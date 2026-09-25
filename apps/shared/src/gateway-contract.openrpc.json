@@ -24097,6 +24097,11 @@
             "title": "Iskanban",
             "type": "boolean"
           },
+          "isGit": {
+            "default": true,
+            "title": "Isgit",
+            "type": "boolean"
+          },
           "sessions": {
             "items": {
               "$ref": "#/components/schemas/ProjectTreeSession"

@@ -2281,6 +2281,7 @@ export interface ProjectTreeLane {
   path?: string | null
   isMain?: boolean
   isKanban?: boolean
+  isGit?: boolean
   sessions?: ProjectTreeSession[]
 }
 /** ``methods_projects._project_tree_row`` + ``project_tree.stamp_profile``: the minimal row the sidebar renders, stamped with the profile it belongs to. */

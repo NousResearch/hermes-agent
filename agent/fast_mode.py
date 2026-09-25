@@ -17,9 +17,43 @@ from typing import Any
 
 BOUNDED_MODES = frozenset({"auto", "cold"})
 DEFAULT_WINDOW_SECONDS = 60
+
+
+def _fast_route_base_url(agent: Any) -> Any:
+    base_url = getattr(agent, "base_url", None)
+    if getattr(agent, "api_mode", None) == "anthropic_messages":
+        return getattr(agent, "_anthropic_base_url", None) or base_url
+    return base_url
+
+
+def _route_fast_overrides(agent: Any) -> dict[str, Any]:
+    from hermes_cli.models import resolve_fast_mode_overrides
+
+    return resolve_fast_mode_overrides(
+        getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+        base_url=_fast_route_base_url(agent),
+    ) or {}
+
+
 # Documented fast-mode rate-limit headers; a limit of 0 means the organization has no fast
 # capacity for the model (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
 _FAST_LIMIT_HEADERS = ("anthropic-fast-input-tokens-limit", "anthropic-fast-output-tokens-limit")
+
+def rederive_static_fast_overrides(agent: Any) -> None:
+    """Keep pinned fast params scoped to the current route after a model/provider swap."""
+    if getattr(agent, "service_tier", None) != "priority":
+        return
+
+    overrides = dict(getattr(agent, "request_overrides", None) or {})
+    if overrides.get("speed") == "fast":
+        overrides.pop("speed")
+    if overrides.get("service_tier") == "priority":
+        overrides.pop("service_tier")
+    route_fast = _route_fast_overrides(agent)
+    if "service_tier" in overrides:
+        route_fast.pop("service_tier", None)
+    overrides.update(route_fast)
+    agent.request_overrides = overrides
 
 
 def begin_turn(agent: Any, conversation_history: Any) -> None:
@@ -45,13 +79,7 @@ def effective_request_overrides(agent: Any) -> dict[str, Any]:
     ``speed`` for a model this session learned has no fast capacity."""
     overrides = dict(getattr(agent, "request_overrides", None) or {})
     if getattr(agent, "service_tier", None) in BOUNDED_MODES and time.monotonic() < getattr(agent, "_fast_until", 0.0):
-        from hermes_cli.models import resolve_fast_mode_overrides
-        base_url = getattr(agent, "base_url", None)
-        if getattr(agent, "api_mode", None) == "anthropic_messages":
-            base_url = getattr(agent, "_anthropic_base_url", None) or base_url
-        overrides.update(
-            resolve_fast_mode_overrides(getattr(agent, "model", None), provider=getattr(agent, "provider", None), base_url=base_url) or {}
-        )
+        overrides.update(_route_fast_overrides(agent))
     if "speed" in overrides and getattr(agent, "model", None) in (getattr(agent, "_fast_mode_unavailable_models", None) or ()):
         overrides.pop("speed", None)
     return overrides

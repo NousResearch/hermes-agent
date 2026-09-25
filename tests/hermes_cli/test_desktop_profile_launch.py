@@ -99,6 +99,8 @@ def _launch_command(tmp_path, monkeypatch, argv: list[str], *, active_profile: s
     monkeypatch.setattr(sys, "argv", argv)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", project)
     monkeypatch.setattr(main_desktop, "_desktop_exe_integrity_error", lambda _path: None)
+    # Module global: restore it so a later cmd_gui test does not inherit a flag.
+    monkeypatch.setattr(cli_main, "_explicit_cli_profile", None)
 
     cli_main._apply_profile_override()
 

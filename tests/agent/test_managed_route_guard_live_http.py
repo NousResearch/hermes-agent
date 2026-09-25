@@ -101,6 +101,7 @@ class _CapturingHandler(BaseHTTPRequestHandler):
             "usage": {"prompt_tokens": 10, "completion_tokens": 1, "total_tokens": 11},
         })
         for c in chunks:
+            c["model"] = resp.get("model", "test-model")
             self.wfile.write(f"data: {json.dumps(c)}\n\n".encode())
         self.wfile.write(b"data: [DONE]\n\n")
         self.wfile.flush()
@@ -638,3 +639,32 @@ def test_iteration_summary_is_a_managed_send(managed_agent_env, monkeypatch, mut
         outcomes = list_outcomes(env["hermes_home"], env["receipt_id"])
         health = [entry for entry in outcomes if entry["kind"] == "routing_health"]
         assert len(health) == len(approved.requests), "summary contact must not disappear from attempt history"
+
+
+@pytest.mark.parametrize("reported,status", [("test-model", "matching"), (None, "missing"), ("TEST-model", "changed")])
+@pytest.mark.parametrize("boundary", ["normal", "streaming", "summary"])
+def test_chat_response_identity_is_record_only(managed_agent_env, reported, status, boundary):
+    from agent.chat_completion_helpers import handle_max_iterations
+    from agent.model_selection_store import get_receipt, list_outcomes
+
+    env = managed_agent_env
+    agent, endpoint = env["agent"], env["approved"]
+    agent._disable_streaming = boundary != "streaming"
+    receipt = get_receipt(env["hermes_home"], env["receipt_id"])
+    for managed in (True, False):
+        agent._managed_routing_receipt_id = env["receipt_id"] if managed else None
+        endpoint.response_queue.append({**_text_resp("identity done"), "model": reported})
+        if boundary == "summary":
+            text = handle_max_iterations(agent, [{"role": "user", "content": "private prompt"}], 1)
+        else:
+            text = agent.run_conversation("private prompt")["final_response"]
+        assert "identity done" in text
+        health = [e["payload"] for e in list_outcomes(env["hermes_home"], env["receipt_id"])
+                  if e["kind"] == "routing_health"]
+        assert len(health) == 1, "unmanaged requests must not append routing observations"
+        assert health[0]["reported_model"] == reported
+        assert health[0]["identity_status"] == status
+        assert health[0]["status"] == "healthy" and health[0]["replay_safe"] is False
+        assert get_receipt(env["hermes_home"], env["receipt_id"]) == receipt
+    assert len(endpoint.requests) == 2
+    assert not env["unapproved"].requests

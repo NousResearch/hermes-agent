@@ -672,6 +672,9 @@ of a fixed `model`/`provider` override. A task without `routing_role` retains le
 behavior only when its parent is unmanaged; managed parents impose their authority
 on every nested launch.
 
+In v1, delegated children without a trusted execution-bound classification attestation
+default to deep routing. A task's proposed class is not such an attestation.
+
 - **Batch members are independent decisions.** Each task in a batch resolves its own
   route against its own requirements; there is no single static model chosen for the
   whole batch.

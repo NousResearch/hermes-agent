@@ -1525,7 +1525,8 @@ class _CodexCompletionsAdapter:
         choice = SimpleNamespace(
             index=0, message=message, finish_reason="stop" if not tool_calls_raw else "tool_calls"
         )
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        return SimpleNamespace(choices=[choice], model=model, usage=usage,
+                               _hermes_reported_model=getattr(final, "_hermes_reported_model", getattr(final, "model", None)))
 
 
 class _ChatShim:
@@ -1722,7 +1723,8 @@ class _AnthropicCompletionsAdapter:
             message=SimpleNamespace(content=_nr.content, tool_calls=_nr.tool_calls, reasoning=_nr.reasoning),
             finish_reason=_nr.finish_reason,
         )
-        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+        return SimpleNamespace(choices=[choice], model=model, usage=usage,
+                               _hermes_reported_model=getattr(response, "model", None))
 
 
 class AnthropicAuxiliaryClient:
@@ -6578,6 +6580,7 @@ class _ChatStreamAccumulator:
         self.finish_reason = self.usage = None
         self.resp_id = ""
         self.resp_model = model or ""
+        self.reported_model = None
 
     def _check_deadlines(self) -> None:
         """Raise TimeoutError past the total ceiling or the host deadline."""
@@ -6635,6 +6638,8 @@ class _ChatStreamAccumulator:
         self._check_deadlines()
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
         self.resp_model = getattr(chunk, "model", None) or self.resp_model
+        if isinstance(getattr(chunk, "model", None), str):
+            self.reported_model = chunk.model
         chunk_usage = getattr(chunk, "usage", None)
         if chunk_usage:
             self.usage = chunk_usage
@@ -6678,7 +6683,7 @@ class _ChatStreamAccumulator:
         )
         choice = SimpleNamespace(index=0, message=message, finish_reason=self.finish_reason or "stop")
         return SimpleNamespace(id=self.resp_id, model=self.resp_model, object="chat.completion",
-                               choices=[choice], usage=self.usage)
+                               choices=[choice], usage=self.usage, _hermes_reported_model=self.reported_model)
 
 
 async def _aggregate_chat_stream_async(

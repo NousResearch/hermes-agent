@@ -7,25 +7,29 @@ import pytest
 
 
 @pytest.fixture
-def native_endpoint():
+def native_endpoint(request):
     class Handler(BaseHTTPRequestHandler):
         requests = []
 
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            reported = getattr(request, "param", "matching")
+            reported = payload.get("model") if reported == "matching" else reported
             if self.path.rstrip("/").endswith(("/messages", "/responses")):
                 self.requests.append(payload)
             response = {"id": "msg_fixture", "type": "message", "role": "assistant",
-                        "model": payload.get("model"), "content": [{"type": "text", "text": "done"}],
+                        "model": reported, "content": [{"type": "text", "text": "done"}],
                         "stop_reason": "end_turn", "stop_sequence": None,
                         "usage": {"input_tokens": 10, "output_tokens": 1}}
             if self.path.rstrip("/").endswith("/responses"):
                 response = {"id": "resp-local", "object": "response", "status": "completed",
-                            "model": payload.get("model"), "output": [{"type": "message", "id": "msg-local",
+                            "model": reported, "output": [{"type": "message", "id": "msg-local",
                             "role": "assistant", "status": "completed",
                             "content": [{"type": "output_text", "text": "done", "annotations": []}]}],
                             "usage": {"input_tokens": 10, "output_tokens": 1, "total_tokens": 11}}
-                body = ("event: response.output_text.delta\ndata: " + json.dumps(
+                created = {"type": "response.created", "response": {"id": "resp-local", "model": response.pop("model")}}
+                body = ("event: response.created\ndata: " + json.dumps(created) +
+                    "\n\nevent: response.output_text.delta\ndata: " + json.dumps(
                     {"type": "response.output_text.delta", "delta": "done", "output_index": 0,
                      "content_index": 0, "item_id": "msg-local"}) +
                     "\n\nevent: response.completed\ndata: " + json.dumps(
@@ -266,3 +270,110 @@ def test_actual_reasoning_conversion_cannot_change_managed_contract(
         else:
             assert len(requests) == 1
             assert requests[0].get("output_config", {}).get("effort") == wire_effort
+
+
+@pytest.mark.parametrize("native_endpoint,identity_status", [
+    ("matching", "matching"), (None, "missing"), ("Different-Model", "changed"),
+], indirect=["native_endpoint"])
+@pytest.mark.parametrize("boundary", ["normal", "streaming", "summary"])
+@pytest.mark.parametrize("api_mode,model,provider", [
+    ("anthropic_messages", "claude-sonnet-4-6", "anthropic"),
+    ("codex_responses", "gpt-5-codex", "openai-compat"),
+])
+def test_native_success_records_reported_identity_without_enforcement(
+    tmp_path, monkeypatch, native_endpoint, identity_status, boundary, api_mode, model, provider,
+):
+    from agent.chat_completion_helpers import handle_max_iterations
+    from agent.model_selection_store import get_receipt, is_route_revoked, list_outcomes
+    from run_agent import AIAgent
+
+    url, requests = native_endpoint
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    receipt_id = _receipt(tmp_path, url, model, provider)
+    original_receipt = get_receipt(tmp_path, receipt_id)
+    agent = AIAgent(
+        api_key="fixture-key", provider=provider, model=model, base_url=url,
+        api_mode=api_mode, max_iterations=1, enabled_toolsets=[], quiet_mode=True,
+        skip_context_files=True, skip_memory=True, save_trajectories=False,
+        reasoning_config={"enabled": True, "effort": "high"},
+    )
+    agent._disable_streaming = boundary != "streaming"
+    agent._managed_routing_home = tmp_path
+    agent._managed_routing_receipt_id = receipt_id
+    try:
+        if boundary == "summary":
+            text = handle_max_iterations(agent, [{"role": "user", "content": "private fixture prompt"}], 1)
+        else:
+            text = agent.run_conversation("private fixture prompt")["final_response"]
+        assert "done" in text
+        assert len(requests) == 1
+        health = [e["payload"] for e in list_outcomes(tmp_path, receipt_id) if e["kind"] == "routing_health"]
+        assert len(health) == 1
+        expected = {"matching": model, "missing": None, "changed": "Different-Model"}[identity_status]
+        assert health[0]["reported_model"] == expected
+        assert health[0]["identity_status"] == identity_status
+        assert health[0]["status"] == "healthy"
+        assert health[0]["replay_safe"] is False
+        assert get_receipt(tmp_path, receipt_id) == original_receipt
+        assert is_route_revoked(tmp_path, "native", "native") is None
+        assert "private fixture prompt" not in json.dumps(health)
+        assert "fixture-key" not in json.dumps(health)
+    finally:
+        agent.close()
+
+
+@pytest.mark.parametrize("native_endpoint,identity_status", [
+    ("matching", "matching"), (None, "missing"), ("Different-Model", "changed"),
+], indirect=["native_endpoint"])
+@pytest.mark.parametrize("boundary", ["reference", "synthesis", "aggregator_stream"])
+@pytest.mark.parametrize("api_mode,model,provider", [
+    ("anthropic_messages", "claude-sonnet-4-6", "custom"),
+    ("codex_responses", "gpt-5-codex", "openai-compat"),
+])
+def test_moa_native_identity_survives_auxiliary_conversion(
+    tmp_path, monkeypatch, native_endpoint, identity_status, boundary, api_mode, model, provider,
+):
+    from agent.model_selection_store import _connect
+    from agent.moa_loop import MoAChatCompletions, _run_reference, aggregate_moa_context
+    from hermes_cli import runtime_provider
+
+    url, requests = native_endpoint
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _receipt(tmp_path, url, model, provider)
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", lambda **kwargs: dict(
+        provider=provider, base_url=url, api_key="fixture-key", api_mode=api_mode,
+        request_overrides={"extra_body": {"reasoning": {"enabled": True, "effort": "high"}}},
+        command=None, args=[],
+    ))
+    slot = dict(provider=provider, model=model, routing_role="builder", routing_policy_id="native",
+                reasoning_effort="high", routing_requirements=dict(input_tokens=1000, reserve_tokens=8192))
+    messages = [{"role": "user", "content": "private native MoA prompt"}]
+    if boundary == "reference":
+        _, text, _ = _run_reference(slot, messages, execution_id="identity", slot_id="reference-0")
+        assert text == "done"
+    elif boundary == "synthesis":
+        text = aggregate_moa_context(user_prompt=messages[0]["content"], api_messages=messages,
+                                     reference_models=[], aggregator=slot)
+        assert "done" in text
+    else:
+        facade = MoAChatCompletions.__new__(MoAChatCompletions)
+        facade._agent = None
+        facade.preset_name = "identity"
+        facade._pending_trace = None
+        facade._plan_aggregator_cache = lambda messages, tools, guidance, runtime: (messages, tools)
+        chunks = list(facade._call_prepared_aggregator(
+            dict(aggregator=slot, messages=messages, guidance="", aggregator_temperature=None),
+            dict(stream=True, max_tokens=8192),
+        ))
+        assert chunks
+    assert len(requests) == 1
+    with _connect(tmp_path) as conn:
+        health = [json.loads(row[0]) for row in conn.execute(
+            "SELECT payload_json FROM routing_outcomes WHERE kind='routing_health'")]
+    assert len(health) == 1
+    expected = {"matching": model, "missing": None, "changed": "Different-Model"}[identity_status]
+    assert health[0]["reported_model"] == expected
+    assert health[0]["identity_status"] == identity_status
+    assert health[0]["status"] == "healthy"
+    assert health[0]["replay_safe"] is False
+    assert "private native MoA prompt" not in json.dumps(health)

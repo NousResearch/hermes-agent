@@ -600,6 +600,7 @@ class _CodexResponseAssembler:
 
     def __init__(self, *, model, on_text_delta, on_reasoning_delta, on_commentary_message, on_first_delta):
         self.model, self.on_text_delta, self.on_reasoning_delta = model, on_text_delta, on_reasoning_delta
+        self.reported_model = None
         self.on_commentary_message, self.on_first_delta = on_commentary_message, on_first_delta
         self.output_items: List[Any] = []
         # output_index / first-observed sequence per output item, in lockstep, so settled pending calls merge
@@ -742,6 +743,9 @@ class _CodexResponseAssembler:
 
     def feed(self, event: Any) -> bool:
         """Process one event; True when the stream hit a terminal frame."""
+        reported = _event_field(_event_field(event, "response"), "model")
+        if isinstance(reported, str):
+            self.reported_model = reported
         event_type = _event_field(event, "type", "")
         event_type = event_type if isinstance(event_type, str) else ""
         handler = self._EXACT_HANDLERS.get(event_type) or next((h for m, h in self._FUZZY_HANDLERS if m(event_type)), None)
@@ -783,6 +787,7 @@ class _CodexResponseAssembler:
         return SimpleNamespace(
             output=output, output_text="".join(self.text_deltas), usage=self.terminal_usage, status=self.terminal_status,
             id=self.terminal_response_id, model=self.model, incomplete_details=self.terminal_incomplete_details,
+            _hermes_reported_model=self.reported_model,
             error=self.terminal_error)
 
 

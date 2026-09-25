@@ -38,6 +38,7 @@ if _REPO_ROOT not in sys.path:
 class _CapturingHandler(BaseHTTPRequestHandler):
     requests: list
     refused_models = ()
+    reported_model = None
 
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("Content-Length", 0))
@@ -54,6 +55,7 @@ class _CapturingHandler(BaseHTTPRequestHandler):
         else:
             self._send_json({
                 "id": "m",
+                "model": self.reported_model,
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": "child done"},
                              "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
@@ -70,6 +72,7 @@ class _CapturingHandler(BaseHTTPRequestHandler):
              "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}},
         ]
         for chunk in chunks:
+            chunk["model"] = self.reported_model
             self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
         self.wfile.write(b"data: [DONE]\n\n")
 
@@ -194,6 +197,43 @@ def test_managed_delegation_task_reaches_real_child_and_pins_receipt(routed_home
     assert len(handler.requests) == 1, "the real child must reach the approved endpoint exactly once"
     sent = json.dumps(handler.requests[0])
     assert "Summarize the managed routing design" in sent
+
+
+@pytest.mark.parametrize("reported,status", [("test-model", "matching"), (None, "missing"), ("TEST-model", "changed")])
+@pytest.mark.parametrize("entrypoint", ["tool", "lifecycle"])
+def test_delegated_response_identity_stays_with_child(routed_home, monkeypatch, reported, status, entrypoint):
+    from agent.model_selection_store import _connect
+    from agent.subagent_lifecycle import SubagentLaunchRequest, SubagentLifecycleService
+    from tools.delegate_tool import delegate_task
+
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    handler.reported_model = reported
+    parent = _make_parent(home, endpoint=url)
+    task = dict(goal="private child identity probe", routing_role="builder",
+                routing_requirements=dict(input_tokens=1000, reserve_tokens=8192))
+    try:
+        if entrypoint == "tool":
+            result = json.loads(delegate_task(tasks=[task], parent_agent=parent))["results"][0]
+            assert result["status"] == "completed", result
+        else:
+            service = SubagentLifecycleService(lambda: parent)
+            handle = service.launch(SubagentLaunchRequest(**task))
+            assert service.wait(handle, timeout_seconds=30).completed
+            assert service.result(handle).terminal_state.value == "SUCCEEDED"
+        assert len(handler.requests) == 1
+        with _connect(home) as conn:
+            health = [json.loads(row[0]) for row in conn.execute(
+                "SELECT payload_json FROM routing_outcomes WHERE kind='routing_health'")]
+        assert len(health) == 1
+        assert health[0]["reported_model"] == reported
+        assert health[0]["identity_status"] == status
+        assert health[0]["status"] == "healthy" and health[0]["replay_safe"] is False
+        assert "private child identity probe" not in json.dumps(health)
+        assert parent._active_children == []
+    finally:
+        parent.close()
 
 
 @pytest.mark.parametrize("first_mode", ["enforced", "shadow"])

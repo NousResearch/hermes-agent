@@ -57,8 +57,8 @@ def enforce_aux_native_wire(client, kwargs, api_mode):
 @contextmanager
 def observe_moa_request(home, receipt_id):
     from agent.managed_route_health import observe_request
-    with observe_request(home, receipt_id), managed_aux_wire_scope(home, receipt_id):
-        yield
+    with observe_request(home, receipt_id) as observation, managed_aux_wire_scope(home, receipt_id):
+        yield observation
 
 
 def observe_moa_stream(home, receipt_id, stream):

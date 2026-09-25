@@ -305,6 +305,12 @@ Key properties, so operators know what this does and doesn't do:
   `receipt-for-task` places the immutable decision under `decision` beside
   `receipt_id` and `outcomes`. A recorded startup identity is not proof of a
   successful provider response: inspect subsequent health events separately.
+  Successful `routing_health` events include `reported_model` (the provider's raw
+  reported identity, or `null` when unavailable) and `identity_status`: `matching`,
+  `missing`, or `changed`. Comparison is exact, with no alias normalization. This
+  v1 observation is record-only: a changed identity does not alter route selection,
+  health, or suspension, and missing identity remains unknown rather than a failure.
+  This records what the provider reports, not proof of the underlying model's identity.
   `routing_wire_validated` events separately record the final SDK payload's model,
   emitted reasoning, protocol and endpoint hash, after middleware and protocol
   conversion. They contain no prompts or credentials and mean validation before

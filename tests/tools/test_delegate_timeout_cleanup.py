@@ -31,11 +31,13 @@ class _SlowUnwindingChild:
 
     def run_conversation(self, **_kwargs):
         self.started.set()
-        assert self.interrupted.wait(timeout=1)
+        assert self.interrupted.wait(timeout=30)
         # Model the real child turn's finally path: it still performs session
         # activity/SQLite cleanup after the parent requests interruption.
         self.unwinding.set()
-        assert self.allow_finish.wait(timeout=2)
+        # Event ordering is the oracle; leave time for cold parent-side imports
+        # and result bookkeeping before the test releases this worker.
+        assert self.allow_finish.wait(timeout=30)
         self.finished.set()
         return {
             "final_response": "",
@@ -76,15 +78,15 @@ def test_timeout_does_not_close_child_while_worker_is_unwinding(monkeypatch):
     )
 
     assert result["status"] == "timeout"
-    assert child.unwinding.wait(timeout=1)
+    assert child.unwinding.wait(timeout=30)
     try:
         assert not child.closed.is_set(), (
             "timed-out child.close() ran before its conversation thread unwound"
         )
     finally:
         child.allow_finish.set()
-    assert child.finished.wait(timeout=1)
-    assert child.closed.wait(timeout=1)
+    assert child.finished.wait(timeout=30)
+    assert child.closed.wait(timeout=30)
     assert not child.close_while_running, (
         "timed-out child.close() raced its still-running conversation thread"
     )

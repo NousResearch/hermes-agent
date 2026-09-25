@@ -87,17 +87,17 @@ def perform_api_call(
                 next_api_kwargs, allow_stream=False, is_github_responses=agent._is_copilot_url(),
                 sanitize_harmony_tokens=agent._is_codex_backend(),
             )
-        from agent.managed_route_health import observe_request
+        from agent.managed_route_health import observe_request, record_response_identity
 
         with observe_request(getattr(agent, "_managed_routing_home", None),
-                             getattr(agent, "_managed_routing_receipt_id", None)):
+                             getattr(agent, "_managed_routing_receipt_id", None)) as observation:
             if _use_streaming:
-                return agent._interruptible_streaming_api_call(
+                return record_response_identity(observation, agent._interruptible_streaming_api_call(
                     next_api_kwargs, on_first_delta=_stop_spinner
-                )
+                ))
             from agent import relay_llm
 
-            return relay_llm.execute(
+            return record_response_identity(observation, relay_llm.execute(
                 next_api_kwargs,
                 agent._interruptible_api_call,
                 session_id=str(agent.session_id or ""),
@@ -116,7 +116,7 @@ def perform_api_call(
                     "retry_count": retry_count,
                 },
                 defer_logical_completion=True,
-            )
+            ))
 
     from hermes_cli.middleware import run_llm_execution_middleware
 

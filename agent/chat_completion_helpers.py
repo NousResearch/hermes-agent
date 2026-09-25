@@ -2018,7 +2018,9 @@ def _managed_summary_call(agent, api_request_id: str, request, callback, *, retr
     )
 
 
-def _summary_text(agent, response, **normalize_kwargs) -> str:
+def _summary_text(agent, response, *, observation, **normalize_kwargs) -> str:
+    from agent.managed_route_health import record_response_identity
+    record_response_identity(observation, response)
     normalized = agent._get_transport().normalize_response(response, **normalize_kwargs)
     if normalized.tool_calls:
         # No summary path executes tool calls; log so a tool-only response that falls into the
@@ -2028,26 +2030,26 @@ def _summary_text(agent, response, **normalize_kwargs) -> str:
 
 
 def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
-    def _attempt(retry_count: int) -> str:
+    def _attempt(retry_count: int, observation) -> str:
         codex_kwargs = agent._build_api_kwargs(api_messages)
         # The transport emits these three as one block (transports/codex.py build_kwargs);
         # strict Responses backends 400 on tool_choice/parallel_tool_calls without tools.
         codex_kwargs.pop("tools", None)
         codex_kwargs.pop("tool_choice", None)
         codex_kwargs.pop("parallel_tool_calls", None)
-        return _summary_text(agent, agent._run_codex_stream(codex_kwargs))
+        return _summary_text(agent, agent._run_codex_stream(codex_kwargs), observation=observation)
     return _attempt
 
 
 def _anthropic_summary_attempt(agent, api_messages: list, api_request_id: str):
-    def _attempt(retry_count: int) -> str:
+    def _attempt(retry_count: int, observation) -> str:
         ant_kw = agent._get_transport().build_kwargs(
             model=agent.model, messages=api_messages, tools=None, max_tokens=agent.max_tokens,
             reasoning_config=agent.reasoning_config, is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(), base_url=getattr(agent, "_anthropic_base_url", None))
         ant_kw = _merge_nous_portal_messages_extra_body(agent, ant_kw)
         response = _managed_summary_call(agent, api_request_id, ant_kw, agent._anthropic_messages_create, retry_count=retry_count)
-        return _summary_text(agent, response, strip_tool_prefix=agent._is_anthropic_oauth)
+        return _summary_text(agent, response, observation=observation, strip_tool_prefix=agent._is_anthropic_oauth)
     return _attempt
 
 
@@ -2061,7 +2063,7 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
     # copy, so ``agent.tools`` may still hold bytes the provider 400s on.
     sanitize_outbound_kwargs(agent, summary_kwargs)
 
-    def _attempt(retry_count: int) -> str:
+    def _attempt(retry_count: int, observation) -> str:
         summary_client = agent._ensure_primary_openai_client(reason="iteration_limit_summary_retry" if retry_count else "iteration_limit_summary")
 
         def send(request):
@@ -2071,7 +2073,7 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
 
         response = _managed_summary_call(
             agent, api_request_id, summary_kwargs, send, retry_count=retry_count)
-        return _summary_text(agent, response)
+        return _summary_text(agent, response, observation=observation)
     return _attempt
 
 
@@ -2112,8 +2114,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             enforce_supported_wire(agent)
             # Summary requests bypass the turn call owner on every protocol.
             with observe_request(getattr(agent, "_managed_routing_home", None),
-                                 getattr(agent, "_managed_routing_receipt_id", None)):
-                text = attempt(retry_count)
+                                 getattr(agent, "_managed_routing_receipt_id", None)) as observation:
+                text = attempt(retry_count, observation)
             if not text:
                 continue
             if "<think>" in text:

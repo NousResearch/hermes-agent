@@ -471,14 +471,16 @@ def _run_reference(
         from agent.auxiliary_client import _normalize_aux_provider
         is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
         from agent.managed_route_aux_wire import observe_moa_request
+        from agent.managed_route_health import record_response_identity
         health_route = managed_resolution or {}
-        with observe_moa_request(health_route.get("routing_home"), health_route.get("receipt_id")):
+        with observe_moa_request(health_route.get("routing_home"), health_route.get("receipt_id")) as observation:
             response = call_llm(
                 task="moa_reference", messages=trimmed, temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=reference_timeout, reasoning_config=reasoning_config,
                 extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
             )
+            record_response_identity(observation, response)
         output_text = _extract_text(response)
         from agent.moa_model_routing import MoARequiredSlotDenied, is_moa_slot_required
         if is_moa_slot_required(slot) and not (output_text or "").strip():
@@ -982,12 +984,13 @@ def aggregate_moa_context(
 
             enforce_input_budget(agg_managed_resolution["routing_home"], agg_managed_resolution["receipt_id"], agg_messages)
         from agent.managed_route_aux_wire import observe_moa_request
+        from agent.managed_route_health import record_response_identity
         health_route = agg_managed_resolution or {}
-        with observe_moa_request(health_route.get("routing_home"), health_route.get("receipt_id")):
-            synthesis = _extract_text(call_llm(
+        with observe_moa_request(health_route.get("routing_home"), health_route.get("receipt_id")) as observation:
+            synthesis = _extract_text(record_response_identity(observation, call_llm(
                 task="moa_aggregator", messages=agg_messages, temperature=aggregator_temperature,
                 reasoning_config=agg_reasoning_config, **agg_runtime,
-            ))
+            )))
         if agg_required and not (synthesis or "").strip():
             raise MoARequiredSlotDenied("aggregator", aggregator["routing_role"], "empty_output", "required aggregator returned empty output")
     except Exception as exc:
@@ -1036,6 +1039,7 @@ def _completed_response_as_stream_chunk(response: Any) -> Any:
     )
     return SimpleNamespace(
         id=getattr(response, "id", None), model=getattr(response, "model", None), choices=[choice], usage=getattr(response, "usage", None),
+        _hermes_reported_model=getattr(response, "_hermes_reported_model", getattr(response, "model", None)),
     )
 
 
@@ -1316,11 +1320,13 @@ class MoAChatCompletions:
                     raise
         else:
             from agent.managed_route_aux_wire import observe_moa_request
+            from agent.managed_route_health import record_response_identity
 
             with observe_moa_request(
                 agg_managed_resolution["routing_home"], agg_managed_resolution["receipt_id"],
-            ):
+            ) as observation:
                 agg_response = _call_aggregator()
+                record_response_identity(observation, agg_response)
         if trace is not None:
             # Streaming output lands as the turn's assistant message; the trace marks it.
             trace["aggregator_streamed"] = stream

@@ -26,6 +26,14 @@ def load_availability(home, policy_id: str, target_profile: str) -> dict:
     return result
 
 
+def record_response_identity(observation, response):
+    """Keep provider evidence separate from adapters' requested-model defaults."""
+    reported = getattr(response, "_hermes_reported_model", getattr(response, "model", None))
+    if isinstance(reported, str):
+        observation["reported_model"] = reported
+    return response
+
+
 @contextmanager
 def observe_request(home, receipt_id):
     if not receipt_id:
@@ -72,6 +80,10 @@ def observe_request(home, receipt_id):
             status="healthy", observed_at=int(time.time()), retry_after=0,
             replay_safe=False,
         )
+        reported = payload.setdefault("reported_model", None)
+        payload["identity_status"] = (
+            "missing" if not reported else "matching" if reported == route["model"] else "changed"
+        )
         append_outcome(home, receipt_id, "routing_health", payload)
 
 
@@ -86,4 +98,5 @@ def observe_stream(home, receipt_id, stream):
     with observe_request(home, receipt_id) as observation:
         for chunk in stream:
             observation["output_observed"] = True
+            record_response_identity(observation, chunk)
             yield chunk

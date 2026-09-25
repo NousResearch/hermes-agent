@@ -40,6 +40,7 @@ if _REPO_ROOT not in sys.path:
 
 class _CapturingHandler(BaseHTTPRequestHandler):
     requests: list
+    reported_model = None
 
     def do_POST(self):  # noqa: N802
         length = int(self.headers.get("Content-Length", 0))
@@ -48,8 +49,20 @@ class _CapturingHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True})
             return
         type(self).requests.append(req)
+        if req.get("stream"):
+            chunks = [dict(id="m", model=self.reported_model, choices=[dict(
+                index=0, delta=dict(role="assistant", content="slot done"), finish_reason=None)]),
+                dict(id="m", choices=[dict(index=0, delta={}, finish_reason="stop")])]
+            body = ("".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n").encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self._send_json({
             "id": "m",
+            "model": self.reported_model,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "slot done"},
                          "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
@@ -430,3 +443,47 @@ def test_shadow_cohort_observation_failure_does_not_cancel_legacy(routed_home, m
     aggregate_moa_context(user_prompt="legacy", api_messages=[{"role": "user", "content": "legacy"}],
                           reference_models=[slot], aggregator={"provider": "custom", "model": "legacy-aggregator"})
     assert [request["model"] for request in handler.requests] == ["legacy-reference", "legacy-aggregator"]
+
+
+@pytest.mark.parametrize("reported,status", [("test-model", "matching"), (None, "missing"), ("TEST-model", "changed")])
+@pytest.mark.parametrize("boundary", ["reference", "synthesis", "aggregator", "aggregator_stream"])
+def test_moa_chat_success_records_provider_identity(routed_home, monkeypatch, reported, status, boundary):
+    from agent.model_selection_store import _connect
+    from agent.moa_loop import MoAChatCompletions, _run_reference, aggregate_moa_context
+
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    handler.reported_model = reported
+    slot = dict(provider="custom", model="test-model", routing_role="moareference" if boundary == "reference" else "moaaggregator",
+                routing_requirements=dict(input_tokens=1000, reserve_tokens=8192))
+    messages = [{"role": "user", "content": "private MoA prompt"}]
+    if boundary == "reference":
+        _, text, _ = _run_reference(slot, messages, execution_id="identity", slot_id="reference-0")
+        assert text == "slot done"
+    elif boundary == "synthesis":
+        assert "slot done" in aggregate_moa_context(user_prompt="private MoA prompt", api_messages=messages,
+                                                    reference_models=[], aggregator=slot)
+    else:
+        facade = MoAChatCompletions.__new__(MoAChatCompletions)
+        facade._agent = None
+        facade.preset_name = "identity"
+        facade._pending_trace = None
+        facade._plan_aggregator_cache = lambda messages, tools, guidance, runtime: (messages, tools)
+        result = facade._call_prepared_aggregator(
+            dict(aggregator=slot, messages=messages, guidance="", aggregator_temperature=None),
+            dict(stream=boundary == "aggregator_stream", max_tokens=8192),
+        )
+        if boundary == "aggregator_stream":
+            assert list(result)
+        else:
+            assert result.choices[0].message.content == "slot done"
+    assert len(handler.requests) == 1
+    with _connect(home) as conn:
+        health = [json.loads(row[0]) for row in conn.execute(
+            "SELECT payload_json FROM routing_outcomes WHERE kind='routing_health'")]
+    assert len(health) == 1
+    assert health[0]["reported_model"] == reported
+    assert health[0]["identity_status"] == status
+    assert health[0]["status"] == "healthy" and health[0]["replay_safe"] is False
+    assert "private MoA prompt" not in json.dumps(health)

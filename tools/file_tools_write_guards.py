@@ -17,6 +17,8 @@ from pathlib import Path
 from agent.file_safety import get_nt_namespace_error
 from tools import file_state
 from tools.binary_extensions import (
+    OLE_COMPOUND_MAGIC,
+    has_ambiguous_document_extension,
     has_binary_extension,
     has_opaque_document_extension,
     is_pdf_path,
@@ -420,6 +422,20 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     return get_container_mirror_warning(resolved, mirror_prefix=_get_container_mirror_prefix_for_task(task_id))
 
 
+def _is_ole_compound_file(filepath: str, task_id: str) -> bool:
+    """True when the file at ``filepath`` exists and starts with the OLE compound-document
+    signature. A missing, text or unreadable file is not a container."""
+    try:
+        resolved = Path(_resolve_path_for_task(filepath, task_id))
+    except Exception:
+        resolved = Path(_expand_tilde(filepath))
+    try:
+        with resolved.open("rb") as fh:
+            return fh.read(len(OLE_COMPOUND_MAGIC)) == OLE_COMPOUND_MAGIC
+    except OSError:
+        return False
+
+
 def _check_binary_document_write(filepath: str, task_id: str = "default") -> str | None:
     """Reject text-tool writes that would corrupt a binary document (read_file showed
     EXTRACTED text, so the model may write it back). Opaque document formats and
@@ -431,9 +447,13 @@ def _check_binary_document_write(filepath: str, task_id: str = "default") -> str
     plausibly believes it holds the file's contents and tries to write the edited text back with
     write_file/patch. A plain-text write can never produce a valid OOXML/OLE/ODF container, so that write
     silently destroys the document (port of nearai/ironclaw#7109).
+
+    ``.pot`` is refused only when the existing file is an OLE compound document: the same
+    suffix is the gettext PO template, a plain-text format (#92131).
     """
     ext = os.path.splitext(filepath)[1].lower()
-    if has_opaque_document_extension(filepath):
+    if has_opaque_document_extension(filepath) or (
+            has_ambiguous_document_extension(filepath) and _is_ole_compound_file(filepath, task_id)):
         return (
             f"Refusing to write plain text to binary document '{filepath}' ({ext}). "
             "A text write cannot produce a valid document container and would "

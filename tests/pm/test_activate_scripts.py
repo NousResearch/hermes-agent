@@ -370,5 +370,6 @@ def test_powershell_activate_exports_and_deactivates(tmp_path: Path):
         capture_output=True, text=True, cwd=str(tmp_path), env=env, timeout=40,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    assert f"active={root}{os.pathsep}" in result.stdout
+    # Nothing is committed, so the checkout alone: the bootstrap .venv's packages never leak in.
+    assert f"active={root}\n" in result.stdout
     assert "after=caller-original" in result.stdout

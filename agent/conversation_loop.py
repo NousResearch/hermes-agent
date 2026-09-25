@@ -257,49 +257,13 @@ def _moa_client_consumes_prepared_request(client: Any) -> bool:
     return callable(getattr(completions, "prepare", None))
 
 
-_MIN_CONTINUATION_OVERLAP = 32
-
-
-def _continuation_overlap_length(previous: str, continuation: str) -> int:
-    """Return the longest continuation prefix that repeats the previous suffix."""
-    if len(previous) < _MIN_CONTINUATION_OVERLAP or len(continuation) < _MIN_CONTINUATION_OVERLAP:
-        return 0
-
-    prefix_lengths = [0] * len(continuation)
-    matched = 0
-    for index in range(1, len(continuation)):
-        while matched and continuation[index] != continuation[matched]:
-            matched = prefix_lengths[matched - 1]
-        if continuation[index] == continuation[matched]:
-            matched += 1
-            prefix_lengths[index] = matched
-
-    matched = 0
-    last_index = len(previous) - 1
-    for index, char in enumerate(previous):
-        while matched and char != continuation[matched]:
-            matched = prefix_lengths[matched - 1]
-        if char == continuation[matched]:
-            matched += 1
-            if matched == len(continuation):
-                if index == last_index:
-                    return matched
-                matched = prefix_lengths[matched - 1]
-    return matched if matched >= _MIN_CONTINUATION_OVERLAP else 0
-
-
-def _join_truncated_parts(parts: List[tuple[str, bool]]) -> str:
-    """Join continuation fragments, deduping only interrupted-stream seams."""
+def _join_truncated_parts(parts: List[str]) -> str:
+    """Join continuation fragments, adding a newline where two would glue together (#78577)."""
     joined = ""
-    previous_was_partial_stub = False
-    for part, is_partial_stub in parts:
-        if previous_was_partial_stub and joined and part:
-            # Overlap can't exceed len(part): scan only that tail of ``joined``.
-            part = part[_continuation_overlap_length(joined[-len(part):], part):]
+    for part in parts:
         if joined and not joined[-1].isspace() and part and not part[0].isspace():
             joined += "\n"
         joined += part
-        previous_was_partial_stub = is_partial_stub
     return joined
 
 
@@ -642,18 +606,14 @@ def _print_billing_or_entitlement_guidance(
     ))
 
 
-def _bot_chat_prompt_stale(agent, stored_prompt: str | None) -> bool:
+def _bot_chat_prompt_stale(agent, stored_prompt: str) -> bool:
     """Bot Chat capability epoch check for a stored prompt.
 
     The stored prompt embeds a capability fingerprint; a mismatch is a deliberate
     once-per-change rebuild. Unstamped prompts never match; probe failures fail closed
     to "reuse" so the cache is kept. Legacy upgrade: a Bot Chat prompt predating the
     epoch mechanism gets ONE title-gated migration rebuild; the stamped result cannot
-    re-fire. A NULL or empty stored prompt already rebuilds every turn, so this probe
-    is not a gate there and must not run.
-    """
-    if not stored_prompt:
-        return False
+    re-fire."""
     try:
         from tools.bot_mode_probe import (
             BOT_CHAT_TITLE,
@@ -742,7 +702,6 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
-        # NULL/empty rows never reach this probe: they already rebuild below.
         if _bot_chat_prompt_stale(agent, stored_prompt):
             logger.info(
                 "Bot Chat capability epoch changed for session %s; rebuilding system prompt to "
@@ -883,18 +842,11 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
 # Named so _is_synthetic_compression_user_turn can recognize a crash-persisted nudge by
 # content (SessionDB projection strips the _length_continuation_nudge tag).
 _LENGTH_CONTINUATION_NETWORK_STUB = (
-    "[System: The previous response was cut off by a network error mid-stream — a transport "
-    "interruption, NOT a change in your capabilities. Your tools are still fully available; call "
-    "them as normal and ignore any earlier claim that you lack tool access. Continue the task "
-    "from where you left off. Do not restart or repeat prior text.]"
+    "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
+    "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
 )
 _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
     "[System: Your previous response was truncated by the output length limit. Continue exactly "
-    "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
-)
-# Pre-#74990 wording; kept so crash-persisted nudges from older sessions are still recognized.
-_LEGACY_LENGTH_CONTINUATION_NETWORK_STUB = (
-    "[System: The previous response was cut off by a network error mid-stream. Continue exactly "
     "where you left off. Do not restart or repeat prior text. Finish the answer directly.]"
 )
 # The dropped-tools variant interpolates tool names; matched by prefix.
@@ -909,8 +861,7 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
             "the stream timed out before it could be delivered. Do NOT retry the same tool call "
             "with the same large content. Instead, break the content into multiple smaller tool "
             "calls (e.g. use multiple patch calls or write smaller files). Each tool call's "
-            "arguments must be under ~8K tokens to avoid stream timeouts. The cut was a transport "
-            "interruption, not a capability change — your tools remain fully available.]"
+            "arguments must be under ~8K tokens to avoid stream timeouts.]"
         )
     return _LENGTH_CONTINUATION_NETWORK_STUB if is_partial_stub else _LENGTH_CONTINUATION_OUTPUT_LIMIT
 
@@ -1180,7 +1131,7 @@ def _peel_moa_guidance(messages: List[Dict[str, Any]], guidance: Any) -> List[Di
 def _redecorate_prompt_cache_for_provider(
     agent, api_messages: List[Dict[str, Any]], *, system_message=None,
     moa_prepared: Optional[Dict[str, Any]] = None, tools_for_api: Optional[List[Dict[str, Any]]] = None,
-) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]] | tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
+) -> tuple[List[Dict[str, Any]], Optional[Dict[str, Any]], List[Dict[str, Any]]]:
     """Strip and re-apply cache_control for the *current* provider policy — failover
     ``continue`` paths reuse ``api_messages`` (#72626). MoA guidance is peeled and rebased."""
     messages: List[Dict[str, Any]] = [dict(m) if isinstance(m, dict) else m for m in (api_messages or [])]
@@ -1226,8 +1177,6 @@ def _redecorate_prompt_cache_for_provider(
         )
         messages, planned_tools = plan.messages, plan.tools
 
-    if tools_for_api is None:
-        return messages, prepared
     return messages, prepared, planned_tools
 
 
@@ -1388,7 +1337,7 @@ class _LoopState:
     restart_count: int = 0
     _outer_error_count: int = 0  # outer-loop exceptions this turn (#92450), see _MAX_OUTER_LOOP_ERRORS
     truncated_tool_call_retries: int = 0
-    truncated_response_parts: List[tuple[str, bool]] = field(default_factory=list)
+    truncated_response_parts: List[str] = field(default_factory=list)
     compression_attempts: int = 0
     _last_preflight_pressure: Optional[int] = None
     # A provider overflow outweighs the rough-estimate calibration that defers preflight after

@@ -9,11 +9,110 @@ post-turn follow-ups (queued prompt, goal continuation, notifications).
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 
 from .method_ctx import HandlerRegistry, bind_module
 
 _registry = HandlerRegistry()
+
+_MODEL_SWITCH_PREFIX = "[System: The active model for this chat has changed to "
+_MODEL_SWITCH_SUFFIX = (
+    ". From this point forward, use this runtime metadata when answering questions about "
+    "what model/provider is active.]"
+)
+
+
+def _is_model_switch_marker_entry(message: Any) -> bool:
+    content = message.get("content") if isinstance(message, dict) else None
+    return isinstance(message, dict) and message.get("role") == "user" and (
+        message.get("display_kind") == "model_switch" or
+        (isinstance(content, str) and content.startswith(_MODEL_SWITCH_PREFIX))
+    )
+
+
+def _model_switch_parts(message: Any) -> tuple[str | None, str | None]:
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, str) or not content.strip():
+        return None, None
+    end = content.find(_MODEL_SWITCH_SUFFIX)
+    if end < 0:
+        return content, None
+    end += len(_MODEL_SWITCH_SUFFIX)
+    return content[:end], (content[end:].lstrip() or None)
+
+
+def _prepend_model_switch_marker(marker: str | None, message: Any) -> Any:
+    if not marker:
+        return message
+    if isinstance(message, str):
+        return f"{marker}\n\n{message}" if message else marker
+    if isinstance(message, list):
+        return [{"type": "text", "text": f"{marker}\n\n"}, *copy.deepcopy(message)]
+    return f"{marker}\n\n{message}" if message is not None else marker
+
+
+def _canonicalize_model_switch_history(
+    history: list,
+) -> tuple[list, str | None, str | None, bool]:
+    if not any(_is_model_switch_marker_entry(m) and _model_switch_parts(m)[0] for m in history):
+        return list(history), None, None, False
+    provider, tail, tail_content, changed = [], None, None, False
+    i = 0
+    while i < len(history):
+        marker = history[i]
+        marker_text, marker_tail = (
+            _model_switch_parts(marker)
+            if _is_model_switch_marker_entry(marker)
+            else (None, None)
+        )
+        next_message = history[i + 1] if i + 1 < len(history) else None
+        if (
+            marker_text
+            and isinstance(next_message, dict)
+            and next_message.get("role") == "user"
+        ):
+            folded = copy.deepcopy(next_message)
+            content = folded.get("content")
+            if marker_tail:
+                content = _prepend_model_switch_marker(marker_tail, content)
+            folded["content"] = _prepend_model_switch_marker(marker_text, content)
+            folded.pop("api_content", None)
+            provider.append(folded)
+            changed = True
+            i += 2
+            continue
+        if marker_text and i == len(history) - 1:
+            tail, tail_content, changed = marker_text, marker_tail, True
+            i += 1
+            continue
+        provider.append(copy.deepcopy(marker))
+        i += 1
+    return provider, tail, tail_content, changed
+
+
+def _strip_model_switch_prefix(message: dict, marker: str, marker_tail: str | None = None) -> None:
+    content = message.get("content")
+    prefix = marker + "\n\n" + ((marker_tail + "\n\n") if marker_tail else "")
+    if isinstance(content, str) and content.startswith(prefix):
+        message["content"] = content[len(prefix):]
+
+
+def _build_display_history(
+    raw_history: list,
+    result_messages: list,
+    current_user_idx: int,
+    tail_marker: str | None,
+    tail_marker_content: str | None = None,
+) -> list | None:
+    if not isinstance(current_user_idx, int) or current_user_idx < 0 or current_user_idx >= len(result_messages):
+        return None
+    if not isinstance(result_messages[current_user_idx], dict) or result_messages[current_user_idx].get("role") != "user":
+        return None
+    tail = copy.deepcopy(result_messages[current_user_idx:])
+    if tail_marker and tail:
+        _strip_model_switch_prefix(tail[0], tail_marker, tail_marker_content)
+    return copy.deepcopy(raw_history) + tail
 
 
 def _bot_mode_delivery_text(response: Any, *, successful: bool) -> Any:
@@ -267,10 +366,12 @@ def _commit_turn_history(
     If history_version moved mid-turn, the only tolerated mutation is a gateway-inserted
     pivot marker (compare content, not indices: ``_append_model_switch_marker`` strips prior
     markers in place); any other desync is surfaced, never dropped."""
+    display_messages = result.pop("_tui_display_messages", None)
+    messages_to_commit = display_messages if isinstance(display_messages, list) else result["messages"]
     with session["history_lock"]:
         current_version = int(session.get("history_version", 0))
         if current_version == history_version:
-            session["history"] = result["messages"]
+            session["history"] = messages_to_commit
             session["history_version"] = history_version + 1
             return None
         # History mutated externally during the turn. Check if the only mutation was a pivot marker the
@@ -486,6 +587,10 @@ class _TurnRun:
     tts_queue: Any = None
     thinking_started: bool = False
     history: list = dataclasses.field(default_factory=list)
+    provider_history: list | None = None
+    model_switch_tail_marker: str | None = None
+    model_switch_tail_content: str | None = None
+    model_switch_canonicalized: bool = False
     history_version: int = 0
     compression_count: int | None = None
     run_kwargs: Any = None
@@ -582,6 +687,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     with session["history_lock"]:
         st.history = list(session["history"])
         st.history_version = int(session.get("history_version", 0))
+    (st.provider_history, st.model_switch_tail_marker, st.model_switch_tail_content,
+     st.model_switch_canonicalized) = _canonicalize_model_switch_history(st.history)
     cwd = _session_cwd(session)
     _register_session_cwd(session)
     cols = session.get("cols", 80)
@@ -614,7 +721,12 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
     if take_speech_interrupted():
         run_message = _prepend_note(run_message, SPEECH_INTERRUPTED_NOTE)
     run_message = _prepend_note(run_message, _pending_reaction_notes(session))
-    return prompt, _prepend_note(run_message, _hud_surface_note(session)), cols, streamer
+    run_message = _prepend_note(run_message, _hud_surface_note(session))
+    if st.model_switch_tail_marker:
+        if st.model_switch_tail_content:
+            run_message = _prepend_model_switch_marker(st.model_switch_tail_content, run_message)
+        run_message = _prepend_model_switch_marker(st.model_switch_tail_marker, run_message)
+    return prompt, run_message, cols, streamer
 
 
 def _invoke_agent(
@@ -660,7 +772,7 @@ def _invoke_agent(
     # A synthesized turn is typed at turn START so a crash persist writes a timeline event,
     # not a raw user bubble; the post-turn stamp is the fallback for an older agent.
     st.run_kwargs = run_kwargs = {
-        "conversation_history": list(st.history),
+        "conversation_history": list(st.provider_history if st.provider_history is not None else st.history),
         "stream_callback": _stream,
         "persist_user_message": (
             _build_persist_user_message(prompt, images, run_message) if images else prompt)}
@@ -691,6 +803,14 @@ def _invoke_agent(
         # roll the client's usage back to a stale snapshot (unbounded join: same worst case).
         _usage_stop.set()
         _usage_thread.join()
+    if st.model_switch_canonicalized and isinstance(st.result, dict):
+        messages = st.result.get("messages")
+        user_idx = getattr(agent, "_persist_user_message_idx", None)
+        if isinstance(messages, list) and isinstance(st.provider_history, list) and user_idx == len(st.provider_history):
+            display = _build_display_history(st.history, messages, user_idx,
+                                             st.model_switch_tail_marker, st.model_switch_tail_content)
+            if display is not None:
+                st.result["_tui_display_messages"] = display
 
 
 def _absorb_turn_result(

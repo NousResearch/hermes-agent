@@ -329,6 +329,57 @@ class TestGitWorktreeFilesNeverCleaned:
         assert not scratch.exists()
         assert result["deleted"] == 1
 
+    def test_file_staged_after_first_classification_is_never_deleted(self, _isolate_env):
+        """The cached ``git ls-files`` set must not outlive the index it was read from.
+
+        Reviewer's repro on the guard added by this PR: ``guess_category()`` runs on
+        every post-tool-call, so a long-lived process (the gateway) caches the ls-files
+        set while ``test_scratch.py`` is still untracked. The same process then stages
+        and commits that file (e.g. an auto-snapshot) and a later ``quick()``
+        re-validates the stored "test" entry through ``guess_category()`` — the stale
+        cache still reports the file as untracked, so ``_delete_item()`` unlinks a file
+        git now owns (``git status`` shows ``D test_scratch.py``).
+
+        No ``cache_clear()`` anywhere in this test: the guard has to notice the index
+        change on its own, exactly as it must inside the live gateway process.
+        """
+        import subprocess
+
+        dg = _load_lib()
+        subprocess.run(["git", "init", "-q", str(_isolate_env)], check=True)
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        control = _isolate_env / "tmp_control.log"
+        control.write_text("x")
+
+        # 1. First classification happens while the file is still untracked — this is
+        #    what fills the per-process index cache.
+        assert dg._inside_git_worktree(scratch) is False
+        assert dg.guess_category(scratch) == "test"
+        assert dg.guess_category(control) == "test"
+        dg.save_tracked([{"path": str(scratch), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1},
+                         {"path": str(control), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+
+        # 2. Git takes ownership of the file without the plugin being told.
+        subprocess.run(["git", "-C", str(_isolate_env), "add", "test_scratch.py"], check=True)
+        subprocess.run(["git", "-C", str(_isolate_env),
+                        "-c", "user.email=test@example.com", "-c", "user.name=Test",
+                        "commit", "-q", "-m", "own it"], check=True)
+
+        # The guard must read the new index, not the one it cached in step 1.
+        assert dg._inside_git_worktree(scratch) is True
+        assert dg.guess_category(scratch) is None
+
+        # 3. quick() re-validates: the file git now owns survives, and the never-tracked
+        #    control in the same repo is still cleaned (not a blanket stop on cleanup).
+        result = dg.quick()
+        assert scratch.exists(), "a file git now owns must never be auto-deleted"
+        assert not control.exists(), "untracked scratch beside it is still disposable"
+        assert result["deleted"] == 1
+        assert dg.load_tracked() == [], "both entries are resolved, neither is kept"
+
 
 class TestStaleCronEntryMigration:
     """Regression tests for #37721 — stale cron-output entries in tracked.json."""

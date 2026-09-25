@@ -2506,19 +2506,17 @@ def _hermes_path_argv(path: str) -> list[str]:
     return [_absolute_hermes_path(path)]
 
 
-def _resolve_hermes_argv() -> list[str]:
+def _resolve_hermes_argv(*, cwd: Optional[str] = None, env: Optional[Mapping[str, str]] = None) -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
     same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
+    hermes_cli.main`` when a fresh interpreter in the worker's cwd and env
+    resolves this installation, then the installed launcher or ``which("hermes")``.
+    The module argv must win over PATH when it actually works: a PATH-first lookup
     lets an attacker-planted ``hermes`` shadow the running install (#111569).
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
     sits below ``gateway`` in the dependency order.
     """
-    import importlib.util
     import shutil
 
     env_bin = os.environ.get("HERMES_BIN", "").strip()
@@ -2530,11 +2528,29 @@ def _resolve_hermes_argv() -> list[str]:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
 
+    # A launcher may insert the checkout into the gateway's sys.path without
+    # installing it into sys.executable. Probe the *child* import context: the
+    # worker runs in its workspace, not in the gateway's current directory.
     try:
-        if importlib.util.find_spec("hermes_cli") is not None:
-            return _module_hermes_argv()
-    except Exception:
-        pass
+        probe = subprocess.run(
+            [sys.executable, "-c", "import hermes_cli; print(hermes_cli.__file__)"],
+            cwd=cwd, env=env, capture_output=True, text=True, timeout=10, check=False,
+        )
+        same_install = (
+            probe.returncode == 0
+            and os.path.normcase(os.path.realpath(probe.stdout.strip()))
+            == os.path.normcase(os.path.realpath(str(Path(__file__).with_name("__init__.py"))))
+        )
+    except (OSError, subprocess.SubprocessError):
+        same_install = False
+    if same_install:
+        return _module_hermes_argv()
+
+    # The checked-out install's shim is preferable to an unrelated executable
+    # on PATH when the gateway was itself bootstrapped through that shim.
+    local_shim = Path(__file__).resolve().parent.parent / ".hermes" / "bin" / "hermes"
+    if local_shim.is_file() and os.access(local_shim, os.X_OK):
+        return [str(local_shim)]
 
     hermes_bin = _safe_which_no_cwd("hermes") if _kb._IS_WINDOWS else shutil.which("hermes")
     if hermes_bin:
@@ -2670,10 +2686,11 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
-def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
+def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str],
+                 launcher: Optional[list[str]] = None) -> list[str]:
     """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command."""
     cmd = [
-        *_resolve_hermes_argv(),
+        *(launcher if launcher is not None else _kb._resolve_hermes_argv()),
         "-p", profile_arg,
         # A worker must NEVER boot the interactive TUI: its no-TTY bail-out
         # exits 0 without doing the task → "protocol violation" every attempt.
@@ -2867,7 +2884,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
-    cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    # Resolve against the exact environment and cwd handed to the worker.
+    worker_cwd = workspace if os.path.isdir(workspace) else None
+    launcher = _kb._resolve_hermes_argv(cwd=worker_cwd, env=env)
+    cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"), launcher)
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

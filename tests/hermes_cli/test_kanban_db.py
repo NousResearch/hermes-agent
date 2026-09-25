@@ -1665,6 +1665,32 @@ def test_resolve_hermes_argv_module_actually_runs():
     assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
 
 
+def test_resolve_hermes_argv_uses_install_shim_when_child_cannot_import(tmp_path, monkeypatch):
+    """The gateway's sys.path is not proof that its bare worker interpreter can import Hermes."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    package = tmp_path / "hermes_cli"
+    package.mkdir()
+    shim = tmp_path / ".hermes" / "bin" / "hermes"
+    shim.parent.mkdir(parents=True)
+    shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    shim.chmod(0o755)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(kbd, "__file__", str(package / "kanban_db_dispatch.py"))
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    child_env = {"PATH": os.environ.get("PATH", "")}
+
+    def probe(argv, **kwargs):
+        assert argv[0] == sys.executable
+        assert kwargs["cwd"] == str(workspace)
+        assert kwargs["env"] is child_env
+        return subprocess.CompletedProcess(argv, 1, "", "No module named 'hermes_cli'")
+
+    monkeypatch.setattr(kbd.subprocess, "run", probe)
+    assert kbd._resolve_hermes_argv(cwd=str(workspace), env=child_env) == [str(shim)]
+
+
 # ---------------------------------------------------------------------------
 # task_age — guard against corrupt timestamp values
 #

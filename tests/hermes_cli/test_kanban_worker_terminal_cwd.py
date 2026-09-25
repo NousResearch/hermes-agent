@@ -40,7 +40,7 @@ def _make_task(kb, *, assignee: str = "w"):
 def _capture_spawn_env(kb, monkeypatch, workspace: str) -> dict:
     from hermes_cli import kanban_db_dispatch as kbd
 
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda **kwargs: ["hermes"])
 
     captured: dict = {}
 

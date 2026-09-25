@@ -100,6 +100,14 @@ DEFAULT_SUPERVISION_PATTERNS = (
     r"\bcheck (?:on )?(?:the )?(?:work|workers|tasks|cards|project)\b",
 )
 # Same-session user override: stop / drop it / change of subject.
+#
+# These patterns locate a CANDIDATE stop token. They are deliberately broad;
+# `_stop_directive()` below decides whether the candidate is actually a
+# directive the user is giving *now*, because a bare occurrence of "stop"
+# is not a stop command: "do not stop supervising the board" (negated),
+# `you said "stop working"` (quoted history) and "tenants stop working after
+# an LXD restart" (a report about the system) all contain one and none of
+# them asks the agent to stop.
 DEFAULT_STOP_PATTERNS = (
     r"\bstop\b",
     r"\bpause\b",
@@ -110,6 +118,101 @@ DEFAULT_STOP_PATTERNS = (
     r"\bleave it\b",
     r"\bnot now\b",
 )
+
+# The project this gate supervises. A status/progress question that names the
+# project by NAME ("what is progress on AgentPod?") is a supervision turn even
+# though it uses none of the board vocabulary above. Override/extend with
+# `agentpod_stop_check.project_aliases`; `board` / `project_id` / `tenant`
+# (when configured) are folded in automatically. An alias is REQUIRED for this
+# route, so an unrelated progress question ("any update on my flight?") is
+# still untouched.
+DEFAULT_PROJECT_ALIASES = ("agentpod",)
+
+_PROGRESS_PATTERN = re.compile(
+    r"\b(?:status|statuses|update|updates|progress|state of|where (?:are|is) (?:we|it|things)"
+    r"|how (?:is|are|'s) (?:it|things|we|that)|what'?s? left|outstanding|in flight|going on)\b"
+)
+
+# Spans the user is QUOTING (their own history, logs, an error string). A stop
+# token inside one is not a directive issued on this turn — UNLESS the user
+# explicitly adopts the quote as the instruction (`_ADOPTION_FRAME`).
+_QUOTED_SPAN = re.compile(
+    r"\"[^\"]*\"|`[^`]*`|\u201c[^\u201d]*\u201d|\u2018[^\u2019]*\u2019"
+    # A single quote only delimits when it is not an intra-word apostrophe,
+    # so "don't stop, it's fine" is never mangled into a quoted span.
+    r"|(?<![A-Za-z0-9])'[^']*'(?![A-Za-z0-9])",
+    re.DOTALL,
+)
+# The text that introduces a quote the user is ISSUING rather than citing:
+#   Please do exactly this: "stop supervising the board"
+# Quoting is not automatically historical, so an adopted span stays live text.
+_ADOPTION_FRAME = re.compile(
+    r"(?:do (?:exactly |precisely |just )?(?:this|that|the following)"
+    r"|my (?:instruction|order|request)(?: is)?"
+    r"|(?:the )?instructions?(?: is| are)?"
+    r"|i(?:'m| am)? (?:telling|asking|instructing) you(?: to)?"
+    r"|here(?:'s| is) (?:the|my) (?:instruction|order|request)"
+    r"|repeat after me|verbatim|word for word)"
+    r"\s*[:,\-\u2013\u2014]?\s*$"
+)
+# Clause boundaries. A directive occupies its own clause. `:` counts, so
+# "URGENT: stop working" and "I'm done: stop the sweep" reach clause-initial
+# position instead of dying on their preamble.
+_CLAUSE_SPLIT = re.compile(r"[.!?;:\n\u2014]+|,")
+# Leading list markers / bullets / numbering / emoji / whitespace. Stripped
+# from a clause prefix before imperative analysis, so "- stop …", "1) stop …"
+# and "\U0001F6D1 stop …" are the same imperative as a bare "stop …".
+_LEAD_MARKERS = re.compile(r"^[\W\d_]+", re.UNICODE)
+# Words/phrases that may precede an imperative without making it non-imperative:
+# discourse markers, politeness, urgency and time adverbials, and explicit
+# performative frames ("I am asking you to …").
+_LEAD_UNIT = (
+    r"ok|okay|alright|actually|hey|so|and|but|then|also|now|yeah|yes|no|nope|"
+    r"please|just|kindly|seriously|honestly|really|finally|again|anyway|anyhow|well|"
+    r"urgent|urgently|asap|immediately|right now|right away|first of all|first|"
+    r"before anything else|for now|for today|for the moment|today|tonight|"
+    r"at this point|from now on|going forward|temporarily|meanwhile|"
+    r"i want you to|i would like you to|i'd like you to|i need you to|"
+    r"i am asking you to|i'm asking you to|i ask you to|"
+    r"i am telling you to|i'm telling you to|i tell you to|"
+    r"i am instructing you to|i'm instructing you to|"
+    r"do exactly this|do this|do the following|"
+    r"you can|you should|you must|you need to|you could|you may|"
+    r"can you|could you|would you|will you|let's|lets|"
+    r"we should|we can|we need to"
+)
+_DIRECTIVE_LEAD = re.compile(
+    r"^(?:(?:" + _LEAD_UNIT + r")\b[\s,:_\-\u2013\u2014]*)*\s*$"
+)
+# A negation immediately governing the candidate ("do not stop", "never stop",
+# "no need to pause", "instead of stopping"). Apostrophes are normalised to
+# ASCII first (`_normalise`), so the smart-quote "don\u2019t" negates too.
+_NEGATION = re.compile(
+    r"\b(?:not|never|cannot|can'?t|won'?t|wont|don'?t|dont|doesn'?t|didn'?t|shouldn'?t|"
+    r"no need to|without|instead of|rather than|avoid|refrain from|keep from)\b"
+    r"(?:\s+\w+){0,3}\s*$"
+)
+# Evidence that the clause already has a structure of its own before the stop
+# token — a subject (pronoun / determiner+noun) or a subordinator. Then the
+# token REPORTS behaviour or sits in a subordinate clause; it does not command:
+#   "tenants stop working after an LXD restart"
+#   "you are missing details and stop working"   (the user describing OUR bug)
+_SUBJECTED = re.compile(
+    r"\b(?:i|we|you|they|he|she|it|this|that|these|those|who|whom|whose|which|"
+    r"where|when|while|if|unless|until|otherwise|because|since|after|although|"
+    r"though|whether|the|a|an|my|our|your|their|its|his|her|there|"
+    r"tenants?|users?|workers?|jobs?|tasks?|cards?|servers?|pods?|containers?|"
+    r"services?|agents?|processes|clients?|customers?|nodes?|things?|bugs?)\b"
+)
+# Apostrophe normalisation (U+2019 / U+02BC -> ASCII) so every clause rule
+# above sees one spelling.
+_APOSTROPHES = str.maketrans({"\u2019": "'", "\u02bc": "'"})
+
+# Per-occurrence verdicts.
+_STOP_NONE = "none"            # no live stop token at all
+_STOP_REPORTED = "reported"    # negated / quoted history / has its own subject
+_STOP_UNDECIDED = "undecided"  # a live stop token we cannot parse either way
+_STOP_COMMAND = "command"      # the user is telling us to stop, now
 
 _LOCK = threading.Lock()
 # session_id -> (user_message, recorded_at). Per-turn supervision context.
@@ -148,15 +251,127 @@ def _matches(patterns, text: str) -> bool:
     return any(re.search(p, blob) for p in patterns)
 
 
+def _normalise(text: str) -> str:
+    """One spelling for every clause rule: ASCII apostrophes, lower case."""
+    return (text or "").translate(_APOSTROPHES).lower()
+
+
+def _strip_quoted(text: str) -> str:
+    """Blank out quoted spans the user is *citing* (their own earlier words, a
+    log line, an error) — but NOT a span they explicitly adopt as this turn's
+    instruction (``Please do exactly this: "stop supervising the board"``).
+    Quotation marks are emphasis as often as they are citation, so adoption is
+    decided by the frame that introduces the span, not by the quotes.
+
+    Offsets need not be preserved — clauses are re-derived from the result.
+    """
+    blob = text or ""
+
+    def _sub(m: "re.Match") -> str:
+        lead = blob[: m.start()]
+        if _ADOPTION_FRAME.search(lead):
+            # Adopted: keep the span as live text, minus its delimiters.
+            return " " + m.group(0)[1:-1] + " "
+        return " "
+
+    return _QUOTED_SPAN.sub(_sub, blob)
+
+
+def _classify_stop(text: str, cfg: Optional[dict] = None) -> str:
+    """Classify the strongest stop signal in ``text``. One of the ``_STOP_*``.
+
+    Per candidate occurrence, in this precedence:
+
+      * **negated** ("do not stop", "never stop", "no need to pause") or inside
+        a quoted span the user is citing -> ``reported``;
+      * **imperative position** — the clause prefix is nothing but list
+        markers, discourse/politeness/urgency words or an explicit performative
+        frame ("I am asking you to") -> ``command``;
+      * **has a structure of its own** before the token — a subject or a
+        subordinator -> ``reported`` ("tenants stop working after an LXD
+        restart", "you are missing details and stop working": the user
+        describing OUR behaviour, not commanding);
+      * anything else -> ``undecided``.
+
+    ``command`` dominates ``undecided`` dominates ``reported``. There is no
+    universal fail-open: an ``undecided`` token keeps the gate QUIET (it never
+    arms supervision) but is not reported as a directive either.
+    """
+    cfg = cfg or {}
+    patterns = cfg.get("stop_patterns") or DEFAULT_STOP_PATTERNS
+    blob = _normalise(_strip_quoted(_normalise(text)))
+    if not blob.strip():
+        return _STOP_NONE
+    verdict = _STOP_NONE
+    for clause in _CLAUSE_SPLIT.split(blob):
+        if not clause.strip():
+            continue
+        for pattern in patterns:
+            for m in re.finditer(pattern, clause):
+                prefix = clause[: m.start()]
+                if _NEGATION.search(prefix):
+                    verdict = verdict if verdict != _STOP_NONE else _STOP_REPORTED
+                    continue
+                if _DIRECTIVE_LEAD.match(_LEAD_MARKERS.sub("", prefix)):
+                    return _STOP_COMMAND
+                if _SUBJECTED.search(prefix):
+                    verdict = verdict if verdict != _STOP_NONE else _STOP_REPORTED
+                    continue
+                verdict = _STOP_UNDECIDED
+    return verdict
+
+
+def stop_directive(text: str, cfg: Optional[dict] = None) -> bool:
+    """Is the user telling the agent, on THIS turn, to stop / drop the topic?
+
+    Precedence for a real stop is preserved exactly: an imperative
+    "stop the board sweep, forget it for now" still wins over every
+    supervision signal, and so does one carrying a preamble, a bullet, a
+    number, a colon or an emoji. ``True`` means *clearly commanded* — see
+    ``_classify_stop`` for what a token that is negated, cited or merely
+    reported means, and ``is_supervision_message`` for what an undecided one
+    does.
+    """
+    return _classify_stop(text, cfg) == _STOP_COMMAND
+
+
+def _project_aliases(cfg: dict) -> set:
+    raw = cfg.get("project_aliases")
+    if raw is None:
+        raw = list(DEFAULT_PROJECT_ALIASES)
+    if isinstance(raw, str):
+        raw = [raw]
+    values = [str(v) for v in (raw or [])]
+    for key in ("board", "project_id", "tenant"):
+        val = cfg.get(key)
+        if val:
+            values.append(str(val))
+    return {v.strip().lower() for v in values if v and v.strip()}
+
+
+def _names_the_project(text: str, cfg: dict) -> bool:
+    blob = (text or "").lower()
+    return any(
+        re.search(r"\b" + re.escape(alias) + r"\b", blob)
+        for alias in _project_aliases(cfg)
+    )
+
+
 def is_supervision_message(text: str, cfg: dict) -> bool:
     """Supervision context comes from the USER's message, never the answer.
 
-    A stop / topic-change in the same session wins over everything else.
+    A real stop / topic-change in the same session wins over everything else
+    (see ``stop_directive`` for what "real" means). A stop token we cannot
+    classify either way also keeps the gate quiet — the doubt is spent on the
+    user, not on the supervision. Otherwise the turn is a supervision turn
+    when it uses board vocabulary, or when it asks for status/progress on the
+    supervised project BY NAME.
     """
-    stop = cfg.get("stop_patterns") or DEFAULT_STOP_PATTERNS
-    if _matches(stop, text):
+    if _classify_stop(text, cfg) in (_STOP_COMMAND, _STOP_UNDECIDED):
         return False
-    return _matches(cfg.get("supervision_patterns") or DEFAULT_SUPERVISION_PATTERNS, text)
+    if _matches(cfg.get("supervision_patterns") or DEFAULT_SUPERVISION_PATTERNS, text):
+        return True
+    return bool(_PROGRESS_PATTERN.search((text or "").lower())) and _names_the_project(text, cfg)
 
 
 def _supervision_turn(cfg: dict, session_id: str) -> bool:

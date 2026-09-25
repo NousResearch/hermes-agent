@@ -48,7 +48,6 @@ class TestNoninteractiveGitEnv:
         assert env["HERMES_TEST_SENTINEL"] == "xyz"
         assert env["GIT_TERMINAL_PROMPT"] == "0"
         # Never mutates the live process environment.
-        assert os.environ.get("GIT_TERMINAL_PROMPT") != "0" or True
         assert "GCM_INTERACTIVE" not in os.environ or os.environ["GCM_INTERACTIVE"] == env["GCM_INTERACTIVE"]
 
 

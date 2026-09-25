@@ -77,7 +77,9 @@ async def test_external_refresh_picked_up_without_restart(tmp_path, monkeypatch)
     # automatically via the HermesMCPOAuthProvider.async_auth_flow
     # pre-hook on the first real request, but we exercise it directly
     # here for test determinism).
-    await mgr.invalidate_if_disk_changed("srv")
+    baseline_changed = await mgr.invalidate_if_disk_changed("srv")
+    assert baseline_changed is False
+    assert provider._initialized is True
 
     # EXTERNAL PROCESS: cron rewrites the tokens file with fresh creds.
     # The old refresh_token has been consumed by this external exchange.

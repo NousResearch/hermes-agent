@@ -59,7 +59,8 @@ def main():
     model = ThreadingHTTPServer(('127.0.0.1', args.port + 1), Model)
     threading.Thread(target=model.serve_forever, daemon=True).start()
     config = {'model': {'default': 'persistence-fixture', 'provider': 'custom', 'base_url': f'http://127.0.0.1:{args.port+1}/v1'}, 'agent': {'max_turns': 1}, 'compression': {'enabled': False}, 'toolsets': [], 'platform_toolsets': {'gui': [], 'cli': []}, 'memory': {'memory_enabled': False, 'user_profile_enabled': False}}
-    import yaml
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    import hermes_yaml as yaml
     for p in (home, profile):
         (p / 'config.yaml').write_text(yaml.safe_dump(config))
         (p / '.env').write_text('OPENAI_API_KEY=local-fixture\n')

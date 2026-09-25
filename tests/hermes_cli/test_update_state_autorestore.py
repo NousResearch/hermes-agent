@@ -98,6 +98,12 @@ def snapshot_db(tmp_path):
     return snapshot
 
 
+@pytest.fixture(autouse=True)
+def _isolate_database_holders(monkeypatch):
+    # These fixtures own all DB connections. Do not scan other users' /proc FDs.
+    monkeypatch.setattr("hermes_cli.backup_restore._foreign_db_holder_pids", lambda path: [])
+
+
 def _row_count(db_path: Path) -> int:
     conn = sqlite3.connect(db_path)
     try:

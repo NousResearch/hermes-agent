@@ -1,6 +1,5 @@
 """Tests for --yolo (HERMES_YOLO_MODE) approval bypass."""
 
-import os
 import pytest
 
 import tools.approval as approval_module
@@ -100,11 +99,6 @@ class TestYoloMode:
         assert result["message"] is None
         assert called["value"] is False
 
-    def test_yolo_mode_not_set_by_default(self):
-        """HERMES_YOLO_MODE should not be set by default."""
-        # Clean env check — if it happens to be set in test env, that's fine,
-        # we just verify the mechanism exists
-        assert os.getenv("HERMES_YOLO_MODE") is None or True  # no-op, documents intent
 
 
     @pytest.mark.parametrize("value", ["false", "False", "0", "off", "no"])

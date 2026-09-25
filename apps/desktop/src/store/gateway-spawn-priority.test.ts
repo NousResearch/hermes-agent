@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // #102281: a user-initiated open must reach Electron main as a FOREGROUND dial
 // on its FIRST IPC, not only on the secondary's connect. Every open first
-// probes the route (sharedPrimaryRoute / isAttachedSharedRemote) with
+// probes the route (sharedPrimaryRoute / ridesPrimaryBackend) with
 // getConnection / getConnectionFor; if that probe is untagged, main starts the
 // spawn as a background slot wait and the click waits out the probe's 20s
 // timeout before anything promotes it.

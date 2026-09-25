@@ -1,0 +1,235 @@
+name: Set up the locked PM toolchain
+description: Install Python/uv and Node/npm from pm/lock.json; cache tools and dependency downloads.
+inputs:
+  toolchain:
+    description: python (Python and uv), node (Node and npm), or all.
+    default: python
+  packages:
+    description: Comma-separated extra PM tools to install beyond the toolchain roots (e.g. ffmpeg). Rides the tools cache like npm/uv.
+    default: ''
+  archive-inputs:
+    description: Use protected R2 credentials to preserve and retrieve the selected toolchain before installation.
+    default: 'false'
+  extras:
+    description: 'JSON runtime extras: omit for tools; [] installs core. Used as test coverage extras with test-environment.'
+    default: ''
+  test-environment:
+    description: 'Build an isolated interpreter with the dev and test groups; never publish these to the runtime environment.'
+    default: 'false'
+  cache:
+    description: Cache the verified PM tool store.
+    default: 'true'
+  save-tools-cache:
+    description: Save the verified PM tools on success. Set false for restore-only jobs.
+    default: 'true'
+  cache-python:
+    description: Cache uv downloads and built wheels; never cache the dependency environment.
+    default: 'true'
+  save-python-cache:
+    description: Save automatically on success. Set false to save a rolling snapshot with save-pm-cache after the consumer, including on failure.
+    default: 'true'
+  cache-node:
+    description: Cache npm downloads; never cache node_modules.
+    default: 'true'
+  save-node-cache:
+    description: Save automatically on success. Set false to save a consumer-scoped rolling snapshot with actions/cache/save after npm preparation.
+    default: 'true'
+  python-cache-dependency-glob:
+    description: Dependency files that invalidate the uv cache.
+    default: |
+      pyproject.toml
+      uv.lock
+  node-cache-dependency-path:
+    description: npm lockfiles that invalidate the npm download cache; supports multiline globs.
+    default: package-lock.json
+  prune-python-cache:
+    description: Use uv cache prune --ci before automatic saves. Explicit bundle saves preserve downloaded wheels.
+    default: 'false'
+  cache-suffix:
+    description: Optional namespace for isolated cache smoke tests.
+    default: ''
+outputs:
+  python-version:
+    description: Locked CPython version, without the PBS build suffix.
+    value: ${{ steps.prepare.outputs.python-version }}
+  uv-version:
+    description: Locked uv version.
+    value: ${{ steps.prepare.outputs.uv-version }}
+  node-version:
+    description: Locked Node version.
+    value: ${{ steps.prepare.outputs.node-version }}
+  npm-version:
+    description: Locked npm version.
+    value: ${{ steps.prepare.outputs.npm-version }}
+  python-path:
+    description: Interpreter for subsequent steps, including requested extras.
+    value: ${{ steps.dependencies.outputs.python-path || steps.install.outputs.python-path }}
+  venv:
+    description: Dependency environment; isolated test environment for dev, otherwise PM-selected runtime.
+    value: ${{ steps.dependencies.outputs.venv }}
+  target:
+    description: Native PM target, independent of the bootstrap interpreter architecture.
+    value: ${{ steps.prepare.outputs.target }}
+  tools-cache-hit:
+    description: Exact PM store cache hit.
+    value: ${{ steps.tools-cache.outputs.cache-hit || steps.tools-cache-restore.outputs.cache-hit }}
+  python-cache-hit:
+    description: Exact uv dependency cache hit.
+    value: ${{ steps.python-cache.outputs.cache-hit || steps.python-cache-restore.outputs.cache-hit }}
+  python-cache-key:
+    description: Rolling snapshot key for save-pm-cache when save-python-cache is false.
+    value: ${{ steps.python-cache-restore.outputs.cache-primary-key }}
+  uv-cache-path:
+    description: Shared uv cache directory for save-pm-cache.
+    value: ${{ steps.install.outputs.uv-cache-path }}
+  node-cache-hit:
+    description: Exact npm dependency cache hit.
+    value: ${{ steps.node-cache.outputs.cache-hit || steps.node-cache-restore.outputs.cache-hit }}
+  node-cache-key:
+    description: Rolling snapshot key when save-node-cache is false.
+    value: ${{ steps.node-cache-restore.outputs.cache-primary-key }}
+  npm-cache-path:
+    description: npm download cache directory for an explicit consumer save.
+    value: ${{ steps.install.outputs.npm-cache-path }}
+runs:
+  using: composite
+  steps:
+    - name: Read PM pins with the runner bootstrap Python
+      id: prepare
+      shell: bash
+      env:
+        _PM_ACTION: ${{ github.action_path }}
+        _PM_TOOLCHAIN: ${{ inputs.toolchain }}
+        _PM_EXTRAS: ${{ inputs.extras }}
+        _PM_PACKAGES: ${{ inputs.packages }}
+      run: |
+        set -euo pipefail
+        # Windows provides python, not necessarily python3. The host resolver
+        # in PM still selects ARM64 when this bootstrap Python runs under x64.
+        if [ "$RUNNER_OS" = Windows ]; then bootstrap=python; else bootstrap=python3; fi
+        "$bootstrap" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" prepare \
+          --toolchain "$_PM_TOOLCHAIN" --extras "$_PM_EXTRAS" --packages "$_PM_PACKAGES" --home "$RUNNER_TEMP/setup-pm"
+
+    # The key covers the PM code and this action, not only the lock: a
+    # provisioning change must re-run the cold path on every lane rather
+    # than restore a store the previous code wrote.
+    - name: Cache verified PM tools
+      id: tools-cache
+      if: inputs.cache == 'true' && inputs.save-tools-cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.prepare.outputs.store }}
+        key: setup-pm-tools-v1-${{ steps.prepare.outputs.target }}-${{ inputs.toolchain }}${{ steps.prepare.outputs.extra-packages }}-${{ hashFiles('pm/**', '.github/actions/setup-pm/**', 'scripts/ci/setup_toolchain.py') }}-${{ inputs.cache-suffix }}
+
+    - name: Restore verified PM tools without saving
+      id: tools-cache-restore
+      if: inputs.cache == 'true' && inputs.save-tools-cache == 'false'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.prepare.outputs.store }}
+        key: setup-pm-tools-v1-${{ steps.prepare.outputs.target }}-${{ inputs.toolchain }}${{ steps.prepare.outputs.extra-packages }}-${{ hashFiles('pm/**', '.github/actions/setup-pm/**', 'scripts/ci/setup_toolchain.py') }}-${{ inputs.cache-suffix }}
+
+    - name: Preserve and retrieve the pinned toolchain
+      if: inputs.archive-inputs == 'true'
+      shell: bash
+      env:
+        _PM_ACTION: ${{ github.action_path }}
+        _PM_BOOTSTRAP: ${{ steps.prepare.outputs.bootstrap-python }}
+        _PM_TOOLCHAIN: ${{ inputs.toolchain }}
+        _PM_PACKAGES: ${{ inputs.packages }}
+      run: |
+        "$_PM_BOOTSTRAP" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" archive-inputs \
+          --toolchain "$_PM_TOOLCHAIN" --packages "$_PM_PACKAGES" --home "$HERMES_HOME"
+
+    - name: Install and verify tools through PM
+      id: install
+      shell: bash
+      env:
+        _PM_ACTION: ${{ github.action_path }}
+        _PM_BOOTSTRAP: ${{ steps.prepare.outputs.bootstrap-python }}
+        _PM_TOOLCHAIN: ${{ inputs.toolchain }}
+        _PM_PACKAGES: ${{ inputs.packages }}
+      run: |
+        "$_PM_BOOTSTRAP" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" install \
+          --toolchain "$_PM_TOOLCHAIN" --packages "$_PM_PACKAGES" --home "$HERMES_HOME"
+
+    - name: Cache uv dependency downloads and builds
+      id: python-cache
+      if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.save-python-cache == 'true' && (inputs.extras != '' || inputs.test-environment == 'true')
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.install.outputs.uv-cache-path }}
+        # pruned/unpruned share one namespace: the pre-save prune is now exact
+        # to the lock (keeps lock-required wheels, drops superseded pins), so
+        # both variants carry the same content contract.
+        key: setup-pm-uv-v3-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}
+
+        # Isolated writes also need a distinct prefix: production's broad
+        # fallback must not restore a smoke run's partial dependency set.
+        restore-keys: ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v3-production-{0}-{1}-{2}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version) || '' }}
+
+    - name: Restore uv dependencies for an explicit save
+      id: python-cache-restore
+      if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.save-python-cache == 'false'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.install.outputs.uv-cache-path }}
+        # Caches are immutable. Each producer needs its own snapshot, even
+        # when a caller run contains both PM Bundle and Desktop Release.
+        key: setup-pm-uv-v3-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
+        restore-keys: |
+          setup-pm-uv-v3-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.os-version }}-${{ steps.prepare.outputs.python-version }}-${{ hashFiles(inputs.python-cache-dependency-glob) || 'no-dependency-glob' }}-
+          ${{ inputs.cache-suffix == '' && format('setup-pm-uv-v3-production-{0}-{1}-{2}-', steps.prepare.outputs.target, steps.prepare.outputs.os-version, steps.prepare.outputs.python-version) || '' }}
+
+    # Post steps run in reverse registration order: prune before cache save.
+    - name: Register uv cache pruning
+      if: inputs.toolchain != 'node' && inputs.cache-python == 'true' && inputs.save-python-cache == 'true' && inputs.prune-python-cache == 'true' && steps.python-cache.outputs.cache-hit != 'true'
+      uses: ./.github/actions/setup-pm/prune
+      with:
+        python: ${{ steps.install.outputs.python-path }}
+        cache: ${{ steps.install.outputs.uv-cache-path }}
+        lock-source: ${{ github.workspace }}
+
+    - name: Require an npm dependency lock for caching
+      if: inputs.toolchain != 'python' && inputs.cache-node == 'true' && hashFiles(inputs.node-cache-dependency-path) == ''
+      shell: bash
+      run: |
+        printf '%s\n' '::error::No npm lock matched node-cache-dependency-path.'
+        exit 1
+
+    - name: Cache npm dependency downloads
+      id: node-cache
+      if: inputs.toolchain != 'python' && inputs.cache-node == 'true' && inputs.save-node-cache == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.install.outputs.npm-cache-path }}
+        key: node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-${{ hashFiles(inputs.node-cache-dependency-path) }}${{ inputs.cache-suffix != '' && format('-{0}', inputs.cache-suffix) || '' }}
+        # A lockfile bump misses the exact key, but the previous download set
+        # is still mostly valid — npm verifies every tarball it reinstalls.
+        restore-keys: |
+          node-cache-${{ runner.os }}-${{ steps.prepare.outputs.arch }}-npm-
+
+    - name: Restore npm dependencies for an explicit save
+      id: node-cache-restore
+      if: inputs.toolchain != 'python' && inputs.cache-node == 'true' && inputs.save-node-cache == 'false'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.install.outputs.npm-cache-path }}
+        # Scope producers so tool-only jobs cannot replace a full desktop cache.
+        key: setup-pm-npm-v1-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.npm-version }}-${{ hashFiles(inputs.node-cache-dependency-path) }}-${{ github.job }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: setup-pm-npm-v1-${{ inputs.cache-suffix || 'production' }}-${{ steps.prepare.outputs.target }}-${{ steps.prepare.outputs.npm-version }}-${{ hashFiles(inputs.node-cache-dependency-path) }}-${{ github.job }}-
+
+    - name: Install the requested Python dependencies through PM
+      id: dependencies
+      if: inputs.extras != '' || inputs.test-environment == 'true'
+      shell: bash
+      env:
+        _PM_ACTION: ${{ github.action_path }}
+        _PM_TOOLCHAIN: ${{ inputs.toolchain }}
+        _PM_EXTRAS: ${{ inputs.extras }}
+        _PM_TEST_ENVIRONMENT: ${{ inputs.test-environment }}
+      run: |
+        args=()
+        if [ "$_PM_TEST_ENVIRONMENT" = true ]; then args+=(--test-environment); fi
+        "$HERMES_PYTHON" -S "$_PM_ACTION/../../../scripts/ci/setup_toolchain.py" dependencies \
+          --toolchain "$_PM_TOOLCHAIN" --extras "$_PM_EXTRAS" --home "$HERMES_HOME" "${args[@]}"

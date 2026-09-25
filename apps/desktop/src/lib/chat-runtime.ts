@@ -29,6 +29,7 @@ export function createClientSessionState(
     model: '',
     provider: '',
     reasoningEffort: '',
+    reasoningEffortWire: '',
     serviceTier: '',
     fast: false,
     yolo: false,
@@ -46,6 +47,17 @@ export function createClientSessionState(
     turnLive: false,
     usage: null
   }
+}
+
+/**
+ * Mark a freshly resumed slice's effort as not-yet-known. The deferred-build
+ * resume reply has no `reasoning_effort`, and falling through to the profile
+ * default would paint a level the built agent's `session.info` then replaces
+ * (#79807). A slice whose effort was already reported (a fast build can beat
+ * the resume reply) keeps it.
+ */
+export function markReasoningEffortPending(state: ClientSessionState): ClientSessionState {
+  return state.reasoningEffortPending === false ? state : { ...state, reasoningEffortPending: true }
 }
 
 export function sessionTitle(session: SessionInfo): string {
@@ -220,9 +232,23 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
   }
 
   if (attachment.kind === 'image') {
+    // Prefer a filesystem-backed `@image:<path>` ref so the in-flight bubble
+    // renders through the same DirectiveImage path as a reloaded turn. That
+    // component shows a bounded thumbnail inline (no full-resolution paint, so
+    // the multi-image send freeze this design guards against does not return)
+    // and hands the full-resolution file to the lightbox/download — fixing the
+    // live-vs-reload fidelity gap where a sent screenshot stayed 512px until a
+    // session reload rehydrated it (#93204). Remote gateways resolve the same
+    // path over the authenticated media API, so no /api/media 403.
+    const pathRef = attachment.path || attachment.detail
+
+    if (pathRef) {
+      return `@image:${formatRefValue(pathRef)}`
+    }
+
     if (attachment.thumbnailUrl?.startsWith('data:')) {
-      // The pill and the in-flight bubble render the bounded thumbnail. Full
-      // bytes are read separately for lightbox/download and model upload.
+      // No path to rehydrate from (e.g. pasted bytes): render the bounded
+      // thumbnail inline. Full bytes remain available for the model upload.
       return attachment.thumbnailUrl
     }
 
@@ -232,10 +258,9 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
       return attachment.previewUrl
     }
 
-    // A newly attached image has no thumbnail while its queued resize is still
-    // pending. Do not fall through to @image:<path>: the optimistic bubble would
-    // fetch and paint the full source, recreating the freeze if Send wins the
-    // race. The model upload remains path/byte based and is unaffected.
+    // A newly attached image with no path and no thumbnail yet: the queued
+    // resize is still pending. Render nothing rather than paint the full source
+    // and recreate the freeze if Send wins the race.
     return null
   }
 

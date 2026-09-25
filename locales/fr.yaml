@@ -86,6 +86,9 @@ gateway:
     switch_failed:         "Branche créée mais impossible de basculer dessus."
     branched_one:          "⑂ Branche **{title}** créée ({count} message copié)\nOriginal : `{parent}`\nBranche : `{new}`\nUtilisez `/resume` pour revenir à l'original."
     branched_many:         "⑂ Branche **{title}** créée ({count} messages copiés)\nOriginal : `{parent}`\nBranche : `{new}`\nUtilisez `/resume` pour revenir à l'original."
+    branched_thread_one:   "⑂ Branché vers **{title}** dans un nouveau fil ({count} message copié)\nFil : {thread}\nOriginal : `{parent}` — cette discussion y reste\nBranche : `{new}`\nUtilisez `/branch --here` pour brancher dans cette discussion."
+    branched_thread_many:  "⑂ Branché vers **{title}** dans un nouveau fil ({count} messages copiés)\nFil : {thread}\nOriginal : `{parent}` — cette discussion y reste\nBranche : `{new}`\nUtilisez `/branch --here` pour brancher dans cette discussion."
+    thread_fallback:       "Aucun fil n'a pu être créé ici, la branche a donc remplacé la session de cette discussion."
 
   commands:
     usage:                 "Utilisation : `/commands [page]`"

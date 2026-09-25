@@ -10,7 +10,6 @@ actual on-disk ``last_status`` the health watchdog reads, not a mock's call list
 """
 
 import threading
-import time
 
 import pytest
 
@@ -169,8 +168,15 @@ class _HeartbeatThreadMisses:
     def __init__(self, real, misses: int, *, steal: bool = False):
         self._real, self._left, self._steal = real, misses, steal
         self.missed = 0
+        self._samples = 0
+        self.processed = threading.Event()
 
     def __call__(self, job_id, *, expected_owner):
+        if threading.current_thread().name == "cron-fire-claim-heartbeat":
+            self._samples += 1
+            if self._samples > 2:
+                # Reaching the next poll proves the confirmation was accepted without latching.
+                self.processed.set()
         if threading.current_thread().name == "cron-fire-claim-heartbeat" and self._left:
             self._left -= 1
             self.missed += 1
@@ -188,21 +194,31 @@ class _HeartbeatThreadMisses:
 
 def _drive_heartbeat_thread(monkeypatch, *, misses, steal=False):
     """run_one_job with the REAL fire-claim heartbeat thread sampling every 10 ms; ``run_job``
-    finishes with a complete response once the heartbeat has taken its armed samples."""
+    finishes after the heartbeat has processed its confirmation, not merely sampled it."""
     import cron.scheduler as sched
 
     job = _claimed_job()
     hb = _HeartbeatThreadMisses(sched.heartbeat_fire_claim, misses, steal=steal)
     delivered, run_cancel = [], []
+    start_heartbeat = sched._start_heartbeat_thread
+
+    def observed_heartbeat(loop_fn, name, fail_log):
+        def run():
+            try:
+                loop_fn()
+            finally:
+                # A confirmed loss exits the loop only after setting the real cancel latch.
+                hb.processed.set()
+
+        return start_heartbeat(run, name, fail_log)
 
     def fake_run_job(job, **kwargs):
-        deadline = time.monotonic() + 5
-        while hb.missed < misses and time.monotonic() < deadline:
-            time.sleep(0.01)
-        time.sleep(0.1)  # let the heartbeat's confirm sample land
+        # Deadlock guard only: store I/O and thread scheduling have no 100 ms upper bound.
+        assert hb.processed.wait(timeout=30), "heartbeat never processed its confirmation"
         run_cancel.append(kwargs["cancel_event"].is_set())
         return True, "output text", "the report", None
 
+    monkeypatch.setattr(sched, "_start_heartbeat_thread", observed_heartbeat)
     monkeypatch.setattr(sched, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
     monkeypatch.setattr(sched, "_FIRE_CLAIM_MISS_CONFIRM_SECONDS", 0.01, raising=False)
     monkeypatch.setattr(sched, "heartbeat_fire_claim", hb)

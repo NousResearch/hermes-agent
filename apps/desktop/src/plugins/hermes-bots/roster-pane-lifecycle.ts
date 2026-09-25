@@ -49,6 +49,12 @@ export function usePublishRosterSnapshot({ data, live, roster, allMeta, activeSo
     backfillMessagingProtocol(activeSourceRoster)
     // React Query owns the stable server snapshot; derived arrays intentionally
     // follow that snapshot rather than retriggering on their own atom writes.
+    // Key on the `profiles`/`sources` subtrees, not the envelope: every 5 s
+    // poll stamps a fresh `fetchedAt`, so the envelope is a new object each
+    // tick while structural sharing keeps unchanged subtrees reference-stable.
+    // Keying on the envelope republished an identical roster every poll —
+    // every $lastRoster subscriber re-rendered and the avatar/meta/activity
+    // side effects re-ran with nothing changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data])
+  }, [live, data?.sources])
 }

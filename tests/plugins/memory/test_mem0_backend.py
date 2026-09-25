@@ -12,7 +12,6 @@ from types import SimpleNamespace
 import pytest
 
 from plugins.memory.mem0._backend import (
-    Mem0Backend,
     PlatformBackend,
     OSSBackend,
     SelfHostedBackend,
@@ -53,13 +52,6 @@ class TestPlatformBackend:
         backend._client = client
         return backend, client
 
-    def test_search_forwards_params(self):
-        backend, client = self._make()
-        result = backend.search("test query", filters={"user_id": "u1"}, top_k=5)
-        assert client.calls[0][0] == "search"
-        assert client.calls[0][1] == "test query"
-        assert client.calls[0][2]["filters"] == {"user_id": "u1"}
-        assert client.calls[0][2]["top_k"] == 5
 
 
     def test_add_forwards_kwargs(self):
@@ -74,15 +66,7 @@ class TestPlatformBackend:
         assert "metadata" not in call[2]
 
 
-    def test_update_forwards(self):
-        backend, client = self._make()
-        backend.update("m1", "new text")
-        assert client.calls[0][1] == {"memory_id": "m1", "text": "new text"}
 
-    def test_delete_forwards(self):
-        backend, client = self._make()
-        backend.delete("m1")
-        assert client.calls[0][1] == {"memory_id": "m1"}
 
 
 class FakeOSSMemory:

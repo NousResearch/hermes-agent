@@ -4,7 +4,7 @@
 // its content with no spinner: a live indicator above a later user message
 // reads as the agent answering out of order.
 import { type ThreadMessage } from '@assistant-ui/react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { stubThreadEnvironment, ThreadRuntime, userMessage } from '../test-utils'
@@ -47,8 +47,7 @@ describe('thinking indicator is tail-only', () => {
   it('shows the loading indicator on a running placeholder at the tail', async () => {
     const { container } = render(<Harness messages={[userMessage('u1', 'question'), assistant('a1', '', true)]} />)
 
-    expect(await screen.findByRole('status', { name: 'Hermes is loading a response' })).toBeTruthy()
-    expect(container.querySelector('[data-slot="aui_response-loading"]')).toBeTruthy()
+    await waitFor(() => expect(container.querySelector('[data-slot="aui_response-loading"]')).toBeTruthy())
   })
 
   it('never shows an indicator on a stale running message mid-transcript', async () => {

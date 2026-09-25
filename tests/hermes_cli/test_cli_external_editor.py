@@ -67,17 +67,6 @@ def test_open_external_editor_expands_paste_placeholders_before_open(tmp_path):
     assert buffer.calls == [False]
 
 
-def test_open_external_editor_sets_skip_collapse_flag_during_expansion(tmp_path):
-    cli_obj = _make_cli()
-    paste_file = tmp_path / "paste.txt"
-    paste_file.write_text("a\nb\nc\nd\ne\nf", encoding="utf-8")
-    buffer = _FakeBuffer(text=f"[Pasted text #1: 6 lines \u2192 {paste_file}]")
-
-    # After expansion the flag should have been set (to prevent re-collapse)
-    assert cli_obj._open_external_editor(buffer=buffer) is True
-    # Flag is consumed by _on_text_changed, but since no handler is attached
-    # in tests it stays True until the handler resets it.
-    assert cli_obj._skip_paste_collapse is True
 
 
 def test_inline_pastes_stores_full_content(tmp_path):

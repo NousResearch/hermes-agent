@@ -1,0 +1,25 @@
+name: markifact
+repo: https://github.com/markifact/markifact-mcp
+sha: 9a873931b6138970888d2a9102a8037dbbd174a5
+subdir: plugins/hermes/markifact
+description: >-
+  Run Google Ads, Meta Ads, TikTok Ads, LinkedIn Ads, GA4, Shopify, HubSpot and 50+ more platforms
+  through Markifact's hosted MCP server. Portable Agent Plugins v1 package with ten skills (operating
+  protocol, write-safety rules, campaign launch, creative rotation, negative sweeps, diagnosis); remote
+  streamable-http with OAuth 2.1 and dynamic client registration, so no Node.js or API keys.
+  Disclosure: creates and edits real ad campaigns that spend your ad budgets; every write is a
+  separate approval-gated operation and the skills instruct confirm-before-spend, but that is enforced
+  by the skills and the server's approval flag, not by Hermes.
+maintainer: Markifact
+tier: community
+category: tools
+requires_hermes: ">=0.20"
+docs_url: https://github.com/markifact/markifact-mcp/tree/main/plugins/hermes/markifact#readme
+version: "1.0.5"
+image: https://raw.githubusercontent.com/markifact/markifact-mcp/9a873931b6138970888d2a9102a8037dbbd174a5/assets/icon.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

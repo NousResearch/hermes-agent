@@ -5,9 +5,11 @@ import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { registry } from '@/contrib/registry'
 import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
+import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
@@ -63,9 +65,7 @@ vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
 // regression in its ref/prop forwarding fails here again.
 // Only `sessionTitle` is overridden (makeSession fakes a bare `title` the real
 // one wouldn't read); the rest of the module is genuine so the arc test can
-// build session state with the same factory the app uses. It is a spy because
-// the row calls it exactly once per render, which is how the isolation test
-// below counts repaints.
+// build session state with the same factory the app uses.
 const sessionTitle = vi.fn((s: SessionInfo) => (s as unknown as { title: string }).title)
 
 vi.mock('@/lib/chat-runtime', async importOriginal => {
@@ -125,14 +125,25 @@ vi.mock('@/store/windows', async importOriginal => {
 
 // SessionActionsMenu open behavior is covered in session-actions-menu.test.tsx
 // against the real component. Stub it here so this file stays focused on the
-// row chrome (handoff avatar tip, etc.).
+// row chrome (handoff avatar tip, etc.) — but record the props so the row's
+// own state plumbing (e.g. the archived flag, #98813) is still asserted.
+const menuProps = vi.hoisted(() => vi.fn())
+
 vi.mock('./session-actions-menu', () => ({
-  SessionActionsMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>
+  SessionActionsMenu: (props: { children?: React.ReactNode }) => {
+    menuProps(props)
+
+    return <>{props.children}</>
+  },
+  SessionContextMenu: (props: { children?: React.ReactNode }) => {
+    menuProps(props)
+
+    return <>{props.children}</>
+  }
 }))
 
 vi.mock('./use-profile-prewarm', () => ({
-  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
+  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), notePointerMove: vi.fn(), startPrewarm: vi.fn() })
 }))
 
 function makeSession(overrides: Partial<SessionInfo> & { title: string }): SessionInfo {
@@ -146,16 +157,6 @@ function makeSession(overrides: Partial<SessionInfo> & { title: string }): Sessi
     ...overrides
   } as unknown as SessionInfo
 }
-
-const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
-
-// The status dot always paints an aria-hidden placeholder so every row's title
-// keeps the same left edge, so "the row's aria-hidden span" no longer names the
-// avatar on its own. `inline-grid` is PlatformAvatar's own layout class in both
-// of its branches — brand glyph and first-letter fallback — and the row passes
-// it no display class that tailwind-merge could drop it for.
-const handoffAvatar = (container: HTMLElement) =>
-  container.querySelector<HTMLElement>('span[aria-hidden="true"].inline-grid')
 
 const noop = vi.fn()
 
@@ -199,62 +200,11 @@ describe('SidebarSessionRow running arc', () => {
 
     expect(arc(container)).toBeTruthy()
   })
-
-  // The row owns its status subscription so a turn starting repaints that row
-  // and nothing else — not its siblings, and not the list around them. Rows
-  // render once per fiber, so counting `sessionTitle` counts repaints.
-  it('repaints only the session whose turn started', () => {
-    render(
-      <>
-        {[makeSession({ id: 's1', title: 'One' }), makeSession({ id: 's2', title: 'Two' })].map(session => (
-          <SidebarSessionRow
-            isPinned={false}
-            isSelected={false}
-            key={session.id}
-            onArchive={noop}
-            onDelete={noop}
-            onPin={noop}
-            onResume={noop}
-            onToggleUnread={noop}
-            session={session}
-            unread={false}
-          />
-        ))}
-      </>
-    )
-    sessionTitle.mockClear()
-
-    act(() => {
-      publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
-    })
-
-    expect(sessionTitle).toHaveBeenCalledTimes(1)
-    expect(sessionTitle).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }))
-  })
 })
 
 describe('SidebarSessionRow', () => {
   afterEach(() => {
     vi.useRealTimers()
-  })
-
-  it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {
-    render(
-      <SidebarSessionRow
-        isPinned={false}
-        isSelected={false}
-        onArchive={noop}
-        onDelete={noop}
-        onPin={noop}
-        onResume={noop}
-        onToggleUnread={noop}
-        session={makeSession({ title: 'Hermes doctor health check results' })}
-        unread={false}
-      />
-    )
-
-    const kebab = screen.getByRole('button', { name: 'Session actions' })
-    expect(tipTrigger(kebab)).toBeNull()
   })
 
   // Full-title tooltip on hover (#83000-class ask): the label is a tooltip
@@ -273,12 +223,6 @@ describe('SidebarSessionRow', () => {
       Object.defineProperty(el, 'scrollWidth', { configurable: true, value: scrollWidth })
       Object.defineProperty(el, 'clientWidth', { configurable: true, value: clientWidth })
     }
-
-    it('wraps the title in a tooltip trigger', () => {
-      renderRow(makeSession({ title }))
-
-      expect(label()).toBeTruthy()
-    })
 
     it('opens with the full title after a settled hover when the title overflows', () => {
       vi.useFakeTimers()
@@ -328,118 +272,20 @@ describe('SidebarSessionRow', () => {
     })
   })
 
-  it('exposes the exact session time through a focusable Tip trigger', () => {
-    // Pin the clock before deriving the timestamp.  The assertion below is
-    // about the *composition* of the label (relative age + absolute time),
-    // but "5 minutes ago" only falls on today when the run does not straddle
-    // local midnight.  Between 00:00 and 00:05 the row correctly renders
-    // "Yesterday at 11:5x PM" and this test failed for a day boundary it was
-    // never written to exercise.  Only `Date` is faked, so the component's
-    // own timers (the running arc, the tooltip open delay) keep running for
-    // real.
-    vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(new Date(2026, 2, 5, 12, 0, 0))
+  // The Archived view reuses the row menu, and the menu needs the row's
+  // archived state to label its shared verb Unarchive (#98813).
+  it('forwards the archived state to the row menu', () => {
+    menuProps.mockClear()
+    renderRow(makeSession({ archived: true, title: 'Archived row' }))
 
-    const startedAt = Math.floor(Date.now() / 1000) - 5 * 60
-
-    render(
-      <SidebarSessionRow
-        isPinned={false}
-        isSelected={false}
-        onArchive={noop}
-        onDelete={noop}
-        onPin={noop}
-        onResume={noop}
-        onToggleUnread={noop}
-        session={makeSession({ started_at: startedAt, title: 'Timestamped session' })}
-        unread={false}
-      />
-    )
-
-    const age = screen.getByText('5m')
-    expect(age.tagName).toBe('TIME')
-    expect(age.getAttribute('datetime')).toBe(new Date(startedAt * 1000).toISOString())
-    expect(age.getAttribute('aria-label')).toMatch(/^5m, Today at /)
-    expect(age.getAttribute('tabindex')).toBe('0')
-    expect(age.getAttribute('title')).toBeNull()
-    expect(tipTrigger(age)).toBeTruthy()
+    expect(menuProps).toHaveBeenCalledWith(expect.objectContaining({ archived: true }))
   })
 
-  it('does not render a handoff avatar for a locally-started session', () => {
-    const { container } = render(
-      <SidebarSessionRow
-        isPinned={false}
-        isSelected={false}
-        onArchive={noop}
-        onDelete={noop}
-        onPin={noop}
-        onResume={noop}
-        onToggleUnread={noop}
-        session={makeSession({ title: 'Local session' })}
-        unread={false}
-      />
-    )
+  it('forwards the non-archived state to the row menu', () => {
+    menuProps.mockClear()
+    renderRow(makeSession({ title: 'Live row' }))
 
-    expect(handoffAvatar(container)).toBeNull()
-  })
-
-  it('wraps the handoff platform avatar in a Tip for a session started on another platform', () => {
-    const { container } = render(
-      <SidebarSessionRow
-        isPinned={false}
-        isSelected={false}
-        onArchive={noop}
-        onDelete={noop}
-        onPin={noop}
-        onResume={noop}
-        onToggleUnread={noop}
-        session={makeSession({
-          handoff_platform: 'telegram',
-          handoff_state: 'active',
-          title: 'Continued from Telegram'
-        })}
-        unread={false}
-      />
-    )
-
-    // PlatformAvatar is the REAL component here (see the note above the vi.mock
-    // block, #67500 third pass) — it renders the Telegram brand SVG rather
-    // than the platform name as text, so query the avatar span itself rather
-    // than text content, and confirm its tooltip trigger actually attaches to
-    // it — proving the real forwardRef/...rest path works, not a mock that
-    // fakes it.
-    const avatar = handoffAvatar(container)
-    expect(avatar).toBeTruthy()
-    expect(tipTrigger(avatar as HTMLElement)).toBeTruthy()
-  })
-})
-
-describe('Inbox-style session card', () => {
-  it('gives truncated card lines room for glyph ink instead of clipping them', () => {
-    renderRow(
-      makeSession({
-        cwd: '/Users/tomek/pursuit-support-agent',
-        message_count: 133,
-        model: 'gpt-4.1',
-        title: 'Ruff lint and pytest verification'
-      }),
-      { card: true }
-    )
-
-    const workspace = screen.getByText('pursuit-support-agent')
-    const title = screen.getByText('Ruff lint and pytest verification').parentElement
-    const footer = screen.getByText('GPT-4.1').parentElement
-
-    expect(title).toBeTruthy()
-    expect(footer).toBeTruthy()
-
-    for (const el of [workspace, title!, footer!]) {
-      expect(el.className).not.toMatch(/\bleading-none\b/)
-      expect(el.className).toMatch(/leading-\[1\.35\]/)
-    }
-
-    expect(workspace.className).toMatch(/\btruncate\b/)
-    expect(screen.getByText('133 messages')).toBeTruthy()
+    expect(menuProps).toHaveBeenCalledWith(expect.objectContaining({ archived: false }))
   })
 })
 
@@ -505,5 +351,63 @@ describe('SidebarSessionRow inside the sortable list', () => {
     grabber.focus()
     fireEvent.keyDown(grabber, space)
     expect(grabber.getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
+// Row-decoration slots: a plugin decorates rows through the registry with the
+// row's stored session id handed to its render — the seam the session-list API
+// pairs with (see #116305 item 3).
+describe('SidebarSessionRow decoration slots', () => {
+  const disposers: Array<() => void> = []
+
+  afterEach(() => {
+    disposers.splice(0).forEach(dispose => dispose())
+  })
+
+  const decorate = (area: string, id: string, testId: string) =>
+    disposers.push(
+      registry.register({
+        area,
+        data: {
+          render: ({ sessionId }: SessionRowSlotProps) => <span data-testid={testId}>{sessionId}</span>
+        },
+        id,
+        source: 'disk'
+      })
+    )
+
+  it('mounts leading and trailing decorations, each handed the DURABLE row id', () => {
+    act(() => {
+      decorate(SESSION_ROW_AREAS.leading, 'deco-lead', 'lead-deco')
+      decorate(SESSION_ROW_AREAS.trailing, 'deco-tail', 'tail-deco')
+    })
+
+    // Auto-compression rotates the live id. A plugin that remembered the live
+    // one decorates this row until the next compaction and then silently stops
+    // matching — so the slot hands the lineage root, the id core's own
+    // pin/reorder and `host.sessions.*` address.
+    renderRow(makeSession({ _lineage_root_id: 'root-9', id: 'live-9', title: 'Compressed' }))
+
+    expect(screen.getByTestId('lead-deco').textContent).toBe('root-9')
+    expect(screen.getByTestId('tail-deco').textContent).toBe('root-9')
+  })
+
+  it('renders nothing for an area with no registrations and survives an unmount', () => {
+    const { container } = renderRow(makeSession({ id: 'row-7', title: 'Plain' }))
+
+    expect(container.querySelector('[data-testid="lead-deco"]')).toBeNull()
+
+    act(() => {
+      decorate(SESSION_ROW_AREAS.leading, 'deco-lead', 'lead-deco')
+    })
+
+    // Same row, contribution arriving late: the slot mounts it in place.
+    expect(screen.getByTestId('lead-deco').textContent).toBe('row-7')
+
+    act(() => {
+      disposers.splice(0).forEach(dispose => dispose())
+    })
+
+    expect(screen.queryByTestId('lead-deco')).toBeNull()
   })
 })

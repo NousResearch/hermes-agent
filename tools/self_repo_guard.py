@@ -446,7 +446,7 @@ def _read_git_alias(executable: str, target: Path, alias: str) -> str | None:
     with contextlib.suppress(OSError, subprocess.SubprocessError):
         result = subprocess.run(
             [executable, "-C", str(target), "config", "--get", f"alias.{alias}"],
-            capture_output=True, text=True, timeout=1, check=False)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1, check=False)
         return (result.stdout.strip() or None) if result.returncode == 0 else None
     return None
 
@@ -560,8 +560,8 @@ def _block_message(operation: str, root: Path) -> str:
         f"Blocked: `{operation}` would rewrite Hermes's live source checkout "
         f"({root}) and can mix module versions in this running process. "
         f"Use a separate worktree or a shared clone on real disk, e.g. "
-        f"`git clone --shared {root} {scratch}/<task>` — avoid /tmp for "
-        "clones that install node/python deps: /tmp is usually RAM-backed tmpfs and a few "
+        f"`git clone --shared {root} {scratch}/<task>` — avoid /tmp for "  # no-tmp: ok — guidance telling the model to AVOID /tmp
+        "clones that install node/python deps: /tmp is usually RAM-backed tmpfs and a few "  # no-tmp: ok — guidance telling the model to AVOID /tmp
         "dependency installs can fill it and ENOSPC other work. Delete the clone when the branch "
         "is pushed. To change this checkout, stop Hermes, run the command externally, then restart "
         "Hermes.")

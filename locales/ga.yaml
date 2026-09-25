@@ -90,6 +90,9 @@ gateway:
     switch_failed:         "Cruthaíodh an brainse ach theip ar athrú chuige."
     branched_one:          "⑂ Brainseáilte go **{title}** ({count} teachtaireacht cóipeáilte)\nBunaidh: `{parent}`\nBrainse: `{new}`\nÚsáid `/resume` chun filleadh ar an mbunaidh."
     branched_many:         "⑂ Brainseáilte go **{title}** ({count} teachtaireacht cóipeáilte)\nBunaidh: `{parent}`\nBrainse: `{new}`\nÚsáid `/resume` chun filleadh ar an mbunaidh."
+    branched_thread_one:   "⑂ Brainseáilte go **{title}** i snáithe nua ({count} teachtaireacht cóipeáilte)\nSnáithe: {thread}\nBunleagan: `{parent}` — fanann an comhrá seo air\nBrainse: `{new}`\nÚsáid `/branch --here` le brainseáil sa chomhrá seo."
+    branched_thread_many:  "⑂ Brainseáilte go **{title}** i snáithe nua ({count} teachtaireacht cóipeáilte)\nSnáithe: {thread}\nBunleagan: `{parent}` — fanann an comhrá seo air\nBrainse: `{new}`\nÚsáid `/branch --here` le brainseáil sa chomhrá seo."
+    thread_fallback:       "Níorbh fhéidir snáithe a chruthú anseo, mar sin ghlac an brainse ionad sheisiún an chomhrá seo."
 
   commands:
     usage:                 "Úsáid: `/commands [page]`"

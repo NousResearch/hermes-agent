@@ -49,6 +49,7 @@ class _FakeSessionDB:
                 "source": "cli",
                 "model": "claude",
                 "started_at": 100,
+                "last_active": 150,
             }
         ]
         return [
@@ -130,6 +131,8 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "source": "cli",
                 "model": "claude",
                 "session_started": 100,
+                # Row recency rides on id-match rows (sessions table)...
+                "last_active": 150,
             },
             {
                 "id": "content_session",
@@ -142,6 +145,8 @@ def test_desktop_session_search_merges_id_matches_before_content_matches(monkeyp
                 "source": "desktop",
                 "model": "gpt",
                 "session_started": 200,
+                # ...while FTS hits have none and leave it null.
+                "last_active": None,
             },
         ]
     }

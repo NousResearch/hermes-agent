@@ -40,7 +40,7 @@ def _force_resolved_browser(monkeypatch, name: str):
     monkeypatch.setattr(webbrowser, "get", lambda *_a, **_kw: _FakeController(name))
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_headless_linux_no_display_refuses(monkeypatch):
     """The reported bug: headless Linux, no display server → don't auto-open.
 

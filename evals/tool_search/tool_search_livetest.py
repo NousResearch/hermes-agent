@@ -32,6 +32,9 @@ import traceback
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+# Scenario D reads this file back; lives in the temp dir, never a hard-coded /tmp.
+FIXTURE_NOTES = Path(tempfile.gettempdir()) / "livetest" / "notes.txt"
+
 # Force-isolate the test environment BEFORE any hermes imports.
 ORIGINAL_HOME = os.environ.get("HERMES_HOME")
 ORIGINAL_AUTH = Path.home() / ".hermes" / "auth.json"
@@ -228,7 +231,7 @@ SCENARIOS: List[Dict[str, Any]] = [
         "id": "D_core_plus_deferred",
         "description": "Task uses BOTH a core tool (read_file) and a deferred tool",
         "prompt": (
-            "Read the file at /tmp/livetest/notes.txt (it exists, just read it) "
+            f"Read the file at {FIXTURE_NOTES} (it exists, just read it) "
             "and then post its contents to the #random Slack channel. Tell me you're done."
         ),
         "expected_underlying_tools": ["read_file", "slack_send_message"],
@@ -300,7 +303,7 @@ def setup_isolated_home(enabled: bool, listing: str = "off",
 
 def _yaml_dump(obj: Any) -> str:
     try:
-        import yaml
+        import hermes_yaml as yaml
         return yaml.safe_dump(obj, sort_keys=False)
     except ImportError:
         return json.dumps(obj, indent=2)
@@ -360,8 +363,8 @@ def run_one_scenario(scenario: Dict[str, Any], enabled: bool, out_dir: Path) -> 
     os.environ["HERMES_HOME"] = str(home)
 
     # Pre-create the test file used by scenario D.
-    Path("/tmp/livetest").mkdir(exist_ok=True)
-    Path("/tmp/livetest/notes.txt").write_text("Hello from the test fixture.\n", encoding="utf-8")
+    FIXTURE_NOTES.parent.mkdir(parents=True, exist_ok=True)
+    FIXTURE_NOTES.write_text("Hello from the test fixture.\n", encoding="utf-8")
 
     n_registered = register_fake_tools()
 

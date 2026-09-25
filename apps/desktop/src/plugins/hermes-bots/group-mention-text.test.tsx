@@ -27,7 +27,10 @@ vi.mock('@hermes/plugin-sdk', async () => {
 
 vi.mock('./shared', () => ({ getPluginCtx: () => null, ID: 'hermes-bots' }))
 
-const members = [{ name: 'planner', handle: 'planner' }, { name: 'reviewer-mac-mini', handle: 'reviewer-mac-mini' }] as GroupMember[]
+const members = [
+  { name: 'planner', handle: 'planner' },
+  { name: 'reviewer-mac-mini', handle: 'reviewer-mac-mini' }
+] as GroupMember[]
 
 describe('group mention rendering', () => {
   it('classifies seated bots, the human and broadcasts, and leaves unknown tokens plain', () => {
@@ -43,11 +46,11 @@ describe('group mention rendering', () => {
     const text = '@planner compare the options, then @user picks; mail ops@example.com — @everyone review'
     const html = renderToStaticMarkup(<>{renderGroupMentionText(text, members)}</>)
 
-    expect(html).toContain('<span class="ref font-medium" data-ref="agent"')
+    expect(html).toContain('data-ref="agent"')
     expect(html).toContain('data-ref="human"')
     expect(html).toContain('data-ref="broadcast"')
     // `@example.com` is not a room identity — no span around it.
-    expect(html).not.toContain('data-ref="agent" title="Bot in this room">@example')
+    expect(html).not.toMatch(/data-ref="[^"]*"[^>]*>@example/)
     expect(html.replace(/<[^>]+>/g, '')).toBe(text)
   })
 })

@@ -31,6 +31,27 @@ export function currentPickerSelection(
   }
 }
 
+/** Canonical provider labels shared by onboarding and the model pill. OAuth
+ * provider ids stay distinct from their direct-API counterparts so a session on
+ * `xai-oauth` never reads as the plain `xai` key path, and internal route names
+ * never reach user-facing copy. */
+export const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  anthropic: 'Anthropic API Key',
+  'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription',
+  'minimax-oauth': 'MiniMax',
+  nous: 'Nous Portal',
+  'openai-codex': 'ChatGPT or Codex Subscription',
+  'qwen-oauth': 'Qwen Code',
+  xai: 'xAI',
+  'xai-oauth': 'xAI Grok'
+}
+
+export function providerDisplayName(provider: string): string {
+  const normalized = provider.trim().toLowerCase()
+
+  return PROVIDER_DISPLAY_NAMES[normalized] ?? provider.trim()
+}
+
 /** Strip provider prefix and normalize for display. */
 export function modelBaseId(model: string): string {
   const trimmed = model.trim()
@@ -52,8 +73,19 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
 function prettifyBase(base: string): string {
+  if (/^deepseek-flash$/i.test(base)) {
+    return 'DeepSeek V4.1 Flash'
+  }
+
   if (/^claude-/i.test(base)) {
-    return titleCase(base.replace(/^claude-/i, '').replace(/-/g, ' '))
+    // Anthropic ids spell the version with hyphens (`haiku-4-5`, `fable-5-1`);
+    // the human name is dotted ("Haiku 4.5"), not "Haiku 4 5".
+    return titleCase(
+      base
+        .replace(/^claude-/i, '')
+        .replace(/(\d)-(?=\d)/g, '$1.')
+        .replace(/-/g, ' ')
+    )
   }
 
   if (/^gpt-/i.test(base)) {
@@ -94,6 +126,16 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
         break
       }
     }
+  }
+
+  // Anthropic's `[1m]` route suffix selects the 1M-context window. It is a
+  // variant of the same model, so it renders as a tag ("Sonnet 5 · 1M") rather
+  // than raw brackets that read like an ANSI escape ("Sonnet 5[1m]").
+  const contextWindow = base.match(/\[(\d+[mk])\]$/i)
+
+  if (contextWindow) {
+    tag = tag ? `${tag} ${contextWindow[1].toUpperCase()}` : contextWindow[1].toUpperCase()
+    base = base.slice(0, -contextWindow[0].length)
   }
 
   // Drop a trailing date-pin (`…-20251101`) — snapshot noise, not a name.

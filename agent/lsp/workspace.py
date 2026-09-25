@@ -15,8 +15,10 @@ from typing import Iterable, Iterator, Optional, Tuple
 
 logger = logging.getLogger("agent.lsp.workspace")
 
-# Cache: start dir → (worktree_root, is_git) so repeated calls don't re-stat.  Cleared on shutdown.
+# Cache: start dir → (worktree_root, is_git) so repeated calls don't re-stat.  Cleared on shutdown; capped
+# because every distinct file dir a long gateway session touches lands here (#62950).
 _workspace_cache: dict = {}
+_WORKSPACE_CACHE_CAP = 512
 
 # Walk cap: the deepest reasonable monorepo is well under 64 levels; bounds a
 # pathological cwd or symlink cycle even though parent-equality normally stops us.
@@ -60,16 +62,18 @@ def find_git_worktree(start: str) -> Optional[str]:
     cached = _workspace_cache.get(str(start_path))
     if cached is not None:
         return cached[0]
+    resolved = None
     for cur in _walk_up(start_path):
         try:
             if (cur / ".git").exists():
                 resolved = str(cur)
-                _workspace_cache[str(start_path)] = (resolved, True)
-                return resolved
+                break
         except OSError:
             break  # permission error on a parent dir — bail out cleanly
-    _workspace_cache[str(start_path)] = (None, False)
-    return None
+    _workspace_cache[str(start_path)] = (resolved, resolved is not None)
+    if len(_workspace_cache) > _WORKSPACE_CACHE_CAP:
+        _workspace_cache.clear()  # a stat cache: resetting is a few re-stats, and one atomic op is thread-safe
+    return resolved
 
 
 def is_inside_workspace(path: str, workspace_root: str) -> bool:
@@ -133,7 +137,14 @@ def resolve_workspace_for_file(file_path: str, *, cwd: Optional[str] = None) -> 
     """Return ``(workspace_root, gated_in)`` for a file.  The cwd's worktree wins when the file is
     inside it; otherwise the file's own worktree is the fallback anchor (monorepos / unrelated
     checkouts).  ``(None, False)`` when neither is in a git worktree."""
-    cwd_root = find_git_worktree(cwd or os.getcwd())
+    try:
+        cwd_anchor = cwd or os.getcwd()
+    except OSError:
+        # The process cwd was removed underneath us (a scratch workspace cleaned up at
+        # card completion); getcwd keeps raising even after the path is recreated, so
+        # there is simply no cwd anchor — fall through to the file's own worktree.
+        cwd_anchor = None
+    cwd_root = find_git_worktree(cwd_anchor) if cwd_anchor else None
     if cwd_root is not None and is_inside_workspace(file_path, cwd_root):
         return cwd_root, True
     file_root = find_git_worktree(file_path)

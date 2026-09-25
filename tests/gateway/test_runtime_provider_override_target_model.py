@@ -27,11 +27,23 @@ def test_provider_override_runtime_uses_the_override_model(_zen_free_default_hom
 
 
 def test_fallback_chain_runtime_uses_the_entry_model(_zen_free_default_home, monkeypatch):
+    """The gateway's AuthError fallback goes through the shared ``resolve_runtime_with_fallback``
+    walker (no gateway-private loop) and keeps the entry's own model."""
     import gateway.run as gateway_run
+    import hermes_cli.runtime_provider as rp
+    from hermes_cli.auth import AuthError
 
+    real_resolve = rp.resolve_runtime_provider
+
+    def primary_auth_fails(**kw):
+        if kw.get("requested") is None:  # the primary, resolved from config.yaml
+            raise AuthError("primary quota exhausted (429)")
+        return real_resolve(**kw)
+
+    monkeypatch.setattr(rp, "resolve_runtime_provider", primary_auth_fails)
     monkeypatch.setattr(gateway_run, "_load_gateway_config",
                         lambda: {"fallback_model": [{"provider": "opencode-go", "model": "mimo-v2.5"}]})
-    fb = gateway_run._try_resolve_fallback_provider()
-    assert fb is not None
+    fb = gateway_run._resolve_runtime_agent_kwargs()
     assert fb["model"] == "mimo-v2.5"
+    assert fb["provider"] == "opencode-go"
     assert fb["base_url"] == "https://opencode.ai/zen/go/v1"

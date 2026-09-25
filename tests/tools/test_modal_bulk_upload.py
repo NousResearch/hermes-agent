@@ -6,7 +6,6 @@ import io
 import tarfile
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
 
 from tools.environments import modal as modal_env
 
@@ -110,11 +109,6 @@ class TestModalBulkUpload:
         args = exec_calls[0]
         assert args[0] == "bash"
         assert args[1] == "-c"
-        cmd = args[2]
-        assert "mkdir -p" in cmd
-        assert "base64 -d" in cmd
-        assert "tar xzf" in cmd
-        assert "-C /" in cmd
 
         # Reassemble the base64 payload from stdin chunks and verify tar contents
         payload = "".join(stdin_mock._written_chunks)

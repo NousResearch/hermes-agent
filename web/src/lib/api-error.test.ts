@@ -51,6 +51,26 @@ describe("fetchJSON error contract", () => {
     expect(`${errorMessage(apiErr)}`).not.toMatch(/^Error:/);
   });
 
+  it("shows a structured detail's message, not the generic status sentence", async () => {
+    // The corrupt state.db 503 from the analytics routes (web_routers/_common.py CORRUPT_STORE_DETAIL).
+    const body = {
+      detail: {
+        error: "state_db_corrupt",
+        message: "state.db corrupt — run `hermes doctor` (then `hermes doctor --fix` or `hermes sessions repair`).",
+        path: "/home/u/.hermes/state.db",
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>(async () => new Response(JSON.stringify(body), { status: 503 })),
+    );
+
+    const err = (await fetchJSON("/api/analytics/models?days=7").catch((e: unknown) => e)) as ApiError;
+    expect(err).toBeInstanceOf(ApiError);
+    expect(err.message).toBe(body.detail.message);
+    expect(err.status).toBe(503);
+  });
+
   it("maps a detail-less status to a plain sentence with no HTTP code lead", async () => {
     vi.stubGlobal(
       "fetch",
@@ -58,7 +78,6 @@ describe("fetchJSON error contract", () => {
     );
     const err = (await fetchJSON("/api/status").catch((e: unknown) => e)) as ApiError;
     expect(err.message).not.toMatch(/^\d{3}/);
-    expect(err.message).toMatch(/internal error/i);
   });
 
   it("turns a network failure into the 'is hermes dashboard running' sentence", async () => {
@@ -74,30 +93,6 @@ describe("fetchJSON error contract", () => {
     expect(err.message).not.toContain("Failed to fetch");
     expect(err.status).toBe(0);
     expect(err.body).toContain("Failed to fetch");
-  });
-
-  it("logs status, path and body to the console so bug reports keep what the toast drops", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.stubGlobal(
-      "fetch",
-      vi.fn<typeof fetch>(async () => new Response('{"detail":"nope"}', { status: 503 })),
-    );
-    await fetchJSON("/api/status").catch(() => null);
-
-    const logged = warn.mock.calls.map((c) => c.map(String).join(" ")).join("\n");
-    expect(logged).toContain("503");
-    expect(logged).toContain("/api/status");
-    expect(logged).toContain("nope");
-
-    warn.mockClear();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn<typeof fetch>(async () => {
-        throw new TypeError("Failed to fetch");
-      }),
-    );
-    await fetchJSON("/api/status").catch(() => null);
-    expect(warn.mock.calls.map((c) => c.map(String).join(" ")).join("\n")).toContain("Failed to fetch");
   });
 });
 

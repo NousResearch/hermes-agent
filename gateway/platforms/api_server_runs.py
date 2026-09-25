@@ -5,8 +5,10 @@ import hashlib
 import json
 import logging
 import os
+import threading
 import time
 import uuid
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -27,6 +29,50 @@ from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
 
 logger = logging.getLogger("gateway.platforms.api_server")
+
+# Executor-thread lifetime for API-server agent turns (#116535). The handler-side
+# ``_inflight_agent_runs`` count in api_server.py drops in the handler's ``finally`` when the
+# handler task is cancelled (disconnect/shutdown) while the executor thread behind
+# ``run_in_executor`` keeps running -- so the shutdown close gate cannot rely on it. This
+# module-level count is taken on the submitting thread before ``run_in_executor`` and released
+# in the worker thread's own ``finally``, which also keeps it visible past ``adapters.clear()``.
+_API_WORKER_LOCK = threading.Lock()
+_API_WORKER_LIVE = 0
+
+
+def api_worker_live_count() -> int:
+    """Executor threads still inside an API-server agent turn (``_run_agent`` and ``/v1/runs``)."""
+    with _API_WORKER_LOCK:
+        return _API_WORKER_LIVE
+
+
+def _submit_api_worker(loop, fn):
+    """``loop.run_in_executor(None, fn)`` with the worker-lifetime count held for the submission.
+
+    Increment on the submitting (handler) thread so the count is live before the worker can
+    exit; decrement in the worker thread's own ``finally`` so handler cancellation cannot drop
+    it early. When submission itself fails (default executor already shut down during quiesce
+    -> RuntimeError) the worker never runs, so the count is released here instead — a leaked
+    count would make the shutdown close gate skip the SessionDB close for the process lifetime.
+    """
+    global _API_WORKER_LIVE
+    with _API_WORKER_LOCK:
+        _API_WORKER_LIVE += 1
+
+    def _counted():
+        try:
+            return fn()
+        finally:
+            global _API_WORKER_LIVE
+            with _API_WORKER_LOCK:
+                _API_WORKER_LIVE -= 1
+
+    try:
+        return loop.run_in_executor(None, _counted)
+    except BaseException:
+        with _API_WORKER_LOCK:
+            _API_WORKER_LIVE -= 1
+        raise
 _ROOM_RETENTION_REQUEST_KEY = (
     RequestKey("hermes.room_run_retention_until", float) if RequestKey is not None
     else "hermes.room_run_retention_until")
@@ -37,10 +83,12 @@ _SUBAGENT_EVENT_KEYS = (
     "output_tokens", "reasoning_tokens", "api_calls", "cost_usd", "files_read", "files_written",
     "output_tail")
 _SUBAGENT_TEXT_KEYS = ("goal", "summary", "output_tail")
-# Terminal usage payload: (wire key, agent attribute), in wire order.
+# Terminal usage payload: (wire key, agent attribute), in wire order. Cache reads ride along so a
+# cost poller does not book them as full-price input (#102101).
 _USAGE_FIELDS = (
     ("input_tokens", "session_prompt_tokens"), ("output_tokens", "session_completion_tokens"),
-    ("total_tokens", "session_total_tokens"))
+    ("total_tokens", "session_total_tokens"), ("cache_read_tokens", "session_cache_read_tokens"),
+    ("cache_write_tokens", "session_cache_write_tokens"))
 # Tool-progress event -> SSE payload fields (tool_name, preview, kwargs); key order is wire format.
 _FIXED_EVENT_FIELDS = {
     "tool.started": lambda tool, preview, kw: {"tool": tool, "preview": preview},
@@ -59,6 +107,54 @@ def _tool_completed_preview(result: Any, redact_sensitive_text: Callable[..., st
     preview = redact_sensitive_text(text, force=True)
     limit = _TOOL_COMPLETED_PREVIEW_MAX_CHARS
     return preview if len(preview) <= limit else preview[: limit - 3] + "..."
+
+
+_RUN_STREAM_SUBSCRIBER_OVERFLOW = object()
+_RUN_STREAM_WRITE_TIMEOUT = 5.0
+
+
+class _RunStream:
+    """Sequence and retain one run's events while fanning out to SSE clients."""
+
+    BACKLOG_LIMIT = 1000
+    SUBSCRIBER_QUEUE_LIMIT = 256
+
+    def __init__(self) -> None:
+        self.subscribers: set[asyncio.Queue] = set()
+        self.backlog: deque[tuple[int, Optional[Dict[str, Any]]]] = deque(
+            maxlen=self.BACKLOG_LIMIT
+        )
+        self.next_seq = 0
+        self.terminal = False
+
+    def put_nowait(self, event: Optional[Dict[str, Any]]) -> None:
+        if self.terminal:
+            return
+        seq = self.next_seq
+        self.next_seq += 1
+        self.backlog.append((seq, event))
+        if event is None:
+            self.terminal = True
+        for queue in list(self.subscribers):
+            try:
+                queue.put_nowait((seq, event))
+            except asyncio.QueueFull:
+                self.detach(queue)
+                while not queue.empty():
+                    queue.get_nowait()
+                queue.put_nowait((seq, _RUN_STREAM_SUBSCRIBER_OVERFLOW))
+
+    def attach(
+        self, last_seq: int = -1
+    ) -> tuple[asyncio.Queue, list[tuple[int, Optional[Dict[str, Any]]]]]:
+        replay = [(seq, event) for seq, event in self.backlog if seq > last_seq]
+        # Headroom for events produced while the replay is still being written.
+        queue: asyncio.Queue = asyncio.Queue(maxsize=self.SUBSCRIBER_QUEUE_LIMIT + len(replay))
+        self.subscribers.add(queue)
+        return queue, replay
+
+    def detach(self, queue: asyncio.Queue) -> None:
+        self.subscribers.discard(queue)
 
 
 def _remember_room_retention(request: "web.Request", claims: dict[str, Any]) -> None:
@@ -126,9 +222,9 @@ def _initialize_run_state(self, *, store_factory) -> None:
     # outlive the request, hence the separate stopping set), pollable statuses, and
     # approval session keys (approval core resolves by session key, clients by run_id).
     self._run_idempotency_ids: set[str] = set()
-    self._run_stream_subscribers: set[str] = set()
     self._stopping_run_ids: set[str] = set()
     self._shutdown_interrupted_run_ids: set[str] = set()
+    self._run_shutdown_requested_at: Optional[float] = None
     (
         self._run_owners, self._run_streams, self._run_streams_created, self._active_run_agents,
         self._active_run_tasks, self._run_statuses, self._run_approval_sessions,
@@ -168,13 +264,17 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
     current.update({"object": "hermes.run", "run_id": run_id, "status": status, "updated_at": now})
     current.setdefault("created_at", fields.pop("created_at", now))
     current.update(fields)
+    shutdown_requested_at = getattr(self, "_run_shutdown_requested_at", None)
+    if shutdown_requested_at is not None and status not in TERMINAL_STATUSES:
+        current.setdefault("shutdown_requested_at", shutdown_requested_at)
     if status != "waiting_for_approval":
         current.pop("approval", None)
     self._run_statuses[run_id] = current
     should_persist = (
         status != previous_status
         or status in TERMINAL_STATUSES
-        or bool(field_names & {"output", "error", "usage", "pending_steer", "session_id"}))
+        or bool(field_names & {
+            "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
             self._run_idempotency_store.update_status(run_id, current)
@@ -193,6 +293,23 @@ def _mark_shutdown_interrupted_runs(self, run_ids) -> None:
             error="Gateway shutdown interrupted the run.",
             last_event="run.interrupted",
         )
+
+
+def _mark_shutdown_requested(self) -> int:
+    """Persist when gateway shutdown began without changing the run state vocabulary."""
+    shutdown_requested_at = getattr(self, "_run_shutdown_requested_at", None)
+    if shutdown_requested_at is None:
+        shutdown_requested_at = time.time()
+        self._run_shutdown_requested_at = shutdown_requested_at
+    marked = 0
+    for run_id, current in list(self._run_statuses.items()):
+        if current.get("status") in TERMINAL_STATUSES or "shutdown_requested_at" in current:
+            continue
+        self._set_run_status(
+            run_id, str(current.get("status") or "running"),
+            shutdown_requested_at=shutdown_requested_at)
+        marked += 1
+    return marked
 
 
 def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop", *, _api_server):
@@ -267,9 +384,10 @@ def _check_run_auth(self, request: "web.Request", *, permission: str, _api_serve
 def _owner_alive(owner_pid: int, owner_started: int) -> bool:
     """True when the recorded owner pid still exists and is the same process incarnation."""
     try:
-        from gateway.status import _pid_exists, get_process_start_time
+        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
         return owner_pid > 0 and bool(_pid_exists(owner_pid)) and (
-            not owner_started or int(get_process_start_time(owner_pid) or 0) == owner_started)
+            not owner_started
+            or start_time_fingerprints_match(owner_started, get_process_start_time(owner_pid) or 0))
     except Exception:
         return False
 
@@ -323,7 +441,7 @@ def _resolve_conversation_history(
             logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
     stored_session_id = None
     if not conversation_history and previous_response_id:
-        stored = self._response_store.get(previous_response_id)
+        stored = self._current_response_store().get(previous_response_id)
         if stored:
             conversation_history = list(stored.get("conversation_history", []))
             stored_session_id = stored.get("session_id")
@@ -367,7 +485,7 @@ class _RunLaunch:
 
     owner: Any
     run_id: str
-    queue: "asyncio.Queue[Optional[Dict]]"
+    queue: _RunStream
     session_id: str
     gateway_session_key: Optional[str]
     declared_selected: bool
@@ -409,7 +527,12 @@ def _retire_live_run(self, run_id: str) -> None:
 
 
 def _drop_run_transport(self, run_id: str) -> None:
-    _forget_run(self, run_id, self._run_streams, self._run_streams_created)
+    _forget_run(
+        self,
+        run_id,
+        self._run_streams,
+        self._run_streams_created,
+    )
 
 
 async def _resolve_live_session_id(self, session_id: str) -> str:
@@ -589,7 +712,7 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     session_history_delivery = not previous_response_id and not conversation_history
     if not conversation_history and selected_session_id and not previous_response_id:
         conversation_history = await self._conversation_history_for_session(str(selected_session_id))
-    q = self._run_streams[run_id] = asyncio.Queue()
+    q = self._run_streams[run_id] = _RunStream()
     created_at = self._run_streams_created[run_id] = time.time()
     self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
     initial_status = self._set_run_status(
@@ -617,7 +740,15 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
         turn_author=turn_author)
     self._activate_admitted_request()
-    task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
+    # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
+    # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
+    # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
+    admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
+    if admitted is not None:
+        task = self._active_run_tasks[run_id] = asyncio.create_task(
+            _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
+    else:
+        task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
         self._background_tasks.add(task)  # tracked for shutdown drain
     if hasattr(task, "add_done_callback"):
@@ -625,8 +756,30 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
 
 
+def _run_usage(agent) -> Dict[str, int]:
+    """Terminal ``usage`` payload from the agent's session counters; a missing or non-numeric
+    counter (test doubles, agents without cache accounting) reads as ``0``."""
+    usage = {}
+    for key, attr in _USAGE_FIELDS:
+        value = getattr(agent, attr, 0)
+        usage[key] = int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+    return usage
+
+
+def _served_runtime(agent) -> Dict[str, str]:
+    """The ``{provider, model}`` pair that actually served the turn. After a ``fallback_providers``
+    switch the agent keeps the fallback runtime until the NEXT turn restores the primary, so when
+    ``run_conversation()`` returns these attributes name the served pair — the run record's
+    ``model`` field only echoes the request (#102101). Non-string attributes read as ``""``."""
+    pair = {}
+    for key in ("provider", "model"):
+        value = getattr(agent, key, "")
+        pair[key] = value if isinstance(value, str) else ""
+    return pair
+
+
 def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_server):
-    """Executor-thread body of one run; returns ``(result, usage)``."""
+    """Executor-thread body of one run; returns ``(result, usage, served_runtime)``."""
     from gateway.session_context import clear_session_vars
     from gateway.hosted_room_execution_policy import (
         RoomExecutionPolicy, bind_room_execution_policy, reset_room_execution_policy)
@@ -680,6 +833,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
         finally:
             # Clear ownership now so a later stop can't reap work this run left running.
             _api_server._clear_turn_process_ownership(agent)
+            self._memory_sessions.checkin(agent)
             # Declared-conversation binding, same precedence gate as _run_agent.
             if run.declared_selected:
                 self._bind_declared_conversation(
@@ -690,7 +844,7 @@ def _run_agent_sync(self, run: _RunLaunch, agent, approval_notify, *, _api_serve
                 for token, reset in resets:
                     with suppress(Exception):
                         reset(token)
-        return r, {key: getattr(agent, attr, 0) or 0 for key, attr in _USAGE_FIELDS}
+        return r, _run_usage(agent), _served_runtime(agent)
 
 
 def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Dict[str, Any]], None]:
@@ -698,23 +852,64 @@ def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Di
     run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
 
     def _approval_notify(approval_data: Dict[str, Any]) -> None:
-        event = dict(approval_data or {})
-        # Clients must never receive the raw flagged command: redact before it hits the stream.
-        # Redact credentials from the command before it enters the SSE/API event stream — same egress bug as
-        # #48456, second transport: API/desktop clients would otherwise receive the raw command Tirith
-        # flagged. Reuse the gateway seam.
-        if "command" in event:
-            from gateway.run import _redact_approval_command
-            event["command"] = _redact_approval_command(event.get("command"))
-        event.update(_run_event(run_id, "approval.request", choices=_api_server._approval_event_choices(
-            smart_denied=bool(event.get("smart_denied")),
-            allow_session=event.get("allow_session") is not False,
-            allow_permanent=event.get("allow_permanent") is not False)))
+        # Clients must never receive the raw flagged command (#48456): the shared builder redacts.
+        event = _api_server._approval_request_event(run_id, approval_data)
         self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
         with suppress(Exception):
             loop.call_soon_threadsafe(q.put_nowait, event)
 
     return _approval_notify
+
+
+async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[str, Any], *, _api_server) -> None:
+    """Drive a run whose turn a live Bot Chat owner is executing, from that owner's mailbox receipt.
+
+    The receipt is the only truth about the turn: ``settled`` completes the run with the owner's
+    reply, a failed receipt fails it with the owner's classified reason. ``/stop`` cannot reach the
+    owner's turn — the mailbox has no recall once a record is claimed — so a stop ends this run
+    as ``cancelled`` while the chat finishes on its own; the stop handler already reports that a
+    run without an in-process agent is not interruptible here.
+    """
+    from tools.bot_live_delivery import await_delivery_async
+
+    run_id = run.run_id
+    delivery_id = record["delivery_id"]
+
+    def _finish(status: str, **fields: Any) -> None:
+        if run_id in self._shutdown_interrupted_run_ids:
+            # Shutdown already published "interrupted"; the cancel that follows must not
+            # rewrite it as a plain "cancelled" (same guard as the native _execute_run).
+            status, fields = "interrupted", {"error": "Gateway shutdown interrupted the run."}
+        self._set_run_status(run_id, status, **fields, last_event=f"run.{status}")
+        with suppress(Exception):
+            run.put_event(_run_event(run_id, f"run.{status}", **fields))
+
+    try:
+        self._set_run_status(run_id, "running", delivery_id=delivery_id)
+        record = await await_delivery_async(
+            home, delivery_id, None, should_stop=lambda: run_id in self._stopping_run_ids) or record
+        if record["status"] in ("queued", "claimed"):
+            _finish("cancelled", completed=False, partial=False, interrupted=True)
+            return
+        if record["status"] == "settled":
+            _finish("completed", completed=True, partial=False, interrupted=False,
+                    output=record.get("reply") or "", usage={})
+        elif record["status"] == "cancelled":
+            _finish("cancelled", completed=False, partial=False, interrupted=True)
+        else:
+            _finish("failed", completed=False, partial=False, interrupted=False,
+                    error=record.get("error") or f"Bot Chat delivery {record['status']}",
+                    **({"reason": record["reason"]} if record.get("reason") else {}))
+    except asyncio.CancelledError:
+        _finish("cancelled", completed=False, partial=False, interrupted=True)
+        raise
+    except Exception as exc:
+        logger.exception("[api_server] run %s (live Bot Chat) failed", run_id)
+        _finish("failed", completed=False, partial=False, interrupted=False, error=str(exc))
+    finally:
+        with suppress(Exception):
+            run.put_event(None)  # sentinel: close the SSE stream
+        _retire_live_run(self, run_id)
 
 
 async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
@@ -728,6 +923,16 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with suppress(Exception):
             loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
 
+    def _interim_cb(text: str, *, already_streamed: bool = False) -> None:
+        # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls),
+        # same ``message.interim`` contract as the TUI gateway; reasoning never reaches this
+        # callback and the final answer still arrives via ``run.completed`` (#67580).
+        if not isinstance(text, str) or not text.strip() or run_id not in self._run_streams:
+            return
+        with suppress(Exception):
+            loop.call_soon_threadsafe(run.put_event, _run_event(
+                run_id, "message.interim", text=text, already_streamed=bool(already_streamed)))
+
     def _finish(status: str, extra: Optional[dict] = None, **fields: Any) -> None:
         """Terminal status, then best-effort ``run.<status>`` event; key order is wire shape."""
         extra = extra or {}
@@ -737,7 +942,9 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             extra = {}
         self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
         with suppress(Exception):
-            run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
+            # A worker can finish before its Future is wrapped, so awaiting it
+            # need not yield to already-scheduled commentary/tool callbacks.
+            loop.call_soon(run.put_event, _run_event(run_id, f"run.{status}", **fields, **extra))
 
     try:
         # Shutdown landed between admission and the task's first tick: nothing to
@@ -752,11 +959,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with self._profile_scope(run.request_profile):
             agent = self._create_agent(
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
-                **run.agent_kwargs)
+                interim_assistant_callback=_interim_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
-        result, usage = await loop.run_in_executor(
-            None, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+        result, usage, served_runtime = await _submit_api_worker(
+            loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
         if not isinstance(result, dict):
             result = {}
         status, fields = terminal_run_status(result)
@@ -766,14 +973,21 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             # Non-retryable client errors (401/400) return failed=True rather than raising.
             _finish("failed", fields, error=_redact_api_error_text(result.get("error") or "agent run failed"))
         else:
-            _finish(status, fields, output=result.get("final_response", ""), usage=usage)
+            # ``runtime`` rides on both the pollable status and the run.completed event via _finish, in the
+            # canonical shape every other api_server surface emits (route_source/requested, cleaned ids).
+            requested = {k: run.agent_kwargs.get(f"requested_{k}") for k in ("provider", "model")}
+            served_runtime = self._sanitize_runtime_metadata(
+                runtime=served_runtime, requested_runtime=requested if any(requested.values()) else None,
+                route_source=("model_routes" if run.agent_kwargs.get("route")
+                              else "raw_request" if any(requested.values()) else "global"))
+            _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime)
     except asyncio.CancelledError:
         _finish("cancelled")
         raise
     except _api_server._ProviderAuthResolutionError as exc:
         # Same controlled provider-auth message the _run_agent() endpoints give.
-        logger.warning("Provider authentication failed for run=%s: %s", run_id, exc)
-        _finish("failed", error=f"⚠️ Provider authentication failed: {exc}")
+        logger.warning("Provider resolution failed for run=%s: %s", run_id, exc)
+        _finish("failed", error=exc.user_text())
     except Exception as exc:
         logger.exception("[api_server] run %s failed", run_id)
         _finish("failed", error=_redact_api_error_text(exc))
@@ -782,7 +996,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         # Event; unregistering releases it. Idempotent on normal completion.
         _unregister_approval_notify(run.approval_session_key)
         with suppress(Exception):
-            run.put_event(None)  # sentinel: close the SSE stream
+            loop.call_soon(run.put_event, None)  # close after the queued events
         _retire_live_run(self, run_id)
 
 
@@ -863,28 +1077,72 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
         await asyncio.sleep(0.05)
     else:
         return _run_not_found(_api_server._openai_error, run_id)
-    q = self._run_streams[run_id]
-    self._run_stream_subscribers.add(run_id)
+    stream = self._run_streams[run_id]
+    raw_last_seq = request.headers.get("Last-Event-ID") or request.query.get("last_seq")
+    try:
+        last_seq = max(-1, int(str(raw_last_seq).strip())) if raw_last_seq is not None else -1
+    except (TypeError, ValueError):
+        last_seq = -1
+    q, replay = stream.attach(last_seq)
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-    await response.prepare(request)
+
+    async def _write(data: bytes) -> None:
+        try:
+            async with asyncio.timeout(_RUN_STREAM_WRITE_TIMEOUT):
+                await response.write(data)
+        except TimeoutError:
+            with suppress(Exception):
+                response.force_close()
+            raise
+
+    async def _write_event(seq: int, event: Dict[str, Any]) -> None:
+        payload = dict(event)
+        payload["seq"] = seq
+        await _write(_api_server._sse_frame(payload, id=seq))
+
+    prepared = False
     try:
+        await response.prepare(request)
+        prepared = True
+        if replay and replay[0][0] > last_seq + 1:
+            truncation = _run_event(
+                run_id,
+                "replay.truncated",
+                oldest_retained_seq=replay[0][0],
+            )
+            if raw_last_seq is not None:
+                truncation["requested_seq"] = last_seq
+            await _write(_api_server._sse_frame(truncation))
+        for seq, event in replay:
+            if event is None:
+                await _write(b": stream closed\n\n")
+                return response
+            await _write_event(seq, event)
+        if stream.terminal and q.empty():
+            await _write(b": stream closed\n\n")
+            return response
         while True:
             try:
-                event = await asyncio.wait_for(
+                seq, event = await asyncio.wait_for(
                     q.get(), timeout=_api_server.CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS)
             except asyncio.TimeoutError:
-                await response.write(b": keepalive\n\n")
+                await _write(b": keepalive\n\n")
                 continue
-            if event is None:  # run finished
-                await response.write(b": stream closed\n\n")
+            if event is _RUN_STREAM_SUBSCRIBER_OVERFLOW:
+                logger.debug("[api_server] closing slow SSE subscriber for run %s", run_id)
                 break
-            await response.write(_api_server._sse_frame(event))
+            if event is None:  # run finished
+                await _write(b": stream closed\n\n")
+                break
+            await _write_event(seq, event)
     except Exception as exc:
+        if not prepared:
+            raise
         logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
     finally:
-        self._run_stream_subscribers.discard(run_id)
-        _drop_run_transport(self, run_id)
+        stream.detach(q)
+        self._release_run_owner_if_forgotten(run_id)
     return response
 
 
@@ -1021,7 +1279,8 @@ def _sweep_orphaned_runs_once(self, now: Optional[float] = None) -> None:
     if now is None:
         now = time.time()
     for run_id, created_at in list(self._run_streams_created.items()):
-        if now - created_at <= self._RUN_STREAM_TTL or run_id in self._run_stream_subscribers:
+        stream = self._run_streams.get(run_id)
+        if now - created_at <= self._RUN_STREAM_TTL or (stream is not None and stream.subscribers):
             continue
         logger.debug("[api_server] sweeping expired run transport %s", run_id)
         task = self._active_run_tasks.get(run_id)

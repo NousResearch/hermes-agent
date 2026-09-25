@@ -39,7 +39,8 @@ Each phase of an iteration is its own sibling, so a change to (say) overflow han
 ~600-line file: `turn_preflight*`, `turn_iteration_prep`, `turn_request_assembly`/`turn_api_request`,
 `turn_api_call`, `turn_api_error`, `turn_response_intake`/`turn_response_check`,
 `turn_empty_response`, `turn_tool_round`/`turn_tool_validation`, `turn_overflow`,
-`turn_truncation`, `turn_context_compaction`, `turn_recovery`, `turn_retry_state`,
+`turn_truncation`, `turn_context_compaction`, `turn_recovery`, `turn_recovery_autorecover`
+(post-exhaustion wait-and-retry ladder), `turn_retry_state`,
 `turn_stop_gates`, `turn_liveness`, `turn_usage`, `turn_final_response`, `turn_finalizer`,
 `turn_summary`. Find the phase with `grep -rn "def X" agent/turn_*.py`.
 
@@ -97,6 +98,10 @@ cache break — keep it the only one. Full detail:
 - **Auxiliary (side-LLM) work** — curator, vision, embedding, title generation, session_search,
   compression — resolves through `agent/auxiliary_client.py::_resolve_auto_route`; each task can pin
   its own `provider/model/base_url/reasoning_effort` under `auxiliary:` in config.yaml.
+  Every physical attempt funnels through `_relay_sync_completion` / `_relay_async_completion` /
+  `_relay_sync_stream`, where `agent/auxiliary_hooks.py` emits `pre_auxiliary_call` /
+  `post_auxiliary_call` (observer-only, fail-open, `aux_task` set); the main-loop
+  `pre/post_api_request` events must NOT fire for aux calls (#79733).
 - Fallback models and credential pools are resolution-chain code: E2E them with real imports
   against a temp `HERMES_HOME`, not mocks (root rubric).
 

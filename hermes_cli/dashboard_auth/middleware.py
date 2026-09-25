@@ -71,6 +71,9 @@ def _unauth_response(request: Request, *, reason: str) -> Response:
     login_url = f"{prefix}/login?next={next_param}" if next_param else f"{prefix}/login"
     if request.url.path.startswith("/api/"):
         expired = reason == "invalid_or_expired_session"
+        # Same reason the client already receives. Never include the bearer.
+        audit_log(AuditEvent.SESSION_REJECTED, reason=reason, path=request.url.path,
+                  ip=_client_ip(request))
         return JSONResponse(
             {"error": "session_expired" if expired else "unauthenticated", "detail": "Unauthorized",
              "reason": reason, "login_url": login_url}, status_code=401)

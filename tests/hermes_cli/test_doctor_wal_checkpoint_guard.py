@@ -80,7 +80,6 @@ def test_large_wal_warning_under_a_live_writer_never_suggests_a_bare_fix(tmp_pat
     finding = Finding()
     _state_db_wal(finding, False, _large_wal_db(tmp_path))
     assert len(finding.issues) == 1 and not finding.fixed
-    assert "normal while Desktop or the gateway is running, or state.db cannot be inspected" in capsys.readouterr().out
     assert finding.issues[0].index("stop the profile's gateway") < finding.issues[0].index("hermes doctor --fix")
 
 

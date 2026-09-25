@@ -128,6 +128,7 @@ async def test_registration_failure_after_failed_discovery_leads_with_discovery(
             else:
                 response = httpx.Response(404, request=outbound)
     msg = str(excinfo.value)
-    assert msg.startswith("Could not read authorization-server metadata (403 from https://example.com/.well-known/oauth-authorization-server")
-    assert "Registration failed: 404" in msg
+    # The metadata refusal (403) must lead; the fallback /register 404 alone is misleading.
+    assert "403" in msg and "404" in msg
+    assert msg.index("403") < msg.index("404")
     assert humanize_oauth_registration_error("srv", excinfo.value, server_url="https://example.com/mcp") is None

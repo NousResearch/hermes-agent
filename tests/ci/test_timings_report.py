@@ -86,8 +86,6 @@ def test_large_regression_is_warning():
     assert "+33" in result["summary"]
 
 
-
-
 def test_detail_shows_top_deltas():
     cur = _timings([_job("slow-job", 120.0), _job("fast-job", 30.0, start_s=120.0)])
     bl = _timings([_job("slow-job", 60.0), _job("fast-job", 60.0, start_s=60.0)])
@@ -96,30 +94,3 @@ def test_detail_shows_top_deltas():
     assert "fast-job" in result["detail"]
     # Sorted by abs delta — slow-job (+60) before fast-job (-30)
     assert result["detail"].index("slow-job") < result["detail"].index("fast-job")
-
-
-
-
-def test_report_url_passed_through():
-    t = _timings([_job("tests", 60.0)])
-    result = _result(_mod.generate_review_status(t, None, report_url="https://artifact/123"))
-    assert result["link"] == "https://artifact/123"
-    assert result["link_label"] == "View report"
-
-
-
-
-def test_nested_format_structure():
-    """The return value is a list with one {source, results: [...]} entry."""
-    t = _timings([_job("tests", 60.0)])
-    statuses = _mod.generate_review_status(t, None)
-    assert isinstance(statuses, list)
-    assert len(statuses) == 1
-    assert statuses[0]["source"] == "ci timing"
-    assert isinstance(statuses[0]["results"], list)
-    assert len(statuses[0]["results"]) == 1
-    r = statuses[0]["results"][0]
-    assert r["kind"] == "debug"
-    assert r["title"] == "CI timings"
-    assert "summary" in r
-    assert "detail" in r

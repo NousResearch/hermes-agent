@@ -5,7 +5,7 @@ to-bot detection, broadcast filtering, WhatsApp markdown conversion, chunk budge
 
 Mixin contract — the host adapter sets these on ``self`` before calling any mixin
 method: ``config`` (PlatformConfig), ``name``, ``_dm_policy`` / ``_group_policy``
-("open" | "allowlist" | "disabled"), ``_allow_from`` / ``_group_allow_from`` (set[str]),
+("open" | "allowlist" | "disabled" | "pairing"), ``_allow_from`` / ``_group_allow_from`` (set[str]),
 ``_mention_patterns`` (list[re.Pattern]), ``_reply_prefix`` (Optional[str]).
 """
 
@@ -18,7 +18,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gateway.platforms._shared import extra_or_secret as _extra_or_wsecret, get_scoped_secret as _get_wsecret
+from gateway.platforms._shared import (
+    decode_json_list_literal as _decode_json_list_literal, extra_or_secret as _extra_or_wsecret,
+    get_scoped_secret as _get_wsecret
+)
 from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 
 
@@ -99,26 +102,31 @@ class WhatsAppBehaviorMixin(OwnAccessPolicyMixin):
 
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
-        """Parse allow_from / group_allow_from from config (list) or env var (CSV)."""
+        """Parse allow_from / group_allow_from from config (list or JSON-list string) or env var (CSV)."""
         if raw is None:
             return set()
+        raw = _decode_json_list_literal(raw)
         parts = raw if isinstance(raw, list) else str(raw).split(",")
         return {str(part).strip() for part in parts if str(part).strip()}
 
-    def _select_dm_allowlist(self, extra: Dict[str, Any], env_keys, read_env) -> Any:
-        """Pick the raw DM allowlist by key *presence*: ``allow_from``/``allowFrom`` in config (an
-        explicit empty list stays authoritative), then the first truthy env carrier. Records the
-        winning source in ``_dm_allowlist_source`` so live DM checks keep the same precedence."""
-        for key in ("allow_from", "allowFrom"):
+    @staticmethod
+    def _select_allowlist(extra: Dict[str, Any], config_keys, env_keys, read_env) -> tuple[Optional[str], Any]:
+        """``(source, raw)`` by key *presence*: a config key wins (an explicit empty list stays authoritative),
+        then the first truthy env carrier; ``(None, None)`` when neither is set."""
+        for key in config_keys:
             if key in extra:
-                self._dm_allowlist_source = "config"
-                return extra.get(key)
+                return "config", extra.get(key)
         for env in env_keys:
-            if read_env(env):
-                self._dm_allowlist_source = env
-                return read_env(env)
-        self._dm_allowlist_source = None
-        return None
+            raw = read_env(env)
+            if raw:
+                return env, raw
+        return None, None
+
+    def _select_dm_allowlist(self, extra: Dict[str, Any], env_keys, read_env) -> Any:
+        """Raw DM allowlist; records the winning source in ``_dm_allowlist_source`` so live DM checks keep
+        the same precedence."""
+        self._dm_allowlist_source, raw = self._select_allowlist(extra, ("allow_from", "allowFrom"), env_keys, read_env)
+        return raw
 
     def _live_dm_allow_from(self) -> set[str]:
         """Allowlist currently enforced for DM intake / strict DM auth. Env-seeded adapters re-read

@@ -38,10 +38,6 @@ class TestInterpretExitCode:
         assert result is not None
         assert "differ" in result.lower()
 
-    def test_colordiff_files_differ(self):
-        result = _interpret_exit_code("colordiff file1 file2", 1)
-        assert result is not None
-        assert "differ" in result.lower()
 
 
     # ---- test / [: exit 1 = condition false ----

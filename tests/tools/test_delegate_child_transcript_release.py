@@ -79,13 +79,6 @@ def test_bind_subagent_parent_does_not_pin_agent():
     assert probe() is None, "Context snapshot still pins the agent"
 
 
-def test_bind_subagent_parent_accepts_non_weakrefable_doubles():
-    class Slots:
-        __slots__ = ()
-
-    double = Slots()
-    with bind_subagent_parent(double):
-        assert get_active_subagent_parent() is double
 
 
 def _fake_child(messages):

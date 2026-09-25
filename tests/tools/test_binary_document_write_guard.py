@@ -19,7 +19,6 @@ from tools.binary_extensions import (
     is_pdf_path,
 )
 from tools.file_tools import patch_tool, write_file_tool
-from tools.file_tools_write_guards import _check_binary_document_write
 
 
 def _make_minimal_docx(path: Path) -> None:
@@ -77,25 +76,6 @@ class TestExtensionHelpers:
         assert is_pdf_path("report.txt") is False
 
 
-class TestCheckBinaryDocumentWrite:
-    def test_docx_always_rejected(self, tmp_path: Path):
-        # Even a NON-existing docx is rejected — text can't be a valid container.
-        err = _check_binary_document_write(str(tmp_path / "new.docx"))
-        assert err is not None
-        assert ".docx" in err
-
-    def test_existing_pdf_rejected(self, tmp_path: Path):
-        pdf = tmp_path / "doc.pdf"
-        pdf.write_bytes(b"%PDF-1.4\n%%EOF\n")
-        err = _check_binary_document_write(str(pdf))
-        assert err is not None
-        assert "overwrite" in err.lower()
-
-    def test_new_pdf_allowed(self, tmp_path: Path):
-        assert _check_binary_document_write(str(tmp_path / "fresh.pdf")) is None
-
-    def test_plain_text_allowed(self, tmp_path: Path):
-        assert _check_binary_document_write(str(tmp_path / "notes.txt")) is None
 
 
 class TestWriteFileToolGuard:

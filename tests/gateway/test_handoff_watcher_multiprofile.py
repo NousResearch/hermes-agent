@@ -72,9 +72,6 @@ def test_scopes_degrade_to_root_when_resolution_raises(monkeypatch):
     assert run._handoff_watch_scopes(runner) == [(None, None)]
 
 
-def test_scopes_tolerate_runner_without_config():
-    """The watcher's own unit tests bind onto a config-less stand-in."""
-    assert run._handoff_watch_scopes(types.SimpleNamespace()) == [(None, None)]
 
 
 class _RecordingDB:

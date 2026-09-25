@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $sessionsLimit, resetSessionsLimit, SIDEBAR_SESSIONS_PAGE_SIZE } from '@/store/layout'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
   $activeSessionId,
   $cronSessions,
@@ -98,6 +99,14 @@ describe('wipeSessionListsForGatewaySwitch', () => {
 
     expect($currentCwd.get()).toBe('')
     expect($currentBranch.get()).toBe('')
+  })
+
+  it("leaves the outgoing backend's project scope so the next draft cannot start in it (#54990)", () => {
+    $projectScope.set('p_old_backend')
+
+    wipeSessionListsForGatewaySwitch()
+
+    expect($projectScope.get()).toBe(ALL_PROJECTS)
   })
 
   it("forgets the previous backend's in-memory paging state", () => {

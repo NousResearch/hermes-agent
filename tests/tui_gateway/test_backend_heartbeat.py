@@ -16,7 +16,6 @@ refreshes it periodically.  This file verifies:
 from __future__ import annotations
 
 import io
-import os
 
 import pytest
 
@@ -71,18 +70,6 @@ class TestBackendHeartbeatRefresher:
         rows = db.list_backend_heartbeats()
         assert len(rows) == 1
 
-    def test_zero_refresh_disables_refresher(self, db, monkeypatch):
-        from tui_gateway import server
-
-        monkeypatch.setattr(server, "_get_db", lambda: db)
-        monkeypatch.setattr(server, "_HEARTBEAT_REFRESH_S", 0.0)
-        monkeypatch.setattr(server, "_heartbeat_refresher_started", False)
-        monkeypatch.setattr(
-            server, "_backend_id_for_this_process",
-            lambda: "test-backend-A",
-        )
-
-        server._start_backend_heartbeat_refresher()
         # Should have written the initial row exactly once, no thread started.
         # (The default flow with _HEARTBEAT_REFRESH_S > 0 would spawn a
         # thread; we asserted the helper is a no-op for repeat calls above.)
@@ -101,15 +88,6 @@ class TestBackendHeartbeatRefresher:
         # Must not raise.
         server._start_backend_heartbeat_refresher()
 
-    def test_backend_id_is_stable_for_this_process(self):
-        """backend_id is per-process and includes a nonce for PID-reuse safety."""
-        from tui_gateway import server
-
-        a = server._backend_id_for_this_process()
-        b = server._backend_id_for_this_process()
-        assert a == b  # idempotent within a process
-        assert ":nonce" not in a  # we use a hex suffix
-        assert str(os.getpid()) in a
 
 
 class TestEntryAndWsWiring:
@@ -134,7 +112,6 @@ class TestEntryAndWsWiring:
         monkeypatch.setattr(entry, "write_json", lambda _payload: True)
         monkeypatch.setattr(entry.sys, "stdin", io.StringIO(""))
 
-        import hermes_cli.model_switch as ms
         monkeypatch.setattr(model_switch_providers, "prewarm_picker_cache_async", lambda: None)
 
         entry.main()

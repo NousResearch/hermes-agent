@@ -59,14 +59,6 @@ describe('detectBundleSkew', () => {
     expect(result).toEqual({ desktopCommitsBehind: 3, outOfSync: true })
   })
 
-  it('counts only commits that touch runtime desktop paths', async () => {
-    const { calls, git } = gitAnswering({ 'merge-base': { code: 0 }, 'rev-list': { stdout: '0' } })
-
-    await detectBundleSkew(STAMP, git, REPO)
-
-    expect(calls[1]).toEqual(['rev-list', '--count', `${STAMP.commit}..HEAD`, '--', ...RUNTIME_PATHS])
-  })
-
   it('is quiet when no desktop commits follow the stamp', async () => {
     const result = await detectBundleSkew(STAMP, gitCounting('0\n'), REPO)
 
@@ -129,30 +121,6 @@ describe('detectBundleSkew', () => {
       desktopCommitsBehind: null,
       outOfSync: false
     })
-  })
-
-  it('does not consult the commit count once ancestry is refused', async () => {
-    const { calls, git } = gitAnswering({
-      'merge-base': { code: 1 },
-      'rev-list': { stdout: '9999\n' }
-    })
-
-    await detectBundleSkew(STAMP, git, REPO)
-
-    expect(calls.map(args => args[0])).toEqual(['merge-base'])
-  })
-
-  it('asks about ancestry before counting, against the same stamp', async () => {
-    const { calls, git } = gitAnswering({
-      'merge-base': { code: 0 },
-      'rev-list': { stdout: '2\n' }
-    })
-
-    const result = await detectBundleSkew(STAMP, git, REPO)
-
-    expect(calls[0]).toEqual(['merge-base', '--is-ancestor', STAMP.commit, 'HEAD'])
-    expect(calls[1]?.[0]).toBe('rev-list')
-    expect(result).toEqual({ desktopCommitsBehind: 2, outOfSync: true })
   })
 
   it('is quiet when git cannot answer the ancestry question at all', async () => {

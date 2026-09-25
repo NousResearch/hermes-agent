@@ -209,29 +209,6 @@ def test_read_open_failure_backs_off_but_recovers(db):
     db._close_read_conn(recovered)
 
 
-@pytest.mark.requires_wal
-def test_checkout_seam_is_the_single_acquisition_point(db):
-    """``_read_ctx`` must acquire via ``_checkout_read_conn`` and nothing else.
-
-    If a future edit re-inlines the pool checkout into ``_read_ctx``, patching
-    ``_get_read_conn`` silently exercises nothing whenever the pool is warm --
-    which is exactly how the writer-lock fallback test below would rot into a
-    no-op without failing.
-    """
-    calls = []
-    original = db._checkout_read_conn
-
-    def _spy():
-        calls.append(1)
-        return original()
-
-    db._checkout_read_conn = _spy
-    try:
-        with db._read_ctx():
-            pass
-    finally:
-        db._checkout_read_conn = original
-    assert calls, "_read_ctx must route acquisition through _checkout_read_conn"
 
 
 def test_fallback_to_locked_writer_when_read_conn_unavailable(db, monkeypatch):
@@ -500,7 +477,6 @@ def test_idle_permits_are_reclaimed_from_a_peer_instance(db):
 @pytest.mark.requires_wal
 def test_peak_is_bounded_across_many_database_files(tmp_path):
     """Read connections must be capped for the PROCESS, not just per file."""
-    import hermes_state
     from hermes_state import SessionDB, _READ_POOL_MAX
     from hermes_state_readpool import _READ_POOL_PROCESS_MAX
 

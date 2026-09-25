@@ -15,13 +15,13 @@ Generate images, video, and audio via diffusion workflows.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/creative/comfyui` |
-| Path | `optional-skills/creative\comfyui` |
+| Path | `optional-skills/creative/comfyui` |
 | Version | `5.1.0` |
 | Author | ['kshitijk4poor', 'alt-glitch', 'purzbeats'] |
 | License | MIT |
 | Platforms | macos, linux, windows |
 | Tags | `comfyui`, `image-generation`, `stable-diffusion`, `flux`, `sd3`, `wan-video`, `hunyuan-video`, `creative`, `generative-ai`, `video-generation` |
-| Related skills | [`stable-diffusion`](../mlops/mlops-stable-diffusion.md) |
+| Related skills | [`stable-diffusion`](../../optional/mlops/mlops-stable-diffusion.md) |
 
 ## Reference: full SKILL.md
 

@@ -9,7 +9,10 @@ import inspect
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:  # annotations only; the real import is per-call in apply_v4a_operations
+    from tools.file_operations_common import PatchResult
 
 from tools.file_operations_common import PatchResult
 

@@ -258,7 +258,7 @@ def test_force_full_redraw_requeues_kitty_frame(boba_like, monkeypatch):
             self.invalidated = True
 
     cli_obj._app = App()
-    monkeypatch.setattr("cli._replay_output_history", lambda: None)
+    monkeypatch.setattr("cli._replay_output_history", lambda *_: None)
 
     cli_obj._force_full_redraw()
 

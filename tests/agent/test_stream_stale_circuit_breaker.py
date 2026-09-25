@@ -46,10 +46,10 @@ def _make_anthropic_agent(**kwargs):
 
 
 def _good_stream_cm():
-    """Context manager whose stream yields no events and returns a valid message."""
+    """Context manager whose stream completes (message_stop) and returns a valid message."""
     cm = MagicMock()
     stream = MagicMock()
-    stream.__iter__ = MagicMock(return_value=iter([]))
+    stream.__iter__ = MagicMock(return_value=iter([SimpleNamespace(type="message_stop")]))
     msg = MagicMock()
     msg.content = []
     msg.stop_reason = "end_turn"

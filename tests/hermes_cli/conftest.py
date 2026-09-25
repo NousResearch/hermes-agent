@@ -57,81 +57,67 @@ def _suppress_concurrent_hermes_gate(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _inline_post_swap_handoff(request, monkeypatch):
-    """Run the post-swap tail in-process instead of re-executing ``hermes update --post-swap``.
-
-    ``_apply_pulled_update`` / ``_update_via_zip`` hand the rest of the run to a child
-    interpreter on the pulled tree. A mocked updater flow must not spawn that child (it would
-    run a real dependency sync against the worktree), so the tail runs here through the same
-    payload round-trip — every step stays patchable and the payload shape is still exercised.
-    Tests of the hand-off itself opt out with ``@pytest.mark.real_post_swap_handoff``.
+def _source_channels_resolve_locally(request, monkeypatch):
+    """Every unflagged ``hermes update`` resolves its channel through R2; tests must
+    not reach the network for that. Default every channel to a ``source-branch``
+    record delivering ``origin/<name>`` through the documented seam. Channel tests
+    that model records themselves re-patch ``_resolve_channel`` after this runs;
+    the marker opts out entirely for tests of the reader's own network path.
     """
-    if request.node.get_closest_marker("real_post_swap_handoff"):
+    if request.node.get_closest_marker("real_release_channels"):
         return
-    try:
-        from hermes_cli import update_cmd, update_receipt
-    except Exception:
-        return
+    from hermes_cli import source_releases
+    from hermes_cli.release_channels import ChannelResolution
 
-    def _inline(args, **payload_kwargs):
-        payload = update_cmd._post_swap_payload(**payload_kwargs)
-        if payload["receipt"]:
-            update_receipt.resume_update_receipt(payload["receipt"])
-        update_cmd._execute_post_swap(payload, args, payload_kwargs["gateway_mode"])
+    def resolve(name, repository):
+        record = {"schema": 1, "name": name, "repository": repository, "policy": "source-branch",
+                  "state": "active", "identity": None, "nextSequence": 1, "head": None,
+                  "delivery": {"kind": "source-branch", "branch": name}}
+        return ChannelResolution(record, record, None)
 
-    monkeypatch.setattr(update_cmd, "_hand_off_post_swap", _inline, raising=False)
+    monkeypatch.setattr(source_releases, "_resolve_channel", resolve)
+
+
+@pytest.fixture(autouse=True)
+def _discharge_host_update_obligation():
+    """Start and end every ``hermes_cli`` test with NO host update-restart obligation.
+
+    The record is host-scoped on purpose (one multiplexer per host), so it lives in the
+    per-OS-USER host state dir — not in the per-test ``HERMES_HOME``. The root conftest pins
+    that dir per test only when the caller supplied no ``HERMES_GATEWAY_LOCK_DIR`` (#118097
+    keeps the documented override working), so with one set every test in a file shares it and
+    a test that arms the obligation makes the next one read a restart it never owed. Clearing
+    the record — rather than re-pinning the dir — leaves that override rule untouched.
+    """
+
+    def _clear() -> None:
+        try:
+            from hermes_cli.update_host_obligation import clear_host_obligation
+
+            clear_host_obligation()
+        except Exception:
+            # Import/env failure here must never error an unrelated test.
+            pass
+
+    _clear()
+    yield
+    _clear()
 
 
 @pytest.fixture
-def isolated_update_runtime(monkeypatch, tmp_path, request):
-    """Keep mocked updater flows off the host checkout and runtime fleet."""
-    from hermes_cli import gateway, main, update_cmd, update_cmd_fleet
-    from hermes_cli import update_inventory, update_receipt
+def isolated_source_completion(monkeypatch):
+    """Unit-test the completion tail in-process; real transport is tested separately."""
+    from hermes_cli import update_cmd, update_completion
 
-    checkout = tmp_path / "isolated-update-checkout"
-    (checkout / ".git").mkdir(parents=True)
-    (checkout / "apps" / "desktop").mkdir(parents=True)
-    monkeypatch.setattr(main, "PROJECT_ROOT", checkout)
-    if hasattr(request.module, "PROJECT_ROOT"):
-        monkeypatch.setattr(request.module, "PROJECT_ROOT", checkout)
+    monkeypatch.setattr("hermes_cli.source_build.build_update_products", lambda *a, **kw: None)
+    monkeypatch.setattr("hermes_cli.venv_sync.publish_launchers", lambda *a: None)
 
-    monkeypatch.setattr(gateway, "find_gateway_pids", lambda *a, **k: [])
-    monkeypatch.setattr(gateway, "find_profile_gateway_processes", lambda *a, **k: [])
-    monkeypatch.setattr(gateway, "_get_service_pids", lambda *a, **k: set())
-    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
-    monkeypatch.setattr(main, "_pause_windows_gateways_for_update", lambda: None)
-    monkeypatch.setattr(main, "_resume_windows_gateways_after_update", lambda *a, **k: None)
-    monkeypatch.setattr(main, "_detect_venv_python_processes", lambda: [])
-    monkeypatch.setattr(main, "_restore_active_tool_dependencies", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_clear_windows_venv_holders_or_exit", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_finish_dashboard_update_cleanup", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd, "_apply_pending_fleet_restart_catchup", lambda *a, **k: None)
-    monkeypatch.setattr(update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None)
-    monkeypatch.setattr(update_inventory, "collect_runtime_inventory", lambda: None)
-    monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda *a, **k: [])
+    def complete(request):
+        update_completion._complete_selected(request)
+        return {"exit_code": 0, "receipt": update_completion._read_terminal_receipt(request),
+                "windows_resume": request["windows_resume"]}
 
-
-# ---- prompt_toolkit / capsys isolation ----
-# ``cli._cprint`` renders through ``prompt_toolkit.print_formatted_text``,
-# which — when called with no explicit ``output=`` — lazily creates an
-# ``Output`` from ``sys.stdout`` **and caches it on the process-global default
-# ``AppSession``** (``prompt_toolkit.application.current._current_app_session``,
-# a ``ContextVar`` with a module-level default). The cache is keyed to nothing
-# and never re-reads ``sys.stdout``.
-#
-# Under pytest, ``capsys`` swaps ``sys.stdout`` for a fresh buffer per test.
-# So the first CLI test that emits through ``_cprint`` (e.g. one exercising
-# ``/queue``, which prints a "Queued: …" line) locks prompt_toolkit's cached
-# output onto *its* captured stdout. Every later ``capsys`` test that asserts
-# on ``_cprint`` output then reads an empty buffer, because the render went to
-# the first test's now-dead capture target. That is the mechanism behind the
-# order-dependent ``test_resume_quiet_stderr`` failure: it passes in isolation
-# and in its own file, but fails in a full ``tests/cli`` run.
-#
-# Reset the cached output before every CLI test so each one re-creates a fresh
-# prompt_toolkit ``Output`` bound to its own ``sys.stdout`` on first use. This
-# is a no-op when prompt_toolkit isn't importable and cheap otherwise (the
-# property re-creates lazily).
+    monkeypatch.setattr(update_cmd, "run_completion", complete)
 
 
 @pytest.fixture(autouse=True)
@@ -155,3 +141,16 @@ def _reset_prompt_toolkit_output_cache():
     _clear()
     yield
     _clear()
+
+@pytest.fixture
+def probe_root(tmp_path):
+    """A fixture checkout the installation launcher can boot from.
+
+    ``runtime_command`` prepends the checkout root and runs ``import hermes_bootstrap``
+    before the probe body, exactly as production does. Tests that point the import
+    guard at a scratch tree need that module present, or the probe dies before its
+    health marker — a developer venv whose editable ``.pth`` shadows the root hides
+    the dependency, CI's clean environment does not.
+    """
+    (tmp_path / "hermes_bootstrap.py").write_text("", encoding="utf-8")
+    return tmp_path

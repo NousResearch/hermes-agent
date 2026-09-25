@@ -285,6 +285,75 @@ def test_resolve_keeps_catalog_meta_when_later_sources_do_not_fetch():
     assert matched.__class__ is CatalogSource
 
 
+def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch, tmp_path):
+    """A preview's (and an install's) sequential resolver calls must share one guarded connection pool."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+    import tools.skills_hub_search as search
+    import tools.skills_hub_clawhub as clawhub
+    from tools.skills_hub_models import SkillBundle, SkillMeta
+
+    clients = []
+    client_kwargs = []
+
+    class Response:
+        status_code = 200
+        text = "ok"
+        content = b"ok"
+        headers = {}
+
+        def json(self):
+            return {"skills": []}
+
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def get(self, *_args, **_kwargs):
+            return Response()
+
+    class Source:
+        def inspect(self, _identifier):
+            hub._guarded_http_get("https://example.com/metadata")
+            # The Hermes-index fetch must ride the same pool (no cache → real GET).
+            assert search._load_hermes_index() == {"skills": []}
+            return SkillMeta("example", "metadata", "test", "example/id", "community")
+
+        def fetch(self, _identifier):
+            hub._guarded_http_get("https://example.com/SKILL.md")
+            return SkillBundle("example", {"SKILL.md": "# Example"}, "test", "example/id", "community")
+
+    def create_client(**kwargs):
+        client_kwargs.append(kwargs)
+        client = Client()
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [Source()])
+    monkeypatch.setattr(hub, "create_ssrf_safe_client", create_client, raising=False)
+    monkeypatch.setattr(hub, "is_safe_url", lambda _url: True)
+    monkeypatch.setattr(hub, "check_website_access", lambda _url: None)
+    monkeypatch.setattr(search, "_hermes_index_cache_file", lambda: tmp_path / "hermes-index.json")
+    monkeypatch.setattr(search.httpx, "get", lambda *_a, **_k: pytest.fail("index fetch bypassed the pool"))
+
+    result = cli_hub.inspect_skill("example/id")
+
+    assert result is not None
+    assert len(clients) == 1
+    # The pooled client keeps the one-shot default timeout and never auto-follows redirects.
+    assert client_kwargs[0]["timeout"] == hub._DEFAULT_HTTP_TIMEOUT
+    assert client_kwargs[0]["follow_redirects"] is False
+
+    # Install runs the same resolve + fetch sequence (plus the per-file fan-out) and must pool too.
+    clients.clear()
+    monkeypatch.setattr(cli_hub, "_resolve_url_bundle_name", lambda *_a, **_k: False)
+    cli_hub.do_install("example/id", console=Console(file=StringIO()))
+    assert len(clients) == 1
+
+
 
 
 # ---------------------------------------------------------------------------

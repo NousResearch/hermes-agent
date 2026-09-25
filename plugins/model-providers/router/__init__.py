@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from agent.reasoning_effort import EFFORT_LADDER
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 from providers import register_provider
 from providers.base import ProviderProfile, _profile_user_agent
 
@@ -163,7 +163,7 @@ def _load_disk() -> tuple[Optional[dict[str, list[str]]], float]:
     if path is None:
         return None, 0.0
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         efforts = data.get("efforts")
         if not isinstance(efforts, dict) or not efforts:
             return None, 0.0
@@ -294,7 +294,7 @@ router = RouterProfile(
     env_vars=("RAMP_ROUTER_API_KEY", "ROUTER_API_KEY", "RAMP_ROUTER_BASE_URL"), base_url=_base_url(),
     auth_type="api_key",
     # Router attributes coding-agent clients by UA prefix; its WAF rejects default UAs.
-    default_headers={"User-Agent": f"Hermes-Agent/{_HERMES_VERSION}"},
+    default_headers={"User-Agent": f"Hermes-Agent/{get_version_info().base_version}"},
     supports_vision=True, default_aux_model="gpt-5.4-mini",
     fallback_models=(),  # account-scoped IDs; the picker uses fetch_models()
 )

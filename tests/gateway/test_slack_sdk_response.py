@@ -131,10 +131,6 @@ class TestSlackResponsePayload:
     def test_sdk_response_yields_its_data(self, make_response):
         assert _slack_response_payload(make_response({"ok": True})) == {"ok": True}
 
-    @response_shape
-    def test_sdk_response_is_not_a_dict(self, make_response):
-        """The premise of the bug: the runtime object fails an isinstance dict gate."""
-        assert not isinstance(make_response({"ok": True}), dict)
 
     @response_shape
     def test_binary_response_is_not_mistaken_for_data(self, make_response):

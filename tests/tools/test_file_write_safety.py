@@ -232,22 +232,27 @@ class TestSafeRootDenialMessageIntegration:
 class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""
 
+    @pytest.mark.platforms("linux")
     def test_etc_hosts_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/etc/hosts") is not None
 
+    @pytest.mark.platforms("linux")
     def test_private_etc_hosts_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/hosts") is not None
 
+    @pytest.mark.platforms("linux")
     def test_private_etc_ssh_config_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/etc/ssh/sshd_config") is not None
 
+    @pytest.mark.platforms("linux")
     def test_private_var_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/private/var/db/something") is not None
 
+    @pytest.mark.platforms("linux")
     def test_boot_still_blocked(self):
         from tools.file_tools_write_guards import _check_sensitive_path
         assert _check_sensitive_path("/boot/grub/grub.cfg") is not None
@@ -291,6 +296,7 @@ class TestAtomicWrite:
         assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
 
 
+    @pytest.mark.platforms("linux")
     def test_patch_routes_through_atomic_write(self, ops, tmp_path: Path):
         target = tmp_path / "edit.py"
         target.write_text("a = 1\nb = 2\nc = 3\n", encoding="utf-8")
@@ -319,16 +325,6 @@ class TestBomHandling:
         env = LocalEnvironment(cwd=str(tmp_path))
         return ShellFileOperations(env, cwd=str(tmp_path))
 
-    def test_helpers(self):
-        from tools.file_operations import _strip_bom, _has_bom
-        assert _strip_bom("\ufeffhello") == ("hello", True)
-        assert _strip_bom("hello") == ("hello", False)
-        assert _strip_bom("") == ("", False)
-        # mid-string BOM is data, not a marker — left alone
-        assert _strip_bom("a\ufeffb") == ("a\ufeffb", False)
-        assert _has_bom("\ufeffx") is True
-        assert _has_bom("x") is False
-        assert _has_bom(None) is False
 
     def test_read_strips_bom(self, ops, tmp_path: Path):
         target = tmp_path / "bom.py"
@@ -374,12 +370,6 @@ class TestBomHandling:
         assert raw.startswith(self.BOM.encode("utf-8")), "BOM lost on V4A update"
         assert b"print('world')" in raw
 
-    def test_file_has_bom_ignores_stripped_pre_content(self, ops, tmp_path: Path):
-        # _file_has_bom must probe the DISK even when handed pre_content
-        # that (having been BOM-stripped upstream) claims there is no BOM.
-        target = tmp_path / "bom_probe.py"
-        target.write_bytes(self.BOM.encode("utf-8") + b"x = 1\n")
-        assert ops._file_has_bom(str(target), pre_content="x = 1\n") is True
 
 
 class TestProtectedInstructionFiles:
@@ -447,7 +437,6 @@ class TestProtectedInstructionFiles:
     def test_prompts_even_under_yolo(self, tmp_path, approvals, monkeypatch):
         """The whole point: auto-approve/yolo must NOT bypass this gate."""
         import tools.approval as A
-        from tools import approval_context
         monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", True)
         target = tmp_path / "AGENTS.md"
         approvals["answer"] = "deny"
@@ -509,6 +498,7 @@ class TestProtectedInstructionFiles:
 
     # ---- adversarial path shapes ----------------------------------------
 
+    @pytest.mark.require_symlinks
     def test_symlink_to_protected_file_is_gated(self, tmp_path, approvals):
         """#41351 lesson: realpath first — innocent name, protected target."""
         real = tmp_path / "AGENTS.md"

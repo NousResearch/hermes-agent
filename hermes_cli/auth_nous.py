@@ -609,13 +609,39 @@ def _refresh_access_token(
         if "access_token" not in payload:
             raise _nous_err("Refresh response missing access_token", "invalid_token", relogin=True)
         return payload
+    if 500 <= response.status_code <= 599:
+        raise AuthError(
+            f"Nous Portal is temporarily unavailable (HTTP {response.status_code}).",
+            provider="nous", code="temporarily_unavailable", retryable=True)
+    # Vercel's Security Checkpoint in front of the Portal answers non-browser clients with a
+    # 403 (``x-vercel-mitigated: deny``) or 429 (``challenge``) page (#120602). That is the edge
+    # refusing the request, not the token endpoint rejecting the grant, so keep the credentials
+    # instead of forcing a re-login.
+    mitigated = response.headers.get("x-vercel-mitigated") if response.status_code in {403, 429} else None
+    if mitigated:
+        from agent.retry_utils import parse_retry_after_seconds
+        raise AuthError(
+            f"Nous Portal's edge firewall challenged the token refresh (HTTP {response.status_code}, "
+            f"x-vercel-mitigated={mitigated}). Credentials kept; try again shortly.",
+            provider="nous", code="upstream_blocked", retryable=True,
+            retry_after=parse_retry_after_seconds(response.headers))
+    from hermes_cli.auth import _OAUTH_GRANT_DEAD_CODES
     try:
         error_payload = response.json()
-    except Exception as exc:
-        raise _nous_err("Refresh token exchange failed", relogin=True) from exc
-    code = str(error_payload.get("error", "invalid_grant"))
+    except Exception:
+        error_payload = {}
+    if not isinstance(error_payload, dict):
+        error_payload = {}
+    # Only an explicit OAuth grant-dead code is terminal: a 429/404 gateway body without an
+    # ``error`` key says nothing about the refresh token, so it must not wipe credentials.
+    # A 401/403 without an ``error`` code still means the token endpoint rejected the refresh
+    # token, so it is reported as ``invalid_grant`` (terminal) rather than left unclassified.
+    raw_code = error_payload.get("error")
+    if raw_code is None and response.status_code in {401, 403}:
+        raw_code = "invalid_grant"
+    code = None if raw_code is None else str(raw_code)
     description = str(error_payload.get("error_description") or "Refresh token exchange failed")
-    relogin = code in {"invalid_grant", "invalid_token", "refresh_token_reused"}
+    relogin = code in _OAUTH_GRANT_DEAD_CODES
     # OAuth 2.1 "refresh token reuse": an external process (health check, monitoring tool, custom
     # self-heal hook) redeemed Hermes's refresh_token without persisting the rotated token, so the
     # server retired the original and revoked the whole session chain as a token-theft signal.
@@ -1419,11 +1445,11 @@ def step_up_nous_billing_scope(
     prior = get_provider_auth_state("nous") or {}
     pconfig = PROVIDER_REGISTRY["nous"]
     # Step-up scope: existing scopes (if any) + billing:manage, deduped, order-stable. Falls back
-    # to the standard inference+tool+billing set.
+    # to the standard inference+billing set.
     _raw_scope = prior.get("scope")
     prior_scope = _raw_scope.split() if isinstance(_raw_scope, str) else []
     requested = list(dict.fromkeys([
-        *(prior_scope or [NOUS_INFERENCE_INVOKE_SCOPE, "tool:invoke"]), NOUS_BILLING_MANAGE_SCOPE]))
+        *(prior_scope or [NOUS_INFERENCE_INVOKE_SCOPE]), NOUS_BILLING_MANAGE_SCOPE]))
     auth_state = _nous_device_code_login(
         portal_base_url=prior.get("portal_base_url") or None,
         inference_base_url=prior.get("inference_base_url") or None,

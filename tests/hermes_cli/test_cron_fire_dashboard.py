@@ -14,13 +14,11 @@ hosted agents don't expose). It must:
     through — 503 when the gateway is unreachable so NAS retries.
 """
 
-import pytest
 from starlette.testclient import TestClient
 
 from hermes_cli import web_server
 import hermes_cli.config as _cfg_mod
 import hermes_cli.web_server_cron as _web_server_cron
-from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 
 def _client(auth_required: bool):
@@ -47,10 +45,6 @@ def _restore(prev_auth, prev_host):
 
 
 
-def test_fire_path_is_public():
-    """Must bypass the dashboard cookie gate so the NAS bearer-JWT callback
-    reaches the verifier (the JWT is the real auth)."""
-    assert "/api/cron/fire" in PUBLIC_API_PATHS
 
 
 def test_bad_token_401(monkeypatch):
@@ -135,7 +129,7 @@ def test_valid_fire_forwards_to_gateway(monkeypatch):
     monkeypatch.setattr(_web_server_cron, "_fire_cron_job_for_profile",
                         lambda p, j: executed.append((p, j)))
 
-    client, pa, ph = _client(auth_required=False)
+    client, pa, ph = _client(auth_required=True)  # the NAS JWT, not the cookie gate, admits it
     try:
         resp = client.post("/api/cron/fire",
                            headers={"Authorization": "Bearer nas-jwt"},
@@ -279,11 +273,12 @@ def test_fire_endpoint_multiplex_reads_port_from_default_listener(tmp_path, monk
     url = _web_server_cron._gateway_fire_endpoint("worker_alpha", worker_home)
 
     assert url == "http://127.0.0.1:8650/p/worker_alpha/api/cron/fire"
-    # The GATEWAY_MULTIPLEX_PROFILES env override is still honored (parity
-    # with gateway/config.py): forcing it off restores per-profile routing.
+    # Forcing the retired opt-out off no longer restores per-profile routing: multiplex-only
+    # means the secondary has no listener of its own, so a fire URL aimed at its port would
+    # reach nothing. The /p/<profile>/ mirror on the default listener is the only live target.
     monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "0")
     assert _web_server_cron._gateway_fire_endpoint("worker_alpha", worker_home) == (
-        "http://127.0.0.1:8702/api/cron/fire"
+        "http://127.0.0.1:8650/p/worker_alpha/api/cron/fire"
     )
 
 

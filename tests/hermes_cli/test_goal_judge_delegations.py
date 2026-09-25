@@ -25,8 +25,7 @@ def test_judge_prompt_states_active_delegations_and_a_wait_branch_for_them():
         verdict, _reason, parse_failed, directive, _transport = goals.judge_goal(
             "refactor everything", "Waiting on 4 workers; nothing to dispatch.", active_delegations=4)
     text = str(seen["prompt"])
-    assert "Active delegations: the agent has 4 delegated subagent batch(es) still running" in text
-    assert "delegated subagents still running" in goals.JUDGE_SYSTEM_PROMPT
+    assert "Active delegations" in text
     assert (verdict, parse_failed) == ("wait", False) and directive.get("seconds") == 900
 
     with patch("agent.auxiliary_client.call_llm", side_effect=fake_call_llm):

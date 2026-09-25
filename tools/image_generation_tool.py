@@ -31,7 +31,7 @@ def _load_fal_client() -> Any:
 from tools.debug_helpers import DebugSession
 from tools.fal_common import (
     _ManagedFalSyncClient, _extract_http_status, _managed_fal_billing_error,
-    _normalize_fal_queue_url_format,
+    _normalize_fal_queue_url_format, submit_managed_fal_with_rate_limit_retry,
 )
 from tools.image_generation_catalog import (
     DEFAULT_ASPECT_RATIO, DEFAULT_MODEL, FAL_MODELS, UPSCALER_CREATIVITY, UPSCALER_DEFAULT_PROMPT,
@@ -127,8 +127,10 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     if managed_gateway is None:
         return fal_client.submit(model, arguments=arguments, headers=request_headers)
     try:
-        return _get_managed_fal_client(managed_gateway).submit(
-            model, arguments=arguments, headers=request_headers)
+        return submit_managed_fal_with_rate_limit_retry(
+            lambda headers: _get_managed_fal_client(managed_gateway).submit(
+                model, arguments=arguments, headers=headers),
+            what="image model", name=model)
     except Exception as exc:
         # A managed-gateway 4xx usually means the portal doesn't proxy this model
         # (allowlist miss, billing gate): give remediation instead of a raw httpx error.

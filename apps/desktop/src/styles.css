@@ -45,7 +45,8 @@
     .pet-wobble,
     .progress-slide,
     .kanban-arc,
-    .glyph-spinner__strip
+    .glyph-spinner__strip,
+    .decode-cursor-blink
   ),
 :root[data-renderer-animations-paused] .arc-border::before,
 :root[data-renderer-animations-paused]
@@ -1240,6 +1241,40 @@
   }
 }
 
+/* Keyframes live here, not in per-instance <style> tags: inserting or removing an
+   @keyframes rule invalidates every animating element in the document (#99889). */
+@keyframes decode-cursor {
+  0%,
+  49% {
+    opacity: 1;
+  }
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+.decode-cursor-blink {
+  animation: decode-cursor 1s step-end infinite;
+}
+/* 0.001 start mirrors ZonesOverlay::GetAnimationAlpha's clamp(t / 200ms, 0.001, 1). */
+@keyframes hermes-zone-fade {
+  from {
+    opacity: 0.001;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes starmap-twinkle {
+  0%,
+  100% {
+    opacity: var(--o, 1);
+  }
+  50% {
+    opacity: calc(var(--o, 1) * 0.35);
+  }
+}
+
 /* No focus rings, anywhere. Kills the native outline plus Tailwind's
    `focus-visible:ring-*` (a box-shadow driven by --tw-ring-*). Unlayered so it
    beats the utilities layer without !important on the outline. The composer /
@@ -1639,6 +1674,24 @@ body.guest-pointer-lock :is(webview, iframe) {
   text-align: start;
 }
 
+/* Appearance → Text direction. An explicit RTL/LTR choice stamps dir on the
+   markdown root, each user line block and both composers; the first-strong
+   plaintext vote is exactly what the reader overrode, so it steps aside and
+   every block takes the chosen direction (every line of a multi-line draft
+   included). Auto stamps no dir, so nothing here matches. Code and KaTeX keep
+   their isolated-LTR rules below. */
+[data-slot='aui_assistant-message-content'] .aui-md[dir] :where(p, h1, h2, h3, h4, h5, h6, li, blockquote),
+[data-slot='aui_user-inline-text'][dir],
+[data-slot='composer-rich-input'][dir] {
+  unicode-bidi: normal;
+}
+
+/* Header cells pin text-left for the Auto (LTR-box) table; a chosen direction
+   aligns headers and cells to its own start edge instead. */
+[data-slot='aui_assistant-message-content'] .aui-md[dir] :where(th, td) {
+  text-align: start;
+}
+
 /* Inline code/KaTeX don't vote on direction and keep their own order: isolate
    makes bidi treat each as one neutral, so a block that *starts* with `./run.sh`
    then Arabic still resolves RTL, and the command's neutrals (dots/slashes)
@@ -1899,22 +1952,18 @@ body.guest-pointer-lock :is(webview, iframe) {
 
 /* ── Composer fill — ONE var painted by the surface AND anything docked to it
    (slash·@ popover, `?` help). State ladder sets the var; consumers just paint
-   `background: var(--composer-fill)`, so every state matches by construction.
-   The :has() rule is last on purpose: while a completion drawer is open it
-   beats focus/scroll and forces an OPAQUE fill (both mix endpoints solid) —
-   translucent glass can never match across the two layers because they sample
-   different backdrops. */
+   `background: var(--composer-fill)`, so every state matches by construction. */
 :root {
   /* Fallback for drawers outside the main composer (e.g. edit-message). */
   --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
 }
 
 [data-slot='composer-root'] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 72%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 88%, transparent);
 }
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
+  --composer-fill: color-mix(in srgb, var(--dt-card) 80%, transparent);
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -3437,8 +3486,7 @@ button[data-slot='aui_msg-reactions'] svg {
 }
 
 /* The composer surface paints TWO layers: the surface itself, plus an
-   `absolute inset-0 -z-10` fill+glass div behind it (composerFill /
-   composerSurfaceGlass). Two stacked fills read as a box inside a box, so the
+   `absolute inset-0 -z-10` fill div behind it (composerInputBacking). Two stacked fills read as a box inside a box, so the
    backing layer goes and the surface carries the single fill. */
 [data-hud-shell] [data-slot='composer-surface'] > .pointer-events-none.absolute.inset-0 {
   display: none !important;
@@ -3530,12 +3578,31 @@ button[data-slot='aui_msg-reactions'] svg {
 
    CanvasTTY grammar: four edge strips + four larger corner targets, each with
    its native resize cursor and each preserving the opposite edge. Deliberately
-   invisible chrome: no glyph or border over whatever app is below the HUD. */
+   invisible chrome: no glyph or border over whatever app is below the HUD.
+
+   Invisible chrome that is ALWAYS hit-testable is a dead zone: an idle HUD is
+   just the bar, the window hands every other point to the app underneath, and
+   the only thing left answering the cursor was this frame — a thin invisible
+   ring that swallowed clicks and drags aimed at the app behind it (#108793).
+   So the frame rides the band's engagement gates: while the HUD is being used
+   (caret in the composer — data-hud-typing, stamped live by useHudGlass — or a
+   held band waiting on an answer) its edges may be grabbed; an in-flight
+   resize keeps its own handle live via data-hud-grabbing, because pointer
+   capture routes the moves to the handle that started the drag. Solid-input
+   hosts (X11) never hand the window away in the first place, so their frame
+   stays live unconditionally. */
 [data-hud-shell] [data-hud-resize] {
   position: absolute;
   z-index: 20;
-  pointer-events: auto;
+  pointer-events: none;
   touch-action: none;
+}
+
+[data-hud-shell][data-hud-typing] [data-hud-resize],
+[data-hud-shell][data-hud-held] [data-hud-resize],
+[data-hud-shell][data-hud-input='solid'] [data-hud-resize],
+[data-hud-shell] [data-hud-resize][data-hud-grabbing] {
+  pointer-events: auto;
 }
 
 [data-hud-shell] [data-hud-resize='n'] {

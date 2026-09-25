@@ -58,7 +58,7 @@ def test_single_local_unwrap_keeps_session_db_todo_store_and_setup_callback(tmp_
             operation = live.get("current-session", payload["op_id"])
             if operation is not None:
                 apply_answer(operation, json.dumps(
-                    {"targets": [{"name": t["name"], "status": "declined"} for t in payload["targets"]]}))
+                    {"targets": [{"name": t["name"], "status": "skipped"} for t in payload["targets"]]}))
                 operation.settle(SettleReason.all_resolved)
 
         threading.Timer(0.02, respond).start()

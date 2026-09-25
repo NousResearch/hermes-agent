@@ -340,6 +340,12 @@ def _start_parent_death_watchdog() -> None:
             )
         except Exception:
             pass
+        # os._exit skips every cleanup: a foreground command in its own process group would outlive us.
+        try:
+            from tools.environments.base import kill_live_foreground_processes
+            kill_live_foreground_processes(now=True)
+        except Exception:
+            pass
         os._exit(0)
 
     threading.Thread(target=_loop, daemon=True, name="serve-parent-watchdog").start()

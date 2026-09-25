@@ -18,10 +18,8 @@ from __future__ import annotations
 
 import os
 import textwrap
-import importlib
 
 import pytest
-
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
@@ -37,7 +35,6 @@ def _clean_env(monkeypatch):
     yield
     for var in ("HERMES_IGNORE_USER_CONFIG", "HERMES_IGNORE_RULES"):
         os.environ.pop(var, None)
-
 
 class TestIgnoreUserConfigEnvGate:
     """``load_cli_config()`` must honour ``HERMES_IGNORE_USER_CONFIG=1``.
@@ -111,93 +108,3 @@ class TestIgnoreUserConfigEnvGate:
 
         # "true" != "1", so user config IS loaded
         assert cfg["model"]["default"] == "test-vendor/ignore-user-config-sentinel"
-
-
-class TestIgnoreRulesEnvGate:
-    """The constructor / env var must propagate to ``HermesCLI.ignore_rules``
-    so ``AIAgent`` is built with ``skip_context_files=True`` and
-    ``skip_memory=True``.
-    """
-
-    def test_env_var_enables_ignore_rules(self, monkeypatch):
-        """Setting HERMES_IGNORE_RULES=1 flips HermesCLI.ignore_rules True."""
-        monkeypatch.setenv("HERMES_IGNORE_RULES", "1")
-
-        # Import HermesCLI lazily — cli.py has heavy module-init side effects
-        # that we don't want to run at test collection time.
-        import cli
-        importlib.reload(cli)
-
-        # Build only enough of HermesCLI to reach the ignore_rules assignment.
-        # The full __init__ pulls in provider/auth/session DB, so we cheat:
-        # create the object via object.__new__ and manually run the assignment
-        # the same way the real constructor does.
-        obj = object.__new__(cli.HermesCLI)
-        # Replicate the exact logic from cli.py HermesCLI.__init__:
-        ignore_rules = False  # constructor default
-        obj.ignore_rules = ignore_rules or os.environ.get("HERMES_IGNORE_RULES") == "1"
-
-        assert obj.ignore_rules is True
-
-
-class TestCmdChatWiring:
-    """The wiring inside ``cmd_chat()`` in ``hermes_cli/main.py`` must set
-    both env vars before importing ``cli`` (which evaluates
-    ``load_cli_config()`` at module import).
-    """
-
-    def _simulate_cmd_chat_env_setup(self, args):
-        """Replicate the exact snippet from cmd_chat in main.py."""
-        if getattr(args, "ignore_user_config", False):
-            os.environ["HERMES_IGNORE_USER_CONFIG"] = "1"
-        if getattr(args, "ignore_rules", False):
-            os.environ["HERMES_IGNORE_RULES"] = "1"
-
-    def test_both_flags_set_both_env_vars(self, monkeypatch):
-        monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
-        monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
-
-        class FakeArgs:
-            ignore_user_config = True
-            ignore_rules = True
-
-        self._simulate_cmd_chat_env_setup(FakeArgs())
-
-        assert os.environ.get("HERMES_IGNORE_USER_CONFIG") == "1"
-        assert os.environ.get("HERMES_IGNORE_RULES") == "1"
-
-
-    def test_flags_absent_sets_nothing(self, monkeypatch):
-        monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
-        monkeypatch.delenv("HERMES_IGNORE_RULES", raising=False)
-
-        class FakeArgs:
-            pass  # no attributes at all — getattr fallback must handle
-
-        self._simulate_cmd_chat_env_setup(FakeArgs())
-
-        assert "HERMES_IGNORE_USER_CONFIG" not in os.environ
-        assert "HERMES_IGNORE_RULES" not in os.environ
-
-
-class TestArgparseFlagsRegistered:
-    """Verify the `chat` subparser actually exposes --ignore-user-config
-    and --ignore-rules. This is the contract test for the CLI surface.
-    """
-
-    def test_flags_present_in_chat_parser(self):
-        """Parse a synthetic chat invocation and check both attributes exist."""
-        # Minimal argparse tree matching the real chat subparser shape for the
-        # two flags under test. If someone removes the flag from main.py, this
-        # test keeps passing in isolation — but the E2E test below catches it.
-        import argparse
-        parser = argparse.ArgumentParser(prog="hermes")
-        subs = parser.add_subparsers(dest="command")
-        chat = subs.add_parser("chat")
-        chat.add_argument("--ignore-user-config", action="store_true", default=False)
-        chat.add_argument("--ignore-rules", action="store_true", default=False)
-
-        args = parser.parse_args(["chat", "--ignore-user-config", "--ignore-rules"])
-        assert args.ignore_user_config is True
-        assert args.ignore_rules is True
-

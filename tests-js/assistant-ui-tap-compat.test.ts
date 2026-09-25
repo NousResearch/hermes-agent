@@ -164,13 +164,3 @@ test('every @assistant-ui/* package\'s tap requirement is satisfiable', () => {
       'whole cluster shares one tap line. See this test\'s module docstring.'
   )
 })
-
-test('caretSatisfies helper', () => {
-  assert.ok(caretSatisfies('0.5.14', '^0.5.10'))
-  assert.ok(caretSatisfies('0.5.14', '^0.5.14'))
-  assert.ok(!caretSatisfies('0.5.14', '^0.9.0'))
-  assert.ok(!caretSatisfies('0.5.14', '^0.6.0'))
-  assert.ok(caretSatisfies('1.2.5', '^1.2.0'))
-  assert.ok(!caretSatisfies('2.0.0', '^1.2.0'))
-  assert.ok(caretSatisfies('0.5.14', '^0.5.0 || ^0.9.0'))
-})

@@ -21,8 +21,9 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from tools.environments.base import BaseEnvironment, EnvironmentConnectionError, _SHELL_ENV_NAME_RE
+from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
+from tools.environments.base_session_env import _SHELL_ENV_NAME_RE
 from tools.environments.docker_egress import (
     _EGRESS_LABEL_KEY, _critical_egress_env_names, _egress_enforce_on_docker, _egress_proxy_args_for_docker,
     _egress_reuse_fingerprint, check_docker_env_collisions, check_extra_args_collisions,
@@ -152,15 +153,18 @@ def reap_orphan_containers(
         age = (now - finished_at).total_seconds()
         if age < max_age_seconds:
             continue
+        # No -f: a sibling may have restarted the container between the ps snapshot
+        # and now (FinishedAt still reports the previous exit), and the daemon refuses
+        # a plain rm on a running container, which is the atomic recheck this sweep needs.
         result = _docker_query(
-            [docker, "rm", "-f", cid], timeout=30, fail="orphan reaper docker rm %s failed: %s", fail_args=(cid[:12],))
+            [docker, "rm", cid], timeout=30, fail="orphan reaper docker rm %s failed: %s", fail_args=(cid[:12],))
         if result is None:
             continue
         if result.returncode == 0:
             removed += 1
             logger.info("Reaped orphan container %s (exited %d seconds ago)", cid[:12], int(age))
         else:
-            logger.debug("docker rm -f %s failed: %s", cid[:12], result.stderr.strip())
+            logger.debug("docker rm %s failed: %s", cid[:12], result.stderr.strip())
     return removed
 
 
@@ -254,7 +258,7 @@ _BASE_SECURITY_ARGS = [
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
     "--cap-add", "FOWNER",
-    "--tmpfs", "/tmp:rw,nosuid,size=512m",
+    "--tmpfs", "/tmp:rw,nosuid,size=512m",  # no-tmp: ok — container tmpfs mount spec
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m"]
 
 _DEFAULT_PIDS_LIMIT = "256"  # applied only when the pids cgroup controller is available
@@ -370,33 +374,45 @@ def _cgroup_limits_available(image: str) -> bool:
     """Probe once per process whether ``--cpus``/``--memory``/``--pids-limit`` work here, via a
     throwaway ``sleep 0`` container from *image* (no extra pull). Without delegated cgroup
     controllers (unprivileged LXCs, rootless) these flags fail every start with exit 126;
-    the result is host-wide, so it is cached."""
+    the result is host-wide, so it is cached. Only DEFINITIVE answers are cached: a probe
+    that could not run (auto-pull past the timeout, daemon cold-start, manifest/pull error)
+    says nothing about cgroup support, so it degrades this spawn and is retried on the next."""
     global _cgroup_limits_ok
     if _cgroup_limits_ok is not None:
         return _cgroup_limits_ok
 
     docker_exe = find_docker()
     if not docker_exe or not image:
-        _cgroup_limits_ok = False
-        return False
+        return False  # not cached: docker may appear later in this process
 
     try:
         result = run_capture(
             [docker_exe, "run", "--rm", "--cpus", "0.5", "--memory", "64m", "--pids-limit", "32",
              image, "sleep", "0"],
             timeout=60)
-        _cgroup_limits_ok = result.returncode == 0
-        if not _cgroup_limits_ok:
-            logger.warning(
-                "Cgroup resource limits (--cpus/--memory/--pids-limit) not "
-                "available in this environment. Containers will run without "
-                "CPU, memory or PID limits. To enable, delegate the cpu, "
-                "memory and pids cgroup controllers to this container. Probe stderr: %s",
-                (result.stderr or "").strip()[:500])
     except Exception as e:
-        _cgroup_limits_ok = False
-        logger.warning("Cgroup limit probe failed; disabling resource limits: %s", e)
-    return _cgroup_limits_ok
+        logger.warning("Cgroup limit probe failed; containers run without "
+                       "CPU/memory/PID limits until a probe succeeds: %s", e)
+        return False
+    if result.returncode == 0:
+        _cgroup_limits_ok = True
+        return True
+    stderr = (result.stderr or "").strip()
+    if "cgroup" not in stderr.lower():
+        # Pull/manifest/daemon errors say nothing about cgroup support: not cached.
+        logger.warning(
+            "Cgroup limit probe could not determine support (docker exited %d: %s). "
+            "Containers run without CPU/memory/PID limits until a probe succeeds.",
+            result.returncode, stderr[:500])
+        return False
+    _cgroup_limits_ok = False
+    logger.warning(
+        "Cgroup resource limits (--cpus/--memory/--pids-limit) not "
+        "available in this environment. Containers will run without "
+        "CPU, memory or PID limits. To enable, delegate the cpu, "
+        "memory and pids cgroup controllers to this container. Probe stderr: %s",
+        stderr[:500])
+    return False
 
 
 def _docker_unavailable(log_msg: str, *log_args, error: str, hint: str, exc_info: bool = False):
@@ -953,26 +969,34 @@ class DockerEnvironment(BaseEnvironment):
 
     @staticmethod
     def _storage_opt_supported() -> bool:
-        """Whether ``--storage-opt size=`` works (only overlay2 on XFS with pquota; ext4 errors out)."""
+        """Whether ``--storage-opt size=`` works (only overlay2 on XFS with pquota; ext4 errors out).
+        Only definitive answers are cached: a probe that could not run (daemon cold-start,
+        hello-world pull timeout) says nothing about pquota support and is retried next spawn."""
         global _storage_opt_ok
         if _storage_opt_ok is not None:
             return _storage_opt_ok
         try:
             docker = find_docker() or "docker"
             result = run_capture([docker, "info", "--format", "{{.Driver}}"], timeout=10)
+            if result.returncode != 0:
+                return False  # daemon unreachable etc. is transient; retry next spawn
             if result.stdout.strip().lower() != "overlay2":
-                _storage_opt_ok = False
+                _storage_opt_ok = False  # storage driver is a host property
                 return False
             # Probe with a real create — the fastest reliable check.
             probe = run_capture([docker, "create", "--storage-opt", "size=1m", "hello-world"], timeout=15)
-            _storage_opt_ok = probe.returncode == 0
-            if _storage_opt_ok and probe.stdout.strip():
-                subprocess.run([docker, "rm", probe.stdout.strip()],
-                               capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+            if probe.returncode == 0:
+                _storage_opt_ok = True
+                if probe.stdout.strip():
+                    subprocess.run([docker, "rm", probe.stdout.strip()],
+                                   capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
+            elif "storage" in (probe.stderr or "").lower():
+                _storage_opt_ok = False  # daemon rejected --storage-opt: a host property
+            # else: pull/daemon failure unrelated to storage-opt; not cached, retried next spawn
         except Exception:
-            _storage_opt_ok = False
+            return False  # TimeoutExpired, missing binary; transient, retried next spawn
         logger.debug("Docker --storage-opt support: %s", _storage_opt_ok)
-        return _storage_opt_ok
+        return _storage_opt_ok or False
 
     def _container_network_mode(self, container_id: str) -> Optional[str]:
         """``HostConfig.NetworkMode`` of a container, or ``None`` when inspection fails (callers

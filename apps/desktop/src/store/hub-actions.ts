@@ -1,5 +1,8 @@
 import { atom, map } from 'nanostores'
 
+// The Capabilities Skills-list query key, imported rather than re-spelled so a
+// hub (un)install updates the Skills tab, not just the hub.
+import { SKILLS_QUERY_KEY } from '@/app/capabilities/skills/skills-data'
 import {
   getActionStatus,
   installSkillFromHub,
@@ -20,9 +23,6 @@ const POLL_MS = 1200
 // Shared with hub.tsx's sources useQuery so a finished action refreshes the
 // installed map.
 export const HUB_SOURCES_KEY = ['skill-hub-sources'] as const
-// The Capabilities Skills-list query key (see app/skills/index.tsx) — kept in
-// sync here so a hub (un)install updates the Skills tab, not just the hub.
-const SKILLS_LIST_KEY = ['skills-list'] as const
 // The built-in optional-skills catalog rows in the Skills tab: an install
 // flips one of them to an installed (toggle) row, so the catalog's
 // installed-flags must refetch alongside the skills list.
@@ -125,7 +125,7 @@ async function runHubAction(
     // Refresh the hub's installed map AND the Capabilities Skills list — a hub
     // (un)install adds/removes a skill, so its count/rows must update too.
     void queryClient.invalidateQueries({ queryKey: HUB_SOURCES_KEY })
-    void queryClient.invalidateQueries({ queryKey: SKILLS_LIST_KEY })
+    void queryClient.invalidateQueries({ queryKey: SKILLS_QUERY_KEY })
     void queryClient.invalidateQueries({ queryKey: OFFICIAL_SKILLS_KEY })
     // …and the composer's `/` list, which caches the command catalog for an
     // hour and would otherwise keep offering the skill we just removed.
@@ -240,7 +240,12 @@ export class HubInstallBlockedError extends Error {
 
 /** Toast for a failed hub action: a blocked install explains the scan gate and
  *  offers "View scan"; anything else keeps the generic summary + raw tail. */
-export function notifyHubActionFailed(err: unknown, fallbackTitle: string, skillName?: string, profile?: ProfileScope): void {
+export function notifyHubActionFailed(
+  err: unknown,
+  fallbackTitle: string,
+  skillName?: string,
+  profile?: ProfileScope
+): void {
   if (!(err instanceof HubInstallBlockedError)) {
     notifyError(err, fallbackTitle)
 

@@ -64,6 +64,7 @@ export const PendingApprovalStack: FC = () => {
       )}
       data-approval-placement={placement}
       data-approval-stack=""
+      data-session-id={sessionId ?? undefined}
       data-slot="tool-approval-stack"
       initial={false}
       transition={reduced || requests.length ? { duration: 0 } : { duration: 0.22, ease: 'easeInOut' }}
@@ -146,7 +147,9 @@ function ApprovalActivity({ floating, visible }: { floating: boolean; visible: b
               }
               open={false}
             >
-              <span className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>{summary || t.assistant.approval.jumpToApproval}</span>
+              <span className={cn(SCAFFOLD_LABEL_CLASS, 'truncate')}>
+                {summary || t.assistant.approval.jumpToApproval}
+              </span>
             </ScaffoldRow>
           </div>
         </motion.div>

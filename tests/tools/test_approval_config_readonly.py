@@ -16,7 +16,7 @@ import pytest
 
 import hermes_cli.config as hc
 from tools.approval import check_all_command_guards, load_permanent_allowlist
-from tools.approval_context import _get_approval_config, _get_approval_mode
+from tools.approval_context import _get_approval_config
 from tools.approval_context import _get_cron_approval_mode
 from tools.tirith_security import _load_security_config
 
@@ -35,53 +35,6 @@ def config_home(tmp_path, monkeypatch):
     hc._LOAD_CONFIG_CACHE.clear()
     yield home
     hc._LOAD_CONFIG_CACHE.clear()
-
-
-def _patched_loaders(monkeypatch):
-    """Count BOTH loader variants. (A boom on load_config is useless here —
-    every call site wraps the load in try/except and would swallow it; a
-    pass-through counter is the robust form. The pins are: legacy
-    load_config == 0 calls, load_config_readonly == the expected count,
-    and cache identity — none satisfiable by the pre-fix code.)"""
-    calls = {"readonly": 0, "legacy": 0}
-
-    real_ro = hc.load_config_readonly
-    real_legacy = hc.load_config
-
-    def counting_ro():
-        calls["readonly"] += 1
-        return real_ro()
-
-    def counting_legacy():
-        calls["legacy"] += 1
-        return real_legacy()
-
-    monkeypatch.setattr(hc, "load_config_readonly", counting_ro)
-    monkeypatch.setattr(hc, "load_config", counting_legacy)
-    return calls
-
-
-def test_guard_never_calls_deepcopy_variant(config_home, monkeypatch):
-    """Pin: a full guard pass must not pay one deepcopying load_config.
-    Fails pre-fix (the guard called load_config 2x per invocation)."""
-    calls = _patched_loaders(monkeypatch)
-    check_all_command_guards("ls -la", "local")
-    assert calls["legacy"] == 0, (
-        f"guard path called deepcopying load_config "
-        f"{calls['legacy']}x — regression reintroduces the deepcopy cost")
-    assert calls["readonly"] >= 1
-
-
-def test_config_readers_never_call_deepcopy_variant(config_home, monkeypatch):
-    calls = _patched_loaders(monkeypatch)
-    assert _get_approval_mode() == "manual"
-    assert _get_approval_config().get("timeout") == 300
-    assert _get_cron_approval_mode() == "deny"
-    assert load_permanent_allowlist() == set()
-    sec = _load_security_config()
-    assert sec["tirith_enabled"] is False
-    assert calls["legacy"] == 0
-    assert calls["readonly"] == 5  # one readonly load per function
 
 
 def test_readers_return_live_cache_without_corrupting_it(

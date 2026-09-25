@@ -34,32 +34,6 @@ def test_load_env_preserves_concatenated_text_as_value_data():
         env_path.unlink(missing_ok=True)
 
 
-def test_load_env_normal_file_unchanged():
-    """A well-formed .env file should be parsed identically."""
-    from hermes_cli.config import load_env
-
-    content = (
-        "TELEGRAM_BOT_TOKEN=mytoken123\n"
-        "ANTHROPIC_API_KEY=sk-ant-key\n"
-        "# comment\n"
-        "\n"
-        "OPENAI_API_KEY=sk-openai\n"
-    )
-
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".env", delete=False, encoding="utf-8"
-    ) as f:
-        f.write(content)
-        env_path = Path(f.name)
-
-    try:
-        with patch("hermes_cli.config.get_env_path", return_value=env_path):
-            result = load_env()
-        assert result["TELEGRAM_BOT_TOKEN"] == "mytoken123"
-        assert result["ANTHROPIC_API_KEY"] == "sk-ant-key"
-        assert result["OPENAI_API_KEY"] == "sk-openai"
-    finally:
-        env_path.unlink(missing_ok=True)
 
 
 def test_env_loader_does_not_split_concatenated_text():

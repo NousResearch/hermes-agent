@@ -100,16 +100,15 @@ def wait_for_registration_success(
 
 
 def _ensure_qrcode_installed() -> bool:
-    """Try to import qrcode; if missing, auto-install it via pip/uv."""
+    """Enable DingTalk dependencies; only render QR codes importable in this process."""
     with contextlib.suppress(ImportError):
         import qrcode  # noqa: F401
         return True
-    import subprocess
-    from hermes_cli.tools_config import _pip_install
-    with contextlib.suppress(subprocess.SubprocessError, ImportError, OSError):
-        if _pip_install(["-q", "qrcode"], timeout=120).returncode == 0:
-            import qrcode  # noqa: F401,F811
-            return True
+    import pm
+    with contextlib.suppress(pm.InstallError, OSError, ValueError):
+        pm.sync_venv(["dingtalk"], explicit=True)
+    # PM selects a new generation for the next launch, never this process.
+    # The authorization link works without qrcode, so no restart is required here.
     return False
 
 
@@ -146,7 +145,7 @@ def dingtalk_qr_auth() -> Optional[Tuple[str, str]]:
         return None
     url = reg["verification_uri_complete"]
     if not _ensure_qrcode_installed():
-        print_warning("  qrcode library install failed, will show link only.")
+        print_warning("  QR rendering is unavailable in this process; using the authorization link.")
     print()
     print_info("  Please scan the QR code below with DingTalk to authorize:")
     print()

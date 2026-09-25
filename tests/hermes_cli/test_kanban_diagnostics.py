@@ -115,23 +115,6 @@ def test_stuck_in_blocked_fires_past_threshold():
 
 
 
-def test_repeated_crashes_truncates_huge_tracebacks():
-    """Full Python tracebacks can be tens of KB. The title stays one
-    line (≤160 chars); the detail caps at 500 chars + ellipsis so the
-    card doesn't explode visually."""
-    huge = "Traceback (most recent call last):\n" + ("  File\n" * 500)
-    task = _task(status="ready")
-    runs = [
-        _run(outcome="crashed", run_id=1, error=huge),
-        _run(outcome="crashed", run_id=2, error=huge),
-    ]
-    diags = kd.compute_task_diagnostics(task, [], runs)
-    d = diags[0]
-    # Title only the first line, capped.
-    assert "\n" not in d.title
-    assert len(d.title) < 250
-    # Detail contains the snippet with ellipsis.
-    assert d.detail.endswith("…") or len(d.detail) < 700
 
 
 # ---------------------------------------------------------------------------

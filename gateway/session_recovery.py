@@ -35,9 +35,14 @@ class SessionRecoveryMixin:
 
     def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
         """Profile namespace for session keys: None when multiplexing is off (legacy
-        ``agent:main``), else ``source.profile`` or the active profile."""
+        ``agent:main``), else the pinned identity's runtime profile, ``source.profile`` or the
+        active profile."""
         if not getattr(self.config, "multiplex_profiles", False):
             return None
+        from gateway.session_identity import identity_of
+        identity = identity_of(source)
+        if identity is not None:
+            return identity.session_key_profile
         if source is not None and source.profile:
             return source.profile
         try:
@@ -151,11 +156,12 @@ class SessionRecoveryMixin:
         had_activity = row.get("_has_messages")
         if had_activity is None:
             had_activity = bool(row.get("message_count") or 0) or last_activity is not None
+        from gateway.session_identity import transport_profile_of
         return SessionEntry(
             session_key=session_key, session_id=str(row["id"]), created_at=created_at,
             updated_at=updated_at, origin=source, display_name=source.chat_name,
             platform=source.platform, chat_type=source.chat_type,
-            reset_had_activity=bool(had_activity))
+            reset_had_activity=bool(had_activity), transport_profile=transport_profile_of(source))
 
     def _find_gateway_session_row(
         self, *, session_key: str, source: SessionSource, allow_peer_fallback: bool,
@@ -319,14 +325,18 @@ class SessionRecoveryMixin:
 
     def _record_gateway_session_peer(
         self, session_id: str, session_key: str, source: Optional[SessionSource],
-        display_name: Optional[str] = None, include_compression_ancestors: bool = False) -> None:
-        """Persist the routing peer for an existing gateway session row."""
+        display_name: Optional[str] = None, include_compression_ancestors: bool = False,
+        transport_profile: Optional[str] = None) -> None:
+        """Persist the routing peer for an existing gateway session row. ``transport_profile`` is the
+        entry's persisted receiving-bot profile; when the caller has no entry it is read off the
+        source's pinned identity (None = unknown, the column keeps whatever an earlier writer set)."""
         db = self._db_for_key(session_key)
         if not db or not source:
             return
         recorder = getattr(db, "record_gateway_session_peer", None)
         if not callable(recorder):
             return
+        from gateway.session_identity import transport_profile_of
         peer = dict(
             source=source.platform.value, user_id=source.user_id, session_key=session_key,
             chat_id=source.chat_id, chat_type=source.chat_type, thread_id=source.thread_id)
@@ -334,7 +344,8 @@ class SessionRecoveryMixin:
             recorder(
                 session_id, **peer, display_name=display_name or source.chat_name,
                 origin_json=_origin_json(source),
-                include_compression_ancestors=include_compression_ancestors)
+                include_compression_ancestors=include_compression_ancestors,
+                transport_profile=transport_profile or transport_profile_of(source))
         except TypeError:
             try:  # older SessionDB without display_name/origin_json kwargs
                 recorder(session_id, **peer)
@@ -405,6 +416,7 @@ class SessionRecoveryMixin:
         """kwargs for ``SessionDB.create_session``. Identity (origin_json) and lineage
         (parent/_reset_from) land atomically in the INSERT so a crash right after cannot strand the
         row unroutable."""
+        from gateway.session_identity import transport_profile_of
         return {
             "session_id": session_id,
             "source": source_value,
@@ -414,6 +426,7 @@ class SessionRecoveryMixin:
             "chat_type": origin.chat_type if origin else None,
             "thread_id": origin.thread_id if origin else None,
             "profile_name": origin.profile if origin else None,
+            "transport_profile": transport_profile_of(origin),
             "origin_json": _origin_json(origin),
             "display_name": display_name,
             "parent_session_id": parent_session_id,

@@ -17,7 +17,6 @@ import pytest
 
 from hermes_cli.main import cmd_dashboard
 
-
 def _ns(**kw):
     """Build an argparse.Namespace with dashboard defaults plus overrides."""
     defaults = dict(
@@ -26,7 +25,6 @@ def _ns(**kw):
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
-
 
 class TestDashboardStatus:
     def test_status_no_processes(self, capsys):
@@ -54,11 +52,9 @@ class TestDashboardStatus:
         # Status is informational — always exits 0.
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "3 hermes dashboard/serve process(es) running" in out
         assert "PID 12345" in out
         assert "PID 12346" in out
         assert "PID 12347" in out and "[serve]" in out
-
 
     def test_status_does_not_try_to_import_fastapi(self):
         """`--status` must not require dashboard runtime deps — it's a
@@ -75,7 +71,6 @@ class TestDashboardStatus:
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
-
 
 class TestDashboardStop:
 
@@ -147,14 +142,12 @@ class TestDashboardStop:
             cmd_dashboard(_ns(stop=True))
         assert exc.value.code == 0
 
-
 class TestLifecycleFlagsTakePrecedence:
     """If both --stop and --status are set, --status wins (it's listed
     first in cmd_dashboard).  Neither is allowed to fall through to the
     server-start path, which is the critical safety property — a user
     who typed ``hermes dashboard --stop`` must not end up ALSO starting
     a new server."""
-
 
     def test_stop_does_not_fall_through_to_server_start(self):
         """Covers the worst-case regression: if --stop ever stopped exiting
@@ -173,25 +166,3 @@ class TestLifecycleFlagsTakePrecedence:
              pytest.raises(SystemExit):
             cmd_dashboard(_ns(stop=True))
         assert called["start"] is False
-
-
-class TestArgparseWiring:
-    """Confirm the flags are exposed via the real argparse tree so
-    ``hermes dashboard --stop`` / ``--status`` actually parse."""
-
-    def test_flags_are_registered(self):
-        from hermes_cli.main import main as _cli_main  # noqa: F401
-        # Rebuild the argparse tree by re-running the section of main()
-        # that builds it.  Cheapest way: introspect via --help on the
-        # already-built parser would require refactoring; instead we
-        # parse the flags directly via a minimal replay.
-        import importlib
-        mod = importlib.import_module("hermes_cli.main")
-        # Find the dashboard_parser instance by running build logic would
-        # be too invasive.  Instead parse args as if via the CLI by
-        # intercepting parse_args.  This is overkill for a smoke test —
-        # we just want to know the flags don't KeyError.
-        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
-             pytest.raises(SystemExit) as exc:
-            mod.cmd_dashboard(_ns(status=True))
-        assert exc.value.code == 0

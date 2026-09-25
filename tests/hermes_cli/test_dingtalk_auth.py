@@ -156,14 +156,33 @@ class TestRenderQR:
 # ---------------------------------------------------------------------------
 
 
-class TestConfigOverrides:
-
-    def test_base_url_default(self, monkeypatch):
-        monkeypatch.delenv("DINGTALK_REGISTRATION_BASE_URL", raising=False)
-        # Force module reload to pick up current env
-        import importlib
-        import hermes_cli.dingtalk_auth as mod
-        importlib.reload(mod)
-        assert mod.REGISTRATION_BASE_URL == "https://oapi.dingtalk.com"
 
 
+@pytest.mark.parametrize("succeeds", [True, False])
+def test_missing_qrcode_enables_dingtalk_without_switching_the_live_process(monkeypatch, succeeds):
+    import pm
+    from hermes_cli import dingtalk_auth
+
+    monkeypatch.setitem(sys.modules, "qrcode", None)
+    calls = []
+    def sync(extras, *, explicit):
+        calls.append((extras, explicit))
+        if not succeeds:
+            raise pm.InstallError("venv", "offline")
+
+    monkeypatch.setattr(pm, "sync_venv", sync)
+    assert dingtalk_auth._ensure_qrcode_installed() is False
+    assert calls == [(["dingtalk"], True)]
+    assert dingtalk_auth.render_qr_to_terminal("https://example.com") is False
+    assert sys.modules["qrcode"] is None
+
+
+def test_available_qrcode_does_not_install(monkeypatch):
+    import pm
+    from hermes_cli import dingtalk_auth
+
+    monkeypatch.setitem(sys.modules, "qrcode", MagicMock())
+    def forbidden(*args, **kwargs):
+        raise AssertionError("installed dependency must not trigger a transaction")
+    monkeypatch.setattr(pm, "sync_venv", forbidden)
+    assert dingtalk_auth._ensure_qrcode_installed() is True

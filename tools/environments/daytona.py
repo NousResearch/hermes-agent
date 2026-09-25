@@ -10,7 +10,7 @@ import math
 import os
 import shlex
 import threading
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from tools.environments.base import BaseEnvironment
 from tools.environments.base_output import _ThreadedProcessHandle
@@ -34,7 +34,7 @@ class DaytonaEnvironment(BaseEnvironment):
                  memory: int = 5120, disk: int = 10240, persistent_filesystem: bool = True,
                  task_id: str = "default"):
         super().__init__(cwd=cwd, timeout=timeout)
-        ensure_lazy_dep("terminal.daytona")
+        ensure_lazy_dep("daytona")
         from daytona import Daytona, CreateSandboxFromImageParams, DaytonaError, Resources, SandboxState
 
         self._persistent, self._task_id, self._SandboxState = persistent_filesystem, task_id, SandboxState
@@ -91,7 +91,11 @@ class DaytonaEnvironment(BaseEnvironment):
         self.init_session()
 
     def _daytona_upload(self, host_path: str, remote_path: str) -> None:
-        self._sandbox.process.exec(quoted_mkdir_command([str(Path(remote_path).parent)]))
+        """Upload a single file via Daytona SDK."""
+        # remote_path is a POSIX path on the sandbox; never run it through the
+        # host's Path (Windows would mangle the separators into backslashes).
+        parent = str(PurePosixPath(remote_path).parent)
+        self._sandbox.process.exec(quoted_mkdir_command([parent]))
         self._sandbox.fs.upload_file(host_path, remote_path)
 
     def _daytona_bulk_upload(self, files: list[tuple[str, str]]) -> None:
@@ -110,7 +114,7 @@ class DaytonaEnvironment(BaseEnvironment):
         """Download remote .hermes/ as a tar archive."""
         rel_base = f"{self._remote_home}/.hermes".lstrip("/")
         # PID-suffixed remote temp path avoids collisions if sync_back runs concurrently.
-        remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"
+        remote_tar = f"/tmp/.hermes_sync.{os.getpid()}.tar"  # no-tmp: ok — remote sandbox path
         # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.
         self._sandbox.process.exec(
             f"tar cf {shlex.quote(remote_tar)} --exclude='*.sock' -C / {shlex.quote(rel_base)}")

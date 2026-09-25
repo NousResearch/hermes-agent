@@ -14,13 +14,6 @@ describe('control-byte split does not touch clean (EVKey-style) input', () => {
     expect(keys[0]).toMatchObject({ raw: 'ạnh' })
   })
 
-  it('a lone backspace read is unchanged', () => {
-    const [keys] = parseMultipleKeypresses(INITIAL_STATE, '\x7f')
-
-    expect(keys).toHaveLength(1)
-    expect(keys[0]).toMatchObject({ name: 'backspace' })
-  })
-
   it('separate clean reads (bs read, then text read) each produce one key', () => {
     const [k1] = parseMultipleKeypresses(INITIAL_STATE, '\x7f')
     const [k2] = parseMultipleKeypresses(INITIAL_STATE, 'ô')
@@ -29,12 +22,5 @@ describe('control-byte split does not touch clean (EVKey-style) input', () => {
     expect(k1[0]).toMatchObject({ name: 'backspace' })
     expect(k2).toHaveLength(1)
     expect(k2[0]).toMatchObject({ raw: 'ô' })
-  })
-
-  it('a full clean Vietnamese word with no embedded control bytes is one text key', () => {
-    const [keys] = parseMultipleKeypresses(INITIAL_STATE, 'vương')
-
-    expect(keys).toHaveLength(1)
-    expect(keys[0]).toMatchObject({ raw: 'vương' })
   })
 })

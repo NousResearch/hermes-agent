@@ -1,12 +1,14 @@
 import { useStore } from '@nanostores/react'
 import { useEffect } from 'react'
 
-import { takeGuideShape } from '@/components/onboarding-chat/assembly'
+import { endChatOnboardingSolo, takeGuideShape } from '@/components/onboarding-chat/assembly'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { ackFreeTierNotice, type FreeTierRequester } from '@/store/free-tier'
 import { $introReveal } from '@/store/intro-reveal'
 import { clearFreeTierIntro } from '@/store/onboarding'
-import { $onboardingGate, runGuideKickoff } from '@/store/onboarding-gate'
+import { $guideOpening, $onboardingGate, runGuideKickoff, skipGuide } from '@/store/onboarding-gate'
+
+import { GuideLoading } from './guide-loading'
 
 interface OnboardingChatGateProps {
   enabled: boolean
@@ -17,6 +19,7 @@ interface OnboardingChatGateProps {
 export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: OnboardingChatGateProps) {
   const gate = useStore($onboardingGate)
   const intro = useStore($introReveal)
+  const opening = useStore($guideOpening)
 
   // A guide is owed the moment the renderer knows it (cinematic with the film
   // seen, or a relaunch mid-guide). Take the solo shape now, before the
@@ -69,9 +72,18 @@ export function OnboardingChatGate({ enabled, onKickoff, requestGateway }: Onboa
 
   useEffect(() => {
     if (enabled && gate.guideQueued && intro.phase === 'hidden') {
-      void runGuideKickoff(onKickoff)
+      const recover = () => {
+        endChatOnboardingSolo()
+        skipGuide()
+      }
+
+      void runGuideKickoff(onKickoff).then(started => {
+        if (!started) {
+          recover()
+        }
+      }, recover)
     }
   }, [enabled, gate.guideQueued, intro.phase, onKickoff])
 
-  return null
+  return opening ? <GuideLoading /> : null
 }

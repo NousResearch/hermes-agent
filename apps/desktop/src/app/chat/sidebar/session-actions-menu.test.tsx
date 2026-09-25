@@ -62,6 +62,7 @@ vi.mock('@/i18n', () => ({
           renameTitle: 'Rename session',
           renamed: 'Renamed',
           sessionActions: 'Session actions',
+          unarchive: 'Unarchive',
           unpin: 'Unpin',
           untitledPlaceholder: 'Untitled'
         }
@@ -123,12 +124,10 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
-  it('opens the dropdown on click without a tooltip on the kebab', async () => {
+  it('opens the dropdown on click', async () => {
     renderMenu()
 
     const trigger = screen.getByRole('button', { name: 'Session actions' })
-
-    expect(trigger.closest('[data-slot="tooltip-trigger"]')).toBeNull()
 
     // Radix's dropdown trigger opens on pointerdown (not on the synthetic
     // 'click' fireEvent alone would dispatch), so fire the full mouse
@@ -223,6 +222,32 @@ describe('SessionActionsMenu', () => {
 
     const deleteItem = await screen.findByRole('menuitem', { name: /delete/i })
     expect(deleteItem.getAttribute('aria-disabled')).toBe('true')
+  })
+
+  // The sidebar's Archived view reuses this menu; its rows must offer the
+  // restore verb instead of a no-op re-archive (#98813). The item still fires
+  // the shared onArchive callback — the wiring dispatches it to the restore
+  // path based on the row's archived state.
+  it('labels the archive verb Unarchive for an already-archived row and fires the shared callback', async () => {
+    const onArchive = vi.fn()
+    render(
+      <SessionActionsMenu archived onArchive={onArchive} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const restoreItem = await screen.findByRole('menuitem', { name: /^unarchive$/i })
+    expect(screen.queryByRole('menuitem', { name: /^archive$/i })).toBeNull()
+
+    fireEvent.click(restoreItem)
+    await waitFor(() => expect(onArchive).toHaveBeenCalledTimes(1))
   })
 
   it('confirms with the Enter key and cancels with Escape', async () => {

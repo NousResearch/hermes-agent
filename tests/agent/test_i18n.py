@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from agent import i18n
 
@@ -97,20 +97,24 @@ def test_language_is_per_profile_under_multiplex(monkeypatch, tmp_path):
     """HERMES_LANGUAGE in the DEFAULT profile's environ must not leak into a secondary profile's
     turn, and the config-language cache must not freeze one profile's ``display.language`` for all."""
     from agent import secret_scope
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
     default_home = tmp_path / "default"; default_home.mkdir()
     prof_b = tmp_path / "b"; prof_b.mkdir()
     (default_home / "config.yaml").write_text("display:\n  language: fr\n")
     (prof_b / "config.yaml").write_text("display:\n  language: de\n")
     monkeypatch.setenv("HERMES_LANGUAGE", "zh")  # default profile's .env, bridged into environ
+    monkeypatch.setenv("HERMES_HOME", str(default_home))
     i18n.reset_language_cache()
-    secret_scope.set_multiplex_active(True)
+    secret_scope.set_multiplex_active(True)  # pins the launch home; a served turn binds an override
     token = secret_scope.set_secret_scope({})
     try:
-        monkeypatch.setenv("HERMES_HOME", str(default_home))
         assert i18n.get_language() == "fr"  # scoped miss: env ignored, this profile's config wins
-        monkeypatch.setenv("HERMES_HOME", str(prof_b))
-        assert i18n.get_language() == "de"  # not the first profile's cached "fr"
+        home_token = set_hermes_home_override(prof_b)
+        try:
+            assert i18n.get_language() == "de"  # not the first profile's cached "fr"
+        finally:
+            reset_hermes_home_override(home_token)
     finally:
         secret_scope.reset_secret_scope(token)
         secret_scope.set_multiplex_active(False)

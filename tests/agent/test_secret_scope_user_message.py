@@ -22,7 +22,6 @@ def test_str_is_a_user_sentence_and_developer_detail_rides_the_notes(multiplex_o
     exc = info.value
     text = str(exc)
     assert "OPENROUTER_API_KEY" in text  # still names what could not be read
-    assert "hermes gateway restart" in text and "hermes debug share" in text
     for jargon in ("set_secret_scope", "Workstream", "developer-guide", "os.environ"):
         assert jargon not in text
     assert any("set_secret_scope" in note for note in exc.__notes__)

@@ -193,17 +193,25 @@ def check_google_chat_requirements() -> bool:
 def ensure_google_chat_deps() -> bool:
     """ACTIVE installer (registry ``ensure_deps_fn``).
 
-    Routes through ``tools.lazy_deps`` so sealed hosted/Docker images write
-    ``HERMES_LAZY_INSTALL_TARGET`` instead of the read-only venv. Resets the
-    failed-import cache so ``create_adapter()`` can load modules after install.
-    ``FeatureUnavailable`` propagates: the registry logs its ``reason`` (quarantine
-    404, no writable target, network), which is exactly what a hosted operator needs.
+    PM owns the install; a refusal (lazy installs off, unsupported platform,
+    network) propagates so the registry logs the reason. Resets the failed-import
+    cache so ``create_adapter()`` can load modules after install.
     """
     global _google_modules_loaded, GOOGLE_CHAT_AVAILABLE
     if GOOGLE_CHAT_AVAILABLE:
         return True
-    from tools.lazy_deps import ensure as _lazy_ensure
-    _lazy_ensure("platform.google_chat", prompt=False)
+    from pm import InstallError, ensure_import
+    # Request BOTH extras before surfacing a failure: a successful install raises
+    # InstallError("restart Hermes to activate…") for the first extra, and aborting
+    # there would leave the second uninstalled — the restart would land back here.
+    failures: list[InstallError] = []
+    for extra in ("google", "google-chat"):
+        try:
+            ensure_import(extra)
+        except InstallError as exc:
+            failures.append(exc)
+    if failures:
+        raise failures[0]
     _google_modules_loaded = False
     return _load_google_modules()
 
@@ -259,7 +267,7 @@ def _load_sa_credentials_from(sa_value: Optional[str]) -> Any:
             raise _SACredentialError("not_found")
         else:
             try:
-                with open(sa_value, "r", encoding="utf-8") as fh:
+                with open(sa_value, "r", encoding="utf-8-sig") as fh:
                     info = json.load(fh)
             except json.JSONDecodeError as exc:
                 raise _SACredentialError("file_invalid", exc) from exc
@@ -295,7 +303,7 @@ class _ThreadCountStore:
         if not self._path.exists():
             return
         try:
-            raw = self._path.read_text(encoding="utf-8")
+            raw = self._path.read_text(encoding="utf-8-sig")
             data = json.loads(raw) if raw.strip() else {}
         except (json.JSONDecodeError, OSError) as exc:
             fmt = ("[GoogleChat] thread-count store at %s is corrupt; starting fresh: %s" if isinstance(exc, ValueError)
@@ -525,7 +533,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
 
     def _load_cached_bot_id(self) -> Optional[str]:
         try:
-            return json.loads(self._bot_id_cache_path().read_text(encoding="utf-8")).get("bot_user_id") or None
+            return json.loads(self._bot_id_cache_path().read_text(encoding="utf-8-sig")).get("bot_user_id") or None
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -682,7 +690,10 @@ class GoogleChatAdapter(BasePlatformAdapter):
         """Run streaming_pull with exponential backoff + full jitter; fatal after N attempts.
         ``subscribe()`` returns a Future that resolves when the stream dies."""
         pubsub_fatals = {
-            gax_exceptions.Unauthenticated: ("pubsub_auth", "Pub/Sub authentication failed (SA key invalid/revoked)"),
+            gax_exceptions.Unauthenticated: (
+                "pubsub_auth",
+                "Pub/Sub authentication failed; check service-account credentials and gateway logs",
+            ),
             gax_exceptions.PermissionDenied: ("pubsub_permission", "SA lacks pubsub.subscriber on the subscription"),
         }
         attempt = 0

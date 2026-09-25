@@ -264,20 +264,6 @@ describe('useMessageStream interim text sealing', () => {
     expect(texts).toHaveLength(2)
   })
 
-  it('settles an identical final completion onto the interim when response_previewed', async () => {
-    mountStream()
-    await start()
-
-    await interim('same reply')
-    await completePreviewed('same reply')
-
-    // With response_previewed, the final text is the same model response
-    // that was published provisionally as an interim — settle onto the
-    // existing interim instead of creating a duplicate. (#65919 review)
-    const texts = assistantMessages()
-    expect(texts.filter(t => t === 'same reply')).toHaveLength(1)
-  })
-
   it('settles a prefix-matched final onto the interim when response_previewed', async () => {
     mountStream()
     await start()

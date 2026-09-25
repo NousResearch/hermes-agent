@@ -56,3 +56,40 @@ def test_provider_unknown_to_catalog_is_reported_not_installed(home, monkeypatch
     said: list[str] = []
     assert mig.migrate_home(home, install=lambda n: pytest.fail("must not install"), say=said.append) is None
     assert "not in the plugin catalog" in said[0] and "memory.provider" in said[0]
+
+
+def test_startup_recovery_attempts_each_profile_home(tmp_path, monkeypatch):
+    """One multiplexed process can start agents for two homes missing the same provider."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from pm import install as pm_install
+
+    homes = [tmp_path / "a", tmp_path / "b"]
+    for profile_home in homes:
+        profile_home.mkdir()
+        (profile_home / "config.yaml").write_text("memory:\n  provider: twin\n", encoding="utf-8")
+    monkeypatch.setattr(mig, "_attempted", set())
+    monkeypatch.setattr(mig, "catalog_source", lambda name: name)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
+    installed = []
+
+    def fake_installer(profile_home):
+        def install(name):
+            plugin_dir = profile_home / "plugins" / name
+            plugin_dir.mkdir(parents=True)
+            (plugin_dir / "__init__.py").write_text("class Twin(MemoryProvider): ...\n", encoding="utf-8")
+            installed.append(profile_home)
+            return {"ok": True}
+
+        return install
+
+    monkeypatch.setattr(mig, "_install_into", fake_installer)
+    outcomes = []
+    for profile_home in (homes[0], homes[1], homes[0]):
+        token = set_hermes_home_override(profile_home)
+        try:
+            outcomes.append(mig.recover_at_startup("twin"))
+        finally:
+            reset_hermes_home_override(token)
+
+    assert outcomes == [True, True, False]
+    assert installed == homes

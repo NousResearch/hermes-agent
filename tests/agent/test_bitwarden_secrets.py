@@ -1,22 +1,17 @@
 """Hermetic tests for the Bitwarden Secrets Manager integration.
 
-We never hit GitHub or Bitwarden in tests — subprocess + urllib are
-mocked so the suite stays fast and offline-safe.  The "live" pull and
-binary download are exercised manually by `hermes secrets bitwarden
-setup` outside of pytest.
+Secret/cache behavior stays offline. PM acquisition and executable invocation
+are exercised by tests/pm/test_security_consumers.py.
 """
 
 from __future__ import annotations
 
-import hashlib
-import io
 import json
 import os
 import stat
 import subprocess
 import sys
 import time
-import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -52,120 +47,6 @@ def hermes_home(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _platform_asset_name
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "system,machine,libc_text,expected",
-    [
-        ("Darwin", "x86_64", "",
-         f"bws-macos-universal-{bw._BWS_VERSION}.zip"),
-        ("Darwin", "arm64", "",
-         f"bws-macos-universal-{bw._BWS_VERSION}.zip"),
-        ("Linux", "x86_64", "glibc",
-         f"bws-x86_64-unknown-linux-gnu-{bw._BWS_VERSION}.zip"),
-        ("Linux", "x86_64", "musl libc",
-         f"bws-x86_64-unknown-linux-musl-{bw._BWS_VERSION}.zip"),
-        ("Linux", "aarch64", "",
-         f"bws-aarch64-unknown-linux-gnu-{bw._BWS_VERSION}.zip"),
-        ("Windows", "AMD64", "",
-         f"bws-x86_64-pc-windows-msvc-{bw._BWS_VERSION}.zip"),
-        ("Windows", "ARM64", "",
-         f"bws-aarch64-pc-windows-msvc-{bw._BWS_VERSION}.zip"),
-    ],
-)
-def test_platform_asset_name(system, machine, libc_text, expected):
-    with mock.patch.object(bw.platform, "system", return_value=system), \
-         mock.patch.object(bw.platform, "machine", return_value=machine), \
-         mock.patch.object(
-             bw.subprocess,
-             "run",
-             return_value=mock.Mock(stdout=libc_text, stderr=libc_text),
-         ):
-        assert bw._platform_asset_name() == expected
-
-
-# ---------------------------------------------------------------------------
-# install_bws — fully mocked HTTP
-# ---------------------------------------------------------------------------
-
-
-def _make_fake_zip(binary_bytes: bytes) -> bytes:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr("bws", binary_bytes)
-    return buf.getvalue()
-
-
-# ---------------------------------------------------------------------------
-# _safe_extract_member — zip-slip containment
-# ---------------------------------------------------------------------------
-
-
-
-
-@pytest.mark.parametrize(
-    "evil_name",
-    [
-        "../escape",
-        "../../escape",
-        "sub/../../escape",
-    ],
-)
-def test_safe_extract_member_rejects_traversal(tmp_path, evil_name):
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        zf.writestr(evil_name, b"pwned")
-    buf.seek(0)
-
-    dest = tmp_path / "extract"
-    dest.mkdir()
-    outside = tmp_path / "escape"
-
-    with zipfile.ZipFile(buf) as zf:
-        with pytest.raises(RuntimeError, match="unsafe archive member"):
-            bw._safe_extract_member(zf, evil_name, dest)
-
-    # The traversal target must not have been written.
-    assert not outside.exists()
-
-
-
-
-
-
-def test_install_bws_happy_path(hermes_home, monkeypatch):
-    fake_binary = b"#!/bin/sh\necho 'bws fake 2.0.0'\n"
-    zip_bytes = _make_fake_zip(fake_binary)
-    asset_name = bw._platform_asset_name()
-    checksum_text = (
-        f"{hashlib.sha256(zip_bytes).hexdigest()}  {asset_name}\n"
-        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff  other-file\n"
-    )
-
-    def fake_download(url, dest):
-        if url.endswith(".zip"):
-            Path(dest).write_bytes(zip_bytes)
-        elif url.endswith(".txt"):
-            Path(dest).write_text(checksum_text)
-        else:
-            raise AssertionError(f"unexpected download url: {url}")
-
-    monkeypatch.setattr(bw, "_http_download", fake_download)
-
-    path = bw.install_bws()
-    assert path.exists()
-    assert path.read_bytes() == fake_binary
-    # Executable bit set
-    assert path.stat().st_mode & stat.S_IXUSR
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
 # fetch_bitwarden_secrets
 # ---------------------------------------------------------------------------
 
@@ -198,7 +79,7 @@ def test_fetch_server_url_sets_env(monkeypatch, tmp_path):
         captured_env.update(kwargs["env"])
         return mock.Mock(returncode=0, stdout=payload, stderr="")
 
-    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
     bw.fetch_bitwarden_secrets(
         access_token="0.t",
@@ -308,7 +189,7 @@ def test_disk_cache_key_mismatch_triggers_refetch(monkeypatch, tmp_path):
     def fake_run(*a, **kw):
         call_count["n"] += 1
         return mock.Mock(returncode=0, stdout=payload, stderr="")
-    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     bw._reset_cache_for_tests(home)
 
     # Write a cache entry for a DIFFERENT token/project pair
@@ -334,6 +215,7 @@ def test_disk_cache_key_mismatch_triggers_refetch(monkeypatch, tmp_path):
 
 
 
+@pytest.mark.platforms("linux")
 def test_encrypted_cache_writes_without_plaintext(monkeypatch, tmp_path):
     """Encrypted cache stores last-good secrets without raw values on disk."""
     home = tmp_path / ".hermes"
@@ -343,7 +225,7 @@ def test_encrypted_cache_writes_without_plaintext(monkeypatch, tmp_path):
     payload = _fake_bws_payload([{"key": "K1", "value": "secret-value"}])
 
     monkeypatch.setattr(
-        bw.subprocess,
+        subprocess,
         "run",
         lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
     )
@@ -406,7 +288,7 @@ def test_encrypted_cache_falls_back_on_network_error(monkeypatch, tmp_path):
             stderr="Error: network is unreachable",
         )
 
-    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     bw._reset_cache_for_tests(home)
 
     first, _ = bw.fetch_bitwarden_secrets(
@@ -474,7 +356,7 @@ def test_stale_disk_cache_returned_when_bws_fails(monkeypatch, tmp_path):
     def fail_run(*a, **kw):
         return mock.Mock(returncode=1, stdout="",
                          stderr="Error: dns resolution failed")
-    monkeypatch.setattr(bw.subprocess, "run", fail_run)
+    monkeypatch.setattr(subprocess, "run", fail_run)
 
     secrets, warnings = bw.fetch_bitwarden_secrets(
         access_token="0.t", project_id="proj-1", binary=fake_binary,
@@ -507,7 +389,7 @@ def test_stale_fallback_skipped_on_auth_failure(monkeypatch, tmp_path):
     _seed_stale_disk_cache(home, secrets={"K1": "v1"}, age_seconds=3600)
 
     monkeypatch.setattr(
-        bw.subprocess, "run",
+        subprocess, "run",
         lambda *a, **kw: mock.Mock(returncode=1, stdout="",
                                    stderr="Error: unauthorized (401)"),
     )

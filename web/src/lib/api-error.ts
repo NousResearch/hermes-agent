@@ -50,6 +50,11 @@ export function extractDetail(body: string): string | null {
               .map((item) => (item && typeof item === "object" ? (item as { msg?: unknown }).msg : null))
               .filter((m): m is string => typeof m === "string");
             if (msgs.length) return msgs.join("; ");
+          } else if (value && typeof value === "object") {
+            // Structured detail ({error: "<code>", message: "<sentence>"}): the code is for
+            // programs, the sentence is what the operator needs to act on.
+            const message = (value as { message?: unknown }).message;
+            if (typeof message === "string" && message.trim()) return message.trim();
           }
         }
       }

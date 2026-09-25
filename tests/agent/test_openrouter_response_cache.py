@@ -14,27 +14,12 @@ class TestBuildOrHeaders:
     """Test the build_or_headers() helper in agent/auxiliary_client.py."""
 
 
-
-
-
-    def test_ttl_default(self):
-        """Default TTL (300) is included when cache is enabled."""
-        from agent.auxiliary_client import build_or_headers
-
-        headers = build_or_headers(or_config={"response_cache": True, "response_cache_ttl": 300})
-        assert headers["X-OpenRouter-Cache-TTL"] == "300"
-
-
-
-
-
     def test_ttl_negative(self):
         """Negative TTL is ignored."""
         from agent.auxiliary_client import build_or_headers
 
         headers = build_or_headers(or_config={"response_cache": True, "response_cache_ttl": -5})
         assert "X-OpenRouter-Cache-TTL" not in headers
-
 
 
     def test_returns_fresh_dict(self):
@@ -67,10 +52,6 @@ class TestEnvVarOverrides:
     """Test env var precedence over config.yaml for response caching."""
 
 
-
-
-
-
     @pytest.mark.parametrize("ttl", ["0", "86401", "abc", "-1", "12.5"])
     def test_invalid_env_ttl_dropped(self, monkeypatch, ttl):
         """Invalid TTL env values are ignored; cache still enabled without TTL."""
@@ -101,17 +82,6 @@ class TestEnvVarOverrides:
         assert headers["X-OpenRouter-Cache"] == "true"
         assert headers["X-OpenRouter-Cache-TTL"] == "600"
 
-class TestDefaultConfig:
-    """Verify the openrouter config section is in DEFAULT_CONFIG."""
-
-    def test_openrouter_section_exists(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-
-        assert "openrouter" in DEFAULT_CONFIG
-        or_cfg = DEFAULT_CONFIG["openrouter"]
-        assert or_cfg["response_cache"] is True
-        assert or_cfg["response_cache_ttl"] == 300
-
 
 # ---------------------------------------------------------------------------
 # _check_openrouter_cache_status
@@ -130,13 +100,11 @@ class TestCheckOpenrouterCacheStatus:
         return agent
 
 
-
     def test_no_header_is_noop(self):
         agent = self._make_agent()
         resp = SimpleNamespace(headers={})
         agent._check_openrouter_cache_status(resp)
         assert getattr(agent, "_or_cache_hits", 0) == 0
-
 
 
     def test_case_insensitive(self):

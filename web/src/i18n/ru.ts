@@ -165,6 +165,10 @@ export const ru: Translations = {
     failedToDeleteSelected: "Не удалось удалить выбранные сессии",
     resumeInChat: "Продолжить в чате",
     newChat: "Новый чат",
+    workspace: "рабочая папка",
+    workspaceDefault: "По умолчанию",
+    workspaceRescan: "Пересканировать репозитории",
+    workspaceCustom: "Другой путь…",
     previousPage: "Предыдущая страница",
     nextPage: "Следующая страница",
     roles: {
@@ -324,6 +328,8 @@ export const ru: Translations = {
     disableRuntime: "Отключить",
     enableAfterInstall: "Включить после установки",
     enableRuntime: "Включить",
+    toggleTakesEffectAfterRestart:
+      "Сохранено — перезапустите шлюз, чтобы применить изменение.",
     forceReinstall: "Принудительная переустановка (сначала удалить существующую папку)",
     headline:
       "Поиск, установка, включение и обновление плагинов Hermes (аналог `hermes plugins`).",

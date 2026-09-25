@@ -1,5 +1,6 @@
 import type { ConnectionRequestPayload, ConnectionUpdatePayload, GatewayEvent } from '@hermes/shared'
 
+import { applyAccountConnectionUpdate } from '@/app/capabilities/connectors/data/account-operations'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { connectionRequestToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-connection'
 import { translateNow } from '@/i18n'
@@ -72,6 +73,12 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
   }
 
   if (isConnectionUpdateEvent(event)) {
+    if (event.payload.owner.type === 'account') {
+      applyAccountConnectionUpdate(event.payload)
+
+      return true
+    }
+
     updateConnectionRequest(sessionId ?? null, event.payload)
 
     if (event.payload.settled && sessionId) {
@@ -153,6 +160,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     }
   } else if ($sudoRequests.get()[key]?.requestId === id) {
     clearSudoRequest(sessionId, id)
+  } else if ($sudoRequests.get()['']?.requestId === id) {
+    clearSudoRequest(null, id) // the app-level Bot Screen install card: not owned by any chat
   } else if ($secretRequests.get()[key]?.requestId === id) {
     clearSecretRequest(sessionId, id)
   } else if ($vaultCodeRequests.get()[key]?.requestId === id) {

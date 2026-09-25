@@ -37,7 +37,7 @@ def delete_mode_db(tmp_path, monkeypatch) -> Path:
     return db
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_repair_refuses_delete_mode_db_held_open_by_another_process(delete_mode_db):
     """A held DELETE-mode reader takes only SHARED, so ``BEGIN IMMEDIATE`` succeeds and the lock probe sees
     nothing; the holder scan must still refuse — REINDEX/VACUUM from a second process is the #103339 class."""

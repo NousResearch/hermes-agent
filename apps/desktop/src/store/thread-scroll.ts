@@ -192,6 +192,21 @@ export type ThreadScrollRestoreResizeMetrics = {
   scrollHeight: number
 }
 
+/** `data-slot` of the spacer that reserves room under the last row for the composer. */
+export const COMPOSER_CLEARANCE_SLOT = 'aui_composer-clearance'
+
+/** Viewport metrics with the composer clearance spacer measured separately. */
+export function readThreadScrollResizeMetrics(
+  viewport: HTMLElement,
+  clearance: HTMLElement | null
+): ThreadScrollRestoreResizeMetrics {
+  return {
+    clearanceHeight: clearance?.clientHeight ?? 0,
+    clientHeight: viewport.clientHeight,
+    scrollHeight: viewport.scrollHeight
+  }
+}
+
 export function threadScrollTranscriptHeight(
   metrics: Pick<ThreadScrollRestoreResizeMetrics, 'clearanceHeight' | 'scrollHeight'>
 ): number {

@@ -199,7 +199,7 @@ def test_parent_watchdog_degrades_to_pid_liveness_when_marker_probe_raises_oserr
                               process_start_marker=lookup_error_probe) is True
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_ps_marker_probe_classifies_missing_process_vs_other_ps_failures(monkeypatch):
     """The darwin ``ps`` probe raises ``ProcessLookupError`` only for an explicit missing-process
     message; any other unknown failure stays a plain ``OSError`` so the watchdog degrades instead

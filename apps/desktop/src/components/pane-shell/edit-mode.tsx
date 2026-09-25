@@ -6,12 +6,23 @@
  * This hook only owns Escape-to-exit.
  */
 
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 import { useEffect } from 'react'
 
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 
 export const $layoutEditMode = atom(false)
+
+// Edit mode force-shows toggle-hidden panes (terminal off, review closed) so
+// they can be rearranged. In Simple those panes are resting by policy, not by
+// a toggle, and arranging machinery you cannot see is not the job — edit mode
+// there works on what Simple shows. The renderers read this, never
+// `$layoutEditMode`, for the hidden-pane question.
+export const $layoutEditRevealsHidden = computed(
+  [$layoutEditMode, $showsAdvancedChrome],
+  (editMode, advanced) => editMode && advanced
+)
 
 export function toggleLayoutEditMode() {
   $layoutEditMode.set(!$layoutEditMode.get())

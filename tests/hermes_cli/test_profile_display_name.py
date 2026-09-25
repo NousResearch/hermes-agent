@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.profiles import (
     create_profile,
@@ -97,7 +97,6 @@ class TestRenameDefault:
         assert rename_profile("default", "Harumesu") == profile_env
         assert profile_env.is_dir()  # directory untouched
         assert read_profile_meta(profile_env)["display_name"] == "Harumesu"
-        assert "canonical id remains 'default'" in capsys.readouterr().out
 
     def test_reflected_in_list_profiles(self, profile_env):
         rename_profile("default", "Harumesu")

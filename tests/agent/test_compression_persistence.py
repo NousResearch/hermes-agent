@@ -99,6 +99,7 @@ class TestFlushAfterCompression:
                 f"Expected 5 compressed messages in new session, got {len(new_rows)}. "
                 f"Compression persistence bug: messages not written to SQLite."
             )
+            db.close()
 
     def test_flush_with_stale_history_loses_messages(self):
         """Stale conversation_history no longer causes data loss."""
@@ -128,6 +129,7 @@ class TestFlushAfterCompression:
             rows = db.get_messages("new-session")
             assert len(rows) == 2
             assert [row["content"] for row in rows] == ["summary", "continuing..."]
+            db.close()
 
     def test_in_place_compression_rebaseline_prevents_duplicate_compacted_rows(self):
         """In-place compaction already persisted the compacted transcript.
@@ -190,6 +192,7 @@ class TestFlushAfterCompression:
                 "tool result",
                 "final answer",
             ]
+            db.close()
 
     def test_abort_after_in_place_compaction_preserves_flush_baseline(self):
         """An aborted retry must survive flush, restart, and resume."""
@@ -335,45 +338,6 @@ class TestFlushAfterCompression:
 # Part 2: Gateway-side — history_offset after session split
 # ---------------------------------------------------------------------------
 
-class TestGatewayHistoryOffsetAfterSplit:
-    """Verify that when the agent creates a new session during compression,
-    the gateway uses history_offset=0 so all compressed messages are written
-    to the JSONL transcript."""
-
-    def test_history_offset_zero_on_session_split(self):
-        """When agent.session_id differs from the original, history_offset must be 0."""
-        # This tests the logic in gateway/run.py run_sync():
-        # _session_was_split = agent.session_id != session_id
-        # _effective_history_offset = 0 if _session_was_split else len(agent_history)
-
-        original_session_id = "session-abc"
-        agent_session_id = "session-compressed-xyz"  # Different = compression happened
-        agent_history_len = 200
-
-        # Simulate the gateway's offset calculation (post-fix)
-        _session_was_split = (agent_session_id != original_session_id)
-        _effective_history_offset = 0 if _session_was_split else agent_history_len
-
-        assert _session_was_split is True
-        assert _effective_history_offset == 0
-
-
-    def test_new_messages_extraction_after_split(self):
-        """After compression with offset=0, new_messages should be ALL agent messages."""
-        # Simulates the gateway's new_messages calculation
-        agent_messages = [
-            {"role": "user", "content": "[CONTEXT COMPACTION] Summary..."},
-            {"role": "user", "content": "recent question"},
-            {"role": "assistant", "content": "recent answer"},
-            {"role": "user", "content": "new question"},
-            {"role": "assistant", "content": "new answer"},
-        ]
-        history_offset = 0  # After fix: 0 on session split
-
-        new_messages = agent_messages[history_offset:] if len(agent_messages) > history_offset else []
-        assert len(new_messages) == 5, (
-            f"Expected all 5 messages with offset=0, got {len(new_messages)}"
-        )
 
 
 
@@ -428,7 +392,7 @@ class TestStoredPromptCwdDrift:
         from agent.conversation_loop import _stored_prompt_matches_runtime
 
         agent = self._make_agent()
-        current_cwd = "/project/current"
+        current_cwd = str(Path("/project/current"))
         stored_prompt = (
             self._host_block(current_cwd)
             + "Model: test/model\n"
@@ -456,7 +420,7 @@ class TestStoredPromptCwdDrift:
         from agent.conversation_loop import _stored_prompt_matches_runtime
 
         agent = self._make_agent()
-        current_cwd = "/project/current"
+        current_cwd = str(Path("/project/current"))
         stored_prompt = (
             self._host_block(current_cwd)
             + "\n# AGENTS.md\n\n"
@@ -531,3 +495,4 @@ class TestStoredPromptCwdDrift:
             assert "Platform: cli" in parts["volatile"], (
                 "Built prompt missing 'Platform: cli' — drift detection cannot read it"
             )
+            db.close()

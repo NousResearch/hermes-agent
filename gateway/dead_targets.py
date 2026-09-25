@@ -53,8 +53,13 @@ class DeadTargetRegistry:
         self._dead: Dict[str, Dict[str, object]] = {}
         self._path = path if path is not None else get_hermes_home() / "gateway" / "dead_targets.json"
         try:
-            raw = json.loads(self._path.read_text(encoding="utf-8")) if self._path.exists() else {}
-            self._dead = {k: v for k, v in raw.items() if isinstance(v, dict)} if isinstance(raw, dict) else {}
+            if self._path.exists():
+                raw = json.loads(self._path.read_text(encoding="utf-8-sig"))
+                if isinstance(raw, dict):
+                    # Only keep well-shaped entries.
+                    self._dead = {
+                        k: v for k, v in raw.items() if isinstance(v, dict)
+                    }
         except (OSError, ValueError) as exc:
             logger.debug("dead_targets: could not load %s (%s) — starting empty", self._path, exc)
 

@@ -36,7 +36,7 @@ hermes send --to telegram "deploy finished"
 echo "RAM 92%" | hermes send --to telegram:-1001234567890
 
 # Send a file
-hermes send --to discord:#ops --file /tmp/report.md
+hermes send --to discord:#ops --file ~/.hermes/cache/scratch/report.md
 
 # Attach a subject/header line
 hermes send --to slack:#eng --subject "[CI] build.log" --file build.log

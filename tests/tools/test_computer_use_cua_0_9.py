@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -73,49 +73,9 @@ def _make_backend(session: _FakeSession):
     return backend
 
 
-def _driver_result(payload: Dict[str, Any]) -> Dict[str, Any]:
-    return {"isError": False, "data": {}, "structuredContent": payload}
-
-
 # ---------------------------------------------------------------------------
 # Selected live schema and foreground delivery
 # ---------------------------------------------------------------------------
-
-
-def test_normalized_fixture_is_sanitized_and_records_the_selected_contract():
-    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    tools = {tool["name"]: tool for tool in fixture["tools"]}
-
-    assert fixture["contract_epoch"] == "cua-driver-0.9"
-    assert fixture["observed_reported_version"] == "0.8.3"
-    assert fixture["capability_version"] == "1"
-    assert fixture["observed_tool_count"] == 49
-    assert "delivery_mode" in tools["click"]["inputSchema"]["properties"]
-    assert "delivery_mode" in tools["type_text"]["inputSchema"]["properties"]
-    assert all(
-        "input.delivery_mode" not in tool["capabilities"] for tool in tools.values()
-    )
-    assert "bring_to_front" in tools
-    assert "bring_to_front" not in tools["click"]["inputSchema"]["properties"]
-    assert {
-        "get_browser_state",
-        "browser_prepare",
-        "browser_navigate",
-        "browser_click",
-        "browser_type",
-        "browser_pointer",
-    }.issubset(tools)
-
-    serialized = json.dumps(fixture)
-    for forbidden in (
-        "/Users/",
-        "\\Users\\",
-        "localhost",
-        "http://",
-        "https://",
-        "token-",
-    ):
-        assert forbidden not in serialized
 
 
 def test_foreground_support_is_discovered_from_tool_input_schema():
@@ -147,36 +107,6 @@ def test_foreground_support_is_discovered_from_tool_input_schema():
     assert session.supports_input_property("type_text", "delivery_mode") is True
     assert session.supports_input_property("bring_to_front", "delivery_mode") is False
     assert session.supports_capability("input.delivery_mode", tool="click") is False
-
-
-def test_foreground_focus_is_a_separate_call_before_action():
-    session = _FakeSession(input_properties={"click": {"delivery_mode"}})
-    backend = _make_backend(session)
-
-    result = backend.click(
-        element=3,
-        delivery_mode="foreground",
-        bring_to_front=True,
-    )
-
-    assert result.ok is True
-    assert [name for name, _ in session.calls] == ["bring_to_front", "click"]
-    focus_args = session.calls[0][1]
-    action_args = session.calls[1][1]
-    assert focus_args == {"pid": 42, "window_id": 7}
-    assert action_args["delivery_mode"] == "foreground"
-    assert "bring_to_front" not in action_args
-
-
-def test_foreground_refuses_only_when_schema_lacks_delivery_property():
-    backend = _make_backend(_FakeSession())
-
-    result = backend.click(element=3, delivery_mode="foreground")
-
-    assert result.ok is False
-    assert result.code == "foreground_unsupported"
-    assert "update" not in result.message.lower()
-    assert backend._session.calls == []
 
 
 def test_invalid_delivery_mode_is_rejected_before_driver_call():
@@ -382,4 +312,3 @@ def test_persistent_focus_has_a_separate_approval_scope(monkeypatch):
     assert seen == ["click", "bring_to_front"]
     assert result["error"].startswith("BLOCKED: User denied")
     assert result["action"] == "bring_to_front"
-

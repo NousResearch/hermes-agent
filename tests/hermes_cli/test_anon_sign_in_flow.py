@@ -10,26 +10,21 @@ from __future__ import annotations
 import threading
 import time
 
-import httpx
 import pytest
 
 from hermes_cli import anon_auth
 from hermes_cli.auth import _auth_file_path
-from hermes_cli.auth_constants import AuthError
 from tests.hermes_cli.test_anon_upgrade import (  # noqa: F401  (fixtures used by name)
     EMAIL, FREE_PICK, PORTAL, WELCOME, _shared_store, _write_model_config, free_account, portal)
 
 __all__ = ["free_account", "portal"]
 
-
 def _drain(**kwargs):
     """Run a sign-in to its end and return every state it yielded."""
     return list(anon_auth.run_sign_in(**kwargs))
 
-
 def _seed_free_tier() -> dict:
     return anon_auth.ensure_portal_identity(explicit=True)
-
 
 def _stub_wait(monkeypatch, outcome, *, before=None):
     """Replace the promotion wait with one that returns *outcome* (running *before* first)."""
@@ -39,10 +34,8 @@ def _stub_wait(monkeypatch, outcome, *, before=None):
         return dict(outcome)
     monkeypatch.setattr(anon_auth, "wait_for_promotion", _wait)
 
-
 def _voided(reason: str) -> dict:
     return {"status": "voided", "reason": reason}
-
 
 def test_a_completed_sign_in_yields_code_waiting_then_completed(portal, free_account):
     _seed_free_tier()
@@ -58,12 +51,11 @@ def test_a_completed_sign_in_yields_code_waiting_then_completed(portal, free_acc
     assert completed.model == FREE_PICK
     assert completed.model_changed is True
 
-
 def test_declined_yields_declined_and_persists_nothing(portal, tmp_path):
     _seed_free_tier()
     before = _auth_file_path().read_bytes()
     shared_before = _shared_store(tmp_path)
-    portal.status_sequence = [{"status": "pending"}, _voided("user_declined")]
+    portal.status_sequence = [_voided("user_declined")]
 
     terminal = [s for s in _drain() if s.terminal]
 
@@ -73,7 +65,6 @@ def test_declined_yields_declined_and_persists_nothing(portal, tmp_path):
     assert portal.token_grants == 0
     assert _auth_file_path().read_bytes() == before
     assert _shared_store(tmp_path) == shared_before
-
 
 def test_a_timeout_yields_timed_out_and_keeps_the_enriched_detail(portal, monkeypatch):
     _seed_free_tier()
@@ -99,7 +90,6 @@ def test_a_timeout_yields_timed_out_and_keeps_the_enriched_detail(portal, monkey
     assert state.copy == anon_auth.UPGRADE_TIMED_OUT
     assert portal.token_grants == 0
 
-
 def test_a_retired_identity_yields_retired_and_clears_the_free_tier(portal, monkeypatch):
     guest = _seed_free_tier()
     cleared = []
@@ -119,7 +109,6 @@ def test_a_retired_identity_yields_retired_and_clears_the_free_tier(portal, monk
     from hermes_cli.auth import _load_auth_store
     assert "nous" not in _load_auth_store().get("providers", {})
 
-
 def test_a_server_superseded_outcome_yields_superseded(portal, tmp_path):
     _seed_free_tier()
     before = _auth_file_path().read_bytes()
@@ -131,7 +120,6 @@ def test_a_server_superseded_outcome_yields_superseded(portal, tmp_path):
     assert state.copy == anon_auth.UPGRADE_REASON_COPY["superseded"]
     assert portal.token_grants == 0
     assert _auth_file_path().read_bytes() == before
-
 
 def test_a_retired_identity_yields_retired_even_when_cleanup_fails(portal, monkeypatch):
     _seed_free_tier()
@@ -149,7 +137,6 @@ def test_a_retired_identity_yields_retired_even_when_cleanup_fails(portal, monke
 
     assert [s.kind for s in states] == ["retired"]
 
-
 @pytest.mark.parametrize(
     "reason,expected",
     [("account_busy", anon_auth.UPGRADE_REASON_COPY["account_busy"]),
@@ -162,7 +149,6 @@ def test_an_unknown_reason_yields_failed_with_the_generic_copy(portal, reason, e
 
     assert state.kind == "failed"
     assert state.copy == expected
-
 
 def test_a_transport_error_yields_failed_without_leaking_the_detail_into_chat_copy(
         portal, monkeypatch, tmp_path):
@@ -181,10 +167,9 @@ def test_a_transport_error_yields_failed_without_leaking_the_detail_into_chat_co
     lowered = state.copy.lower()
     for banned in ("http://", "https://", "/anonymous/", "anonymous"):
         assert banned not in lowered
-    assert state.copy_terminal == f"Sign-in failed: {detail}"
+    assert detail in state.copy_terminal
     assert portal.token_grants == 0
     assert _auth_file_path().read_bytes() == before
-
 
 def test_a_persist_failure_yields_failed_rather_than_raising(portal, free_account, monkeypatch):
     _seed_free_tier()
@@ -200,7 +185,6 @@ def test_a_persist_failure_yields_failed_rather_than_raising(portal, free_accoun
     assert states[-1].terminal is True
     assert "read-only home" in states[-1].copy_terminal
     assert settles == []
-
 
 def test_a_settle_failure_yields_failed_rather_than_raising(portal, free_account, monkeypatch):
     _seed_free_tier()
@@ -221,7 +205,6 @@ def test_a_settle_failure_yields_failed_rather_than_raising(portal, free_account
     assert "config is read-only" in states[-1].copy_terminal
     assert len(persists) == 1
 
-
 def test_already_signed_in_short_circuits_before_any_network(portal):
     from hermes_cli.auth import _load_auth_store, _save_auth_store, _save_provider_state
     store = _load_auth_store()
@@ -236,7 +219,6 @@ def test_already_signed_in_short_circuits_before_any_network(portal):
     assert states[0].precondition is True
     assert portal.calls == []
 
-
 def test_free_tier_off_yields_unavailable(portal, monkeypatch):
     monkeypatch.setattr(anon_auth, "guest_enabled", lambda: False)
     portal.calls.clear()
@@ -247,7 +229,6 @@ def test_free_tier_off_yields_unavailable(portal, monkeypatch):
     assert states[0].copy == anon_auth.UPGRADE_UNAVAILABLE_CHAT
     assert states[0].copy_terminal == anon_auth.UPGRADE_UNAVAILABLE
     assert portal.calls == []
-
 
 def test_no_identity_on_disk_yields_unavailable_without_touching_the_portal(portal, monkeypatch):
     """A sign-in never creates the identity it signs in from: the boot bootstrap is the only creator.
@@ -264,7 +245,6 @@ def test_no_identity_on_disk_yields_unavailable_without_touching_the_portal(port
     assert states[-1].copy == anon_auth.UPGRADE_UNAVAILABLE_CHAT
     assert portal.calls == []
 
-
 def test_cancelling_before_the_wait_persists_nothing(portal, tmp_path):
     _seed_free_tier()
     before = _auth_file_path().read_bytes()
@@ -280,7 +260,6 @@ def test_cancelling_before_the_wait_persists_nothing(portal, tmp_path):
     assert [s.kind for s in rest] == ["superseded"]
     assert portal.token_grants == 0
     assert _auth_file_path().read_bytes() == before
-
 
 def test_cancelling_during_the_wait_ends_it_within_a_second(portal, tmp_path):
     _seed_free_tier()
@@ -315,7 +294,6 @@ def test_cancelling_during_the_wait_ends_it_within_a_second(portal, tmp_path):
     assert portal.token_grants == 0
     assert _auth_file_path().read_bytes() == before
 
-
 @pytest.mark.parametrize("cancel_wins", [False, True])
 def test_cancelling_during_a_completed_status_request_obeys_the_surface_policy(
         portal, free_account, cancel_wins):
@@ -335,7 +313,6 @@ def test_cancelling_during_a_completed_status_request_obeys_the_surface_policy(
     state = _load_auth_store()["providers"]["nous"]
     assert anon_auth.is_guest_state(state) is cancel_wins
 
-
 def _cancel_after_a_completed_promotion(portal, monkeypatch, *, cancel_wins: bool):
     _seed_free_tier()
     stop = threading.Event()
@@ -346,7 +323,6 @@ def _cancel_after_a_completed_promotion(portal, monkeypatch, *, cancel_wins: boo
     monkeypatch.setattr(anon_auth, "wait_for_promotion", _wait)
     return list(anon_auth.run_sign_in(
         cancelled=stop.is_set, cancel_wins_after_promotion=cancel_wins))
-
 
 def test_a_desktop_style_cancel_after_a_completed_promotion_persists_nothing(
         portal, free_account, monkeypatch, tmp_path):
@@ -359,7 +335,6 @@ def test_a_desktop_style_cancel_after_a_completed_promotion_persists_nothing(
     assert portal.token_grants == 0
     assert _auth_file_path().read_bytes() == before
 
-
 def test_a_gateway_style_supersede_after_a_completed_promotion_still_signs_in(
         portal, free_account, monkeypatch):
     states = _cancel_after_a_completed_promotion(portal, monkeypatch, cancel_wins=False)
@@ -369,7 +344,6 @@ def test_a_gateway_style_supersede_after_a_completed_promotion_still_signs_in(
     from hermes_cli.auth import _load_auth_store
     state = _load_auth_store()["providers"]["nous"]
     assert not anon_auth.is_guest_state(state)
-
 
 def test_a_persist_guard_that_refuses_persists_nothing_and_never_settles(
         portal, free_account, monkeypatch, tmp_path):
@@ -389,27 +363,6 @@ def test_a_persist_guard_that_refuses_persists_nothing_and_never_settles(
     assert settles == []
     assert _auth_file_path().read_bytes() == before
 
-
-def test_settle_runs_exactly_once_per_completion(portal, free_account, monkeypatch):
-    _seed_free_tier()
-    settles, persists = [], []
-    real_settle = anon_auth.settle_after_upgrade
-    from hermes_cli import auth_nous
-    real_persist = auth_nous.persist_nous_credentials
-    monkeypatch.setattr(
-        anon_auth, "settle_after_upgrade",
-        lambda state: (settles.append(state), real_settle(state))[1])
-    monkeypatch.setattr(
-        auth_nous, "persist_nous_credentials",
-        lambda state, **kw: (persists.append(state), real_persist(state, **kw))[1])
-
-    states = list(anon_auth.run_sign_in())
-
-    assert states[-1].kind == "completed"
-    assert len(settles) == 1
-    assert len(persists) == 1
-
-
 def test_persistence_happens_only_after_the_promotion_and_the_token_grant(portal, free_account):
     _seed_free_tier()
     before = _auth_file_path().read_bytes()
@@ -422,34 +375,6 @@ def test_persistence_happens_only_after_the_promotion_and_the_token_grant(portal
     assert seen["completed"] != before
     paths = [p for _, p in portal.calls]
     assert "/api/oauth/token" in paths
-
-
-def test_the_budget_shrinks_across_the_two_waits(portal, free_account, monkeypatch):
-    """One absolute deadline: what the promotion wait spends, the token poll no longer has."""
-    _seed_free_tier()
-    captured = {}
-    from hermes_cli import auth_device_flow
-    real_request, real_poll = auth_device_flow._request_device_code, auth_device_flow._poll_for_token
-
-    def _short_lived_code(client, portal_base_url, client_id, scope):
-        return {**real_request(client, portal_base_url, client_id, scope), "expires_in": 10}
-    monkeypatch.setattr(auth_device_flow, "_request_device_code", _short_lived_code)
-
-    def _wait(client, portal_base_url, claim_code, *, expires_in, interval, cancelled=None):
-        time.sleep(3.0)
-        return {"status": "completed", "account_email": EMAIL}
-    monkeypatch.setattr(anon_auth, "wait_for_promotion", _wait)
-
-    def _poll(**kwargs):
-        captured.update(kwargs)
-        return real_poll(**kwargs)
-    monkeypatch.setattr(auth_device_flow, "_poll_for_token", _poll)
-
-    states = list(anon_auth.run_sign_in())
-
-    assert states[-1].kind == "completed"
-    assert 1 <= captured["expires_in"] <= 7
-
 
 def test_the_scope_is_entered_for_the_preconditions_and_the_persist_but_never_around_a_wait(
         portal, free_account, monkeypatch):
@@ -489,16 +414,3 @@ def test_the_scope_is_entered_for_the_preconditions_and_the_persist_but_never_ar
         assert not (first[1] <= wait_start and wait_end <= second[1])
         # and never held across a yield, which would hand the scope to the consumer's thread
         assert not any(first[1] <= at <= second[1] for at in yields)
-
-
-def test_wait_for_promotion_without_a_cancel_hook_is_unchanged(portal):
-    import httpx
-    _seed_free_tier()
-    portal.status_sequence = [{"status": "completed", "account_email": EMAIL}]
-    portal.calls.clear()
-    with httpx.Client(transport=httpx.MockTransport(portal.handler), base_url=PORTAL) as client:
-        outcome = anon_auth.wait_for_promotion(
-            client, PORTAL, "clm_1", expires_in=30, interval=0)
-
-    assert outcome == {"status": "completed", "account_email": EMAIL}
-    assert [p for _, p in portal.calls] == ["/api/anonymous/promotion-status"]

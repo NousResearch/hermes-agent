@@ -119,3 +119,37 @@ def test_identity_resolves_back_through_named_lookup(monkeypatch):
     assert entry is not None
     assert entry["base_url"] == "https://api.mimo.example/v1"
     assert entry["api_key"] == "sk-entry"
+
+
+def test_named_lookup_does_not_read_an_unmatched_providers_secret(monkeypatch):
+    """Provider identity scans must not touch credentials belonging to preceding entries."""
+    from agent.secret_scope import is_multiplex_active, set_multiplex_active
+
+    monkeypatch.delenv("HERMES_CUSTOM_ALPHA_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "alpha": {
+                    "api": "https://alpha.invalid/v1",
+                    "key_env": "HERMES_CUSTOM_ALPHA_API_KEY",
+                },
+                "beta": {
+                    "api": "https://beta.invalid/v1",
+                    "api_key": "beta-inline-key",
+                },
+            }
+        },
+    )
+    previous = is_multiplex_active()
+    set_multiplex_active(True)
+    try:
+        entry = rp._get_named_custom_provider("beta")
+    finally:
+        set_multiplex_active(previous)
+
+    assert entry is not None
+    assert entry["name"] == "beta"
+    assert entry["base_url"] == "https://beta.invalid/v1"
+    assert entry["api_key"] == "beta-inline-key"

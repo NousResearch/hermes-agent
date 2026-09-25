@@ -3,6 +3,7 @@ import {
   $connectionRequests,
   clearConnectionRequest,
   type ConnectionRequest,
+  isCatalogKind,
   normalizeConnectionRequest,
   setConnectionRequest
 } from '@/store/connection-request'
@@ -39,6 +40,17 @@ export function restorePendingConnectionFromSnapshot(
     return { authoritativeAbsent: true, cleared: null, request: null }
   }
 
+  const current = $connectionRequests.get()[sessionId]
+
+  // A resume snapshot is read once and can land after the live frames it predates. It must not
+  // revive a card the operation already settled, nor put back a row a newer frame has moved.
+  // Only the same operation can refuse it: a settled cache says nothing about the next operation
+  // the session opened. A settled refusal is no pending card; a newer live frame is still the
+  // pending card, and the caller must keep treating the session as waiting on it.
+  if (current?.opId === request.opId && (current.settled || current.seq > request.seq)) {
+    return { authoritativeAbsent: false, cleared: null, request: current.settled ? null : current }
+  }
+
   setConnectionRequest(request)
 
   return { authoritativeAbsent: false, cleared: null, request }
@@ -46,6 +58,14 @@ export function restorePendingConnectionFromSnapshot(
 
 /** Tool row for a pending operation whose `tool.start` event was missed. */
 export function connectionRequestToolPayload(request: ConnectionRequest): GatewayEventPayload & { name: string } {
+  if (request.targets.some(target => isCatalogKind(target.kind))) {
+    return {
+      args: { action: 'install', items: request.targets.map(target => ({ id: target.name, kind: target.kind })) },
+      name: 'manage_catalog',
+      tool_id: request.toolCallId
+    }
+  }
+
   return {
     args: {
       action: request.targets[0]?.action ?? (request.targets[0]?.kind === 'connector' ? 'connect' : 'install'),

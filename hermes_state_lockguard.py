@@ -40,17 +40,33 @@ _SHARED_FIRST = _PENDING_BYTE + 2
 _SHARED_SIZE = 510
 _SHM_DMS_BYTE = 128
 
-try:
-    import fcntl
-    # CPython exports F_OFD_SETLK only from 3.12. The kernel ABI values are stable: 37 on every
-    # Linux arch (asm-generic/fcntl.h), 90 on XNU (bsd/sys/fcntl.h, documented in fcntl(2)).
-    _F_OFD_SETLK: Optional[int] = getattr(
-        fcntl, "F_OFD_SETLK", {"linux": 37, "darwin": 90}.get(sys.platform.rstrip("0123456789")))
-    _F_RDLCK, _F_UNLCK, _SEEK_SET = fcntl.F_RDLCK, fcntl.F_UNLCK, os.SEEK_SET
-except ImportError:  # Windows
+# Windows has no POSIX advisory locks, and the module promises to be a no-op there. Gate on the
+# platform FIRST: some Windows installs have a third-party module importable as `fcntl` (stock
+# CPython for Windows ships none), and letting the import decide would arm the guard on a
+# lookalike. Off Windows a partial module is equally fatal at import time — every importer of
+# hermes_state dies before supported() can say "no" (#118026) — so tolerate a missing attribute
+# the same way as a missing module and fall back to the no-op.
+if os.name == "nt":
     fcntl = None  # type: ignore[assignment]
-    _F_OFD_SETLK = None
+    _F_OFD_SETLK: Optional[int] = None
     _F_RDLCK = _F_UNLCK = _SEEK_SET = 0
+else:
+    try:
+        import fcntl
+        # CPython exports F_OFD_SETLK only from 3.12. The kernel ABI values are stable: 37 on every
+        # Linux arch (asm-generic/fcntl.h), 90 on XNU (bsd/sys/fcntl.h, documented in fcntl(2)).
+        _F_OFD_SETLK = getattr(
+            fcntl, "F_OFD_SETLK", {"linux": 37, "darwin": 90}.get(sys.platform.rstrip("0123456789")))
+        _F_RDLCK, _F_UNLCK, _SEEK_SET = fcntl.F_RDLCK, fcntl.F_UNLCK, os.SEEK_SET
+        # The constants alone do not make the guard usable: _ofd_lock() calls fcntl.fcntl(), so a
+        # module that has the constants but no callable would pass supported() and then raise
+        # from the first hold(). Probe the whole capability here, not just the symbols.
+        if not callable(getattr(fcntl, "fcntl", None)):
+            raise ImportError("fcntl module has no fcntl() callable")
+    except (ImportError, AttributeError):
+        fcntl = None  # type: ignore[assignment]
+        _F_OFD_SETLK = None
+        _F_RDLCK = _F_UNLCK = _SEEK_SET = 0
 
 # struct flock differs per libc: glibc/musl put type+whence first, Darwin/BSD last.
 _FLOCK_FORMAT = "@qqihh" if sys.platform == "darwin" or "bsd" in sys.platform else "@hhqqi"

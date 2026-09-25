@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { DesktopAgentRoster, DesktopRegistryConnection } from '@/global'
 
-import { buildRestGroups, countRestAgents, fleetRouteKey } from './fleet-rail'
+import { buildRestGroups, countRestAgents } from './fleet-rail'
 
 const connections: DesktopRegistryConnection[] = [
   { id: 'pandora', kind: 'remote', label: 'Pandora', url: 'https://pandora.example' },
@@ -122,6 +122,5 @@ describe('buildRestGroups', () => {
 
     // local: default + omer; vps: default
     expect(countRestAgents(groups)).toBe(3)
-    expect(fleetRouteKey('local', 'omer')).toBe('local::omer')
   })
 })

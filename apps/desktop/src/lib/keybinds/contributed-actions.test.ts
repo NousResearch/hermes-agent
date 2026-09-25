@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { createPluginContext } from '@/contrib/plugin'
-import { registry } from '@/contrib/registry'
-import { allKeybindActions, contributedKeybindHandler, KEYBINDS_AREA } from '@/lib/keybinds/actions'
+import { allKeybindActions, contributedKeybindHandler, keybindAction, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { bindingsFor } from '@/store/keybinds'
 
 // The plugin-command contract: a plugin ships a hotkey through the `keybinds`
@@ -54,15 +53,10 @@ describe('contributed keybind actions', () => {
 
     // The built-in keeps its own combo and its own (i18n) label — the
     // contribution is filtered out rather than overriding core.
-    // (bare shift+n was removed from session.new defaults — it hijacked
-    // typing a capital N into focused inputs, #76185)
-    expect(bindingsFor('session.new')).toEqual(['mod+n'])
+    expect(bindingsFor('session.new')).toEqual(keybindAction('session.new')?.defaults)
+    expect(bindingsFor('session.new')).not.toContain('mod+alt+n')
     expect(allKeybindActions().filter(a => a.id === 'session.new')).toHaveLength(1)
 
     dispose()
-  })
-
-  it('leaves no registry residue between plugin loads', () => {
-    expect(registry.getArea(KEYBINDS_AREA).filter(c => c.source === 'plugin:demo')).toHaveLength(0)
   })
 })

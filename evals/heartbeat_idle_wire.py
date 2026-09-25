@@ -2,7 +2,7 @@
 
 Run from the repo with a clean environment and a temporary HERMES_HOME:
   .venv/bin/python evals/heartbeat_idle_wire.py
-Pass --base-poller /tmp/run_goals_base.py to compare the old poller. No network.
+Pass --base-poller <path>/run_goals_base.py to compare the old poller. No network.
 """
 
 import argparse
@@ -46,7 +46,7 @@ async def main(base_poller):
     runner._run_in_executor_with_context = asyncio.to_thread
     adapter = WireAdapter(PlatformConfig(enabled=True, typing_indicator=False), Platform.TELEGRAM)
     adapter.wire = []
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     source = SessionSource(platform=Platform.TELEGRAM, chat_id="42", user_id="42", chat_type="dm")
     key = build_session_key(source)
     watch = {key: (source, "wire-session")}

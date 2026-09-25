@@ -23,7 +23,6 @@ def _make_cli_stub():
     cli._reasoning_box_opened = False
     cli._reasoning_buf = ""
     cli._reasoning_preview_buf = ""
-    cli._deferred_content = ""
     cli._stream_text_ansi = ""
     cli._stream_needs_break = False
     cli._emitted = []

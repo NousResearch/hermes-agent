@@ -388,6 +388,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
     compression_recovery_deadline REAL,
     profile_name TEXT,
+    transport_profile TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
@@ -668,6 +669,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
     ON sessions(system_prompt_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_tool_names
+    ON sessions(tool_names);
 -- Recent-session browsing must never derive recency by scanning messages.
 -- This expression is the durable, indexable approximation used to preselect
 -- a small candidate set before compression-chain and preview hydration.

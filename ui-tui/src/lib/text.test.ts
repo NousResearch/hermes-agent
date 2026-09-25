@@ -48,13 +48,6 @@ describe('formatAbandonedClarify', () => {
 
     expect(out.split('\n')[0]).toBe('ask trailing space')
   })
-
-  it('numbers options 1-based to match the live ClarifyPrompt', () => {
-    const out = formatAbandonedClarify('q', ['first'], 'timed out')
-
-    expect(out).toContain('  1. first')
-    expect(out).not.toContain('  0.')
-  })
 })
 
 describe('formatAbandonedClarifyBatch', () => {

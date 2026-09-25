@@ -10,21 +10,14 @@ Covers:
 """
 
 import json
-import os
-import threading
-import time
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from tools import delegation_live_log as dll
 from tools.delegation_live_log import (
     LiveTranscriptWriter,
     create_live_transcripts,
     live_transcript_root,
-    prune_stale_live_dirs,
-    update_manifest_statuses,
     wrap_progress_callback,
 )
 
@@ -274,19 +267,6 @@ def test_manifest_includes_model_and_provider():
     assert len(manifest["tasks"]) == 2
 
 
-def test_manifest_model_provider_are_optional_and_default_none():
-    """When not provided, model and provider should be null in the manifest."""
-    delegation_id, _writers, _paths = create_live_transcripts(
-        [{"goal": "task without model"}]
-    )
-
-    manifest = json.loads(
-        (live_transcript_root() / delegation_id / "manifest.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert manifest["model"] is None
-    assert manifest["provider"] is None
 
 
 def test_no_file_in_the_dispatch_directory_carries_the_raw_key():

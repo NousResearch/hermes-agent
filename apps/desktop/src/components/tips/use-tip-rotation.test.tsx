@@ -170,6 +170,7 @@ it.each(['flag-off', 'tips-off', 'remote'])('does not read or offer when %s', as
   if (guard === 'remote') {
     $connection.set({ mode: 'remote' } as never)
   }
+
   mount()
   await act(async () => {
     await vi.advanceTimersByTimeAsync(3_000)

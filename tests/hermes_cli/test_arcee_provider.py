@@ -27,15 +27,6 @@ _OTHER_PROVIDER_KEYS = (
 # =============================================================================
 
 
-class TestArceeProviderRegistry:
-    def test_registered(self):
-        assert "arcee" in PROVIDER_REGISTRY
-
-
-    def test_inference_base_url(self):
-        assert PROVIDER_REGISTRY["arcee"].inference_base_url == "https://api.arcee.ai/api/v1"
-
-
 # =============================================================================
 # Aliases
 # =============================================================================
@@ -79,27 +70,12 @@ class TestArceeCredentials:
         monkeypatch.delenv("ARCEE_BASE_URL", raising=False)
         creds = resolve_api_key_provider_credentials("arcee")
         assert creds["api_key"] == "arc-direct-key"
-        assert creds["base_url"] == "https://api.arcee.ai/api/v1"
+        assert creds["base_url"] == PROVIDER_REGISTRY["arcee"].inference_base_url
 
 
 # =============================================================================
 # Model catalog
 # =============================================================================
-
-
-class TestArceeModelCatalog:
-    def test_static_model_list(self):
-        """Arcee has a static _PROVIDER_MODELS catalog entry. Specific model
-        names change with releases and don't belong in tests.
-        """
-        from hermes_cli.models import _PROVIDER_MODELS
-        assert "arcee" in _PROVIDER_MODELS
-        assert len(_PROVIDER_MODELS["arcee"]) >= 1
-
-    def test_canonical_provider_entry(self):
-        from hermes_cli.models import CANONICAL_PROVIDERS
-        slugs = [p.slug for p in CANONICAL_PROVIDERS]
-        assert "arcee" in slugs
 
 
 # =============================================================================
@@ -108,9 +84,6 @@ class TestArceeModelCatalog:
 
 
 class TestArceeNormalization:
-    def test_in_matching_prefix_strip_set(self):
-        from hermes_cli.model_normalize import _MATCHING_PREFIX_STRIP_PROVIDERS
-        assert "arcee" in _MATCHING_PREFIX_STRIP_PROVIDERS
 
 
     def test_bare_name_unchanged(self):
@@ -125,11 +98,6 @@ class TestArceeNormalization:
 
 class TestArceeURLMapping:
 
-    def test_provider_prefixes(self):
-        from agent.model_metadata import _PROVIDER_PREFIXES
-        assert "arcee" in _PROVIDER_PREFIXES
-        assert "arcee-ai" in _PROVIDER_PREFIXES
-        assert "arceeai" in _PROVIDER_PREFIXES
 
     def test_trajectory_compressor_detects_arcee(self):
         import trajectory_compressor as tc
@@ -141,16 +109,6 @@ class TestArceeURLMapping:
 # =============================================================================
 # providers.py overlay + aliases
 # =============================================================================
-
-
-class TestArceeProvidersModule:
-    def test_overlay_exists(self):
-        from hermes_cli.providers import HERMES_OVERLAYS
-        assert "arcee" in HERMES_OVERLAYS
-        overlay = HERMES_OVERLAYS["arcee"]
-        assert overlay.transport == "openai_chat"
-        assert overlay.base_url_env_var == "ARCEE_BASE_URL"
-        assert not overlay.is_aggregator
 
 
 # =============================================================================

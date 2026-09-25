@@ -36,6 +36,22 @@ export function setSessionCompacting(sessionId: string | null | undefined, activ
   $compactingSessions.set(next)
 }
 
+// A manual /compress whose RPC answers `pending` (#97948) returns before the
+// compute host is done, so the handler never reaches the branch that renders
+// the summary. Claim the session here and let the `compacted`/`ready` edge
+// announce the completion instead — that edge is the only one the client gets.
+const deferredCompressSessions = new Set<string>()
+
+export function markCompressDeferred(sessionId: string | null | undefined): void {
+  deferredCompressSessions.add(keyFor(sessionId))
+}
+
+/** Consume the claim. True only for the first terminal edge, so a later
+ *  auto-compaction on the same session cannot replay the notice. */
+export function takeCompressDeferred(sessionId: string | null | undefined): boolean {
+  return deferredCompressSessions.delete(keyFor(sessionId))
+}
+
 /** Clear compaction only when the gateway proves the turn resumed or ended. */
 export function reconcileSessionCompacting(
   sessionId: string | null | undefined,

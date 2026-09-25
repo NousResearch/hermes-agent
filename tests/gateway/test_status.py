@@ -2,7 +2,7 @@
 
 import json
 import os
-import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -383,6 +383,43 @@ class TestGatewayRuntimeStatus:
         cmdline = r"hermes_home=c:\opt\data\profiles\coder hermes gateway run --replace"
         assert status._command_line_belongs_to_profile(cmdline, home) is True
 
+    def test_command_line_belongs_to_profile_rejects_sibling_homes(self):
+        """A substring test let ``HERMES_HOME=/root/profiles/ops2`` satisfy the ``ops`` profile's
+        predicate, so a stale state record could borrow the sibling's live gateway identity (same
+        shape as the ``-p ops`` vs ``-p ops-2`` token rule) -- on the named AND the default branch
+        (#115031). An exact or absent assignment still matches."""
+        home = Path("/fixture/profiles/ops")
+        for cmdline in (
+            "HERMES_HOME=/fixture/profiles/ops2 hermes gateway run",
+            "HERMES_HOME=/fixture/profiles/ops-backup hermes gateway run",
+            "HERMES_HOME=/fixture/profiles/ops/2 hermes gateway run",
+        ):
+            assert not status._command_line_belongs_to_profile(cmdline, home), cmdline
+        default_home = Path("/opt/hermes-data")
+        assert not status._command_line_belongs_to_profile("HERMES_HOME=/opt/hermes-data2 hermes gateway run", default_home)
+        assert status._command_line_belongs_to_profile("HERMES_HOME=/opt/hermes-data hermes gateway run", default_home)
+        assert status._command_line_belongs_to_profile("hermes gateway run", default_home)
+
+    def test_command_line_belongs_to_profile_matches_own_home_spellings_only(self):
+        """Token-bounded value AND name: quoted values (ps/wmic re-quoting) and a trailing separator
+        (systemd ``Environment=``, ``sh -c`` wrappers) are the same home; ``FOO=hermes_home=/x``
+        embeds the name inside another token and is not an assignment."""
+        home = Path("/opt/data/profiles/coder with space")
+        assert status._command_line_belongs_to_profile(
+            'hermes_home="/opt/data/profiles/coder with space" hermes gateway run', home)
+        # /proc and psutil hand argv back space-joined, so an unquoted value with a space is cut at
+        # the space by the token parser; the whole-home literal match must still claim it.
+        assert status._command_line_belongs_to_profile(
+            "HERMES_HOME=/opt/data/profiles/coder with space hermes gateway run", home)
+        assert status._command_line_belongs_to_profile(
+            r"HERMES_HOME=C:\Users\John Doe\.hermes hermes gateway run", Path(r"C:\Users\John Doe\.hermes"))
+        assert not status._command_line_belongs_to_profile(
+            "HERMES_HOME=/opt/data/profiles/coder with spaces hermes gateway run", home)
+        home = Path("/fixture/profiles/ops")
+        assert status._command_line_belongs_to_profile("HERMES_HOME=/fixture/profiles/ops/ hermes gateway run", home)
+        assert status._command_line_belongs_to_profile("HERMES_HOME=/opt/hermes-data/ hermes gateway run", Path("/opt/hermes-data"))
+        assert not status._command_line_belongs_to_profile("FOO=hermes_home=/fixture/profiles/ops hermes gateway run", home)
+
 
     def test_write_runtime_status_explicit_none_clears_stale_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -434,10 +471,94 @@ class TestGatewayRuntimeStatus:
             adapter._fatal_error_code = adapter._fatal_error_message = None
             adapter._fatal_error_retryable = True
             adapter._mark_connected()
+        assert status.flush_runtime_status(timeout=2.0)
         entry = status.read_runtime_status()["platforms"]["telegram"]
         assert entry["state"] == "connected"
         assert entry["needs_attention"] is False
         assert entry["retrying_since"] is None
+
+
+class TestRuntimeStatusBackgroundWriter:
+    def test_blocked_write_does_not_block_publish_and_burst_coalesces(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        write_started = threading.Event()
+        release_write = threading.Event()
+        publish_returned = threading.Event()
+        writes = []
+
+        def controlled_write(_path, payload):
+            writes.append(payload)
+            if len(writes) == 1:
+                write_started.set()
+                assert release_write.wait(timeout=5.0)
+
+        writer = status._RuntimeStatusWriter(write_fn=controlled_write)
+        monkeypatch.setattr(status, "_runtime_status_writer", writer)
+
+        def publish_initial_status():
+            status.publish_runtime_status(
+                platform="reviewer:slack", platform_state="fatal"
+            )
+            publish_returned.set()
+
+        caller = threading.Thread(target=publish_initial_status)
+        caller.start()
+        try:
+            assert write_started.wait(timeout=2.0)
+            assert publish_returned.wait(timeout=2.0)
+            status.publish_runtime_status(
+                gateway_state="running",
+                active_work=["telegram:dm:1"],
+                multiplex_standalone_reason="single-profile",
+            )
+            status.publish_runtime_status(
+                platform="telegram",
+                platform_state="connected",
+                ingress_url="https://example.test/p/default/telegram",
+                listener_base="http://127.0.0.1:8080",
+            )
+            status.publish_runtime_status(drop_profile_platforms="reviewer")
+            for active_agents in range(50):
+                status.publish_runtime_status(active_agents=active_agents)
+        finally:
+            release_write.set()
+            caller.join(timeout=2.0)
+
+        assert writer.flush(timeout=2.0)
+        assert len(writes) == 2
+        final = writes[-1]
+        assert final["gateway_state"] == "running"
+        assert final["active_agents"] == 49
+        assert final["active_work"] == ["telegram:dm:1"]
+        assert final["multiplex_standalone_reason"] == "single-profile"
+        assert "reviewer:slack" not in final["platforms"]
+        assert final["platforms"]["telegram"]["ingress_url"].endswith("/telegram")
+        assert final["platforms"]["telegram"]["listener_base"] == "http://127.0.0.1:8080"
+
+    def test_sync_write_can_bound_a_blocked_persistence_wait(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        write_started = threading.Event()
+        release_write = threading.Event()
+
+        def blocked_write(_path, _payload):
+            write_started.set()
+            assert release_write.wait(timeout=5.0)
+
+        writer = status._RuntimeStatusWriter(write_fn=blocked_write)
+        monkeypatch.setattr(status, "_runtime_status_writer", writer)
+        try:
+            persisted = status.write_runtime_status(
+                gateway_state="starting", wait_timeout=0.05
+            )
+            assert write_started.wait(timeout=2.0)
+            assert persisted is False
+        finally:
+            release_write.set()
+        assert writer.flush(timeout=2.0)
 
 
 class TestGetProcessStartTime:
@@ -450,7 +571,6 @@ class TestGetProcessStartTime:
 
     def test_live_process_is_stable_int(self):
         import subprocess
-        import time
         p = subprocess.Popen(["sleep", "20"])
         try:
             a = status._get_process_start_time(p.pid)
@@ -464,7 +584,7 @@ class TestGetProcessStartTime:
 
 
 class TestTerminatePid:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the real
         # CREATE_NO_WINDOW creationflags value that windows_hide_flags()
@@ -489,8 +609,8 @@ class TestTerminatePid:
             (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
         ]
 
+    @pytest.mark.platforms("windows")
     def test_windows_force_refuses_pid_without_start_time_guard(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
         calls = []
         monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
 
@@ -499,8 +619,8 @@ class TestTerminatePid:
 
         assert calls == []
 
+    @pytest.mark.platforms("windows")
     def test_windows_force_refuses_reused_pid(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
         calls = []
         monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
@@ -511,8 +631,42 @@ class TestTerminatePid:
         assert calls == []
 
 
+class TestPidExistsZombieProbe:
+    """#115578: the psutil ``status()`` zombie probe is POSIX-only. On Windows it costs ~7 ms per
+    pid, runs once per registry entry inside the session-registry file lock, and can never
+    report a zombie (Windows has no such state), so pollers starve at a handful of leases."""
+
+    @staticmethod
+    def _spy_status(monkeypatch):
+        psutil = pytest.importorskip("psutil")
+        calls = []
+        real_status = psutil.Process.status
+
+        def spy(self):
+            calls.append(self.pid)
+            return real_status(self)
+
+        monkeypatch.setattr(psutil.Process, "status", spy)
+        return calls
+
+    @pytest.mark.platforms("windows")
+    def test_windows_skips_zombie_status_probe(self, monkeypatch):
+        # Faking os.name on POSIX proves nothing about the cost on the real host; the wine2e
+        # runner receipt (red on main, green on the fix) is the live repro for this test.
+        calls = self._spy_status(monkeypatch)
+        assert status._pid_exists(os.getpid()) is True
+        assert calls == []
+
+    @pytest.mark.platforms("linux")
+    def test_posix_still_probes_zombie_status(self, monkeypatch):
+        # Control: on POSIX a zombie still answers pid_exists(), so the probe must survive.
+        calls = self._spy_status(monkeypatch)
+        assert status._pid_exists(os.getpid()) is True
+        assert calls == [os.getpid()]
+
+
 class TestScopedLocks:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the msvcrt
         # byte-range locking path at all: msvcrt does not exist off Windows,
@@ -1254,6 +1408,24 @@ class TestLaunchdPlistRespawnGovernance:
         assert "<key>ExitTimeOut</key>" in plist
         assert "<key>KeepAlive</key>" in plist
 
+    def test_plist_exit_timeout_uses_full_gui_domain_clamp(self, tmp_path, monkeypatch):
+        """launchd's gui domain clamps ExitTimeOut at 60s; ask for all of it.
+
+        Anything above 60 is silently clamped, anything below throws away
+        drain headroom the gateway could have used before SIGKILL.
+        """
+        import re
+
+        from gateway.restart import LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S, LAUNCHD_STOP_CLEANUP_RESERVE_S
+        from hermes_cli.gateway import generate_launchd_plist
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        plist = generate_launchd_plist()
+        m = re.search(r"<key>ExitTimeOut</key>\s*<integer>(\d+)</integer>", plist)
+        assert m, plist
+        # Ask for the whole gui-domain clamp, and leave room for post-drain cleanup inside it.
+        assert int(m.group(1)) >= LAUNCHD_GUI_EXIT_TIMEOUT_CLAMP_S > LAUNCHD_STOP_CLEANUP_RESERVE_S
+
 
 class TestPermissionErrorOnLockFile:
     """Stale root-owned lock files from launchd Background sessions must not
@@ -1433,12 +1605,15 @@ class TestResolveGatewayLiveness:
         assert calls == {"health": 0, "runtime_pid": 0}
 
 
-    def test_probe_exception_degrades_instead_of_raising(self):
+    def test_probe_exception_degrades_instead_of_raising(self, tmp_path, monkeypatch):
         """A raising rung must fall through, never propagate.
 
         Status endpoints poll this constantly; an exotic /proc or a
         permissions error must not turn into a 500.
         """
+        # Empty rendezvous dir: no host gateway owns the role, so the multiplexer rung stays quiet.
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path))
+
         def _boom(*a, **k):
             raise RuntimeError("probe exploded")
 

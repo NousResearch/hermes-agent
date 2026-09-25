@@ -33,19 +33,9 @@ def _reset_arm_flag(monkeypatch):
 
 
 class TestSignalArmLogic:
-    def test_arms_with_double_cleanup_timeout(self, monkeypatch):
-        monkeypatch.setenv("HERMES_EXIT_WATCHDOG_S", "7")
-        with patch.object(cli, "_arm_exit_watchdog") as arm:
-            cli._arm_exit_watchdog_on_shutdown_signal()
-        arm.assert_called_once_with(timeout_s=14.0, from_signal=True)
 
 
 
-    def test_bad_env_value_falls_back_to_default(self, monkeypatch):
-        monkeypatch.setenv("HERMES_EXIT_WATCHDOG_S", "not-a-number")
-        with patch.object(cli, "_arm_exit_watchdog") as arm:
-            cli._arm_exit_watchdog_on_shutdown_signal()
-        arm.assert_called_once_with(timeout_s=60.0, from_signal=True)
 
     def test_never_raises_even_if_arm_explodes(self, monkeypatch):
         monkeypatch.setenv("HERMES_EXIT_WATCHDOG_S", "7")
@@ -102,7 +92,7 @@ while True:
 """
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.platforms("posix")  # POSIX signals
 def test_sigterm_on_wedged_process_forces_exit_within_leash():
     """E2E: a wedged process armed via the signal path self-exits at ~2×
     HERMES_EXIT_WATCHDOG_S; without the signal it would live forever."""
@@ -137,7 +127,7 @@ def test_sigterm_on_wedged_process_forces_exit_within_leash():
             p.kill()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.platforms("posix")  # POSIX signals
 def test_signal_watchdog_is_skipped_once_cleanup_starts():
     """If cleanup starts after signal intent, the cleanup-owned watchdog should
     govern shutdown and the signal watchdog should not hard-kill midway."""

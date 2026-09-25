@@ -212,6 +212,16 @@ def _resume_panel_colors() -> tuple:
         return tuple(default for _, default in _RESUME_SKIN_COLORS)
 
 
+def _retire_agent(cli) -> None:
+    """Drop ``cli.agent`` so the next turn rebuilds it, releasing its LLM clients first: the Codex
+    app-server child (and MCP descendants) belongs to the instance, so ``self.agent = None`` alone
+    orphans it for the CLI process lifetime (#72548). Session tool state is kept (soft release)."""
+    agent = cli.agent
+    if agent is not None and hasattr(agent, "release_clients"):
+        agent.release_clients()
+    cli.agent = None
+
+
 class CLIAgentSetupMixin:
     """Agent construction + session-resume display methods for ``HermesCLI``."""
 
@@ -223,6 +233,7 @@ class CLIAgentSetupMixin:
         _primary_exc = None
         runtime = None
         _model_at_entry = self.model
+        self._credentials_rate_limited = False
         try:
             # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
             # api_mode) must see the model this CLI will actually send, not config's `default`,
@@ -238,6 +249,8 @@ class CLIAgentSetupMixin:
             if runtime is not None:
                 _primary_exc = None
         if runtime is None:
+            from hermes_cli.auth import is_rate_limited_auth_error
+            self._credentials_rate_limited = bool(_primary_exc) and is_rate_limited_auth_error(_primary_exc)
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
             if getattr(self, "tool_progress_mode", "full") == "off":
                 print(message, file=sys.stderr)  # quiet/stream-json: stdout is machine-readable
@@ -324,7 +337,7 @@ class CLIAgentSetupMixin:
 
         # AIAgent/OpenAI client holds auth at init, so rebuild on key/routing/model change.
         if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
-            self.agent = None
+            _retire_agent(self)
             self._active_agent_route_signature = None
         return True
 
@@ -347,7 +360,7 @@ class CLIAgentSetupMixin:
         order and switch the CLI's requested_provider/model to the first that resolves.
         None when the error is not auth-related or no fallback resolves."""
         from cli import _cprint, logger
-        from hermes_cli.auth import AuthError
+        from hermes_cli.auth import AuthError, primary_failure_wording
         from hermes_cli.runtime_provider import resolve_runtime_provider
         if not isinstance(primary_exc, AuthError):
             return None
@@ -368,12 +381,13 @@ class CLIAgentSetupMixin:
                 if _fb_api_key:
                     _fb_kwargs["explicit_api_key"] = _fb_api_key
                 runtime = resolve_runtime_provider(**_fb_kwargs)
+                _why_log, _why = primary_failure_wording(primary_exc)  # #117482: quota is not auth
                 logger.warning(
-                    "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
-                    primary_exc, _fb_provider, _fb_model)
+                    "Primary provider %s (%s). Falling through to fallback: %s/%s",
+                    _why_log, primary_exc, _fb_provider, _fb_model)
                 from gateway.warning_notifications import render_notification
                 render_notification(
-                    lambda: _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}"),
+                    lambda: _cprint(f"⚠️  {_why} — switching to fallback: {_fb_provider} / {_fb_model}"),
                     platform="cli")
                 self.requested_provider = _fb_provider
                 self.model = _fb_model
@@ -492,7 +506,7 @@ class CLIAgentSetupMixin:
         except Exception as exc:
             logger.debug("first-run config re-sync failed: %s", exc)
         # Force credential re-resolution + agent rebuild on next use.
-        self.agent = None
+        _retire_agent(self)
         self._active_agent_route_signature = None
         if self._runtime_credentials_ready():
             _cprint("  ✓ Provider configured — you're ready to chat.")
@@ -636,11 +650,13 @@ class CLIAgentSetupMixin:
             effective_model = model_override or self.model
             # -q never builds the prompt_toolkit app, so the clarify modal can't be
             # answered — answer headless instead of polling until clarify_timeout.
+            single_query_mode = getattr(self, "_single_query_mode", False)
             clarify_callback = (
                 # See #94943.
                 _single_query_clarify_callback
-                if getattr(self, "_single_query_mode", False)
+                if single_query_mode
                 else self._clarify_callback)
+            connection_callback = None if single_query_mode else self._connection_callback
             self.agent = AIAgent(
                 model=effective_model, api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"), provider=runtime.get("provider"),
@@ -662,7 +678,7 @@ class CLIAgentSetupMixin:
                 provider_data_collection=self._provider_data_collection,
                 openrouter_min_coding_score=self._openrouter_min_coding_score,
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
-                clarify_callback=clarify_callback,
+                clarify_callback=clarify_callback, connection_callback=connection_callback,
                 reasoning_callback=self._current_reasoning_callback(),
                 fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,

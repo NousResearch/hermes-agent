@@ -8,6 +8,7 @@ registered are stopped lazily on the next lookup.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import queue
 import threading
@@ -26,7 +27,7 @@ _STOP = object()
 class _ConsumerDispatcher:
     hook_name: str
     callback: Callable[..., Any]
-    events: "queue.Queue[dict[str, Any] | object]"
+    events: "queue.Queue[tuple[contextvars.Context, dict[str, Any]] | object]"
     thread: threading.Thread | None = None
 
 
@@ -62,10 +63,16 @@ def _worker(dispatcher: _ConsumerDispatcher) -> None:
         try:
             if item is _STOP:
                 return
-            payload = dict(item)
+            context, payload = item
+            payload = dict(payload)
             payload.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
             try:
-                dispatcher.callback(**payload)
+                # The worker outlives every turn and serves every profile; run the callback in the
+                # enqueuing turn's contextvars so it sees that turn's profile scope (home override,
+                # secrets), not an unbound context that fail-closed plugin bindings refuse (#118538).
+                # ``copy()``: one snapshot fans out to N consumer threads and a Context can only be
+                # entered by one thread at a time.
+                context.copy().run(dispatcher.callback, **payload)
             except Exception as exc:
                 # Fires once per streaming delta: a mis-declared callback fails identically every
                 # time, so it goes through the manager's warn-once reporter (#111922).
@@ -126,7 +133,7 @@ def _dispatchers_for(hook_name: str) -> list[_ConsumerDispatcher]:
 def enqueue_plugin_stream_hook(hook_name: str, **payload: Any) -> bool:
     """Queue an observer hook for each consumer without running plugin code inline."""
     queued = False
-    item = dict(payload)
+    item = (contextvars.copy_context(), dict(payload))
     for dispatcher in _dispatchers_for(hook_name):
         if _put_drop_oldest(dispatcher.events, item):
             queued = True
@@ -147,10 +154,13 @@ def has_reasoning_stream_observer_hooks() -> bool:
 
 
 def stream_reasoning_deltas_enabled() -> bool:
-    """Return True only when the user opted plugins into reasoning deltas."""
+    """Return True only when the user opted plugins into reasoning deltas.
+
+    Read-only scalar lookup: skips ``load_config()``'s deepcopy. Callers on the token path
+    should still cache the result per stream (``_fire_reasoning_delta`` does)."""
     try:
         from hermes_cli import config as config_mod
-        config = config_mod.load_config()
+        config = config_mod.load_config_readonly()
         return bool(config_mod.cfg_get(config, "plugins", "stream_reasoning_deltas", default=False))
     except Exception:
         logger.debug("failed to read plugins.stream_reasoning_deltas", exc_info=True)

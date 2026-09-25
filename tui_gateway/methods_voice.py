@@ -250,7 +250,7 @@ def _deliver_fd_transcript(text: str) -> None:
     """Emit the captured interjection; a bare stop phrase also ends the voice chat. The stop
     check must never break delivery (stubbed voice_mode in tests, partial installs)."""
     try:
-        from tools.voice_mode import is_voice_stop_phrase
+        from tools.voice_mode_transcript import is_voice_stop_phrase
         is_stop = is_voice_stop_phrase(text)
     except Exception:
         is_stop = False

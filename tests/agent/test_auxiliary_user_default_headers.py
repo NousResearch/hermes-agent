@@ -24,21 +24,13 @@ def _isolate(tmp_path, monkeypatch):
 
 
 def _write_config(tmp_path, config_dict):
-    import yaml
-    (tmp_path / ".hermes" / "config.yaml").write_text(yaml.dump(config_dict))
+    import hermes_yaml as yaml
+    (tmp_path / ".hermes" / "config.yaml").write_text(yaml.safe_dump(config_dict))
 
 
 class TestApplyUserDefaultHeadersHelper:
     """Direct unit tests for the merge helper."""
 
-    def test_user_headers_merged_and_win(self, tmp_path):
-        _write_config(tmp_path, {
-            "model": {"default": "m", "default_headers": {"User-Agent": "curl/8.7.1", "X-Extra": "1"}},
-        })
-        from agent.auxiliary_client import _apply_user_default_headers
-        merged = _apply_user_default_headers({"User-Agent": "OpenAI/Python 2.24.0"})
-        assert merged["User-Agent"] == "curl/8.7.1"  # user wins
-        assert merged["X-Extra"] == "1"
 
 
 

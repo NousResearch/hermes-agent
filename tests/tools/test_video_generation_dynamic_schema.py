@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from agent import video_gen_registry
 from agent.video_gen_provider import VideoGenProvider
@@ -84,15 +84,6 @@ class _ImageOnlyProvider(VideoGenProvider):
 
 
 class TestDynamicSchemaBuilder:
-    def test_no_config_says_so(self, cfg_home):
-        from tools.video_generation_tool import _build_dynamic_video_schema
-
-        desc = _build_dynamic_video_schema()["description"]
-        # No provider configured AND none available → description says so. The
-        # wording reflects the *resolved* active provider (mirrors execution),
-        # so it reads "available" rather than "configured".
-        assert "No video backend is available" in desc
-        assert "hermes tools" in desc
 
 
     def test_builder_wired_into_registry(self):

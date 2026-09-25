@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Run a repo Python script under the activated Hermes environment.
+#
+# Shebang target for POSIX scripts:
+#     #!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
+#
+# The kernel appends the invoking script, so `$1` is the Python file to run
+# and `$@` its arguments. Activates when there is no environment to inherit, or
+# when the inherited one no longer matches its inputs (scripts/_activation.sh);
+# then execs the interpreter on the same file, so tracebacks and __file__ point
+# at the real script.
+set -u
+
+target=${1:-}
+if [ -z "$target" ]; then
+    printf 'usage: %s <script.py> [args...]\n' "$0" >&2
+    exit 2
+fi
+shift
+
+_here="$(cd "$(dirname "$target")" && pwd)"
+while [ "$_here" != / ] && [ ! -f "$_here/activate" ]; do _here="$(dirname "$_here")"; done
+if [ ! -f "$_here/activate" ]; then
+    printf '%s: no activate script above %s\n' "$0" "$target" >&2
+    exit 1
+fi
+
+# shellcheck source=scripts/_activation.sh
+. "$_here/scripts/_activation.sh"
+hermes_ensure_activated "$_here" || exit 1
+
+exec python3 "$target" "$@"

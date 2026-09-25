@@ -86,16 +86,26 @@ function sessionMessages(key: string, turns = 1): ThreadMessage[] {
 }
 
 interface ScrollHarnessProps {
+  isRunning?: boolean
   messages: ThreadMessage[]
   sessionKey: string | null
   scrollProfile?: string
   sessionId?: string | null
+  clampToComposer?: boolean
   window?: TranscriptWindowValue
 }
 
-function ScrollHarness({ messages, sessionKey, scrollProfile, sessionId, window }: ScrollHarnessProps) {
+function ScrollHarness({
+  isRunning = false,
+  messages,
+  sessionKey,
+  scrollProfile,
+  sessionId,
+  window,
+  clampToComposer
+}: ScrollHarnessProps) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    isRunning: false,
+    isRunning,
     messages,
     onNew: async () => {}
   })
@@ -103,13 +113,266 @@ function ScrollHarness({ messages, sessionKey, scrollProfile, sessionId, window 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <TranscriptWindowProvider value={window ?? { olderAvailable: false, expandWindow: () => {} }}>
-        <Thread scrollProfile={scrollProfile} sessionId={sessionId} sessionKey={sessionKey} />
+        <Thread
+          clampToComposer={clampToComposer}
+          scrollProfile={scrollProfile}
+          sessionId={sessionId}
+          sessionKey={sessionKey}
+        />
       </TranscriptWindowProvider>
     </AssistantRuntimeProvider>
   )
 }
 
 describe('list session-scroll restore', () => {
+  it('keeps a bottom-pinned reader pinned while a running turn grows the content (#118482)', async () => {
+    // use-stick-to-bottom follows a content resize on the next animation frame,
+    // so streamed growth paints at the stale scrollTop and the viewport drifts
+    // up before the re-pin. The transcript ResizeObserver closes that frame.
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{
+      callback: ResizeObserverCallback
+      targets: Set<Element>
+    }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const messages = sessionMessages('stream')
+
+    const { container, unmount } = render(<ScrollHarness isRunning messages={messages} sessionKey="stream" />)
+    const vp = viewportEl(container)
+
+    try {
+      const deliverContentResize = () => {
+        for (const observer of observers) {
+          const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+          if (targets.length) {
+            observer.callback(
+              targets.map(target => ({ target, contentRect: { height: scrollHeightValue } })) as ResizeObserverEntry[],
+              observer as unknown as ResizeObserver
+            )
+          }
+        }
+      }
+
+      await settleScroll(10)
+      expect(vp.scrollTop).toBeGreaterThanOrEqual(scrollHeightValue - CLIENT_H - 1)
+
+      // Hold the library's follow frame so the resize leg is the only writer.
+      const raf = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation(() => 0)
+
+      try {
+        // Several streamed chunks land; the reader never leaves the bottom.
+        for (const delta of [120, 240, 168, 300]) {
+          scrollHeightValue += delta
+          act(deliverContentResize)
+
+          expect(vp.scrollTop).toBe(scrollHeightValue - CLIENT_H)
+        }
+
+        // An open inline edit holds the viewport: its growth is not followed.
+        const editingTop = vp.scrollTop
+        vp.setAttribute('data-editing', 'true')
+
+        act(() => {
+          scrollHeightValue += 200
+          deliverContentResize()
+        })
+
+        expect(vp.scrollTop).toBe(editingTop)
+        vp.removeAttribute('data-editing')
+
+        // A reader who scrolled up is not yanked back by the same growth.
+        const readingTop = scrollHeightValue - CLIENT_H - 900
+
+        act(() => {
+          vp.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -160 }))
+          vp.scrollTop = readingTop
+          vp.dispatchEvent(new Event('scroll'))
+        })
+
+        act(() => {
+          scrollHeightValue += 400
+          deliverContentResize()
+        })
+
+        expect(vp.scrollTop).toBe(readingTop)
+      } finally {
+        raf.mockRestore()
+      }
+    } finally {
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
+  it('does not follow a composer-only resize while a turn is running (#118482)', async () => {
+    // Typing in the composer grows the clearance spacer, not the transcript.
+    // The follow is keyed on transcript height, so it must not pull the reader.
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const { container, unmount } = render(
+      <ScrollHarness clampToComposer isRunning messages={sessionMessages('clr')} sessionKey="clr" />
+    )
+    const vp = viewportEl(container)
+    const clearance = vp.querySelector('[data-slot="aui_composer-clearance"]')
+
+    // Only rendered when the transcript is clamped to the composer; without the
+    // spacer there is no composer-only resize to distinguish from row growth.
+    if (!clearance) {
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+
+      return
+    }
+
+    await settleScroll(10)
+    const atBottom = vp.scrollTop
+
+    // Composer-only growth: the spacer absorbs the whole scrollHeight delta.
+    Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+      configurable: true,
+      get() {
+        return this.getAttribute?.('data-slot') === 'aui_composer-clearance' ? CLIENT_H + 168 : CLIENT_H
+      }
+    })
+    scrollHeightValue += 168
+
+    try {
+      act(() => {
+        for (const observer of [...observers]) {
+          const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+          if (targets.length) {
+            observer.callback(
+              targets.map(target => ({ target, contentRect: { height: scrollHeightValue } })) as ResizeObserverEntry[],
+              observer as unknown as ResizeObserver
+            )
+          }
+        }
+      })
+
+      expect(vp.scrollTop).toBe(atBottom)
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+        configurable: true,
+        get() {
+          return CLIENT_H
+        }
+      })
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
+  it('lets a reader escape bottom-follow when a running transcript grows during the scroll gesture', async () => {
+    // #116273: a pending clarify keeps the turn running while the transcript
+    // can still resize. If that resize lands in the same frame as scroll-up,
+    // the reader's intent must win over bottom-follow.
+    const previousObserver = globalThis.ResizeObserver
+    const observers = new Set<{ callback: ResizeObserverCallback; targets: Set<Element> }>()
+
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        targets = new Set<Element>()
+        constructor(public callback: ResizeObserverCallback) {
+          observers.add(this)
+        }
+        observe(target: Element) {
+          this.targets.add(target)
+        }
+        unobserve(target: Element) {
+          this.targets.delete(target)
+        }
+        disconnect() {
+          this.targets.clear()
+        }
+      }
+    )
+
+    const messages = sessionMessages('pending')
+    const { container, unmount } = render(<ScrollHarness isRunning messages={messages} sessionKey="pending" />)
+
+    try {
+      const vp = viewportEl(container)
+      await settleScroll(10)
+
+      const deliverContentResize = (height: number) => {
+        for (const observer of observers) {
+          const targets = [...observer.targets].filter(el => el.getAttribute('data-slot') === 'aui_thread-content')
+
+          if (targets.length) {
+            observer.callback(
+              targets.map(target => ({ target, contentRect: { height } })) as ResizeObserverEntry[],
+              observer as unknown as ResizeObserver
+            )
+          }
+        }
+      }
+
+      act(() => deliverContentResize(scrollHeightValue))
+      await settleScroll(3)
+      expect(vp.scrollTop).toBeGreaterThanOrEqual(scrollHeightValue - CLIENT_H - 1)
+
+      const readingTop = scrollHeightValue - CLIENT_H - 900
+
+      act(() => {
+        vp.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: -160 }))
+        vp.scrollTop = readingTop
+        vp.dispatchEvent(new Event('scroll'))
+        scrollHeightValue += 120
+        deliverContentResize(scrollHeightValue)
+      })
+
+      await settleScroll(10)
+
+      expect(vp.scrollTop).toBeLessThan(scrollHeightValue - CLIENT_H - 100)
+      expect(vp.scrollTop).toBeGreaterThanOrEqual(readingTop - 1)
+    } finally {
+      unmount()
+      vi.stubGlobal('ResizeObserver', previousObserver)
+    }
+  })
+
   it('restores a reading offset on return after switching away', async () => {
     saveThreadScrollPosition('a', { fromBottom: 800, kind: 'offset' })
 
@@ -148,6 +411,7 @@ describe('list session-scroll restore', () => {
     if (offset) {
       saveThreadScrollPosition('a', { fromBottom: offset, kind: 'offset' })
     }
+
     const messages = sessionMessages('a')
 
     const pane = (visible: boolean) => (
@@ -200,6 +464,7 @@ describe('list session-scroll restore', () => {
     if (offset) {
       saveThreadScrollPosition('a', { fromBottom: offset, kind: 'offset' })
     }
+
     const messages = sessionMessages('a')
     let runtimeId: string | null = null
 
@@ -321,11 +586,13 @@ describe('list session-scroll restore', () => {
     if (profileFirst) {
       setActiveProfile('pr-bot')
     }
+
     rerender(pane(false))
 
     if (!profileFirst) {
       setActiveProfile('pr-bot')
     }
+
     const otherKey = threadScrollStorageKey()
     await settleScroll(10)
     // The selected global profile can still belong to the other Bot when the
@@ -482,6 +749,7 @@ describe('list session-scroll restore', () => {
     for (let step = 0; step < 5; step++) {
       await settleScroll(20)
     }
+
     act(() => window.dispatchEvent(new Event('beforeunload')))
     expect(getThreadScrollPosition('lost')).toEqual({ kind: 'offset', fromBottom: SCROLL_H - CLIENT_H })
     expect(viewportEl(container).scrollTop).toBe(0)

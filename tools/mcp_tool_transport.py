@@ -86,6 +86,31 @@ def _pgroup_alive(pgid: Optional[int]) -> bool:
         return False
 
 
+class LiveEndpointUnavailable(ConnectionError):
+    """A declared runtime file did not provide a usable live endpoint."""
+
+
+def _live_endpoint(server_name: str) -> Optional[tuple[str, dict]]:
+    from agent.redact import register_vault_redaction_value
+    from hermes_platform import declaration
+    from hermes_platform.host import facts
+    from hermes_platform.resolver.app import AppResolver
+    from tools.mcp_liveness import liveness_for
+
+    live = liveness_for(server_name)
+    if live.kind != "server_json":
+        return None
+    decl = declaration.lookup(server_name)
+    definition = decl.app_for(facts.os_family()) if decl is not None else None
+    endpoint = AppResolver(live.app_definition(definition)).endpoint() if definition is not None else None
+    if endpoint is None:
+        raise LiveEndpointUnavailable(f"MCP server '{server_name}' has no usable live endpoint")
+    if endpoint.token:
+        register_vault_redaction_value(endpoint.token)
+    headers = {"Authorization": f"Bearer {endpoint.token}"} if endpoint.token else {}
+    return endpoint.url, headers
+
+
 class MCPServerTransportMixin:
     """Methods of :class:`tools.mcp_tool.MCPServerTask` (mixed in; relies on its attributes)."""
 
@@ -340,7 +365,8 @@ class MCPServerTransportMixin:
     # ------------------------------------------------------------------- HTTP
 
     async def _preflight_content_type(self, url: str, *, headers: Optional[dict] = None,
-                                      ssl_verify: bool = True, client_cert=None, timeout: float = 5.0) -> None:
+                                      ssl_verify: bool = True, client_cert=None, timeout: float = 5.0,
+                                      strict_redirect_headers: bool = False) -> None:
         """Probe *url* before the SDK connects: a plain web page would make the SDK sit out the full
         ``connect_timeout`` before an opaque ``CancelledError``; this raises NonMcpEndpointError within
         ``timeout``. Allow-list based: only a 2xx with a definite non-MCP content type is rejected, and
@@ -359,9 +385,15 @@ class MCPServerTransportMixin:
         probe_headers = dict(headers) if headers else {}
         # Same route as the SDK client: TLS on an explicit transport (which also turns off httpx's own
         # env proxy auto-detection) plus the repo's proxy mounts, so the probe and the handshake agree.
+        # Same redirect boundary as the transport client too: httpx strips Authorization on a
+        # cross-origin hop natively, but forwards every other configured header verbatim — under
+        # strict_redirect_headers those must not leave the configured origin on the probe either.
         probe_transport = _httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
+        _build_client = _make_redirect_header_stripper(
+            _httpx, _httpx.URL(url), strict=strict_redirect_headers,
+            configured_header_names={key.lower() for key in probe_headers})
         try:
-            async with _httpx.AsyncClient(
+            async with _build_client(
                     follow_redirects=True, timeout=_httpx.Timeout(timeout), transport=probe_transport,
                     **_present(mounts=_mcp_proxy_mounts(_httpx, url, ssl_verify, client_cert, self.name))) as client:
                 resp = await client.head(url, headers=probe_headers)  # cheapest; GET on 405/501
@@ -470,22 +502,21 @@ class MCPServerTransportMixin:
         # Explicit AsyncClient matching the SDK's create_mcp_http_client defaults; MUST come from the
         # SDK's httpx (httpx2 on mcp >= 2.0) since the SDK sends its own Requests through it.
         httpx = _core.sdk_httpx()
-        _strip_auth_on_cross_origin_redirect = _make_redirect_header_stripper(
-            httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
+        _build_client = _make_redirect_header_stripper(
+            httpx, httpx.URL(url), strict=strict_cfg_headers, configured_header_names=configured_header_names)
         # verify/cert live on the inner transport: a custom transport= makes client-level TLS kwargs
         # inert — and suppresses httpx's own proxy auto-detection, hence the explicit mounts=.
         inner_transport = httpx.AsyncHTTPTransport(verify=ssl_verify, **_present(cert=client_cert))
         client_kwargs: dict = {"follow_redirects": True, "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                                **({"headers": headers} if headers else {}),
-                               "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect,
-                                                            _make_http_rejection_recorder(self._http_rejection)]},
+                               "event_hooks": {"response": [_make_http_rejection_recorder(self._http_rejection)]},
                                "transport": _make_mcp_body_cap_transport(httpx, inner_transport),
                                **_present(mounts=_mcp_proxy_mounts(httpx, url, ssl_verify, client_cert, self.name),
                                           auth=oauth_auth)}
 
         @asynccontextmanager
         async def _owned_client_streams():  # the SDK skips cleanup when http_client is provided
-            async with httpx.AsyncClient(**client_kwargs) as http_client:
+            async with _build_client(**client_kwargs) as http_client:
                 async with _core.streamable_http_client(url, http_client=http_client) as streams:
                     yield streams
         return _owned_client_streams()
@@ -498,9 +529,13 @@ class MCPServerTransportMixin:
                               "mcp.client.streamable_http is not available. "
                               "Upgrade the mcp package to get HTTP support.")
         url = config["url"]
+        headers = dict(config.get("headers") or {})
+        live = _live_endpoint(self.name)
+        if live is not None:
+            url, live_headers = live
+            headers.update(live_headers)
         logger.debug("MCP server '%s': connecting to %s", self.name, url)
         self._http_rejection = {}  # last 4xx/5xx the owned client saw this attempt (recorder hook)
-        headers = dict(config.get("headers") or {})
         # Agent Plugins v1 strict_redirect_headers: configured headers MUST NOT follow a cross-origin
         # redirect — capture their names BEFORE client-generated headers are merged in.
         configured_header_names = {key.lower() for key in headers}

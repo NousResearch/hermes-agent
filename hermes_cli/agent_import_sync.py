@@ -87,7 +87,7 @@ def load_sync_manifest(target_root: Path) -> Dict[str, Any]:
     if not path.exists():
         return {"version": 1, "agents": {}}
     try:
-        data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        data = json.loads(path.read_text(encoding="utf-8-sig", errors="replace"))
     except (json.JSONDecodeError, OSError):
         logger.warning("Unreadable %s — starting a fresh sync manifest", path)
         return {"version": 1, "agents": {}}

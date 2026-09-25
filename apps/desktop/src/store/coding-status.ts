@@ -3,14 +3,8 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 import type { HermesGitWorktree, HermesRepoStatus } from '@/global'
 import { desktopGit } from '@/lib/desktop-git'
 
-import {
-  $projectScope,
-  $projectTree,
-  $worktreeDialog,
-  $worktreeRefreshToken,
-  ALL_PROJECTS,
-  projectRootCwd
-} from './projects'
+import { $projectScope, ALL_PROJECTS } from './project-scope'
+import { $projectTree, $worktreeDialog, $worktreeRefreshToken, projectRootCwd } from './projects'
 import {
   $busy,
   $currentCwd,

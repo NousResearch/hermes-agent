@@ -1,10 +1,10 @@
 import { atom, computed } from 'nanostores'
 
-import { persistentAtom } from '@/lib/persisted'
-import { readKey } from '@/lib/storage'
+import { readJson, readKey, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
+import { normalizeProfileKey } from './profile'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
 /**
@@ -19,6 +19,9 @@ import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
  * Tabs are global and outlive the session that created them, like tabs
  * anywhere else — they close when you close them.
  */
+
+/** How an HTML file target shows: the live page, or its source. */
+export type PreviewRenderMode = 'preview' | 'source'
 
 export interface PreviewTarget {
   binary?: boolean
@@ -38,7 +41,7 @@ export interface PreviewTarget {
   mimeType?: string
   path?: string
   previewKind?: 'binary' | 'html' | 'image' | 'pdf' | 'text'
-  renderMode?: 'preview' | 'source'
+  renderMode?: PreviewRenderMode
   source: string
   /** Runtime-only target that cannot be restored from persisted state. */
   transient?: boolean
@@ -51,11 +54,6 @@ export interface PreviewServerRestart {
   taskId: string
   url: string
 }
-
-/** Where an open came from. Only affects how an HTML file is first rendered:
- *  browsing files is "peek at the source", a tool/link handing you something is
- *  "run it". Not a separate code path — just a property of the target. */
-export type PreviewRecordSource = 'explicit-link' | 'file-browser' | 'manual' | 'tool-result'
 
 export interface PreviewTab {
   id: RightRailTabId
@@ -118,8 +116,10 @@ function isPdfFileTarget(target: PreviewTarget): boolean {
  * Without this restore-time migration, an already-open PDF keeps taking the
  * obsolete raw-binary path after Desktop itself has been upgraded. */
 export function decodePreviewTabs(raw: string): PreviewTab[] {
-  const parsed = JSON.parse(raw) as unknown
+  return parseTabList(JSON.parse(raw) as unknown)
+}
 
+function parseTabList(parsed: unknown): PreviewTab[] {
   return (Array.isArray(parsed) ? parsed.filter(isPreviewTab) : []).map(tab =>
     isPdfFileTarget(tab.target) && tab.target.previewKind === 'binary'
       ? { ...tab, target: { ...tab.target, previewKind: 'pdf' as const } }
@@ -127,21 +127,159 @@ export function decodePreviewTabs(raw: string): PreviewTab[] {
   )
 }
 
-export const $previewTabs = persistentAtom<PreviewTab[]>(TABS_STORAGE_KEY, [], {
-  decode: decodePreviewTabs,
-  // Inline bytes are not restorable. Strip them from images, and skip remote
-  // HTML and artifact tabs that cannot render without their in-memory payload.
-  encode: tabs =>
-    JSON.stringify(
-      tabs.filter(
-        tab =>
-          tab.target.kind !== 'artifact' &&
-          !tab.target.transient &&
-          !(tab.target.previewKind === 'html' && tab.target.dataUrl)
-      ),
-      (key, value) => (key === 'dataUrl' ? undefined : value)
-    )
+/** The tabs a profile's rail is showing, keyed by profile. */
+type TabsByProfile = Record<string, PreviewTab[]>
+
+/** Read every profile's bucket. A value written by a build that stored ONE
+ *  global array is held back and adopted by the first scope to arrive rather
+ *  than dropped — tabs the user can see are the tabs that must survive. */
+let pendingLegacyTabs: PreviewTab[] | null = null
+
+function loadTabsByProfile(): TabsByProfile {
+  const stored = readJson<unknown>(TABS_STORAGE_KEY)
+
+  if (Array.isArray(stored)) {
+    pendingLegacyTabs = parseTabList(stored)
+
+    return {}
+  }
+
+  if (!stored || typeof stored !== 'object') {
+    return {}
+  }
+
+  const byProfile: TabsByProfile = {}
+
+  for (const [key, value] of Object.entries(stored as Record<string, unknown>)) {
+    byProfile[normalizeProfileKey(key)] = parseTabList(value)
+  }
+
+  return byProfile
+}
+
+const tabsByProfile = loadTabsByProfile()
+
+/** Inline bytes are not restorable. Strip them from images, and skip remote
+ *  HTML and artifact tabs that cannot render without their in-memory payload. */
+function persistableTabs(tabs: PreviewTab[]): PreviewTab[] {
+  return tabs.filter(
+    tab =>
+      tab.target.kind !== 'artifact' &&
+      !tab.target.transient &&
+      !(tab.target.previewKind === 'html' && tab.target.dataUrl)
+  )
+}
+
+function persistTabs() {
+  const buckets: TabsByProfile = {}
+
+  for (const [key, tabs] of Object.entries(tabsByProfile)) {
+    const persistable = persistableTabs(tabs)
+
+    if (persistable.length > 0) {
+      buckets[key] = persistable
+    }
+  }
+
+  // `dataUrl` holds inline bytes that cannot be restored; drop the key wherever
+  // it survives the filter above (an image tab). An empty map removes the key
+  // rather than storing `{}`, matching the tiles store.
+  writeKey(
+    TABS_STORAGE_KEY,
+    Object.keys(buckets).length === 0
+      ? null
+      : JSON.stringify(buckets, (key, value) => (key === 'dataUrl' ? undefined : value))
+  )
+}
+
+// Tabs are scoped to THE CHAT ON SCREEN, not to the window's gateway socket.
+// `session-states.ts` resolves the focused session's owner and pushes it here
+// via `setPreviewScope`; the two must not be conflated, because a focused tab
+// does not swap the socket — every bot chat is served by one pooled backend, so
+// a socket-keyed rail showed one agent's preview in every agent's chat. That is
+// the same trap `bot-row.tsx` documents for the roster highlight. (It also owns
+// the resolver, so it pushes rather than having this module reach for it — this
+// file is already imported by session-states.ts.)
+//
+// Which bucket the atom mirrors. A RENAME moves the view without the scope
+// changing, so this has to follow the rename or the persist subscriber below
+// would resurrect the bucket the rename just deleted.
+let viewKey = 'default'
+
+export const $previewTabs = atom<PreviewTab[]>([])
+
+$previewTabs.subscribe(tabs => {
+  // `subscribe` hands a readonly view; the bucket is a mutable store of its own.
+  tabsByProfile[viewKey] = [...tabs]
+  persistTabs()
 })
+
+/** Re-home the rail onto the profile that owns the chat on screen. Called by
+ *  `session-states.ts` whenever the focused session (or its resolved owner)
+ *  changes; the previous agent's tabs must not leak into the next one. */
+export function setPreviewScope(scope: string) {
+  const next = normalizeProfileKey(scope) || 'default'
+
+  if (next === viewKey) {
+    return
+  }
+
+  if (pendingLegacyTabs) {
+    tabsByProfile[next] = [...(tabsByProfile[next] ?? []), ...pendingLegacyTabs]
+    pendingLegacyTabs = null
+    persistTabs()
+  }
+
+  viewKey = next
+  $previewTabs.set(tabsByProfile[next] ?? [])
+}
+
+/** Drop one profile's rail. Delete counterpart of the tiles store's
+ *  `dropTilesForProfile`, which profile deletion calls. */
+export function dropPreviewTabsForProfile(profile: string) {
+  const key = normalizeProfileKey(profile)
+
+  delete tabsByProfile[key]
+  persistTabs()
+
+  if (key === viewKey) {
+    $previewTabs.set([])
+  }
+}
+
+/** Move one profile's rail to another. Rename counterpart of the tiles store's
+ *  `migrateTilesForProfile`: without it a rename strands the tabs under a
+ *  profile that no longer exists. */
+export function migratePreviewTabsForProfile(oldProfile: string, newProfile: string) {
+  const from = normalizeProfileKey(oldProfile)
+  const to = normalizeProfileKey(newProfile)
+
+  if (from === to) {
+    return
+  }
+
+  const moved = tabsByProfile[from]
+
+  if (moved) {
+    delete tabsByProfile[from]
+    tabsByProfile[to] = [...(tabsByProfile[to] ?? []), ...moved]
+  }
+
+  // The view belongs to the renamed profile; only its NAME changed. Re-point it
+  // BEFORE the atom is set, so the persist subscriber writes the new bucket
+  // rather than resurrecting the one just deleted.
+  const wasInView = from === viewKey
+
+  if (wasInView) {
+    viewKey = to
+  }
+
+  persistTabs()
+
+  if (wasInView) {
+    $previewTabs.set(tabsByProfile[to] ?? [])
+  }
+}
 
 if (typeof window !== 'undefined') {
   try {
@@ -365,29 +503,45 @@ function browserTabId(tabs: PreviewTab[]): RightRailTabId {
   return tabs.findLast(isBrowserTab)?.id ?? mintBrowserTabId()
 }
 
-// Browsing files is "peek at the source"; a tool or an explicit link handing
-// you an HTML file means "run it".
-function isFilePreviewSource(source: PreviewRecordSource): boolean {
-  return source === 'file-browser' || source === 'manual'
-}
-
-function previewTargetForSource(target: PreviewTarget, source: PreviewRecordSource): PreviewTarget {
-  if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode === 'source') {
+/** HTML files open rendered unless the caller asks for a mode. A re-open keeps
+ *  the mode the tab is already in, so refreshing the target never undoes a
+ *  user's Source pick. */
+function withRenderMode(target: PreviewTarget, existing?: PreviewTarget): PreviewTarget {
+  if (target.kind !== 'file' || target.previewKind !== 'html' || target.renderMode) {
     return target
   }
 
-  return { ...target, renderMode: isFilePreviewSource(source) ? 'source' : 'preview' }
+  return { ...target, renderMode: existing?.renderMode ?? 'preview' }
+}
+
+/** An agent hand-over means "show the page": an HTML file opens rendered even
+ *  when its tab is sitting in Source, unlike a re-open from the Files pane. */
+export function renderedHtmlTarget(target: PreviewTarget): PreviewTarget {
+  return target.kind === 'file' && target.previewKind === 'html' && !target.renderMode
+    ? { ...target, renderMode: 'preview' }
+    : target
+}
+
+/** Flip a tab between live Render and Source in place. Same tab id. */
+export function setPreviewRenderMode(tabId: string, renderMode: PreviewRenderMode) {
+  const current = $previewTabs.get()
+  const index = current.findIndex(tab => tab.id === tabId)
+
+  if (index === -1 || current[index]?.target.renderMode === renderMode) {
+    return
+  }
+
+  $previewTabs.set(current.map((item, i) => (i === index ? { ...item, target: { ...item.target, renderMode } } : item)))
 }
 
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes
  *  its target so a stale label/path can't outlive the thing it points at. The
  *  only way anything reaches a preview. */
-export function openPreview(target: PreviewTarget, source: PreviewRecordSource = 'manual') {
-  const resolved = previewTargetForSource(target, source)
+export function openPreview(target: PreviewTarget) {
   const current = $previewTabs.get()
-  const id = resolved.kind === 'url' ? browserTabId(current) : previewTabId(resolved)
+  const id = target.kind === 'url' ? browserTabId(current) : previewTabId(target)
   const index = current.findIndex(tab => tab.id === id)
-  const tab: PreviewTab = { id, target: resolved }
+  const tab: PreviewTab = { id, target: withRenderMode(target, current[index]?.target) }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
   selectRightRailTab(id)

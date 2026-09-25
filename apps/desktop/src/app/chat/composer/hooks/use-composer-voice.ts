@@ -5,7 +5,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useI18n } from '@/i18n'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
-import { adoptSpokenReplySession, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
+import {
+  adoptSpokenReplySession,
+  assistantTurnKey,
+  markAssistantIdSpoken,
+  resolveSpokenReply
+} from '@/lib/spoken-reply'
 import { CONVERSATION_LEASE, READ_ALOUD_LEASE, syncTtsLease } from '@/lib/tts-lease'
 import { toLiveHistory } from '@/lib/voice-live'
 import { clearWakeIndicator, syncWakeIndicatorWithVoice } from '@/lib/wake-indicator'
@@ -19,7 +24,7 @@ import { resumeWakeAfterVoice } from '@/store/wake-word'
 
 import { pinFloatingComposerCapture } from '../floating-target'
 import type { ComposerTarget } from '../focus'
-import { onComposerVoiceToggleRequest } from '../focus'
+import { onComposerDictationRequest, onComposerVoiceToggleRequest } from '../focus'
 import { useComposerScope, useComposerSurfaceId } from '../scope'
 import type { ChatBarProps } from '../types'
 
@@ -79,9 +84,7 @@ export function useComposerVoice({
 
         // Runs on every streamed flush: test the parts in place instead of
         // joining the whole reply into a string just to check it is non-blank.
-        return last?.pending && last.parts.some(part => part.type === 'text' && /\S/.test(part.text))
-          ? last.id
-          : null
+        return last?.pending && last.parts.some(part => part.type === 'text' && /\S/.test(part.text)) ? last.id : null
       }),
     [$messages]
   )
@@ -136,7 +139,8 @@ export function useComposerVoice({
     return {
       id: last.id,
       pending: Boolean(last.pending),
-      text
+      text,
+      turnKey: assistantTurnKey(sessionId, messages, last.id)
     }
   }
 
@@ -294,7 +298,7 @@ export function useComposerVoice({
     []
   )
 
-  // The `composer.voice` hotkey (Ctrl+B) toggles the conversation. Starting
+  // The `composer.voice` hotkey toggles the conversation. Starting
   // with STT unconfigured lets the conversation surface its own "configure
   // speech-to-text" notice rather than silently no-opping.
   const toggleVoiceConversation = useCallback(() => {
@@ -313,6 +317,14 @@ export function useComposerVoice({
   useEffect(
     () => onComposerVoiceToggleRequest(toggled => toggled === target && toggleVoiceConversation()),
     [target, toggleVoiceConversation]
+  )
+
+  // The bindable `composer.dictate` action shares the mic button's callback,
+  // including its recording/transcribing state machine. Ignore disabled
+  // composers so an unavailable draft cannot acquire the microphone.
+  useEffect(
+    () => onComposerDictationRequest(requested => requested === target && !disabled && dictate()),
+    [dictate, disabled, target]
   )
 
   useEffect(() => {

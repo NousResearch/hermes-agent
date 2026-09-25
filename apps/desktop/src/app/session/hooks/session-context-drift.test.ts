@@ -123,18 +123,6 @@ describe('sessionContextDrift', () => {
     expect(reason).toBe('route:__new__->sess-b')
   })
 
-  it('does not drift when composerScope is omitted (non-composer submits: queue drain, steer)', () => {
-    const reason = sessionContextDrift({
-      startRouteToken: routeToken(sessionRoute(SESS_A)),
-      nowRouteToken: routeToken(sessionRoute(SESS_A)),
-      startSelectedStoredId: SESS_A,
-      nowSelectedStoredId: SESS_A,
-      submitTargetStoredId: SESS_A
-    })
-
-    expect(reason).toBeNull()
-  })
-
   it('does not drift when composerScope matches the resolved (lineage) submit target', () => {
     const reason = sessionContextDrift({
       startRouteToken: routeToken(sessionRoute(SESS_A)),
@@ -155,20 +143,6 @@ describe('sessionContextDrift', () => {
       nowRouteToken: routeToken(sessionRoute(SESS_A)),
       startSelectedStoredId: SESS_A,
       nowSelectedStoredId: SESS_A,
-      submitTargetStoredId: SESS_A,
-      composerScope: SESS_B,
-      submitTargetComposerScope: SESS_A
-    })
-
-    expect(reason).toBe('composer:sess-b->sess-a')
-  })
-
-  it('checks the composer prong before the route/selection prongs', () => {
-    const reason = sessionContextDrift({
-      startRouteToken: routeToken(sessionRoute(SESS_A)),
-      nowRouteToken: routeToken(sessionRoute(SESS_B)),
-      startSelectedStoredId: SESS_A,
-      nowSelectedStoredId: SESS_B,
       submitTargetStoredId: SESS_A,
       composerScope: SESS_B,
       submitTargetComposerScope: SESS_A

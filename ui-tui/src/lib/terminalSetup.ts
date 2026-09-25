@@ -1,6 +1,6 @@
 import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 
 export type SupportedTerminal = 'cursor' | 'vscode' | 'windsurf'
 
@@ -214,15 +214,18 @@ export function getVSCodeStyleConfigDir(
   env: NodeJS.ProcessEnv = process.env,
   homeDir: string = homedir()
 ): null | string {
+  // Explicit platform inputs must not inherit the host path separators.
+  const targetJoin = platform === 'win32' ? win32.join : posix.join
+
   if (platform === 'darwin') {
-    return join(homeDir, 'Library', 'Application Support', appName, 'User')
+    return targetJoin(homeDir, 'Library', 'Application Support', appName, 'User')
   }
 
   if (platform === 'win32') {
-    return env['APPDATA'] ? join(env['APPDATA'], appName, 'User') : null
+    return env['APPDATA'] ? targetJoin(env['APPDATA'], appName, 'User') : null
   }
 
-  return join(homeDir, '.config', appName, 'User')
+  return targetJoin(homeDir, '.config', appName, 'User')
 }
 
 function isKeybinding(value: unknown): value is Keybinding {

@@ -8,6 +8,11 @@ import {
 import { useLocation, useSearchParams } from "react-router";
 import { api, setManagementProfile } from "@/lib/api";
 import { ProfileContext } from "@/contexts/profile-context";
+import {
+  dashboardInitialProfile,
+  initialProfileScope,
+  shouldAdoptActiveProfile,
+} from "@/lib/profile-bootstrap";
 
 /**
  * Machine-level management-profile scope.
@@ -38,11 +43,13 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   const { pathname } = useLocation();
   const [profiles, setProfiles] = useState<string[]>([]);
   const [currentProfile, setCurrentProfile] = useState("default");
+  const bootstrapProfile = dashboardInitialProfile();
 
-  // Initial value comes from the URL (deep link / refresh / unified-launch
-  // preselect); afterwards state leads and the URL follows.
+  // An explicit URL wins; profile-less deep links inherit the unified-launch
+  // preselection injected by the server. Afterwards state leads and the URL
+  // follows.
   const [profile, setProfileState] = useState(
-    () => searchParams.get("profile") ?? "",
+    () => initialProfileScope(searchParams, bootstrapProfile),
   );
 
   // Mirror into the api module synchronously on every render where it
@@ -92,11 +99,17 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         const active = info.active || "default";
         setCurrentProfile(current);
 
-        // Deep links (?profile=) win. Otherwise align the switcher with the
-        // sticky active profile so Chat and management pages match what the
-        // Profiles page shows as "active" (machine dashboard runs as
-        // `current`, usually default).
-        if (urlProfile === null && active !== current) {
+        // Explicit URL and unified-launch bootstrap scopes win. Without
+        // either, align the switcher with the sticky active profile so Chat
+        // and management pages match what Profiles shows as "active".
+        if (
+          shouldAdoptActiveProfile(
+            urlProfile,
+            bootstrapProfile,
+            current,
+            active,
+          )
+        ) {
           setManagementProfile(active);
           setProfileState(active);
         }

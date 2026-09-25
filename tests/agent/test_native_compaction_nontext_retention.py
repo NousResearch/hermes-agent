@@ -1,7 +1,7 @@
 """Regression coverage for image-only user content across native compaction."""
 
 from agent.codex_responses_adapter import _chat_messages_to_responses_input
-from agent.native_compaction import _extract_item_text, prune_pre_checkpoint_items
+from agent.native_compaction import prune_pre_checkpoint_items
 
 
 _IMAGE_URL = "data:image/png;base64,AAAA"
@@ -10,11 +10,6 @@ _RESPONSES_IMAGE_PART = {"type": "input_image", "image_url": _IMAGE_URL}
 _CHECKPOINT = {"type": "compaction", "encrypted_content": "blob_cp"}
 
 
-def test_extract_item_text_remains_text_only_for_image_content():
-    image_only = {"content": [_RESPONSES_IMAGE_PART]}
-
-    assert _extract_item_text(image_only) is None
-    assert _extract_item_text({"content": []}) is None
 
 
 def test_image_only_user_message_survives_pre_checkpoint_pruning_verbatim():

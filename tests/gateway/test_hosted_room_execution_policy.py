@@ -231,3 +231,50 @@ def test_policy_drift_requires_reauthorization_without_retry():
     assert len(client.dispatches) == 1
     assert refreshed == []
     assert reauthorization == [True]
+
+
+def _two_profile_homes(tmp_path, monkeypatch) -> None:
+    """alpha is the launch/active home (``HERMES_PROFILE=alpha``); beta is a served sibling."""
+    root = tmp_path / ".hermes"
+    for name, turns in (("alpha", 12), ("beta", 7)):
+        home = root / "profiles" / name
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text(
+            f"agent:\n  max_turns: {turns}\napprovals:\n  mode: manual\n"
+            "platform_toolsets:\n  api_server: [hermes-api-server, web]\n")
+        (home / ".env").write_text("")
+    from hermes_cli import profiles
+    import gateway.run as gateway_run
+    alpha = root / "profiles" / "alpha"
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: root)
+    monkeypatch.setattr(gateway_run, "_hermes_home", alpha)
+    monkeypatch.setenv("HERMES_HOME", str(alpha))
+    monkeypatch.setenv("HERMES_PROFILE", "alpha")
+    monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+
+def test_catalog_policy_comes_from_the_served_profile_not_the_launch_env(tmp_path, monkeypatch):
+    _two_profile_homes(tmp_path, monkeypatch)
+
+    def turns(profile: str) -> int:
+        catalog = catalog_mapping(installation_id="install-peer", persistent_process=True, target_profile=profile)
+        assert catalog["execution_policy"]["target_profile"] == profile
+        return catalog["execution_policy"]["max_iterations"]
+
+    assert turns("alpha") == 12                      # control: the active home
+    assert turns("beta") == 7                        # precedence: beta's config, not alpha's (env/active)
+    assert turns("alpha") == 12                      # A->B->A: no bleed back
+    with pytest.raises(ValueError, match="'ghost' is not a live profile"):
+        execution_policy_mapping(target_profile="ghost")
+
+
+def test_catalog_requires_the_served_profile_and_never_reads_hermes_profile(monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE", "reviewer")
+    with pytest.raises(TypeError, match="target_profile"):
+        catalog_mapping(installation_id="install-peer", persistent_process=True)  # type: ignore[call-arg]
+    with pytest.raises(ValueError, match="target_profile"):
+        catalog_mapping(installation_id="install-peer", persistent_process=True, target_profile="")
+    with pytest.raises(ValueError, match="target_profile does not match"):
+        catalog_mapping(
+            installation_id="install-peer", persistent_process=True, target_profile="other",
+            execution_policy=_policy())

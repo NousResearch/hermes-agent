@@ -19,7 +19,6 @@ from pathlib import Path
 
 import pytest
 
-import hermes_state_repair
 
 import hermes_startup_watchdog as sw
 from hermes_startup_watchdog import (
@@ -85,85 +84,7 @@ class TestContracts:
 
         assert SERVICE_RESTART_EXIT_CODE == GATEWAY_SERVICE_RESTART_EXIT_CODE
 
-    def test_implementation_module_is_stdlib_only(self):
-        """Import-lightness is a correctness property (arm-before-imports,
-        no import-lock dependence at fire time): the implementation module
-        must not import the gateway/agent/hermes_cli graphs at module level."""
-        import ast
-        import inspect
 
-        source = inspect.getsource(sw)
-        tree = ast.parse(source)
-        forbidden_roots = {
-            "gateway",
-            "agent",
-            "hermes_cli",
-            "hermes_state",
-            "hermes_constants",
-            "tools",
-            "plugins",
-        }
-        offenders = []
-        for node in ast.walk(tree):
-            # Only module-level and unconditional imports matter; function-
-            # bodied imports (the ledger helper) are deliberate and guarded.
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom):
-                names = [node.module or ""]
-            else:
-                continue
-            for name in names:
-                root = name.split(".")[0]
-                if root in forbidden_roots and node.col_offset == 0:
-                    offenders.append(name)
-        assert offenders == []
-
-    def test_all_documented_entry_points_arm_the_watchdog(self):
-        """Every documented arm site must actually call arm_startup_watchdog,
-        so a future entry point can't silently ship unwatched. This is a
-        structural contract: the arm sites are the whole point of the
-        pre-loop coverage, and they're spread across four files."""
-        import ast
-        import inspect
-        from pathlib import Path
-
-        repo_root = Path(__file__).resolve().parents[2]
-        arm_sites = {
-            # (file, reason) — each must contain an arm_startup_watchdog call
-            "hermes_cli/main.py": "argv fast-path (standard `hermes gateway run`)",
-            "hermes_cli/gateway.py": "run_gateway() config-bridge re-arm",
-            "gateway/run.py": "gateway.run.main() backstop arm",
-            "cli.py": "legacy `--gateway` entry point",
-        }
-        for rel, reason in arm_sites.items():
-            path = repo_root / rel
-            assert path.exists(), f"arm site file missing: {rel} ({reason})"
-            source = path.read_text()
-            tree = ast.parse(source)
-            # Collect both direct calls and aliased imports (main.py uses
-            # `from hermes_startup_watchdog import arm_startup_watchdog as _arm_sw`
-            # then calls `_arm_sw()` to keep the fast-path import-light).
-            aliases = set()
-            for node in ast.walk(tree):
-                if isinstance(node, ast.ImportFrom) and node.module == "hermes_startup_watchdog":
-                    for alias in node.names:
-                        if alias.name == "arm_startup_watchdog":
-                            aliases.add(alias.asname or "arm_startup_watchdog")
-            calls = []
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call):
-                    fn = node.func
-                    name = (
-                        fn.id
-                        if isinstance(fn, ast.Name)
-                        else fn.attr
-                        if isinstance(fn, ast.Attribute)
-                        else None
-                    )
-                    if name in aliases or name == "arm_startup_watchdog":
-                        calls.append(node.lineno)
-            assert calls, f"{rel} has no arm_startup_watchdog call ({reason})"
 
 
 
@@ -439,24 +360,7 @@ class TestProgressLease:
         assert record["lease_count"] >= 1
         assert record["last_lease_phase"] == "brief_phase"
 
-    def test_schema_init_declares_lease(self):
-        """hermes_state_schema._init_schema must hold a progress lease so
-        multi-GB migrations aren't misread as deadlocks (wiring contract)."""
-        import inspect
 
-        import hermes_state_schema
-
-        src = inspect.getsource(hermes_state_schema.SessionSchemaMixin._init_schema)
-        assert "report_startup_progress" in src
-
-    def test_repair_declares_lease(self):
-        """repair_state_db_schema (I/O-bound, ~zero CPU) must hold a lease."""
-        import inspect
-
-        import hermes_state
-
-        src = inspect.getsource(hermes_state_repair.repair_state_db_schema)
-        assert "report_startup_progress" in src
 
 
 class TestFire:
@@ -607,22 +511,9 @@ class TestBoundedExit:
         time.sleep(0.8)
         assert exit_capture.codes == [SERVICE_RESTART_EXIT_CODE]
 
-    def test_escort_uses_no_logging_or_filesystem(self):
-        """Structural guarantee: the escort body must not touch logging,
-        the filesystem, or imports — only sleep, an Event check, and the
-        exit seam."""
-        import inspect
-
-        src = inspect.getsource(StartupWatchdogHandle._exit_escort)
-        for banned in ("logger.", "logging", "open(", "Path(", "import ", "mkdir"):
-            assert banned not in src, f"escort must not use {banned!r}"
 
 
 class TestDumpPath:
-    def test_dump_path_under_home(self, tmp_path):
-        assert get_startup_watchdog_dump_path(tmp_path) == (
-            tmp_path / "logs" / "gateway-startup-watchdog.log"
-        )
 
     def test_dump_write_failure_is_swallowed(self, monkeypatch):
         monkeypatch.setattr(

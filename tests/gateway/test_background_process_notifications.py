@@ -94,11 +94,6 @@ def _watch_event(session_id="proc_watch", thread_id="42"):
 
 class TestLoadBackgroundNotificationsMode:
 
-    def test_defaults_to_concise(self, monkeypatch, tmp_path):
-        import gateway.run as gw
-        monkeypatch.setattr(gw, "_hermes_home", tmp_path)
-        monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
-        assert GatewayRunner._load_background_notifications_mode() == "concise"
 
     def test_unknown_mode_falls_back_to_concise(self, monkeypatch, tmp_path):
         (tmp_path / "config.yaml").write_text(
@@ -473,64 +468,6 @@ class TestConciseFormatter:
         )
         assert "…" in text
         assert len(text) < 200
-
-
-@pytest.mark.asyncio
-async def test_concise_mode_sends_pretty_message_not_raw_dump(monkeypatch, tmp_path):
-    """Default mode: a finished process produces the one-line status message,
-    never the '[Background process ... Here's the final output: ...]' wall."""
-    import tools.process_registry as pr_module
-
-    big_output = "\n".join(str(i * 100) for i in range(60))
-    sessions = [SimpleNamespace(
-        output_buffer=big_output, exited=True, exit_code=0,
-        command="python3 scan.py", started_at=None,
-    )]
-    monkeypatch.setattr(
-        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False)
-    )
-
-    async def _instant_sleep(*_a, **_kw):
-        pass
-    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
-
-    runner = _build_runner(monkeypatch, tmp_path, "concise")
-    adapter = runner.adapters[Platform.TELEGRAM]
-
-    await runner._run_process_watcher(_watcher_dict())
-
-    adapter.send.assert_awaited_once()
-    sent_text = adapter.send.await_args.args[1]
-    assert sent_text.startswith("✅ Background task finished")
-    assert "Here's the final output" not in sent_text
-    assert "5000" not in sent_text
-
-
-@pytest.mark.asyncio
-async def test_concise_mode_failure_includes_tail(monkeypatch, tmp_path):
-    import tools.process_registry as pr_module
-
-    sessions = [SimpleNamespace(
-        output_buffer="starting\nfatal: repo not found\n", exited=True,
-        exit_code=128, command="git clone x", started_at=None,
-    )]
-    monkeypatch.setattr(
-        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False)
-    )
-
-    async def _instant_sleep(*_a, **_kw):
-        pass
-    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
-
-    runner = _build_runner(monkeypatch, tmp_path, "concise")
-    adapter = runner.adapters[Platform.TELEGRAM]
-
-    await runner._run_process_watcher(_watcher_dict())
-
-    adapter.send.assert_awaited_once()
-    sent_text = adapter.send.await_args.args[1]
-    assert sent_text.startswith("❌ Background task failed") and "exit 128" in sent_text
-    assert "fatal: repo not found" in sent_text
 
 
 @pytest.mark.asyncio

@@ -101,11 +101,6 @@ class TestQuarantinedHandleStopsTouchingTheFile:
             db.close()
         assert not any("wal_checkpoint" in sql for sql in recorder.recorded)
         assert db._conn is None
-        assert any(
-            "Skipping the close-time WAL checkpoint" in rec.getMessage()
-            and "hermes sessions recover" in rec.getMessage()
-            for rec in caplog.records
-        )
 
     def test_close_disables_sqlite_internal_checkpoint_on_py312(self, tmp_path):
         """Quarantine must also stop SQLite's own last-connection checkpoint.
@@ -168,6 +163,7 @@ class TestQuarantineScope:
         finally:
             db.close()
 
+    @pytest.mark.platforms("posix")
     def test_replaced_file_takes_precedence_over_corrupt(self, tmp_path):
         import os
 

@@ -116,4 +116,35 @@ describe('the turn timer covers the gaps, not just the streaming', () => {
 
     expect(container.querySelector('[data-slot="aui_turn-activity"]')).toBeNull()
   })
+
+  it('keeps one live region across working/idle flips so screen readers do not re-announce it', () => {
+    const { container } = render(
+      <Harness
+        messages={[userMessage('u1', 'do the thing'), assistant('a1', [{ type: 'text', text: 'On it.' }], false)]}
+      />
+    )
+
+    act(() => vi.advanceTimersByTime(7_000))
+    const row = container.querySelector<HTMLElement>('[data-slot="aui_turn-activity"]')
+    expect(row?.dataset.state).toBe('active')
+    // The ticking timer must not feed the live region.
+    const hidden = [...(row?.querySelectorAll('[aria-hidden="true"]') ?? [])].map(n => n.textContent)
+    expect(hidden.some(text => /\d+s/.test(text ?? ''))).toBe(true)
+
+    act(() => $busy.set(false))
+    // Idle: same node, still an exposed live region — visually hidden via
+    // sr-only, never display:none / [hidden], which would drop it from the
+    // accessibility tree and re-announce on the next flip.
+    expect(container.querySelector('[data-slot="aui_turn-activity"]')).toBe(row)
+    expect(row?.dataset.state).toBe('idle')
+    expect(row?.hidden).toBe(false)
+    expect(row?.classList.contains('hidden')).toBe(false)
+    expect(row?.getAttribute('aria-live')).toBe('polite')
+    expect(row?.textContent).toBe('')
+    expect(row?.getAttribute('aria-label')).toBeFalsy()
+
+    act(() => $busy.set(true))
+    act(() => vi.advanceTimersByTime(7_000))
+    expect(container.querySelector('[data-slot="aui_turn-activity"][data-state="active"]')).toBe(row)
+  })
 })

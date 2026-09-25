@@ -193,7 +193,7 @@ export function VoiceActivity({ state }: { state: VoiceActivityState }) {
 
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate font-medium text-foreground/85">{title}</span>
-        <span className="font-mono text-[0.6875rem] text-muted-foreground/85">
+        <span aria-hidden="true" className="font-mono text-[0.6875rem] text-muted-foreground/85">
           {formatElapsed(state.elapsedSeconds)}
         </span>
       </div>

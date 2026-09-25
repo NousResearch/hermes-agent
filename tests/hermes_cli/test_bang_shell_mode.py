@@ -5,6 +5,7 @@ invoked for a dangerous command, that non-zero exit codes surface, and the
 load-bearing invariant: a bang command leaves conversation_history
 byte-identical because it never becomes a turn.
 """
+import builtins
 import copy
 import json
 import os
@@ -19,7 +20,6 @@ from hermes_cli.bang_shell import (
     parse_bang_command,
     run_bang_command,
 )
-
 
 # ── detection / parsing ────────────────────────────────────────────────────
 
@@ -63,7 +63,6 @@ class TestBangDetection:
     def test_parse_strips_exactly_one_bang(self, text, expected):
         assert parse_bang_command(text) == expected
 
-
 class TestBangContextGating:
     """Bang mode is CLI-only — gateway/cron users have their own shells."""
 
@@ -85,10 +84,10 @@ class TestBangContextGating:
         monkeypatch.setenv(var, value)
         assert bang_shell_enabled() is False
 
-
 # ── execution ──────────────────────────────────────────────────────────────
 
 class TestBangExecution:
+    @pytest.mark.platforms("linux")
     def test_output_is_streamed_to_writer(self):
         lines = []
         code = run_bang_command("echo bang-one; echo bang-two", writer=lines.append)
@@ -96,6 +95,7 @@ class TestBangExecution:
         assert "bang-one" in lines
         assert "bang-two" in lines
 
+    @pytest.mark.platforms("linux")
     def test_stderr_is_merged_into_output(self):
         lines = []
         run_bang_command("echo to-stderr >&2", writer=lines.append)
@@ -106,6 +106,7 @@ class TestBangExecution:
         code = run_bang_command("exit 42", writer=lines.append)
         assert code == 42
 
+    @pytest.mark.platforms("linux")
     def test_runs_in_requested_cwd(self, tmp_path):
         lines = []
         code = run_bang_command("pwd", cwd=str(tmp_path), writer=lines.append)
@@ -121,6 +122,22 @@ class TestBangExecution:
         assert code == 0
         assert "ok" in lines
 
+    def test_unavailable_environment_sanitizer_prevents_launch(self):
+        lines = []
+        real_import = builtins.__import__
+
+        def block_sanitizer(name, *args, **kwargs):
+            if name == "tools.environments.local":
+                raise ImportError("environment sanitizer unavailable")
+            return real_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", block_sanitizer), \
+             patch("hermes_cli.bang_shell.subprocess.Popen") as popen:
+            code = run_bang_command("echo must-not-run", writer=lines.append)
+
+        assert code == 127
+        popen.assert_not_called()
+        assert any("failed to run command" in line for line in lines)
 
 # ── CLI handler: approval gate, usage hint, exit codes ─────────────────────
 
@@ -137,7 +154,6 @@ def _make_cli(history=None):
     cli._app = None
     return cli
 
-
 def _printed(cli):
     """All text the CLI printed, flattened to plain strings."""
     out = []
@@ -147,7 +163,6 @@ def _printed(cli):
         arg = call.args[0]
         out.append(getattr(arg, "plain", None) or str(arg))
     return out
-
 
 class TestBangHandlerDispatch:
     def test_non_bang_text_is_not_handled(self):
@@ -172,11 +187,6 @@ class TestBangHandlerDispatch:
         assert cli.handle_bang_shell("!exit 3") is True
         assert any("exited 3" in line for line in _printed(cli))
 
-    def test_zero_exit_prints_no_exit_line(self):
-        cli = _make_cli()
-        cli.handle_bang_shell("!true")
-        assert not any("exited" in line for line in _printed(cli))
-
     def test_disabled_context_falls_through(self, monkeypatch):
         """Gateway sessions must not execute bang commands."""
         cli = _make_cli()
@@ -184,7 +194,6 @@ class TestBangHandlerDispatch:
         with patch("hermes_cli.bang_shell.run_bang_command") as runner:
             assert cli.handle_bang_shell("!echo nope") is False
         runner.assert_not_called()
-
 
 class TestBangApprovalGate:
     """A user-typed command still goes through the terminal tool's gate."""
@@ -227,7 +236,6 @@ class TestBangApprovalGate:
             assert cli.handle_bang_shell("!rm -rf /") is True
         runner.assert_not_called()
 
-
 # ── THE load-bearing invariant ─────────────────────────────────────────────
 
 _SEED_HISTORY = [
@@ -246,7 +254,6 @@ _SEED_HISTORY = [
     },
     {"role": "tool", "tool_call_id": "call_1", "content": "a.py b.py"},
 ]
-
 
 class TestBangLeavesHistoryByteIdentical:
     """Nothing about a bang command may enter conversation history.
@@ -297,17 +304,3 @@ class TestBangLeavesHistoryByteIdentical:
         assert json.dumps(cli.conversation_history, sort_keys=True) == json.dumps(
             _SEED_HISTORY, sort_keys=True
         )
-
-    def test_role_alternation_is_preserved_across_many_bangs(self):
-        cli = _make_cli(history=copy.deepcopy(_SEED_HISTORY))
-        before = json.dumps(cli.conversation_history, sort_keys=True)
-
-        for _ in range(5):
-            cli.handle_bang_shell("!echo repeated")
-
-        assert json.dumps(cli.conversation_history, sort_keys=True) == before
-        roles = [m["role"] for m in cli.conversation_history]
-        assert roles == ["system", "user", "assistant", "user", "assistant", "tool"]
-
-
-

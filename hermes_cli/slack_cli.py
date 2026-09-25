@@ -93,7 +93,8 @@ def slack_manifest_command(args) -> int:
     if long_description_file is not None:
         source_arg = str(long_description_file)
         try:
-            with Path(source_arg).expanduser().open("r", encoding="utf-8", newline="") as handle:
+            source = Path(source_arg).expanduser()
+            with source.open("r", encoding="utf-8-sig", newline="") as handle:
                 long_description = handle.read()
         except (OSError, UnicodeError, RuntimeError) as exc:
             return fail(f"cannot read long description from {source_arg}: {exc}")

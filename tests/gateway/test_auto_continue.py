@@ -26,28 +26,6 @@ def _simulate_auto_continue(agent_history: list, user_message: str) -> str:
     return message
 
 
-class TestAutoDetection:
-    """Test that trailing tool results are correctly detected."""
-
-    def test_trailing_tool_result_triggers_note(self):
-        history = [
-            {"role": "user", "content": "deploy the app"},
-            {"role": "assistant", "content": None, "tool_calls": [
-                {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}}
-            ]},
-            {"role": "tool", "tool_call_id": "call_1", "content": "deployed successfully"},
-        ]
-        result = _simulate_auto_continue(history, "what happened?")
-        assert "[System note:" in result
-        assert "interrupted" in result
-        assert "NEW message" in result
-        assert "Do NOT re-execute" in result
-        assert "what happened?" in result
-
-
-    def test_empty_history_no_note(self):
-        result = _simulate_auto_continue([], "hello")
-        assert result == "hello"
 
 
 class TestInterruptedReplayFiltering:

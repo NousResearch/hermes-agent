@@ -92,7 +92,16 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (rf'{_MODIFY}\.hermes/(config\.yaml|SOUL\.md)', "hermes_config_mod", "strict"),
 
     # ── Hardcoded secrets ────────────────────────────────────────────
-    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
+    # The lookahead skips a value that is itself an environment-variable NAME
+    # (SHOUTY_SNAKE, ≥2 underscore-separated segments): ENV_PASSWORD =
+    # "MYPLUGIN_APP_PASSWORD" says where the credential lives, it does not embed
+    # one (#116221). Scoped case-sensitive on purpose — the pattern compiles with
+    # IGNORECASE and a lowercase snake value is the password-passphrase shape
+    # ("correct_horse_battery_staple"); requiring an underscore segment keeps
+    # underscore-free all-caps credentials (AWS AKIA…, base32) matched.
+    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
+     r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
+     r'[A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
 ]
 
 # Invisible / bidirectional unicode used in injection attacks (aligned with skills_guard.py

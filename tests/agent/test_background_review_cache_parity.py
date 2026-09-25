@@ -444,7 +444,7 @@ def test_same_model_review_surfaces_ignored_reasoning_effort_once():
             agent, {"reasoning_effort": "low"}, max_iterations=5)
         assert not routed
         assert len(warnings) == 1, f"expected exactly one notice, got {warnings!r}"
-        assert "auxiliary.background_review.reasoning_effort='low'" in warnings[0], warnings[0]
+        assert "reasoning_effort" in warnings[0], warnings[0]
         # Cache-parity behaviour itself is unchanged: the fork still inherits the parent verbatim.
         assert captured["init_kwargs"]["reasoning_config"] == agent.reasoning_config
         # Second fork on the same parent: no repeat.

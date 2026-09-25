@@ -9,6 +9,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from hermes_state_common import _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _sql_session_last_active
+from hermes_state_errors import StateDbReplacedError
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -97,20 +98,36 @@ _UNLINKED_SCOPE_CLAUSES = """                      AND COALESCE(NULLIF(TRIM(s.pr
 
 class SessionTelegramTopicsMixin:
     """Telegram DM topic-mode tables, bindings and lookups. Read paths tolerate absent
-    tables (nobody ran ``/topic``) by returning their empty value; only
-    ``enable``/``bind`` run the migration."""
+    tables (nobody ran ``/topic``) by returning their empty value and never create them;
+    pre-v3 tables left by an upgrade are self-healed on read."""
+
+    def _topic_read(self, read, empty):
+        """Run ``read()``; an absent table reads as ``empty``. A pre-v3 table left by an upgrade
+        (#103363) raises ``no such column: profile_name`` — heal it and retry, otherwise the
+        write-only migration is never reached and topic mode silently reads as off forever."""
+        try:
+            return read()
+        except sqlite3.OperationalError as exc:
+            if "no such column: profile_name" not in str(exc):
+                return empty
+        try:
+            self.apply_telegram_topic_migration()
+        except (sqlite3.Error, StateDbReplacedError):
+            logger.warning("telegram topic tables are pre-v3 and the heal failed; reading as empty", exc_info=True)
+            return empty
+        return read()
 
     def _topic_read_one(self, sql: str, params):
-        """``fetchone`` that treats an unmigrated table as None."""
-        try:
-            return self._read_one(sql, params)
-        except sqlite3.OperationalError:
-            return None
+        return self._topic_read(lambda: self._read_one(sql, params), None)
+
+    def _topic_read_all(self, sql: str, params):
+        return self._topic_read(lambda: self._read_all(sql, params), [])
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in. Deliberately NOT
         part of startup reconciliation: operators can upgrade and keep the old bot
-        behavior until a user runs /topic. Schema versions: v1 initial; v2 session_id FK
+        behavior until a user runs /topic. Also invoked by ``_topic_read`` to heal a
+        pre-v3 table an upgrade left behind (#103363). Schema versions: v1 initial; v2 session_id FK
         ON DELETE CASCADE (pruning clears bindings); v3 ``profile_name`` on both tables so
         multiplexed gateways sharing one state.db isolate topic state per profile.
 
@@ -123,23 +140,27 @@ class SessionTelegramTopicsMixin:
                 if "profile_name" in have:
                     continue
                 # v1/v2 → v3. SQLite can't ALTER a PK or FK, so rebuild (also supplies v2's
-                # ON DELETE CASCADE). Legacy rows land in "default" only.
+                # ON DELETE CASCADE); _rebuild_table runs inside the open BEGIN IMMEDIATE so a crash
+                # rolls back instead of stranding rows (#42004). A {table}_new left by an older
+                # build's executescript crash is dropped first; its legacy table is still intact.
+                # v1 bindings had no ON DELETE CASCADE, so pruned sessions left orphan rows that
+                # the v3 FK (foreign_keys=ON on the writer) would reject — copy only live ones.
                 legacy_columns = columns.replace("profile_name, ", "", 1)
-                conn.executescript(f"""
-                    CREATE TABLE {table}_new ({ddl});
-                    INSERT INTO {table}_new ({columns})
-                        SELECT 'default', {legacy_columns} FROM {table};
-                    DROP TABLE {table};
-                    ALTER TABLE {table}_new RENAME TO {table};
-                    """)
+                live = " WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.id = session_id)" if "session_id" in columns else ""
+                conn.execute(f"DROP TABLE IF EXISTS {table}_new")
+                self._rebuild_table(
+                    conn.cursor(), table, f"{table}_legacy", f"CREATE TABLE {table} ({ddl})",
+                    f"INSERT INTO {table} ({columns}) SELECT 'default', {legacy_columns} FROM {table}_legacy{live}",
+                )
             # Indexes after any rebuild: the user index needs profile_name.
-            conn.executescript("""
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session
-                ON telegram_dm_topic_bindings(session_id);
-
-                CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user
-                ON telegram_dm_topic_bindings(profile_name, user_id, chat_id);
-                """)
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_session "
+                "ON telegram_dm_topic_bindings(session_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_telegram_dm_topic_bindings_user "
+                "ON telegram_dm_topic_bindings(profile_name, user_id, chat_id)"
+            )
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -228,13 +249,10 @@ class SessionTelegramTopicsMixin:
     ) -> List[Dict[str, Any]]:
         """All bindings for one chat, newest first ([] when the table is absent)."""
         profile_name = _normalize_telegram_topic_profile_name(profile_name)
-        try:
-            rows = self._read_all(
-                "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? ORDER BY updated_at DESC",
-                (profile_name, str(chat_id)),
-            )
-        except sqlite3.OperationalError:
-            return []
+        rows = self._topic_read_all(
+            "SELECT * FROM telegram_dm_topic_bindings WHERE profile_name = ? AND chat_id = ? ORDER BY updated_at DESC",
+            (profile_name, str(chat_id)),
+        )
         return [dict(row) for row in rows]
 
     def get_telegram_topic_binding_by_session(self, *, session_id: str) -> Optional[Dict[str, Any]]:

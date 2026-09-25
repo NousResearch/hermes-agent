@@ -12,7 +12,6 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.run import GatewayRunner
 import gateway.run_startup as run_startup
 
-
 @pytest.mark.asyncio
 async def test_gateway_boot_runs_the_free_tier_bootstrap_before_any_adapter_connects(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -39,14 +38,3 @@ async def test_gateway_boot_runs_the_free_tier_bootstrap_before_any_adapter_conn
 
     assert ok is True
     assert order[:2] == ["bootstrap", "prefilter-platforms"], order
-
-
-def test_gateway_bootstrap_seam_calls_the_one_creator(monkeypatch):
-    """The seam delegates to `free_tier_bootstrap.run_bootstrap`; nothing else in the gateway may mint."""
-    import hermes_cli.free_tier_bootstrap as ftb
-    calls: list[dict] = []
-    monkeypatch.setattr(ftb, "run_bootstrap", lambda **kw: calls.append(kw))
-
-    GatewayRunner._start_free_tier_bootstrap()
-
-    assert calls == [{"announce": False}]

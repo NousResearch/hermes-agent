@@ -130,6 +130,20 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
+### Group chats (bot mode)
+
+Groups are gated by **group policy**, not by the DM allowlist. `WHATSAPP_GROUP_POLICY` / `whatsapp.group_policy`
+defaults to `pairing`, which forwards nothing from groups. `allowlist` plus `WHATSAPP_GROUP_ALLOWED_USERS` /
+`whatsapp.group_allow_from` (comma-separated **group JIDs**, e.g. `120363001234567890@g.us`) admits the listed
+groups; `open` admits every group the bot is a member of. The sender is then checked like any other gateway
+principal: with `WHATSAPP_ALLOWED_USERS` set, a participant must be on it (or paired) — a sender WhatsApp
+addresses by LID matches through the phone number Baileys supplies alongside it, so a first contact with no
+`lid-mapping` file yet is not dropped; with no sender allowlist,
+`allowlist` trusts the group-JID list alone and admits every participant of a listed group, while `open` still
+needs the participant paired or `WHATSAPP_ALLOW_ALL_USERS=true`. By default the bot answers every admitted group
+message; set `require_mention: true` / `WHATSAPP_REQUIRE_MENTION=true` to answer only @mentions, replies to the
+bot, or `/commands` (groups in `free_response_chats` are exempt).
+
 Then start the gateway:
 
 ```bash
@@ -224,7 +238,7 @@ All of this works out of the box in bot (Baileys) mode; no configuration needed.
 
 ### Message Batching (Debounce)
 
-WhatsApp delivers each message individually, so a rapid burst (forwarded batches, paste-splits, multi-line text) would otherwise trigger a separate agent invocation per fragment — wasting tokens and producing several disjointed replies. The adapter buffers successive text messages from the same chat and dispatches them as one combined request after a short quiet period (default **5s**, extended to **10s** for very long fragments). Tune via `config.yaml`:
+WhatsApp delivers each message individually, so a rapid burst (forwarded batches, paste-splits, multi-line text) would otherwise trigger a separate agent invocation per fragment — wasting tokens and producing several disjointed replies. The adapter buffers successive text messages from the same chat and dispatches them as one combined request after a short quiet period (default **0.3s**, extended to **1s** for very long fragments; capped at 2s / 4s). Tune via `config.yaml`:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -232,8 +246,8 @@ gateway:
   platforms:
     whatsapp:
       extra:
-        text_batch_delay_seconds: 5.0         # quiet period before flushing a batch
-        text_batch_split_delay_seconds: 10.0  # extended delay near the split threshold
+        text_batch_delay_seconds: 0.3         # quiet period before flushing a batch (max 2.0)
+        text_batch_split_delay_seconds: 1.0   # extended delay near the split threshold (max 4.0)
 ```
 
 Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).

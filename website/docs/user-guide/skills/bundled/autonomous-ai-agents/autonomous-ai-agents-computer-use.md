@@ -15,8 +15,8 @@ Drive the desktop background-first; escalate on signal.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/autonomous-ai-agents\computer-use` |
-| Version | `2.0.0` |
+| Path | `skills/autonomous-ai-agents/computer-use` |
+| Version | `2.1.0` |
 | Author | Francesco Bonacci (f-trycua), Hermes Agent |
 | License | MIT |
 | Platforms | macos, windows, linux |
@@ -41,12 +41,14 @@ or an open model on a local OpenAI-compatible endpoint. There is no
 Anthropic-native schema to learn.
 
 Hermes drives [cua-driver](https://github.com/trycua/cua) under the hood.
-This wrapper skill teaches the Hermes `computer_use` workflow and action
-vocabulary. Call the actions documented below instead of raw cua-driver MCP
-tools. For driver internals and platform-specific behavior, follow the Cua
-skill installed by `cua-driver skills install`. Hermes autodetection is a
-planned cua-driver follow-up, so currently point Hermes at the resulting
-`~/.cua-driver/skills/cua-driver` directory or symlink it into your skill space.
+This skill teaches the Hermes `computer_use` **action vocabulary**, which is
+NOT the driver's raw MCP vocabulary. Call the actions documented below and
+never the driver's tools by name: `capture` is a Hermes action that maps to
+the driver's `get_window_state`; `element=N` is a Hermes argument that the
+wrapper translates into the driver's `element_token` handle. If you see a
+driver-side error mentioning `snapshot_id`, `element_token`, or "no reviewed
+risk classification", you (or a stale description) called the raw driver
+vocabulary — go back to the actions below.
 
 ## The canonical workflow
 
@@ -56,8 +58,7 @@ planned cua-driver follow-up, so currently point Hermes at the resulting
 computer_use(action="capture", mode="som", app="<the app you're driving>")
 ```
 
-Returns a screenshot with numbered overlays on every interactable
-element AND an AX-tree index like:
+Returns a screenshot plus an indexed element list like:
 
 ```
 #1  AXButton 'Back' @ (12, 80, 28, 28) [Chrome]
@@ -65,6 +66,12 @@ element AND an AX-tree index like:
 #7  Link 'Sign In' @ (900, 420, 80, 24) [Chrome]
 ...
 ```
+
+The `#N` index is the ONLY element handle you use. Behind it the wrapper
+keeps this snapshot's opaque per-element token and sends it with every
+`element=N` action, so a click on an index from a superseded snapshot is
+refused explicitly (`stale`) instead of landing on the wrong control.
+Re-capture after anything that changes the screen; indices do not survive it.
 
 The role names match the host platform's accessibility framework
 (`AXButton` on macOS, `Button` on Windows UIA, `push button` on Linux
@@ -91,9 +98,20 @@ computer_use(action="click", element=7, capture_after=True)
 
 | `mode` | Returns | Best for |
 |---|---|---|
-| `som` (default) | Screenshot + numbered overlays + AX index | Vision models; preferred default |
-| `vision` | Plain screenshot | When SOM overlay interferes with what you want to verify |
-| `ax` | AX tree only, no image | Text-only models, or when you don't need to see pixels |
+| `som` (default) | Screenshot + indexed element list | Vision models; preferred default |
+| `vision` | Plain screenshot, no elements | When you only need pixels (then click by `coordinate=`) |
+| `ax` | Element list only, no image | Text-only models, or when you don't need to see pixels |
+
+Current drivers always return the screenshot AND the tree in one call;
+`mode` decides what Hermes hands back to you, not what the driver does.
+There is no numbered overlay burned into the screenshot — the index list is
+the map; ground on both and cross-check (the tree lies on some surfaces).
+
+**No vision model?** If your main model can't read images (or the provider
+rejects image tool results), Hermes routes the screenshot through the
+auxiliary vision model and you get a text description instead of pixels.
+Configure `auxiliary.vision` in `config.yaml` to pick that model, or use
+`mode="ax"` and drive by element index without a screenshot at all.
 
 ## Actions
 
@@ -107,8 +125,10 @@ drag              from_element=N, to_element=M        (or from/to_coordinate)
 scroll            direction=up|down|left|right   amount=3 (ticks)
 type              text="…"
 key               keys="<save shortcut>" | "return" | "escape" | "<modifier>+t"
+set_value         element=N  value="…"     (selects/sliders without opening the menu)
 wait              seconds=0.5
 list_apps
+list_windows
 focus_app         app="<app name>"   raise_window=false   (default: don't raise)
 ```
 
@@ -133,8 +153,8 @@ Returned fields (present when the driver supports them):
   (ran but almost certainly did nothing).
 - `escalation`: `{recommended: "px" | "foreground", reason}` — present
   only when there's a next rung to try.
-- `code`: a structured refusal like `"background_unavailable"` or
-  `"foreground_unsupported"`.
+- `code`: a structured refusal like `"background_unavailable"`,
+  `"foreground_unsupported"`, or `"stale"` (re-capture, then retry by index).
 - `verified`: `true` only on AX read-back.
 
 Walk it in order:
@@ -257,8 +277,8 @@ computer_use(action="scroll", direction="down", amount=3, coordinate=[500, 400])
 `list_apps` returns running apps with bundle IDs / process names, PIDs,
 and window counts. `focus_app` routes input to an app without raising
 it. You rarely need to focus explicitly — passing `app=...` to
-`capture` / `click` / `type` will target that app's frontmost window
-automatically.
+`capture` will target that app's frontmost window and every following
+input action goes to that same window (input actions ignore `app=`).
 
 ## Delivering screenshots to the user
 
@@ -297,10 +317,13 @@ in your conversation context.
 |---|---|
 | `cua-driver not installed` | Run `hermes computer-use install`, or `hermes tools` and enable Computer Use |
 | Captures consistently return empty / "no on-screen window" | On Linux: DISPLAY may not be set (X11) or you're on pure Wayland — ask the user to run `hermes computer-use doctor`. On Windows: you may be in Session 0 (SSH session) instead of the interactive desktop — see the cua-driver `WINDOWS.md` deep-dive |
-| Element index stale ("Element N not in cache") | SOM indices are only valid until the next `capture`. Re-capture before clicking. The wrapper carries opaque `element_token`s for stale-detection; you'll see an explicit error rather than a wrong click |
+| `code:"stale"` / "element_token is stale" | Indices belong to one snapshot. Re-`capture`, read the new indices, then act. Never reuse an index across a capture |
+| "bare element_index is not accepted" / `snapshot_id_required` | The driver saw a raw index without its token. This is a wrapper defect, not something you fix by passing `snapshot_id` (Hermes has no such argument). Re-capture once; if it repeats, tell the user to run `hermes update` and fall back to `coordinate=[x, y]` from the capture's bounds meanwhile |
+| "tool 'capture' has no reviewed risk classification" / `Unknown tool` | Something called the driver's MCP vocabulary directly (`capture`, `screenshot`, `get_window_state`, `click` with raw args). Only the `computer_use(action=…)` vocabulary in this file exists on the Hermes side |
 | Click had no effect | Read the structured verdict. `effect:"unverifiable"` → fresh capture/state before retry, even with an escalation hint. `effect:"suspected_noop"` or a structured refusal → climb the recommended ladder: coordinate (px), then foreground. Browser chrome/native prompts remain native; page content is a separate toolset. Don't conclude the app is undrivable |
 | Type text disappears into a terminal emulator | cua-driver detects terminals (Ghostty, iTerm2, Terminal.app, Windows Terminal, mintty, etc.) and routes through key-event synthesis — should "just work" on a recent cua-driver. If it doesn't, ask the user to run `hermes computer-use doctor` |
 | `blocked pattern in type text` | You tried to `type` a shell command matching the dangerous-pattern block list (`curl ... \| bash`, `sudo rm -rf`, etc.). Break the command up or reconsider |
+| `hermes computer-use doctor` says "could not be started … Access is denied" (Windows) | The Hermes venv interpreter can't execute a binary under `C:\Program Files\WindowsApps`; the tool itself may still work because the shell resolves another copy on PATH. Fix once: reinstall cua-driver with the upstream installer (lands under the user profile) or set `HERMES_CUA_DRIVER_CMD` to a copy outside `WindowsApps`. The same denial spams `errors.log` for any other `WindowsApps` binary Hermes spawns (e.g. `bws.exe`) |
 | Anything else weird | **First action: ask the user to run `hermes computer-use doctor`.** It runs the cua-driver `health_report` MCP tool and prints a structured per-check matrix. Their output tells you (and them) exactly what's wrong |
 
 ## When NOT to use `computer_use`
@@ -325,13 +348,12 @@ X11/Wayland nuances, recording trajectory + video, browser-page
 interaction, etc.) live in cua-driver's skill pack — same content the
 cua-driver team ships and maintains for every other agent harness.
 
-To link the cua-driver skill pack into your skill space:
-
 ```
 cua-driver skills install
 ```
 
-You'll then have access to:
+links the pack into `~/.hermes/skills/cua-driver` (Hermes is a detected
+agent; `cua-driver skills status` shows the link state). You'll then have:
 
 - `SKILL.md` — the cross-platform core (snapshot invariant, no-
   foreground contract, click dispatch, AX tree mechanics)
@@ -345,11 +367,6 @@ You'll then have access to:
 - `WEB_APPS.md` — browser page interaction tips
 - `TESTS.md` — replay-by-trajectory workflow
 
-These are platform deep dives, not duplicates — when the user reports
-"on Windows the click landed on the wrong element," you read
-`WINDOWS.md` for the UIA / UWP context that explains why and what to
-do differently.
-
-Hermes autodetection is a planned follow-up in trycua/cua. For now, the command
-installs the pack under `~/.cua-driver/skills/cua-driver`; point Hermes at that
-directory or symlink it into the user's skill space.
+Those files describe the driver's OWN MCP tools (`get_window_state`,
+`element_token`, `snapshot_id`, …). Read them for platform context; keep
+calling the Hermes actions from this file — the wrapper does the translation.

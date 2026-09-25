@@ -109,7 +109,7 @@ class GatewaySessionWatchersMixin:
             if not session_key or session_key in candidates or not overflow:
                 continue
             source = getattr(overflow[0], "source", None)
-            if source is not None and (adapter := self._adapter_for_source(source)) is not None:
+            if source is not None and (adapter := self._delivery_adapter_for(source)) is not None:
                 candidates[session_key] = (adapter, overflow[0])
         return candidates
 

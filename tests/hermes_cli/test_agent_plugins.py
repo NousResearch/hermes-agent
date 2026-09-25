@@ -31,7 +31,7 @@ def _write_skill(root: Path, directory: str = "summarize", **fields: object) -> 
     skill_dir.mkdir(parents=True)
     metadata = {"name": directory, "description": "Summarizes reports."}
     metadata.update(fields)
-    import yaml
+    import hermes_yaml as yaml
 
     (skill_dir / "SKILL.md").write_text(
         f"---\n{yaml.safe_dump(metadata, sort_keys=False)}---\nInstructions.\n",
@@ -67,11 +67,11 @@ def test_loads_manifest_skill_and_stdio_server(tmp_path: Path) -> None:
     assert package.skills[0].root == skill_dir.resolve()
     server = package.mcp_servers["worker"]
     assert server["command"] == "python"
-    assert server["args"] == [str(root.resolve() / "server.py"), "${UNKNOWN}"]
+    assert server["args"] == [str(root.resolve()) + "/server.py", "${UNKNOWN}"]
     assert server["cwd"] == str(root.resolve())
     assert server["env"]["PLUGIN_ROOT"] == str(root.resolve())
     assert server["env"]["PLUGIN_DATA"] == str((tmp_path / "data").resolve())
-    assert server["env"]["CACHE"] == str((tmp_path / "data").resolve() / "cache")
+    assert server["env"]["CACHE"] == str((tmp_path / "data").resolve()) + "/cache"
     assert (tmp_path / "data").is_dir()
 
 
@@ -91,6 +91,59 @@ def test_loads_manifest_skill_and_stdio_server(tmp_path: Path) -> None:
 def test_rejects_invalid_manifests(tmp_path: Path, manifest: object) -> None:
     _write_json(tmp_path / "plugin.json", manifest)
     with pytest.raises(AgentPluginError):
+        load_agent_plugin(tmp_path, tmp_path / "data")
+
+
+def test_server_declaration_joins_mcp_and_preserves_liveness(tmp_path: Path) -> None:
+    app = tmp_path / "example-app"
+    app.write_text("", encoding="utf-8")
+    _write_json(
+        tmp_path / "plugin.json",
+        _manifest(extensions={
+            "com.nousresearch.hermes": {"servers": {"worker": {
+                "app": {"darwin": {"presence": "executable", "location": str(app)}},
+                "requires": {"app": True},
+                "liveness": {"kind": "static"},
+            }}}
+        }),
+    )
+    _write_json(
+        tmp_path / "mcp.json",
+        {"$schema": MCP_SCHEMA_V1, "mcpServers": {"worker": {"type": "stdio", "command": "python"}}},
+    )
+
+    package = load_agent_plugin(tmp_path, tmp_path / "data")
+
+    server = package.server_declarations["worker"]
+    assert server.declaration.requires_app
+    assert server.liveness == {"kind": "static"}
+
+
+def test_orphan_server_declaration_disables_package(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "plugin.json",
+        _manifest(extensions={
+            "com.nousresearch.hermes": {"servers": {"orphan": {"requires": {"app": False}}}}
+        }),
+    )
+
+    with pytest.raises(AgentPluginError, match="orphan.*no matching mcp.json server"):
+        load_agent_plugin(tmp_path, tmp_path / "data")
+
+
+def test_liveness_without_declaration_disables_package(tmp_path: Path) -> None:
+    _write_json(
+        tmp_path / "plugin.json",
+        _manifest(extensions={
+            "com.nousresearch.hermes": {"servers": {"worker": {"liveness": {"kind": "static"}}}}
+        }),
+    )
+    _write_json(
+        tmp_path / "mcp.json",
+        {"$schema": MCP_SCHEMA_V1, "mcpServers": {"worker": {"type": "stdio", "command": "python"}}},
+    )
+
+    with pytest.raises(AgentPluginError, match="liveness without app or requires"):
         load_agent_plugin(tmp_path, tmp_path / "data")
 
 
@@ -133,6 +186,7 @@ def test_rejects_invalid_optional_skill_fields(
     assert package.skills == ()
 
 
+@pytest.mark.require_symlinks
 def test_symlink_escape_is_isolated_to_component(tmp_path: Path) -> None:
     root = tmp_path / "plugin"
     root.mkdir()

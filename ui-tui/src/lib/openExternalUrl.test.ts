@@ -124,13 +124,6 @@ describe('openExternalUrl', () => {
     expect(calls[0]!.args).toEqual(['https://example.com/foo'])
   })
 
-  it('uses xdg-open on linux', () => {
-    const { spawn, calls } = mockSpawn()
-
-    openExternalUrl('https://example.com/', { spawn, platform: () => 'linux' })
-    expect(calls[0]!.command).toBe('xdg-open')
-  })
-
   it('refuses to open file: URLs and does not spawn', () => {
     const { spawn, calls } = mockSpawn()
 

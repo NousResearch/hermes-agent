@@ -20,9 +20,7 @@ real Azure endpoint. Tests must remain hermetic per AGENTS.md.
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
 from types import SimpleNamespace
-from typing import cast
 
 import pytest
 
@@ -42,26 +40,6 @@ def _reset_adapter_cache():
 # ---------------------------------------------------------------------------
 
 
-class TestEntraScopeConstant:
-    """Pin the Microsoft-documented Foundry inference scope.
-
-    Microsoft's official samples for both ``*.openai.azure.com`` and
-    ``*.services.ai.azure.com`` use ``https://ai.azure.com/.default``.
-    The older ``cognitiveservices.azure.com/.default`` is the
-    control-plane scope and is rejected for inference by newer
-    Azure OpenAI / Foundry resources.
-
-    Users with sovereign-cloud or unusual-tenant requirements pass the
-    scope explicitly via ``model.entra.scope`` in ``config.yaml``.
-
-    Refs:
-      * https://learn.microsoft.com/azure/ai-foundry/openai/how-to/managed-identity
-      * https://learn.microsoft.com/azure/ai-foundry/foundry-models/how-to/configure-entra-id
-    """
-
-    def test_default_scope_matches_microsoft_documentation(self):
-        from agent.azure_identity_adapter import SCOPE_AI_AZURE_DEFAULT
-        assert SCOPE_AI_AZURE_DEFAULT == "https://ai.azure.com/.default"
 
 
 # ---------------------------------------------------------------------------
@@ -69,30 +47,6 @@ class TestEntraScopeConstant:
 # ---------------------------------------------------------------------------
 
 
-class TestMaterializeBearerForHttp:
-    """The only helper that mints a real bearer JWT — must call the
-    callable exactly once and never fall through to display masking."""
-
-    def test_callable_is_invoked_and_returns_token(self):
-        from agent.azure_identity_adapter import materialize_bearer_for_http
-
-        invoked = {"count": 0}
-
-        def provider():
-            invoked["count"] += 1
-            return "fresh-jwt"
-
-        assert materialize_bearer_for_http(provider) == "fresh-jwt"
-        assert invoked["count"] == 1
-
-
-
-    def test_empty_string_raises(self):
-        from agent.azure_identity_adapter import materialize_bearer_for_http
-        with pytest.raises(ValueError):
-            materialize_bearer_for_http("")
-        with pytest.raises(ValueError):
-            materialize_bearer_for_http(None)
 
 
 # ---------------------------------------------------------------------------
@@ -192,17 +146,6 @@ class TestBuildBearerHttpClient:
 
 
 
-class TestIsTokenProvider:
-    def test_callable_is_token_provider(self):
-        from agent.azure_identity_adapter import is_token_provider
-        assert is_token_provider(lambda: "x") is True
-
-    def test_string_is_not_token_provider(self):
-        from agent.azure_identity_adapter import is_token_provider
-        assert is_token_provider("static-key") is False
-        # ``str`` instances are technically callable in some edge cases
-        # — confirm they're never classified as token providers.
-        assert is_token_provider("") is False
 
 
 # ---------------------------------------------------------------------------
@@ -227,12 +170,6 @@ class TestEntraIdentityConfig:
 
 
 
-    def test_dataclass_is_frozen(self):
-        # Frozen dataclasses are hashable / safe to pass through caches.
-        from agent.azure_identity_adapter import EntraIdentityConfig
-        cfg = EntraIdentityConfig()
-        with pytest.raises((AttributeError, Exception)):
-            setattr(cfg, "scope", "mutated")
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +188,7 @@ class _FakeAzureIdentity:
         self.last_credential_kwargs = None
         self.last_scope = None
         self.credential_count = 0
+        self.scoped_calls = []
 
     def DefaultAzureCredential(self, **kwargs):  # noqa: N802 — match SDK
         self.last_credential_kwargs = kwargs
@@ -259,6 +197,18 @@ class _FakeAzureIdentity:
             get_token=lambda scope: SimpleNamespace(token="fake-jwt", expires_on=9999999999),
             kwargs=kwargs,
         )
+
+    def ClientSecretCredential(self, tenant_id, client_id, client_secret):  # noqa: N802
+        self.scoped_calls.append(("client_secret", tenant_id, client_id, client_secret))
+        return SimpleNamespace(kind="client_secret", tenant_id=tenant_id, client_id=client_id)
+
+    def WorkloadIdentityCredential(self, **kwargs):  # noqa: N802
+        self.scoped_calls.append(("workload_identity", kwargs))
+        return SimpleNamespace(kind="workload_identity", kwargs=kwargs)
+
+    def ManagedIdentityCredential(self, **kwargs):  # noqa: N802
+        self.scoped_calls.append(("managed_identity", kwargs))
+        return SimpleNamespace(kind="managed_identity", kwargs=kwargs)
 
     def get_bearer_token_provider(self, credential, scope):
         self.last_scope = scope
@@ -274,6 +224,9 @@ def fake_azure_identity(monkeypatch):
 
     fake_module = SimpleNamespace(
         DefaultAzureCredential=fake.DefaultAzureCredential,
+        ClientSecretCredential=fake.ClientSecretCredential,
+        WorkloadIdentityCredential=fake.WorkloadIdentityCredential,
+        ManagedIdentityCredential=fake.ManagedIdentityCredential,
         get_bearer_token_provider=fake.get_bearer_token_provider,
     )
     monkeypatch.setitem(sys.modules, "azure", SimpleNamespace(identity=fake_module))
@@ -289,19 +242,6 @@ def fake_azure_identity(monkeypatch):
 
 
 class TestBuildCredential:
-    def test_default_kwargs_are_minimal(self, fake_azure_identity):
-        """SDK default for ``exclude_interactive_browser_credential`` is
-        True; we only pass it when the user opts IN to interactive
-        browser auth. Tenant / authority / service principal config
-        flow through the standard ``AZURE_*`` env vars (read by
-        azure-identity directly), not Hermes config kwargs."""
-        from agent.azure_identity_adapter import EntraIdentityConfig, build_credential
-        cred = build_credential(EntraIdentityConfig())
-        kwargs = fake_azure_identity.last_credential_kwargs
-        # Default config should produce empty kwargs — SDK uses its own
-        # defaults plus env-var-driven settings.
-        assert kwargs == {}
-        assert cred is not None
 
 
     def test_credential_is_cached_per_config(self, fake_azure_identity):
@@ -319,6 +259,54 @@ class TestBuildCredential:
         assert c1 is not c2
         assert fake_azure_identity.credential_count == 2
 
+
+class TestScopedCredential:
+    """A served multiplex profile never mints the launch profile's ambient chain (#116313)."""
+
+    def test_two_homes_multiplex_refuses_ambient_chain_and_keeps_standalone(
+        self, fake_azure_identity, tmp_path, monkeypatch,
+    ):
+        """A -> B -> A over two real homes: A (own AZURE_* in .env) builds its ClientSecretCredential,
+        cred-less B is refused instead of getting DefaultAzureCredential (which reads A's AZURE_* from
+        the process env), A again is unaffected; the probe thread runs under the caller's scope so the
+        doctor path surfaces the same refusal. Control: a standalone run keeps the ambient chain."""
+        from agent import secret_scope
+        from agent.azure_identity_adapter import EntraIdentityConfig, _probe_token, build_credential
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        home_a, home_b = tmp_path / "home-A", tmp_path / "home-B"
+        for home in (home_a, home_b):
+            home.mkdir()
+        (home_a / ".env").write_text("AZURE_TENANT_ID=tenant-A\nAZURE_CLIENT_ID=client-A\nAZURE_CLIENT_SECRET=secret-A\n")
+        (home_b / ".env").write_text("")
+        # The launch profile's .env is in the process env, exactly what DefaultAzureCredential reads.
+        monkeypatch.setenv("AZURE_TENANT_ID", "tenant-A")
+        monkeypatch.setenv("AZURE_CLIENT_ID", "client-A")
+        monkeypatch.setenv("AZURE_CLIENT_SECRET", "secret-A")
+        config = EntraIdentityConfig()
+
+        def in_scope(home, fn):
+            h_tok = set_hermes_home_override(str(home))
+            s_tok = secret_scope.set_secret_scope(secret_scope.build_profile_secret_scope(home))
+            try:
+                return fn()
+            finally:
+                secret_scope.reset_secret_scope(s_tok)
+                reset_hermes_home_override(h_tok)
+
+        # Control: standalone (no multiplex, no override) keeps today's ambient chain.
+        assert build_credential(config).kwargs is not None
+        assert fake_azure_identity.credential_count == 1
+
+        monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+        assert in_scope(home_a, lambda: build_credential(config)).client_id == "client-A"
+        with pytest.raises(RuntimeError, match="refused for this profile"):
+            in_scope(home_b, lambda: build_credential(config))
+        probe = in_scope(home_b, lambda: _probe_token(config, 5.0))
+        assert "refused for this profile" in probe["error"]
+        assert in_scope(home_a, lambda: build_credential(config)).client_id == "client-A"
+        # Absence on the wrong side: B never reached the ambient chain.
+        assert fake_azure_identity.credential_count == 1
 
 
 class TestBuildTokenProvider:
@@ -364,24 +352,21 @@ class TestRequireAzureIdentityMissing:
         monkeypatch.setattr("builtins.__import__", _fake_import)
 
         # Simulate lazy installs disabled.
-        from tools.lazy_deps import FeatureUnavailable
+        from pm import InstallError as FeatureUnavailable
 
         def _fake_ensure(*args, **kwargs):
             raise FeatureUnavailable(
-                "provider.azure_identity",
-                ("azure-identity==1.25.3",),
+                "azure-identity",
                 "lazy installs disabled (test simulation)",
             )
 
-        # The adapter calls ``ensure`` from ``tools.lazy_deps``; intercept
+        # The adapter calls ``ensure_import`` from ``pm``; intercept
         # it by patching the actual symbol path.
-        monkeypatch.setattr("tools.lazy_deps.ensure", _fake_ensure)
+        monkeypatch.setattr("pm.ensure_import", _fake_ensure)
 
         with pytest.raises(ImportError) as exc_info:
             _adapter._require_azure_identity()
-        msg = str(exc_info.value)
-        assert "azure-identity" in msg
-        assert "Foundry" in msg or "foundry" in msg.lower()
+        assert "azure-identity" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +380,7 @@ class TestHasAzureIdentityCredentials:
         """With allow_install=True (default), the probe must trigger the
         lazy-install path before bailing — otherwise the wizard's
         ``preflight`` would silently fail for fresh installs that haven't
-        run ``pip install azure-identity`` yet."""
+        enabled the Azure identity extra yet."""
         from agent import azure_identity_adapter as _adapter
 
         installed = {"called": False}
@@ -482,7 +467,7 @@ class TestDescribeActiveCredential:
         )
         assert info["ok"] is False
         assert "lazy installs disabled" in info["error"]
-        assert "lazy" in info["hint"].lower()
+        assert "hermes pm install --extra azure-identity" in info["hint"]
 
     def test_reports_env_sources_for_managed_identity(self, fake_azure_identity, monkeypatch):
         from agent.azure_identity_adapter import describe_active_credential

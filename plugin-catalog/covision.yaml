@@ -1,0 +1,19 @@
+name: covision
+repo: https://github.com/Covision-Consultants/covision-agent-plugin
+sha: 373012bed0a36f7d4345a180eefc26352403cd3d
+description: >-
+  Read-only Covision meeting, assigned-task, and published-knowledge tools through
+  the Covision Streamable HTTP MCP service, plus a workflow skill. Requires a
+  Covision account, organization connector enablement, and browser OAuth consent;
+  no API key or client secret is stored in the plugin.
+maintainer: Covision Consultants
+tier: community
+category: tools
+docs_url: https://github.com/Covision-Consultants/covision-agent-plugin
+version: "1.0.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

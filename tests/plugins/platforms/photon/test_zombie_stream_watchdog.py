@@ -23,8 +23,8 @@ gRPC traffic occurs.
 """
 from __future__ import annotations
 
-import asyncio
 import json
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Dict
@@ -36,19 +36,18 @@ from plugins.platforms.photon.adapter import PhotonAdapter
 
 _MODULE = Path("plugins/platforms/photon/sidecar/stream-staleness.mjs").resolve()
 
-
 def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
     cfg = PlatformConfig(enabled=True, token="", extra={})
     return PhotonAdapter(cfg)
 
-
 # -- Sidecar decision rules (execute the real node module) -------------------
 
 def _run_staleness_harness(script: str) -> Dict[str, Any]:
     harness = (
-        "import { classifyProbeRejection, shouldProbe, isZombieSuspect } "
+        "import { classifyProbeRejection, shouldProbe, isZombieSuspect, "
+        "createProbeMessageId } "
         f"from {json.dumps(_MODULE.as_uri())};\n"
         + script
     )
@@ -62,6 +61,18 @@ def _run_staleness_harness(script: str) -> Dict[str, Any]:
     assert run.returncode == 0, run.stderr
     return json.loads(run.stdout)
 
+def test_probe_message_id_is_guid_shaped_and_unique() -> None:
+    out = _run_staleness_harness(
+        """
+        const first = createProbeMessageId();
+        const second = createProbeMessageId();
+        process.stdout.write(JSON.stringify({ first, second }));
+        """
+    )
+    guid_re = r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    assert re.fullmatch(guid_re, out["first"])
+    assert re.fullmatch(guid_re, out["second"])
+    assert out["first"] != out["second"]
 
 def test_probe_rejection_classification_is_strict() -> None:
     """Only not-found-shaped rejections prove liveness; everything else is
@@ -90,7 +101,6 @@ def test_probe_rejection_classification_is_strict() -> None:
         assert out[name]["alive"] is False, name
         assert out[name]["inconclusive"] is True, name
 
-
 def test_should_probe_requires_silence_past_threshold_and_cooldown() -> None:
     out = _run_staleness_harness(
         """
@@ -110,7 +120,6 @@ def test_should_probe_requires_silence_past_threshold_and_cooldown() -> None:
     assert out["pastThresholdButCoolingDown"] is False
     assert out["watchdogDisabled"] is False
     assert out["watchdogDisabledNegative"] is False
-
 
 def test_zombie_requires_probe_proven_connectivity_never_silence_alone() -> None:
     """The core conservatism rule: shared lines can be quiet for hours, so a
@@ -140,7 +149,6 @@ def test_zombie_requires_probe_proven_connectivity_never_silence_alone() -> None
     assert out["notSilentEnough"] is False
     assert out["disabled"] is False
 
-
 # -- Adapter surfacing of the new /healthz staleness fields ------------------
 
 def _healthz_payload(**staleness: Any) -> Dict[str, Any]:
@@ -161,7 +169,6 @@ def _healthz_payload(**staleness: Any) -> Dict[str, Any]:
             },
         },
     }
-
 
 @pytest.mark.asyncio
 async def test_monitor_surfaces_zombie_suspected_without_fatal(
@@ -198,7 +205,6 @@ async def test_monitor_surfaces_zombie_suspected_without_fatal(
     assert any(
         "suspected zombie stream" in rec.message for rec in caplog.records
     )
-
 
 # -- Adapter watchdog: inconclusive never counts toward respawn --------------
 

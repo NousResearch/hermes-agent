@@ -49,3 +49,22 @@ export class PrimaryProfilePin {
     return String(readPreference() ?? '').trim() || 'default'
   }
 }
+
+/**
+ * One authoritative launch-profile decision for a startup attempt (#108417).
+ *
+ * `routingProfile` is what the pin and the routing table should answer for
+ * (the preference at decision time, 'default' when unset); `argvProfile` is
+ * what the local launch argument and child env carry (the same preference,
+ * `null` when unset so the legacy flag-less launch is preserved). Both come
+ * from the SAME read so a preference change landing mid-startup becomes the
+ * next boot's decision instead of splitting routing identity from
+ * `--profile`.
+ */
+export function resolveLaunchProfile(
+  readPreference: () => null | string | undefined
+): { argvProfile: null | string; routingProfile: string } {
+  const argvProfile = String(readPreference() ?? '').trim() || null
+
+  return { argvProfile, routingProfile: argvProfile ?? 'default' }
+}

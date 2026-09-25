@@ -10,7 +10,7 @@ import importlib.metadata
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
@@ -26,6 +26,13 @@ logger = logging.getLogger("hermes_cli.plugins")
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
+
+# Per-harness manifest directories plugin repos ship for OTHER agent harnesses (e.g. obra/superpowers keeps one
+# plugin.json per harness). Their plugin.json is not an Agent Plugins v1 manifest and can never validate, so
+# parsing it on every discovery pass only spams warnings (#101962).
+_FOREIGN_HARNESS_MANIFEST_DIRS = frozenset({
+    ".claude-plugin", ".codex-plugin", ".cursor-plugin", ".devin-plugin", ".kimi-plugin",
+})
 
 
 def _select_entry_point_group(entry_points: Any, group: str) -> list:
@@ -109,7 +116,23 @@ def scan_directory(
     manifests: List[PluginManifest] = []
     if not path.is_dir():
         return manifests
-    for child in sorted(path.iterdir()):
+    try:
+        children = sorted(path.iterdir())
+    except OSError as exc:
+        logger.warning("Skipping unreadable plugin directory %s: %s", path, exc)
+        return manifests
+    for child in children:
+        # Cache/dunder dirs (__pycache__, __MACOSX__, …) are never
+        # plugins. Walking them can raise PermissionError and take
+        # down every subsequent tool call (#86996).
+        if child.name.startswith("__") and child.name.endswith("__"):
+            logger.debug("Skipping dunder plugin path %s", child)
+            continue
+        if child.name in _FOREIGN_HARNESS_MANIFEST_DIRS:
+            logger.debug("Skipping %s (foreign-harness manifest convention)", child)
+            continue
+        # pathlib.Path.is_dir() swallows OSError, but injected Path-likes
+        # and test doubles can still raise. Fail closed per child.
         try:
             if not child.is_dir() or (depth == 0 and skip_names and child.name in skip_names):
                 continue
@@ -150,11 +173,14 @@ def collect_directory_manifests() -> List[PluginManifest]:
         logger.debug("  %s: %d manifest(s)", label, len(found))
         manifests.extend(found)
 
-    # Excluded bundled top-level categories have their own discovery; platforms scan separately.
+    # Excluded bundled top-level categories have their own discovery. ``platforms/`` is an ordinary category
+    # dir: the recursion keys its adapters ``platforms/<dir>`` like every other category (``web/firecrawl``),
+    # which is the key `hermes plugins enable/disable` and the dashboard write (#27548); the manifest name
+    # (``photon-platform``) stays an accepted alias through ``gate_manifest``.
     repo_plugins = _origin.get_bundled_plugins_dir()
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
-    _scan("bundled (top-level)", repo_plugins, "bundled", {"memory", "context_engine", "platforms", "model-providers"})
-    _scan("bundled/platforms", repo_plugins / "platforms", "bundled")
+    _scan("bundled (top-level)", repo_plugins, "bundled",
+          {"memory", "context_engine", "model-providers", "cron_providers"})
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")
@@ -165,6 +191,32 @@ def collect_directory_manifests() -> List[PluginManifest]:
     else:
         logger.debug("Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)")
     return manifests
+
+
+def resolve_manifest_winners(manifests: List[PluginManifest]) -> Dict[str, PluginManifest]:
+    """Later sources win on key collision (project > user > bundled): a same-named copy under
+    ``~/.hermes/plugins/<name>`` is the documented way to override a bundled plugin, and is logged. A flat
+    user/project manifest that claims a bundled key from a *differently named* directory is an impostor, not
+    an override (``impostor_dir/plugin.yaml`` with ``name: kanban``): it is skipped with a warning so
+    ``hermes plugins enable kanban`` never activates unrelated code under the bundled name."""
+    winners: Dict[str, PluginManifest] = {}
+    for manifest in manifests:
+        key = manifest_key(manifest)
+        shadowed = winners.get(key)
+        if shadowed is not None and shadowed.source == "bundled" and manifest.source in {"user", "project"}:
+            own_dir = Path(manifest.path).name if manifest.path else ""
+            bundled_dir = Path(shadowed.path).name if shadowed.path else ""
+            if own_dir and bundled_dir and own_dir != bundled_dir:
+                logger.warning(
+                    "Ignoring %s plugin at %s: its manifest name '%s' is a bundled plugin's key but the "
+                    "directory is named '%s'; rename the directory to '%s' to override the bundled plugin",
+                    manifest.source, manifest.path, key, own_dir, bundled_dir,
+                )
+                continue
+            logger.info("Plugin '%s' at %s (%s) shadows the bundled copy at %s", key, manifest.path,
+                        manifest.source, shadowed.path)
+        winners[key] = manifest
+    return winners
 
 
 @dataclass(frozen=True)
@@ -222,4 +274,13 @@ def gate_manifest(
             f"not enabled in config (run `hermes plugins enable {lookup_key}` to activate)", logging.DEBUG,
             "Skipping '%s' (not in plugins.enabled)",
         )
+    if manifest.source != "bundled":
+        # The catalog kill list is enforced at install; a plugin recalled AFTER it was installed must not keep
+        # loading. Offline check (in-tree list + cached live copy), honours an explicit install-time bypass.
+        from hermes_cli.plugins_cmd_catalog import installed_plugin_removal
+        removed = installed_plugin_removal(manifest.name, manifest.path)
+        if removed is not None:
+            error = f"removed from the Hermes plugin catalog: {removed.reason or 'no reason recorded'}"
+            return _placeholder(error, logging.WARNING, "Refusing to load plugin '%s' — %s; run `hermes plugins remove`",
+                                error)
     return ManifestGate("load")

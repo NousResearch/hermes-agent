@@ -1,0 +1,24 @@
+name: provider-status
+repo: https://github.com/apoapostolov/hermes-agent-awesome-plugins
+sha: 5994db2e4e7212b073e9017a73e2dc1093b9865d
+subdir: public/provider-status
+description: >-
+  Status-bar quota tracking for 17 providers: Tavily, OpenCode Go, DeepSeek,
+  GLM (z.ai), OpenRouter, Grok (xAI), Codex (OpenAI), OpenAI, Anthropic, Groq,
+  Cerebras, Moonshot Kimi, MiniMax, Google Gemini, Hugging Face, Mistral, and
+  Qwen. DeepSeek and GLM show peak/off-peak gauges and countdowns. Includes
+  OAuth and multi-key pools. This edition does not rotate Hermes environment
+  keys on exhaust. Codex and Grok checks use their CLI client identity and
+  user-agent.
+maintainer: apoapostolov
+tier: community
+category: desktop
+docs_url: https://github.com/apoapostolov/hermes-agent-awesome-plugins/tree/main/public/provider-status
+version: "1.5.9"
+image: https://raw.githubusercontent.com/apoapostolov/hermes-agent-awesome-plugins/5994db2e4e7212b073e9017a73e2dc1093b9865d/public/provider-status/docs/hero.png
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

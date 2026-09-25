@@ -23,10 +23,6 @@ from plugins.memory.honcho.client import HonchoClientConfig
 
 
 class TestSessionAiPeerPrefixConfigParsing:
-    def test_default_is_false(self):
-        """Default preserves existing behaviour."""
-        config = HonchoClientConfig()
-        assert config.session_ai_peer_prefix is False
 
     def test_root_level_true(self, tmp_path, monkeypatch):
         config_file = tmp_path / "honcho.json"

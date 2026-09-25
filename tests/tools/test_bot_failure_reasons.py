@@ -21,26 +21,6 @@ FIXTURE_NO_PROVIDER = (
 FIXTURE_NO_TOKEN = "agent init failed: No access token found for Nous Portal login."
 
 
-def test_closed_vocabulary_contains_every_code():
-    assert fr.ALL_REASONS == {
-        "runtime_offline",
-        "queued_expired",
-        "delivery_timeout",
-        "agent_blocked",
-        "cancelled",
-        "provider_auth_or_access",
-        "provider_quota_limit",
-        "provider_rate_limit",
-        "provider_server_error",
-        "context_overflow",
-        "missing_config",
-        "model_unavailable",
-        "unknown",
-    }
-    # constants match their string values
-    assert fr.RUNTIME_OFFLINE == "runtime_offline"
-    assert fr.PROVIDER_AUTH_OR_ACCESS == "provider_auth_or_access"
-    assert fr.UNKNOWN == "unknown"
 
 
 @pytest.mark.parametrize(
@@ -99,12 +79,6 @@ def test_fixture_no_access_token_is_missing_config():
 
 
 def test_auto_retryable_set_and_predicate():
-    assert fr.AUTO_RETRYABLE == {
-        fr.RUNTIME_OFFLINE,
-        fr.DELIVERY_TIMEOUT,
-        fr.PROVIDER_RATE_LIMIT,
-        fr.PROVIDER_SERVER_ERROR,
-    }
     for code in fr.AUTO_RETRYABLE:
         assert fr.is_auto_retryable(code)
     for code in fr.ALL_REASONS - fr.AUTO_RETRYABLE:

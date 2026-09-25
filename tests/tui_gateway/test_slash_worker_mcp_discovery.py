@@ -12,7 +12,7 @@ import textwrap
 import threading
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 _mcp_server_mod = pytest.importorskip("mcp.server")
 
@@ -51,6 +51,8 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
     (profile_home / "config.yaml").write_text(
         yaml.safe_dump(
             {
+                # Let real discovery finish before the CLI snapshots its tools.
+                "mcp_discovery_timeout": 30,
                 "mcp_servers": {
                     "profileprobe": {
                         "enabled": True,
@@ -91,19 +93,31 @@ def test_profile_local_mcp_tool_is_visible_in_slash_worker(tmp_path):
     try:
         assert proc.stdin is not None
         assert proc.stdout is not None
-        stdout = proc.stdout
-        threading.Thread(
-            target=lambda: output.put(stdout.readline()),
-            daemon=True,
-        ).start()
-        proc.stdin.write(json.dumps({"id": 1, "command": "/tools"}) + "\n")
-        proc.stdin.flush()
-        try:
-            line = output.get(timeout=10)
-        except queue.Empty:
-            pytest.fail("slash worker produced no /tools response within 10 seconds")
-        response = json.loads(line)
-        assert response["ok"] is True
+
+        def read_responses():
+            for line in proc.stdout:
+                output.put(line)
+            output.put("")
+
+        threading.Thread(target=read_responses, daemon=True).start()
+
+        def request(request_id, command, timeout):
+            proc.stdin.write(json.dumps({"id": request_id, "command": command}) + "\n")
+            proc.stdin.flush()
+            try:
+                line = output.get(timeout=timeout)
+            except queue.Empty:
+                pytest.fail(f"slash worker did not answer {command} within {timeout}s")
+            assert line, f"slash worker exited before answering {command}"
+            response = json.loads(line)
+            assert response["id"] == request_id
+            assert response["ok"] is True, response
+            return response
+
+        # Cold imports and real MCP startup have their own budget; the warm
+        # command must still answer promptly, with the tool already present.
+        request(1, "/version", 60)
+        response = request(2, "/tools", 10)
         assert "mcp__profileprobe__hermes_61922_profile_probe" in response["output"]
     finally:
         proc.terminate()

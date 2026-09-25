@@ -5,8 +5,7 @@ import {
   archiveTodosAtTurnEnd,
   getTurnState,
   patchTurnState,
-  resetTurnState,
-  toggleTodoCollapsed
+  resetTurnState
 } from '../app/turnStore.js'
 
 describe('turnStore live progress helpers', () => {
@@ -54,13 +53,5 @@ describe('turnStore live progress helpers', () => {
   it('returns nothing when there are no todos at turn end', () => {
     expect(archiveTodosAtTurnEnd()).toEqual([])
     expect(archiveDoneTodos()).toEqual([])
-  })
-
-  it('tracks collapsed state independently of todo content', () => {
-    toggleTodoCollapsed()
-    expect(getTurnState().todoCollapsed).toBe(true)
-
-    toggleTodoCollapsed()
-    expect(getTurnState().todoCollapsed).toBe(false)
   })
 })

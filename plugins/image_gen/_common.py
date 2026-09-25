@@ -71,10 +71,15 @@ def load_image_gen_config(sub: Optional[str] = None) -> Dict[str, Any]:
 def resolve_static_model(
     models: Dict[str, Dict[str, Any]], default: str, *, env_var: str, config_key: str,
     explicit: Optional[str] = None, include_top_level: bool = True,
-    config: Optional[Dict[str, Any]] = None,
+    config: Optional[Dict[str, Any]] = None, passthrough: bool = False,
 ) -> Tuple[str, Dict[str, Any]]:
     """``(model_id, meta)`` from a fixed catalog; first *known* id wins (unknown ids fall through):
-    explicit → ``env_var`` → ``image_gen.<config_key>.model`` → ``image_gen.model`` → ``default``."""
+    explicit → ``env_var`` → ``image_gen.<config_key>.model`` → ``image_gen.model`` → ``default``.
+
+    ``passthrough``: an unknown id from ``env_var`` or the provider-scoped ``image_gen.<config_key>.model``
+    is sent verbatim as the API model with no ``quality`` (OpenAI-compatible gateways serve their own
+    image model names and reject unknown enum values, #97928). The shared top-level ``image_gen.model``
+    never passes through — it may hold another provider's id."""
     if isinstance(explicit, str) and explicit.strip() in models:
         return explicit.strip(), models[explicit.strip()]
     env_override = os.environ.get(env_var)
@@ -88,6 +93,10 @@ def resolve_static_model(
     for candidate in candidates:
         if isinstance(candidate, str) and candidate in models:
             return candidate, models[candidate]
+    if passthrough:
+        custom = next((c.strip() for c in (env_override, candidates[0]) if isinstance(c, str) and c.strip()), "")
+        if custom:
+            return custom, {"display": custom, "api_model": custom, "quality": None}
     return default, models[default]
 
 
@@ -240,6 +249,25 @@ class HttpFailure:
     status: int = 0
     message: str = ""
     response: Any = None
+
+
+def record_token_usage(usage: Any, *, model: str, provider: str, base_url: Optional[str] = None) -> None:
+    """Record a token-billed image call against the ambient session as task ``image_generation``.
+
+    Token-metered image models (OpenRouter chat-image and Image API models, OpenAI ``gpt-image``)
+    bill exactly like a chat completion, so they get a ``session_model_usage`` row through the
+    same chokepoint as auxiliary calls. ``usage`` is the response's usage block (dict or SDK
+    object). Per-image backends (FAL, xAI, Krea, ...) return no token usage and never call this;
+    a body without tokens is a no-op inside ``record_aux_usage``, as is running outside a turn.
+    """
+    if not usage:
+        return
+    from types import SimpleNamespace
+
+    from agent.aux_accounting import record_aux_usage
+
+    record_aux_usage(
+        SimpleNamespace(model=model, usage=usage), "image_generation", provider=provider, base_url=base_url)
 
 
 def post_json(

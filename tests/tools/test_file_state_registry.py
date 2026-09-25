@@ -29,7 +29,6 @@ from tools.file_tools import (
     clear_file_ops_cache,
     read_file_tool,
     write_file_tool,
-    patch_tool,
 )
 
 
@@ -179,12 +178,8 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         the same scratch path without a "modified by sibling subagent" refusal."""
         p = self._mk()
         file_state.note_write("cron:JOB:run1", p)
-        registry = file_state.get_registry()
-        self.assertEqual(registry._last_writer[p][0], "cron:JOB:run1")
+        file_state.get_registry().forget_task("cron:JOB:run1")
 
-        registry.forget_task("cron:JOB:run1")
-
-        self.assertNotIn(p, registry._last_writer)
         self.assertIsNone(file_state.check_stale("cron:JOB:run2", p))
         # A sibling that has NOT ended still triggers the guard.
         file_state.note_write("subagent-1-live", p)
@@ -269,12 +264,6 @@ class FileToolsIntegrationTests(unittest.TestCase):
             self.assertEqual(f.read(), "B wrote\n")
 
 
-    def test_net_new_file_no_warning(self):
-        p = os.path.join(self._tmpdir, "brand_new.txt")
-        # Nobody has read or written this before.
-        w = json.loads(write_file_tool(path=p, content="hi\n", task_id="agentX"))
-        self.assertFalse(w.get("_warning"))
-        self.assertNotIn("error", w)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+import { readStatusCode } from './api-transport'
 import { isGatewayAuthRejection } from './connection-config'
 import { type NativeAccessTokenOptions, NativeAuthChangedError } from './native-access-token'
 import { shouldRotateNativeTokenAfterRejection } from './native-auth-decisions'
@@ -22,6 +23,13 @@ async function cookieFallback<T>(request: () => Promise<T>, nativeError: unknown
     }
 
     throw cookieError
+  }
+}
+
+/** A confirmed bearer 401 is an app-token failure, not a server OAuth session. */
+function markStaleAppToken(error: unknown): void {
+  if (error && typeof error === 'object') {
+    ;(error as { appTokenRejected?: boolean }).appTokenRejected = true
   }
 }
 
@@ -97,6 +105,10 @@ export async function mintGatewayWsTicket(
           return await mintWithBearer(rotatedAt)
         }
       } catch (error) {
+        if (readStatusCode(error) === 401) {
+          markStaleAppToken(error)
+        }
+
         return cookieFallback(requestWithCookie, error)
       }
     }

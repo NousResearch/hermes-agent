@@ -1,0 +1,21 @@
+name: reading-buddy
+repo: https://github.com/harrylabsj/hermes-plugin-reading-buddy
+sha: 486034846dc82916460faaa7ab1b4baedea08f5b
+description: 'Local-first WeRead (微信读书) reading companion: syncs bookshelf, reading
+  stats and notes to the local machine and turns them into private reading cards and
+  weekly/monthly reviews through 8 MCP tools, with a built-in fictional demo mode for
+  previews. Engine pinned to an immutable git commit (e5f6673) over npx stdio; Portable
+  Agent Plugins v1 package (mcp.json + skills/), needs Node.js 20+ on PATH. All data stays
+  in PLUGIN_DATA; never posts to WeRead — cards and reviews are local files saved only
+  after user confirmation. Disclosure — live mode sends your WEREAD_API_KEY as a Bearer token plus book ids and paging cursors to i.weread.qq.com (Tencent''s WeRead agent gateway) and nothing else; the engine''s MCP tool descriptions and error messages are Chinese-only while the skills are English-first; the engine''s npm dependencies resolve as caret ranges at first launch.'
+maintainer: harrylabsj
+tier: community
+category: tools
+docs_url: https://github.com/harrylabsj/reading-buddy
+version: "1.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

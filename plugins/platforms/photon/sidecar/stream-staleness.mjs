@@ -23,9 +23,15 @@
 // These helpers are pure (no SDK, no timers) so tests can execute them under
 // node — see tests/plugins/platforms/photon/test_zombie_stream_watchdog.py.
 
+import { randomUUID } from "node:crypto";
+
 // gRPC NOT_FOUND is code 5; SDKs also surface it as "not found" / "NotFound"
 // message text. Anything not clearly not-found is inconclusive.
 const NOT_FOUND_RE = /not[\s_-]?found/i;
+/** Return a unique message id accepted by Spectrum's message-id parser. */
+export function createProbeMessageId() {
+  return randomUUID();
+}
 
 /**
  * Classify the rejection of the synthetic-id probe read.

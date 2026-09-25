@@ -24,37 +24,9 @@ def _spawn_exit(code: int) -> subprocess.Popen:
     return proc
 
 
-def test_windows_reaper_classifies_parked_popen_exit(monkeypatch):
-    """With the Windows flag on, the reaper learns exit codes from the parked
-    ``Popen`` handles (no ``waitpid``) and the decode needs no ``os.WIF*``:
-    the rate-limit sentinel is ``rate_limited``, a crash ``nonzero_exit``,
-    and a still-running worker is left alone."""
-    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
-    for name in ("WIFEXITED", "WEXITSTATUS", "WIFSIGNALED", "WTERMSIG"):
-        monkeypatch.delattr(os, name, raising=False)
-    monkeypatch.setattr(kbd, "_live_worker_procs", {})
-    monkeypatch.setattr(kbd, "_recent_worker_exits", {})
-
-    limited = _spawn_exit(kb.KANBAN_RATE_LIMIT_EXIT_CODE)
-    crashed = _spawn_exit(3)
-    alive = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])  # noqa: S603
-    try:
-        for proc in (limited, crashed, alive):
-            kbd._live_worker_procs[proc.pid] = proc
-
-        reaped = kbd.reap_worker_zombies()
-
-        assert sorted(reaped) == sorted([limited.pid, crashed.pid])
-        assert kbd._classify_worker_exit(limited.pid) == ("rate_limited", kb.KANBAN_RATE_LIMIT_EXIT_CODE)
-        assert kbd._classify_worker_exit(crashed.pid) == ("nonzero_exit", 3)
-        assert kbd._classify_worker_exit(alive.pid) == ("unknown", None)
-        assert set(kbd._live_worker_procs) == {alive.pid}
-    finally:
-        alive.kill()
-        alive.wait()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_native_windows_reaper_and_decode(monkeypatch):
     """Native Windows, nothing patched: ``_IS_WINDOWS`` selects the Popen-poll
     reaper and the decode runs where ``os.WIFEXITED`` does not exist, so the

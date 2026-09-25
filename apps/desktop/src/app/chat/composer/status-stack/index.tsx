@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
 import { useComposerSurfaceId } from '@/app/chat/composer/scope'
+import { useSessionView } from '@/app/chat/session-view'
 import { AGENTS_ROUTE } from '@/app/routes'
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { BillingBanner } from '@/components/billing-banner'
@@ -29,6 +30,7 @@ import {
   stopBackgroundProcess
 } from '@/store/composer-status'
 import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
+import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
 import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
 import { $threadScrolledUpBySession } from '@/store/thread-scroll'
@@ -57,6 +59,15 @@ const GROUP_ICON: Record<StatusGroup['type'], string> = {
   todo: 'checklist',
   subagent: 'agent',
   background: 'server-process'
+}
+
+// Goals and todos are the plan the user is following; subagents and background
+// processes are how Hermes is executing it. Simple mode shows the plan only.
+const GROUP_TIER: Record<StatusGroup['type'], Tiered> = {
+  goal: {},
+  todo: {},
+  subagent: { tier: 'advanced' },
+  background: { tier: 'advanced' }
 }
 
 const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
@@ -97,7 +108,12 @@ interface ComposerStatusStackProps {
 export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
-  useSubagentSnapshot(sessionId)
+  const storedSessionId = useStore(useSessionView().$storedId)
+  const interfaceMode = useStore($interfaceMode)
+  const shown = useMemo(() => shownInMode(interfaceMode), [interfaceMode])
+  // Hydrate always (delegate cards and session dots read the same store after
+  // a reload); keep POLLING only while the subagent group is on the shelf.
+  useSubagentSnapshot(sessionId, shown(GROUP_TIER.subagent))
   // Subscribe to THIS session's slice only. Both maps churn on other
   // sessions' activity (subagent ticks, background polls, preview updates in
   // any tile); a whole-map `useStore` re-rendered every mounted stack — one
@@ -125,15 +141,17 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
 
   const isStructuredSupported = controlEntry?.capability === 'supported'
 
-  const groups = useMemo(() => {
-    const raw = groupStatusItems(items)
+  // Every group, before the shelf decides what to SHOW: whether a dev server is
+  // running is a fact about the session (it keeps its localhost preview chip
+  // alive) even when Simple keeps the background group itself off screen.
+  const allGroups = useMemo(() => groupStatusItems(items), [items])
 
-    if (isStructuredSupported) {
-      return raw.filter(g => g.type !== 'goal')
-    }
+  const hasRunningBackground = allGroups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
 
-    return raw
-  }, [items, isStructuredSupported])
+  const groups = useMemo(
+    () => allGroups.filter(group => shown(GROUP_TIER[group.type]) && (group.type !== 'goal' || !isStructuredSupported)),
+    [allGroups, isStructuredSupported, shown]
+  )
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
   // process tool completions) live in use-message-stream. This must NOT reset
@@ -149,8 +167,6 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
       void refreshSessionControl(sessionId)
     }
   }, [sessionId])
-
-  const hasRunningBackground = groups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
 
   // Drop localhost previews once no dev server is left running — that's what made
   // dead `localhost:5174` chips stick around. On-disk file previews are kept.
@@ -185,7 +201,11 @@ export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStat
   const previewRows =
     visiblePreviews.length > 0 && sessionId
       ? visiblePreviews.map(item => (
-          <PreviewStatusRow item={item} key={item.id} onDismiss={id => dismissPreviewArtifact(sessionId, id)} />
+          <PreviewStatusRow
+            item={item}
+            key={item.id}
+            onDismiss={id => dismissPreviewArtifact(sessionId, id, storedSessionId ?? sessionId)}
+          />
         ))
       : []
 

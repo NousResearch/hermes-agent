@@ -3,6 +3,7 @@
 manifest_version: 1
 
 name: stripe
+connector_slug: stripe_mcp
 description: >-
   Payments, customers, and invoices via Stripe's hosted MCP.
 source: https://docs.stripe.com/mcp

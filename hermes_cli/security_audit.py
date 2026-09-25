@@ -116,7 +116,7 @@ def _discover_plugins(hermes_home: Path) -> list[Component]:
         for filename, parse in _PLUGIN_PIN_FILES:
             path = plugin_dir / filename
             try:
-                pins = parse(path.read_text(encoding="utf-8", errors="replace")) if path.is_file() else []
+                pins = parse(path.read_text(encoding="utf-8-sig", errors="replace")) if path.is_file() else []
             except OSError:
                 continue
             out.extend(Component(name=n, version=v, ecosystem="PyPI", source=f"plugin:{plugin_dir.name}") for n, v in pins)

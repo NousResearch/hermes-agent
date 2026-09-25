@@ -26,7 +26,9 @@ def test_explicit_astra_resolves_and_uses_official_responses(monkeypatch, tmp_pa
     )
 
     assert agent.api_mode == "codex_responses"
-    assert agent.context_compressor.context_length == 1_050_000
+    from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS
+
+    assert agent.context_compressor.context_length == DEFAULT_CONTEXT_LENGTHS["gpt-6-astra"]
     kwargs = agent._get_transport().build_kwargs(
         model=agent.model,
         messages=[{"role": "user", "content": "Hi"}],
@@ -59,7 +61,7 @@ def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, 
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(metadata, "_codex_oauth_context_cache", {})
-    monkeypatch.setattr(metadata.requests, "get", lambda *args, **kwargs: SimpleNamespace(
+    monkeypatch.setattr(metadata.model_metadata_http, "get", lambda *args, **kwargs: SimpleNamespace(
         status_code=200,
         json=lambda: {"models": [{"slug": "gpt-6-astra", "context_window": advertised}]},
     ))

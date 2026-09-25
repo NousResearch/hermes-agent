@@ -1,5 +1,12 @@
 """Regression tests for empty-response recovery transcript persistence."""
 
+import json
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from hermes_state import SessionDB
 from run_agent import AIAgent
 
 
@@ -45,11 +52,9 @@ def _agent_with_stubbed_persistence():
 
 
 def test_persist_session_strips_trailing_empty_recovery_scaffolding():
-    """After stripping scaffolding, also rewind past orphan trailing tool-result
-    messages that the failed iteration left behind. Otherwise the next user
-    message lands after a bare ``tool`` and produces a protocol-invalid
-    sequence that most providers silently fail on, retriggering the empty-
-    retry loop indefinitely.
+    """Only the flagged scaffolding goes. The assistant(tool_calls) + tool pair
+    already ran and was saved before execution, so it stays. The persist layer does
+    not author a closing row: the exit owner closes the tool tail with its reason.
     """
     agent = _agent_with_stubbed_persistence()
     messages = [
@@ -78,12 +83,8 @@ def test_persist_session_strips_trailing_empty_recovery_scaffolding():
 
     AIAgent._persist_session(agent, messages, conversation_history=[])
 
-    # After strip + rewind, only the original user message remains. The
-    # assistant(tool_calls) + tool pair is dropped because its iteration
-    # never produced a real response.
-    assert messages == [
-        {"role": "user", "content": "run the task"},
-    ]
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool"]
+    assert messages[1]["tool_calls"][0]["id"] == messages[2]["tool_call_id"]
     assert agent.flushed_session_db_messages[-1] == messages
     assert all(not msg.get("_empty_recovery_synthetic") for msg in messages)
 
@@ -164,3 +165,105 @@ def test_flush_skips_thinking_prefill_scaffolding():
     agent._flush_messages_to_session_db(messages, conversation_history=[])
 
     assert [r["content"] for r in agent._session_db.rows] == ["hi", "Hello!"]
+
+
+# ── Real turn loop: a tool that already ran survives an empty-response exit ──
+
+_DEAD_LOCAL = "http://127.0.0.1:9"
+
+
+def _response(content="", finish_reason="stop", tool_calls=None):
+    choice = SimpleNamespace(
+        message=SimpleNamespace(content=content, tool_calls=tool_calls),
+        finish_reason=finish_reason, index=0,
+    )
+    return SimpleNamespace(id="chatcmpl-test", choices=[choice], model="test/model", usage=None)
+
+
+def _write_file_call(path):
+    return SimpleNamespace(
+        id="call_write", type="function",
+        function=SimpleNamespace(name="write_file", arguments=json.dumps({"path": str(path), "content": "PAYMENT #1 SENT\n"})),
+    )
+
+
+@pytest.fixture
+def real_loop(tmp_path, monkeypatch):
+    """A real AIAgent on the real ``file`` toolset and a real SessionDB; only the provider is scripted.
+    Any request that would still leave the process dies on a dead local address."""
+    for var in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.setenv(var, _DEAD_LOCAL)
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setenv("no_proxy", "")
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **k: None)
+    monkeypatch.setattr("agent.title_generator.start_title_upgrade", lambda *a, **k: None)
+    monkeypatch.chdir(tmp_path)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    sid = "sess-empty-exit"
+    with patch("agent.process_bootstrap.OpenAI"), patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+        agent = AIAgent(
+            api_key="test-key", base_url=f"{_DEAD_LOCAL}/v1", model="test/model", quiet_mode=True,
+            skip_context_files=True, skip_memory=True, enabled_toolsets=["file"], session_db=db, session_id=sid,
+        )
+
+    def _no_real_client(*_a, **_k):
+        raise AssertionError("a real provider client would be built")
+
+    agent._create_openai_client = _no_real_client
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+
+    def run(script, user_message):
+        pending = list(script)
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.side_effect = lambda **_kw: pending.pop(0)
+        return agent.run_conversation(user_message)
+
+    yield SimpleNamespace(agent=agent, db=db, sid=sid, ledger=tmp_path / "ledger.txt", run=run)
+    db.close()
+
+
+def _assert_saved_tool_pairs_stay_live(result, db, sid):
+    def ids(rows):
+        calls = {tc["id"] for m in rows if m.get("role") == "assistant" for tc in (m.get("tool_calls") or [])}
+        return calls, {m.get("tool_call_id") for m in rows if m.get("role") == "tool"}
+
+    saved = db.get_messages_as_conversation(sid)
+    saved_calls, saved_results = ids(saved)
+    live_calls, live_results = ids(result["messages"])
+    assert saved_calls and saved_calls == saved_results
+    # The next turn replays result["messages"]: a pair missing there is a side effect the model re-runs.
+    assert saved_calls <= live_calls and saved_results <= live_results
+    assert saved[-1]["role"] != "tool"
+
+
+def test_empty_response_give_up_keeps_the_executed_tool_call_live(real_loop):
+    result = real_loop.run(
+        [_response(finish_reason="tool_calls", tool_calls=[_write_file_call(real_loop.ledger)])]
+        + [_response() for _ in range(8)],
+        "record the payment in ledger.txt",
+    )
+
+    assert real_loop.ledger.read_text() == "PAYMENT #1 SENT\n"
+    assert result["turn_exit_reason"] == "empty_response_exhausted"
+    _assert_saved_tool_pairs_stay_live(result, real_loop.db, real_loop.sid)
+
+
+def test_stop_during_empty_response_recovery_keeps_the_executed_tool_call_live(real_loop, monkeypatch):
+    agent = real_loop.agent
+
+    def stop_during_backoff(*_a, **_k):
+        agent.interrupt("user pressed stop")
+        return 5.0
+
+    monkeypatch.setattr("agent.retry_utils.jittered_backoff", stop_during_backoff)
+    script = [_response(finish_reason="tool_calls", tool_calls=[_write_file_call(real_loop.ledger)]), _response(), _response()]
+    result = real_loop.run(script, "record the payment in ledger.txt")
+
+    assert real_loop.ledger.read_text() == "PAYMENT #1 SENT\n"
+    assert result["interrupted"] is True
+    _assert_saved_tool_pairs_stay_live(result, real_loop.db, real_loop.sid)
+    # The Stop owner strips the nudge scaffold itself and closes with its own reason.
+    assert result["messages"][-1]["content"] == result["final_response"]

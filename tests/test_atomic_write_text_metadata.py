@@ -24,9 +24,7 @@ import pytest
 from utils import atomic_write_text, atomic_yaml_write
 
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX permission bits"
-)
+pytestmark = pytest.mark.platforms("posix")  # POSIX permission bits
 
 
 class TestPreserveMode:

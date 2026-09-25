@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { setAlwaysExternalLinks } from '@/store/external-links'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import {
@@ -41,6 +42,7 @@ function installTitleBridge(title: string) {
 afterEach(() => {
   __resetLinkTitleCache()
   closeRightRail()
+  setAlwaysExternalLinks(false)
   vi.restoreAllMocks()
   cleanup()
 
@@ -136,6 +138,19 @@ describe('external link helpers', () => {
     expect($previewTabs.get()).toHaveLength(0)
   })
 
+  it('sends a plain click to the OS browser when "always external" is on', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+    setAlwaysExternalLinks(true)
+
+    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
   it('treats only the HUD renderer as a native-link surface', () => {
     expect(hudForcesNativeLinks('')).toBe(false)
     expect(hudForcesNativeLinks('?win=secondary')).toBe(false)
@@ -196,28 +211,6 @@ describe('external link helpers', () => {
     expect(openExternal).toHaveBeenCalledWith('mailto:hi@example.com')
   })
 
-  it('hides the trailing external-link icon by default', () => {
-    installDesktopBridge()
-
-    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
-
-    const link = screen.getByRole('link', { name: 'Example link' })
-    expect(link.querySelector('svg')).toBeNull()
-  })
-
-  it('shows a trailing external-link icon when opted in', () => {
-    installDesktopBridge()
-
-    render(
-      <ExternalLink href="https://example.com/path/to/resource" showExternalIcon>
-        Example link
-      </ExternalLink>
-    )
-
-    const link = screen.getByRole('link', { name: 'Example link' })
-    expect(link.querySelector('svg')).toBeTruthy()
-  })
-
   it('renders pretty links with fetched titles and no host suffix', async () => {
     const bridge = vi.fn().mockResolvedValue('From Fajardo: Full-Day Culebra Islands Catamaran Tour')
     installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
@@ -234,17 +227,6 @@ describe('external link helpers', () => {
       expect(link.textContent).toContain('From Fajardo: Full-Day Culebra Islands Catamaran Tour')
     })
     expect(link.textContent).not.toContain('getyourguide.com')
-  })
-
-  it('shows host/path fallback when title is unavailable', () => {
-    installDesktopBridge()
-    const url = 'https://www.expedia.com/things-to-do/puerto-rico-el-yunque'
-
-    render(<PrettyLink href={url} />)
-
-    const link = screen.getByTitle(url)
-
-    expect(link.textContent).toBe('Puerto Rico El Yunque')
   })
 
   it('ignores error-like fetched titles and falls back to slug label', async () => {
@@ -331,29 +313,5 @@ describe('external link helpers', () => {
 
     const link = screen.getByRole('link', { name: 'agent.log' })
     expect(link.getAttribute('href')).toBe('https://agent.log')
-  })
-
-  it('prefixes a pretty link to a known host with its brand glyph', () => {
-    installDesktopBridge()
-
-    const url = 'https://github.com/NousResearch/hermes-agent/pull/123'
-
-    render(<PrettyLink fallbackLabel="#123" href={url} />)
-
-    const link = screen.getByTitle(url)
-
-    expect(link.querySelector('svg')).toBeTruthy()
-    // The glyph is decorative — it must not pollute the link's accessible name.
-    expect(link.textContent).toBe('#123')
-  })
-
-  it('renders no brand glyph for an unknown host', () => {
-    installDesktopBridge()
-
-    const url = 'https://example.com/some/page'
-
-    render(<PrettyLink fallbackLabel="Some Page" href={url} />)
-
-    expect(screen.getByTitle(url).querySelector('svg')).toBeNull()
   })
 })

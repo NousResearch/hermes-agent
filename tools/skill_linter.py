@@ -49,6 +49,11 @@ _INCIDENT_REF_PER_KCHAR = 0.5  # the 100k incident-log SKILL.md this targets sat
 # Calibration: a deliberately curated large workflow skill sits near 50 topical files; the hoarding
 # shape this catches was 443 one-per-session files.
 _MAX_REFERENCE_FILES = 60
+# oversized-body: SKILL.md is loaded whole by skill_view and then rides in context for every later
+# call of the session, so body size is paid per turn, not once. The authoring standard is ~200 lines;
+# this budget is ~3x that (bundled skills average ~20k chars). The hard cap in skill_manager_tool
+# (100k) is a safety stop, not a target — agent-authored skills grew to sit right under it.
+_BODY_SOFT_BUDGET_CHARS = 24_000
 
 ERROR = "error"
 WARNING = "warning"
@@ -69,7 +74,6 @@ def _err(rule: str, message: str) -> LintFinding:
 
 def _warn(rule: str, message: str) -> LintFinding:
     return LintFinding(WARNING, rule, message)
-
 
 def _strip_code_blocks(body: str) -> str:
     """Remove fenced code blocks so prose-only checks don't fire on examples."""
@@ -121,6 +125,12 @@ def _check_frontmatter(frontmatter: Dict[str, Any], skill_dir: Optional[Path]) -
 
 
 def _check_body(body: str, skill_dir: Optional[Path]) -> Iterator[LintFinding]:
+    if len(body) > _BODY_SOFT_BUDGET_CHARS:
+        yield _warn("oversized-body",
+                    f"SKILL.md body is {len(body):,} chars (~{len(body) // 4:,} tokens); skill_view loads "
+                    f"all of it and it stays in context for every later call of the session. Keep the "
+                    f"always-on rules here (~200 lines) and move topic depth into references/<topic>.md, "
+                    f"linked from the body.")
     # Only backtick-wrapped mentions in PROSE (not fenced code): bare words are too noisy.
     prose = _strip_code_blocks(body)
     for util, tool in _SHELL_UTIL_TO_TOOL.items():
@@ -160,7 +170,7 @@ def _check_files(frontmatter: Dict[str, Any], skill_dir: Path) -> Iterator[LintF
             if not script.is_file() or script.suffix not in (".py", ".sh", ".bash"):
                 continue
             try:
-                text = script.read_text(encoding="utf-8", errors="ignore")
+                text = script.read_text(encoding="utf-8-sig", errors="ignore")
             except OSError:
                 continue
             hit = [p for p in _POSIX_PRIMITIVES if p in text]
@@ -201,7 +211,7 @@ def lint_content(content: str, *, skill_dir: Optional[Path] = None) -> List[Lint
 def lint_skill(skill_md_path: Path) -> List[LintFinding]:
     """Lint a SKILL.md file on disk, with all on-disk checks enabled."""
     skill_md_path = Path(skill_md_path)
-    content = skill_md_path.read_text(encoding="utf-8", errors="ignore")
+    content = skill_md_path.read_text(encoding="utf-8-sig", errors="ignore")
     return lint_content(content, skill_dir=skill_md_path.parent)
 
 

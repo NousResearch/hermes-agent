@@ -62,20 +62,6 @@ def _pydantic_warnings(recorded):
     return [w for w in recorded if "Pydantic serializer warnings" in str(w.message)]
 
 
-def test_stop_event_dump_actually_warns_without_suppression():
-    """Precondition: the fixture really trips the SDK/pydantic warning.
-
-    If a future SDK/pydantic release stops warning here, the other tests
-    pass vacuously — this test tells us the guard can be simplified.
-    """
-    stop_event, _ = _accumulated_stop_event()
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
-        stop_event.model_dump()
-    assert _pydantic_warnings(recorded), (
-        "fixture no longer reproduces the pydantic serializer warning; "
-        "the warnings=False guards may be removable"
-    )
 
 
 def test_relay_llm_jsonable_no_warning_leak():

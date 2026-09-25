@@ -12,7 +12,7 @@ the rendered interactive prompt on Slack.
 
 import importlib
 import sys
-import time
+import threading
 import types
 
 import pytest
@@ -29,6 +29,13 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self.sent = []
         self.edits = []
+        # Set on the first send/edit. The fake agent (on an executor thread)
+        # waits on it, so the turn cannot end before the progress task has
+        # rendered its first bubble.
+        self.delivered = threading.Event()
+
+    def _record(self, content):
+        self.delivered.set()
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -38,10 +45,12 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
         self.sent.append({"chat_id": chat_id, "content": content})
+        self._record(content)
         return SendResult(success=True, message_id="m-1")
 
     async def edit_message(self, chat_id, message_id, content) -> SendResult:
         self.edits.append({"chat_id": chat_id, "message_id": message_id, "content": content})
+        self._record(content)
         return SendResult(success=True, message_id=message_id)
 
     async def send_typing(self, chat_id, metadata=None) -> None:
@@ -55,7 +64,15 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
 
 
 class ClarifyThenToolAgent:
-    """Emits a clarify tool.started (with raw args) then a normal tool."""
+    """Emits a clarify tool.started (with raw args) then a normal tool, and
+    returns only once the progress task has delivered its first bubble.
+
+    Both events are queued before that wait, and the queue drains FIFO, so the
+    first bubble is the clarify one if clarify leaks and the terminal one if
+    not. A timeout means nothing drained and fails the test.
+    """
+
+    adapter = None
 
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -70,9 +87,9 @@ class ClarifyThenToolAgent:
                 "Which environment?",
                 {"question": "Which environment?", "choices": ["staging", "production"]},
             )
-            time.sleep(0.35)
             cb("tool.started", "terminal", "pwd", {})
-            time.sleep(0.35)
+            if not type(self).adapter.delivered.wait(timeout=5.0):
+                raise AssertionError("progress task never delivered a bubble")
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
@@ -127,6 +144,7 @@ async def test_clarify_tool_never_renders_progress_bubble(monkeypatch, tmp_path,
     """
     adapter = ProgressCaptureAdapter()
     runner = _make_runner(adapter)
+    monkeypatch.setattr(ClarifyThenToolAgent, "adapter", adapter)
     gateway_run = _install_fakes(monkeypatch, mode)
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
@@ -152,5 +170,6 @@ async def test_clarify_tool_never_renders_progress_bubble(monkeypatch, tmp_path,
     # No clarify progress line at all (verb "Asking" / tool name).
     assert "clarify" not in all_content
     assert "Asking" not in all_content
-    # The unrelated terminal tool still renders progress normally.
+    # The unrelated terminal tool still renders progress normally (and proves
+    # the no-leak asserts above ran against a drained queue).
     assert "pwd" in all_content

@@ -1,3 +1,5 @@
+import type { MediaImageDimensions } from '@/lib/media'
+
 type ToolLike = {
   result?: unknown
   toolName?: unknown
@@ -64,6 +66,21 @@ export function generatedImageFromResult(result: unknown): string | null {
   }
 
   return stringFields(record, DISPLAY_KEYS)[0] ?? null
+}
+
+/** Image backends can report decoded PNG geometry (`pixel_size`) separately from the requested `size`.
+ * Never use requested_size/size or aspect_ratio as intrinsic metadata. */
+export function generatedImageDimensionsFromResult(result: unknown): MediaImageDimensions | undefined {
+  const record = recordFromUnknown(result)
+  const match = typeof record?.pixel_size === 'string' ? /^(\d+)x(\d+)$/.exec(record.pixel_size) : null
+
+  return match &&
+    Number.isSafeInteger(Number(match[1])) &&
+    Number.isSafeInteger(Number(match[2])) &&
+    Number(match[1]) > 0 &&
+    Number(match[2]) > 0
+    ? { width: Number(match[1]), height: Number(match[2]) }
+    : undefined
 }
 
 /** Every path/URL a generated image might appear as in prose, for de-duping. */

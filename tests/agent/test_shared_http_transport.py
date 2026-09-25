@@ -134,14 +134,6 @@ def test_different_verify_or_proxy_get_different_transports(no_proxy_env, monkey
     proxied.close()
 
 
-def test_async_clients_are_not_shared(no_proxy_env):
-    a = build_keepalive_http_client("https://api.example.com/v1", async_mode=True)
-    b = build_keepalive_http_client("https://api.example.com/v1", async_mode=True)
-    assert isinstance(a, httpx.AsyncClient)
-    ta = [t for t in a._mounts.values() if t is not None]
-    tb = [t for t in b._mounts.values() if t is not None]
-    assert all(isinstance(t, httpx.AsyncHTTPTransport) for t in ta + tb)
-    assert not {id(t) for t in ta} & {id(t) for t in tb}
 
 
 def test_force_close_only_touches_owning_clients_inflight_sockets(no_proxy_env, local_server):

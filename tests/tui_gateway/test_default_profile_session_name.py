@@ -150,6 +150,7 @@ def test_custom_default_root_real_session_db_owner_stamping(tmp_path, monkeypatc
             source="desktop",
             cwd=str(tmp_path),
             profile_name=profile_name_for_home(str(default_home)) or server._current_profile_name(),
+            model="branch-model",
         )
 
     # Verify rows in default_home / state.db

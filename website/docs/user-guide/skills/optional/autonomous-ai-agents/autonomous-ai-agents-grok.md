@@ -15,7 +15,7 @@ Delegate coding to xAI Grok Build CLI (features, PRs).
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/autonomous-ai-agents/grok` |
-| Path | `optional-skills/autonomous-ai-agents\grok` |
+| Path | `optional-skills/autonomous-ai-agents/grok` |
 | Version | `0.1.1` |
 | Author | Matt Maximo (MattMaximo), Hermes Agent |
 | License | MIT |
@@ -200,7 +200,7 @@ Obsidian or a repo) without mutating anything:
 3. Save Grok's stdout straight into the destination note with `write_file()`.
 
 ```
-grok --no-auto-update -p "Read /tmp/current.md and /tmp/inventory.md. Produce markdown only, no preamble. Output a clean note titled 'Cleanup Review'." --output-format plain
+grok --no-auto-update -p "Read ~/.hermes/cache/scratch/current.md and ~/.hermes/cache/scratch/inventory.md. Produce markdown only, no preamble. Output a clean note titled 'Cleanup Review'." --output-format plain
 ```
 
 **Pitfall (same as Claude Code):** for document rewrites, a loose "rewrite this"
@@ -233,22 +233,22 @@ terminal(command="gh pr comment 42 --body '<review text>'", workdir="/path/to/re
 
 ```
 # Create worktrees
-terminal(command="git worktree add -b fix/issue-78 /tmp/issue-78 main", workdir="~/project")
-terminal(command="git worktree add -b fix/issue-99 /tmp/issue-99 main", workdir="~/project")
+terminal(command="git worktree add -b fix/issue-78 ~/.hermes/cache/scratch/issue-78 main", workdir="~/project")
+terminal(command="git worktree add -b fix/issue-99 ~/.hermes/cache/scratch/issue-99 main", workdir="~/project")
 
 # Launch Grok headless in each (background)
-terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #78: <description>. Commit when done.'", workdir="/tmp/issue-78", background=true, notify_on_complete=true)
-terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #99: <description>. Commit when done.'", workdir="/tmp/issue-99", background=true, notify_on_complete=true)
+terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #78: <description>. Commit when done.'", workdir="~/.hermes/cache/scratch/issue-78", background=true, notify_on_complete=true)
+terminal(command="grok --no-auto-update --always-approve -p 'Fix issue #99: <description>. Commit when done.'", workdir="~/.hermes/cache/scratch/issue-99", background=true, notify_on_complete=true)
 
 # Monitor
 process(action="list")
 
 # After completion: push and open PRs
-terminal(command="cd /tmp/issue-78 && git push -u origin fix/issue-78")
+terminal(command="cd ~/.hermes/cache/scratch/issue-78 && git push -u origin fix/issue-78")
 terminal(command="gh pr create --repo user/repo --head fix/issue-78 --title 'fix: ...' --body '...'")
 
 # Cleanup
-terminal(command="git worktree remove /tmp/issue-78", workdir="~/project")
+terminal(command="git worktree remove ~/.hermes/cache/scratch/issue-78", workdir="~/project")
 ```
 
 ## Useful Subcommands & TUI Commands

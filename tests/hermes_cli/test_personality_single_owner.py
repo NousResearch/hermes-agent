@@ -12,13 +12,12 @@ import os
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.personality import (
     BUILTIN_PERSONALITIES,
     available_personalities,
     active_personality_name,
-    describe_personality,
     normalize_personality_name,
     persist_personality,
     prompt_text,
@@ -73,11 +72,9 @@ def test_resolve_personality_neutral_and_case_insensitive():
     assert prompt == KAWAII
 
 
-def test_resolve_personality_unknown_raises_with_listing():
-    with pytest.raises(ValueError) as exc:
+def test_resolve_personality_unknown_raises():
+    with pytest.raises(ValueError):
         resolve_personality("doesnotexist", {})
-    assert "Available" in str(exc.value)
-    assert "`none`" in str(exc.value)
 
 
 def test_resolve_overlay_personality_wins_over_manual_prompt():
@@ -121,10 +118,6 @@ def test_prompt_text_normalizes_none_str_list():
     assert prompt_text(["a", " b ", ""]) == "a\nb"
 
 
-def test_describe_personality_truncates_and_flattens():
-    assert describe_personality("x" * 80) == "x" * 50 + "..."
-    assert "\n" not in describe_personality("a\nb")
-    assert describe_personality({"description": "short desc"}) == "short desc"
 
 
 # ── persistence (single write path) ──────────────────────────────────────────

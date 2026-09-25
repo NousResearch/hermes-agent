@@ -78,8 +78,25 @@ export function appIconCandidates(opts: {
 
   return [
     ...(isWindows ? [path.join(resourcesPath ?? '', 'icon.ico'), path.join(appRoot, 'assets', 'icon.ico')] : []),
+    // The unpacked on-disk copy first (dist/** is asarUnpack'ed), as resolveWebDist() does: statting
+    // any path inside app.asar goes through Electron's asar fs.Stats shim, which emits Node's DEP0180
+    // on every packaged launch (#96857). In a dev tree unpackedPathFor is the identity.
+    path.join(unpackedPathFor(appRoot), 'dist', 'apple-touch-icon.png'),
     path.join(appRoot, 'public', 'apple-touch-icon.png'),
-    path.join(appRoot, 'dist', 'apple-touch-icon.png'),
-    path.join(unpackedPathFor(appRoot), 'dist', 'apple-touch-icon.png')
+    path.join(appRoot, 'dist', 'apple-touch-icon.png')
   ]
+}
+
+/**
+ * Whether to replace the macOS Dock icon at runtime with `app.dock.setIcon()`.
+ *
+ * A packaged `.app` already carries the Hermes icon in its bundle
+ * (electron-builder `build.icon`). Overriding it with a flat PNG at runtime
+ * hides that bundle icon for the life of the process, so macOS 26 can't apply
+ * the Clear/Tinted Liquid Glass styles to it (#73195). Only a dev run needs the
+ * override: there the bundle is the stock Electron.app and the Dock would show
+ * the Electron logo.
+ */
+export function shouldOverrideDockIcon(opts: { platform: NodeJS.Platform; isPackaged: boolean }): boolean {
+  return opts.platform === 'darwin' && !opts.isPackaged
 }

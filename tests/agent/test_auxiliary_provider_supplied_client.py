@@ -63,6 +63,7 @@ def registered(monkeypatch):
     profiles, which is what routes them into ``_resolve_api_key_branch`` in the first place.
     """
     import hermes_cli.auth as _auth
+    from hermes_cli.auth_plugin_providers import register_plugin_provider
     from agent import secret_scope as _secret_scope
 
     _providers._discover_providers()
@@ -74,7 +75,7 @@ def registered(monkeypatch):
 
     def _register(profile: ProviderProfile) -> None:
         _providers.register_provider(profile)
-        _auth._register_plugin_provider(profile)
+        register_plugin_provider(profile)
 
     yield _register
     _secret_scope.reset_secret_scope(scope_token)

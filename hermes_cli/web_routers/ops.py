@@ -29,7 +29,10 @@ from hermes_cli.web_models import (
     BackupRequest, CredentialPoolAdd, HookCreate, HookDelete, ImportRequest, MemoryProviderSelect,
     MemoryReset, PairingApprove, PairingRevoke, WebhookCreate, WebhookEnabledToggle,
 )
-from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, http_failure, spawn_profile_action
+from hermes_cli.web_routers._common import (
+    config_scoped_to_thread, config_write_scope, destructive_profile, http_failure,
+    spawn_profile_action,
+)
 from hermes_cli.web_routers.files import stream_upload_to_path
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -38,6 +41,7 @@ router = APIRouter()
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _discover_memory_provider_statuses = late("_discover_memory_provider_statuses", "hermes_cli.web_server_memory")
 _gateway_subcommand = late("_gateway_subcommand", "hermes_cli.web_server_gateway")
+_config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
 _spawn_hermes_action = late("_spawn_hermes_action", "hermes_cli.web_server_gateway")
 _write_platform_enabled = late("_write_platform_enabled", "hermes_cli.web_server_messaging")
@@ -46,9 +50,14 @@ load_config = late("load_config", "hermes_cli.config")
 save_config = late("save_config", "hermes_cli.config")
 
 
-def _spawn_action(argv: List[str], name: str, *, log_msg: str, prefix: str) -> dict:
-    """Spawn a dashboard-profile ``hermes <argv>`` action; spawn failure -> 500."""
-    return spawn_profile_action(None, argv, name, log_msg=log_msg, prefix=prefix)
+def _spawn_action(argv: List[str], name: str, *, log_msg: str, prefix: str,
+                  profile: Optional[str] = None) -> dict:
+    """Spawn a ``hermes -p <profile> <argv>`` action; spawn failure -> 500.
+
+    The profile reaches the child as argv (``_profile_cli_args``) — the only mechanism
+    that retargets a fresh process's import-time home bindings.
+    """
+    return spawn_profile_action(profile, argv, name, log_msg=log_msg, prefix=prefix)
 
 
 # --- Pairing: how a remote admin onboards messaging users without shell access.
@@ -143,25 +152,32 @@ def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> D
 
 
 @router.get("/api/webhooks")
-async def list_webhooks():
-    import hermes_cli.webhook as wh
+async def list_webhooks(profile: Optional[str] = None):
+    def _run():
+        import hermes_cli.webhook as wh
 
-    base_url = wh._get_webhook_base_url()
-    return {
-        "enabled": wh._is_webhook_enabled(),
-        "base_url": base_url,
-        "subscriptions": [
-            _webhook_route_summary(name, route, base_url)
-            for name, route in wh._load_subscriptions().items()
-        ],
-    }
+        base_url = wh._get_webhook_base_url()
+        return {
+            "enabled": wh._is_webhook_enabled(),
+            "base_url": base_url,
+            "subscriptions": [
+                _webhook_route_summary(name, route, base_url)
+                for name, route in wh._load_subscriptions().items()
+            ],
+        }
+
+    return await config_scoped_to_thread(profile, _run)
 
 
 @router.post("/api/webhooks/enable")
-async def enable_webhooks():
+async def enable_webhooks(profile: Optional[str] = None):
+    def _run():
+        with config_write_scope(profile):
+            _write_platform_enabled("webhook", True)
+
     with http_failure("Failed to enable webhook platform from dashboard", 500, detail="Failed to enable webhook platform."):
-        _write_platform_enabled("webhook", True)
-    restart_result = _restart_gateway_after(None, what="enabling webhooks", label="Webhook enable")
+        await asyncio.to_thread(_run)
+    restart_result = _restart_gateway_after(profile, what="enabling webhooks", label="Webhook enable")
     return {
         "ok": True,
         "platform": "webhook",
@@ -172,10 +188,13 @@ async def enable_webhooks():
 
 
 @router.post("/api/webhooks")
-async def create_webhook(body: WebhookCreate):
+async def create_webhook(body: WebhookCreate, profile: Optional[str] = None):
     import hermes_cli.webhook as wh
 
-    if not wh._is_webhook_enabled():
+    def _enabled():
+        return wh._is_webhook_enabled()
+
+    if not await config_scoped_to_thread(profile, _enabled):
         raise HTTPException(
             status_code=400, detail="Webhook platform is not enabled. Enable it from the Webhooks page first.",
         )
@@ -206,17 +225,20 @@ async def create_webhook(body: WebhookCreate):
     if body.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": body.deliver_chat_id}
 
-    subs = wh._load_subscriptions()
-    subs[name] = route
-    wh._save_subscriptions(subs)
+    def _save():
+        subs = wh._load_subscriptions()
+        subs[name] = route
+        wh._save_subscriptions(subs)
+        return _webhook_route_summary(name, route, wh._get_webhook_base_url())
 
-    summary = _webhook_route_summary(name, route, wh._get_webhook_base_url())
+    summary = await config_scoped_to_thread(profile, _save)
     summary["secret"] = secret  # surfaced exactly once, on create
     return summary
 
 
 def _webhook_subs_with(name: str):
-    """(module, subscriptions, key) for an existing route; 404 otherwise."""
+    """(module, subscriptions, key) for an existing route; 404 otherwise. Call inside the
+    request's profile scope — ``_load_subscriptions`` resolves the home at call time."""
     import hermes_cli.webhook as wh
 
     key = (name or "").strip().lower()
@@ -227,20 +249,29 @@ def _webhook_subs_with(name: str):
 
 
 @router.delete("/api/webhooks/{name}")
-async def delete_webhook(name: str):
-    wh, subs, key = _webhook_subs_with(name)
-    del subs[key]
-    wh._save_subscriptions(subs)
+async def delete_webhook(name: str, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "DELETE /api/webhooks/{name}")
+
+    def _run():
+        wh, subs, key = _webhook_subs_with(name)
+        del subs[key]
+        wh._save_subscriptions(subs)
+
+    await config_scoped_to_thread(profile, _run)
     return {"ok": True}
 
 
 @router.put("/api/webhooks/{name}/enabled")
-async def set_webhook_enabled(name: str, body: WebhookEnabledToggle):
+async def set_webhook_enabled(name: str, body: WebhookEnabledToggle, profile: Optional[str] = None):
     """Disabled routes stay on disk (re-enable later) but the gateway rejects
     their events with 403; it hot-reloads the file, so no restart is needed."""
-    wh, subs, key = _webhook_subs_with(name)
-    subs[key]["enabled"] = bool(body.enabled)
-    wh._save_subscriptions(subs)
+    def _run():
+        wh, subs, key = _webhook_subs_with(name)
+        subs[key]["enabled"] = bool(body.enabled)
+        wh._save_subscriptions(subs)
+        return key
+
+    key = await config_scoped_to_thread(profile, _run)
     return {"ok": True, "name": key, "enabled": bool(body.enabled)}
 
 
@@ -301,7 +332,7 @@ def _pool_entry_summary(entry: Any, index: int) -> Dict[str, Any]:
 
 
 @router.get("/api/credentials/pool")
-async def list_credential_pool():
+async def list_credential_pool(profile: Optional[str] = None):
     from agent.credential_pool import load_pool
     from hermes_cli.auth import read_credential_pool
 
@@ -323,11 +354,14 @@ async def list_credential_pool():
                 })
         return {"providers": providers}
 
-    return await asyncio.to_thread(_run)
+    # A named profile reads only its own auth.json (#111724), and the store path
+    # resolves at call time — so the pool the dashboard shows is the one the
+    # requested profile's agent would actually use.
+    return await config_scoped_to_thread(profile, _run)
 
 
 @router.post("/api/credentials/pool")
-async def add_credential_pool_entry(body: CredentialPoolAdd):
+async def add_credential_pool_entry(body: CredentialPoolAdd, profile: Optional[str] = None):
     import uuid
     from agent.credential_pool import (
         AUTH_TYPE_API_KEY,
@@ -381,11 +415,11 @@ async def add_credential_pool_entry(body: CredentialPoolAdd):
             _log.exception("POST /api/credentials/pool failed")
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return await asyncio.to_thread(_run)
+    return await config_scoped_to_thread(profile, _run)
 
 
 @router.delete("/api/credentials/pool/{provider}/{index}")
-async def remove_credential_pool_entry(provider: str, index: int):
+async def remove_credential_pool_entry(provider: str, index: int, profile: Optional[str] = None):
     """Remove a pool entry (``index`` is 1-based, as listed).
 
     Removal must be sticky: ``load_pool()`` re-seeds entries from their backing
@@ -433,7 +467,8 @@ async def remove_credential_pool_entry(provider: str, index: int):
                     _log.exception("suppress_credential_source failed")
         return {"ok": True, "provider": provider, "count": len(pool.entries()), "cleaned": cleaned, "hints": hints}
 
-    return await asyncio.to_thread(_run)
+    return await config_scoped_to_thread(
+        destructive_profile(profile, "DELETE /api/credentials/pool/{provider}/{index}"), _run)
 
 
 # --- Memory provider: setup is dashboard-native only via get_config_schema();
@@ -444,7 +479,7 @@ _MEMORY_FILES = (("MEMORY.md", "memory"), ("USER.md", "user"))
 
 
 @router.get("/api/memory")
-async def get_memory_status():
+async def get_memory_status(profile: Optional[str] = None):
     def _run():  # load_config(), stats and discovery are disk reads — off-loop
         cfg = load_config()
         mem = cfg.get("memory")
@@ -456,16 +491,20 @@ async def get_memory_status():
             files[key] = path.stat().st_size if path.exists() else 0
         return {"active": active, "providers": _discover_memory_provider_statuses(), "builtin_files": files}
 
-    return await asyncio.to_thread(_run)
+    return await config_scoped_to_thread(profile, _run)
 
 
 @router.put("/api/memory/provider")
-async def set_memory_provider(body: MemoryProviderSelect):
+async def set_memory_provider(body: MemoryProviderSelect, profile: Optional[str] = None):
     provider = _normalize_memory_provider_name(body.provider)
 
     def _run():
-        _require_memory_provider_ready(provider)
-        with _CONFIG_MUTATION_LOCK:
+        # Readiness resolves through load_config()/_discover_memory_provider_statuses(), so it
+        # MUST run inside the scope: outside it a provider configured only in the target profile
+        # reads as "not ready" (refused) and one configured only in the launch profile reads as
+        # ready and gets written into the target as a broken setting.
+        with config_write_scope(profile):
+            _require_memory_provider_ready(provider)
             cfg = load_config()
             if not isinstance(cfg.get("memory"), dict):
                 cfg["memory"] = {}
@@ -477,22 +516,26 @@ async def set_memory_provider(body: MemoryProviderSelect):
 
 
 @router.post("/api/memory/reset")
-async def reset_memory(body: MemoryReset):
+async def reset_memory(body: MemoryReset, profile: Optional[str] = None):
     target = (body.target or "all").strip().lower()
     if target not in {"all", "memory", "user"}:
         raise HTTPException(status_code=400, detail="target must be all, memory, or user")
+    profile = destructive_profile(profile, "POST /api/memory/reset")
 
-    mem_dir = get_hermes_home() / "memories"
-    deleted = []
-    for fname, key in _MEMORY_FILES:
-        path = mem_dir / fname
-        if target in {"all", key} and path.exists():
-            try:
-                path.unlink()
-                deleted.append(fname)
-            except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
-    return {"ok": True, "deleted": deleted}
+    def _run():
+        mem_dir = get_hermes_home() / "memories"
+        deleted = []
+        for fname, key in _MEMORY_FILES:
+            path = mem_dir / fname
+            if target in {"all", key} and path.exists():
+                try:
+                    path.unlink()
+                    deleted.append(fname)
+                except OSError as exc:
+                    raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
+        return {"ok": True, "deleted": deleted}
+
+    return await config_scoped_to_thread(profile, _run)
 
 
 # --- Operations: long-running text-output commands (doctor, audit, backup,
@@ -501,44 +544,48 @@ async def reset_memory(body: MemoryReset):
 
 
 @router.post("/api/ops/doctor")
-async def run_doctor():
-    return _spawn_action(["doctor"], "doctor", log_msg="Failed to spawn doctor", prefix="Failed to run doctor")
+async def run_doctor(profile: Optional[str] = None):
+    return _spawn_action(["doctor"], "doctor", log_msg="Failed to spawn doctor",
+                         prefix="Failed to run doctor", profile=profile)
 
 
 @router.post("/api/ops/security-audit")
-async def run_security_audit():
+async def run_security_audit(profile: Optional[str] = None):
     return _spawn_action(
         ["security", "audit"], "security-audit",
-        log_msg="Failed to spawn security audit", prefix="Failed to run security audit",
+        log_msg="Failed to spawn security audit", prefix="Failed to run security audit", profile=profile,
     )
 
 
-def _dashboard_backup_dir() -> Path:
-    return get_hermes_home() / "backups"
+def _dashboard_backup_dir(profile: Optional[str] = None) -> Path:
+    """``<profile home>/backups`` — the archive belongs to the profile it backs up."""
+    with _config_profile_scope(profile):
+        return get_hermes_home() / "backups"
 
 
 @router.post("/api/ops/backup")
-async def run_backup(body: BackupRequest):
+async def run_backup(body: BackupRequest, profile: Optional[str] = None):
     archive: Optional[Path] = None
     output = (body.output or "").strip()
     if not output:
         stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
-        archive = _dashboard_backup_dir() / f"hermes-backup-{stamp}-{secrets.token_hex(4)}.zip"
+        archive = _dashboard_backup_dir(profile) / f"hermes-backup-{stamp}-{secrets.token_hex(4)}.zip"
         try:
             archive.parent.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"Could not create backup directory: {exc}")
         output = str(archive)
-    response = _spawn_action(["backup", "-o", output], "backup", log_msg="Failed to spawn backup", prefix="Failed to run backup")
+    response = _spawn_action(["backup", "-o", output], "backup", log_msg="Failed to spawn backup",
+                             prefix="Failed to run backup", profile=profile)
     if archive is not None:
         response["archive"] = str(archive)
     return response
 
 
 @router.get("/api/ops/backup/download")
-async def download_dashboard_backup(archive: str):
+async def download_dashboard_backup(archive: str, profile: Optional[str] = None):
     try:
-        backup_dir = _dashboard_backup_dir().expanduser().resolve(strict=False)
+        backup_dir = _dashboard_backup_dir(profile).expanduser().resolve(strict=False)
         target = Path(archive).expanduser().resolve(strict=True)
     except FileNotFoundError:
         raise HTTPException(status_code=404, detail="Backup not found")
@@ -554,21 +601,23 @@ async def download_dashboard_backup(archive: str):
     )
 
 
-def _spawn_import(archive: str, force: bool) -> dict:
+def _spawn_import(archive: str, force: bool, profile: Optional[str] = None) -> dict:
     args = ["import", archive]
     if force:
         args.append("--force")
-    return _spawn_action(args, "import", log_msg="Failed to spawn import", prefix="Failed to run import")
+    return _spawn_action(args, "import", log_msg="Failed to spawn import",
+                         prefix="Failed to run import", profile=profile)
 
 
 @router.post("/api/ops/import")
-async def run_import(body: ImportRequest):
+async def run_import(body: ImportRequest, profile: Optional[str] = None):
+    profile = destructive_profile(profile, "POST /api/ops/import")
     archive = (body.archive or "").strip()
     if not archive:
         raise HTTPException(status_code=400, detail="archive path is required")
     if not os.path.isfile(archive):
         raise HTTPException(status_code=404, detail=f"Archive not found: {archive}")
-    return _spawn_import(archive, body.force)
+    return _spawn_import(archive, body.force, profile)
 
 
 def _safe_backup_upload_name(filename: str | None) -> str:
@@ -583,8 +632,10 @@ def _safe_backup_upload_name(filename: str | None) -> str:
 async def run_import_upload(
     file: UploadFile = File(...),
     force: bool = Form(False),
+    profile: Optional[str] = None,
 ):
-    staging_dir = _dashboard_backup_dir()
+    profile = destructive_profile(profile, "POST /api/ops/import-upload")
+    staging_dir = _dashboard_backup_dir(profile)
     try:
         staging_dir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
@@ -599,11 +650,11 @@ async def run_import_upload(
     if not zipfile.is_zipfile(target):
         target.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="Uploaded archive is not a valid zip file")
-    return {**_spawn_import(str(target), force), "archive": str(target), "uploaded_bytes": total}
+    return {**_spawn_import(str(target), force, profile), "archive": str(target), "uploaded_bytes": total}
 
 
 @router.get("/api/ops/hooks")
-async def list_hooks():
+async def list_hooks(profile: Optional[str] = None):
     """Configured shell hooks with consent (allowlist) status, whether the
     script is currently executable, and the valid hook events for the form."""
     def _run():
@@ -640,7 +691,7 @@ async def list_hooks():
             })
         return {"hooks": out, "valid_events": valid_events}
 
-    return await asyncio.to_thread(_run)
+    return await config_scoped_to_thread(profile, _run)
 
 
 def _hook_body_fields(body) -> tuple[str, str]:
@@ -652,7 +703,7 @@ def _hook_body_fields(body) -> tuple[str, str]:
 
 
 @router.post("/api/ops/hooks")
-async def create_hook(body: HookCreate):
+async def create_hook(body: HookCreate, profile: Optional[str] = None):
     """Add a shell hook to config.yaml and optionally record consent.
 
     Shell hooks run arbitrary commands, so this is privileged: it writes the
@@ -661,6 +712,11 @@ async def create_hook(body: HookCreate):
     """
     from agent import shell_hooks
 
+    # Creating an auto-approved shell hook is strictly more privileged than removing one:
+    # it writes an arbitrary command into `hooks:` and, with `approve`, into that profile's
+    # consent allowlist. Same rule as DELETE — an unnamed profile is refused while several
+    # are served rather than silently arming the launch profile.
+    profile = destructive_profile(profile, "POST /api/ops/hooks")
     event, command = _hook_body_fields(body)
     valid_hooks = None
     with contextlib.suppress(Exception):
@@ -669,7 +725,7 @@ async def create_hook(body: HookCreate):
         raise HTTPException(status_code=400, detail=f"Unknown event '{event}'. Valid: {', '.join(sorted(valid_hooks))}")
 
     def _run():
-        with _CONFIG_MUTATION_LOCK:
+        with config_write_scope(profile):
             cfg = load_config()
             hooks_cfg = cfg.get("hooks")
             if not isinstance(hooks_cfg, dict):
@@ -694,19 +750,20 @@ async def create_hook(body: HookCreate):
                 _log.exception("hook consent record failed")
         return {"ok": True, "event": event, "command": command, "approved": approved}
 
-    return await asyncio.to_thread(_run)
+    return await config_scoped_to_thread(profile, _run)
 
 
 @router.delete("/api/ops/hooks")
-async def delete_hook(body: HookDelete):
+async def delete_hook(body: HookDelete, profile: Optional[str] = None):
     """Remove a hook from config.yaml and revoke its consent allowlist entry."""
     from agent import shell_hooks
 
+    profile = destructive_profile(profile, "DELETE /api/ops/hooks")
     event, command = _hook_body_fields(body)
 
     def _run():
         removed = False
-        with _CONFIG_MUTATION_LOCK:
+        with config_write_scope(profile):
             cfg = load_config()
             hooks_cfg = cfg.get("hooks")
             if isinstance(hooks_cfg, dict) and isinstance(hooks_cfg.get(event), list):
@@ -726,41 +783,45 @@ async def delete_hook(body: HookDelete):
             shell_hooks.revoke(command)
         return removed
 
-    if not await asyncio.to_thread(_run):
+    if not await config_scoped_to_thread(profile, _run):
         raise HTTPException(status_code=404, detail="No matching hook found")
     return {"ok": True}
 
 
 @router.get("/api/ops/checkpoints")
-async def list_checkpoints():
+async def list_checkpoints(profile: Optional[str] = None):
     """/rollback shadow-store checkpoints (read-only): count + size per session
     so the UI can show what a prune reclaims; pruning itself is a spawned CLI
     action so the confirmation logic stays in one place."""
-    cp_dir = get_hermes_home() / "checkpoints"
-    sessions = []
-    total_bytes = 0
-    if cp_dir.is_dir():
-        with os.scandir(cp_dir) as scan:
-            children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
-        for child in children:
-            if not child.is_dir():
-                continue
-            size = count = 0
-            for f in child.rglob("*"):
-                if f.is_file():
-                    try:
-                        size += f.stat().st_size
-                        count += 1
-                    except OSError:
-                        pass
-            total_bytes += size
-            sessions.append({"session": child.name, "files": count, "bytes": size})
-    return {"sessions": sessions, "total_bytes": total_bytes}
+    def _run():
+        cp_dir = get_hermes_home() / "checkpoints"
+        sessions = []
+        total_bytes = 0
+        if cp_dir.is_dir():
+            with os.scandir(cp_dir) as scan:
+                children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+            for child in children:
+                if not child.is_dir():
+                    continue
+                size = count = 0
+                for f in child.rglob("*"):
+                    if f.is_file():
+                        try:
+                            size += f.stat().st_size
+                            count += 1
+                        except OSError:
+                            pass
+                total_bytes += size
+                sessions.append({"session": child.name, "files": count, "bytes": size})
+        return {"sessions": sessions, "total_bytes": total_bytes}
+
+    return await config_scoped_to_thread(profile, _run)
 
 
 @router.post("/api/ops/checkpoints/prune")
-async def prune_checkpoints():
+async def prune_checkpoints(profile: Optional[str] = None):
     return _spawn_action(
         ["checkpoints", "prune"], "checkpoints-prune",
         log_msg="Failed to spawn checkpoints prune", prefix="Failed to prune checkpoints",
+        profile=destructive_profile(profile, "POST /api/ops/checkpoints/prune"),
     )

@@ -183,6 +183,43 @@ def test_compression_child_uses_content_addressed_prompt(db):
     assert _prompt_count(db) == 1
 
 
+def test_compression_child_continues_the_parents_tool_pin(db):
+    pin = {"version": "sha", "tools": [{"type": "function", "function": {"name": "read_file"}}]}
+    db.create_session("parent", "telegram")
+    db.update_session_tool_names("parent", pin)
+    db.append_message("parent", "user", "original")
+    assert db.try_acquire_compression_lock("parent", "holder", ttl_seconds=60)
+
+    db.publish_compression_child(
+        parent_session_id="parent", child_session_id="child", source="telegram", system_prompt="p",
+        messages=[{"role": "user", "content": "summary"}], compression_lock_holder="holder")
+
+    assert json.loads(db.get_session("child")["tool_names"]) == pin
+
+
+def test_recovery_cleanup_keeps_tool_pins_and_drops_dangling_pin_refs(tmp_path):
+    from hermes_cli.session_recovery import _cleanup_partial_orphans
+
+    pin = {"version": "sha", "tools": [{"type": "function", "function": {"name": "read_file"}}]}
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        db.create_session("pinned", "tui")
+        db.update_session_tool_names("pinned", pin)
+        db.create_session("dangling", "tui")
+        db._conn.execute("UPDATE sessions SET tool_names = ? WHERE id = 'dangling'", ("ab" * 32,))
+        db.create_session("legacy", "tui")
+        db._conn.execute("UPDATE sessions SET tool_names = ? WHERE id = 'legacy'", ('["read_file"]',))
+        db._conn.commit()
+    conn = sqlite3.connect(str(tmp_path / "state.db"), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    _cleanup_partial_orphans(conn)
+    conn.close()
+
+    with SessionDB(db_path=tmp_path / "state.db") as db:
+        assert json.loads(db.get_session("pinned")["tool_names"]) == pin
+        assert db.get_session("dangling")["tool_names"] is None
+        assert db.get_session("legacy")["tool_names"] == '["read_file"]'
+
+
 def test_imported_prompts_are_deduplicated(tmp_path):
     prompt = "shared imported prompt"
     source = SessionDB(db_path=tmp_path / "source.db")

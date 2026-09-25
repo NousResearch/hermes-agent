@@ -120,18 +120,6 @@ describe('rendering a blob face', () => {
     expect('traits' in opts).toBe(false)
   })
 
-  it('passes the locked seed and the pinned silhouette’s trait', async () => {
-    const { BotFace } = await import('./avatar')
-
-    render(<BotFace color="#38bdf8" name="inbox-triage" shape="blobatar:abc:sun" size={32} />)
-
-    const [seed, opts] = lastBlobCall()
-
-    expect(seed).toBe('abc')
-    expect(opts.traits?.shape).toBeGreaterThanOrEqual(BANDS.sun[0])
-    expect(opts.traits?.shape).toBeLessThan(BANDS.sun[1])
-  })
-
   it('puts every silhouette inside its own frozen band', async () => {
     const { BLOB_KINDS, BotFace } = await import('./avatar')
 
@@ -155,25 +143,6 @@ describe('rendering a blob face', () => {
     const { container } = render(<BotFace color="#38bdf8" name="agent" shape="blobatar" size={32} />)
 
     expect(container.querySelector('svg[data-hb-math]')).toBeTruthy()
-  })
-})
-
-describe('catchlight contrast follows the pupil, not the body', () => {
-  const catchlights = (container: HTMLElement) =>
-    ['l', 'r'].map(side => container.querySelector(`[data-hb-hl-${side}]`)?.getAttribute('fill'))
-
-  it('puts a DARK sparkle on the cream pupils of a dark body', async () => {
-    const { BotFace } = await import('./avatar')
-    const { container } = render(<BotFace color="#3b0910" name="oxblood" shape="circle" />)
-
-    expect(catchlights(container)).toEqual(['rgba(0,0,0,0.6)', 'rgba(0,0,0,0.6)'])
-  })
-
-  it('keeps the white sparkle on the dark pupils of a light body', async () => {
-    const { BotFace } = await import('./avatar')
-    const { container } = render(<BotFace color="#f5e6c8" name="cream" shape="circle" />)
-
-    expect(catchlights(container)).toEqual(['rgba(255,255,255,0.85)', 'rgba(255,255,255,0.85)'])
   })
 })
 

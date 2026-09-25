@@ -46,12 +46,15 @@ class ApiCallVerdict:
 
 def _should_stream(agent: Any) -> bool:
     """Streaming is preferred even without consumers (stale-stream / read-timeout health
-    checks); disabled on provider signal, ACP schemes, MoA without a display consumer, or
-    Mock clients in tests (SimpleNamespace, not stream iterators)."""
+    checks); disabled on provider signal, ACP providers (``acp://`` scheme or an
+    external-process provider profile), MoA without a display consumer, or Mock clients in
+    tests (SimpleNamespace, not stream iterators)."""
     if getattr(agent, "_disable_streaming", False):
         return False
     _base = str(agent.base_url or "").lower()
-    if agent.provider in {"copilot-acp"} or _base.startswith(("acp://", "acp+tcp://")):
+    from hermes_cli.runtime_provider_backends import _is_external_process_provider
+
+    if _base.startswith(("acp://", "acp+tcp://")) or _is_external_process_provider(agent.provider):
         return False
     if not agent._has_stream_consumers():
         if agent.provider == "moa":
@@ -184,6 +187,10 @@ def handle_api_interrupt(
     api_elapsed = time.time() - api_start_time
     agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
     interrupted = True
+    # A Stop during the empty-response nudge request leaves the synthetic assistant+nudge
+    # pair after an executed tool result; strip it so the row appended below follows the tool
+    # row (the finalizer then closes the tail with this exit's own reason).
+    agent._drop_trailing_empty_response_scaffolding(messages)
     _partial = agent._strip_think_blocks(
         getattr(agent, "_current_streamed_assistant_text", "") or ""
     ).strip()

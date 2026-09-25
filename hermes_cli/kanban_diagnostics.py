@@ -112,6 +112,18 @@ def _latest_event_ts(events: Iterable[Any], kinds: set[str]) -> int:
     return max([0, *(_event_ts(ev) for ev in events if _event_kind(ev) in kinds)])
 
 
+def _latest_gave_up_is_terminal_provider(events: Iterable[Any]) -> bool:
+    """True when the most recent breaker trip was a terminal provider error (credential
+    revoked, model gone) and nothing has resumed the task since."""
+    for ev in reversed(list(events)):
+        kind = _event_kind(ev)
+        if kind == "gave_up":
+            return bool(_parse_payload(ev).get("terminal_provider"))
+        if kind in {"unblocked", "promoted", "completed", "claimed"}:
+            return False
+    return False
+
+
 def _cli_hint(label: str, command: str, *, suggested: bool = False) -> DiagnosticAction:
     return DiagnosticAction(kind="cli_hint", label=label, payload={"command": command},
                             suggested=suggested)
@@ -369,8 +381,12 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     threshold = _positive_int(_failure_threshold(cfg), 3)
     failure_limit = _positive_int(cfg.get("failure_limit"), threshold)
     failures = _first_field(task, "consecutive_failures", "spawn_failures", 0)
-    if failures is None or failures < threshold:
+    # A terminal provider error (credential revoked, model gone) blocks the card after ONE
+    # attempt, below any threshold; it still needs an operator, so diagnose it now.
+    terminal_trip = _latest_gave_up_is_terminal_provider(events)
+    if not terminal_trip and (failures is None or failures < threshold):
         return []
+    failures = failures or 0
     last_err = _first_field(task, "last_failure_error", "last_spawn_error")
     assignee = _task_field(task, "assignee")
 
@@ -397,7 +413,15 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     severity = "critical" if failures >= threshold * 2 else "error"
     err_snippet = _error_snippet(last_err)
     outcome_label = _OUTCOME_LABELS.get(most_recent_outcome or "", "failure")
-    if err_snippet:
+    if terminal_trip:
+        title = "Provider rejected this profile's credential or model — blocked after one attempt"
+        detail = (
+            f"The worker's provider call failed with an error a retry cannot fix (revoked or invalid "
+            f"API key, model not found), so the dispatcher blocked the task instead of spending the "
+            f"{failure_limit}-attempt retry budget on it. Full last error:\n\n{err_snippet}\n\n"
+            f"Fix the assignee profile's provider credentials/model, then unblock the task."
+        )
+    elif err_snippet:
         title = f"Agent {outcome_label} x{failures}: {err_snippet.splitlines()[0][:160]}"
         detail = (
             f"This task has failed {failures} times in a row (most recent: {outcome_label}). Full "

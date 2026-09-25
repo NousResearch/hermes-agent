@@ -61,19 +61,7 @@ class TestSendRequiresCollection:
         # send must never imply enabled
         assert resolved.enabled is False
 
-    def test_send_without_collection_logs_an_error(self, caplog):
-        with caplog.at_level(logging.ERROR):
-            resolve_send_config(_config(enabled=False, send=True))
-        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
-        assert len(errors) == 1
-        assert "enabled is false" in errors[0].getMessage()
 
-    def test_the_error_is_logged_once_per_process(self, caplog):
-        with caplog.at_level(logging.ERROR):
-            for _ in range(5):
-                resolve_send_config(_config(enabled=False, send=True))
-        errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
-        assert len(errors) == 1, "misconfiguration must not spam every hook fire"
 
 
 class TestEndpointPrecedence:

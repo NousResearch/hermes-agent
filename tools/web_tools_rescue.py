@@ -47,6 +47,30 @@ def _ring_vendor_keyless(name: str) -> bool:
     return use_keyless(name, get_provider_env(key_var) if key_var else "")
 
 
+def _managed_search_fallback(provider, original_error: str, query: str, limit: int):
+    """Try managed Firecrawl for this call only; None leaves the original error for keyless rescue."""
+    from agent.web_search_provider import get_provider_env
+    from tools.web_tools import _managed_web_search
+    if (getattr(provider, "name", "") != "perplexity"
+            or get_provider_env("PERPLEXITY_API_KEY") or not _managed_web_search()):
+        return None
+    logger.warning("web_search managed Perplexity failed (%s); serving this call from managed Firecrawl", (original_error or "")[:200])
+    try:
+        from agent.web_search_registry import get_provider
+        resp = get_provider("firecrawl").search(query, limit)
+    except Exception as exc:  # noqa: BLE001 — fallback is best-effort
+        resp = {"success": False, "error": str(exc)}
+    if not resp.get("success"):
+        logger.warning("managed Firecrawl fallback failed too: %s", str(resp.get("error", ""))[:200])
+        return None
+    resp.setdefault("data", {}).update(
+        fallback_from="managed_primary",
+        backend_error=f"Primary managed search failed this call ({(original_error or 'unknown error')[:300]}); "
+                      "result served by the managed fallback. The next call will use the primary again.",
+    )
+    return resp
+
+
 def _rescue_eligible(provider) -> bool:
     """True when a failed call on *provider* should get a one-shot rescue.
 

@@ -1,9 +1,9 @@
-"""Native OpenAI Responses server-side compaction — gpt-5.6 on direct OpenAI routes only.
+"""Native OpenAI Responses server-side compaction on supported OpenAI routes.
 
 ``context_management=[{"type": "compaction", "compact_threshold": N}]`` makes the server
 summarize older context into an opaque ``compaction`` item once the input crosses N tokens.
-Deliberately narrow (live-verified): gpt-5.6 only (5.1/5.2 fail server-side with no
-structured rejection) on api.openai.com or the ChatGPT Codex backend. The local compressor
+Deliberately narrow: gpt-5.6 on api.openai.com or the ChatGPT Codex backend, plus exact
+gpt-6-astra on official Codex OAuth. The local compressor
 stays armed as fallback (native threshold clamped below the local trigger); compaction items
 ride the ``codex_reasoning_items`` sidecar. No transport imports (shared gate, no cycles).
 """
@@ -14,6 +14,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
+from agent.codex_headers import is_official_codex_base_url
 from agent.context_compressor import is_compaction_summary_message
 from agent.message_content import flatten_message_text
 
@@ -27,9 +28,16 @@ DEFAULT_COMPACT_THRESHOLD = 200_000
 _ELIGIBLE_MODEL_MARKER = "gpt-5.6"
 
 
-def is_native_compaction_model(model: Optional[str]) -> bool:
-    """True when the model is in the gpt-5.6 family."""
-    return _ELIGIBLE_MODEL_MARKER in (model or "").lower()
+def is_native_compaction_model(
+    model: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
+) -> bool:
+    """Preserve gpt-5.6 eligibility; Astra additionally requires official Codex OAuth."""
+    model_name = (model or "").lower()
+    return _ELIGIBLE_MODEL_MARKER in model_name or (
+        model_name == "gpt-6-astra"
+        and (provider or "").strip().lower() == "openai-codex"
+        and is_official_codex_base_url(base_url or "")
+    )
 
 
 def resolve_native_compaction_capabilities(
@@ -38,7 +46,7 @@ def resolve_native_compaction_capabilities(
     """Resolve the native-compaction capability for a runtime destination (a resolved ``False``
     is distinct from "unresolved" and must survive model switches unchanged)."""
     direct_default = (provider or "").strip().lower() == "openai" and not base_url
-    return {"native_compaction": is_native_compaction_model(model) and (
+    return {"native_compaction": is_native_compaction_model(model, provider=provider, base_url=base_url) and (
         direct_default or is_direct_openai_route(base_url, is_codex_backend=is_codex_backend))}
 
 
@@ -116,7 +124,10 @@ def native_compaction_context_management(agent: Any, *, is_codex_backend: bool, 
     if getattr(agent, "compression_checkpoint_required", False) is True:
         _warn_native_compaction_suppressed_by_checkpoint_gate()
         return None
-    if is_xai_responses or is_github_responses or not is_native_compaction_model(getattr(agent, "model", None)):
+    if is_xai_responses or is_github_responses or not is_native_compaction_model(
+        getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+        base_url=getattr(agent, "base_url", None),
+    ):
         return None
     trusted_proxy = bool(getattr(agent, "capabilities", {}).get("openai_native_compaction", False))
     if not trusted_proxy and not is_direct_openai_route(getattr(agent, "base_url", None), is_codex_backend=is_codex_backend):

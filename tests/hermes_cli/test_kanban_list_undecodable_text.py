@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_db_dispatch as kbd
 
 
 @pytest.fixture
@@ -72,3 +74,30 @@ def test_show_json_survives_blob_cells_in_sibling_tables(board):
         assert isinstance(comments[-1].body, str) and "\ufffd" in comments[-1].body
         events = kb.list_events(conn, tid)
         json.dumps([dataclasses.asdict(c) for c in comments] + [dataclasses.asdict(e) for e in events])
+
+
+def test_respawn_guard_survives_blob_comment_body_and_failure_error(board):
+    """A BLOB-typed ``task_comments.body`` or ``tasks.last_failure_error`` must not
+    abort ``check_respawn_guard`` (issue #116473). Both raw reads previously handed
+    ``bytes`` to a ``str`` regex, raising ``TypeError`` and killing the whole
+    dispatch pass after the poisoned row."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="card", assignee="worker")
+        kb.add_comment(conn, tid, author="worker", body="placeholder")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_comments SET body = ? WHERE task_id = ?",
+                (sqlite3.Binary(b"no pr url here"), tid),
+            )
+        # BLOB comment body within the PR guard window: no PR URL, so no guard.
+        assert kbd.check_respawn_guard(conn, tid) is None
+        # The whole pass must not abort on the poisoned row.
+        kbd.dispatch_once(conn, dry_run=True)
+
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                (sqlite3.Binary(b"429 quota exceeded"), tid),
+            )
+        # BLOB last_failure_error still matches the quota/auth blocker pattern.
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"

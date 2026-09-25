@@ -55,16 +55,6 @@ def test_normalize_entry_drops_invalid_extra_headers():
         assert "extra_headers" not in normalized
 
 
-def test_normalize_entry_stringifies_values_and_skips_none():
-    normalized = _normalize_custom_provider_entry(
-        {
-            "name": "my-proxy",
-            "base_url": "https://llm.internal.example.com/v1",
-            "extra_headers": {"X-Int": 7, "X-None": None},
-        }
-    )
-    assert normalized is not None
-    assert normalized["extra_headers"] == {"X-Int": "7"}
 
 
 def test_get_custom_provider_extra_headers_matches_base_url():

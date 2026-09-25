@@ -141,25 +141,7 @@ class TestToolProgressScrollback:
 
 
 
-    def test_pending_info_stores_on_started(self):
-        """tool.started stores args for later use by tool.completed."""
-        cli = _make_cli(tool_progress="all")
-        cli._on_tool_progress("tool.started", "terminal", "ls", {"command": "ls"})
-        assert "terminal" in cli._pending_tool_info
-        assert len(cli._pending_tool_info["terminal"]) == 1
-        assert cli._pending_tool_info["terminal"][0] == {"command": "ls"}
 
-    def test_pending_info_consumed_on_completed(self):
-        """tool.completed consumes stored args (FIFO for concurrent)."""
-        cli = _make_cli(tool_progress="all")
-        cli._on_tool_progress("tool.started", "terminal", "ls", {"command": "ls"})
-        cli._on_tool_progress("tool.started", "terminal", "pwd", {"command": "pwd"})
-        assert len(cli._pending_tool_info["terminal"]) == 2
-        with patch.object(_cli_mod, "_cprint"):
-            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.1, is_error=False)
-        # First entry consumed, second remains
-        assert len(cli._pending_tool_info.get("terminal", [])) == 1
-        assert cli._pending_tool_info["terminal"][0] == {"command": "pwd"}
 
 
 class TestMoAReferenceBlocks:

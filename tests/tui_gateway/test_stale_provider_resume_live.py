@@ -32,7 +32,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 OLD_URL = "https://old-endpoint.invalid/v1"
 NEW_URL = "https://new-endpoint.invalid/v1"

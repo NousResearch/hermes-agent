@@ -36,11 +36,16 @@ logger = logging.getLogger(__name__)
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15
 # Patterns in schtasks stderr that mean "fall back to the Startup folder".
-_FALLBACK_PATTERNS = re.compile(
-    r"(access is denied|acceso denegado|přístup byl odepřen|schtasks timed out|schtasks produced no output)",
-    re.IGNORECASE,
+# schtasks' localized "access is denied" (en/es/cs/zh-Hans/zh-Hant/ja/ko): one vocabulary for both
+# the elevated-install offer and the Startup-folder fallback.
+_ACCESS_DENIED_WORDS = (
+    r"access is denied|acceso denegado|přístup byl odepřen|拒绝访问|拒絕存取|アクセスが拒否されました|"
+    r"액세스가 거부되었습니다"
 )
-_ACCESS_DENIED_PATTERN = re.compile(r"(access is denied|acceso denegado)", re.IGNORECASE)
+_FALLBACK_PATTERNS = re.compile(
+    rf"({_ACCESS_DENIED_WORDS}|schtasks timed out|schtasks produced no output)", re.IGNORECASE
+)
+_ACCESS_DENIED_PATTERN = re.compile(rf"({_ACCESS_DENIED_WORDS})", re.IGNORECASE)
 
 # Set by _spawn_detached() when the breakaway spawn failed and it retried WITHOUT
 # CREATE_BREAKAWAY_FROM_JOB — the child stays in the parent's Job Object and may be killed when this
@@ -66,6 +71,39 @@ def _schtasks_encoding() -> str:
         return "utf-8"
 
 
+def _windows_console_encodings() -> list[str]:
+    """Code pages a console tool such as ``schtasks.exe`` writes to a pipe, most likely first: the
+    console output code page (65001 once ``configure_windows_stdio`` ran, else the OEM page), the OEM
+    page, then the ANSI page. Read from kernel32, so Python's UTF-8 mode cannot disguise them."""
+    kernel32 = getattr(getattr(ctypes, "windll", None), "kernel32", None)
+    if kernel32 is None:
+        return [_schtasks_encoding()]
+    pages: list[str] = []
+    for getter in ("GetConsoleOutputCP", "GetOEMCP", "GetACP"):
+        try:
+            code_page = int(getattr(kernel32, getter)())
+        except (AttributeError, OSError, ValueError):
+            continue
+        if code_page > 0 and f"cp{code_page}" not in pages:
+            pages.append(f"cp{code_page}")
+    return pages or [_schtasks_encoding()]
+
+
+def _decode_schtasks_output(data: bytes) -> str:
+    """Decode captured ``schtasks.exe`` bytes. schtasks writes the console/OEM code page even when this
+    process runs in UTF-8 mode (the launcher sets ``PYTHONUTF8=1``), so ``locale.getpreferredencoding``
+    is the wrong codec on a non-ASCII account path: ``C:\\Users\\方舟`` came back as ``����`` and the
+    Scheduled-Task drift check could never settle (#116193). Strict UTF-8 first (ASCII and genuine
+    UTF-8 output pass; legacy multi-byte text fails loudly), then the native code pages, then a lossy
+    fallback so a reader thread never raises."""
+    for encoding in ("utf-8", *_windows_console_encodings()):
+        try:
+            return data.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return data.decode("utf-8", errors="replace")
+
+
 def _assert_windows() -> None:
     if sys.platform != "win32":
         raise RuntimeError("gateway_windows is Windows-only")
@@ -75,6 +113,29 @@ def _hermes_home() -> Path:
     from hermes_cli.config import get_hermes_home
 
     return Path(get_hermes_home())
+
+
+def hermes_service_roots() -> tuple[str, ...]:
+    """Directories a Hermes-owned SCM service binary lives under: the checkout (its ``venv`` included),
+    the running interpreter's ``Scripts`` dir (``hermes.exe`` shim) and the ``gateway-service`` launcher dir."""
+    project_root = Path(__file__).resolve().parent.parent
+    return (str(project_root), str(Path(sys.executable).parent), str(_hermes_home() / "gateway-service"))
+
+
+def _normalize_windows_path(value: str) -> str:
+    return value.strip().lstrip('"').replace("\\", "/").rstrip("/").casefold()
+
+
+def hermes_owns_windows_service(name: str, binpath: str, hermes_roots: tuple[str, ...]) -> bool:
+    """Positive ownership of an SCM service: Hermes-named (``hermes*``) or its binary path starts under a
+    Hermes root. Pure so it is testable off-Windows. A Scheduled-Task-launched gateway descends from
+    ``svchost.exe`` hosting ``Schedule``; without this gate the updater took Task Scheduler for the
+    gateway's supervisor and ``sc.exe stop Schedule`` aborted every update (#97208)."""
+    normalized_name = "".join(char for char in name.casefold() if char.isalnum())
+    if normalized_name.startswith("hermes"):
+        return True
+    candidate = _normalize_windows_path(binpath)
+    return any(candidate.startswith(_normalize_windows_path(root) + "/") for root in hermes_roots if root)
 
 
 def _preserve_hermes_home_path(path: str | Path) -> str:
@@ -129,13 +190,17 @@ def _exec_schtasks(args: list[str]) -> tuple[int, str, str]:
     if schtasks is None:
         return (1, "", "schtasks.exe not found on PATH")
     try:
-        # Locale encoding + replace: a non-UTF-8 status line must never surface a UnicodeDecodeError
-        # from subprocess' reader threads. CREATE_NO_WINDOW: no flashing console under a TUI.
+        # Bytes, decoded by _decode_schtasks_output: a non-UTF-8 status line must never surface a
+        # UnicodeDecodeError from subprocess' reader threads. CREATE_NO_WINDOW: no flashing console under a TUI.
         proc = subprocess.run(
-            [schtasks, *args], capture_output=True, text=True, encoding=_schtasks_encoding(), errors="replace",
+            [schtasks, *args], capture_output=True, text=False,
             timeout=_SCHTASKS_TIMEOUT_S, creationflags=windows_hide_flags(),
         )
-        return (proc.returncode, proc.stdout or "", proc.stderr or "")
+        return (
+            proc.returncode,
+            _decode_schtasks_output(proc.stdout or b""),
+            _decode_schtasks_output(proc.stderr or b""),
+        )
     except subprocess.TimeoutExpired:
         return (124, "", f"schtasks timed out after {_SCHTASKS_TIMEOUT_S}s")
     except OSError as e:
@@ -683,6 +748,29 @@ def _spawn_detached(script_path: Path | None = None, home: Path | None = None) -
     return proc.pid
 
 
+def _stdin_is_interactive(*, isatty: bool, console_mode_ok: bool | None) -> bool:
+    """A human can answer a prompt only on a real console. The Windows CRT reports isatty()==True for
+    every character device — the NUL device included (`hermes gateway start < NUL`, stdin=DEVNULL) — so
+    isatty must be confirmed by GetConsoleMode accepting the handle (#113977). ``console_mode_ok`` is
+    None where that fact does not exist (not Windows) and isatty alone decides."""
+    return isatty and console_mode_ok is not False
+
+
+def _stdout_isatty() -> bool:
+    """The question is printed to stdout. When stdout is captured, nobody sees it. Desktop update
+    hand-offs before #122234 captured each step's stdout while leaving it the console's stdin, so a
+    prompt there waited forever for an answer to a question nobody saw."""
+    return sys.stdout is not None and sys.stdout.isatty()
+
+
+def _stdin_console_mode_ok() -> bool | None:
+    if sys.platform != "win32":
+        return None
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.GetStdHandle(-10)  # STD_INPUT_HANDLE
+    return bool(kernel32.GetConsoleMode(handle, ctypes.byref(ctypes.c_ulong())))
+
+
 def _install_choice_from_env(name: str) -> bool | None:
     raw = os.environ.get(name)
     if raw is None:
@@ -725,7 +813,7 @@ def _start_or_report_running(running_pids: list[int] | None = None) -> None:
         _report_already_running(running_pids)
     else:
         pid = _spawn_detached()
-        _report_gateway_start(f"direct spawn (PID {pid})")
+        _report_gateway_start("direct spawn")
 
 
 def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -> None:
@@ -785,7 +873,7 @@ def install(
             _start_or_report_running()
         else:
             print("ℹ Gateway not started and no auto-start service installed.")
-            print("  Run later with: hermes gateway start")
+            print("  Run in the foreground later with: hermes gateway run")
         return
 
     task_name = get_task_name()
@@ -796,6 +884,11 @@ def install(
         _startup_staging_path().unlink(missing_ok=True)
     except OSError:
         pass
+    if force:
+        # Pre-suffix strays (task ``Hermes_Gateway``, Startup ``Hermes_Gateway.vbs``) are unreachable by
+        # the current names, so a plain reconcile never heals them (#116157).
+        from hermes_cli.gateway_windows_legacy import remove_legacy_launchers
+        remove_legacy_launchers()
 
     # On locked-down accounts schtasks can sit for the full timeout before returning Access Denied.
     # All intent questions were asked above, so ask for UAC before touching schtasks.
@@ -981,7 +1074,7 @@ def _consume_start_attestation(generation: str, home: Path | None = None) -> Non
 def _read_start_attestation(home: Path | None = None) -> object | None:
     """Parsed attestation payload (any JSON type), or ``None`` when absent/unreadable. Never raises."""
     try:
-        return json.loads(_start_attestation_path(home).read_text(encoding="utf-8"))
+        return json.loads(_start_attestation_path(home).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
 
@@ -1016,7 +1109,7 @@ def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None, hom
         from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
         sentinel = get_lifecycle_sentinel_path(home if home is not None else _hermes_home())
-        data = json.loads(sentinel.read_text(encoding="utf-8"))
+        data = json.loads(sentinel.read_text(encoding="utf-8-sig"))
     except OSError:
         return False
     except Exception:
@@ -1189,6 +1282,9 @@ def uninstall() -> None:
         except FileNotFoundError:
             pass
 
+    from hermes_cli.gateway_windows_legacy import remove_legacy_launchers
+    remove_legacy_launchers()
+
     if is_task_registered() and not scheduled_task_removed:
         print(f"⚠ Scheduled Task still registered: {task_name}")
 
@@ -1347,7 +1443,7 @@ def _probe_pid_file(pid_path: Path) -> int | None:
     if _probe_missing(1, pid_path, "PID file"):
         return None
     try:
-        data = json.loads(pid_path.read_text(encoding="utf-8"))
+        data = json.loads(pid_path.read_text(encoding="utf-8-sig"))
         pid_value = int(data.get("pid")) if data.get("pid") is not None else None
         _probe(1, True, f"PID file present: {pid_path} (pid={pid_value})")
         return pid_value
@@ -1396,7 +1492,7 @@ def _probe_state_file(state_path: Path) -> None:
     if _probe_missing(5, state_path, "gateway_state.json"):
         return
     try:
-        state_data = json.loads(state_path.read_text(encoding="utf-8"))
+        state_data = json.loads(state_path.read_text(encoding="utf-8-sig"))
         gateway_state = state_data.get("gateway_state")
         updated_at = state_data.get("updated_at")
         age_str = ""
@@ -1469,6 +1565,8 @@ def status(deep: bool = False) -> None:
         print(f"✓ Windows login item installed: {entry if entry.exists() else _legacy_startup_entry_path()}")
     else:
         print("✗ Gateway service not installed")
+    from hermes_cli.gateway_windows_legacy import warn_legacy_launchers
+    warn_legacy_launchers()
 
     print(f"✓ Gateway process running (PID: {', '.join(map(str, pids))})" if pids else "✗ No gateway process detected")
 
@@ -1493,24 +1591,33 @@ def start() -> None:
         return
 
     if not is_task_registered() and not is_startup_entry_installed():
-        from hermes_cli.setup import prompt_yes_no
+        # Login persistence is a lasting system change: a bare ``start`` installs it only on an explicit
+        # answer — the HERMES_GATEWAY_INSTALL_START_ON_LOGIN override or a real TTY prompt — never on a
+        # non-TTY default (#113977). Declining still starts the gateway; the command is ``start``.
+        start_on_login = _install_choice_from_env("HERMES_GATEWAY_INSTALL_START_ON_LOGIN")
+        if start_on_login is None:
+            from hermes_cli.setup import is_interactive_stdin, is_noninteractive, prompt_yes_no
 
-        print("✗ Gateway service is not installed")
-        if not prompt_yes_no("  Install it now so the gateway starts on login?", True):
-            print("  Run: hermes gateway install")
+            print("✗ Gateway service is not installed")
+            if is_noninteractive() or not _stdout_isatty() or not _stdin_is_interactive(
+                isatty=is_interactive_stdin(), console_mode_ok=_stdin_console_mode_ok()
+            ):
+                start_on_login = False
+            else:
+                start_on_login = prompt_yes_no("  Install it now so the gateway starts on login?", True)
+        if start_on_login:
+            # install() starts the gateway itself (start_now) and reports the outcome — including a UAC
+            # hand-off to an elevated child — so there is nothing left to spawn or to warn about here.
+            install(force=False, start_now=True, start_on_login=True)
             return
-        install(force=False)
-        if not is_task_registered() and not is_startup_entry_installed():
-            print("⚠ Gateway install did not complete in this process.")
-            print("  If a UAC prompt opened, approve it, then run: hermes gateway start")
-            return
+        print("ℹ Login auto-start not installed; add it later with: hermes gateway install")
     elif is_task_registered():
         reconcile_scheduled_task(get_task_name())   # like systemd's regenerate-on-stale before a start
 
     # Manual starts use the same console-less direct spawn as restart() and install --start-now;
     # Scheduled Task / Startup entries are only login persistence.
     pid = _spawn_detached()
-    _report_gateway_start(f"direct spawn (PID {pid})")
+    _report_gateway_start("direct spawn")
 
 
 def _drain_gateway_pid(pid: int, drain_timeout: float) -> bool:

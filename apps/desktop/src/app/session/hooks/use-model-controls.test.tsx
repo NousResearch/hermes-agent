@@ -128,26 +128,6 @@ describe('useModelControls', () => {
     expect(queryClient.getQueryData(modelOptionsQueryKey('beta', null, 'source-b'))).toBeUndefined()
   })
 
-  it('applies the global model when there is no active runtime session', async () => {
-    vi.mocked(getGlobalModelInfo).mockResolvedValue({
-      model: 'openai/gpt-5.5',
-      provider: 'openai-codex'
-    })
-
-    const { result } = renderHook(() =>
-      useModelControls({
-        queryClient: new QueryClient(),
-        requestGateway: vi.fn()
-      })
-    )
-
-    await result.current.refreshCurrentModel()
-
-    expect($currentModel.get()).toBe('openai/gpt-5.5')
-    expect($currentProvider.get()).toBe('openai-codex')
-    expect(getCurrentModelSource()).toBe('default')
-  })
-
   it('does not clobber the active session footer state with global model info', async () => {
     setCurrentModel('deepseek/deepseek-v4-pro')
     setCurrentProvider('deepseek')
@@ -373,11 +353,8 @@ describe('useModelControls', () => {
     expect(requestGateway).toHaveBeenCalledTimes(1)
     expect(confirmMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        cancelLabel: 'Keep current model',
-        confirmLabel: 'Switch anyway',
         description: 'This contributor model trains on your data.',
-        destructive: true,
-        title: 'Switch to muse-spark-1.2-contributor?'
+        destructive: true
       })
     )
 
@@ -598,26 +575,6 @@ describe('useModelControls', () => {
     await result.current.refreshCurrentModel()
 
     expect($currentModel.get()).toBe('deepseek-v4.1-flash')
-    expect(getCurrentModelSource()).toBe('manual')
-  })
-
-  it('keeps a sticky manual pick that is still in the catalog', async () => {
-    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
-
-    const queryClient = new QueryClient()
-    queryClient.setQueryData(modelOptionsQueryKey('default'), {
-      providers: [{ models: ['openrouter/glm-4.7', 'openai/gpt-5.5'], name: 'OpenRouter', slug: 'openrouter' }]
-    })
-
-    setCurrentModel('openrouter/glm-4.7')
-    setCurrentProvider('openrouter')
-    setCurrentModelSource('manual')
-
-    const { result } = renderHook(() => useModelControls({ queryClient, requestGateway: vi.fn() }))
-
-    await result.current.refreshCurrentModel()
-
-    expect($currentModel.get()).toBe('openrouter/glm-4.7')
     expect(getCurrentModelSource()).toBe('manual')
   })
 

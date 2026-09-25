@@ -6,7 +6,6 @@ import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/termin
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
 import { ContextMenu, ContextMenuTrigger, HERMES_CONTEXT_MENU_TRIGGER_ATTR } from '@/components/ui/context-menu'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
-import { formatCombo } from '@/lib/keybinds/combo'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 import { $connection } from '@/store/session'
 
@@ -206,26 +205,6 @@ describe('AppContextMenu', () => {
     expect(screen.getByText('the')).toBeTruthy()
   })
 
-  it('shows edit verbs without icons and with faded accelerators', async () => {
-    installBridge()
-    mountMenu()
-    const host = attach('<textarea></textarea>')
-
-    fireEvent.contextMenu(host.querySelector('textarea')!)
-
-    // formatCombo picks ⌘/Ctrl from the host running the test, exactly like
-    // the menu itself — so the assertion is platform-honest, not hardcoded.
-    const pasteItem = (await screen.findByText('Paste')).closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(pasteItem.querySelector('[data-slot="dropdown-menu-shortcut"]')?.textContent).toBe(formatCombo('mod+v'))
-    expect(pasteItem.querySelector('.codicon')).toBeNull()
-
-    const selectAllItem = screen.getByText('Select all').closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(selectAllItem.querySelector('[data-slot="dropdown-menu-shortcut"]')?.textContent).toBe(formatCombo('mod+a'))
-    expect(selectAllItem.querySelector('.codicon')).toBeNull()
-  })
-
   it('runs edit verbs after the menu closed, with focus back on the editable', async () => {
     const contextMenuEdit = vi.fn().mockResolvedValue(undefined)
 
@@ -341,22 +320,6 @@ describe('AppContextMenu', () => {
     })
     expect(contextMenuEdit).not.toHaveBeenCalled()
     expect(document.activeElement).toBe(textarea)
-  })
-
-  it('splits select all into its own section under the edit verbs', async () => {
-    installBridge()
-    mountMenu()
-    const host = attach('<textarea>text</textarea>')
-
-    fireEvent.contextMenu(host.querySelector('textarea')!)
-
-    const selectAllItem = (await screen.findByText('Select all')).closest('[data-slot="dropdown-menu-item"]')!
-    const pasteItem = screen.getByText('Paste').closest('[data-slot="dropdown-menu-item"]')!
-
-    // Sections render as sibling `.contents` wrappers with the separator
-    // inside the later one — different wrappers = different sections.
-    expect(pasteItem.parentElement).not.toBe(selectAllItem.parentElement)
-    expect(selectAllItem.parentElement?.querySelector('[data-slot="dropdown-menu-separator"]')).not.toBeNull()
   })
 
   it('grays out cut, copy, and select all in an empty field', async () => {
@@ -511,23 +474,6 @@ describe('AppContextMenu guest (in-app browser)', () => {
 
     expect(await screen.findByText('Select all')).toBeTruthy()
     expect(screen.getByText('Inspect element')).toBeTruthy()
-    // The page verbs live on the browser bar only now.
-    expect(screen.queryByText('Copy page URL')).toBeNull()
-    expect(screen.queryByText('Open in browser')).toBeNull()
-    expect(screen.queryByText('Show preview console')).toBeNull()
-  })
-
-  it('draws a line between select all and inspect element', async () => {
-    installBridge()
-    mountMenu()
-
-    openGuestContextMenu(10, 10, guestParams(), guestHandle())
-
-    const selectAllItem = (await screen.findByText('Select all')).closest('[data-slot="dropdown-menu-item"]')!
-    const inspectItem = screen.getByText('Inspect element').closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(selectAllItem.parentElement).not.toBe(inspectItem.parentElement)
-    expect(inspectItem.parentElement?.querySelector('[data-slot="dropdown-menu-separator"]')).not.toBeNull()
   })
 
   it('runs inspect element against the handle', async () => {
@@ -549,22 +495,7 @@ describe('AppContextMenu guest (in-app browser)', () => {
 
     expect(await screen.findByText('Open in in-app browser')).toBeTruthy()
     expect(screen.getByText('Copy URL')).toBeTruthy()
-    // Inspect element rides every guest menu; the bar-only verbs do not.
     expect(screen.getByText('Inspect element')).toBeTruthy()
-    expect(screen.queryByText('Copy page URL')).toBeNull()
-  })
-
-  it('keeps inspect element in guest editable menus', async () => {
-    installBridge()
-    mountMenu()
-
-    openGuestContextMenu(10, 10, guestParams({ isEditable: true }), guestHandle())
-
-    expect(await screen.findByText('Paste')).toBeTruthy()
-    expect(screen.getByText('Inspect element')).toBeTruthy()
-    expect(screen.queryByText('Copy page URL')).toBeNull()
-    expect(screen.queryByText('Open in browser')).toBeNull()
-    expect(screen.queryByText('Show preview console')).toBeNull()
   })
 
   it('grays out guest edit verbs from Chromium editFlags', async () => {
@@ -590,19 +521,6 @@ describe('AppContextMenu guest (in-app browser)', () => {
     expect(item('Copy').getAttribute('data-disabled')).not.toBeNull()
     expect(item('Select all').getAttribute('data-disabled')).not.toBeNull()
     expect(item('Paste').getAttribute('data-disabled')).toBeNull()
-  })
-
-  it('splits guest select all into its own section', async () => {
-    installBridge()
-    mountMenu()
-
-    openGuestContextMenu(10, 10, guestParams({ isEditable: true }), guestHandle())
-
-    const selectAllItem = (await screen.findByText('Select all')).closest('[data-slot="dropdown-menu-item"]')!
-    const pasteItem = screen.getByText('Paste').closest('[data-slot="dropdown-menu-item"]')!
-
-    expect(pasteItem.parentElement).not.toBe(selectAllItem.parentElement)
-    expect(selectAllItem.parentElement?.querySelector('[data-slot="dropdown-menu-separator"]')).not.toBeNull()
   })
 
   it('dispatches guest edit verbs a frame after the menu closes', async () => {

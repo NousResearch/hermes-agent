@@ -27,15 +27,29 @@ from hermes_cli.sizefmt import format_bytes
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_KEEP = 5
+DEFAULT_KEEP = 2
 
 # Never rolled into a snapshot: .hub/ is owned by the skills hub (rolling it back breaks lockfile invariants); .curator_backups
 # is the backup dir itself; .git is repository metadata — rolling it back breaks git tracking, and snapshots that include it grow
 # with the full history (once backups are committed back, each snapshot contains the prior ones: 38MB of skills inflated to 24GB
 # in weeks); .locks holds skill_manage's per-skill lock files — restoring them would swap a lock out from under a waiting
 # writer. The tar filter in ``snapshot_skills`` applies the same set to nested paths, so a nested ``.git`` is skipped too.
-# See #91449.
-_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".locks", ".git"}
+# See #91449. ``.curator_ledger.jsonl`` is the append-only audit log and ``.archive/`` the recoverable store the curator
+# promises never to delete: rolling either back to an older copy LOSES entries/skills, and both grow without bound (a 650MB
+# ledger made every snapshot 820MB — and every archive step gunzips the newest snapshot in full, so a pass that pruned 57
+# skills held the CLI prompt for 6 minutes).
+_EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub", ".locks", ".git", ".archive", ".curator_ledger.jsonl"}
+
+
+def _excluded_member(ti: tarfile.TarInfo) -> bool:
+    """Skip excluded names anywhere in the path, plus regeneratable DIRECTORIES (venv, node_modules,
+    caches — a 1.3 GB torch venv inside one skill made every snapshot 349 MB, #107539). Directory
+    parts only: a plain file that happens to be called ``venv`` is skill content."""
+    from tools.skill_ledger import TRANSIENT_DIRS
+
+    parts = Path(ti.name).parts
+    dir_parts = parts if ti.isdir() else parts[:-1]
+    return any(p in _EXCLUDE_TOP_LEVEL for p in parts) or any(p in TRANSIENT_DIRS for p in dir_parts)
 
 # Snapshot id: UTC ISO with colons replaced by dashes (Windows-safe filename); optional ``-NN`` suffix for same-second snapshots.
 _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
@@ -160,9 +174,9 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
         with tarfile.open(archive, "w:gz", compresslevel=6) as tf:
             for entry in sorted(skills.iterdir()):
                 if entry.name not in _EXCLUDE_TOP_LEVEL:
-                    # arcname relative to skills/ so extraction drops back in cleanly; the filter excludes nested _EXCLUDE_TOP_LEVEL paths too.
+                    # arcname relative to skills/ so extraction drops back in cleanly; the filter excludes nested paths too.
                     tf.add(str(entry), arcname=entry.name, recursive=True,
-                           filter=lambda ti: None if any(p in _EXCLUDE_TOP_LEVEL for p in Path(ti.name).parts) else ti)
+                           filter=lambda ti: None if _excluded_member(ti) else ti)
         # Cron capture is additive and never fails the snapshot; the manifest records whether it happened so rollback can say "no cron data".
         _write_manifest(dest, reason, archive, _count_skill_files(skills), _backup_cron_jobs_into(dest))
     except (OSError, tarfile.TarError) as e:
@@ -170,9 +184,16 @@ def snapshot_skills(reason: str = "manual", *, protect_ids: Optional[Set[str]] =
         shutil.rmtree(dest, ignore_errors=True)  # clean up partial snapshot
         return None
 
-    _prune_old(keep=get_keep(), protect=protect_ids)
+    # A same-second id reuse after a prune (`...Z` next to a surviving `...Z-02`) sorts BELOW its sibling;
+    # the snapshot just written must never be its own prune victim.
+    _prune_old(keep=get_keep(), protect=(protect_ids or set()) | {snap_id})
     logger.info("Curator snapshot created: %s (%s)", snap_id, reason)
     return dest
+
+
+def prune_old_snapshots() -> List[str]:
+    """Apply ``curator.backup.keep`` without taking a new snapshot (the prune-only curator pass)."""
+    return _prune_old(keep=get_keep())
 
 
 def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:
@@ -202,7 +223,7 @@ def _prune_old(keep: int, protect: Optional[Set[str]] = None) -> List[str]:
 # --- List + rollback ---
 def _read_manifest(snap_dir: Path) -> Dict[str, Any]:
     try:
-        return json.loads((snap_dir / "manifest.json").read_text(encoding="utf-8"))
+        return json.loads((snap_dir / "manifest.json").read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -249,7 +270,7 @@ def _restore_cron_skill_links(snapshot_dir: Path) -> Dict[str, Any]:
     if not backup_file.exists():
         return {**report, "error": f"snapshot has no {CRON_JOBS_FILENAME}"}
     try:
-        backup_jobs = _jobs_list(json.loads(backup_file.read_text(encoding="utf-8")))
+        backup_jobs = _jobs_list(json.loads(backup_file.read_text(encoding="utf-8-sig")))
     except (OSError, json.JSONDecodeError) as e:
         return {**report, "error": f"failed to load backed-up jobs: {e}"}
     if backup_jobs is None:
@@ -317,15 +338,19 @@ def _restore_excluded_subtrees(staged: Path, skills: Path) -> None:
     (submodule / worktree ``gitdir:`` pointer) — both are moved. Best-effort and conditional: an entry is carried only when
     its parent skill dir was restored and nothing sits at the target. If the target snapshot predates the skill, the entry
     is dropped with the staging dir rather than left orphaned; the safety snapshot excludes these paths too, so not undoable."""
+    from tools.skill_ledger import TRANSIENT_DIRS
+
     for dirpath, dirnames, filenames in os.walk(staged):
-        for src in [Path(dirpath) / n for n in (*dirnames, *filenames) if n in _EXCLUDE_TOP_LEVEL]:
+        carried = [Path(dirpath) / n for n in filenames if n in _EXCLUDE_TOP_LEVEL]
+        carried += [Path(dirpath) / n for n in dirnames if n in _EXCLUDE_TOP_LEVEL or n in TRANSIENT_DIRS]
+        for src in carried:
             dest = skills / src.relative_to(staged)
             if dest.parent.is_dir() and not dest.exists():
                 try:
                     shutil.move(str(src), str(dest))
                 except OSError as e:
                     logger.debug("Could not restore excluded entry %s: %s", src, e)
-        dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_TOP_LEVEL]
+        dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_TOP_LEVEL and d not in TRANSIENT_DIRS]
 
 
 def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:

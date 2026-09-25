@@ -127,6 +127,8 @@ def _agent_cbs(sid: str) -> dict:
     callbacks = {
         "tool_start_callback": lambda tc_id, name, args: _on_tool_start(sid, tc_id, name, args),
         "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(sid, tc_id, name, args, result),
+        "tool_result_metadata_callback": lambda tc_id, name, args, result: _prepare_tool_result_metadata(
+            sid, tc_id, name, args, result),
         "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs),
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid) and _emit("tool.generating", sid, {"name": name}),
@@ -184,7 +186,8 @@ def _apply_project_workspace(task_id: str, path: str, _name: str = "") -> None:
         agent = session.get("agent")
         info = _session_info(agent, session) if agent is not None else {
             "cwd": resolved, "branch": git_probe.branch(resolved),
-            "project": _project_info_for_cwd(resolved), "lazy": True}
+            "project": _project_info_for_cwd(resolved), "lazy": True,
+            "desktop_contract": DESKTOP_BACKEND_CONTRACT}
         _emit("session.info", sid, info)
     except Exception:
         logger.debug("failed to emit session.info after project workspace move", exc_info=True)
@@ -310,6 +313,30 @@ def _load_fallback_model():
     return get_fallback_chain(_load_cfg())
 
 
+def _sync_agent_fallback_with_config(sid: str, session: dict) -> None:
+    """Adopt ``fallback_providers`` edits into the cached agent at turn start.
+
+    Desktop/TUI chats keep one agent across turns, and ``_make_agent`` reads the chain once: a chat
+    opened before ``hermes fallback add`` kept an empty chain forever and a provider-quota 429 ended in
+    a provider error with a healthy fallback configured (#95066). Same per-turn contract the messaging
+    gateway applies to its cached agents (``GatewayRunner._refresh_fallback_model``): the config is
+    read fail-closed, so a torn/invalid config.yaml keeps the agent's last known-good chain instead of
+    ``_load_cfg()``'s fail-open ``{}`` reading as "chain removed" and wiping it. Never blocks the turn.
+    """
+    agent = session.get("agent")
+    if agent is None:
+        return
+    try:
+        from gateway.run import GatewayRunner
+        from hermes_cli.config_effective import load_user_config_effective
+        from hermes_cli.fallback_config import get_fallback_chain
+        chain = get_fallback_chain(load_user_config_effective(_active_config_path(), fail_closed=True))
+    except Exception as e:
+        logger.warning("fallback chain sync skipped for %s (keeping current chain): %s", sid, e)
+        return
+    GatewayRunner._apply_fallback_chain_to_agent(agent, chain)
+
+
 def _background_agent_kwargs(agent, task_id: str) -> dict:
     cfg = _load_cfg()
 
@@ -338,7 +365,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "request_overrides": dict(g("request_overrides", {}) or {}),
         # The side agent persists into the PARENT's store: a named-profile chat's ``bg_*`` rows
         # belong to that profile's state.db, not the launch handle.
-        "platform": "tui", "session_db": getattr(agent, "_session_db", None) or _get_db(), "fallback_model": fallback}
+        "platform": "tui", "session_db": getattr(agent, "_session_db", None) or _get_db(), "fallback_model": fallback,
+        "side_agent": True}
 
 
 def _ephemeral_preview_agent_kwargs(agent, task_id: str) -> dict:

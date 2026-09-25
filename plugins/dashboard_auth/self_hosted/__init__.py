@@ -64,6 +64,15 @@ def _require_https_or_loopback(url: str, *, field: str) -> str:
     raise ProviderError(f"OIDC {field} must be https:// (or http on localhost), got {url!r}")
 
 
+def _origin(url: str) -> tuple:
+    """``(scheme, hostname, port)`` for an origin compare, with default ports
+    normalised so ``https://h`` and ``https://h:443`` are the same origin."""
+    parts = urllib.parse.urlparse(url)
+    scheme = parts.scheme.lower()
+    return (scheme, (parts.hostname or "").lower(),
+            parts.port or {"https": 443, "http": 80}.get(scheme))
+
+
 class SelfHostedOIDCProvider(JwtOAuthProvider):
     """Generic self-hosted OpenID Connect provider (authorization-code + PKCE)."""
 
@@ -188,14 +197,23 @@ class SelfHostedOIDCProvider(JwtOAuthProvider):
         try:
             # follow_redirects=True: many IDPs answer discovery with a 3xx (Authentik
             # canonicalises .well-known; proxies upgrade http→https) and httpx defaults to
-            # not following. Safe because the issuer pin and HTTPS checks below validate the
-            # *resolved* document. The token/revocation POSTs deliberately do NOT follow
+            # not following. The token/revocation POSTs deliberately do NOT follow
             # redirects (they carry an auth code / refresh token).
             response = httpx.get(url, headers=JSON_HEADERS, timeout=_DISCOVERY_TIMEOUT_SEC, follow_redirects=True)
         except httpx.RequestError as exc:
             raise ProviderError(f"OIDC discovery unreachable: {exc}") from exc
         if response.status_code != 200:
             raise ProviderError(f"OIDC discovery returned {response.status_code} for {url!r}")
+        # Resolved-origin pin: the document only counts as the IDP's when the url that
+        # actually served it shares the configured issuer's origin. The ``issuer`` field
+        # inside the body is attacker-controlled content and cannot prove where the
+        # document came from — a single cleartext or attacker-hosted redirect hop could
+        # otherwise serve a forged document asserting the configured issuer with
+        # attacker jwks_uri / token_endpoint.
+        if _origin(str(response.url)) != _origin(self._issuer):
+            raise ProviderError(
+                f"OIDC discovery resolved to {response.url}, outside the configured "
+                f"issuer's origin ({self._issuer!r})")
         payload = parse_json_body(response)
         if not payload:
             raise ProviderError("OIDC discovery returned a non-JSON body")

@@ -111,7 +111,7 @@ SCAR: List[tuple] = [
 ]
 
 ADVERSARIAL: List[tuple] = [
-    ("media-tag", "Here you go\nMEDIA:/tmp/output.png\ndone"),
+    ("media-tag", "Here you go\nMEDIA:/tmp/output.png\ndone"),  # no-tmp: ok — fixture string parsed by MEDIA-tag conformance vectors
     ("unclosed-fence", "```python\nprint('never closed')"),
     ("pathological-nesting", "**bold *italic ~~struck `code` struck~~ italic* bold**"),
     ("placeholder-injection", "sneaky \x00PH0\x00 token and \x00SL1\x00 too"),

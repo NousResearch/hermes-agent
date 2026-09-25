@@ -14,47 +14,8 @@ def reset_skin_state():
     skin_engine._active_skin_name = "default"
 
 
-class TestSkinConfig:
-    def test_default_skin_has_required_fields(self):
-        from hermes_cli.skin_engine import load_skin
-        skin = load_skin("default")
-        assert skin.name == "default"
-        assert skin.tool_prefix == "┊"
-        assert "banner_title" in skin.colors
-        assert "banner_border" in skin.colors
-        assert "agent_name" in skin.branding
 
 
-    def test_get_spinner_wings_empty_for_default(self):
-        from hermes_cli.skin_engine import load_skin
-        skin = load_skin("default")
-        assert skin.get_spinner_wings() == []
-
-
-class TestBuiltinSkins:
-    def test_ares_skin_loads(self):
-        from hermes_cli.skin_engine import load_skin
-        skin = load_skin("ares")
-        assert skin.name == "ares"
-        assert skin.tool_prefix == "╎"
-        # Crimson identity: border stays red-dominant (exact values are owned
-        # by the palette audit in test_skin_palettes.py, which enforces
-        # contrast floors — don't pin literals here).
-        border = skin.get_color("banner_border")
-        r, g, b = (int(border[i:i + 2], 16) for i in (1, 3, 5))
-        assert r > g and r > b, f"ares border lost its crimson: {border}"
-        assert skin.get_color("response_border") == "#C7A96B"
-        assert skin.get_color("session_label") == "#C7A96B"
-        assert skin.get_color("session_border") == "#6E584B"
-        assert skin.get_branding("agent_name") == "Ares Agent"
-
-    def test_ares_has_spinner_customization(self):
-        from hermes_cli.skin_engine import load_skin
-        skin = load_skin("ares")
-        wings = skin.get_spinner_wings()
-        assert len(wings) > 0
-        assert isinstance(wings[0], tuple)
-        assert len(wings[0]) == 2
 
 
 
@@ -72,19 +33,6 @@ class TestSkinManagement:
         assert get_active_skin().name == "ares"
 
 
-    def test_list_skins_includes_builtins(self):
-        from hermes_cli.skin_engine import list_skins
-        skins = list_skins()
-        names = [s["name"] for s in skins]
-        assert "default" in names
-        assert "ares" in names
-        assert "mono" in names
-        assert "slate" in names
-        assert "daylight" in names
-        assert "warm-lightmode" in names
-        for s in skins:
-            assert "source" in s
-            assert s["source"] == "builtin"
 
 
 
@@ -103,8 +51,8 @@ class TestUserSkins:
             "branding": {"agent_name": "Custom Agent"},
             "tool_prefix": "▸",
         }
-        import yaml
-        skin_file.write_text(yaml.dump(skin_data))
+        import hermes_yaml as yaml
+        skin_file.write_text(yaml.safe_dump(skin_data))
 
         # Patch skins dir
         monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
@@ -122,10 +70,10 @@ class TestUserSkins:
 
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()
-        import yaml
+        import hermes_yaml as yaml
 
         (skins_dir / "broken.yaml").write_text(
-            yaml.dump(
+            yaml.safe_dump(
                 {
                     "name": "broken",
                     "colors": ["not", "a", "mapping"],
@@ -152,8 +100,8 @@ class TestUserSkins:
         from hermes_cli.skin_engine import list_skins
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()
-        import yaml
-        (skins_dir / "pirate.yaml").write_text(yaml.dump({
+        import hermes_yaml as yaml
+        (skins_dir / "pirate.yaml").write_text(yaml.safe_dump({
             "name": "pirate",
             "description": "Arr matey",
         }))
@@ -181,11 +129,6 @@ class TestDisplayIntegration:
 class TestCliBrandingHelpers:
 
 
-    def test_active_goodbye_ares(self):
-        from hermes_cli.skin_engine import set_active_skin, get_active_goodbye
-
-        set_active_skin("ares")
-        assert get_active_goodbye() == "Farewell, warrior! ⚔"
 
     def test_prompt_toolkit_style_overrides_cover_tui_classes(self):
         from hermes_cli.skin_engine import set_active_skin, get_prompt_toolkit_style_overrides

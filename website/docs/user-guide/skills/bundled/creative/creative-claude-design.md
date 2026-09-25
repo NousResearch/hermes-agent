@@ -15,13 +15,13 @@ Design one-off HTML artifacts (landing, deck, prototype).
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/creative\claude-design` |
+| Path | `skills/creative/claude-design` |
 | Version | `1.1.0` |
 | Author | BadTechBandit |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `design`, `html`, `prototype`, `ux`, `ui`, `creative`, `artifact`, `deck`, `motion`, `design-system` |
-| Related skills | [`design-md`](./creative-design-md.md), [`popular-web-designs`](./creative-popular-web-designs.md), [`excalidraw`](../../optional/creative/creative-excalidraw.md), [`architecture-diagram`](./creative-architecture-diagram.md) |
+| Related skills | [`design-md`](../../bundled/creative/creative-design-md.md), [`popular-web-designs`](../../bundled/creative/creative-popular-web-designs.md), [`excalidraw`](../../optional/creative/creative-excalidraw.md), [`architecture-diagram`](../../bundled/creative/creative-architecture-diagram.md) |
 
 ## Reference: full SKILL.md
 

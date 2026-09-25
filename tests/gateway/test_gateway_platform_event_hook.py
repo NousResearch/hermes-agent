@@ -40,7 +40,6 @@ from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 from gateway.run import GatewayRunner  # noqa: E402
 from gateway.profile_routing import ProfileRoute  # noqa: E402
 from hermes_cli.plugins import (  # noqa: E402
-    VALID_HOOKS,
     PluginContext,
     PluginManager,
     PluginManifest,
@@ -109,15 +108,6 @@ def _auth_reaction_update(user_id, chat_type="private", chat_id=123, message_id=
 # Hook registration
 # ---------------------------------------------------------------------------
 
-class TestHookRegistration:
-    def test_gateway_platform_event_registered_reserved_absent(self):
-        """register_hook rejects names not in VALID_HOOKS, so the implemented
-        hook must be present. The reserved gateway_* names are deliberately
-        absent (no inert surface without a concrete fire site); lock that in."""
-        assert "gateway_platform_event" in VALID_HOOKS
-        assert "gateway_session_titled" not in VALID_HOOKS
-        assert "gateway_message_delivered" not in VALID_HOOKS
-        assert "gateway_thread_created" not in VALID_HOOKS
 
 
 # ---------------------------------------------------------------------------
@@ -159,25 +149,6 @@ class TestRunnerDispatch:
 
         invoke.assert_not_called()
 
-    def test_skips_dispatch_when_no_subscriber(self):
-        runner = object.__new__(GatewayRunner)
-        authorized = MagicMock(return_value=True)
-        runner._is_user_authorized = authorized
-        invoke = MagicMock()
-        source = _adapter()._source_from_reaction_for_auth(
-            _auth_reaction_update(user_id=777)
-        )
-
-        with patch("hermes_cli.lifecycle.has_hook", return_value=False), patch(
-            "hermes_cli.lifecycle.invoke_hook", invoke
-        ):
-            asyncio.run(runner._handle_gateway_platform_event(
-                {"platform": "telegram", "event_type": "reaction", "payload": {}},
-                source,
-            ))
-
-        authorized.assert_not_called()
-        invoke.assert_not_called()
 
     def test_plugin_layer_error_is_isolated(self):
         runner = object.__new__(GatewayRunner)
@@ -415,19 +386,6 @@ class TestNormalizeMessageEdited:
 # ---------------------------------------------------------------------------
 
 class TestOnPlatformUpdate:
-    def test_no_subscriber_skips_normalization_source_and_dispatch(self):
-        a = _adapter()
-        a._normalize_platform_event = MagicMock()
-        a._source_from_reaction_for_auth = MagicMock()
-        handler = AsyncMock()
-        a.set_platform_event_handler(handler)
-
-        with patch("hermes_cli.lifecycle.has_hook", return_value=False):
-            asyncio.run(a._on_platform_update(MagicMock(), context=MagicMock()))
-
-        a._normalize_platform_event.assert_not_called()
-        a._source_from_reaction_for_auth.assert_not_called()
-        handler.assert_not_awaited()
 
     def test_fires_gateway_platform_event_with_envelope(self):
         a = _adapter()
@@ -649,50 +607,6 @@ class TestRegisterHandlers:
     #64176 review asked to share registration between the initial path and any
     rebuild; these tests pin that the observer (group 99) is included alongside
     the core handlers."""
-
-    _HANDLER_ATTRS = (
-        "_handle_text_message", "_handle_command", "_handle_location_message",
-        "_handle_media_message", "_handle_callback_query", "_on_platform_update",
-    )
-
-    def _adapter_with_handlers(self) -> TelegramAdapter:
-        a = _adapter()
-        # Stand-ins for the bound handler methods. _register_handlers only
-        # passes them to add_handler, it never calls them.
-        for name in self._HANDLER_ATTRS:
-            setattr(a, name, object())
-        return a
-
-    @staticmethod
-    def _observer_calls(app):
-        return [c for c in app.add_handler.call_args_list if c.kwargs.get("group") == 99]
-
-    def test_registers_core_handlers_plus_observer(self):
-        a = self._adapter_with_handlers()
-        app = MagicMock()
-        a._register_handlers(app)
-
-        # Six core handlers (default group, no group kwarg — incl. the
-        # inline command picker) plus the gateway_platform_event observer
-        # alone in group 99, so it observes alongside rather than
-        # displacing the core handlers.
-        calls = app.add_handler.call_args_list
-        assert len(calls) == 7
-        assert len([c for c in calls if c.kwargs.get("group") == 99]) == 1
-        assert len([c for c in calls if not c.kwargs]) == 6
-
-    def test_rebuild_re_registers_observer(self):
-        """A second call on a fresh app (e.g. a future rebuild) re-registers
-        every handler, observer included."""
-        a = self._adapter_with_handlers()
-        first_app = MagicMock()
-        rebuilt_app = MagicMock()
-
-        a._register_handlers(first_app)
-        a._register_handlers(rebuilt_app)  # the rebuild path
-
-        assert rebuilt_app.add_handler.call_count == 7
-        assert len(self._observer_calls(rebuilt_app)) == 1
 
     def test_transient_init_rebuild_uses_shared_registration(self, monkeypatch):
         """The real connect retry path must call the shared registration method

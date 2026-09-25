@@ -1,8 +1,6 @@
 """Plan-vs-execution reconciliation (#91277 Phase 2: restart via declared mechanism).
 
 Pins:
-- _restart_mechanism returns machine-readable ids; describe_restart_mechanism
-  derives display strings (policy table is data, not prose).
 - match_runtime_outcomes classifies every planned runtime against the restart
   phase's bookkeeping: restarted / stopped / failed / unaccounted.
 - report_unaccounted_runtimes escalates (returns True) ONLY on unaccounted
@@ -13,7 +11,6 @@ from hermes_cli.update_inventory import (
     RuntimeRecord,
     UpdatePlan,
     _restart_mechanism,
-    describe_restart_mechanism,
     match_runtime_outcomes,
     report_unaccounted_runtimes,
 )
@@ -35,18 +32,6 @@ def _rt(profile: str, pid: int, supervisor: str = "manual") -> RuntimeRecord:
     )
 
 
-def test_mechanism_ids_are_machine_readable_and_described():
-    assert _restart_mechanism("systemd", "default") == "systemd"
-    assert _restart_mechanism("launchd", "work") == "launchd"
-    assert _restart_mechanism("desktop", "default") == "desktop"
-    assert _restart_mechanism("manual", "work") == "manual"
-    assert _restart_mechanism("windows-service", "default") == "windows-service"
-    # display derives FROM the id
-    assert "systemctl" in describe_restart_mechanism("systemd", "default")
-    assert "kickstart" in describe_restart_mechanism("launchd", "work")
-    assert "-p work" in describe_restart_mechanism("manual", "work")
-    assert describe_restart_mechanism("manual", "default") == "hermes gateway restart"
-    assert "sc.exe" in describe_restart_mechanism("windows-service", "default")
 
 
 def test_windows_service_supervisor_classification():

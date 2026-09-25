@@ -17,7 +17,7 @@ import random
 import shutil
 import tempfile
 import time
-import yaml
+import hermes_yaml as yaml
 import logging
 import asyncio
 from pathlib import Path

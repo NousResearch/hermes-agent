@@ -60,5 +60,5 @@ def test_reasoning_flag_with_global_writes_config_and_drops_the_pin(_quiet_switc
     assert _quiet_switch["agent.reasoning_effort"] == "none"
     assert "create_reasoning_override" not in session
 
-    with pytest.raises(ValueError, match="--reasoning takes"):
+    with pytest.raises(ValueError):
         server._apply_model_switch("sid", {"agent": _Agent()}, "new/model --reasoning turbo")

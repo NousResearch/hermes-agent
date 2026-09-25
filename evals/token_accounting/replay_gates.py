@@ -26,7 +26,7 @@ Scenarios per shape:
 
 Usage (from a checkout root, venv python)::
 
-    python evals/token_accounting/replay_gates.py --out /tmp/result.json
+    python evals/token_accounting/replay_gates.py --out result.json
 """
 
 from __future__ import annotations
@@ -276,7 +276,7 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="ab-token-accounting-"))
     os.environ["HERMES_HOME"] = str(tmp / "home")
     (tmp / "home").mkdir(parents=True)
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     wire = _FakeChat()
     result: dict = {"checkout": str(ROOT), "head": head,
                     "compressor_sha256": hashlib.sha256(

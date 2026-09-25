@@ -1,7 +1,9 @@
 name: hermes-auto-titler
 repo: https://github.com/Vocllum/hermes-auto-titler
-sha: 307993c36e261af2769e486befc6841e96f93423
-description: Provenance-aware automatic session title maintenance that never overrides user titles.
+sha: f97cb949f2e802bf02ac376f8deba04aeecca0b5
+version: "0.2.3.1"
+image: https://raw.githubusercontent.com/Vocllum/hermes-auto-titler/f97cb949f2e802bf02ac376f8deba04aeecca0b5/docs/catalog-card.png
+description: "Topic-aware session title tracking for Hermes Agent across evolving conversations. Disclosure — with the default first_title_mode: plugin the plugin sets auxiliary.title_generation.enabled: false in your ~/.hermes/config.yaml on load (not reverted on uninstall); retitles sessions in the background via your configured auxiliary/title provider."
 maintainer: Vocllum
 tier: community
 category: automation
@@ -10,6 +12,7 @@ platforms: []
 capabilities:
   provides_tools: []
   provides_hooks:
+    - pre_llm_call
     - on_session_end
     - on_session_finalize
   provides_middleware: []

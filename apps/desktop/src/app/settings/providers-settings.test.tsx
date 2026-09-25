@@ -135,7 +135,9 @@ describe('ProvidersSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save' }))
       await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('WIDGET_API_KEY', 'fixture-key', 'profile-b'))
       fireEvent.click(screen.getByRole('button', { name: 'profile-a' }))
-      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith(undefined))
+      // Back onto the app's active profile: no override is stored, but the
+      // request must still name it (#118432).
+      await waitFor(() => expect(getEnvVars).toHaveBeenLastCalledWith('profile-a'))
     } finally {
       cleanup()
       $settingsScopeOverride.set(null)
@@ -178,7 +180,7 @@ describe('ProvidersSettings', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }))
     })
 
-    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', undefined))
+    await waitFor(() => expect(disconnectOAuthProvider).toHaveBeenCalledWith('nous', 'default'))
     expect(listOAuthProviders).toHaveBeenCalledTimes(2)
   })
 
@@ -193,17 +195,6 @@ describe('ProvidersSettings', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
     })
 
-    expect(disconnectOAuthProvider).not.toHaveBeenCalled()
-  })
-
-  it('keeps provider selection separate from account removal', async () => {
-    await renderProvidersSettings()
-
-    await act(async () => {
-      fireEvent.click(await screen.findByText('Nous Portal'))
-    })
-
-    expect(startManualProviderOAuth).toHaveBeenCalledWith('nous', undefined)
     expect(disconnectOAuthProvider).not.toHaveBeenCalled()
   })
 
@@ -224,7 +215,6 @@ describe('ProvidersSettings', () => {
 
     expect(await screen.findByText('Qwen Code')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Remove Qwen Code' })).toBeNull()
-    expect(screen.getByText(/managed by its own CLI/)).toBeTruthy()
   })
 
   it('renders a Keys card for a backend-tagged provider with no PROVIDER_GROUPS prefix', async () => {
@@ -297,7 +287,6 @@ describe('ProvidersSettings', () => {
     render(<ProvidersSettings onClose={vi.fn()} onViewChange={vi.fn()} view="keys" />)
 
     const row = await screen.findByText('Local / custom endpoint')
-    expect(screen.getByText(/OpenAI-compatible endpoint/)).toBeTruthy()
 
     fireEvent.click(row)
 

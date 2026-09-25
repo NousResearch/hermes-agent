@@ -13,6 +13,7 @@ from contextlib import suppress
 from functools import lru_cache
 import json
 import logging
+import os
 import secrets
 import socket
 import subprocess
@@ -23,8 +24,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from hermes_cli.local_runtime.binaries import server_binary, runtimes_root
-from hermes_cli.local_runtime.processes import spawn_server
+from hermes_cli.local_runtime.binaries import runtimes_root
+from hermes_cli.local_runtime.processes import server_child_env, spawn_server
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,7 @@ def _stable_api_key() -> str:
     """
     key_path = runtimes_root() / ".api_key"
     with suppress(OSError):
-        existing = key_path.read_text(encoding="utf-8").strip()
+        existing = key_path.read_text(encoding="utf-8-sig").strip()
         if len(existing) >= 16:
             return existing
     key = secrets.token_urlsafe(24)
@@ -115,12 +116,15 @@ class LlamaServerSupervisor:
     # comes back to.
     IDLE_UNLOAD_S = 15 * 60
 
-    def __init__(self, install_dir: Path, models_dir: Path, *,
+    def __init__(self, binary: Path, models_dir: Path, *,
                  models_max: int = 4, port: int | None = None,
                  extra_args: list[str] | None = None,
                  log_path: Path | None = None,
                  preset_path: Path | None = None):
-        self.install_dir = Path(install_dir)
+        # The exact engine binary (PM store path, backend-selected), handed
+        # in by boot — the supervisor never discovers binaries itself: a
+        # legacy-directory scan could resurrect bytes pm did not pin.
+        self.binary = Path(binary)
         self.models_dir = Path(models_dir)
         self.models_max = models_max
         self.port = port or _stable_port()
@@ -166,7 +170,7 @@ class LlamaServerSupervisor:
     # ── lifecycle ────────────────────────────────────────────
 
     def _spawn(self) -> None:
-        exe = server_binary(self.install_dir)
+        exe = self.binary
         cmd = [
             str(exe),
             "--host", "127.0.0.1",
@@ -197,8 +201,8 @@ class LlamaServerSupervisor:
         self._log_handle.write(f"\n# spawn: {cmd}\n")
         self._log_handle.flush()
         # list-args, never a shell: spaced paths (user homes) must survive.
-        self.proc, self._job = spawn_server(cmd, stdout=self._log_handle,
-                                             stderr=subprocess.STDOUT, cwd=str(exe.parent))
+        self.proc, self._job = spawn_server(cmd, stdout=self._log_handle, stderr=subprocess.STDOUT,
+                                             cwd=str(exe.parent), env=server_child_env(os.environ))
         logger.info("llama-server router spawned pid=%s port=%s", self.proc.pid, self.port)
         # State goes down at SPAWN, not after health: endpoint resolution treats a
         # live-pid-but-not-yet-healthy server as "starting" rather than "unconfigured", so a
@@ -339,7 +343,7 @@ class LlamaServerSupervisor:
         try:
             import psutil
 
-            exe = str(server_binary(self.install_dir))
+            exe = str(self.binary)
         except Exception:  # noqa: BLE001
             return
         own_pid = self.proc.pid if self.proc is not None else None

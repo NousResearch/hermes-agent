@@ -5,6 +5,8 @@ added to ``/api/status``: profile enumeration, single vs multiplex vs multiple
 gateway detection, and per-platform port resolution.
 """
 
+from pathlib import Path
+
 import pytest
 
 from hermes_cli import web_server
@@ -57,7 +59,7 @@ def _patch_topology(monkeypatch, homes, running, runtimes):
     import hermes_cli.profiles as profiles_mod
     import gateway.status as status_mod
 
-    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex: homes)
+    monkeypatch.setattr(profiles_mod, "profiles_to_serve", lambda multiplex, **kw: homes)
     monkeypatch.setattr(
         profiles_mod, "_check_gateway_running",
         lambda home: next(n for n, h in homes if h == home) in running,
@@ -69,6 +71,20 @@ def _patch_topology(monkeypatch, homes, running, runtimes):
 
 
 class TestCollectProfileGatewayTopology:
+    def test_running_standalone_profile_is_in_topology(self, tmp_path, monkeypatch):
+        from hermes_cli import profiles
+
+        root = tmp_path / ".hermes"
+        solo = root / "profiles" / "solo"
+        solo.mkdir(parents=True)
+        (solo / "config.yaml").write_text("gateway:\n  standalone: true\n")
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        monkeypatch.setattr(profiles, "_check_gateway_running", lambda home: home == solo)
+        topo = _collect_profile_gateway_topology()
+        assert "solo" in topo["profiles"]
+        assert [g["profile"] for g in topo["gateways"]] == ["solo"]
+
     def test_no_gateways_running(self, tmp_path, monkeypatch):
         homes = [("default", tmp_path / "d"), ("coder", tmp_path / "c")]
         _patch_topology(monkeypatch, homes, running=set(), runtimes={})
@@ -185,6 +201,29 @@ class TestCollectProfileGatewayTopology:
         )
         topo = _collect_profile_gateway_topology()
         assert set(topo["profile_platforms"].get("coder", {})) == {"signal"}
+
+    def test_a_stale_platform_entry_reports_no_port(self, tmp_path, monkeypatch):
+        # The live case: a Feishu entry left "connected" by a gateway process from a week earlier
+        # (the platform has since been removed) put its port into ``gateways[].ports`` beside the
+        # ports the live gateway really binds. Ports follow the same writer-identity ownership as
+        # the platform map: a port the current process does not bind is not reported.
+        homes = [("default", tmp_path / "d")]
+        runtimes = {
+            "default": {
+                "platforms": {
+                    "api_server": {"state": "connected", "writer_pid": 200, "writer_start_time": 222},
+                    "feishu": {"state": "connected", "writer_pid": 34105, "writer_start_time": 178945520374},
+                }
+            },
+        }
+        _patch_topology(monkeypatch, homes, running={"default"}, runtimes=runtimes)
+        monkeypatch.setattr(
+            _web_server_gateway,
+            "_profile_gateway_writer_identity",
+            lambda home, runtime: (200, 222),
+        )
+        topo = _collect_profile_gateway_topology()
+        assert set(topo["gateways"][0]["ports"]) == {"api_server"}
 
     def test_no_live_process_means_no_aggregation(self, tmp_path, monkeypatch):
         # When the record's PID doesn't validate against a live gateway

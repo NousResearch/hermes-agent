@@ -1,0 +1,22 @@
+name: hermes-jailbreak-kernel
+repo: https://github.com/Enchanted0911/hermes-jailbreak-kernel
+sha: 6b305c4892048aff7d30fab60a18294c8f22eca3
+description: >-
+  Jailbreak-kernel plugin for Hermes Agent (ported from dsh-infinite-gen-4): dual-layer
+  same-source system-prompt injection + llm_request request-layer system rebuild + opencode
+  session rotation, removing model refusals. Ships /jailbreak status command and a 54-check
+  offline self-test. Disclosure — llm_request middleware that replaces/appends the system prompt
+  with a refusal-removal ("jailbreak") kernel on every request and rotates the x-opencode-session
+  header; writes a per-session diagnostic dump of the full system prompt (which can include
+  memory/persona text) to its own plugin dir (dumps/). No network, no exec.
+maintainer: Enchanted0911
+tier: community
+category: general
+requires_hermes: ">=0.19"
+docs_url: https://github.com/Enchanted0911/hermes-jailbreak-kernel#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - llm_request
+  requires_env: []

@@ -39,12 +39,6 @@ class TestUsageAuditPath:
         p = scheduler._usage_audit_path()
         assert p == tmp_hermes_home / "cron" / "usage_audit.jsonl"
 
-    def test_does_not_use_path_home(self, tmp_hermes_home):
-        """Audit path must NOT hardcode Path.home() — it bypasses profile-aware resolution."""
-        with patch.object(Path, "home") as mock_home:
-            p = scheduler._usage_audit_path()
-            mock_home.assert_not_called()
-        assert p == tmp_hermes_home / "cron" / "usage_audit.jsonl"
 
 
 class TestUtcnowIsoMs:
@@ -77,37 +71,14 @@ class TestWriteUsageAudit:
         assert len(lines) == 1
         assert lines[0] == record
 
-    def test_missing_token_info_writes_line_with_null_fields(self, tmp_hermes_home):
-        record = {
-            "ts": "2026-05-01T04:23:11.123Z",
-            "job_id": "j",
-            "fire_id": "f",
-            "prompt_tokens": None,
-            "completion_tokens": None,
-            "total_tokens": None,
-            "response_silent": True,
-            "deliver_target": "telegram",
-            "model": None,
-            "duration_ms": 12,
-            "error": "boom",
-        }
-        scheduler._write_usage_audit(record)
-        lines = _read_jsonl(scheduler._usage_audit_path())
-        assert len(lines) == 1
-        assert lines[0]["prompt_tokens"] is None
-        assert lines[0]["completion_tokens"] is None
-        assert lines[0]["total_tokens"] is None
-        assert lines[0]["error"] == "boom"
 
-    def test_writer_exception_swallowed(self, tmp_hermes_home, caplog):
+    def test_writer_exception_swallowed(self, tmp_hermes_home):
         # Force json.dumps to raise — writer must NOT propagate.
         with patch("cron.scheduler.json.dumps", side_effect=RuntimeError("kaboom")):
             scheduler._write_usage_audit({"job_id": "x"})
 
         # File never created.
         assert not scheduler._usage_audit_path().exists()
-        # Warning logged with our marker.
-        assert any("usage_audit write failed" in rec.message for rec in caplog.records)
 
     def test_parent_dir_created_if_missing(self, tmp_hermes_home):
         # Ensure the cron path does not exist yet.

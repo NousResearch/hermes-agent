@@ -4,13 +4,13 @@ import asyncio
 import json
 import os
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import PlatformConfig
 from plugins.platforms.raft.adapter import (
     ACTIVITY_DRAIN_SCHEMA,
     ACTIVITY_EVENT_SCHEMA,
@@ -18,27 +18,11 @@ from plugins.platforms.raft.adapter import (
     BRIDGE_TOKEN_HEADER,
     DEFAULT_PATH,
     RaftAdapter,
-    _ACTIVE_ADAPTERS,
-    _ACTIVE_ADAPTERS_LOCK,
-    _RAFT_CONTEXT_LOCK,
-    _RAFT_PROMPT_TURN_IDS,
-    _RAFT_SESSION_IDS,
-    _RAFT_TURN_IDS,
     _has_content_field,
     _env_enablement,
-    _is_connected,
-    _on_session_start,
-    _on_pre_llm_call,
-    _on_pre_tool_call,
-    _on_post_llm_call,
-    _on_post_tool_call,
-    _on_session_end,
-    _on_session_finalize,
-    check_raft_requirements,
     interactive_setup,
     register,
 )
-from gateway.session import build_session_key
 
 RAFT_CHANNEL_SCHEMA = "raft-channel-wake.v1"
 FUTURE_RAFT_CHANNEL_SCHEMA = "raft-channel-wake.v2"
@@ -90,14 +74,6 @@ class TestRaftWakePayload:
 
 
 class TestRaftWakeHttp:
-    @pytest.mark.asyncio
-    async def test_send_is_noop_success(self):
-        adapter = _make_adapter()
-
-        result = await adapter.send("default", "hello")
-
-        assert result.success is True
-        assert result.message_id is None
 
 
     @pytest.mark.asyncio
@@ -195,17 +171,10 @@ class TestBodySize:
 
 
 class TestRaftConfig:
-    def test_env_enablement_auto_enables_with_raft_profile(self, monkeypatch):
-        monkeypatch.setenv("RAFT_PROFILE", "my-agent")
-
-        extra = _env_enablement()
-
-        assert extra is not None
-        assert extra["enabled"] is True
 
 
     def test_interactive_setup_keeps_existing_profile_when_not_reconfigured(
-        self, monkeypatch, tmp_path, capsys
+        self, monkeypatch, tmp_path
     ):
         env_path = tmp_path / ".env"
         env_path.write_text("RAFT_PROFILE=existing\n", encoding="utf-8")
@@ -217,7 +186,6 @@ class TestRaftConfig:
 
         assert env_path.read_text(encoding="utf-8") == "RAFT_PROFILE=existing\n"
         assert os.environ["RAFT_PROFILE"] == "existing"
-        assert "Keeping RAFT_PROFILE=existing" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

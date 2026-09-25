@@ -22,7 +22,7 @@ import type * as DataModule from './data'
 import { translateBots } from './i18n-test-helper'
 import type { RosterRow } from './types'
 
-interface SkillsViewProps {
+interface CapabilitiesViewProps {
   fixedConnection?: string
   fixedProfile?: string
 }
@@ -32,19 +32,19 @@ const mocks = vi.hoisted(() => ({
   createCanonicalChat: vi.fn(async () => 'session-1'),
   deleteBot: vi.fn(async () => undefined),
   /** Flipped off to model a desktop build that predates the live surface. */
-  hasSkillsView: { value: true },
+  hasCapabilitiesView: { value: true },
   notify: vi.fn(),
   notifyError: vi.fn(),
   request: vi.fn(),
   requestProfile: vi.fn(async () => ({})),
   saveBotMeta: vi.fn(),
-  skillsView: [] as SkillsViewProps[]
+  skillsView: [] as CapabilitiesViewProps[]
 }))
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const original = await importOriginal<typeof HermesSdk>()
 
-  const SkillsViewStub = (props: SkillsViewProps) => {
+  const CapabilitiesViewStub = (props: CapabilitiesViewProps) => {
     mocks.skillsView.push(props)
 
     return null
@@ -52,7 +52,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
 
   // Builds that route `fixedConnection` get the live Capabilities tab for
   // remote targets too, pinned to the target machine's backend.
-  SkillsViewStub.supportsFixedConnection = true
+  CapabilitiesViewStub.supportsFixedConnection = true
 
   const mocked: Record<string, unknown> = {
     ...original,
@@ -68,10 +68,10 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     usePluginI18n: () => translateBots
   }
 
-  Object.defineProperty(mocked, 'SkillsView', {
+  Object.defineProperty(mocked, 'CapabilitiesView', {
     configurable: true,
     enumerable: true,
-    get: () => (mocks.hasSkillsView.value ? SkillsViewStub : undefined)
+    get: () => (mocks.hasCapabilitiesView.value ? CapabilitiesViewStub : undefined)
   })
 
   return mocked
@@ -101,13 +101,17 @@ function withQueryClient(children: ReactNode) {
   )
 }
 
-async function renderDialog(hasSkillsView: boolean) {
-  mocks.hasSkillsView.value = hasSkillsView
+async function renderDialog(hasCapabilitiesView: boolean, onConfigureModel?: (bot: RosterRow) => void) {
+  mocks.hasCapabilitiesView.value = hasCapabilitiesView
   vi.resetModules()
 
   const { CreateAgentDialog } = await import('./create-dialog')
 
-  const view = render(withQueryClient(<CreateAgentDialog onClose={() => undefined} open roster={roster} />))
+  const view = render(
+    withQueryClient(
+      <CreateAgentDialog onClose={() => undefined} onConfigureModel={onConfigureModel} open roster={roster} />
+    )
+  )
 
   fireEvent.change(screen.getByPlaceholderText('inbox-triage'), { target: { value: 'inbox-triage' } })
   fireEvent.click(screen.getByRole('button', { name: /Advanced/ }))
@@ -233,6 +237,43 @@ describe('materializing the draft profile', () => {
     )
   })
 
+  it('lets a remote-target Bot start fresh instead of forcing a clone of the target default', async () => {
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+
+    await renderDialog(true)
+
+    await screen.findByText('Create on')
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+
+    // The picker stays live for a remote target and offers only what exists
+    // on THAT machine: fresh, or its own default — never a local roster name.
+    const cloneFrom = controlUnder('Clone from profile (on Studio)')
+
+    expect(cloneFrom.getAttribute('data-disabled')).toBeNull()
+    fireEvent.click(cloneFrom)
+    expect(screen.getAllByRole('option').map(option => option.textContent)).toEqual([
+      'Fresh profile (bundled skills)',
+      'default'
+    ])
+    fireEvent.click(screen.getByRole('option', { name: /Fresh profile/ }))
+    // Shared keys live on the TARGET machine, and the label says which.
+    screen.getByText('Share keys & accounts with the default profile on Studio')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() =>
+      expect(mocks.requestProfile).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: 'studio' }),
+        'profiles.create',
+        expect.objectContaining({ clone_from: null, name: 'inbox-triage' })
+      )
+    )
+  })
+
   it('creates it on the first MCP setup click, then adds the server to it', async () => {
     // Older builds keep the staged MCP tab, which is where the setup button
     // lives. There is no "save the agent first" gate: the button is live.
@@ -251,6 +292,75 @@ describe('materializing the draft profile', () => {
         profile: 'inbox-triage'
       })
     )
+  })
+})
+
+describe('provider readiness before the intro turn', () => {
+  const notReady = { error: 'No usable credentials found for openrouter.', ok: false }
+
+  it('keeps the bot, skips the intro, and offers model setup when its provider is not ready', async () => {
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) =>
+      method === 'setup.runtime_check' ? notReady : base(method, params)
+    )
+    const onConfigureModel = vi.fn()
+
+    await renderDialog(true, onConfigureModel)
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: false }))
+    expect(mocks.request).toHaveBeenCalledWith('setup.runtime_check', { profile: 'inbox-triage' })
+    expect(createCalls()).toHaveLength(1)
+
+    const toast = mocks.notify.mock.calls.at(-1)![0]
+
+    expect(toast).toMatchObject({
+      detail: notReady.error,
+      kind: 'warning',
+      title: 'Bot "Inbox Triage" created'
+    })
+    toast.action.onClick()
+    expect(onConfigureModel).toHaveBeenCalledWith(expect.objectContaining({ name: 'inbox-triage' }))
+  })
+
+  it('runs the intro when the provider check passes', async () => {
+    const base = mocks.request.getMockImplementation()!
+    mocks.request.mockImplementation(async (method: string, params?: unknown) =>
+      method === 'setup.runtime_check' ? { ok: true } : base(method, params)
+    )
+
+    await renderDialog(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() => expect(mocks.createCanonicalChat).toHaveBeenCalledWith('inbox-triage', { kickoff: true }))
+    expect(mocks.notify).toHaveBeenLastCalledWith({ kind: 'success', message: 'Bot "Inbox Triage" created' })
+  })
+
+  it('checks a remote bot on its own machine and warns without an editor shortcut', async () => {
+    mocks.connections.mockResolvedValue([
+      { id: 'local', label: 'This Mac' },
+      { id: 'studio', label: 'Studio' }
+    ])
+    mocks.requestProfile.mockImplementation(async () => notReady)
+
+    await renderDialog(true, vi.fn())
+    await screen.findByText('Create on')
+    fireEvent.click(controlUnder('Create on'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Studio' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create Bot' }))
+
+    await waitFor(() =>
+      expect(mocks.notify).toHaveBeenLastCalledWith(
+        expect.objectContaining({ kind: 'warning', title: 'Bot "Inbox Triage" created on Studio' })
+      )
+    )
+    expect(mocks.requestProfile).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: 'studio' }),
+      'setup.runtime_check',
+      { profile: 'inbox-triage' }
+    )
+    expect(mocks.notify.mock.calls.at(-1)![0].action).toBeUndefined()
+    expect(mocks.request).not.toHaveBeenCalledWith('setup.runtime_check', expect.anything())
   })
 })
 

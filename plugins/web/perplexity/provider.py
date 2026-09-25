@@ -18,11 +18,12 @@ Config keys this provider responds to::
 
 Env vars::
 
-    PERPLEXITY_API_KEY=...       # https://www.perplexity.ai/account/api (required)
+    PERPLEXITY_API_KEY=...       # required for direct search and extract
     PERPLEXITY_BASE_URL=...      # optional override of https://api.perplexity.ai
 
-Keyed only — Perplexity has no anonymous tier, so this provider is not a
-member of the zero-config keyless ring and never resolves without a key.
+No anonymous tier. The Nous Subscription selection serves search through
+``perplexity-gateway.<TOOL_GATEWAY_DOMAIN>`` using the Nous token; a direct
+key takes precedence. Managed extract stays on Firecrawl.
 
 Extract caveat: Perplexity's only supported page-content route returns the
 passages of a page relevant to a *query* (elisions marked ``…``), not the
@@ -40,7 +41,7 @@ from urllib.parse import urlparse
 import httpx
 
 from agent.web_search_provider import WebSearchProvider
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ _KEY_URL = "https://www.perplexity.ai/account/api"
 _HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    "User-Agent": f"HermesAgent/{get_version_info().base_version}",
     "X-Pplx-Integration": "hermes-agent",
 }
 
@@ -69,8 +70,18 @@ def _missing_key_error() -> str:
     return f"PERPLEXITY_API_KEY is not set. Get a key at {_KEY_URL}"
 
 
-def _perplexity_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    """POST to the Perplexity API and return the parsed JSON response.
+def _managed_gateway(token_reader=None):
+    """Nous Tool Gateway config when web_search is on the managed route, else None."""
+    from tools import managed_tool_gateway as gw
+    from tools.web_tools import _managed_web_search
+
+    if not _managed_web_search():
+        return None
+    return gw.resolve_managed_tool_gateway("perplexity", token_reader=token_reader)
+
+
+def _perplexity_request(endpoint: str, payload: Dict[str, Any], gateway=None) -> Dict[str, Any]:
+    """POST to Perplexity or the supplied gateway; return parsed JSON.
 
     Raises ``ValueError`` when the key is missing or on any non-2xx status,
     carrying the response body so Perplexity's own error text (invalid key,
@@ -79,9 +90,14 @@ def _perplexity_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any
     from agent.web_search_provider import get_provider_env
 
     api_key = get_provider_env("PERPLEXITY_API_KEY")
-    if not api_key:
+    headers = _HEADERS
+    if gateway is not None:
+        # Nous-owned key behind the gateway: identify the harness only, not a per-user integration.
+        base_url, api_key, headers = gateway.gateway_origin.rstrip("/"), gateway.nous_user_token, {"User-Agent": _HEADERS["User-Agent"]}
+    elif api_key:
+        base_url = (get_provider_env("PERPLEXITY_BASE_URL") or _DEFAULT_BASE_URL).rstrip("/")
+    else:
         raise ValueError(_missing_key_error())
-    base_url = (get_provider_env("PERPLEXITY_BASE_URL") or _DEFAULT_BASE_URL).rstrip("/")
     url = f"{base_url}/{endpoint.lstrip('/')}"
     logger.info("Perplexity %s request to %s", endpoint, url)
 
@@ -92,7 +108,7 @@ def _perplexity_request(endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
-            **_HEADERS,
+            **headers,
         },
     )
     if response.status_code >= 400:
@@ -156,7 +172,7 @@ def _query_for_urls(urls: List[str]) -> str:
 
 
 class PerplexityWebSearchProvider(WebSearchProvider):
-    """Perplexity Search API (search) + content snippets (extract), keyed only."""
+    """Direct or managed search; direct-key content snippets for extract."""
 
     @property
     def name(self) -> str:
@@ -167,10 +183,11 @@ class PerplexityWebSearchProvider(WebSearchProvider):
         return "Perplexity"
 
     def is_available(self) -> bool:
-        """Return True when ``PERPLEXITY_API_KEY`` is set to a non-empty value."""
+        """True with a ``PERPLEXITY_API_KEY``, or on the managed route with a likely-usable Nous token."""
         from agent.web_search_provider import get_provider_env
+        from tools.managed_tool_gateway import peek_nous_access_token
 
-        return bool(get_provider_env("PERPLEXITY_API_KEY"))
+        return bool(get_provider_env("PERPLEXITY_API_KEY")) or _managed_gateway(token_reader=peek_nous_access_token) is not None
 
     def supports_search(self) -> bool:
         return True
@@ -191,15 +208,24 @@ class PerplexityWebSearchProvider(WebSearchProvider):
             if is_interrupted():
                 return {"success": False, "error": "Interrupted"}
 
-            logger.info("Perplexity search: '%s' (limit=%d)", query, limit)
-            raw = _perplexity_request(
-                "search",
-                {
-                    "query": query,
-                    "max_results": max(1, min(limit, _MAX_SEARCH_RESULTS)),
-                    "search_context_size": "low",
-                },
-            )
+            from agent.web_search_provider import get_provider_env
+            from tools.web_tools import _managed_web_search
+
+            direct = bool(get_provider_env("PERPLEXITY_API_KEY"))
+            gateway = None if direct else _managed_gateway()
+            if gateway is None and not direct and _managed_web_search():
+                from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER, selection_error
+                raise ValueError(selection_error(
+                    "web", NOUS_MANAGED_PROVIDER, "the Nous Tool Gateway is not available (not entitled or unreachable)"))
+            logger.info("Perplexity search: '%s' (limit=%d%s)", query, limit, ", managed" if gateway else "")
+            payload = {
+                "query": query,
+                "max_results": max(1, min(limit, _MAX_SEARCH_RESULTS)),
+                "search_context_size": "low",
+            }
+            if gateway is not None:
+                payload["search_type"] = "fast"
+            raw = _perplexity_request("search", payload, gateway)
             return _normalize_search_results(raw)
         except ValueError as exc:
             return {"success": False, "error": str(exc)}

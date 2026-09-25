@@ -24,7 +24,7 @@ from agent.secret_sources.base import (
     SECRET_SOURCE_API_VERSION, ErrorKind, FetchResult, SecretSource, is_valid_env_name,
     reset_source_environment, set_source_environment,
 )
-from hermes_constants import hermes_home_key
+from hermes_constants import hermes_home_key, normalize_scope
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +52,9 @@ class AppliedVar:
     source: str          # SecretSource.name
     shape: str           # "mapped" | "bulk"
     overrode_env: bool   # replaced a pre-existing .env/shell value
+    # The source may beat .env/shell for this var (``override_existing`` and not ``preserve_existing``), so a
+    # dotenv reload may re-assert it; a gap-fill or preserved name must keep following .env edits (#74265).
+    authoritative: bool = False
 
 
 @dataclass
@@ -108,6 +111,7 @@ def register_source(source: SecretSource, *, replace: bool = False, builtin: boo
     if problem:
         logger.warning(problem)
         return False
+    scope = normalize_scope(scope)
     name = source.name
     with _REGISTRY_LOCK:
         effective = dict(_SOURCES)
@@ -132,7 +136,7 @@ def register_source(source: SecretSource, *, replace: bool = False, builtin: boo
 def _merged(scope: Optional[str]) -> Dict[str, SecretSource]:
     """Global sources overlaid with the scope's (default: current home) registrations."""
     merged = dict(_SOURCES)
-    merged.update(_SCOPED_SOURCES.get(scope or hermes_home_key(), {}))
+    merged.update(_SCOPED_SOURCES.get(hermes_home_key(scope), {}))
     return merged
 
 
@@ -145,6 +149,7 @@ def get_source(name: str, *, scope: Optional[str] = None) -> Optional[SecretSour
 def snapshot_registration(name: str, *, scope: Optional[str] = None) -> Optional[SecretSource]:
     """Return the registration owned by exactly one registry layer."""
     _ensure_builtin_sources()
+    scope = normalize_scope(scope)
     with _REGISTRY_LOCK:
         return (_SOURCES if scope is None else _SCOPED_SOURCES.get(scope, {})).get(name)
 
@@ -153,6 +158,7 @@ def restore_registration(name: str, current: SecretSource, previous: Optional[Se
                          scope: Optional[str] = None) -> bool:
     """Restore a host-owned source registration if it is still current."""
     _ensure_builtin_sources()
+    scope = normalize_scope(scope)
     with _REGISTRY_LOCK:
         target = _SOURCES if scope is None else _SCOPED_SOURCES.setdefault(scope, {})
         if target.get(name) is not current:
@@ -359,7 +365,8 @@ class _Applier:
         self.env[var] = value
         self.claimed[var] = source.name
         sr.applied.append(var)
-        self.report.provenance[var] = AppliedVar(var, source.name, source.shape, overrode_env=existed)
+        self.report.provenance[var] = AppliedVar(var, source.name, source.shape, overrode_env=existed,
+                                                 authoritative=override and var not in self.preserve)
         return True
 
 

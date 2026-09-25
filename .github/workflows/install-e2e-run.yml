@@ -50,6 +50,11 @@ on:
         required: false
         type: string
         default: refs/heads/main
+      update-ref:
+        description: 'What to update TO: HEAD (the commit under test), or NEXT -- a synthetic child of install-ref that the driver mints, so a leg that installs HEAD still has an update to take (HEAD''s own updater).'
+        required: false
+        type: string
+        default: HEAD
       leg-id:
         description: 'Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg''s logs + player artifacts so the report job can link a row to its zip.'
         required: true
@@ -94,7 +99,22 @@ jobs:
       # in that clone. A shallow clone cannot serve either need.
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
+
+      # The checkout owns the chat driver, not OLD's installed Node/runtime.
+      - name: Set up driver tools only
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          packages: ffmpeg
+          cache: false
+          cache-python: false
+          cache-node: false
+
+      - name: Install locked chat driver dependencies
+        shell: bash
+        run: npm ci --workspace tests-js --include-workspace-root --omit=dev --ignore-scripts --no-audit --no-fund
 
       # One recording mechanism on every OS (Xvfb gives headless linux a
       # display; the same display serves any app the driver launches).
@@ -110,7 +130,8 @@ jobs:
           tests/install/installer-script-e2e.sh \
             --install-method '${{ inputs.install-method }}' \
             --update-method '${{ inputs.update-method }}' \
-            --install-ref '${{ inputs.install-ref }}'
+            --install-ref '${{ inputs.install-ref }}' \
+            --update-ref '${{ inputs.update-ref }}'
         env:
           # Outside the workspace on purpose: logs written into the repo
           # would trip the driver's own dirty-tree guard.

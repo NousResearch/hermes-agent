@@ -46,11 +46,6 @@ class TestDockerDaemonRedirect:
         assert detect_dangerous_command("docker ps -a") == (False, None, None)
 
 
-    def test_podman_local_rm_not_misattributed_to_redirect(self):
-        is_dangerous, _, desc = detect_dangerous_command(
-            "podman rm old-container")
-        if is_dangerous:
-            assert "remote" not in desc
 
 
 class TestDockerLifecycleFlagInsertion:

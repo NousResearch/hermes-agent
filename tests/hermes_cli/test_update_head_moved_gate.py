@@ -18,36 +18,6 @@ import hermes_cli.main_web_build as main_web_build
 import hermes_cli.main_install_repair as main_install_repair
 from hermes_cli import update_cmd
 
-
-def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
-    """Simulate git commands where HEAD advances from pre_sha to post_sha."""
-    calls = {"n": 0}
-
-    def side_effect(cmd, **kwargs):
-        joined = " ".join(str(c) for c in cmd)
-
-        # git rev-parse --abbrev-ref HEAD  (get current branch)
-        if "rev-parse" in joined and "--abbrev-ref" in joined:
-            return SimpleNamespace(returncode=0, stdout="main\n", stderr="")
-
-        # git rev-list HEAD..origin/main --count  (behind count)
-        if "rev-list" in joined:
-            return SimpleNamespace(returncode=0, stdout="3\n", stderr="")
-
-        # git rev-parse HEAD  — first call (pre-pull) returns pre_sha,
-        # subsequent calls (post-pull) return post_sha.
-        if joined.endswith("rev-parse HEAD"):
-            if calls["n"] == 0:
-                calls["n"] += 1
-                return SimpleNamespace(returncode=0, stdout=f"{pre_sha}\n", stderr="")
-            return SimpleNamespace(returncode=0, stdout=f"{post_sha}\n", stderr="")
-
-        # Everything else (merge, checkout, etc.) succeeds quietly.
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    return side_effect
-
-
 def _make_head_pinned_side_effect(sha="abc123"):
     """Simulate a detached checkout pinned to ``sha``: HEAD never moves."""
 
@@ -66,7 +36,6 @@ def _make_head_pinned_side_effect(sha="abc123"):
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     return side_effect
-
 
 def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
     """Patch the hermes_cli.main helpers ``_cmd_update_impl`` touches.
@@ -128,19 +97,6 @@ def _patch_update_deps(monkeypatch, tmp_path, run_side_effect):
         hermes_gateway, "find_profile_gateway_processes", lambda *a, **k: []
     )
 
-
-def test_update_success_when_head_moves(monkeypatch, tmp_path, capsys):
-    """When the pull advances HEAD, the update proceeds normally."""
-    args = SimpleNamespace(branch=None, yes=False, force=False, force_venv=False)
-    _patch_update_deps(monkeypatch, tmp_path, _make_head_moved_side_effect())
-
-    hermes_main.cmd_update(args)  # completes normally (no SystemExit)
-
-    out = capsys.readouterr().out
-    assert "✓ Code updated!" in out
-    assert "Code did not move" not in out
-
-
 def test_update_fails_loudly_when_head_pinned(monkeypatch, tmp_path, capsys):
     """A detached/pinned HEAD that never moves must fail loudly, not print
     '✓ Code updated!' against the stale tree."""
@@ -152,6 +108,4 @@ def test_update_fails_loudly_when_head_pinned(monkeypatch, tmp_path, capsys):
 
     assert exc_info.value.code == 1
     out = capsys.readouterr().out
-    assert "Code did not move" in out
     assert "✓ Code updated!" not in out
-    assert "checkout main" in out

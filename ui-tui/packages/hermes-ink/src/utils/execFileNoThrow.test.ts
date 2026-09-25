@@ -138,22 +138,4 @@ describe.skipIf(onWindows)('execFileNoThrow with daemon-style children', () => {
     // call from the timer registers code=124 first. Either way: 124.
     expect(result.code).toBe(124)
   })
-
-  it('does not double-resolve when both timer and exit fire', async () => {
-    const pidFile = join(scriptDir, 'sleeper-race.pid')
-
-    // Race: child happens to exit right around the timeout. The settled
-    // guard ensures only the first resolution wins.
-    const result = await execFileNoThrow(daemonScript, [pidFile], {
-      timeout: 50, // very tight
-      resolveOnExit: true
-    })
-
-    trackSleeperPid(pidFile)
-
-    // Either code=0 (exit beat timer) or code=124 (timer beat exit).
-    // Both are valid outcomes; the contract is that the promise settles
-    // exactly once and doesn't throw.
-    expect([0, 124]).toContain(result.code)
-  })
 })

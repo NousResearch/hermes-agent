@@ -117,7 +117,7 @@ def test_disabled_connections_cannot_be_called_through_a_stale_schema(monkeypatc
     from tools.registry import registry
 
     monkeypatch.setattr(config, "connectors_available", lambda: False)
-    monkeypatch.setattr(managed, "_default_client",
+    monkeypatch.setattr(managed, "managed_client",
                         lambda: (_ for _ in ()).throw(AssertionError("disabled connector attempted I/O")))
     result = json.loads(registry.dispatch("manage_connections", {"action": "connect", "connectors": ["gmail"]}))
     assert "not available" in result["error"]

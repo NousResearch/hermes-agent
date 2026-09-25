@@ -4,7 +4,7 @@
 Called by tts_tool via subprocess so the ~500MB TTS model lives in a process that exits
 after synthesis. Usage:
     python -m tools.neutts_synth --text "Hello" --out out.wav --ref-audio jo.wav --ref-text jo.txt
-Requires ``pip install -U neutts[all]`` and espeak-ng (apt/brew).
+Run ``hermes setup tts`` and choose NeuTTS; espeak-ng is also required (apt/brew).
 """
 
 import argparse
@@ -39,16 +39,18 @@ def main():
 
     ref_audio = Path(args.ref_audio).expanduser()
     ref_text_path = Path(args.ref_text).expanduser()
-    for label, p in (("audio", ref_audio), ("text", ref_text_path)):
-        if not p.exists():
-            print(f"Error: reference {label} not found: {p}", file=sys.stderr)
-            sys.exit(1)
-    ref_text = ref_text_path.read_text(encoding="utf-8").strip()
+    if not ref_audio.exists():
+        print(f"Error: reference audio not found: {ref_audio}", file=sys.stderr)
+        sys.exit(1)
+    if not ref_text_path.exists():
+        print(f"Error: reference text not found: {ref_text_path}", file=sys.stderr)
+        sys.exit(1)
 
+    ref_text = ref_text_path.read_text(encoding="utf-8-sig").strip()
     try:
         from neutts import NeuTTS
     except ImportError:
-        print("Error: neutts not installed. Run: python -m pip install -U neutts[all]", file=sys.stderr)
+        print("Error: neutts not installed. Run hermes setup tts and choose NeuTTS.", file=sys.stderr)
         sys.exit(1)
 
     # llama_cpp (backbone) offloads to GPU only for the literal string "gpu";

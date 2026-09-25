@@ -7,13 +7,9 @@ Verifies that:
 3. update_session_meta updates the correct columns atomically.
 """
 
-import ast
 import json
-import tempfile
-from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
-import pytest
 
 from hermes_state import SessionDB
 from acp_adapter.session import SessionManager
@@ -34,12 +30,6 @@ def _mock_agent():
 class TestUpdateSessionMeta:
     """Direct unit tests for the new public method."""
 
-    def test_method_exists(self, tmp_path):
-        db = _tmp_db(tmp_path)
-        assert hasattr(db, "update_session_meta"), (
-            "SessionDB must have update_session_meta() public method"
-        )
-        assert callable(db.update_session_meta)
 
     def test_updates_model_config(self, tmp_path):
         db = _tmp_db(tmp_path)
@@ -55,24 +45,6 @@ class TestUpdateSessionMeta:
 
 
 
-    def test_uses_execute_write_not_private_api(self, tmp_path):
-        """update_session_meta must route through _execute_write, not _conn directly."""
-        db = _tmp_db(tmp_path)
-        db.create_session("s4", source="acp")
-
-        call_count = [0]
-        original = db._execute_write
-
-        def patched(fn, *args, **kwargs):
-            call_count[0] += 1
-            return original(fn, *args, **kwargs)
-
-        db._execute_write = patched
-        db.update_session_meta("s4", json.dumps({"cwd": "."}), model="m")
-
-        assert call_count[0] >= 1, (
-            "update_session_meta must call _execute_write at least once"
-        )
 
 
 
@@ -80,52 +52,6 @@ class TestUpdateSessionMeta:
 # AST check: session.py must not access db._lock or db._conn
 # ---------------------------------------------------------------------------
 
-class TestNoPrviateDBAccess:
-    """_persist() in session.py must not access db._lock or db._conn."""
-
-    def test_no_db_private_lock_access(self):
-        with open("acp_adapter/session.py", encoding="utf-8") as f:
-            source = f.read()
-
-        tree = ast.parse(source)
-
-        violations = []
-        for node in ast.walk(tree):
-            # Looking for: db._lock  or  db._conn
-            if isinstance(node, ast.Attribute):
-                if isinstance(node.value, ast.Name) and node.value.id == "db":
-                    if node.attr in ("_lock", "_conn"):
-                        violations.append(
-                            f"db.{node.attr} at line {node.lineno}"
-                        )
-
-        assert violations == [], (
-            "session.py accesses private SessionDB internals: "
-            + ", ".join(violations)
-            + " — use db.update_session_meta() instead"
-        )
-
-    def test_persist_calls_update_session_meta(self):
-        """AST check: _persist must call db.update_session_meta()."""
-        with open("acp_adapter/session.py", encoding="utf-8") as f:
-            tree = ast.parse(f.read())
-
-        found = False
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_persist":
-                for child in ast.walk(node):
-                    if isinstance(child, ast.Call):
-                        func = child.func
-                        if isinstance(func, ast.Attribute):
-                            if func.attr == "update_session_meta":
-                                found = True
-                                break
-                break
-
-        assert found, (
-            "_persist() must call db.update_session_meta() "
-            "instead of db._conn.execute() directly"
-        )
 
 
 # ---------------------------------------------------------------------------

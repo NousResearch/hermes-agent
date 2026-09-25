@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import plugins.memory.openviking as ov
 

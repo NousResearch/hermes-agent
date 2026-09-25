@@ -7,33 +7,11 @@ import {
   filePathFromMediaPath,
   gatewayMediaDataUrl,
   isInlineMediaSrc,
-  isRemoteGateway,
   mediaExternalUrl,
   mediaGatewayStreamUrl,
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from './media'
-
-describe('isRemoteGateway', () => {
-  afterEach(() => {
-    $connection.set(null)
-  })
-
-  it('is false with no connection', () => {
-    $connection.set(null)
-    expect(isRemoteGateway()).toBe(false)
-  })
-
-  it('is false in local mode', () => {
-    $connection.set({ mode: 'local' } as never)
-    expect(isRemoteGateway()).toBe(false)
-  })
-
-  it('is true in remote mode', () => {
-    $connection.set({ mode: 'remote' } as never)
-    expect(isRemoteGateway()).toBe(true)
-  })
-})
 
 describe('filePathFromMediaPath', () => {
   it('passes through a plain path', () => {

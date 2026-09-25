@@ -161,7 +161,6 @@ def test_verifier_clears_marker_after_late_current_gateway_state(monkeypatch) ->
         restart,
         _pre_update_plan=None,
         _windows_gateway_resume=None,
-        node_failures=[],
         update_complete=True,
     )
 

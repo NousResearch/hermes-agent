@@ -749,6 +749,8 @@ Routes are mounted under `/api/plugins/<name>/`, so the above becomes:
 
 Plugin API routes sit behind the dashboard's normal auth gate — unauthenticated requests get a `401` before the plugin route runs, and requests to a disabled plugin's routes are rejected at request time. Still, **don't expose the dashboard on a public interface with `--host 0.0.0.0` if you run untrusted plugins** — an authenticated session can reach their routes too.
 
+During an HTTP request, a plugin handler reads the launch profile's config and credentials by default. The dashboard's `?profile=<name>` query parameter selects a named profile for that request; an unknown profile returns `404`. Read credentials with `agent.secret_scope.get_secret()` rather than `os.environ`, which belongs to the process launch profile. The request scope reaches both async handlers and FastAPI's sync endpoint workers, but does not propagate into threads a plugin creates itself. For background work, pass `contextvars.copy_context().run` to `ThreadPoolExecutor.submit`, or use `agent.memory_provider.spawn_context_thread` for a dedicated thread. Avoid retaining a request's scope beyond its lifetime.
+
 #### Accessing Hermes internals
 
 Backend routes run inside the dashboard process, so they can import from the hermes-agent codebase directly:

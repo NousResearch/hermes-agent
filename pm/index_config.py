@@ -5,6 +5,10 @@ project, interpreter or cache an operation uses (pm.environment). Index and
 transport knobs are different: on mirrored or air-gapped networks they are the
 only way any dependency resolves at all (#88453, #94613, #95608). Only those
 cross the boundary; the lockfile stays authoritative for what gets installed.
+Lock verification does not receive ``UV_INDEX_URL`` or ``UV_DEFAULT_INDEX``:
+those replace the registry the lock records, so uv reports a valid lock as
+stale. Extra indexes and transport settings still cross, and a real ``uv lock``
+still sees the override.
 
 uv never reads pip's configuration, so a pip-only mirror (``PIP_INDEX_URL`` or
 ``index-url`` in pip.conf) is bridged to ``UV_INDEX_URL`` unless uv already has

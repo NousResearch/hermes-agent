@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { botSelectionKey } from './data'
 import { useBots } from './i18n'
-import { displayRequest, type DisplayThumbnail } from './screen-connection'
+import { displayRequest, isManagedBackend, type DisplayThumbnail } from './screen-connection'
 import { openBotScreen } from './screen-open'
 import { type PortalTone, useScreenPortalState } from './screen-portal'
 import type { BotMeta, RosterRow } from './types'
@@ -131,7 +131,7 @@ function ScreenHeroContent({ bot, meta }: { bot: RosterRow; meta?: BotMeta | nul
           off: t.screen.heroStopped,
           missing: t.screen.heroNotInstalled,
           unsupported: t.screen.portalUnsupported,
-          unavailable: t.screen.portalUnavailable,
+          unavailable: isManagedBackend(bot) ? t.screen.portalUnavailableManaged : t.screen.portalUnavailable,
           unknown: t.screen.heroConnecting
         }[tone]
 

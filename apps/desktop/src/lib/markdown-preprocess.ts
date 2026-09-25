@@ -329,7 +329,11 @@ export function shieldDirectiveLines(text: string): string {
 
   return text.replace(
     DIRECTIVE_LINE_RE,
-    (_match, indent: string, directive: string) => indent + directive.replace(MARKDOWN_INLINE_META_RE, '\\$&')
+    // An existing escape pair (`\~`, `\\`, …) is passed through whole — the
+    // lone-tilde escape upstream may already have shielded a character, and
+    // re-escaping its backslash would no longer arrive byte-for-byte.
+    (_match, indent: string, directive: string) =>
+      indent + directive.replace(/\\.|[\\`*_~[\]<>]/g, m => (m.length === 2 ? m : `\\${m}`))
   )
 }
 
@@ -354,10 +358,65 @@ function normalizeVisibleProse(text: string): string {
         ? part
         : part
             .split(MATH_SPAN_SPLIT_RE)
-            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(segment)))
+            .map((segment, index) => (index % 2 === 1 ? segment : rewriteProseSegment(escapeLoneTildes(segment))))
             .join('')
     )
     .join('')
+}
+
+/**
+ * Escape lone tildes so GFM strikethrough can't pair them across prose.
+ *
+ * remark-gfm treats a single `~` as a valid strikethrough delimiter, so a
+ * numeric range like `1~10,11~20` pairs the two tildes and deletes the
+ * middle. A `~` that is already backslash-escaped, or part of a run of
+ * exactly two (`~~deleted~~`), is left alone; everything else gets the
+ * backslash escape the parser consumes.
+ */
+function escapeLoneTildes(text: string): string {
+  if (!text.includes('~')) {
+    return text
+  }
+
+  let out = ''
+  let cursor = 0
+
+  while (cursor < text.length) {
+    const char = text[cursor]
+
+    if (char === '\\' && cursor + 1 < text.length) {
+      out += text.slice(cursor, cursor + 2)
+      cursor += 2
+
+      continue
+    }
+
+    if (char !== '~') {
+      out += char
+      cursor += 1
+
+      continue
+    }
+
+    let run = 0
+
+    while (text[cursor + run] === '~') {
+      run += 1
+    }
+
+    // A run of exactly two is (potential) strikethrough syntax — keep it.
+    // Any other run (a lone `~`, or `~~~`-style leftovers) escapes every
+    // tilde so the parser reads it as literal text.
+    if (run === 2) {
+      out += '~~'
+    } else {
+      out += '\\~'.repeat(run)
+    }
+
+    cursor += run
+  }
+
+  return out
 }
 
 function isEscapedAt(text: string, index: number): boolean {

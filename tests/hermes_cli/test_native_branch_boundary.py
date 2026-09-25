@@ -3,10 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
+import cli
+
 
 @pytest.mark.parametrize("creation_fails", [False, True])
 def test_branch_fences_only_after_child_creation(monkeypatch, creation_fails):
-    import cli
     import hermes_cli.cli_commands_mixin as commands
 
     events = []

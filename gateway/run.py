@@ -428,9 +428,36 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
     project_root = Path(__file__).resolve().parent.parent
     candidates: list[Path] = []
-    if os.environ.get("VIRTUAL_ENV"):
-        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
-    candidates.append(project_root / "venv")
+    # A committed PM environment is authoritative for detached runs (2026-09-25 runtime repair,
+    # re-applied 2026-09-26): when one exists it REPLACES the ambient candidates — the in-tree
+    # venv may have been built by a different interpreter generation and must not win.
+    try:
+        from pm.environments import committed_venv
+
+        pm_env = committed_venv(project_root)
+    except Exception:
+        logger.debug("PM committed-venv lookup failed; falling back to legacy venv candidates", exc_info=True)
+        pm_env = None
+    if pm_env is not None:
+        candidates.append(pm_env)
+    else:
+        if os.environ.get("VIRTUAL_ENV"):
+            candidates.append(Path(os.environ["VIRTUAL_ENV"]))
+        candidates.append(project_root / "venv")
+
+    def _pyvenv_version(venv_dir: Path) -> tuple[int, int] | None:
+        """(major, minor) from pyvenv.cfg, or None when unknown."""
+        try:
+            for line in (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace").splitlines():
+                key, sep, value = line.partition("=")
+                if sep and key.strip().lower() == "version":
+                    major, _, rest = value.strip().partition(".")
+                    minor, _, _ = rest.partition(".")
+                    if major.isdigit() and minor.isdigit():
+                        return int(major), int(minor)
+        except OSError:
+            pass
+        return None
 
     seen: set[str] = set()
     for venv_dir in candidates:
@@ -445,6 +472,18 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():
+            continue
+
+        # Never inject site-packages built for a different CPython ABI: the native extensions
+        # cannot load, and the partial injection then breaks every LATER import of a compiled
+        # package (pydantic_core took down the hosted room worker 5x at startup, 2026-09-26).
+        # Unknown layouts (no readable pyvenv.cfg) keep the legacy inject behavior.
+        venv_version = _pyvenv_version(resolved_venv)
+        if venv_version is not None and venv_version != (sys.version_info.major, sys.version_info.minor):
+            logger.debug(
+                "Skipping venv %s: built for Python %s.%s, running %s.%s",
+                resolved_venv, *venv_version, sys.version_info.major, sys.version_info.minor,
+            )
             continue
 
         project_entry = str(project_root)

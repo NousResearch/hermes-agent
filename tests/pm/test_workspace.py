@@ -144,3 +144,69 @@ def test_staging_root_and_env_are_honored_without_live_mutation(layout, monkeypa
         assert kwargs["env"]["UV_PROJECT_ENVIRONMENT"] == str(environment.destination)
         assert kwargs["env"]["UV_PYTHON"] == str(environment.python)
     assert os.environ["PM_WORKSPACE_TEST_SENTINEL"] == "live"
+
+
+def test_pyproject_write_rides_out_a_transient_file_lock(monkeypatch, tmp_path):
+    monkeypatch.setattr(ws, "_PYPROJECT_WRITE_RETRY_DELAYS_S", (0.0,) * 4)
+    real_write_text = Path.write_text
+    attempts = []
+
+    def flaky(self, data, encoding=None, errors=None, newline=None):
+        attempts.append(self)
+        if len(attempts) == 1:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_write_text(self, data, encoding=encoding, errors=errors, newline=newline)
+
+    monkeypatch.setattr(Path, "write_text", flaky)
+    target = tmp_path / "pyproject.toml"
+    ws._write_pyproject_riding_out_file_lock(target, "[project]\nname = 'x'\n")
+    assert len(attempts) == 2
+    assert target.read_text(encoding="utf-8") == "[project]\nname = 'x'\n"
+
+
+def test_pyproject_write_lock_exhaustion_reraises_the_last_error(monkeypatch, tmp_path):
+    monkeypatch.setattr(ws, "_PYPROJECT_WRITE_RETRY_DELAYS_S", (0.0, 0.0))
+    attempts = []
+
+    def denied(self, *args, **kwargs):
+        attempts.append(self)
+        raise PermissionError(13, "Permission denied", str(self))
+
+    monkeypatch.setattr(Path, "write_text", denied)
+    with pytest.raises(PermissionError):
+        ws._write_pyproject_riding_out_file_lock(tmp_path / "pyproject.toml", "x")
+    # Two delayed retries plus the final un-wrapped attempt.
+    assert len(attempts) == 3
+
+
+def test_pyproject_write_does_not_retry_permanent_errors(monkeypatch, tmp_path):
+    monkeypatch.setattr(ws, "_PYPROJECT_WRITE_RETRY_DELAYS_S", (0.0,) * 5)
+    attempts = []
+
+    def is_a_directory(self, *args, **kwargs):
+        attempts.append(self)
+        raise IsADirectoryError(21, "Is a directory", str(self))
+
+    monkeypatch.setattr(Path, "write_text", is_a_directory)
+    with pytest.raises(IsADirectoryError):
+        ws._write_pyproject_riding_out_file_lock(tmp_path / "pyproject.toml", "x")
+    assert len(attempts) == 1
+
+
+def test_generation_survives_a_locked_pyproject_write(layout, monkeypatch):
+    tmp, core, _, _ = layout
+    monkeypatch.setattr(ws, "_PYPROJECT_WRITE_RETRY_DELAYS_S", (0.0,))
+    real_write_text = Path.write_text
+    denied = {"once": False}
+
+    def flaky(self, data, encoding=None, errors=None, newline=None):
+        if self.name == "pyproject.toml" and not denied["once"]:
+            denied["once"] = True
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_write_text(self, data, encoding=encoding, errors=errors, newline=newline)
+
+    monkeypatch.setattr(Path, "write_text", flaky)
+    root = tmp / "gen-ws"
+    ws._generate_pyproject([], root, source=core)
+    assert denied["once"]
+    assert (root / "pyproject.toml").is_file()

@@ -104,6 +104,34 @@ def _copy_core_inputs(source: Path, destination: Path) -> None:
         shutil.copy2(entry, target)
 
 
+# A real-time scanner (AV/EDR/indexer) can hold a short exclusive handle on the files a
+# bulk copy just created — _copy_core_inputs drops 2000+ fresh files into a new generation
+# and the pyproject write that immediately follows then fails with [Errno 13] while reads
+# still succeed, discarding the whole dependency sync and leaving the source-completion
+# marker behind (#122800). Only PermissionError is retried: other write failures are
+# permanent. The window stays well inside the desktop's 90 s startup wait.
+_PYPROJECT_WRITE_RETRY_DELAYS_S = (0.5, 1.0, 2.0, 2.0, 4.0, 4.0, 8.0, 8.0, 15.0, 15.0)
+
+
+def _write_pyproject_riding_out_file_lock(target: Path, text: str) -> None:
+    """``write_text`` that retries a transient PermissionError with bounded backoff; re-raises the last one."""
+    import logging
+    import time
+
+    logger = logging.getLogger(__name__)
+    for attempt, delay in enumerate(_PYPROJECT_WRITE_RETRY_DELAYS_S, start=1):
+        try:
+            target.write_text(text, encoding="utf-8")
+            return
+        except PermissionError as exc:
+            logger.warning(
+                "workspace pyproject write %s hit a file lock (attempt %d/%d), retrying in %.1fs: %s",
+                target, attempt, len(_PYPROJECT_WRITE_RETRY_DELAYS_S) + 1, delay, exc,
+            )
+            time.sleep(delay)
+    target.write_text(text, encoding="utf-8")
+
+
 def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Path, *, source: Path) -> None:
     """Snapshot core and plugin build inputs into a fresh generation."""
     source = source.resolve()
@@ -132,7 +160,7 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
         text = core_text.rstrip("\n") + "\n"
     target = root / "pyproject.toml"
     _copy_core_inputs(source, root)
-    target.write_text(text, encoding="utf-8")
+    _write_pyproject_riding_out_file_lock(target, text)
 
 
 def _core_release_quarantine(document: dict, core_lock: Path) -> None:
@@ -281,16 +309,16 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         if virtual or changed:
             import tomli_w
 
-            (member / "pyproject.toml").write_text(tomli_w.dumps(document), encoding="utf-8")
+            _write_pyproject_riding_out_file_lock(member / "pyproject.toml", tomli_w.dumps(document))
         return member
     specs = declaration.install_requirements
     member = root / "plugin-deps" / key
     member.mkdir(parents=True)
-    (member / "pyproject.toml").write_text(
+    _write_pyproject_riding_out_file_lock(
+        member / "pyproject.toml",
         f'[project]\nname = "hermes-plugin-{key}"\nversion = "0.0.0"\n'
         'requires-python = ">=3.11"\n'
         f'dependencies = {json.dumps(specs)}\n[tool.uv]\npackage = false\n',
-        encoding="utf-8",
     )
     return member
 

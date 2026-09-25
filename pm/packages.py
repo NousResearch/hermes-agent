@@ -617,8 +617,10 @@ class Npm(BinaryPackage):
 @register
 class Git(BinaryPackage):
     """Windows only: Git for Windows carries the bash.exe contract. POSIX
-    uses the system git — a deliberate gap, not an oversight. The tar.bz2
-    release asset extracts with stdlib tarfile: no self-extractor, no GUI."""
+    uses the system git - a deliberate gap, not an oversight. The pinned
+    PortableGit asset is a self-extracting 7z: it carries its own extractor,
+    so no tar bzip2 filter and no bzip2.exe are needed on the machine
+    (#122512), and no GUI."""
 
     name = "git"
     optional = True
@@ -638,7 +640,7 @@ class Git(BinaryPackage):
         arch = "arm64" if target.endswith("arm64") else "64-bit"
         return (
             f"https://github.com/git-for-windows/git/releases/download/"
-            f"v{tag}.windows.{build}/Git-{tag}.{build}-{arch}.tar.bz2"
+            f"v{tag}.windows.{build}/PortableGit-{tag}.{build}-{arch}.7z.exe"
         )
 
     def latest_versions(self, target: str, locked=None) -> list[str]:
@@ -651,9 +653,23 @@ class Git(BinaryPackage):
         return out
 
     def unpack(self, archive: Path, staged: Path, target: str) -> None:
-        from pm.store import extract_tar
+        import subprocess
 
-        extract_tar(archive, staged, git_msys=True)
+        # The self-extracting 7z carries its own extractor: running it needs
+        # no tar bzip2 filter and no bzip2.exe (#122512). Download bytes are
+        # sha256-pinned before this runs, same as every other artifact.
+        staged.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            [str(archive), f"-o{staged}", "-y"],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if proc.returncode:
+            raise RuntimeError(
+                f"PortableGit self-extractor failed ({proc.returncode}): "
+                f"{(proc.stderr or proc.stdout).strip()[-500:]}"
+            )
 
     def env(self, entry: Path, target: str) -> dict:
         return {"PATH": [str(entry / "cmd"), str(entry / "usr" / "bin")]}

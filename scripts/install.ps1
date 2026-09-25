@@ -82,14 +82,14 @@ $script:UvPinFiles = @{
 $script:GitPinVersion = "2.53.0+3"
 $script:GitPinFiles = @{
     "win32-x64" = @{
-        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-64-bit.tar.bz2"
-        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/1661f02e85a7901ad7920e2a358ee3772ed9066b00d8590bf2d9046ef10aa8b2"
-        Sha256 = "1661f02e85a7901ad7920e2a358ee3772ed9066b00d8590bf2d9046ef10aa8b2"
+        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-64-bit.7z.exe"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
+        Sha256 = "b365da794b1d2225eb24d5f5e09ef7792cfd5fa26c3a3586210280c80dff3a2a"
     }
     "win32-arm64" = @{
-        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-arm64.tar.bz2"
-        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/4015f05a68bd2bcf3cc6c426e8d44b65d670fbb879225bb7b7c347cfc3a2758a"
-        Sha256 = "4015f05a68bd2bcf3cc6c426e8d44b65d670fbb879225bb7b7c347cfc3a2758a"
+        Url    = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/PortableGit-2.53.0.3-arm64.7z.exe"
+        MirrorUrl = "https://hermes-assets.nousresearch.com/upstream/sha256/0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
+        Sha256 = "0db54010054c01f35501cf69e1e32d3710138ecb934d188bd77093afed24300e"
     }
 }
 # --- END GENERATED: bootstrap pins ---
@@ -540,25 +540,23 @@ function Get-PinnedGit {
     $tmpDir = Join-Path ([IO.Path]::GetTempPath()) "hermes-git-bootstrap-$PID"
     try {
         New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
-        $tarPath = Join-Path $tmpDir "git.tar.bz2"
-        Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $tarPath
+        $sfxPath = Join-Path $tmpDir "portable-git.7z.exe"
+        Invoke-VerifiedDownload -Url $pin.Url -MirrorUrl $pin.MirrorUrl -Sha256 $pin.Sha256 -OutFile $sfxPath
         $extractDir = Join-Path $tmpDir "unpacked"
         New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-        # The pinned artifact is a git-for-windows tar.bz2 (the same one pm
-        # itself extracts). Windows 10+ ships bsdtar with bzip2 support in
-        # System32; a GNU tar earlier on PATH (Cygwin/MSYS) reads C:\ as a
-        # remote host, so never resolve it from PATH.
-        $inboxTar = Join-Path $env:SystemRoot 'System32\tar.exe'
-        # MSYS ships these as symlinks into /proc. Without symlink rights (not
-        # elevated, no Developer Mode) tar cannot create them and fails the
-        # whole extract. Skip exactly the links pm's own extractor skips
-        # (pm/store.py extract_tar git_msys) so any other failure still fails.
-        # '^' anchors bsdtar's otherwise any-path-component match.
-        $msysProcLinks = @('dev/fd', 'dev/stdin', 'dev/stdout', 'dev/stderr', 'etc/mtab')
-        $excludes = foreach ($link in $msysProcLinks) { '--exclude'; "^$link" }
-        Invoke-Native { & $inboxTar @excludes -xf $tarPath -C $extractDir }
-        if ($LASTEXITCODE) { Fail "failed to extract pinned git archive" }
-        # Layout: Git-<ver>/cmd\git.exe — flatten the single wrapper dir.
+        # The pinned artifact is git-for-windows' PortableGit self-extracting
+        # 7z archive. It carries its own extractor, so extraction needs no tar
+        # bzip2 filter and no bzip2.exe on the machine: the old .tar.bz2 pin
+        # died on Windows 10 boxes whose System32 tar cannot run the bzip2
+        # filter ("unable to run program bzip2 -d", issue #122512).
+        Unblock-File -Path $sfxPath -ErrorAction SilentlyContinue
+        # The SFX stub is a GUI-subsystem exe: PowerShell's `&` would not wait
+        # for it, so drive it explicitly and wait for its exit code.
+        $sfx = [System.Diagnostics.Process]::Start($sfxPath, "-o`"$extractDir`" -y")
+        $sfx.WaitForExit()
+        if ($sfx.ExitCode) { Fail "failed to extract pinned git archive" }
+        # PortableGit roots cmd\git.exe directly; still flatten a single
+        # wrapper dir if a layout ever arrives wrapped.
         $inner = @(Get-ChildItem $extractDir)
         $src = $extractDir
         if ($inner.Count -eq 1 -and $inner[0].PSIsContainer) { $src = $inner[0].FullName }

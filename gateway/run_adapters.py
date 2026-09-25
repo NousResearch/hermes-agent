@@ -1796,10 +1796,8 @@ class GatewayAdapterLifecycleMixin:
         """
         from gateway.run import get_hermes_home
         transport_home = Path(get_hermes_home()) if self._multiplex_on() and profile_name is None else None
-        # Resolve the owning profile's home once; the scope itself is entered per call so a callback
-        # reads the same per-turn allowlist freshness (and external-secret hydration) as the message
-        # path — ``_make_profile_message_handler`` re-reads the profile's ``.env`` per message, and a
-        # snapshot built here would keep a tap denied after an operator edits that ``.env``.
+        # Resolved once; the scope is entered per call so an ``.env`` allowlist edit reaches the next
+        # tap, matching the message path's per-message re-read.
         profile_home = self._routed_profile_home(profile_name) if profile_name else None
 
         def check(
@@ -1821,12 +1819,12 @@ class GatewayAdapterLifecycleMixin:
             if adapter is not None:
                 source._transport_adapter_ref = _weakref.ref(adapter)
             if transport_home is None:
-                # Per call, like every sibling secondary handler: same ``.env`` freshness and hydration
-                # as the message path. ``_scope_or_null`` keeps the fail-closed behavior for an
-                # unresolvable profile home (bind nothing; an unscoped read raises instead of
-                # borrowing another profile's env).
+                # Sync, on the adapter's event loop (per tap, per inline-query keystroke): never
+                # hydrate external secret sources here — that takes the process-global source lock
+                # (#99519). Startup and the message path hydrate off-loop; this reads their cache.
                 from gateway.run import _profile_runtime_scope
-                with self._scope_or_null(_profile_runtime_scope, profile_home):
+                with self._scope_or_null(
+                        functools.partial(_profile_runtime_scope, hydrate_secrets=False), profile_home):
                     return self._is_user_authorized(source)
             # Canonicalize FIRST (callback sources never went through ``build_source``): the routed
             # profile's pairing store is consulted, allowlists read under the transport home.

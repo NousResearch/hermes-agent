@@ -20,8 +20,8 @@ def mux_home(tmp_path, monkeypatch):
 
     home = tmp_path / "hh"
     (home / "profiles" / "secondary").mkdir(parents=True)
-    (home / ".env").write_text("")
-    (home / "profiles" / "secondary" / ".env").write_text("")
+    (home / ".env").write_text("", encoding="utf-8")
+    (home / "profiles" / "secondary" / ".env").write_text("", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     for key in (
         "TELEGRAM_ALLOWED_USERS",
@@ -76,7 +76,7 @@ def test_routed_primary_callback_uses_routed_pairing_store_and_transport_allowli
     runner = _runner(mux_home)
     store = runner.pairing_stores["secondary"]
     store._save_json(store._approved_path("telegram"), {"777": {}})
-    (mux_home / ".env").write_text("TELEGRAM_ALLOWED_USERS=999\n")
+    (mux_home / ".env").write_text("TELEGRAM_ALLOWED_USERS=999\n", encoding="utf-8")
     tg = _telegram(runner)
 
     # Paired only in the routed profile → allowed in the routed chat only.
@@ -93,7 +93,7 @@ def test_bot_sender_reaches_allow_bots_policy_through_callback(mux_home):
     from gateway.run import _profile_runtime_scope
 
     runner = _runner(mux_home)
-    (mux_home / ".env").write_text("TELEGRAM_ALLOWED_USERS=999\nTELEGRAM_ALLOW_BOTS=all\n")
+    (mux_home / ".env").write_text("TELEGRAM_ALLOWED_USERS=999\nTELEGRAM_ALLOW_BOTS=all\n", encoding="utf-8")
     tg = _telegram(runner)
 
     def msg(uid, is_bot):
@@ -110,13 +110,21 @@ def test_bot_sender_reaches_allow_bots_policy_through_callback(mux_home):
         assert tg._is_user_authorized_from_message(msg(4343, False)) is False
 
 
-def test_secondary_owned_callback_reads_own_profile_allowlist(mux_home):
+def test_secondary_owned_callback_reads_own_profile_allowlist(mux_home, monkeypatch):
     """#120639: a secondary profile's own bot authorizes inline-button callers
     against the OWNING profile's allowlist — the same ``.env`` scope the
     cold-path message handler reads — even though the callback fires outside
-    any profile runtime scope, straight off the adapter's event loop."""
+    any profile runtime scope, straight off the adapter's event loop. The
+    default profile's allowlist never leaks in, and the sync check never
+    hydrates external secret sources on that loop (#99519 class)."""
+    import hermes_cli.env_loader as env_loader
+
+    hydrated = []
+    monkeypatch.setattr(env_loader, "hydrate_profile_secret_sources", hydrated.append)
     runner = _runner(mux_home)
-    (mux_home / "profiles" / "secondary" / ".env").write_text("TELEGRAM_ALLOWED_USERS=555\n")
+    (mux_home / ".env").write_text("TELEGRAM_ALLOWED_USERS=999\n", encoding="utf-8")
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")  # the default profile's live os.environ
+    (mux_home / "profiles" / "secondary" / ".env").write_text("TELEGRAM_ALLOWED_USERS=555\n", encoding="utf-8")
     tg = _telegram(runner)
     tg._hermes_profile_name = "secondary"
     runner._profile_adapters = {"secondary": {Platform.TELEGRAM: tg}}
@@ -127,6 +135,7 @@ def test_secondary_owned_callback_reads_own_profile_allowlist(mux_home):
     # No ambient profile scope: the adapter event loop invokes the callback bare.
     assert tg._is_callback_user_authorized("555", chat_id="111", chat_type="private") is True
     assert tg._is_callback_user_authorized("999", chat_id="111", chat_type="private") is False
+    assert hydrated == []
 
 
 def test_secondary_callback_allowlist_follows_env_edits(mux_home):
@@ -137,7 +146,7 @@ def test_secondary_callback_allowlist_follows_env_edits(mux_home):
     ``.env`` per message), no allow/deny split until the adapter reconnects."""
     runner = _runner(mux_home)
     env_path = mux_home / "profiles" / "secondary" / ".env"
-    env_path.write_text("TELEGRAM_ALLOWED_USERS=555\n")
+    env_path.write_text("TELEGRAM_ALLOWED_USERS=555\n", encoding="utf-8")
     tg = _telegram(runner)
     tg._hermes_profile_name = "secondary"
     runner._profile_adapters = {"secondary": {Platform.TELEGRAM: tg}}
@@ -146,7 +155,7 @@ def test_secondary_callback_allowlist_follows_env_edits(mux_home):
     )
 
     assert tg._is_callback_user_authorized("777", chat_id="111", chat_type="private") is False
-    env_path.write_text("TELEGRAM_ALLOWED_USERS=555,777\n")  # operator adds a user at runtime
+    env_path.write_text("TELEGRAM_ALLOWED_USERS=555,777\n", encoding="utf-8")  # operator adds a user at runtime
     assert tg._is_callback_user_authorized("777", chat_id="111", chat_type="private") is True
 
 
@@ -161,7 +170,7 @@ def test_slack_interactive_auth_prefers_wired_profile_check(mux_home, monkeypatc
     runner = _runner(mux_home)
     runner.adapters = {}
     sec_home = mux_home / "profiles" / "secondary"
-    (sec_home / ".env").write_text("SLACK_ALLOWED_USERS=U_SEC\n")
+    (sec_home / ".env").write_text("SLACK_ALLOWED_USERS=U_SEC\n", encoding="utf-8")
     monkeypatch.setenv("SLACK_ALLOW_ALL_USERS", "true")
 
     def slack(with_check):

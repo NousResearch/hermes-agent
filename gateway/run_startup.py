@@ -1238,7 +1238,8 @@ class GatewayStartupMixin:
         self._failed_platforms[platform] = self._startup_retry_entry(platform, adapter, platform_config)
 
     async def _start_aggregate_connect_results(
-        self, _raw: list, startup_retryable_errors: list, startup_nonretryable_errors: list
+        self, _raw: list, startup_retryable_errors: list, startup_nonretryable_errors: list,
+        startup_nonretryable_details: list,
     ) -> int:
         """Apply connect outcomes to shared state single-threaded (exactly as the original serial
         loop did); returns the connected adapter count."""
@@ -1290,6 +1291,13 @@ class GatewayStartupMixin:
             )
             target = startup_retryable_errors if _retryable else startup_nonretryable_errors
             target.append(f"{platform.value}: {adapter.fatal_error_message}")
+            if not _retryable:
+                # Parallel structured record: the startup gate has to know WHICH platform failed (a
+                # port binder is fatal, a messaging platform is not) and the formatted lines above are
+                # for humans — never parse them back apart.
+                startup_nonretryable_details.append(
+                    (platform, getattr(adapter.config, "extra", None), adapter.fatal_error_message)
+                )
             if _retryable:
                 self._failed_platforms[platform] = self._startup_retry_entry(
                     platform, adapter, platform_config, queued=False
@@ -1337,9 +1345,50 @@ class GatewayStartupMixin:
             logger.warning(_line)
         return False, connected_count
 
+    @staticmethod
+    def _startup_fatal_port_binder_reasons(startup_nonretryable_details: list) -> list:
+        """Formatted reasons for the non-retryable failures that left a HOST PORT unbound.
+
+        Derived from ``gateway.config.platform_binds_port`` — the single source of truth for "does
+        this platform own a listener" (it also knows the conditional modes, e.g. Feishu only binds in
+        webhook mode). Never hardcode a platform list here: a new port-binding platform must inherit
+        this behaviour by being added to ``PORT_BINDING_PLATFORM_VALUES``, nowhere else.
+        """
+        from gateway.config import platform_binds_port
+        return [
+            f"{_platform.value}: {_message}"
+            for _platform, _extra, _message in startup_nonretryable_details
+            if platform_binds_port(_platform.value, _extra)
+        ]
+
+    def _startup_fail_unbound_port_binder(self, port_binder_reasons: list) -> bool:
+        """Exit 78 because a port-binding platform could not bind at startup. Always returns True.
+
+        Why this overrides the "stay alive for the siblings" reasoning below: a messaging platform
+        that fails to connect degrades SERVICE, and a human notices within one message. A platform
+        that binds a port is a CONTRACT SURFACE — the only thing an external prober can observe is
+        the port, and an unbound port on a live process is indistinguishable from a hung host. A
+        provisioner polling ``curl 127.0.0.1:<port>`` waits out its whole timeout (20 minutes, in the
+        case that motivated this) while ``systemctl is-active`` cheerfully reports ``active``.
+        Exiting 78 makes systemd's ``RestartPreventExitStatus=78`` park the unit as ``failed``, which
+        is the loud, pollable signal that was missing. Losing the sibling messaging platforms for the
+        minutes it takes an operator to read the journal is strictly cheaper than a tenant wedged in
+        ``provisioning`` with every health light green.
+        """
+        reason = "; ".join(port_binder_reasons)
+        logger.error(
+            "%d port-binding platform(s) could not bind at startup: %s. A configured listener that is "
+            "not listening is invisible to every external health probe, so the gateway is exiting "
+            "(%d) instead of running with the port dark. Fix the reported error, then "
+            "`hermes gateway restart`.",
+            len(port_binder_reasons), reason, GATEWAY_FATAL_CONFIG_EXIT_CODE,
+        )
+        self._startup_fail_fatal_config(reason)
+        return True
+
     def _start_handle_no_connections(
         self, connected_count: int, enabled_platform_count: int, startup_retryable_errors: list,
-        startup_nonretryable_errors: list,
+        startup_nonretryable_errors: list, startup_nonretryable_details: list,
     ) -> bool:
         """Log/degrade when a configured platform failed to start; return True when startup must exit.
 
@@ -1348,20 +1397,28 @@ class GatewayStartupMixin:
         sibling platforms serve normally. One WARNING next to "Gateway running with N platform(s)" let
         a gateway with no API server at all look healthy for half an hour (api_server lost the bind
         race against the gateway it was replacing, and nothing retried).
+
+        One class is louder than degraded: a non-retryable failure of a PORT-BINDING platform exits 78
+        even when siblings connected — see ``_startup_fail_unbound_port_binder``.
         """
         from gateway.run import _write_runtime_status_quiet
+        _port_binder_reasons = self._startup_fatal_port_binder_reasons(startup_nonretryable_details)
         if connected_count != 0:
             if startup_nonretryable_errors:
                 # Parked fatal failures never heal on their own, so the platforms still serving must
                 # not be reported as a healthy run. Retryable peers are deliberately left alone: the
                 # reconnect watcher recovers them and their platform entry already says "retrying".
                 self._startup_parked_platforms = True
-                logger.error(
-                    "%d configured platform(s) failed to start and are parked (fix the reported error, "
-                    "then `hermes gateway restart`): %s. The gateway is DEGRADED — it serves the "
-                    "remaining platform(s) with those unserved.",
-                    len(startup_nonretryable_errors), "; ".join(startup_nonretryable_errors),
-                )
+                _parked = [_e for _e in startup_nonretryable_errors if _e not in _port_binder_reasons]
+                if _parked:
+                    logger.error(
+                        "%d configured platform(s) failed to start and are parked (fix the reported error, "
+                        "then `hermes gateway restart`): %s. The gateway is DEGRADED — it serves the "
+                        "remaining platform(s) with those unserved.",
+                        len(_parked), "; ".join(_parked),
+                    )
+                if _port_binder_reasons:
+                    return self._startup_fail_unbound_port_binder(_port_binder_reasons)
             return False
         if startup_nonretryable_errors and not startup_retryable_errors:
             reason = "; ".join(startup_nonretryable_errors)
@@ -1372,6 +1429,11 @@ class GatewayStartupMixin:
             # Mixed (some fatal, some transient): exiting 78 would take the gateway PERMANENTLY down
             # over a blip. Log the fatal side loudly and fall through to the degraded/retry path.
             self._startup_parked_platforms = True
+            if _port_binder_reasons:
+                # ...except when the fatal side is a listener: see _startup_fail_unbound_port_binder.
+                # A dark port cannot be waited out by any external prober, so the retryable peers'
+                # chance to recover does not buy enough to justify staying up unobservably broken.
+                return self._startup_fail_unbound_port_binder(_port_binder_reasons)
             logger.error(
                 # WhatsApp enabled but never paired) while others hit merely transient errors (e.g. Telegram
                 # TimedOut during polling startup). Exiting with GATEWAY_FATAL_CONFIG_EXIT_CODE here is
@@ -1568,6 +1630,7 @@ class GatewayStartupMixin:
         # to overlap the connects; _finish_startup_restore awaits it (bounded).
         self._start_startup_warmup()
         startup_nonretryable_errors: list[str] = []
+        startup_nonretryable_details: list = []
         startup_retryable_errors: list[str] = []
         self._startup_parked_platforms = False  # fresh boot: no platform has failed yet
         (
@@ -1581,7 +1644,7 @@ class GatewayStartupMixin:
         if _raw is None:
             return True
         connected_count = await self._start_aggregate_connect_results(
-            _raw, startup_retryable_errors, startup_nonretryable_errors
+            _raw, startup_retryable_errors, startup_nonretryable_errors, startup_nonretryable_details
         )
         if await self._abort_startup_if_shutdown_requested():
             return True
@@ -1591,7 +1654,8 @@ class GatewayStartupMixin:
         if _aborted:
             return True
         if self._start_handle_no_connections(
-            connected_count, enabled_platform_count, startup_retryable_errors, startup_nonretryable_errors
+            connected_count, enabled_platform_count, startup_retryable_errors,
+            startup_nonretryable_errors, startup_nonretryable_details,
         ):
             return True
         if await self._abort_startup_if_shutdown_requested():

@@ -16,6 +16,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
+from hermes_cli import kanban_reclaim as kbr
 from hermes_cli.kanban_output import _err, _fmt_ts, _print_json
 
 
@@ -204,17 +205,18 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     HEALTH_WINDOW = 6  # ticks (default 30s at interval=5)
     health_state = {"bad_ticks": 0, "last_warn_at": 0}
 
-    def _ready_queue_nonempty() -> bool:
+    def _ready_queue_nonempty(exclude_ids=None) -> bool:
         """Is there a ready+assigned+unclaimed task the dispatcher would spawn for?
         Control-plane lanes pulled via ``claim_task`` are correctly idle, not stuck."""
         try:
             with kbc.connect_closing() as conn:
-                return kbd.has_spawnable_ready(conn)
+                return kbd.has_spawnable_ready(conn, exclude_ids)
         except Exception:
             return False
 
     def _on_tick(res):
-        ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty()
+        # Guard-deferred cards are a deliberate decision, not a stuck dispatcher.
+        ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty(kbd.guard_deferred_ids(res))
         if ready_pending and not res.spawned:
             health_state["bad_ticks"] += 1
         else:
@@ -342,13 +344,78 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             shutil.rmtree(path, ignore_errors=True)
             removed_ws += 1
 
+    reclaimed_wt = _reclaim_worktrees(args)
+
     removed_events = 0
     if event_days:
         with kbc.connect_closing() as conn:
             removed_events = kb.gc_events(conn, older_than_seconds=event_days * 24 * 3600)
     removed_logs = kb.gc_worker_logs(older_than_seconds=log_days * 24 * 3600) if log_days else 0
     print(f"GC complete: {removed_ws} workspace(s), "
+          f"{reclaimed_wt} done-card worktree(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
+    return 0
+
+
+def _reclaim_roots(args: argparse.Namespace) -> list[Path]:
+    """``--worktree-root`` when given, else the globbed/board-derived defaults."""
+    explicit = getattr(args, "worktree_roots", None)
+    if explicit:
+        return [Path(p).expanduser() for p in explicit]
+    return kbr.default_roots()
+
+
+def _reclaim_worktrees(args: argparse.Namespace) -> int:
+    """Reap done cards' worktrees, printing the reason for every refusal.
+
+    A reclaim pass that silently removes nothing is the failure mode this
+    replaces, so refusals are printed, not swallowed.
+    """
+    if getattr(args, "no_worktrees", False):
+        return 0
+    roots = _reclaim_roots(args)
+    if not roots:
+        return 0
+    dry_run = bool(getattr(args, "dry_run", False))
+    # Deliverable 1: before/after free space is measured HERE, in the scheduled
+    # path, and recorded on the card. Evidence that only exists when a human
+    # runs a script by hand is not evidence the next tick will produce.
+    before_mb = kbr.free_space_mb(roots[0])
+    decisions = kbr.reclaim_done_worktrees(
+        roots=roots,
+        min_age_hours=getattr(args, "worktree_min_age_hours", 6),
+        dry_run=dry_run,
+    )
+    after_mb = kbr.free_space_mb(roots[0])
+    print(f"Worktree reclaim over {len(roots)} root(s):")
+    for line in kbr.format_decisions(decisions):
+        print(line)
+    removed = sum(1 for d in decisions if d.removed)
+    print(f"  -> {removed} removed, {len(decisions) - removed} kept")
+    print(f"  -> free before {before_mb}MB, after {after_mb}MB")
+    if removed and not dry_run and not getattr(args, "no_comment", False):
+        written = kbr.record_reclaim_comments(
+            decisions, before_mb=before_mb, after_mb=after_mb,
+        )
+        print(f"  -> recorded the before/after df on {written} card(s)")
+    return removed
+
+
+def _cmd_reclaim_worktrees(args: argparse.Namespace) -> int:
+    """``hermes kanban reclaim`` with no task id — the disk-guard entry point."""
+    _reclaim_worktrees(args)
+    root_args = _reclaim_roots(args)
+    if getattr(args, "logs", False):
+        for root in root_args:
+            decisions = kbr.reclaim_stale_sibling_logs(
+                root=Path(root).expanduser(),
+                min_age_days=getattr(args, "log_min_age_days", 7),
+                dry_run=bool(getattr(args, "dry_run", False)),
+            )
+            if decisions:
+                print(f"Sibling logs under {root}:")
+                for line in kbr.format_decisions(decisions):
+                    print(line)
     return 0
 
 

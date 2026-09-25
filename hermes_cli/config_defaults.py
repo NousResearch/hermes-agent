@@ -193,6 +193,9 @@ DEFAULT_CONFIG = {
         "verify_guidance": True,
         # Max consecutive `pre_verify` "continue" nudges per turn (hooks can't trap the loop).
         "max_verify_nudges": 3,
+        # Fire the `pre_verify` gate on turns that edited no files too (payload
+        # `changed_paths=[]`). Default False = edited-code turns only.
+        "pre_verify_on_no_edit_turns": False,
         # Verification closure: after code edits in a workspace, refuse a final answer until fresh
         # verification evidence exists or the agent explains why it can't check (bounded loop,
         # passive ledger). False (default) because the nudges proved more noise than signal; true =

@@ -367,6 +367,7 @@ from hermes_cli.subcommands.backup import build_backup_parser
 from hermes_cli.subcommands.import_cmd import build_import_cmd_parser
 from hermes_cli.subcommands.import_agent import build_import_agent_parser
 from hermes_cli.subcommands.config import build_config_parser
+from hermes_cli.subcommands.harness import build_harness_parser
 from hermes_cli.subcommands.skin import build_skin_parser
 from hermes_cli.subcommands.console import build_console_parser
 from hermes_cli.subcommands.update import build_update_parser
@@ -2280,6 +2281,74 @@ def cmd_config(args):
         sys.exit(1)
 
 
+def cmd_harness(args):
+    """Inspect and mutate the typed, reversible harness manifest."""
+    from hermes_cli import harness_manifest as manifest
+
+    try:
+        command = getattr(args, "harness_command", None) or "show"
+        if command in {"show", "diff"}:
+            state = manifest.show_state()
+            if command == "diff":
+                state = {**state, "values": {
+                    key: value for key, value in state["values"].items()
+                    if value != next(item.default for item in manifest.registry() if item.path == key)
+                }}
+            if getattr(args, "json", False):
+                print(manifest.canonical_json(state))
+            else:
+                print(f"Harness manifest: {state['path']}")
+                print(f"Stock revision:   {state['stock_revision']}")
+                print(f"Fingerprint:      {state['fingerprint']}")
+                if command == "diff":
+                    print("Changed values:")
+                    for key, value in state["values"].items():
+                        print(f"  {key}: {value}")
+                else:
+                    print("Overlays:")
+                    for overlay in state["overlays"]:
+                        status = "active" if overlay["active"] else "stale"
+                        print(f"  {overlay['id']} ({status}): {overlay['values']}")
+            return 0
+        if command == "explain":
+            result = manifest.explain(args.key)
+            print(manifest.canonical_json(result) if getattr(args, "json", False) else _format_harness_explanation(result))
+            return 0
+        if command == "set":
+            manifest.set_value(args.key, manifest.parse_cli_value(args.value), overlay=args.overlay, reason=args.reason)
+            print(f"Set {args.key} in overlay {args.overlay!r}; fingerprint: {manifest.fingerprint()}")
+            return 0
+        if command == "revert":
+            if not args.yes and sys.stdin.isatty():
+                answer = input(f"Remove harness overlay {args.overlay!r}? [y/N] ").strip().lower()
+                if answer not in {"y", "yes"}:
+                    print("Cancelled.")
+                    return 1
+            elif not args.yes:
+                print("Refusing non-interactive revert without --yes", file=sys.stderr)
+                return 2
+            manifest.revert_overlay(args.overlay)
+            print(f"Reverted harness overlay {args.overlay!r}")
+            return 0
+        raise manifest.HarnessManifestError(f"unknown harness command: {command}")
+    except manifest.HarnessManifestError as exc:
+        print(f"✗ {exc}", file=sys.stderr)
+        return 2
+
+
+def _format_harness_explanation(result):
+    lines = [
+        f"{result['key']}: {result['description']}",
+        f"  type: {result['type']}  safety: {result['safety']}",
+        f"  stock: {result['default']!r}",
+        f"  active: {result['active_value']!r}",
+        f"  revision: {result['stock_revision']}",
+    ]
+    for source in result["sources"]:
+        lines.append(f"  source: {source['overlay']} ({source['reason']}) -> {source['value']!r}")
+    return "\n".join(lines)
+
+
 def cmd_backup(args):
     """Back up Hermes home directory to a zip file."""
     from hermes_cli import backup
@@ -3451,6 +3520,7 @@ def _build_cli_parser():
     build_import_cmd_parser(subparsers, cmd_import=cmd_import)
     build_import_agent_parser(subparsers, cmd_import_agent=cmd_import_agent)
     build_config_parser(subparsers, cmd_config=cmd_config)
+    build_harness_parser(subparsers, cmd_harness=cmd_harness)
     build_skin_parser(subparsers, cmd_skin=cmd_skin)
     build_console_parser(subparsers, cmd_console=cmd_console)
     build_pairing_parser(subparsers, cmd_pairing=cmd_pairing)

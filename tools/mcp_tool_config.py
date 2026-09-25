@@ -10,6 +10,7 @@ import shutil
 import sys
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from tools.mcp_tool_common import _env_ref_name, _prepend_path
 
@@ -162,8 +163,32 @@ def _which_with_config_pathext(command: str, path_arg, env: dict):
     return None
 
 
-def _launcher_fallback(command: str, *, windows: Optional[bool] = None) -> str:
-    """Well-known install locations for bare launcher commands; *command* unchanged when none exists.
+def _managed_node_dirs_with_ancestors() -> list:
+    """Managed Node dirs for the active home, then for the NEAREST ancestor that
+    carries its own managed ``node/`` tree.
+
+    Sub-profiles (``<root>/profiles/<name>``) have no managed tree of their own;
+    without the ancestor walk every bare ``npx`` there fell through to PATH and
+    crashed with WinError 2 (2026-09-25). The nearest ancestor wins, matching
+    the shadowing rule everywhere else in Hermes."""
+    from hermes_constants import get_hermes_home, iter_hermes_node_dirs
+    directories = [*map(str, iter_hermes_node_dirs(get_hermes_home()))]
+    seen = {os.path.normcase(os.path.abspath(d)) for d in directories}
+    for ancestor in Path(get_hermes_home()).parents:
+        if not (ancestor / "node").is_dir():
+            continue
+        for directory in iter_hermes_node_dirs(ancestor):
+            key = os.path.normcase(os.path.abspath(str(directory)))
+            if key not in seen:
+                seen.add(key)
+                directories.append(str(directory))
+        break
+    return directories
+
+
+def _node_fallback(command: str, *, windows: Optional[bool] = None) -> str:
+    """Well-known Node install locations for bare ``npx``/``npm``/``node``, plus the nearest ancestor home's
+    managed tree (sub-profiles inherit the root install's Node runtime); *command* unchanged when none exists.
 
     One resolver for two launcher families. ``npx``/``npm``/``node``: the managed tree comes from
     ``iter_hermes_node_dirs`` (Windows unpacks into ``<home>\\node``, POSIX into ``<home>/node/bin``)
@@ -179,18 +204,10 @@ def _launcher_fallback(command: str, *, windows: Optional[bool] = None) -> str:
     from hermes_constants import get_hermes_home
     from hermes_platform.resolver.known_dirs import uv_tool_dirs
     home = os.path.expanduser("~")
-    if command in {"uv", "uvx"}:
-        # expanduser: the table carries the ``~`` form so both this walk and
-        # locate_command's expandvars+expanduser agree on one spelling.
-        directories = [os.path.join(str(get_hermes_home()), "bin"),
-                       *(os.path.expanduser(d) for d in uv_tool_dirs())]
-    else:
-        from hermes_constants import iter_hermes_node_dirs
-        # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel
-        # Homebrew), needed when a hand-authored env.PATH omits it — npx's shebang re-execs
-        # /usr/bin/env node.
-        directories = [*map(str, iter_hermes_node_dirs(get_hermes_home())),
-                      os.path.join(home, ".local", "bin"), os.path.join(os.sep, "usr", "local", "bin")]
+    # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel Homebrew),
+    # needed when a hand-authored env.PATH omits it — npx's shebang re-execs /usr/bin/env node.
+    directories = [*map(str, _managed_node_dirs_with_ancestors()), os.path.join(home, ".local", "bin"),
+                   os.path.join(os.sep, "usr", "local", "bin")]
     candidates = (c for d in directories for c in _npx_bin_candidates(d, command, windows=windows))
     return next((c for c in candidates if os.path.isfile(c) and os.access(c, os.X_OK)), command)
 

@@ -374,10 +374,7 @@ describe('usePromptActions /skills review scope', () => {
 
     await handle!.submitText('/skills pending')
 
-    expect(requestGateway).toHaveBeenCalledWith(
-      'slash.exec',
-      expect.objectContaining({ command: 'skills pending' })
-    )
+    expect(requestGateway).toHaveBeenCalledWith('slash.exec', expect.objectContaining({ command: 'skills pending' }))
   })
 })
 

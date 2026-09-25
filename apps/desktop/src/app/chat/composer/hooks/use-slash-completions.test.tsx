@@ -176,26 +176,30 @@ describe('useSlashCompletions', () => {
   })
 
   it('keeps command-stage /skills rows when replace_from says command stage', async () => {
-    const request = vi.fn().mockImplementation((method: string) =>
-      Promise.resolve(
-        method === 'commands.catalog'
-          ? CATALOG
-          : { items: [{ text: '/skills', display: '/skills', kind: 'command' }], replace_from: 1 }
+    const request = vi
+      .fn()
+      .mockImplementation((method: string) =>
+        Promise.resolve(
+          method === 'commands.catalog'
+            ? CATALOG
+            : { items: [{ text: '/skills', display: '/skills', kind: 'command' }], replace_from: 1 }
+        )
       )
-    )
     const api = harness({ request } as unknown as HermesGateway)
 
     expect(commandsOf(await completions(api, 'skills '))).toEqual(['/skills'])
   })
 
   it('filters blocked subcommands from replace_from even without trailing space', async () => {
-    const request = vi.fn().mockImplementation((method: string) =>
-      Promise.resolve(
-        method === 'commands.catalog'
-          ? CATALOG
-          : { items: [{ text: 'install' }, { text: 'pending' }], replace_from: 9 }
+    const request = vi
+      .fn()
+      .mockImplementation((method: string) =>
+        Promise.resolve(
+          method === 'commands.catalog'
+            ? CATALOG
+            : { items: [{ text: 'install' }, { text: 'pending' }], replace_from: 9 }
+        )
       )
-    )
     const api = harness({ request } as unknown as HermesGateway)
     const items = await completions(api, 'skills')
 

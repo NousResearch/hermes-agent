@@ -134,20 +134,17 @@ describe('desktop slash command curation', () => {
   })
 
   it('trusts the backend arg-stage flag and skips malformed completion rows', () => {
-    expect(
-      filterDesktopSubcommandCompletions('/skills ', [{ text: '/skills' }], { isArgCompletion: false })
-    ).toEqual([{ text: '/skills' }])
+    expect(filterDesktopSubcommandCompletions('/skills ', [{ text: '/skills' }], { isArgCompletion: false })).toEqual([
+      { text: '/skills' }
+    ])
     expect(
       filterDesktopSubcommandCompletions('/skills', [{ text: 'install' }, { text: 'pending' }], {
         isArgCompletion: true
       })
     ).toEqual([{ text: 'pending' }])
-    expect(
-      filterDesktopSubcommandCompletions('/skills ', [
-        { text: undefined },
-        { text: 'pending' }
-      ])
-    ).toEqual([{ text: 'pending' }])
+    expect(filterDesktopSubcommandCompletions('/skills ', [{ text: undefined }, { text: 'pending' }])).toEqual([
+      { text: 'pending' }
+    ])
   })
 
   it('lets the live catalog narrow the static /skills allowlist', () => {

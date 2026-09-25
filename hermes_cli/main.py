@@ -2859,6 +2859,29 @@ def _first_positional_argv() -> str | None:
     return args[0] if args else None
 
 
+def _looks_like_gateway_run_invocation() -> bool:
+    """True when this process's own argv can end up hosting the gateway runtime in-process.
+
+    Covers `gateway run` and `gateway restart` — the manual/no-service-manager restart fallback
+    calls `run_gateway()` in-process in the SAME process (`hermes_cli/gateway.py::_cmd_restart` /
+    `_restart_all`), so it hits gateway/run_startup.py's startup sequence exactly like a plain
+    `run` does. Reuses the canonical cmdline classifier
+    (`gateway.status.looks_like_gateway_runtime_command_line`) against our own `sys.argv` rather
+    than a hand-rolled check.
+    """
+    from gateway.status import looks_like_gateway_runtime_command_line
+    return looks_like_gateway_runtime_command_line(" ".join(sys.argv))
+
+
+def _should_warn_pending_fleet_restart_at_startup() -> bool:
+    """False for `update` (that command reports it directly) and for a `gateway run`/`restart`
+    invocation, which defers to gateway/run_startup.py after its own runtime-status stamp:
+    checked this early, it always finds its own coverage row missing (nothing wrote it yet)
+    and warns about itself on every restart. See #117953.
+    """
+    return "update" not in sys.argv[1:] and not _looks_like_gateway_run_invocation()
+
+
 def _plugin_cli_discovery_needed() -> bool:
     """True when the CLI might be invoking a plugin-registered subcommand.
 
@@ -3574,7 +3597,7 @@ def main():
 
     # Dependency recovery already ran before imports. Report any fleet restart
     # still owed by a previous update without restarting services here.
-    if "update" not in sys.argv[1:]:
+    if _should_warn_pending_fleet_restart_at_startup():
         try:
             from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
 

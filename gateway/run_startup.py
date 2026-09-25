@@ -918,6 +918,12 @@ class GatewayStartupMixin:
                 logger.warning("Timed out persisting initial gateway runtime status")
         except Exception:
             logger.debug("Initial gateway runtime-status write failed", exc_info=True)
+        # `hermes_cli/main.py` skips its own startup check for a `gateway run` process (#117953)
+        # so it runs here instead, after the stamp above — otherwise it always finds this
+        # gateway's own coverage row missing (nothing wrote it yet) and warns about itself.
+        with suppress(Exception):
+            from hermes_cli.update_cmd_fleet import _warn_pending_fleet_restart_on_startup
+            _warn_pending_fleet_restart_on_startup()
         with _log_suppressed(logging.DEBUG, "gateway health OTLP export startup failed", exc_info=True):
             from hermes_cli.config import load_config
             from agent.monitoring.gateway_health_export import start_gateway_health_export

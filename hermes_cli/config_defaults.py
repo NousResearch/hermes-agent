@@ -2287,6 +2287,11 @@ DEFAULT_CONFIG = {
         # Max active messages per session for in-memory export (`hermes sessions export`); checked
         # per session, so full-DB backups of small sessions work.
         "max_export_messages": 20000,
+        # Max PHYSICAL rows in one session, including rewound and archived
+        # compaction generations. Stop runaway rewrite loops before they fill
+        # the database even when the active tip is short; 0 only for controlled
+        # backup/recovery.
+        "max_storage_messages": 500000,
     },
     # First-touch onboarding hints (agent/onboarding.py). Each hint shows once and is latched under
     # `seen`; wipe the section to re-see all hints.

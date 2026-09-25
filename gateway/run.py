@@ -3080,8 +3080,18 @@ def _normalize_empty_agent_response(
         # ``error`` can be an EXPLICIT None (bypasses dict.get default) -> would render "failed: None".
         error_detail = agent_result.get("error") or "unknown error"
         error_str = str(error_detail).lower()
-        # Persistence failures: suggesting /reset would destroy context without fixing storage.
         failure_reason = str(agent_result.get("failure_reason") or "")
+        # An amplified session cannot be fixed by retrying this turn or repairing disk.
+        if (
+            failure_reason == "session_persistence_failed:amplification"
+            or "storage amplification guard" in error_str
+        ):
+            return (
+                "⚠️ This session reached its physical transcript-row safety limit. "
+                "The blocked write was not saved. Start a new session. For controlled "
+                "recovery, make a verified backup before cleaning archived generations."
+            )
+        # Persistence failures: suggesting /reset would destroy context without fixing storage.
         if failure_reason.startswith("session_persistence_failed") or "session storage" in error_str:
             if failure_reason.endswith(":disk") or "disk" in error_str:
                 return (

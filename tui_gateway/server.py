@@ -2690,7 +2690,13 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
 def _load_resume_transcript(db, stored_id: str, *, model_history_only: bool = False) -> tuple[list, list, list]:
     """(raw_history, display_history, ancestor_prefix) for a cold resume. The full lineage is materialized
     only while it fits sessions.max_resume_messages (the transcript is REST-paginated), else the tip alone."""
-    from hermes_state import SessionResumeTooLargeError
+    from hermes_state import SessionResumeTooLargeError, SessionStorageAmplificationError
+    storage_guard = getattr(db, "assert_storage_safe", None)
+    if callable(storage_guard):
+        # The tip-only fallback below is for a long *active* lineage, not for a
+        # session whose physical archive has grown beyond the storage ceiling.
+        # Check even when only model history is requested.
+        storage_guard(stored_id)
     if model_history_only:
         raw_history = db.get_messages_as_conversation(
             stored_id, repair_alternation=True, include_row_ids=True)
@@ -2700,6 +2706,8 @@ def _load_resume_transcript(db, stored_id: str, *, model_history_only: bool = Fa
     if callable(guard):
         try:
             guard(stored_id)
+        except SessionStorageAmplificationError:
+            raise  # Physical archive growth must never take the tip-only fallback.
         except SessionResumeTooLargeError as exc:
             prefix_fits = False
             logger.info("resume %s: compression lineage exceeds the resume limit (%s); hydrating the tip segment only",

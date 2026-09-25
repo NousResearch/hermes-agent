@@ -48,6 +48,23 @@ class TestPersistenceFailureRecoveryMessage:
         assert "/reset" not in response
         assert "unknown error" not in response.lower()
 
+    @pytest.mark.parametrize("failure_reason", [
+        "session_persistence_failed:amplification", "",
+    ])
+    def test_amplification_refusal_is_not_retryable_or_saved(self, failure_reason):
+        agent_result = {
+            "final_response": "",
+            "failed": True,
+            "failure_reason": failure_reason,
+            "error": "session storage amplification guard blocked synthetic-sensitive-id",
+            "api_calls": 1,
+        }
+        response = _normalize_empty_agent_response(agent_result, "", history_len=10).lower()
+        assert "physical" in response and "backup" in response
+        assert "new session" in response and "not saved" in response
+        for wrong in ("temporarily", "send it again", "already be saved", "disk", "doctor", "synthetic-sensitive-id"):
+            assert wrong not in response
+
     def test_unknown_cause_persistence_failure_still_avoids_reset(self):
         agent_result = {
             "final_response": "",

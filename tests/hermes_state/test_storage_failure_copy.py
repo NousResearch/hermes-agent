@@ -8,6 +8,7 @@ import sqlite3
 
 import pytest
 
+from hermes_state import SessionStorageAmplificationError
 from hermes_state_user_copy import describe_storage_failure, storage_failure_details
 
 
@@ -28,6 +29,17 @@ def test_each_cause_has_a_stable_code_and_an_action(exc, code, command):
     assert failure.gloss
     # The raw sqlite wording never leaks into the user-facing gloss.
     assert "sqlite" not in failure.gloss.lower() and "OperationalError" not in failure.gloss
+
+
+def test_amplification_refusal_gets_safe_recovery_advice():
+    failure = describe_storage_failure(
+        SessionStorageAmplificationError("synthetic-session", 5, 1, 5)
+    )
+    assert failure.cause == "amplification"
+    assert failure.code == "storage_amplification"
+    assert "Start a new session" in failure.action
+    assert "backup" in failure.action.lower()
+    assert "doctor" not in failure.action.lower()
 
 
 def test_details_line_is_flattened_and_bounded():

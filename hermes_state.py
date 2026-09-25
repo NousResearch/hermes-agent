@@ -84,6 +84,7 @@ except ImportError:  # pragma: no cover - stripped/scaffold installs only
 logger = logging.getLogger(__name__)
 
 _MAX_SAFE_MESSAGES = 20_000  # resume/export guard default
+_MAX_SAFE_STORAGE_MESSAGES = 500_000  # physical rows retained by one session
 
 
 def _configured_transcript_limit(key: str, fallback: int = _MAX_SAFE_MESSAGES) -> int:
@@ -107,6 +108,11 @@ def resolved_max_export_messages() -> int:
     return _configured_transcript_limit("max_export_messages")
 
 
+def resolved_max_storage_messages() -> int:
+    """Config-resolved per-session physical-row ceiling (0 disables it)."""
+    return _configured_transcript_limit("max_storage_messages", _MAX_SAFE_STORAGE_MESSAGES)
+
+
 class SessionResumeTooLargeError(ValueError):
     def __init__(
         self, message_count: int, limit: int = _MAX_SAFE_MESSAGES, scope: str = "across its lineage",
@@ -126,6 +132,32 @@ class SessionExportTooLargeError(ValueError):
         super().__init__(
             f"session '{session_id}' has at least {message_count} active messages; "
             f"safe in-memory export limit is {limit}"
+        )
+
+
+class SessionStorageAmplificationError(SessionResumeTooLargeError):
+    """The physical transcript-row ceiling blocked a write before persistence.
+
+    Existing resume callers must treat this as a safety refusal, not a transient
+    storage error that may be ignored in favor of an unsafe transcript.
+    """
+
+    def __init__(self, session_id: str, stored_rows: int, attempted_rows: int,
+                 limit: int = _MAX_SAFE_STORAGE_MESSAGES):
+        self.session_id = session_id
+        self.stored_rows = stored_rows
+        self.attempted_rows = attempted_rows
+        self.limit = limit
+        projected = stored_rows + attempted_rows
+        ValueError.__init__(
+            self,
+            f"session storage amplification guard blocked the write: session "
+            f"'{session_id}' has at least {stored_rows} physical message rows "
+            f"and the write would add {attempted_rows} (projected {projected}; "
+            f"limit {limit}). The write was stopped before persistence. Start a "
+            "fresh session or clean archived generations after a verified "
+            "backup; set sessions.max_storage_messages: 0 only for controlled "
+            "recovery."
         )
 
 

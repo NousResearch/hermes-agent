@@ -320,6 +320,7 @@ class SessionMessagesMixin:
         def _do(conn):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+            self._assert_session_storage_growth_safe(conn, session_id, 1)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
             return msg_id
@@ -355,6 +356,7 @@ class SessionMessagesMixin:
             if existing is not None:
                 return existing[0]
             self._check_transcript_write_guards(conn, session_id, None, reject_active_turn_lease=True)
+            self._assert_session_storage_growth_safe(conn, session_id, 1)
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, 0, unit=True)
             return msg_id
@@ -512,9 +514,67 @@ class SessionMessagesMixin:
         row = self._read_one("SELECT role FROM messages WHERE id = ? AND session_id = ? AND active = 1", (int(row_id), session_id))
         return row[0] if row else None
 
+    def _assert_session_storage_growth_safe(
+        self, conn, session_id: str, attempted_rows: int = 0, *,
+        max_messages: Optional[int] = None,
+    ) -> int:
+        """Bound physical generations, not just the active replay projection.
+
+        The cheap indexed ID-span bound proves most appends safe. Interleaved
+        sessions can leave gaps, so a large span falls back to an exact count
+        that stops after the first row proving the operation unsafe. Call from
+        the same serialized write transaction as each insertion or clone.
+        """
+        from hermes_state import SessionStorageAmplificationError, resolved_max_storage_messages
+
+        if max_messages is None:
+            max_messages = resolved_max_storage_messages()
+        if max_messages < 0:
+            raise ValueError("max_messages must be non-negative")
+        if max_messages == 0:
+            return 0
+
+        attempted_rows = max(0, int(attempted_rows))
+        remaining = max_messages - attempted_rows
+        if remaining < 0:
+            raise SessionStorageAmplificationError(session_id, 0, attempted_rows, max_messages)
+
+        bounds = conn.execute(
+            "SELECT "
+            "(SELECT id FROM messages WHERE session_id = ? ORDER BY id LIMIT 1), "
+            "(SELECT id FROM messages WHERE session_id = ? ORDER BY id DESC LIMIT 1)",
+            (session_id, session_id),
+        ).fetchone()
+        first_id = bounds[0] if bounds else None
+        last_id = bounds[1] if bounds else None
+        if first_id is None or last_id is None:
+            return 0
+        id_span = int(last_id) - int(first_id) + 1
+        if id_span <= remaining:
+            return id_span
+
+        row = conn.execute(
+            "SELECT COUNT(*) FROM ("
+            "SELECT 1 FROM messages WHERE session_id = ? LIMIT ?"
+            ") AS bounded_session_rows",
+            (session_id, remaining + 1),
+        ).fetchone()
+        stored_rows = int(row[0] if row else 0)
+        if stored_rows > remaining:
+            raise SessionStorageAmplificationError(session_id, stored_rows, attempted_rows, max_messages)
+        return stored_rows
+
+    def assert_storage_safe(self, session_id: str, max_messages: Optional[int] = None) -> int:
+        """Return a bounded physical-row count or refuse an amplified session."""
+        with self._read_ctx() as conn:  # type: ignore[attr-defined]
+            return self._assert_session_storage_growth_safe(
+                conn, session_id, 0, max_messages=max_messages
+            )
+
     def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
         """Insert *messages* as fresh active rows in the caller's txn -> ``(inserted, tool_call_count)``.
         Never touches sessions.* counters (callers reconcile differently); reasoning kept for assistant rows."""
+        self._assert_session_storage_growth_safe(conn, session_id, len(messages))
         now_ts = time.time()
         inserted = tool_calls_total = 0
         for msg in messages:
@@ -790,6 +850,11 @@ class SessionMessagesMixin:
             rewind_ids += covered_active[-int(tail_count):]
         rewind_ids += unseen
         rewind_ids = list(dict.fromkeys(rewind_ids))
+        # The new compacted set and raw unseen-row clones are one physical-row
+        # projection; fail before changing archival flags in this transaction.
+        self._assert_session_storage_growth_safe(
+            conn, session_id, len(compacted_messages) + len(unseen)
+        )
         if rewind_ids:
             placeholders = _placeholders(rewind_ids)
             conn.execute(
@@ -874,6 +939,11 @@ class SessionMessagesMixin:
                     (session_id, *((int(watermark),) if bound else ()), int(tail_count))).fetchall()]
             rewind_ids += tail_ids
             rewind_ids = list(dict.fromkeys(rewind_ids))
+            # The compacted set and concurrent-tail clones are both physical
+            # inserts; preflight the combined growth before mutating flags.
+            self._assert_session_storage_growth_safe(
+                conn, session_id, len(compacted_messages) + len(tail_ids)
+            )
             if rewind_ids:
                 placeholders = _placeholders(rewind_ids)
                 conn.execute("UPDATE messages SET active = 0, compacted = 0 "
@@ -1405,6 +1475,7 @@ class SessionMessagesMixin:
         """Resume row count, or raise ``SessionResumeTooLargeError``. ``max_messages=None`` reads config; 0
         disables the guard without counting. ``tip_only`` bounds only the tip's active rows for callers that
         never materialize the lineage: a heavily compressed conversation is a success, not a rejection."""
+        self.assert_storage_safe(session_id)
         from hermes_state import SessionResumeTooLargeError, resolved_max_resume_messages
         if max_messages is None:
             max_messages = resolved_max_resume_messages()

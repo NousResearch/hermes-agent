@@ -1032,6 +1032,10 @@ group_sessions_per_user: true
 #   vacuum_after_prune: true
 #   min_vacuum_interval_days: 30
 #   min_interval_hours: 24
+#   # Physical rows per session (active plus archived generations). A runaway
+#   # rewrite/compaction stops before it fills the database. Set 0 only during
+#   # controlled recovery after a verified backup; this is not a lifetime cap.
+#   max_storage_messages: 500000
 
 # Optional direct endpoint for autonomous Bot Mode rooms spanning gateways.
 # Leave unset for the safe default: Desktop coordinates cross-gateway rooms and

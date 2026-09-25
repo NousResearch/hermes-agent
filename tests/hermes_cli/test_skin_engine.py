@@ -123,11 +123,11 @@ class TestCustomCSS:
 
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()
-        import yaml
+        import hermes_yaml as yaml
 
         data = {"name": "styled", "colors": {"background": "#101010"}}
         data.update(skin_data)
-        (skins_dir / "styled.yaml").write_text(yaml.dump(data), encoding="utf-8")
+        (skins_dir / "styled.yaml").write_text(yaml.safe_dump(data))
         monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
         return load_skin("styled")
 

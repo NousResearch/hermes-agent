@@ -1,12 +1,10 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
+import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { skinPref, ThemeProvider, useTheme } from './context'
 import { everforestTheme } from './presets'
 
-import { $backendThemes, __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
-import { ThemeProvider } from './context'
 
 // The live-authoring loop: Hermes writes/edits one skin file and every surface
 // repaints. An in-place edit keeps the NAME — only the palette moves.
@@ -82,8 +80,6 @@ describe('ThemeProvider ← backend skin sync', () => {
   it('paints a persisted backend skin once the connect-time seed makes it resolvable', () => {
     window.localStorage.setItem('hermes-desktop-theme-v2', 'bloomberg')
 
-
-  it('injects customCSS from an applied backend skin', () => {
     render(
       <ThemeProvider>
         <div />
@@ -98,6 +94,14 @@ describe('ThemeProvider ← backend skin sync', () => {
 
     expect(cssVar('--theme-background-seed')).toBe('#000000')
     expect(skinPref.resolve('default')).toBe('bloomberg')
+  })
+})
+
+describe('ThemeProvider ← local bridge fallback', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+    cleanup()
   })
 
   it('uses the local bridge skin when a remote gateway has not connected yet', async () => {
@@ -239,6 +243,22 @@ describe('ThemeProvider highlight preview', () => {
 
     act(() => ctx.previewTheme('does-not-exist', 'dark'))
     expect(cssVar('--theme-foreground')).toBe(painted)
+  })
+})
+
+describe('ThemeProvider customCSS injection', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+    cleanup()
+  })
+
+  it('injects customCSS from an applied backend skin', () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
 
     act(() =>
       ingestBackendSkin({ ...bloomberg('#ff9f0a'), customCSS: '.chat-input { font-size: 16px; }' }, { apply: true })

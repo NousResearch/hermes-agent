@@ -1672,9 +1672,21 @@ body.guest-pointer-lock :is(webview, iframe) {
 [data-slot='composer-rich-input'] {
   unicode-bidi: plaintext;
   text-align: start;
-  /* CJK fonts handle full-width punctuation (，。？！…—) before Latin fallback */
-  font-family: "PingFang SC", "PingFang TC", "PingFang HK", "Microsoft YaHei",
-    "Noto Sans CJK SC", "Noto Sans CJK TC", var(--dt-font-sans);
+}
+
+/* Keyed on the UI language, not installed fonts: PingFang/YaHei ship on every
+   Mac/Windows box and would restyle Latin text for everyone. CJK-first is what
+   makes shared codepoints (…—“”) render full-width. */
+[data-slot='composer-rich-input']:lang(zh) {
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', var(--dt-font-sans);
+}
+
+[data-slot='composer-rich-input']:lang(zh-hant) {
+  font-family: 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', var(--dt-font-sans);
+}
+
+[data-slot='composer-rich-input']:lang(ja) {
+  font-family: 'Hiragino Sans', 'Yu Gothic UI', 'Noto Sans CJK JP', var(--dt-font-sans);
 }
 
 /* Appearance → Text direction. An explicit RTL/LTR choice stamps dir on the

@@ -120,7 +120,7 @@ export function OverlayView({
               </div>
             )}
 
-            <div className="pointer-events-auto absolute right-[calc(var(--titlebar-tools-right,0.75rem)+0.5rem)] top-[calc(0.1875rem+var(--titlebar-height)/2)] flex -translate-y-1/2 items-center gap-1.5 [-webkit-app-region:no-drag]">
+            <div className="pointer-events-auto absolute right-[var(--titlebar-tools-right,0.75rem)] top-[calc(0.1875rem+var(--titlebar-height)/2)] flex -translate-y-1/2 items-center gap-1.5 [-webkit-app-region:no-drag]">
               {titlebarActions}
 
               <Button

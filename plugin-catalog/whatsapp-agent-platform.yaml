@@ -1,7 +1,7 @@
 name: whatsapp-agent-platform
 repo: https://github.com/ahtishamdilawar/hermes-whatsapp-agent-platform
-sha: 5771c7c5f90eb2804ff80e072571093598ed92eb
-version: "0.1.0"
+sha: b2443012d5cdfcae949c3aa6996702f0b650f3ab
+version: "0.1.1"
 requires_hermes: ">=0.21.4"
 title: WhatsApp Agent Platform
 description: >-
@@ -15,7 +15,7 @@ description: >-
 maintainer: ahtishamdilawar
 tier: community
 category: platform
-docs_url: https://github.com/ahtishamdilawar/hermes-whatsapp-agent-platform/blob/5771c7c5f90eb2804ff80e072571093598ed92eb/README.md
+docs_url: https://github.com/ahtishamdilawar/hermes-whatsapp-agent-platform/blob/b2443012d5cdfcae949c3aa6996702f0b650f3ab/README.md
 platforms: []
 capabilities:
   provides_tools: []

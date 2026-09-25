@@ -100,7 +100,8 @@ def test_shallow_checkout_publishes_its_release_after_fetching_the_commit_graph(
                        capture_output=True, env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.invalid",
                                                  "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.invalid"})
     checkout = tmp_path / "checkout"
-    subprocess.run(["git", "clone", "-q", "--depth", "1", server.as_uri(), str(checkout)], check=True, capture_output=True)
+    subprocess.run(["git", "clone", "-q", "--no-local", "--depth", "1", str(server), str(checkout)],
+                   check=True, capture_output=True)
 
     assert fetch_full_commit_graph(checkout)
     stamp = write_source_stamp(checkout)
@@ -131,7 +132,7 @@ def test_full_checkout_refreshes_release_tags_before_publishing_identity(tmp_pat
         git(server, "tag", tag)
     git(server, "commit", "-q", "--allow-empty", "-m", "after release")
     checkout = tmp_path / "checkout"
-    git(server, "clone", "-q", "--no-tags", server.as_uri(), str(checkout))
+    git(server, "clone", "-q", "--no-local", "--no-tags", str(server), str(checkout))
     old_tag, old_version = versions[0]
     git(checkout, "fetch", "-q", "origin", f"refs/tags/{old_tag}:refs/tags/{old_tag}")
     commit = git(checkout, "rev-parse", "HEAD")
@@ -166,7 +167,7 @@ def test_release_tag_refresh_preserves_existing_partial_clone_filter(tmp_path):
 
     git(server, "config", "uploadpack.allowFilter", "true")
     checkout = tmp_path / "partial"
-    git(server, "clone", "-q", "--no-tags", "--filter=blob:none", server.as_uri(), str(checkout))
+    git(server, "clone", "-q", "--no-local", "--no-tags", "--filter=blob:none", str(server), str(checkout))
     assert git(checkout, "config", "--get", "remote.origin.partialclonefilter") == "blob:none"
     fetch_full_commit_graph(checkout)
     assert git(checkout, "config", "--get", "remote.origin.partialclonefilter") == "blob:none"

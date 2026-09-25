@@ -25,8 +25,15 @@ def _cache_path() -> Path:
 
 
 def config_fingerprint(config: dict) -> str:
-    """Stable hash of the connection-defining parts of an MCP server config."""
-    tools_filter = config.get("tools") or {}
+    """Stable hash of the connection-defining parts of an MCP server config.
+
+    ``tools`` may be written as dict, comma-string or list shorthand (see
+    ``normalize_tools_filter``) — all representations of the same filter fingerprint
+    identically, so rewriting a config between shorthands doesn't invalidate the lazy
+    schema cache.
+    """
+    from tools.mcp_tool_common import normalize_tools_filter
+    tools_filter = normalize_tools_filter(config.get("tools"), "mcp_servers.<name>.tools")
     payload = {
         "command": config.get("command"),
         "args": config.get("args") or [],

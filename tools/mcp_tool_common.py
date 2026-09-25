@@ -28,6 +28,34 @@ _core = _OriginProxy()
 _MISSING = object()
 
 
+def normalize_tools_filter(value: Any, label: str) -> dict:
+    """Canonicalise an MCP server's ``tools`` config to the documented dict shape.
+
+    The dict form (``{include: [...], exclude: [...], resources/prompts: bool}``) is
+    canonical; a bare string is a comma-separated ``include`` whitelist shorthand and a
+    list/tuple/set is an ``include`` whitelist as written. Falsy values keep their legacy
+    meaning of "no filter"; any other type warns and degrades to "no filter" instead of
+    crashing the registration paths, the way a bare string used to blow up
+    ``config_fingerprint`` with ``'str' object has no attribute 'get'`` and leave the
+    server with 0 registered tools and no actionable error.
+    """
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        return {"include": [p.strip() for p in value.split(",") if p.strip()]}
+    if isinstance(value, (list, tuple)):
+        return {"include": [str(item) for item in value]}
+    if isinstance(value, (set, frozenset)):
+        # Sets have no meaningful iteration order; sort so the normalized dict (and anything
+        # derived from it, like fingerprints and cache keys) is deterministic.
+        return {"include": sorted(str(item) for item in value)}
+    logger.warning("MCP config %s must be a dict (include/exclude) or a tool-name list; ignoring %r",
+                   label, value)
+    return {}
+
+
 def mcp_field(obj, snake: str, camel: str, default=None):
     """Read an MCP model field across the 1.x -> 2.x rename to snake_case. Pydantic aliases
     don't apply to attribute access, so ``getattr(result, "isError", False)`` silently returns

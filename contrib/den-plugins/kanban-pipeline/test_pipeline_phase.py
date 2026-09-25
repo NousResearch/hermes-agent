@@ -55,6 +55,13 @@ CONFIG_YAML = """kanban_pipeline:
 """
 
 
+def _kbc_mod():
+    """``hermes_cli.kanban_db_connect`` resolved at call time (fixtures reload
+    hermes_cli modules per test); ``kanban_db.connect`` is a removed compat path."""
+    import importlib
+    return importlib.import_module("hermes_cli.kanban_db_connect")
+
+
 def _fresh_home(tmp_path_factory, config_yaml=CONFIG_YAML):
     home = str(tmp_path_factory.mktemp("kp_home"))
     os.environ["HERMES_HOME"] = home
@@ -77,7 +84,6 @@ def env(tmp_path_factory):
     for mod in [m for m in list(sys.modules) if m.startswith("hermes_cli")]:
         del sys.modules[mod]
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as _kbc
     assert home in str(kb.kanban_db_path()), kb.kanban_db_path()
 
     spec = importlib.util.spec_from_file_location("kp_under_test", PLUGIN_SRC)
@@ -117,7 +123,7 @@ def test_delivered_current_artifact_beats_historical_url_and_creates_zero(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(merged=True, deployed=True, state="MERGED",
                                       detail="merge=6dc8964d8c35 live=36a655165c3b behind_by=0")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(
             conn, title="P1 — Make new tenant configuration valid",
             assignee="software-engineer",
@@ -131,7 +137,7 @@ def test_delivered_current_artifact_beats_historical_url_and_creates_zero(env):
 
     kp._on_completed(task_id=src)
 
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == [], titles(kb, conn)
         mine = "\n".join(b for b in comment_bodies(kb, conn, src)
                          if b.startswith("[kanban-pipeline:"))
@@ -153,7 +159,7 @@ def test_historical_url_alone_never_selects_a_target(env):
                 "detail": "fake"}
 
     kp.ARTIFACT_STATE_FN = _probe
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(
             conn, title="impl thing", assignee="software-engineer",
             body=("Current scope: finish the config fix.\n"
@@ -164,7 +170,7 @@ def test_historical_url_alone_never_selects_a_target(env):
                          fire_lifecycle_hook=False)
 
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == []
     assert calls == [], "a historical link must not even be probed"
 
@@ -176,14 +182,14 @@ def test_historical_url_alone_never_selects_a_target(env):
 def test_ambiguous_current_metadata_creates_zero_and_is_observable(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state()
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="two artifacts", assignee="software-engineer",
                              body="nothing here")
         kb.complete_task(conn, src,
                          summary="landed %s and %s" % (PR_CURRENT, PR_OTHER),
                          fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == []
         bodies = "\n".join(comment_bodies(kb, conn, src))
         assert "[kanban-pipeline:ambiguous-artifact:" in bodies
@@ -202,12 +208,12 @@ def test_probe_failure_creates_zero_and_is_observable(env):
         raise kp.ProbeError("read-only artifact probe exit 1: gh: connection refused")
 
     kp.ARTIFACT_STATE_FN = _boom
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="opened " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == []
         bodies = "\n".join(comment_bodies(kb, conn, src))
         assert "[kanban-pipeline:artifact-probe-failed:" in bodies
@@ -217,7 +223,7 @@ def test_probe_failure_creates_zero_and_is_observable(env):
 def test_run_metadata_read_failure_creates_zero_and_is_observable(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state()
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="opened " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
@@ -228,7 +234,7 @@ def test_run_metadata_read_failure_creates_zero_and_is_observable(env):
         kp._on_completed(task_id=src)
     finally:
         kb.latest_run = real_latest
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == []
         bodies = "\n".join(comment_bodies(kb, conn, src))
         assert "[kanban-pipeline:metadata-read-failed:" in bodies
@@ -239,12 +245,12 @@ def test_deployment_state_unknown_creates_zero(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(merged=True, deployed=None, state="MERGED",
                                       detail="no successful push run to compare against")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="merged " + PR_CURRENT)
         kb.complete_task(conn, src, summary="merged " + PR_CURRENT, fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == []
         assert "[kanban-pipeline:deployment-state-unknown:" in "\n".join(
             comment_bodies(kb, conn, src))
@@ -258,7 +264,7 @@ def test_existing_canonical_owner_is_reused_not_duplicated(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(merged=True, deployed=False, state="MERGED",
                                       detail="merge=abc behind_by=3")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         owner = kb.create_task(conn, title="release convergence (canonical)",
                                assignee="software-engineer",
                                body="owns deployment of " + PR_CURRENT)
@@ -266,7 +272,7 @@ def test_existing_canonical_owner_is_reused_not_duplicated(env):
                              body="merged " + PR_CURRENT)
         kb.complete_task(conn, src, summary="merged " + PR_CURRENT, fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == []
         bodies = "\n".join(comment_bodies(kb, conn, src))
         assert "[kanban-pipeline:existing-owner:" in bodies
@@ -281,12 +287,12 @@ def test_fresh_approved_open_pr_creates_merge_gate_with_linked_deploy(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN", approved=True,
                                       detail="state=OPEN reviewDecision=APPROVED")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl feature", assignee="software-engineer",
                              body="PR " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         rows = conn.execute(
             "select id,title,assignee,status from tasks order by created_at").fetchall()
         got = [r[1] for r in rows if r[1].startswith("pipeline:")]
@@ -305,13 +311,13 @@ def test_merged_but_not_deployed_creates_deploy_only(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(merged=True, deployed=False, state="MERGED",
                                       detail="merge=deadbeef1234 live=cafebabe5678 behind_by=4")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl feature", assignee="software-engineer",
                              body="PR " + PR_CURRENT)
         kb.complete_task(conn, src, summary="merged deadbeef1234 " + PR_CURRENT,
                          fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         got = pipeline_titles(kb, conn)
         assert got == ["pipeline: deploy+live-check PR #4878"], got
         assert not any("merge-gate" in t for t in got), "merged artifact must not spawn a merge card"
@@ -326,12 +332,12 @@ def test_merged_but_not_deployed_creates_deploy_only(env):
 def test_closed_unmerged_artifact_creates_zero(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="CLOSED", approved=False, detail="state=CLOSED")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="PR " + PR_CURRENT)
         kb.complete_task(conn, src, summary="abandoned " + PR_CURRENT, fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == []
         assert "[kanban-pipeline:artifact-not-open:" in "\n".join(comment_bodies(kb, conn, src))
 
@@ -343,13 +349,13 @@ def test_closed_unmerged_artifact_creates_zero(env):
 def test_repeated_completion_events_create_no_duplicates(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="PR " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
     for _ in range(4):
         kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         got = pipeline_titles(kb, conn)
         assert got.count("pipeline: merge-gate PR #4878") == 1, got
         assert got.count("pipeline: deploy+live-check PR #4878") == 1, got
@@ -361,7 +367,7 @@ def test_repeated_completion_events_create_no_duplicates(env):
 def test_concurrent_completion_events_create_no_duplicates(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="PR " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
@@ -382,7 +388,7 @@ def test_concurrent_completion_events_create_no_duplicates(env):
     for t in threads:
         t.join(timeout=60)
     assert errors == [], errors
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         got = pipeline_titles(kb, conn)
         assert got.count("pipeline: merge-gate PR #4878") == 1, got
         assert got.count("pipeline: deploy+live-check PR #4878") == 1, got
@@ -396,13 +402,13 @@ def test_pipeline_card_completion_never_chains(env):
     kb, kp = env
     probed = []
     kp.ARTIFACT_STATE_FN = lambda url: probed.append(url) or fake_state(state="OPEN")(url)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         gate = kb.create_task(conn, title="pipeline: merge-gate PR #4878", assignee="reviewer",
                               body="Merge gate for " + PR_CURRENT)
         kb.complete_task(conn, gate, summary="merged abc123 " + PR_CURRENT,
                          fire_lifecycle_hook=False)
     kp._on_completed(task_id=gate)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == ["pipeline: merge-gate PR #4878"]
     assert probed == []
 
@@ -415,14 +421,14 @@ def test_structured_run_metadata_outranks_body_text(env):
     kb, kp = env
     seen = []
     kp.ARTIFACT_STATE_FN = lambda url: seen.append(url) or fake_state(state="OPEN")(url)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="old draft lived at " + PR_HISTORICAL)
         kb.complete_task(conn, src, metadata={"pr_url": PR_CURRENT},
                          summary="done", fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
     assert seen == [PR_CURRENT], seen
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == ["pipeline: merge-gate PR #4878",
                                              "pipeline: deploy+live-check PR #4878"]
 
@@ -434,7 +440,7 @@ def test_structured_run_metadata_outranks_body_text(env):
 def test_board_mutation_failure_never_raises(env, caplog):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(merged=True, deployed=True, state="MERGED", detail="x")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="PR " + PR_CURRENT)
         kb.complete_task(conn, src, summary="merged " + PR_CURRENT, fire_lifecycle_hook=False)
@@ -452,7 +458,7 @@ def test_board_mutation_failure_never_raises(env, caplog):
 def test_create_task_failure_never_raises(env, caplog):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="PR " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
@@ -473,12 +479,12 @@ def test_create_task_failure_never_raises(env, caplog):
 def test_generated_instructions_honour_merge_gate_and_scope(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="PR " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         gate_body = conn.execute(
             "select body from tasks where title like 'pipeline: merge-gate%'").fetchone()[0]
         dep_body = conn.execute(
@@ -543,15 +549,15 @@ def test_real_hook_through_complete_task_and_default_transport(tmp_path_factory)
 import os, sys
 sys.path.insert(0, %(repo)r)
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as _kbc
+from hermes_cli.kanban_db_connect import connect as _connect
 from hermes_cli import plugins
 plugins.discover_plugins(force=True)
 assert plugins.has_hook("kanban_task_completed"), "plugin hook not discovered"
-with _kbc.connect() as conn:
+with _connect() as conn:
     src = kb.create_task(conn, title="impl real", assignee="software-engineer",
                          body="PR %(pr)s")
     kb.complete_task(conn, src, summary="opened %(pr)s")   # real lifecycle hook fires
-with _kbc.connect() as conn:
+with _connect() as conn:
     rows = [r[0] for r in conn.execute("select title from tasks order by created_at")]
 print(repr(rows))
 ''' % {"repo": REPO, "pr": PR_CURRENT}
@@ -657,14 +663,14 @@ def test_green_push_run_on_another_workflow_is_never_deployment_evidence(env, tm
     assert any("branch=main" in q for q in api), api          # target branch scoped
     assert not any("compare" in q for q in api), api          # ancestry never alone
 
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: deliver " + PR_CURRENT)
         kb.complete_task(conn, src, result="delivered", summary="merged " + PR_CURRENT,
                          fire_lifecycle_hook=False)
     kp.ARTIFACT_STATE_FN = kp._gh_artifact_state   # the real default transport
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         bodies = "\n".join(comment_bodies(kb, conn, src))
         assert "[kanban-pipeline:already-delivered:" not in bodies
         assert "[kanban-pipeline:deployment-state-unknown:" in bodies
@@ -721,13 +727,13 @@ def test_qualified_deploy_job_at_merge_sha_is_evidence_worded_accurately(env, tm
     assert state["deployed"] is True, state
     assert "deploy job" in state["detail"] and MERGE_SHA[:12] in state["detail"]
 
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: " + PR_CURRENT)
         kb.complete_task(conn, src, summary="merged " + PR_CURRENT, fire_lifecycle_hook=False)
     kp.ARTIFACT_STATE_FN = kp._gh_artifact_state   # the real default transport
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == []
         bodies = "\n".join(comment_bodies(kb, conn, src))
         assert "[kanban-pipeline:already-delivered:" in bodies
@@ -796,14 +802,14 @@ def test_pr_number_prefix_collision_is_not_ownership(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
     base = "https://github.com/VibeTechnologies/AgentPod/pull/"
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         kb.create_task(conn, title="pipeline: merge-gate PR #10", assignee="reviewer",
                        body="Merge gate for " + base + "10")
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: " + base + "1")
         kb.complete_task(conn, src, summary="opened " + base + "1", fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         got = pipeline_titles(kb, conn)
         assert "pipeline: merge-gate PR #1" in got, got
         assert "pipeline: deploy+live-check PR #1" in got, got
@@ -813,7 +819,7 @@ def test_archived_quote_never_suppresses_chaining(env):
     """CX2b: an archived card that merely quotes the URL is not an owner."""
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         stale = kb.create_task(conn, title="stale autogenerated card", assignee="reviewer",
                                body="pipeline: deploy+live-check for " + PR_HISTORICAL)
         kb.archive_task(conn, stale)
@@ -822,7 +828,7 @@ def test_archived_quote_never_suppresses_chaining(env):
         kb.complete_task(conn, src, summary="opened " + PR_HISTORICAL,
                          fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         got = pipeline_titles(kb, conn)
         assert got == ["pipeline: merge-gate PR #4841",
                        "pipeline: deploy+live-check PR #4841"], got
@@ -832,7 +838,7 @@ def test_historical_quote_in_a_live_card_is_not_ownership(env):
     """CX2c: a live card whose CURRENT scope is a different artifact owns nothing here."""
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         kb.create_task(conn, title="unrelated live work", assignee="software-engineer",
                        body=("CURRENT SCOPE: deliver " + PR_OTHER + "\n\n"
                              "--- Historical task context; obsolete instructions do not "
@@ -842,7 +848,7 @@ def test_historical_quote_in_a_live_card_is_not_ownership(env):
         kb.complete_task(conn, src, summary="opened " + PR_HISTORICAL,
                          fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         got = pipeline_titles(kb, conn)
         assert got.count("pipeline: merge-gate PR #4841") == 1, got
         assert got.count("pipeline: deploy+live-check PR #4841") == 1, got
@@ -852,7 +858,7 @@ def test_partial_chain_is_adopted_and_completed_without_duplicates(env):
     """CX7: event 1 dies after the merge gate; the retry mints ONLY the missing hop."""
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
@@ -871,12 +877,12 @@ def test_partial_chain_is_adopted_and_completed_without_duplicates(env):
         kp._on_completed(task_id=src)
     finally:
         kb.create_task = real_create
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         after1 = pipeline_titles(kb, conn)
     assert after1 == ["pipeline: merge-gate PR #4878"], after1
 
     kp._on_completed(task_id=src)            # the natural retry
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         after2 = pipeline_titles(kb, conn)
         assert after2.count("pipeline: merge-gate PR #4878") == 1, after2
         assert after2.count("pipeline: deploy+live-check PR #4878") == 1, after2
@@ -887,7 +893,7 @@ def test_done_merge_gate_does_not_suppress_the_owed_deploy_hop(env):
     """A completed, verified phase covers ITSELF only."""
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         gate = kb.create_task(conn, title="pipeline: merge-gate PR #4878", assignee="reviewer",
                               body="Merge gate for " + PR_CURRENT,
                               idempotency_key=kp._phase_key("merge", kp._identity(PR_CURRENT)))
@@ -896,7 +902,7 @@ def test_done_merge_gate_does_not_suppress_the_owed_deploy_hop(env):
                              body="CURRENT SCOPE: " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         got = pipeline_titles(kb, conn)
         assert got.count("pipeline: merge-gate PR #4878") == 1, got
         assert got.count("pipeline: deploy+live-check PR #4878") == 1, got
@@ -911,18 +917,17 @@ def test_repo_without_sanctioned_helper_states_a_configuration_gap(env, tmp_path
     for mod in [m for m in list(sys.modules) if m.startswith("hermes_cli")]:
         del sys.modules[mod]
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as _kbc
     spec = importlib.util.spec_from_file_location("kp_gap", PLUGIN_SRC)
     kp = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(kp)
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
     assert home in str(kb.kanban_db_path())
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         gate_body = conn.execute(
             "select body from tasks where title like 'pipeline: merge-gate%'").fetchone()[0]
     assert "OWNER CONFIGURATION GAP" in gate_body
@@ -938,14 +943,14 @@ def test_foreign_repository_is_out_of_scope_and_never_probed(env):
     probed = []
     kp.ARTIFACT_STATE_FN = lambda url: probed.append(url) or fake_state(state="OPEN")(url)
     foreign = "https://github.com/some-vendor/unrelated-oss/pull/12"
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="investigate upstream", assignee="software-engineer",
                              body="CURRENT SCOPE: read-only investigation, see " + foreign)
         kb.complete_task(conn, src, summary="investigated, see " + foreign,
                          fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
     assert probed == []
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == []
         bodies = "\n".join(comment_bodies(kb, conn, src))
         assert "[kanban-pipeline:repo-out-of-scope:" in bodies
@@ -957,14 +962,14 @@ def test_foreign_repository_is_out_of_scope_and_never_probed(env):
 def test_chain_lock_lives_beside_the_board_db_and_is_used(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
     lock = str(kb.kanban_db_path()) + ".kanban-pipeline.chain.lock"
     assert os.path.exists(lock), lock          # the DEFAULT board is protected too
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert "lock exclusive" in "\n".join(comment_bodies(kb, conn, src))
 
 
@@ -972,7 +977,7 @@ def test_chain_lock_timeout_defers_bounded_and_mints_nothing(env, tmp_path_facto
     """CX4: a wedged holder in another OS process must not block or bypass."""
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
@@ -992,7 +997,7 @@ def test_chain_lock_timeout_defers_bounded_and_mints_nothing(env, tmp_path_facto
         holder.kill()
         holder.wait(timeout=30)
     assert waited < 20, waited                 # bounded, never an indefinite hang
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == [], "must not mint outside the atomic section"
         assert "[kanban-pipeline:chain-lock-busy:" in "\n".join(comment_bodies(kb, conn, src))
 
@@ -1002,7 +1007,7 @@ def test_chain_lock_timeout_defers_bounded_and_mints_nothing(env, tmp_path_facto
 def test_changed_failure_condition_is_not_swallowed_by_the_first_one(env):
     """CX6: dedup is on code + scope + condition digest, not on the code alone."""
     kb, kp = env
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
@@ -1010,14 +1015,14 @@ def test_changed_failure_condition_is_not_swallowed_by_the_first_one(env):
     kp.ARTIFACT_STATE_FN = lambda u: (_ for _ in ()).throw(RuntimeError("gh auth token expired"))
     kp._on_completed(task_id=src)
     kp._on_completed(task_id=src)              # identical condition -> still one
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         first = [b for b in comment_bodies(kb, conn, src) if b.startswith("[kanban-pipeline:")]
     assert len(first) == 1, first
 
     kp.ARTIFACT_STATE_FN = lambda u: (_ for _ in ()).throw(
         RuntimeError("artifact repository was DELETED - escalate now"))
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         bodies = [b for b in comment_bodies(kb, conn, src) if b.startswith("[kanban-pipeline:")]
     assert len(bodies) == 2, bodies
     assert any("DELETED" in b for b in bodies)
@@ -1030,7 +1035,7 @@ def test_board_payload_is_honoured_from_a_worker_thread(env):
     kb.create_board("alt", name="alt board")
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
     with kb.scoped_current_board("alt"):
-        with _kbc.connect() as conn:
+        with _kbc_mod().connect() as conn:
             src = kb.create_task(conn, title="impl on alt", assignee="software-engineer",
                                  body="CURRENT SCOPE: " + PR_CURRENT)
             kb.complete_task(conn, src, summary="opened " + PR_CURRENT,
@@ -1039,9 +1044,9 @@ def test_board_payload_is_honoured_from_a_worker_thread(env):
     t.start()
     t.join(timeout=60)
     with kb.scoped_current_board("alt"):
-        with _kbc.connect() as conn:
+        with _kbc_mod().connect() as conn:
             on_alt = pipeline_titles(kb, conn)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         on_default = pipeline_titles(kb, conn)
     assert on_alt == ["pipeline: merge-gate PR #4878",
                       "pipeline: deploy+live-check PR #4878"], on_alt
@@ -1051,20 +1056,20 @@ def test_board_payload_is_honoured_from_a_worker_thread(env):
 def test_invalid_or_unknown_board_payload_is_refused(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
     kp._on_completed(task_id=src, board="../../etc")       # invalid slug
     kp._on_completed(task_id=src, board="no-such-board")   # valid slug, absent board
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == []
 
 
 def test_artifactless_completion_is_quiet_but_delivery_shaped_gets_one_notice(env):
     kb, kp = env
     kp.ARTIFACT_STATE_FN = fake_state(state="OPEN")
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         quiet = kb.create_task(conn, title="write the doc", assignee="software-engineer",
                                body="no artifact here")
         kb.complete_task(conn, quiet, summary="wrote the doc", fire_lifecycle_hook=False)
@@ -1075,7 +1080,7 @@ def test_artifactless_completion_is_quiet_but_delivery_shaped_gets_one_notice(en
     kp._on_completed(task_id=quiet)
     kp._on_completed(task_id=shaped)
     kp._on_completed(task_id=shaped)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert [b for b in comment_bodies(kb, conn, quiet)
                 if b.startswith("[kanban-pipeline:")] == []
         notices = [b for b in comment_bodies(kb, conn, shaped)
@@ -1090,17 +1095,16 @@ def test_plugin_is_inert_without_explicit_config(tmp_path_factory):
     for mod in [m for m in list(sys.modules) if m.startswith("hermes_cli")]:
         del sys.modules[mod]
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as _kbc
     spec = importlib.util.spec_from_file_location("kp_off", PLUGIN_SRC)
     kp = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(kp)
     assert home in str(kb.kanban_db_path())
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
     kp._on_completed(task_id=src)
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == []
         assert comment_bodies(kb, conn, src) == []
 
@@ -1114,7 +1118,6 @@ os.environ["HERMES_HOME"] = %(home)r
 for v in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD"):
     os.environ.pop(v, None)
 from hermes_cli import kanban_db as kb
-from hermes_cli import kanban_db_connect as _kbc
 spec = importlib.util.spec_from_file_location("kp_child", %(src)r)
 kp = importlib.util.module_from_spec(spec); spec.loader.exec_module(kp)
 kp.ARTIFACT_STATE_FN = lambda u: {"merged": False, "deployed": False, "approved": True,
@@ -1127,7 +1130,7 @@ def _child(home, body):
 
 
 def _seed_completed_source(kb, board=None):
-    with _kbc.connect(board=board) as conn:
+    with _kbc_mod().connect(board=board) as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=False)
@@ -1141,7 +1144,6 @@ def test_cross_process_completion_events_create_no_duplicates(tmp_path_factory, 
     for mod in [m for m in list(sys.modules) if m.startswith("hermes_cli")]:
         del sys.modules[mod]
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as _kbc
     if board:
         kb.create_board(board, name=board)
     src = _seed_completed_source(kb, board)
@@ -1155,7 +1157,7 @@ def test_cross_process_completion_events_create_no_duplicates(tmp_path_factory, 
     outs = [p.communicate(timeout=300) for p in procs]
     for p, (o, e) in zip(procs, outs):
         assert p.returncode == 0, e[-800:]
-    with _kbc.connect(board=board) as conn:
+    with _kbc_mod().connect(board=board) as conn:
         got = pipeline_titles(kb, conn)
     assert got.count("pipeline: merge-gate PR #4878") == 1, got
     assert got.count("pipeline: deploy+live-check PR #4878") == 1, got
@@ -1169,7 +1171,6 @@ def test_cross_process_partial_creation_is_completed_by_a_later_process(tmp_path
     for mod in [m for m in list(sys.modules) if m.startswith("hermes_cli")]:
         del sys.modules[mod]
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db_connect as _kbc
     src = _seed_completed_source(kb)
 
     crash = (
@@ -1185,7 +1186,7 @@ def test_cross_process_partial_creation_is_completed_by_a_later_process(tmp_path
     p = subprocess.run([sys.executable, "-c", _child(home, crash)],
                        capture_output=True, text=True, timeout=300)
     assert p.returncode == 9, (p.returncode, p.stderr[-500:])
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert pipeline_titles(kb, conn) == ["pipeline: merge-gate PR #4878"]
     lock = str(kb.kanban_db_path()) + ".kanban-pipeline.chain.lock"
     assert os.path.exists(lock)
@@ -1194,7 +1195,7 @@ def test_cross_process_partial_creation_is_completed_by_a_later_process(tmp_path
     p2 = subprocess.run([sys.executable, "-c", _child(home, retry)],
                         capture_output=True, text=True, timeout=300)
     assert p2.returncode == 0, p2.stderr[-800:]
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         got = pipeline_titles(kb, conn)
     assert got.count("pipeline: merge-gate PR #4878") == 1, got
     assert got.count("pipeline: deploy+live-check PR #4878") == 1, got
@@ -1209,12 +1210,12 @@ def test_completion_hook_never_hangs_or_breaks_the_transition(env):
         raise RuntimeError("probe exploded")
 
     kp.ARTIFACT_STATE_FN = _slow_boom
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         src = kb.create_task(conn, title="impl", assignee="software-engineer",
                              body="CURRENT SCOPE: " + PR_CURRENT)
         kb.complete_task(conn, src, summary="opened " + PR_CURRENT, fire_lifecycle_hook=True)
     t0 = time.time()
     kp._on_completed(task_id=src)
     assert time.time() - t0 < 30
-    with _kbc.connect() as conn:
+    with _kbc_mod().connect() as conn:
         assert kb.get_task(conn, src).status == "done"

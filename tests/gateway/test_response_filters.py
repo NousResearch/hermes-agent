@@ -114,3 +114,31 @@ def test_padding_on_bracketed_prose_is_still_delivered():
     assert not is_intentional_silence_response("SILENT ]")
     assert not is_autonomous_silence_response("a status update [ SILENT ] for this tick")
 
+
+
+def test_code_formatted_sentinel_is_autonomous_silence():
+    """Models wrap the literal marker in code formatting; the wrapped form must not leak."""
+    for response in (
+        "`[SILENT]`",
+        "``[SILENT]``",
+        "```\n[SILENT]\n```",
+        "```text\n[SILENT]\n```",
+        "```text block\n[SILENT]\n```",
+        "`[SILENT]`\n\nNothing new this tick.",
+        "2 deals filtered\n\n`[SILENT]`",
+        "`[SILENT]` No changes detected",
+        "``[SILENT]`` No changes detected",
+        "`NO_REPLY`",
+    ):
+        assert is_autonomous_silence_response(response), response
+
+
+def test_code_spanned_sentinel_mentioned_mid_body_is_delivered():
+    assert not is_autonomous_silence_response("Reply with `[SILENT]` when there is nothing new.")
+    assert not is_autonomous_silence_response("Report\n\nThe job emits `[SILENT]` on quiet ticks.\n\nDone.")
+    assert not is_autonomous_silence_response("```python\nprint('[SILENT] handling')\n```")
+
+
+def test_interactive_exact_rule_is_unchanged_for_code_spans():
+    """Only the loose autonomous lane peels code formatting."""
+    assert not is_intentional_silence_response("`[SILENT]`")

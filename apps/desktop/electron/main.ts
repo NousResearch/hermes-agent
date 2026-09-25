@@ -531,7 +531,7 @@ import {
 import { startRelaunchWaiter } from './updater/relaunch-waiter'
 import { preflightStateDb } from './updater/state-db-preflight'
 import { createStoreStrategy } from './updater/store-client'
-import { isHermesOwnedVenvDaemon } from './venv-holder-select'
+import { isExternalVenvHolder, isHermesOwnedVenvDaemon } from './venv-holder-select'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { decodeWebText } from './web-text-decoder'
@@ -3677,6 +3677,22 @@ function isShimLocked(shimPath) {
 // held installation. Selection lives in the pure
 // venv-holder-select module (ordinal path-prefix, no PowerShell -like
 // wildcard hazards) so it's testable without Electron.
+function scanWindowsProcesses(): Array<{ ProcessId?: unknown; ExecutablePath?: unknown; CommandLine?: unknown }> {
+  const out = execFileSync(
+    'powershell',
+    [
+      '-NoProfile',
+      '-Command',
+      'Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.CommandLine } | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress'
+    ],
+    hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 })
+  )
+
+  const parsed = JSON.parse(String(out || '[]'))
+
+  return Array.isArray(parsed) ? parsed : [parsed]
+}
+
 function killHermesOwnedVenvDaemons(updateRoot) {
   if (!IS_WINDOWS) {
     return
@@ -3687,19 +3703,7 @@ function killHermesOwnedVenvDaemons(updateRoot) {
   let holders = []
 
   try {
-    const out = execFileSync(
-      'powershell',
-      [
-        '-NoProfile',
-        '-Command',
-        'Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.CommandLine } | Select-Object ProcessId, ExecutablePath, CommandLine | ConvertTo-Json -Compress'
-      ],
-      hiddenWindowsChildOptions({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 15_000 })
-    )
-
-    const parsed = JSON.parse(String(out || '[]'))
-
-    holders = (Array.isArray(parsed) ? parsed : [parsed]).filter(p =>
+    holders = scanWindowsProcesses().filter(p =>
       isHermesOwnedVenvDaemon(p?.ExecutablePath, p?.CommandLine, scriptsDir)
     )
   } catch {
@@ -3718,6 +3722,50 @@ function killHermesOwnedVenvDaemons(updateRoot) {
       } catch (error) {
         // Update hand-off only. Close/stop must not swallow this; see
         // windowsCloseStopOwnedBackends.
+        rememberLog(`[updates] taskkill PID ${pid} failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+  }
+}
+
+// Kill EXTERNAL Hermes processes that hold this install's venv shim (#62311):
+// the gateway Startup item and dashboard Scheduled Task are launched outside
+// this app (Task Scheduler / autostart), so the backend teardown above never
+// sees them — yet they map venv files and made every update hand-off abort
+// with "venv shim still locked". Selection is deliberately narrow
+// (isExternalVenvHolder: exe under venv\Scripts AND unambiguously a Hermes
+// program) — unrelated processes that merely mention the install root or use
+// the venv interpreter for their own scripts are never killed; the shim-lock
+// probe still aborts the hand-off for those. Called before the release gate
+// AND inside each gate pass, so a respawning autostart holder is re-killed
+// instead of winning the 15s race.
+function killExternalVenvHolders(updateRoot) {
+  if (!IS_WINDOWS) {
+    return
+  }
+
+  const scriptsDir = path.join(resolveVenvDir(updateRoot), 'Scripts')
+
+  let holders = []
+
+  try {
+    holders = scanWindowsProcesses().filter(p =>
+      isExternalVenvHolder(p?.ExecutablePath as string | undefined, p?.CommandLine as string | undefined, scriptsDir)
+    )
+  } catch {
+    // Best-effort: the shim-lock probe remains the backstop.
+    return
+  }
+
+  for (const holder of holders) {
+    const pid = Number(holder?.ProcessId)
+
+    if (Number.isInteger(pid) && pid > 0) {
+      rememberLog(`[updates] stopping external Hermes venv holder (autostart gateway/dashboard) PID ${pid} before hand-off`)
+
+      try {
+        forceKillProcessTree(pid)
+      } catch (error) {
         rememberLog(`[updates] taskkill PID ${pid} failed: ${error instanceof Error ? error.message : String(error)}`)
       }
     }
@@ -4196,6 +4244,12 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
   // (venv-holder-select) — external holders are never killed here.
   killHermesOwnedVenvDaemons(updateRoot)
 
+  // External autostart Hermes processes (gateway Startup item, dashboard
+  // Scheduled Task) also hold the venv shim and are invisible to the backend
+  // teardown (#62311). Kill them before the gate AND re-scan inside each gate
+  // pass, so a respawning holder loses the race instead of the update.
+  killExternalVenvHolders(updateRoot)
+
   const shim = venvHermesShimPath(updateRoot)
 
   const gate = await waitForBackendRelease(
@@ -4204,6 +4258,9 @@ async function releaseBackendLock(updateRoot: string, tag: string): Promise<{ un
       isShimLocked: () => Boolean(isShimLocked(shim)),
       isPidAlive: isPidAliveWindows,
       collectStragglerPids: () => {
+        // Re-kill resurgent external holders (autostart gateway/dashboard) on
+        // every pass — #62311 — before collecting the desktop-owned stragglers.
+        killExternalVenvHolders(updateRoot)
         const stragglers = []
 
         const currentHermesProcess = backendConnectionState.getProcess()

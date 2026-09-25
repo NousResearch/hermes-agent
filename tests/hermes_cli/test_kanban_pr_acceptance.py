@@ -129,3 +129,47 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")
+
+
+# --- #122689: acceptance must read the repo as the ASSIGNEE profile's gh login ---
+
+@pytest.mark.platforms("posix")
+def test_acceptance_runs_gh_as_the_assignee_profile(tmp_path, monkeypatch):
+    """The gh child env carries the assignee's own GH credentials (its .env),
+    never the ambient/launch residue, and an invisible repo is classified
+    `auth` naming the repository — not a retryable `infra` failure."""
+    from pathlib import Path
+
+    launch_home = tmp_path / "home"
+    launch_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(launch_home))
+    assignee_home = launch_home / "profiles" / "b"
+    assignee_home.mkdir(parents=True)
+    (assignee_home / ".env").write_text("GH_TOKEN=b-token\n", encoding="utf-8")
+    # Ambient residue that must NOT decide the login.
+    monkeypatch.setenv("GH_TOKEN", "launch-token")
+    monkeypatch.setenv("GH_CONFIG_DIR", "/nonexistent/launch/gh")
+
+    env_dump = tmp_path / "gh_env.json"
+    shim = tmp_path / "bin"
+    shim.mkdir()
+    gh = shim / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport json, os\n"
+                  f"json.dump(dict(os.environ), open({str(env_dump)!r}, 'w'))\n"
+                  "print(json.dumps({'data': {'repository': None}}))\n")
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    kb.init_db()
+    with connect() as conn:
+        tid = kb.create_task(conn, title="as-b", completion_contract="acme/repo", assignee="b")
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        assert kb.get_task(conn, tid).status != "done"
+        receipts = [json.loads(r[0]) for r in conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,))]
+        assert receipts[-1]["classification"] == "auth"
+        assert "acme/repo" in receipts[-1]["detail"]
+    captured = json.loads(env_dump.read_text())
+    assert captured["GH_TOKEN"] == "b-token"
+    assert captured.get("GH_CONFIG_DIR") != "/nonexistent/launch/gh"
+    assert "credentials" in (kb.get_task(conn, tid).last_failure_error or "")

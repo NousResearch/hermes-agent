@@ -2,10 +2,16 @@
 
 Network work happens outside SQLite transactions. The lifecycle owner persists
 receipts only after rechecking the captured run/status/contract under its lock.
+
+``gh`` runs as the card's assignee profile (``profile_home``), not the ambient
+login: :func:`_gh_env` resolves that profile's own credentials/config for the
+subprocess — a multi-profile host's default ``gh`` login cannot read another
+org's private repos (#122689).
 """
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from urllib.parse import quote
@@ -22,21 +28,92 @@ def validate_contract(value: str | None) -> str:
     return value
 
 
-def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
+def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
+         profile_home: str | None = None):
     command = ["gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:
         command += ["--paginate", "--slurp"]
-    result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
-                            text=True, timeout=30, check=True)
+    try:
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=30, check=True, env=_gh_env(profile_home))
+    except subprocess.CalledProcessError as exc:
+        # 401/403/404 = the login cannot see this repository (wrong profile identity
+        # or missing grant), not a transient API failure. Persist only the status
+        # code + endpoint, never gh's stderr (credentials/host details).
+        denied = re.search(r"HTTP (40[134])", exc.stderr or "")
+        if denied:
+            raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
+        raise
     value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
 
 
-def collect_acceptance(contract: str, published_pr: str | None) -> dict:
+class _GateAuthError(RuntimeError):
+    """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
+    this profile's login cannot see the repo — an identity problem to fix, not
+    an infrastructure blip to retry."""
+
+
+def _gh_env(profile_home: str | None) -> dict[str, str]:
+    """Child env for ``gh``: the card's profile identity when one is resolvable.
+
+    The completion boundary runs in the worker (assignee), the CLI, or a
+    reviewer/dispatcher turn, so an ambient ``gh`` login is whichever process
+    happened to call it. ``served_profile_child_env(inherit_credentials=True)``
+    is the blessed seam for "this child acts for that profile": it scrubs the
+    launch profile's credential residue and overlays the target profile's own
+    ``GH_TOKEN``/``GH_CONFIG_DIR`` (its ``.env`` + external secret sources).
+    ``None`` keeps the ambient env — unassigned cards and single-profile hosts
+    behave exactly as before.
+    """
+    if not profile_home:
+        return os.environ
+    from tools.environments.local import _is_routed_home, served_profile_child_env
+    base = dict(os.environ)
+    if _is_routed_home(profile_home):
+        # gh's config dir decides which login `gh api` uses, yet it is a path,
+        # not a credential, so no scrub list sees it: drop launch residue (a
+        # unit-file export never shows in the launch `.env` the strip reads).
+        # The target's own GH_CONFIG_DIR is overlaid from its `.env` below; a
+        # same-home target keeps operator exports, like every other child.
+        base.pop("GH_CONFIG_DIR", None)
+    return served_profile_child_env(base=base, target_home=profile_home,
+                                    inherit_credentials=True)
+
+
+def _assignee_profile_home(conn, task_id: str) -> "str | None":
+    """Home whose ``gh`` login must read the contract repo, or None.
+
+    The assignee owns the PR and its repo; the reviewer fallback matches
+    dispatch, which re-spawns a review-lane task under the assignee's profile.
+    Name resolution goes through ``get_profile_dir`` (rooted at the DEFAULT
+    profile root, not this process's launch home): the boundary may run inside
+    a routed turn, and profile operations are HOME-anchored by design.
+    Unresolvable names (unassigned, "worker", uninstalled) return None so the
+    ambient login is used rather than guessing an identity.
+    """
+    try:
+        row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    except Exception:
+        return None
+    assignee = row["assignee"] if row else None
+    if not assignee or assignee == "worker":
+        return None
+    try:
+        from hermes_cli.profiles import get_profile_dir, profile_exists
+        if not profile_exists(assignee):
+            return None
+        return str(get_profile_dir(assignee))
+    except Exception:
+        return None
+
+
+def collect_acceptance(contract: str, published_pr: str | None,
+                       profile_home: str | None = None) -> dict:
     receipt = {"ok": False, "classification": "missing", "head_sha": None,
                "pr_url": published_pr, "checks": [],
                "recovery": "Fix required failures, rerun infrastructure checks or wait, then retry completion. "
@@ -54,14 +131,19 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state
             baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (
                 json.dumps(owner), json.dumps(name), number)
-        pr = _api("graphql", query=query)["data"]["repository"]["pullRequest"]
+        repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
+        if repository is None:
+            # A private repo the login cannot read resolves to null, not an error.
+            raise _GateAuthError(f"HTTP 404 on graphql {repo}")
+        pr = repository["pullRequest"]
         sha, branch = pr["headRefOid"], pr["baseRefName"]
         receipt["head_sha"] = sha
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or pr["state"] not in {"OPEN", "MERGED"}:
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100",
+                     paginate=True, profile_home=profile_home)
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
@@ -71,11 +153,13 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         if not required:
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
             return receipt
-        pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest", paginate=True)
+        pages = _api(f"repos/{repo}/commits/{sha}/check-runs?per_page=100&filter=latest",
+                     paginate=True, profile_home=profile_home)
         runs = [run for page in pages for run in page["check_runs"]]
         if len({r["id"] for r in runs}) != pages[0]["total_count"]:
             raise ValueError("Incomplete check-run pagination")
-        statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100", paginate=True) for s in page]
+        statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100",
+                                                       paginate=True, profile_home=profile_home) for s in page]
         outcomes = []
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
@@ -96,12 +180,17 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
                     "head_sha": check.get("head_sha", check.get("sha")),
                     "classification": classification, "conclusion": outcome})
         # Re-read after all pages: old-head successes are never transferable.
-        current = _api(f"repos/{repo}/pulls/{number}")
+        current = _api(f"repos/{repo}/pulls/{number}", profile_home=profile_home)
         if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")
         receipt["ok"] = receipt["classification"] == "success"
+        return receipt
+    except _GateAuthError as exc:
+        receipt.update(classification="auth",
+                       detail=f"GitHub refused the acceptance read ({exc}) as the assignee profile's gh login; "
+                              "fix that profile's GitHub credentials/access to the repository, then retry completion.")
         return receipt
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.

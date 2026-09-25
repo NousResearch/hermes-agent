@@ -65,6 +65,12 @@ neutral **required** evidence cannot complete the card. Neither can zero-run
 acceptance, unreadable policy or GitHub API failures. A repository without required
 checks needs a local-only contract. `gh` must be authenticated with read access to
 the repository's checks and rules; no remote writes are performed by this gate.
+Acceptance reads run as the **assignee profile's** `gh` login — its `GH_TOKEN` /
+`GH_CONFIG_DIR` from the profile's own `.env`, never the ambient login of the
+process completing the card. On multi-profile hosts (one GitHub identity per
+org), sign `gh` in per profile (`GH_CONFIG_DIR` in that profile's `.env`). A
+login that cannot see the repository is rejected with `classification=auth`,
+naming the repository, instead of a retryable infra failure.
 
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery

@@ -3352,6 +3352,11 @@ export const koOverrides = {
       switchTo: (name, gateway) => `${gateway}의 ${name}(으)로 전환`,
       deleteOn: gateway => ` (${gateway})`
     },
+    status: {
+      unread: (count: number) => `읽지 않은 세션 ${count}개`,
+      needsInput: (count: number) => `답변이 필요한 세션 ${count}개`,
+      working: (count: number) => `실행 중인 세션 ${count}개`
+    },
     remoteOverride: {
       menuItem: '원격 호스트에 연결…',
       badge: (host: string) => `${host}에서 실행`,
@@ -5580,6 +5585,9 @@ export const koOverrides = {
     sessionUnavailable: '세션을 사용할 수 없음',
     createSessionFailed: '새 세션을 생성하지 못했습니다',
     promptFailed: '프롬프트 실패',
+    staleSessionTitle: '대화가 최신이 아닙니다',
+    staleSessionBody:
+      '이 창이 같은 대화의 다른 화면보다 뒤처져 있었습니다. 최신 메시지를 불러왔습니다. 그래도 보내시려면 다시 보내세요.',
     providerCredentialRequired: '첫 메시지를 전송하기 전에 공급자 자격 증명을 추가하세요.',
     emptySlashCommand: '빈 슬래시 명령',
     desktopCommands: '데스크톱 명령',

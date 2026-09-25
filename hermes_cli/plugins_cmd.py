@@ -766,9 +766,13 @@ def _discover_all_plugins() -> list:
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)
+    # Match the runtime's directory precedence by key AND declared name: nested
+    # directory keys are qualified, while the installed pip alias is not.
+    directory_names = {row[0] for row in seen.values()}
     # Entry-point plugins are installed as Python packages, so they have no plugin directory.
     for m in discover_entrypoint_manifests():
-        seen.setdefault(m.name, (m.name, m.version, m.description, "entrypoint", m.path, m.name))
+        if m.name not in directory_names:
+            seen.setdefault(m.name, (m.name, m.version, m.description, "entrypoint", m.path, m.name))
     return list(seen.values())
 
 

@@ -2990,6 +2990,32 @@ class TestNewEndpoints:
         assert resp.json()["names"] == ["kanban-orchestrator"]
         assert calls and calls[0]["include_gated"] is True
 
+    def test_get_skills_listing_includes_environment_gated(self, monkeypatch):
+        # Regression (same class as the toggle 400): the Capabilities tab renders
+        # its sections FROM this listing, so a gated listing hides the whole
+        # Devops section whenever the Kanban environment goes inactive — while
+        # toggle-category keeps accepting it. The gates are offer-time filters
+        # for the agent; a config surface lists every discoverable skill.
+        import tools.skills_tool as skills_tool
+
+        rows = [
+            {"name": "kanban-orchestrator", "description": "a", "category": "devops",
+             "environments": ["kanban"]},
+            {"name": "github", "description": "b", "category": "github"},
+        ]
+
+        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False):
+            return [
+                dict(r) for r in rows
+                if include_gated or skills_tool.skill_matches_environment(r)
+            ]
+
+        monkeypatch.setattr(skills_tool, "skill_matches_environment", lambda fm: False)
+        monkeypatch.setattr(skills_tool, "_find_all_skills", _fake_find_all_skills)
+
+        names = {s["name"] for s in self.client.get("/api/skills").json()}
+        assert {"kanban-orchestrator", "github"} <= names
+
     def test_toggle_skill_category_null_matches_uncategorized(self, monkeypatch):
         import tools.skills_tool as skills_tool
         from hermes_cli.config import load_config

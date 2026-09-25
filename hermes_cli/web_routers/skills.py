@@ -351,7 +351,11 @@ async def get_skills(profile: Optional[str] = None):
         with _profile_scope(profile):
             config = load_config()
             disabled = get_disabled_skills(config)
-            skills = _find_all_skills(skip_disabled=True)
+            # include_gated: this listing is the config surface the Capabilities
+            # tab renders its sections from — the platform/environment/app gates
+            # are offer-time filters for the agent, not reasons to hide a
+            # category the user can still toggle.
+            skills = _find_all_skills(skip_disabled=True, include_gated=True)
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
             # without a per-skill manifest read): hub > bundled > agent, where

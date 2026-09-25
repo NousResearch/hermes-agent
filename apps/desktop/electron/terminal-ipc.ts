@@ -46,6 +46,31 @@ export function terminalLcCtype(
   return platform === 'darwin' ? 'UTF-8' : env.LANG || 'C.UTF-8'
 }
 
+// A backend-spawned Electron inherits the backend's Python activation
+// environment. An interactive pane must not: conda's hook then imports
+// packages off PYTHONPATH that were built for the backend interpreter.
+// External terminal launchers keep PYTHONPATH on purpose.
+export function scrubBackendPythonEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const scrubbed = { ...env }
+
+  for (const key of Object.keys(scrubbed)) {
+    const upper = key.toUpperCase()
+
+    if (
+      upper === 'PYTHONPATH' ||
+      upper === 'PYTHONHOME' ||
+      upper === 'VIRTUAL_ENV' ||
+      upper === '_CE_M' ||
+      upper === '_CE_CONDA' ||
+      upper.startsWith('CONDA_')
+    ) {
+      delete scrubbed[key]
+    }
+  }
+
+  return scrubbed
+}
+
 export function registerTerminalIpc({
   isWindows,
   findOnPath,
@@ -152,7 +177,7 @@ export function registerTerminalIpc({
   }
 
   function terminalShellEnv() {
-    const env = { ...process.env }
+    const env = scrubBackendPythonEnv(process.env)
 
     // Electron is commonly launched through `npm run dev`; do not leak npm's
     // managed prefix into a user's interactive shell (nvm/proto warn loudly).

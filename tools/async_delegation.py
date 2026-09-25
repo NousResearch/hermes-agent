@@ -703,7 +703,7 @@ def _dispatch_admitted(
     with _records_lock:
         active_slots = {r.get("slot_key") or r["delegation_id"] for r in _records.values() if r.get("status") in _ACTIVE_STATES}
         if record["slot_key"] not in active_slots and len(active_slots) >= max_async_children:
-            return {"status": "rejected", "error": capacity_error}
+            return {"status": "rejected", "error": capacity_error, "at_capacity": True}
         _records[delegation_id] = record
         live_units = sum(1 for r in _records.values() if r.get("status") in _LIVE_STATES)
     _persist_dispatch(record)
@@ -758,7 +758,8 @@ def dispatch_async_delegation(
     ``session_key``/``parent_session_id`` are captured on the parent thread (the worker carries
     no contextvars) and route the completion back to the spawning session.
     ``progress_fn() -> (token, in_tool)`` enables stale monitoring; omitted = unmonitored.
-    Returns ``{"status": "dispatched", "delegation_id"}`` or ``{"status": "rejected", "error"}``."""
+    Returns ``{"status": "dispatched", "delegation_id"}`` or ``{"status": "rejected", "error"}`` (plus
+    ``"at_capacity": True`` when the pool was full rather than the schedule failing)."""
     delegation_id = _new_delegation_id()
     handle = _dispatch(
         delegation_id=delegation_id, goal=goal, goals=None, context=context,

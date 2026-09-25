@@ -1346,8 +1346,12 @@ DEFAULT_CONFIG = {
         # "none" (empty = inherit)
         "reasoning_effort": "",
         # Max parallel children per batch AND max concurrent background delegation units; async
-        # dispatches beyond it run synchronously. Floor 1, no ceiling.
+        # dispatches beyond it follow `at_capacity`. Floor 1, no ceiling.
         "max_concurrent_children": 10,
+        # Background dispatch when that pool is full: "sync" runs the batch inline (blocks the parent
+        # turn for the children's whole runtime); "reject" starts nothing and returns a structured
+        # rejection telling the model to wait for the running results.
+        "at_capacity": "sync",
         # Background fan-outs return as ONE message when the whole call finishes. true = each task
         # (or `group`) returns on its own as it finishes — more new turns for the orchestrator.
         "independent_completions": False,

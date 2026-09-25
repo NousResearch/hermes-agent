@@ -288,6 +288,156 @@ def test_providers_singular_model_does_not_suppress_ollama_native_discovery(monk
     assert ollama["models"] == ["qwen3:latest", "llama3.2:latest"]
 
 
+@pytest.mark.parametrize(
+    ("requested", "canonical"),
+    [
+        ("OpenRouter", "openrouter"),
+        ("hf", "huggingface"),
+        ("kilo-gateway", "kilocode"),
+        ("google", "gemini"),
+        ("kimi-cn", "kimi-coding-cn"),
+        ("opencode", "opencode-zen"),
+    ],
+)
+def test_list_authenticated_providers_marks_aliased_current_provider(
+    monkeypatch, requested, canonical
+):
+    """Provider aliases and casing must still mark the canonical row current.
+
+    The picker uses ``is_current`` to preserve a saved model through aggregator
+    overlap stripping, so a spelling alias must not make that protection vanish.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.model_switch_providers._collect_authed_provider_slugs", lambda *a, **k: [])
+    monkeypatch.setattr("hermes_cli.model_switch_providers._build_curated_lists", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._iter_builtin_candidates",
+        lambda *a, **k: iter([(canonical, canonical, None, ())]),
+    )
+    monkeypatch.setattr("hermes_cli.model_switch_providers._any_env", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._live_or_curated_ids",
+        lambda *a, **k: ["stealth/space-bunny-alpha"],
+    )
+    monkeypatch.setattr("agent.models_dev.get_provider_info", lambda *a, **k: None)
+
+    rows = list_authenticated_providers(
+        current_provider=requested,
+        current_model="stealth/space-bunny-alpha",
+        user_providers={},
+        custom_providers=[],
+        probe_custom_providers=False,
+        probe_current_custom_provider=False,
+    )
+
+    row = next(r for r in rows if r["slug"] == canonical)
+    assert row["is_current"] is True
+
+
+def test_aliased_current_preserves_overlap_through_authenticated_row_builder(monkeypatch):
+    """End-to-end alias resolution must survive authenticated-row dedup.
+
+    ``hf`` is the accepted spelling for ``huggingface``. The authenticated
+    builder must mark that canonical row current, so inventory dedup retains
+    the saved overlapping model while a custom proxy advertises the same ID.
+    """
+    from hermes_cli.inventory import ConfigContext, build_models_payload
+
+    target = "moonshotai/Kimi-K2.6"
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        "hermes_cli.providers.is_routing_aggregator",
+        lambda provider: provider == "huggingface",
+    )
+    monkeypatch.setattr("hermes_cli.models.CANONICAL_PROVIDERS", [])
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._collect_authed_provider_slugs",
+        lambda *a, **k: [],
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._iter_builtin_candidates",
+        lambda *a, **k: iter([("huggingface", "huggingface", None, ("HF_TOKEN",))]),
+    )
+    monkeypatch.setattr("hermes_cli.model_switch_providers._any_env", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._live_or_curated_ids",
+        lambda *a, **k: [target, "Qwen/Qwen3.5-397B-A17B"],
+    )
+    monkeypatch.setattr("agent.models_dev.get_provider_info", lambda *a, **k: None)
+
+    ctx = ConfigContext(
+        current_provider="hf",
+        current_model=target,
+        current_base_url="",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Shared Proxy",
+                "provider_key": "shared-proxy",
+                "base_url": "https://proxy.example/v1",
+                "model": target,
+                "discover_models": False,
+            }
+        ],
+    )
+    payload = build_models_payload(ctx, probe_custom_providers=False)
+
+    hf_row = next(r for r in payload["providers"] if r["slug"] == "huggingface")
+    assert hf_row["is_current"] is True
+    assert target in hf_row["models"]
+    assert hf_row["total_models"] == 2
+
+
+def test_configured_raw_openai_does_not_also_mark_openrouter_current(monkeypatch):
+    """End-to-end picker boundary: direct OpenAI and OpenRouter may coexist,
+    but only the configured raw provider is current. The overlap model must
+    consequently remain stripped from inactive OpenRouter.
+    """
+    from hermes_cli.inventory import ConfigContext, build_models_payload
+
+    target = "stealth/space-bunny-alpha"
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr("hermes_cli.providers.is_routing_aggregator", lambda provider: provider == "openrouter")
+    monkeypatch.setattr("hermes_cli.models.CANONICAL_PROVIDERS", [])
+    monkeypatch.setattr("hermes_cli.model_switch_providers._collect_authed_provider_slugs", lambda *a, **k: [])
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._iter_builtin_candidates",
+        lambda *a, **k: iter([("openrouter", "openrouter", None, ("OPENROUTER_API_KEY",))]),
+    )
+    monkeypatch.setattr("hermes_cli.model_switch_providers._any_env", lambda *a, **k: True)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers._live_or_curated_ids",
+        lambda *a, **k: [target, "anthropic/claude-sonnet-4.6"],
+    )
+    monkeypatch.setattr("agent.models_dev.get_provider_info", lambda *a, **k: None)
+
+    user_providers = {
+        "openai": {
+            "name": "OpenAI Direct",
+            "base_url": "https://api.openai.com/v1",
+            "model": target,
+            "discover_models": False,
+        }
+    }
+    ctx = ConfigContext(
+        current_provider="openai",
+        current_model=target,
+        current_base_url="https://api.openai.com/v1",
+        user_providers=user_providers,
+        custom_providers=[],
+    )
+    payload = build_models_payload(ctx, probe_custom_providers=False)
+
+    direct = next(r for r in payload["providers"] if r["slug"] == "openai")
+    openrouter = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    assert direct["is_current"] is True
+    assert openrouter["is_current"] is False
+    assert target not in openrouter["models"]
+    assert target in direct["models"]
+
+
 def test_list_authenticated_providers_can_skip_custom_provider_live_probe(monkeypatch):
     monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
     monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})

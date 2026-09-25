@@ -20,6 +20,51 @@ from utils import base_url_host_matches
 # Log-record parity with the origin module.
 logger = logging.getLogger("hermes_cli.model_switch")
 
+
+def _picker_provider_identity(
+    provider: str, *, user_providers: dict | None = None, custom_providers: list | None = None,
+) -> str:
+    """Return the runtime identity used to match a picker row.
+
+    Preserve an explicitly configured raw provider name before applying the
+    runtime alias table. This keeps ``providers.openai`` distinct from the
+    legacy bare ``openai`` alias while still resolving accepted runtime names
+    such as ``google`` and ``kilo-gateway`` to their canonical route.
+    """
+    raw = str(provider or "").strip().lower()
+    if not raw:
+        return ""
+    if isinstance(user_providers, dict):
+        for name in user_providers:
+            if str(name).strip().lower() == raw:
+                return raw
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        key = str(entry.get("provider_key") or "").strip()
+        name = str(entry.get("name") or "").strip()
+        if raw in custom_provider_aliases(name, key):
+            return custom_provider_slug(name, key)
+    try:
+        from hermes_cli.models import CANONICAL_PROVIDERS
+        if raw in {str(entry.slug).strip().lower() for entry in CANONICAL_PROVIDERS} or raw == "custom":
+            return raw
+    except Exception:
+        pass
+    try:
+        from hermes_cli.auth import _plugin_aliases
+        mapped = _plugin_aliases().get(raw)
+        if mapped:
+            return str(mapped).strip().lower()
+    except Exception:
+        pass
+    try:
+        from hermes_cli.providers import normalize_provider
+        return normalize_provider(raw)
+    except Exception:
+        return raw
+
+
 # Aggregators whose full catalogs (70+ models) must stay visible: never capped by max_models.
 _UNCAPPED_PICKER_PROVIDERS: frozenset[str] = frozenset({"opencode-zen", "opencode-go"})
 
@@ -388,11 +433,24 @@ def _has_fast_aws_sdk_signal() -> bool:
             "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_WEB_IDENTITY_TOKEN_FILE")))
 
 
-def _has_aws_sdk_creds_for_listing(slug: str, current_provider: str) -> bool:
-    """AWS SDK credential check; the full boto3 chain is only consulted for the *current* provider."""
+def _has_aws_sdk_creds_for_listing(
+    slug: str, current_provider: str, *, is_current: bool | None = None,
+) -> bool:
+    """AWS SDK credential check; the full boto3 chain is only consulted for the current route.
+
+    ``current_provider`` may be an accepted alias such as ``aws`` while the
+    picker row is canonical ``bedrock``. Callers that already have a
+    ``_PickerBuild`` should pass its identity-safe ``is_current`` result; the
+    fallback keeps this helper useful in isolation.
+    """
     if _has_fast_aws_sdk_signal():
         return True
-    if str(slug or "").strip().lower() != str(current_provider or "").strip().lower():
+    if is_current is None:
+        is_current = (
+            _picker_provider_identity(slug)
+            == _picker_provider_identity(current_provider)
+        )
+    if not is_current:
         return False
     try:
         from agent.bedrock_adapter import has_aws_credentials
@@ -692,10 +750,49 @@ class _PickerBuild:
     builtin_endpoints: set = field(default_factory=set)
     # (display_name, base_url) pairs from section 3 so section 4 skips overlapping rows.
     section3_pairs: set = field(default_factory=set)
+    # Raw configuration is needed to resolve current-provider identity without
+    # collapsing a configured ``providers.openai`` key into the openrouter alias.
+    # Appended after existing fields to preserve positional construction compatibility.
+    user_providers: dict | None = None
+    custom_providers: list | None = None
 
     @property
     def current_provider_norm(self) -> str:
         return self.current_provider.lower()
+
+    @property
+    def current_provider_canonical(self) -> str:
+        """Runtime identity for current-row comparisons.
+
+        Use the runtime/model-catalog alias table, not the generic provider
+        table: the latter is intentionally lossy (``openai`` -> OpenRouter
+        and both Kimi regional IDs -> one models.dev family). A configured
+        raw provider must retain its own identity, while accepted runtime
+        aliases such as ``google`` and ``kilo-gateway`` must still match.
+        """
+        return _picker_provider_identity(
+            self.current_provider_norm,
+            user_providers=self.user_providers,
+            custom_providers=self.custom_providers,
+        )
+
+    def provider_is_current(self, provider: str, aliases: set | None = None) -> bool:
+        """Whether a row's provider identity is the active one."""
+        row_identity = {str(provider).strip().lower(), *(str(alias).strip().lower() for alias in (aliases or ()))}
+        if not row_identity:
+            return False
+        if self.current_provider_norm in row_identity:
+            return True
+        if self.current_provider_canonical in row_identity:
+            return True
+        return self.current_provider_canonical in {
+            _picker_provider_identity(
+                identity,
+                user_providers=self.user_providers,
+                custom_providers=self.custom_providers,
+            )
+            for identity in row_identity
+        }
 
     @property
     def current_base_url_norm(self) -> str:
@@ -752,12 +849,10 @@ class _PickerBuild:
 
     def endpoint_is_current(self, slug: str, aliases: set, url_norm: str, *, url_match_ok: bool = True) -> bool:
         """Row is current by slug/alias, or (bare ``custom`` provider) by matching base_url."""
-        return (
-            str(slug).strip().lower() == self.current_provider_norm
-            or self.current_provider_norm in aliases
-            or (
-                self.current_provider_norm == "custom" and bool(self.current_base_url_norm)
-                and url_norm == self.current_base_url_norm and url_match_ok))
+        return self.provider_is_current(slug, aliases) or (
+            self.current_provider_canonical == "custom" and bool(self.current_base_url_norm)
+            and url_norm == self.current_base_url_norm and url_match_ok
+        )
 
     def discover_endpoint(
         self, api_key: Any, api_url: str, native_provider: str, has_explicit_models: bool, *,
@@ -819,14 +914,18 @@ def _lap_builtin_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         pinfo = get_provider_info(mdev_id)
         display_name = pconfig.name if pconfig and pconfig.name else (pinfo.name if pinfo else mdev_id)
         b.add_builtin_row(
-            hermes_id, display_name, b.current_provider in (hermes_id, mdev_id), model_ids, "built-in")
+            hermes_id, display_name, b.provider_is_current(hermes_id), model_ids, "built-in")
 
 
 def _overlay_has_creds(b: _PickerBuild, pid: str, hermes_slug: str, overlay) -> bool:
     """Section-2 credential ladder: env/SDK, external-process executable, auth store, pool,
     anthropic's external credential files."""
     if overlay.auth_type == "aws_sdk":
-        has_creds = _has_aws_sdk_creds_for_listing(hermes_slug, b.current_provider)
+        has_creds = _has_aws_sdk_creds_for_listing(
+            hermes_slug,
+            b.current_provider,
+            is_current=b.provider_is_current(hermes_slug),
+        )
     else:
         from hermes_cli.model_switch import _scoped_key_env
         has_creds = _overlay_has_env_creds(pid, hermes_slug, overlay, _scoped_key_env)
@@ -913,7 +1012,8 @@ def _lap_overlay_rows(b: _PickerBuild, data: dict, user_providers: dict) -> None
         if isinstance(configured, dict):
             model_ids = list(dict.fromkeys([*_declared_model_ids(configured.get("models")), *model_ids]))
         b.add_builtin_row(
-            hermes_slug, get_label(hermes_slug), b.current_provider in (hermes_slug, pid), model_ids, "hermes")
+            hermes_slug, get_label(hermes_slug), b.provider_is_current(hermes_slug),
+            model_ids, "hermes")
         b.seen_slugs.add(pid.lower())
 
 
@@ -937,7 +1037,12 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             if lit and lit <= sib_vars < set(cp_config.api_key_env_vars) and cp.slug != b.current_provider:
                 continue
         has_creds = has_creds or _auth_store_has_provider(cp.slug) or _pool_usable(cp.slug) or (
-            _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(cp.slug, b.current_provider))
+            _is_aws_sdk(cp_config) and _has_aws_sdk_creds_for_listing(
+                cp.slug,
+                b.current_provider,
+                is_current=b.provider_is_current(cp.slug),
+            )
+        )
         if not has_creds and cp_config is not None and cp_config.auth_type == "external_process":
             # Subprocess-backed providers own their auth; the binary resolving is the credential
             # evidence for listing (same gate as the copilot-acp overlay row and hermes auth status).
@@ -954,7 +1059,7 @@ def _lap_canonical_rows(b: _PickerBuild) -> None:
             model_ids = _live_or_curated_ids(cp.slug, b.curated, merge_models_dev=False,
                                              non_blocking=b.non_blocking_catalogs)
         b.add_builtin_row(
-            cp.slug, cp.label, cp.slug == b.current_provider, model_ids, "canonical", uncapped_ok=False)
+            cp.slug, cp.label, b.provider_is_current(cp.slug), model_ids, "canonical", uncapped_ok=False)
 
 
 def _lap_user_provider_rows(b: _PickerBuild, user_providers: dict) -> None:
@@ -1221,7 +1326,8 @@ def list_authenticated_providers(
         refresh=refresh, excluded={str(p).strip().lower() for p in (excluded_providers or []) if p},
         non_blocking_catalogs=non_blocking_catalogs,
         curated=_build_curated_lists(current_provider, current_base_url, current_model,
-                                     non_blocking=non_blocking_catalogs))
+                                     non_blocking=non_blocking_catalogs),
+        user_providers=user_providers, custom_providers=custom_providers)
 
     # Warm the disk cache in parallel before the serial section loops (otherwise 15-30s of live
     # round-trips on a cold cache). Skipped when refresh=True (serial path force-refreshes) and

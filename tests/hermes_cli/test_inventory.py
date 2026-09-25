@@ -22,6 +22,8 @@ from __future__ import annotations
 from unittest.mock import patch
 
 
+import pytest
+
 from hermes_cli.inventory import (
     ConfigContext,
     build_models_payload,
@@ -142,6 +144,100 @@ def test_include_unconfigured_appends_canonical_skeletons():
                  if r.get("source") == "canonical"]
     assert all(r["models"] == [] for r in skeletons)
     assert all(r["total_models"] == 0 for r in skeletons)
+
+
+def test_explicit_only_keeps_authenticated_row_for_aliased_current():
+    """The explicit-only filter must resolve current identity from context.
+
+    Do not pre-seed ``is_current`` here: the row flag is intentionally false so
+    this test proves that the filter maps ``google`` to the canonical ``gemini``
+    row instead of dropping it and replacing it with a missing-credential
+    skeleton. The alias hop goes through ``_picker_provider_identity``, not the
+    general normalizer (which would collapse unrelated provider families).
+    """
+    row = {
+        "slug": "gemini",
+        "name": "Google AI Studio",
+        "models": ["gemini-3.8-flash"],
+        "total_models": 1,
+        "is_current": False,
+        "is_user_defined": False,
+        "source": "built-in",
+    }
+    ctx = _empty_ctx(provider="google", model="gemini-3.8-flash")
+    with (
+        _list_auth_returning([row]),
+        patch("hermes_cli.config.read_raw_config", return_value={}),
+        patch("hermes_cli.auth.is_provider_explicitly_configured", return_value=False),
+        patch("hermes_cli.inventory._anthropic_oauth_credentials_present", return_value=False),
+        patch("hermes_cli.inventory._external_process_signed_in", return_value=False),
+    ):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert payload["providers"] == [row]
+    assert payload["providers"][0]["source"] == "built-in"
+
+
+def test_explicit_only_keeps_aliased_current_skeleton_when_credentials_missing():
+    """Accepted runtime aliases must restore the saved current-provider row.
+
+    ``list_authenticated_providers`` omits a provider when its credential has
+    disappeared. The explicit-only picker then appends a configured-current
+    skeleton; accepted spellings such as ``google`` and ``hf`` must resolve to
+    the canonical slug instead of leaving the current selection invisible.
+    """
+    ctx = _empty_ctx(provider="google", model="gemini-3.8-flash")
+    with _list_auth_returning([]):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    row = next(r for r in payload["providers"] if r["slug"] == "gemini")
+    assert row["is_current"] is True
+    assert row["source"] == "configured-current"
+    assert row["authenticated"] is False
+    assert row["models"] == ["gemini-3.8-flash"]
+    assert [r["slug"] for r in payload["providers"]] == ["gemini"]
+
+
+def test_explicit_only_keeps_aliased_current_skeleton_for_regional_provider():
+    """``kimi-cn`` is an accepted alias, not the exact canonical ID.
+
+    It must restore the China-specific row rather than disappearing or
+    collapsing onto the non-China Kimi provider.
+    """
+    ctx = _empty_ctx(provider="kimi-cn", model="kimi-k2.6")
+    with _list_auth_returning([]):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert [r["slug"] for r in payload["providers"]] == ["kimi-coding-cn"]
+    assert payload["providers"][0]["models"] == ["kimi-k2.6"]
+
+
+def test_explicit_only_skeleton_does_not_fall_back_from_raw_openai_to_openrouter():
+    """An explicit ``providers.openai`` entry is a distinct raw identity.
+
+    The generic provider normalizer maps ``openai`` to OpenRouter, but that
+    lossy fallback must never make the missing-credential skeleton show
+    OpenRouter for a configured direct-OpenAI endpoint.
+    """
+    ctx = ConfigContext(
+        current_provider="openai",
+        current_model="gpt-5.6-sol",
+        current_base_url="https://api.openai.com/v1",
+        user_providers={
+            "openai": {
+                "name": "OpenAI Direct",
+                "base_url": "https://api.openai.com/v1",
+                "model": "gpt-5.6-sol",
+            }
+        },
+        custom_providers=[],
+    )
+    with _list_auth_returning([]):
+        payload = build_models_payload(ctx, explicit_only=True)
+
+    assert "openrouter" not in [r["slug"] for r in payload["providers"]]
+    assert "openai" not in [r["slug"] for r in payload["providers"]]
+    assert payload["providers"] == []
 
 
 def test_explicit_only_filters_ambient_credentials_but_keeps_current_and_custom_rows():
@@ -503,6 +599,55 @@ def test_aggregator_dedup_removes_overlapping_models():
     assert or_row["total_models"] == 2
 
 
+
+
+def test_current_provider_keeps_selected_overlap_in_picker():
+    """The dedup stage preserves an overlap on a row already marked current.
+
+    Identity resolution is covered by the authenticated-row builder tests;
+    this unit fixture deliberately isolates the second-stage dedup contract.
+    """
+    target = "stealth/space-bunny-alpha"
+    rows = [
+        _user_provider_row("custom:freebuff", [target]),
+        _aggregator_row("openrouter", [target, "anthropic/claude-sonnet-4.6"]),
+    ]
+    for row in rows:
+        if row["slug"] == "openrouter":
+            row["is_current"] = True
+    ctx = _empty_ctx(provider="openrouter", model=target)
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    openrouter = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    assert target in openrouter["models"]
+    assert openrouter["total_models"] == 2
+
+
+def test_inactive_noncurrent_row_still_loses_overlap():
+    """Identity equality alone never preserves an overlap.
+
+    This isolates dedup's row-local ``is_current`` guard. The requested
+    provider is OpenRouter while the only candidate row is inactive Kilo;
+    even if those names shared an identity, the overlap would still have to
+    be removed from the non-current row.
+    """
+    target = "stealth/space-bunny-alpha"
+    rows = [
+        _user_provider_row("custom:freebuff", [target]),
+        _aggregator_row("kilocode", [target, "anthropic/claude-sonnet-4.6"]),
+    ]
+    for row in rows:
+        if row["slug"] == "kilocode":
+            row["is_current"] = False
+    ctx = _empty_ctx(provider="OpenRouter", model=target)
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    kilo = next(r for r in payload["providers"] if r["slug"] == "kilocode")
+    assert kilo["is_current"] is False
+    assert target not in kilo["models"]
+    assert kilo["total_models"] == 1
 
 
 def test_flat_namespace_reseller_keeps_first_party_models_overlapping_user_proxy():

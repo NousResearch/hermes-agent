@@ -962,6 +962,7 @@ hermes kanban archive <id>...
 hermes kanban request-review <id> [--summary "..."] [--metadata JSON] [--reviewer PROFILE]
 hermes kanban request-changes <id> "<required changes>"               # active reviewer -> implementer
 hermes kanban reopen-review  <id>... [--reason "..."]                 # changes requested: 'review' -> ready/todo
+hermes kanban reopen-done    <id> [reason...] [--ids ...] [--json] # operator recovery: done/archived -> ready/todo
 
 hermes kanban tail <id>                                # follow a single task's event stream
 hermes kanban watch [--assignee P] [--tenant T]        # live stream ALL events to the terminal

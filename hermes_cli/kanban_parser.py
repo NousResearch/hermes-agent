@@ -386,6 +386,12 @@ _SPECS = [
         _TASK_IDS,
         _reason("Optional reason/note — recorded as a comment before reopening. Quote multi-word reasons."),
     ], help="Send one or more review tasks back for changes (review -> ready/todo)"),
+    _cmd("reopen-done", [
+        _TASK_ID,
+        _arg("reason", nargs="*", help="Audit-trail reason (recorded on the event + a durable comment)"),
+        _arg("--ids", nargs="+", default=None, help="Additional task ids to reopen with the same reason"),
+        _json_flag(help="Emit machine-readable JSON result"),
+    ], help="Operator recovery: retract a verified-bad done/archived task back to ready/todo"),
     _cmd("promote", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Audit-trail reason (recorded on the task_events row)"),

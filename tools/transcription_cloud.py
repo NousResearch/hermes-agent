@@ -448,7 +448,7 @@ def _extract_transcript_text(transcription: Any) -> str:
 # Gemini 3.5 Transcribe supported BCP-47 locale codes & common alias mappings.
 # Reference: https://ai.google.dev/gemini-api/docs/transcribe#supported-languages
 _GEMINI_TRANSCRIBE_BCP47_MAP: Dict[str, str] = {
-    # Chinese variants
+    # Chinese variants (Simplified / Cantonese)
     "zh": "cmn-Hans-CN",
     "zh-cn": "cmn-Hans-CN",
     "zh_cn": "cmn-Hans-CN",
@@ -457,9 +457,6 @@ _GEMINI_TRANSCRIBE_BCP47_MAP: Dict[str, str] = {
     "cmn": "cmn-Hans-CN",
     "mandarin": "cmn-Hans-CN",
     "chinese": "cmn-Hans-CN",
-    "zh-tw": "cmn-Hans-CN",
-    "zh_tw": "cmn-Hans-CN",
-    "zh-hant": "cmn-Hans-CN",
     "zh-hk": "yue-Hant-HK",
     "zh_hk": "yue-Hant-HK",
     "yue": "yue-Hant-HK",
@@ -631,11 +628,25 @@ _OFFICIAL_GEMINI_BCP47_CODES: Dict[str, str] = {
 }
 
 
+# Traditional Chinese script aliases: Google only lists Mandarin Simplified (cmn-Hans-CN)
+# and Cantonese Traditional (yue-Hant-HK). Do not force traditional aliases into the
+# Simplified locale; omit language_codes so Gemini auto-detects language and script.
+_GEMINI_TRADITIONAL_CHINESE_ALIASES = {
+    "zh-tw",
+    "zh_tw",
+    "zh-hant",
+    "zh_hant",
+    "traditional-chinese",
+}
+
+
 def _normalize_gemini_bcp47(lang: Optional[str]) -> Optional[str]:
     """Normalize language hints into Gemini-supported BCP-47 locale tags.
 
     Official reference: https://ai.google.dev/gemini-api/docs/transcribe#supported-languages
     Omitted / empty / auto returns None to let Gemini auto-detect language.
+    Traditional Chinese aliases (zh-TW, zh-Hant) are also omitted to avoid forcing
+    Simplified Mandarin (cmn-Hans-CN), allowing Gemini's auto-detection to preserve Traditional script.
     """
     if not lang:
         return None
@@ -643,6 +654,8 @@ def _normalize_gemini_bcp47(lang: Optional[str]) -> Optional[str]:
     if not raw or raw.lower() in ("auto", "none", "detect", "default"):
         return None
     key = raw.lower().replace("_", "-")
+    if key in _GEMINI_TRADITIONAL_CHINESE_ALIASES:
+        return None
     if key in _GEMINI_TRANSCRIBE_BCP47_MAP:
         return _GEMINI_TRANSCRIBE_BCP47_MAP[key]
     if key in _OFFICIAL_GEMINI_BCP47_CODES:

@@ -192,6 +192,13 @@ class TestGeminiSTT:
             ("zh-cn", "cmn-Hans-CN"),
             ("zh_hans", "cmn-Hans-CN"),
             ("cmn-Hans-CN", "cmn-Hans-CN"),
+            ("zh-tw", None),
+            ("zh-TW", None),
+            ("zh_tw", None),
+            ("zh-hant", None),
+            ("zh-Hant", None),
+            ("zh_hant", None),
+            ("traditional-chinese", None),
             ("yue", "yue-Hant-HK"),
             ("cantonese", "yue-Hant-HK"),
             ("ja", "ja-JP"),
@@ -261,3 +268,18 @@ class TestGeminiSTT:
         payload = mock_post.call_args.kwargs["json"]
         t_cfg = payload["generation_config"]["transcription_config"]
         assert "language_codes" not in t_cfg
+
+    def test_interactions_api_traditional_chinese_omitted_for_autodetect(self, fake_wav, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {"output_text": "Traditional Chinese transcript."}
+
+        for trad_lang in ["zh-TW", "zh-Hant", "zh_tw"]:
+            with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+                 patch("requests.post", return_value=mock_response) as mock_post:
+                res = _transcribe_gemini(fake_wav, "gemini-3.5-transcribe", language=trad_lang)
+
+            assert res["success"] is True
+            payload = mock_post.call_args.kwargs["json"]
+            t_cfg = payload["generation_config"]["transcription_config"]
+            assert "language_codes" not in t_cfg, f"Expected no language_codes for {trad_lang}"

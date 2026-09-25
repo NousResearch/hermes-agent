@@ -2913,13 +2913,16 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     """Hermes update/restart argv: the running interpreter's ``python -m hermes_cli.main``
     (exactly this install), else ``hermes`` on PATH, else None. The module argv must win: a
     PATH-first lookup lets an attacker-planted ``hermes`` shadow the running install when
-    /update or /restart re-execs it (#111569)."""
-    try:
-        import importlib.util
-        if importlib.util.find_spec("hermes_cli") is not None:
-            return [sys.executable, "-m", "hermes_cli.main"]
-    except Exception:
-        pass
+    /update or /restart re-execs it (#111569). The module argv only wins when a fresh CHILD
+    resolves it too — under the launcher bootstrap the parent's repo path lives solely in its
+    own ``sys.path`` and a ``-m`` re-exec dies with ModuleNotFoundError (2026-09-25 fleet
+    paralysis); ``child_hermes_module_argv`` falls back to this install's launcher-form argv.
+    Mirrors ``hermes_cli.kanban_db_dispatch._resolve_hermes_argv``."""
+    from hermes_cli._launchers import child_hermes_module_argv
+
+    child_argv = child_hermes_module_argv()
+    if child_argv is not None:
+        return child_argv
     import shutil
     hermes_bin = shutil.which("hermes")
     if hermes_bin:

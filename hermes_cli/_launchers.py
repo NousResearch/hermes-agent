@@ -50,6 +50,112 @@ def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main"
     return [str(python), "-I", "-c", bootstrap, *args]
 
 
+#: Per-process verdict of the fresh-child import probe, keyed by (interpreter,
+#: module). An install's import shape is fixed at process boot, so one probe
+#: answers every spawn this process makes.
+_child_module_probe_cache: dict[tuple[str, str], bool] = {}
+
+
+def _module_resolves_in_fresh_child(module: str) -> bool:
+    """Can a fresh child of THIS interpreter import ``module`` under the same
+    environment a spawned worker would get?
+
+    Two launch realities the parent cannot see through its own ``sys.path``:
+    the child's cwd is the task workspace (``-P`` drops the cwd from
+    ``sys.path`` regardless), and Hermes-owned ``PYTHONPATH`` entries are
+    stripped from every child by the shared sanitizer (a Desktop source launch
+    puts the repo root on PYTHONPATH; that entry does not travel to the
+    worker). Site-packages, editable installs, and user PYTHONPATH entries all
+    survive and answer yes. A launcher bootstrap (``python -I -c`` with the
+    repo root injected into the PARENT's path only) answers no — which is
+    exactly the lie that paralyzed the fleet on 2026-09-25.
+    """
+    import subprocess
+    import tempfile
+
+    verdict = _child_module_probe_cache.get((sys.executable, module))
+    if verdict is not None:
+        return verdict
+    env = dict(os.environ)
+    try:
+        from tools.environments.local_pythonpath import _strip_hermes_owned_pythonpath
+
+        _strip_hermes_owned_pythonpath(env)
+    except Exception:
+        env.pop("PYTHONPATH", None)  # conservative: err toward the child-bootable form
+    kwargs: dict = {"cwd": tempfile.gettempdir(), "env": env}
+    if _is_windows():
+        # The probe is a hidden-console child: no window flash from the gateway
+        # dispatcher/update loop (same class as #54220 / #56747).
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        kwargs["creationflags"] = windows_hide_flags()
+    try:
+        probe = subprocess.run(
+            [sys.executable, "-P", "-c", f"import {module}"],
+            capture_output=True, timeout=30, **kwargs,
+        )
+        verdict = probe.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        # Can't run our own interpreter — keep the historical module argv.
+        verdict = True
+    _child_module_probe_cache[(sys.executable, module)] = verdict
+    return verdict
+
+
+def child_hermes_module_argv(module: str = "hermes_cli") -> list[str] | None:
+    """A ``Popen``-ready argv that enters ``<module>.main`` from THIS install in
+    a fresh child process, or ``None`` when the module is not importable here.
+
+    ``sys.executable -m <module>.main`` is only honest when a fresh child also
+    resolves the module. It does not when the parent was exec'd by the
+    launcher bootstrap (``python -I -c '...sys.path.insert(0, root)...'``):
+    the repo root lives solely in the parent's in-process path, and every
+    spawned child dies with ``ModuleNotFoundError`` (fleet paralysis on
+    emberevosrv, 2026-09-25 03:34 — workers AND the gateway's own
+    update/restart re-exec). In that case resolve to the same install the
+    parent runs: the published launcher with ``--run-module`` when this tree
+    published one, else the equivalent inline bootstrap from
+    :func:`runtime_command` — both re-inject the parent's ROOT, so the child
+    boots exactly like the parent. Callers keep module-argv-beats-PATH
+    precedence (#111569): this never consults PATH, and every install kind
+    whose module argv resolves in a child (venv, Nix, editable) keeps it
+    byte-for-byte.
+    """
+    import importlib.util
+
+    try:
+        spec = importlib.util.find_spec(module)
+    except Exception:
+        return None
+    if spec is None:
+        return None
+    if _module_resolves_in_fresh_child(module):
+        return [sys.executable, "-m", f"{module}.main"]
+    # ``<module>/__init__.py`` sits at ``<root>/<module>/``, so the package's own
+    # position names the install root — the same inline math hermes_cli.main
+    # uses for its bootstrap root. No cwd or PATH is consulted.
+    if spec.origin:
+        root = Path(spec.origin).resolve().parent.parent
+    elif spec.submodule_search_locations:
+        root = Path(next(iter(spec.submodule_search_locations))).resolve().parent
+    else:
+        return [sys.executable, "-m", f"{module}.main"]
+    if not (root / module).is_dir():
+        return [sys.executable, "-m", f"{module}.main"]  # exotic layout — historical behavior
+    # The published launcher boots THIS root's modules for a module-form child.
+    # A batch shim (.cmd/.bat) is never argv[0]: task-derived values ride its
+    # argv (same rule as _hermes_path_argv's batch-shim refusal).
+    for name in ("hermes", "hermes.exe") if _is_windows() else ("hermes",):
+        launcher = root / ".hermes" / "bin" / name
+        if (launcher.is_file() and os.access(launcher, os.X_OK)
+                and not launcher.name.lower().endswith((".cmd", ".bat"))):
+            return [str(launcher), "--run-module", f"{module}.main"]
+    # No published launcher: the equivalent inline bootstrap (same builder the
+    # systemd unit and launchd plist use), so the child path-injects the root.
+    return runtime_command(root, module=f"{module}.main", python=sys.executable)
+
+
 def print_runtime_command(repo_root: Path, argv: list[str]) -> None:
     """Machine boundary for consumers holding the exact published launcher."""
     import argparse

@@ -2451,6 +2451,59 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    @pytest.mark.parametrize("api_mode,platform", [
+        ("chat_completions", "cli"), ("chat_completions", "cron"),
+        ("anthropic_messages", "cli"),
+    ])
+    def test_summary_interrupt_aborts_only_its_request(self, agent, monkeypatch, api_mode, platform):
+        agent.api_mode = api_mode
+        agent.platform = platform
+        agent._cached_system_prompt = "You are helpful."
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        request_client = MagicMock()
+        aborted = []
+
+        def blocked(*args, **kwargs):
+            entered.set()
+            release.wait(10)
+            raise OSError("fixture request stopped")
+
+        def abort(client, **kwargs):
+            aborted.append(client)
+            release.set()
+
+        agent.client.chat.completions.create.side_effect = blocked
+        request_client.chat.completions.create.side_effect = blocked
+        monkeypatch.setattr(agent, "_create_request_openai_client", lambda **kw: request_client)
+        monkeypatch.setattr(agent, "_create_request_anthropic_client", lambda **kw: request_client)
+        monkeypatch.setattr(agent, "_abort_request_openai_client", abort)
+        monkeypatch.setattr(agent, "_abort_request_anthropic_client", abort)
+        monkeypatch.setattr(agent, "_close_request_openai_client", lambda *a, **kw: None)
+        monkeypatch.setattr(agent, "_close_request_anthropic_client", lambda *a, **kw: None)
+        if api_mode == "anthropic_messages":
+            agent._is_anthropic_oauth = False
+            transport = SimpleNamespace(build_kwargs=lambda **kw: {"model": "fixture", "messages": kw["messages"]})
+            monkeypatch.setattr(agent, "_get_transport", lambda: transport)
+            monkeypatch.setattr(agent, "_anthropic_messages_create", blocked)
+
+        def summarize():
+            try:
+                agent._handle_max_iterations([{"role": "user", "content": "work"}], 1)
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=summarize)
+        worker.start()
+        try:
+            assert entered.wait(5), "summary did not reach provider fixture"
+            agent.interrupt()
+            assert finished.wait(4), "summary ignored interrupt while provider was blocked"
+            assert aborted == [request_client]
+            agent.client.close.assert_not_called()
+        finally:
+            release.set()
+            worker.join(12)
+
     def test_summary_notice_uses_safe_print(self, agent):
         agent._print_fn = lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("closed"))
         agent.client.chat.completions.create.return_value = _mock_response(content="Summary")

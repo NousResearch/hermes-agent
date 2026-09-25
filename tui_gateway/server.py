@@ -2024,8 +2024,18 @@ def _tool_progress_enabled(sid: str) -> bool:
 
 
 def _tool_lifecycle_required_for_ui(name: str) -> bool:
-    """Interactive UI, not optional chrome: Desktop renders clarify / connection cards from the tool-call part."""
-    return name in ("clarify", "manage_connections", "setup_mcp")
+    """Interactive UI / card surfaces, not optional chrome.
+
+    Desktop renders these from the tool-call part itself, so suppressing the
+    lifecycle hides the turn's deliverable entirely (`isCardTool` in
+    apps/desktop/src/lib/tool-render-class.ts must stay in sync with this set):
+    clarify / connection cards are consent surfaces, and image_generate /
+    manage_catalog / delegate_task draw the thing the user asked for.
+    """
+    return name in (
+        "clarify", "manage_connections", "setup_mcp",
+        "image_generate", "manage_catalog", "delegate_task",
+    )
 
 
 def _restart_slash_worker(sid: str, session: dict):

@@ -175,6 +175,33 @@ def test_shown_reasoning_keeps_subagent_thinking_text(monkeypatch):
     assert events[0][2]["text"] == "the child's visible thought"
 
 
+def test_hidden_reasoning_keeps_card_tool_lifecycle(monkeypatch):
+    """Card tools are the turn's deliverable, not chrome.
+
+    Desktop's answer-only gate (`message-parts.tsx`) keeps card tools visible via
+    `isCardTool` (tool-render-class.ts): clarify, delegate_task, image_generate,
+    manage_catalog, manage_connections. The gateway must emit their full
+    lifecycle under answer-only mode too — no event means no part means nothing
+    for Desktop to keep. A suppressed `tool.start` would also orphan a failed
+    call's `tool.complete`.
+    """
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "hide-cards", show_reasoning=False, effort="high")
+
+    cases = {
+        "tool-image": ("image_generate", {"prompt": "a cat"}),
+        "tool-catalog": ("manage_catalog", {"action": "list"}),
+        "tool-delegate": ("delegate_task", {"goal": "do it"}),
+    }
+    for tool_id, (name, args) in cases.items():
+        server._on_tool_start("hide-cards", tool_id, name, args)
+        server._on_tool_complete("hide-cards", tool_id, name, args, json.dumps({"success": True}))
+
+    for tool_id in cases:
+        lifecycle = [event[0] for event in events if event[2].get("tool_id") == tool_id]
+        assert lifecycle == ["tool.start", "tool.complete"], tool_id
+
+
 def test_hidden_reasoning_shows_failed_terminal_exit_code(monkeypatch):
     events = _capture(monkeypatch)
     _session(monkeypatch, "hide-exit", show_reasoning=False, effort="high")

@@ -180,8 +180,10 @@ def _resolve_hermes_bin_for_desktop_entry(
     Wraps :func:`hermes_cli.relaunch.resolve_hermes_bin` with one rule: an ``argv[0]`` inside this
     checkout is a launch-context artifact, not a durable installed launcher — persisting it makes
     the entry depend on how the previous launch happened (a bootstrap loop). Skip such candidates
-    and fall through to PATH, then to the installer's known wrapper locations. ``resolve_fn`` is
-    injectable for tests.
+    and fall through to PATH, then to the installer's known wrapper locations. A candidate that
+    provably cannot serve ``hermes desktop`` (a code tree carrying ``hermes_cli`` but no desktop
+    app beside it — a managed runtime env's console script) is skipped the same way: its entry
+    would only ever die with "Desktop GUI source not found". ``resolve_fn`` is injectable for tests.
 
     See #90492.
     """
@@ -202,7 +204,15 @@ def _resolve_hermes_bin_for_desktop_entry(
     # installation. Only rerun the resolver with argv[0] hidden when the primary could actually
     # be checkout-internal (also shortens the window a concurrent reader sees mutated sys.argv).
     primary = resolve_fn()
-    if primary and not _inside_checkout(primary, checkout_root, original_argv0):
+    # A launcher that provably cannot serve `hermes desktop` (a code tree carrying hermes_cli
+    # but no desktop app beside it — e.g. a managed runtime env's console script) is not a
+    # usable external primary: persisting it writes an entry that dies with "Desktop GUI source
+    # not found". Fall through so the durable-wrapper probe below can still find a working one.
+    if (
+        primary
+        and not _inside_checkout(primary, checkout_root, original_argv0)
+        and _can_serve_desktop(primary) is not False
+    ):
         return primary
 
     # A primary that is NOT checkout-internal and not the invoking interpreter is an external launcher (e.g.
@@ -224,8 +234,11 @@ def _resolve_hermes_bin_for_desktop_entry(
     # gnome-shell 50.x crashes when hermes.desktop changes while its ShellApp is STARTING (#110885).
     # ``primary is None`` implies ``rerouted is None`` (the rerun only hides argv[0]), so only the
     # probe can still find anything.
-    if primary and rerouted is not None and not _inside_checkout(
-        rerouted, checkout_root, original_argv0
+    if (
+        primary
+        and rerouted is not None
+        and not _inside_checkout(rerouted, checkout_root, original_argv0)
+        and _can_serve_desktop(rerouted) is not False
     ):
         return rerouted
     # A PATH hit inside this checkout is the same launch-context artifact as argv[0]: the
@@ -334,6 +347,76 @@ def _wrapper_targets_checkout(wrapper: Path, checkout_root: Path) -> bool:
         stripped.endswith(root) or any(root + t in text for t in _ROOT_TERMINATORS)
         for root in roots
     )
+
+
+_HERMES_CODE_MARKERS = ("hermes_cli", "workspace/hermes_cli")
+_DESKTOP_APP_ENTRIES = ("apps/desktop/package.json", "workspace/apps/desktop/package.json")
+
+
+def _launcher_tree(path: Path) -> Path:
+    """Install tree a ``bin`` launcher belongs to: ``<tree>/venv/bin/x`` → ``<tree>``."""
+    parent = path.parent
+    if parent.name not in ("bin", "Scripts", "scripts"):
+        return parent
+    tree = parent.parent
+    return tree.parent if tree.name in ("venv", ".venv", "env") else tree
+
+
+def _tree_desktop_state(tree: Path) -> Optional[bool]:
+    """``True`` when *tree* can serve ``hermes desktop``, ``False`` when it provably cannot, else ``None``.
+
+    ``False`` is reserved for a tree that IS a hermes code tree (carries ``hermes_cli``) yet has no
+    desktop app beside it — the managed runtime env layout, whose launcher runs but dies with
+    "Desktop GUI source not found". Unfamiliar shapes stay ``None`` (accepted) so no install
+    method is rejected for looking exotic.
+    """
+    if any((tree / entry).is_file() for entry in _DESKTOP_APP_ENTRIES):
+        return True
+    from hermes_cli.steward import is_bundled_payload
+
+    if is_bundled_payload(tree):
+        return True
+    if any((tree / marker).is_dir() for marker in _HERMES_CODE_MARKERS):
+        return False
+    return None
+
+
+def _embedded_launcher_target(wrapper: Path) -> Optional[Path]:
+    """First absolute path to an existing ``bin`` launcher embedded in a shell wrapper script."""
+    head = _read_head(wrapper)
+    if head is None:
+        return None
+    for match in re.finditer(r"""["'\s](/[^\s"'$;)\\]+)""", head.decode("utf-8", errors="replace")):
+        if "/bin/" in match.group(1) and Path(match.group(1)).is_file():
+            return Path(match.group(1))
+    return None
+
+
+def _can_serve_desktop(candidate: str, _depth: int = 2) -> Optional[bool]:
+    """Desktop-capability of a launcher path; shell wrappers followed to their target.
+
+    Native binaries, unreadable files, interpreters, and shapes without markers stay ``None``;
+    only a launcher whose tree provably lacks the desktop app is rejected (``False``).
+    """
+    try:
+        path = Path(candidate)
+        if not path.is_file():
+            return None
+        head = _read_head(path, 256)
+    except OSError:
+        return None
+    if head is None or not head.startswith(b"#!"):
+        return None
+    tokens = _shebang_tokens(head.decode("utf-8", errors="replace").splitlines()[0])
+    if _depth and tokens and (Path(tokens[0]).name in _SHELL_NAMES or Path(tokens[0]).name == "env"):
+        # The installer's shim (any shell launcher) execs its real target; judge THAT tree.
+        target = _embedded_launcher_target(path)
+        if target is not None:
+            verdict = _can_serve_desktop(str(target), _depth - 1)
+            if verdict is not None:
+                return verdict
+    return _tree_desktop_state(_launcher_tree(path))
+
 
 
 def _known_wrapper_candidates():

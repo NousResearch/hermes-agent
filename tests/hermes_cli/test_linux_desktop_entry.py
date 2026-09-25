@@ -1170,3 +1170,106 @@ def test_deferred_install_skips_heal_after_exit_without_reveal():
     deferred.finish()
     assert calls == []
     assert not deferred._thread.is_alive()
+
+
+# --- desktop-capability of the persisted Exec (managed runtime env launchers) ------------------
+
+
+def _write_script(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _env_shaped_tree(tmp_path: Path, name: str = "managed-env") -> Path:
+    """The runtime env layout: a code tree (workspace/hermes_cli) with no desktop app in it."""
+    tree = tmp_path / name
+    (tree / "workspace" / "hermes_cli").mkdir(parents=True)
+    (tree / "workspace" / "hermes_cli" / "main.py").write_text("", encoding="utf-8")
+    _write_script(tree / "venv" / "bin" / "hermes", "#!/bin/sh\nexit 0\n")
+    python_bin = tree / "venv" / "bin" / "python"
+    python_bin.write_bytes(b"\x7fELF fake")  # real interpreters are binaries, never scripts
+    python_bin.chmod(0o755)
+    return tree
+
+
+def _full_tree(tmp_path: Path, name: str = "install") -> Path:
+    """A checkout that carries the desktop app beside hermes_cli."""
+    tree = tmp_path / name
+    (tree / "hermes_cli").mkdir(parents=True)
+    (tree / "apps" / "desktop" / "assets").mkdir(parents=True)
+    (tree / "apps" / "desktop" / "package.json").write_text("{}", encoding="utf-8")
+    _write_script(tree / "venv" / "bin" / "hermes", "#!/bin/sh\nexit 0\n")
+    python_bin = tree / "venv" / "bin" / "python"
+    python_bin.write_bytes(b"\x7fELF fake")  # real interpreters are binaries, never scripts
+    python_bin.chmod(0o755)
+    return tree
+
+
+def test_capability_rejects_env_shaped_launcher_and_accepts_full_tree(tmp_path):
+    env_tree = _env_shaped_tree(tmp_path)
+    full_tree = _full_tree(tmp_path)
+    assert lde._can_serve_desktop(str(env_tree / "venv" / "bin" / "hermes")) is False
+    assert lde._can_serve_desktop(str(full_tree / "venv" / "bin" / "hermes")) is True
+    # Interpreters are not judged: a launcher execing one is followed to its own tree instead.
+    assert lde._can_serve_desktop(str(env_tree / "venv" / "bin" / "python")) is None
+    assert lde._can_serve_desktop(str(full_tree / "venv" / "bin" / "python")) is None
+
+
+def test_capability_unknown_shapes_pass(tmp_path):
+    missing = tmp_path / "nowhere" / "bin" / "hermes"
+    assert lde._can_serve_desktop(str(missing)) is None
+    native = _write_script(tmp_path / "opt" / "bin" / "hermes", "")
+    assert lde._can_serve_desktop(str(native)) is None
+
+
+def test_capability_follows_wrapper_to_its_target(tmp_path):
+    env_tree = _env_shaped_tree(tmp_path)
+    full_tree = _full_tree(tmp_path)
+    bad_wrapper = _write_script(
+        tmp_path / "shims" / "hermes",
+        f'#!/usr/bin/env bash\nexec "{env_tree}/venv/bin/hermes" "$@"\n',
+    )
+    good_wrapper = _write_script(
+        tmp_path / "shims" / "hermes-good",
+        f'#!/usr/bin/env bash\nexec "{full_tree}/venv/bin/hermes" "$@"\n',
+    )
+    assert lde._can_serve_desktop(str(bad_wrapper)) is False
+    assert lde._can_serve_desktop(str(good_wrapper)) is True
+
+
+def test_resolver_skips_incapable_primary_for_wrapper(tmp_path, xdg_home):
+    """A PATH-first launcher from an env-shaped tree must not win over the durable wrapper."""
+    env_tree = _env_shaped_tree(tmp_path)
+    checkout = _full_tree(tmp_path, "checkout")
+    wrapper = _write_script(
+        tmp_path / ".local" / "bin" / "hermes",
+        f'#!/usr/bin/env bash\nexec "{checkout}/venv/bin/hermes" "$@"\n',
+    )
+    resolution = lde._resolve_hermes_bin_for_desktop_entry(
+        resolve_fn=lambda: str(env_tree / "venv" / "bin" / "hermes"),
+        checkout_root=checkout,
+    )
+    assert resolution == str(wrapper)
+
+
+def test_install_through_wrapper_when_primary_is_incapable(tmp_path, xdg_home, monkeypatch):
+    """End to end: the PATH-first env launcher is skipped and the wrapper's Exec is persisted."""
+    root = _full_tree(tmp_path, "checkout")
+    (root / "apps" / "desktop" / "assets" / "icon.png").write_bytes(b"\x89PNG fake")
+    env_tree = _env_shaped_tree(tmp_path)
+    wrapper = _write_script(
+        tmp_path / ".local" / "bin" / "hermes",
+        f'#!/usr/bin/env bash\nexec "{root}/venv/bin/hermes" "$@"\n',
+    )
+    monkeypatch.setattr(lde, "_launcher_entry_management_enabled", lambda: True)
+    monkeypatch.setattr(
+        "hermes_cli.relaunch.resolve_hermes_bin",
+        lambda: str(env_tree / "venv" / "bin" / "hermes"),
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    entry = lde.install_desktop_entry(root)
+    assert entry == lde.desktop_entry_path()
+    assert _parse(entry.read_text(encoding="utf-8"))["Exec"] == f"{wrapper} desktop"

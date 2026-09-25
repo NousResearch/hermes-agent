@@ -597,7 +597,8 @@ def _prepare_turn_input(sid: str, session: dict, st: _TurnRun, text: Any, images
             provider=getattr(agent, "provider", "") or "",
             config_context_length=getattr(agent, "_config_context_length", None))
         ctx = preprocess_context_references(
-            prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len)
+            prompt, cwd=cwd, allowed_root=cwd, context_length=ctx_len,
+            allowed_files=session.get("staged_file_attachments", ()))
         if ctx.blocked:
             _emit(
                 "error", sid, {"message": "\n".join(ctx.warnings) or "Context injection refused."})

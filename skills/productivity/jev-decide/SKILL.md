@@ -1,7 +1,7 @@
 ---
 name: jev-decide
 description: "Structure uncertain decisions with calibrated judgments."
-version: 1.0.0
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -47,7 +47,17 @@ For a standard orchestration recommendation, pass the ticket or task text direct
 hermes jev classify-task "refactor the production auth module"
 ```
 
-This returns four decisions (`risk_level`, `agent_choice`, `needs_review`, and `model_class`) plus a readable recommendation. The command is advisory only: it never runs tools, approves changes, deploys, publishes, or changes permissions.
+This returns four decisions (`risk_level`, `agent_choice`, `needs_review`, and `model_class`) plus a readable recommendation. The recommended model is resolved against the live OpenRouter catalog and includes its provider, exact model ID, tier, reasons, and ordered fallback chain. The command is advisory only: it never runs tools, approves changes, deploys, publishes, or changes permissions.
+
+Inspect the authorized catalog without classifying a task:
+
+```text
+hermes jev models
+hermes jev models --tier mid --min-context-length 1000000 --require-reasoning
+hermes jev models --catalog-only
+```
+
+The JSON groups all current candidates into `cheap_fast`, `mid`, and `premium`, reports exclusion reasons, and optionally shows the safe fallback order for a requested tier. Jev assigns tiers from the current metadata; `--catalog-only` skips that paid advisory pass and reports deterministic catalog-only sources and policy. Catalog metadata and tier assignments use a profile-scoped one-hour disk cache, so repeated CLI processes do not repeat the catalog fetch or paid classification calls. Cache reads, locks, and writes are best-effort: an unavailable or invalid cache causes a direct live fetch and, unless `--catalog-only` is used, classification; that live result and its usage remain authoritative even when it cannot be cached.
 
 ## Quick Reference
 
@@ -109,23 +119,25 @@ Order the list from least to most severe and say what separates adjacent levels.
 
 ### Model selection
 
-Use `choice` because model candidates are named alternatives rather than an ordered scale:
+Keep agent and model selection as independent axes:
 
-```json
-{
-  "model": {
-    "type": "choice",
-    "instructions": "Choose the best model for this task under the stated budget and latency constraints.",
-    "criteria": {
-      "fast-model": "Best when latency and low cost dominate and the task is routine",
-      "reasoning-model": "Best when ambiguity, long context, or failure cost requires deeper reasoning",
-      "vision-model": "Best when interpreting images is essential"
-    }
-  }
-}
+- `agent_choice` selects the execution arrangement (`codex`, `claude`, `either`, or `both`). An agent name is not a model ID.
+- `model_class` selects the task tier (`cheap_fast`, `mid`, `premium`, or `no_llm`).
+- Jev assigns each current candidate a tier and recommended use from catalog-declared availability, pricing, context, tool support, reasoning, structured output support, reliability evidence, and explicit task requirements. Deterministic code then selects the canonical model and provider route.
+
+Do not attach a model capability to an agent name. For example, say “agent `codex` with model `openai/...`,” not “the Codex model,” and never describe Claude Code as a model.
+
+The absolute floor is the overall capability and reliability represented by Sonnet 4.6. Anthropic Sonnet/Opus below 4.6 and OpenAI GPT below 5.5 are deterministically rejected. Every family and vendor must also declare the Sonnet 4.6 baseline's observable 1M-token context, 64k output, text input/output, availability, and valid pricing. Tool support is always required for task resolution. Reasoning and structured-output support are independent task filters, not properties inferred from a `mid` or `premium` tier; request them explicitly with `--require-reasoning` or `--require-structured-outputs` when the task needs them. Later named variants such as Luna, Sol, Terra, Astra, or a newly named family are candidates only when the exact ID is present and valid in the current provider catalog. Batch-only, unavailable, malformed, and below-floor entries are excluded. Family or version never determines the tier by itself.
+
+A canonical model and a provider route are also separate axes. For OpenAI and Anthropic canonical models, add and prefer the compatible native OpenAI/Codex or Anthropic/Claude Code route only when that exact canonical model appears in Hermes' current native provider catalog (Anthropic dot and dash version spellings are equivalent); then try the catalog-verified OpenRouter route for the same model. If no native match exists, OpenRouter is the primary route rather than evidence that a native route exists. OpenRouter is a provider usable by either execution agent, not a third agent, and OpenRouter-only candidates remain distinct canonical models with compatible execution agents.
+
+When OpenRouter lists multiple routes for one canonical model, candidate-level context, capabilities, and pricing come from the exact unsuffixed canonical row when it exists; otherwise the lexicographically smallest provider model ID is the stable representative. The resolver never blends route-specific metadata into synthetic capabilities or lets a suffix such as `:free` replace the base row. It preserves every unique route and orders a verified native route before deterministic OpenRouter IDs.
+
+When requirements are known, make them explicit:
+
+```text
+hermes jev classify-task "review a large repository migration" --min-context-length 1000000 --require-reasoning --require-structured-outputs
 ```
-
-Include measured constraints in the state: modality, context size, latency target, budget, and error cost.
 
 ### Orchestration classification
 
@@ -138,6 +150,8 @@ Use `hermes jev classify-task "TASK"` when a coordinator needs a consistent firs
 
 The policy recommends human escalation when risk is High or Critical, or when review probability is at least 0.9. It marks a task as eligible for coordinator-controlled automatic approval only when risk is Trivial or Low and review probability is below 0.1; all other cases recommend review. Eligibility is not approval: the coordinator remains responsible for authorization, and existing approval, security, deployment, and publication controls always apply.
 
+After Jev advises a task tier, use the resolver's first route. If it fails at runtime, follow `recommendation.model.fallback_chain` in order: alternate provider routes for that canonical model first, then other models in the requested tier, then higher tiers. Never substitute a lower tier silently, never bypass the authorized floor, and stop for coordinator review if the chain is exhausted.
+
 ## Pitfalls
 
 - Do not encode the desired answer in instructions or criteria.
@@ -146,6 +160,10 @@ The policy recommends human escalation when risk is High or Critical, or when re
 - Do not collapse an uncertain compound question into one `noul`; split independent gates.
 - Do not interpret confidence as probability that the world is safe. Read it alongside the returned probabilities and the evidence quality.
 - Do not send secrets or unnecessary private data in the state.
+- Do not invent a model ID from a naming pattern or a rumored release; the current catalog is authoritative.
+- Do not fall back below the recommended tier, even to save cost or reduce latency.
+- Do not couple `agent_choice` to a model family. Choose each axis from its own evidence.
+- Do not count the same canonical model once per provider. Merge its native and OpenRouter routes.
 - Do not treat `eligible_for_coordinator_auto_approval` as an approval event. Jev only advises the coordinator and cannot authorize or execute an action.
 
 ## Verification
@@ -155,4 +173,6 @@ The policy recommends human escalation when risk is High or Critical, or when re
 - Confirm all relevant alternatives or rubric levels are represented.
 - Confirm the result includes `answers` and `usage`, and record cost when decisions run repeatedly.
 - If the result drives a consequential action, verify required human approval independently.
-- For `classify-task`, confirm `recommendation.advisory_only` is `true` and apply authorization outside Jev.
+- For `classify-task`, confirm `recommendation.advisory_only` is `true`, both the agent and exact model are stated separately, and apply authorization outside Jev.
+- Confirm the selected canonical model and provider are the first fallback entry, duplicate provider routes are merged under one model, every fallback meets the policy floor, and every fallback tier is the requested tier or higher.
+- Confirm the profile-scoped catalog snapshot is no more than one hour old when catalog availability matters to an important dispatch.

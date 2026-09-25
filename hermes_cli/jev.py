@@ -73,6 +73,21 @@ TASK_CLASSIFICATION_QUESTIONS = {
     },
 }
 
+MODEL_TIER_CRITERIA = {
+    "below_floor": (
+        "Does not match the overall capability and reliability floor represented by "
+        "Anthropic Claude Sonnet 4.6"
+    ),
+    "cheap_fast": (
+        "Meets the floor and is best for routine, bounded, latency- or cost-sensitive work"
+    ),
+    "mid": "Meets the floor and is best for normal implementation, analysis, and review",
+    "premium": (
+        "Meets the floor and is best for complex, ambiguous, broad-context, or high-risk work"
+    ),
+}
+_MODEL_CLASSIFICATION_BATCH_SIZE = 20
+
 
 class JevInputError(ValueError):
     """Raised when CLI input cannot form a valid Decisions API request."""
@@ -98,7 +113,9 @@ def parse_state(value: str) -> str | dict[str, Any]:
     except json.JSONDecodeError:
         return value
     if not isinstance(parsed, dict):
-        raise JevInputError("state JSON must be an object; use plain text for a string state")
+        raise JevInputError(
+            "state JSON must be an object; use plain text for a string state"
+        )
     return parsed
 
 
@@ -106,7 +123,9 @@ def parse_questions(value: str) -> dict[str, dict[str, Any]]:
     """Load and validate the question mapping accepted by the Decisions API."""
     questions = _parse_json_or_file(value, label="questions")
     if not isinstance(questions, dict) or not questions:
-        raise JevInputError("questions must be a non-empty JSON object keyed by question id")
+        raise JevInputError(
+            "questions must be a non-empty JSON object keyed by question id"
+        )
 
     for question_id, question in questions.items():
         if not isinstance(question_id, str) or not question_id:
@@ -119,8 +138,13 @@ def parse_questions(value: str) -> dict[str, dict[str, Any]]:
                 f"question {question_id!r} has invalid type {question_type!r}; "
                 "expected noul, choice, or score"
             )
-        if not isinstance(question.get("instructions"), str) or not question["instructions"].strip():
-            raise JevInputError(f"question {question_id!r} needs non-empty instructions")
+        if (
+            not isinstance(question.get("instructions"), str)
+            or not question["instructions"].strip()
+        ):
+            raise JevInputError(
+                f"question {question_id!r} needs non-empty instructions"
+            )
 
         criteria = question.get("criteria")
         if question_type == "noul":
@@ -172,6 +196,67 @@ def request_decision(payload: dict[str, Any], api_key: str) -> dict[str, Any]:
     return document
 
 
+def classify_model_metadata(
+    catalog: list[dict[str, Any]], api_key: str
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Ask Jev to tier provider-neutral, deterministically prefiltered metadata."""
+    from hermes_cli.jev_models import metadata_for_jev, provisional_catalog
+
+    candidates, _ = provisional_catalog(catalog)
+    assignments: dict[str, dict[str, Any]] = {}
+    usage: list[dict[str, Any]] = []
+    for offset in range(0, len(candidates), _MODEL_CLASSIFICATION_BATCH_SIZE):
+        batch = candidates[offset : offset + _MODEL_CLASSIFICATION_BATCH_SIZE]
+        question_ids = [f"model_{offset + index:04d}" for index in range(len(batch))]
+        state_candidates = {
+            question_id: metadata_for_jev(candidate)
+            for question_id, candidate in zip(question_ids, batch, strict=True)
+        }
+        questions = {
+            question_id: {
+                "type": "choice",
+                "instructions": (
+                    f"Classify candidates.{question_id} by observed/declared capability, "
+                    "reliability evidence, context, tool support, pricing, latency evidence, "
+                    "and appropriate use. Family or version alone must not determine the tier."
+                ),
+                "criteria": MODEL_TIER_CRITERIA,
+            }
+            for question_id in question_ids
+        }
+        result = request_decision(
+            {
+                "model": JEV_MODEL,
+                "state": {
+                    "absolute_floor": "anthropic/claude-sonnet-4.6-equivalent",
+                    "candidates": state_candidates,
+                },
+                "questions": questions,
+            },
+            api_key,
+        )
+        for question_id, candidate in zip(question_ids, batch, strict=True):
+            answer = _answer(result, question_id)
+            tier = answer.get("choice")
+            if tier not in MODEL_TIER_CRITERIA:
+                raise JevInputError(
+                    f"Decisions API returned an invalid model tier for {question_id!r}"
+                )
+            confidence = answer.get("confidence")
+            assignments[candidate["canonical_model"]["id"]] = {
+                "tier": tier,
+                "confidence": (
+                    float(confidence)
+                    if isinstance(confidence, (int, float))
+                    and not isinstance(confidence, bool)
+                    else None
+                ),
+            }
+        if isinstance(result.get("usage"), dict):
+            usage.append(result["usage"])
+    return assignments, usage
+
+
 def _answer(result: dict[str, Any], question_id: str) -> dict[str, Any]:
     """Return one typed answer or reject a malformed Decisions API response."""
     answers = result.get("answers")
@@ -186,7 +271,9 @@ def _choice(result: dict[str, Any], question_id: str) -> str:
     choice = answer.get("choice")
     allowed = TASK_CLASSIFICATION_QUESTIONS[question_id]["criteria"]
     if not isinstance(choice, str) or choice not in allowed:
-        raise JevInputError(f"Decisions API returned an invalid choice for {question_id!r}")
+        raise JevInputError(
+            f"Decisions API returned an invalid choice for {question_id!r}"
+        )
     return choice
 
 
@@ -204,7 +291,9 @@ def _risk_level(answer: dict[str, Any]) -> tuple[int, float]:
 def _review_probability(answer: dict[str, Any]) -> float:
     probability = answer.get("noul")
     if not isinstance(probability, (int, float)) or isinstance(probability, bool):
-        raise JevInputError("Decisions API returned an invalid needs_review probability")
+        raise JevInputError(
+            "Decisions API returned an invalid needs_review probability"
+        )
     return min(1.0, max(0.0, float(probability)))
 
 
@@ -223,17 +312,28 @@ def _routing_advice(risk: int, review_probability: float) -> str:
     return "recommend_review"
 
 
-def classify_task(task_text: str, *, api_key: str | None = None) -> dict[str, Any]:
+def classify_task(
+    task_text: str,
+    *,
+    api_key: str | None = None,
+    catalog: list[dict[str, Any]] | None = None,
+    model_classifications: dict[str, dict[str, Any]] | None = None,
+    native_catalogs: dict[str, list[str]] | None = None,
+    min_context_length: int = 0,
+    require_reasoning: bool = False,
+    require_structured_outputs: bool = False,
+) -> dict[str, Any]:
     """Ask Jev for advisory orchestration classifications and format the recommendation."""
     if not task_text.strip():
         raise JevInputError("task text must not be empty")
+    resolved_api_key = api_key or load_openrouter_api_key()
     result = request_decision(
         {
             "model": JEV_MODEL,
             "state": task_text,
             "questions": TASK_CLASSIFICATION_QUESTIONS,
         },
-        api_key or load_openrouter_api_key(),
+        resolved_api_key,
     )
     risk_answer = _answer(result, "risk_level")
     risk, raw_risk = _risk_level(risk_answer)
@@ -243,6 +343,75 @@ def classify_task(task_text: str, *, api_key: str | None = None) -> dict[str, An
     model_class = _choice(result, "model_class")
     needs_review = review_probability >= 0.5
     disposition = _routing_advice(risk, review_probability)
+
+    from hermes_cli.jev_models import (
+        cached_catalog_resolution,
+        classify_catalog,
+        load_native_catalogs,
+        model_requirements,
+        resolve_model,
+    )
+
+    requirements = model_requirements(
+        min_context_length=min_context_length,
+        require_tools=True,
+        require_reasoning=require_reasoning,
+        require_structured_outputs=require_structured_outputs,
+    )
+    if model_class == "no_llm":
+        model_recommendation = {
+            "provider": None,
+            "provider_model_id": None,
+            "canonical_model": None,
+            "selected_model_id": None,
+            "requested_tier": "no_llm",
+            "tier": "no_llm",
+            "recommended_use": "deterministic work without an LLM",
+            "agent_choice": agent,
+            "provider_routes": [],
+            "fallback_chain": [],
+            "fallback_policy": {
+                "route_before_model": True,
+                "native_before_openrouter_when_compatible": True,
+                "native_catalog_match_required": True,
+                "allowed_tiers": [],
+                "same_tier_then_higher": True,
+                "lower_tier_forbidden": True,
+                "runtime_must_not_silently_downgrade": True,
+            },
+            "requirements": requirements,
+            "reasons": [
+                "Jev classified the task as deterministic work that does not require an LLM",
+                "agent choice was evaluated independently from model choice",
+            ],
+            "jev_catalog_usage": [],
+        }
+    else:
+        assignments = model_classifications
+        catalog_usage: list[dict[str, Any]] = []
+        if catalog is None:
+            live_catalog, cached_assignments, catalog_usage = cached_catalog_resolution(
+                resolved_api_key,
+                classify_model_metadata,
+                catalog_only=assignments is not None,
+            )
+            if assignments is None:
+                assignments = cached_assignments
+        else:
+            live_catalog = catalog
+        if assignments is None and catalog is not None:
+            assignments, catalog_usage = classify_model_metadata(
+                live_catalog, resolved_api_key
+            )
+        if native_catalogs is None:
+            native_catalogs = load_native_catalogs() if catalog is None else {}
+        candidates, _ = classify_catalog(
+            live_catalog, assignments, native_catalogs=native_catalogs
+        )
+        model_recommendation = resolve_model(
+            candidates, model_class, requirements, agent_choice=agent
+        )
+        model_recommendation["jev_catalog_usage"] = catalog_usage
 
     return {
         "risk_level": {
@@ -258,13 +427,15 @@ def classify_task(task_text: str, *, api_key: str | None = None) -> dict[str, An
         "model_class": {"choice": model_class},
         "recommendation": {
             "agent": agent,
+            "model": model_recommendation,
             "requires_review": needs_review,
             "model_class": model_class,
             "risk": RISK_RUBRIC[risk],
             "disposition": disposition,
             "advisory_only": True,
             "message": (
-                f"Recommend {agent}; {RISK_RUBRIC[risk]} risk; model class {model_class}; "
+                f"Recommend agent {agent}; {RISK_RUBRIC[risk]} risk; model tier {model_class}; "
+                f"model {model_recommendation['selected_model_id'] or 'none'} selected independently; "
                 f"disposition {disposition}. Jev does not approve or execute actions."
             ),
         },
@@ -275,7 +446,14 @@ def classify_task(task_text: str, *, api_key: str | None = None) -> dict[str, An
 def cmd_classify_task(args: Any) -> int:
     """Print an advisory orchestration classification for task text."""
     try:
-        classification = classify_task(args.task_text)
+        classification = classify_task(
+            args.task_text,
+            min_context_length=getattr(args, "min_context_length", 0),
+            require_reasoning=getattr(args, "require_reasoning", False),
+            require_structured_outputs=getattr(
+                args, "require_structured_outputs", False
+            ),
+        )
     except JevInputError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
@@ -288,9 +466,61 @@ def cmd_classify_task(args: Any) -> int:
             is_http_error = False
         if not is_http_error:
             raise
-        print(f"Error: Decisions API request failed: {exc}", file=sys.stderr)
+        print(f"Error: OpenRouter request failed: {exc}", file=sys.stderr)
         return 1
     print(json.dumps(classification, indent=2))
+    return 0
+
+
+def cmd_models(args: Any) -> int:
+    """Print the current authorized catalog and optional safe fallback order."""
+    from hermes_cli.jev_models import (
+        cached_catalog_resolution,
+        inspect_catalog,
+        load_native_catalogs,
+        model_requirements,
+    )
+
+    try:
+        api_key = load_openrouter_api_key()
+        requirements = model_requirements(
+            min_context_length=getattr(args, "min_context_length", 0),
+            require_tools=True,
+            require_reasoning=getattr(args, "require_reasoning", False),
+            require_structured_outputs=getattr(
+                args, "require_structured_outputs", False
+            ),
+        )
+        catalog_only = getattr(args, "catalog_only", False)
+        catalog, assignments, usage = cached_catalog_resolution(
+            api_key,
+            classify_model_metadata,
+            catalog_only=catalog_only,
+        )
+        native_catalogs = load_native_catalogs()
+        result = inspect_catalog(
+            catalog,
+            assignments=assignments,
+            requested_tier=getattr(args, "tier", None),
+            requirements=requirements,
+            native_catalogs=native_catalogs,
+        )
+        result["jev_usage"] = usage
+    except JevInputError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:
+        try:
+            import httpx
+
+            is_http_error = isinstance(exc, httpx.HTTPError)
+        except ImportError:
+            is_http_error = False
+        if not is_http_error:
+            raise
+        print(f"Error: OpenRouter models request failed: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2))
     return 0
 
 

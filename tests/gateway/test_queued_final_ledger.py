@@ -60,8 +60,12 @@ def _rows():
 
 
 def _source(*, chat_id=CHAT, thread_id=None, chat_type="dm"):
+    # chat_name/user_id/... : the follow-up lane now re-binds HERMES_SESSION_* from the
+    # queued event's source (_set_session_env reads these straight off it).
     return SimpleNamespace(platform=Platform.TELEGRAM, chat_id=chat_id, thread_id=thread_id,
-                           chat_type=chat_type)
+                           chat_type=chat_type, chat_name="", user_id="5230977008",
+                           user_id_alt="", user_name="Ledger Tester", message_id=None,
+                           profile="")
 
 
 def _telegram_adapter(send_result=None):

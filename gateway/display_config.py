@@ -22,6 +22,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # Gateway-only assistant/status chatter; mobile platforms opt down to final-answer-first.
     "interim_assistant_messages": True,
     "suppress_warning_notifications": False,
+    # The chat's readers are NOT the operator (a personal-account platform, a customer-facing bot):
+    # operator-only notices (busy acks, the silence-marker warning, retry guidance) stay out of it,
+    # and an intentional silence is honoured instead of being replaced by a visible fallback.
+    "third_party_chat": False,
     "long_running_notifications": True,
     "busy_ack_detail": True,
     "busy_steer_ack_enabled": True,  # busy_input_mode=steer echo; the text still lands in the run
@@ -59,7 +63,10 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "feishu": _TIER_MEDIUM,
     "buzz": _TIER_MEDIUM,  # Nostr: edits in place but channels are shared community spaces
     "signal": _TIER_LOW,
-    "whatsapp": _TIER_MEDIUM,  # Baileys bridge supports /edit
+    # The Baileys bridge is a linked device on the operator's PERSONAL account: inbound chats are
+    # with their contacts, so the agent is answering someone else and notices written for the
+    # operator must not land there.
+    "whatsapp": {**_TIER_MEDIUM, "third_party_chat": True},  # Baileys bridge supports /edit
     "whatsapp_cloud": _TIER_LOW,  # adapter lacks edit_message; promote once it lands
     "photon": _TIER_LOW,  # permanent-message iMessage inboxes (no edit)
     "bluebubbles": _TIER_LOW,
@@ -92,6 +99,17 @@ def resolve_display_setting(user_config: dict, platform_key: str, setting: str, 
     if val is None:
         val = _GLOBAL_DEFAULTS.get(setting)
     return fallback if val is None else val
+
+
+def chat_readers_are_third_party(user_config: dict, platform_key: str) -> bool:
+    """Is this platform's chat read by someone OTHER than the operator?
+
+    True on platforms where the agent answers the operator's contacts or customers rather than
+    the operator themselves (``display.third_party_chat``; a personal-account bridge or a
+    customer-facing bot). Callers use it to keep operator-only notice text — busy acks, the
+    silence-marker warning, retry guidance — out of a conversation it would only confuse (#107899).
+    """
+    return bool(resolve_display_setting(user_config, platform_key, "third_party_chat", False))
 
 
 def _configured_display_value(user_config: dict, platform_key: str, setting: str) -> Any:
@@ -188,6 +206,7 @@ _NORMALISERS: dict[str, Any] = {
     "streaming": _norm_bool,
     "interim_assistant_messages": _norm_bool,
     "suppress_warning_notifications": _norm_suppress_warning_notifications,
+    "third_party_chat": _norm_bool,
     "long_running_notifications": _norm_long_running,
     "busy_ack_detail": _norm_bool,
     "busy_steer_ack_enabled": _norm_bool,

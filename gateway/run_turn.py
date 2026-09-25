@@ -88,6 +88,33 @@ _UNEXPECTED_SILENCE_REPLY = (
 )
 
 
+def _third_party_chat(source: Any) -> bool:
+    """Does this platform's chat reach someone other than the operator? (``display.third_party_chat``)"""
+    from gateway.display_config import chat_readers_are_third_party
+    from gateway.run import _load_gateway_config, _platform_config_key
+
+    platform = getattr(source, "platform", None)
+    if platform is None:
+        return False
+    try:
+        return chat_readers_are_third_party(_load_gateway_config(), _platform_config_key(platform))
+    except Exception:  # unreadable config keeps the operator-facing behavior
+        logger.debug("third_party_chat resolution failed for platform %s", platform, exc_info=True)
+        return False
+
+
+def _silence_allowed_for_turn(source: Any, display_kind: Any) -> bool:
+    """May this turn end on a silence marker without a visible fallback?
+
+    Machinery turns always may. A human message ADDRESSED TO the operator must not vanish
+    silently — a bare marker there is more likely a failure, so it stays visible. A chat whose
+    readers are somebody else is the third case: the agent deciding it has nothing to say to a
+    contact is a correct outcome, and the fallback text is operator-facing machinery that would
+    land in a stranger's chat (#107899).
+    """
+    return is_machinery_display_kind(display_kind) or _third_party_chat(source)
+
+
 def _bg_prompt_preview(prompt: str, limit: int = 60) -> str:
     """Short single-line quote of a /bg prompt for its failure notice (the task id means nothing to the user)."""
     text = " ".join(str(prompt or "").split())
@@ -1537,9 +1564,10 @@ class GatewayTurnMixin:
             response = ""
         _intentional_silence = self._is_intentional_silence(agent_result, response)
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
-        # opened the chain: an internal follow-up may go silent, a human one must not.
+        # opened the chain: an internal follow-up may go silent, a human one must not (a turn in a
+        # third-party chat may — see _silence_allowed_for_turn).
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        if _intentional_silence and not _silence_allowed_for_turn(source, _silence_kind):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -3726,7 +3754,7 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+            if _silence_allowed_for_turn(turn_ctx.source, turn_ctx.persist_user_display_kind):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",

@@ -252,6 +252,29 @@ gateway:
 
 Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).
 
+### Notices Written for You Never Reach Someone Else
+
+In **bot mode** the bridge is a linked device on your own WhatsApp account, so an inbound DM is a
+message from one of your contacts and every reply goes out as you. Notices the gateway writes for
+*you* — `⚡ Interrupting current task`, `↪ Redirected current run`, the "the model returned only a
+silence marker … try again" fallback — mean nothing to that person and read as broken machinery, so
+WhatsApp ships with `display.third_party_chat: true` and they are never delivered there. The same
+switch lets the agent end a turn silently when it has nothing to say to them, instead of posting the
+fallback text.
+
+To treat your WhatsApp chats as your own again (you message your own bot, no other participants):
+
+```yaml
+# ~/.hermes/config.yaml
+display:
+  platforms:
+    whatsapp:
+      third_party_chat: false
+```
+
+The same key is available on any platform you operate for other people (a customer-facing bot) —
+see [Per-platform progress overrides](../configuration.md#per-platform-progress-overrides).
+
 ### Quoted Replies
 
 Replying to (quoting) an earlier message gives the agent the quoted text as context. Quoting an image, voice note, video or document also attaches that file to the turn, so "what is this?" under a quoted image works — whether the attachment came from another person or from the bot itself (a cron-delivered chart, a generated image). WhatsApp only ships a thumbnail stub with a quote, so the file is resolved from the bridge's download cache (inbound media, in-memory for the bridge's lifetime) or from a local index of the bot's own sends (last 1000 messages); quotes of anything older arrive without the attachment.

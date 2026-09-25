@@ -2170,6 +2170,7 @@ display:
   platforms: {}           # Per-platform display overrides (see below)
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
   suppress_warning_notifications: false  # Opt-in: hide automatic warning/diagnostic notices (see messaging guide)
+  third_party_chat: false # Per-platform: the chat's readers are NOT you (see per-platform section)
   show_commentary: true   # Codex models: deliver commentary-channel progress narration as visible mid-turn updates
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: ""         # Legacy cosmetic field still surfaced in some summaries
@@ -2372,6 +2373,30 @@ display:
 From the CLI, use the canonical path — `hermes config set display.platforms.telegram.streaming false`. The shorthand `hermes config set platforms.telegram.streaming false` is accepted too: because per-platform *display* settings (`streaming`, `show_reasoning`, `tool_progress`, …) are only ever read from `display.platforms`, `config set`/`get`/`unset` redirect that shorthand to the canonical key and print a note. Connection keys under the top-level `platforms.<name>` block (`token`, `enabled`, `reply_to_mode`, `extra`) are not redirected. Writing them under the nested prefix (`hermes config set gateway.platforms.telegram.enabled true`) is redirected to the top-level `platforms.telegram.enabled` with a note: the gateway reads both blocks, but the top-level one wins on shared keys, so a nested write would be silently shadowed by an existing top-level value.
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
+
+### Chats read by someone else (`third_party_chat`)
+
+Every per-platform setting above assumes the person reading the chat is *you*. On a platform where
+the agent answers your contacts or your customers instead — the WhatsApp linked-device bridge, a
+customer-facing bot — the notices the gateway writes for the operator are out of place:
+`⚡ Interrupting current task` and `↪ Redirected current run` describe *your* turn, the
+silence-marker fallback (`⚠️ The model returned only a silence marker for a message that needed a
+reply. Try again or rephrase.`) is an instruction to you, and a busy acknowledgement answers a
+question nobody asked.
+
+```yaml
+display:
+  third_party_chat: false        # global default: these chats are yours
+  platforms:
+    whatsapp:
+      third_party_chat: true     # shipped default for the linked-device bridge
+```
+
+With it on, the busy acknowledgement is skipped entirely (the inbound message still lands in the
+run — only the bubble is), and an intentional silence marker is honoured instead of being replaced
+by the fallback, so the agent can simply not answer a "thanks!" from a contact. Set it back to
+`false` to get the operator behaviour on that platform. The global kill switch for busy
+acknowledgements, `HERMES_GATEWAY_BUSY_ACK_ENABLED`, still applies on top of it.
 
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 

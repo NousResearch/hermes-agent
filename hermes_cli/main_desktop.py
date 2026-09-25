@@ -555,7 +555,7 @@ def _desktop_macos_has_valid_real_signature(app: Path) -> bool:
         return False
     try:
         info = subprocess.run(
-            [codesign, "-dv", str(app)], check=False, capture_output=True, text=True)
+            [codesign, "-dv", str(app)], check=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
         output = f"{info.stdout}\n{info.stderr}"
         if info.returncode != 0 or "TeamIdentifier=" not in output or "TeamIdentifier=not set" in output:
             return False
@@ -636,7 +636,7 @@ def _macos_legacy_adhoc_resign(codesign: str, app: Path) -> bool:
     prompt is recoverable, deletion is not)."""
     try:
         result = subprocess.run(
-            [codesign, "--force", "--deep", "--sign", "-", str(app)], check=False, capture_output=True, text=True
+            [codesign, "--force", "--deep", "--sign", "-", str(app)], check=False, capture_output=True, text=True, encoding="utf-8", errors="replace"
         )
         if result.returncode != 0:
             print(
@@ -644,7 +644,7 @@ def _macos_legacy_adhoc_resign(codesign: str, app: Path) -> bool:
                 "leaving safeStorage keychain item untouched)"
             )
             return False
-        if _codesign_verify(codesign, app, check=False, text=True).returncode != 0:
+        if _codesign_verify(codesign, app, check=False, text=True, encoding="utf-8", errors="replace").returncode != 0:
             print(
                 "  (warning: legacy ad-hoc re-sign did not pass strict verification; "
                 "leaving safeStorage keychain item untouched)"
@@ -713,7 +713,7 @@ def _macos_codesigning_identity_valid(security: str, identity: str) -> bool:
     shows untrusted certs codesign refuses. Idempotency probe + postcondition. Never raises."""
     try:
         result = subprocess.run(
-            [security, "find-identity", "-v", "-p", "codesigning"], capture_output=True, text=True, check=False,
+            [security, "find-identity", "-v", "-p", "codesigning"], capture_output=True, text=True, encoding="utf-8", errors="replace", check=False,
         )
     except Exception:
         return False
@@ -762,7 +762,7 @@ def _macos_create_signing_identity(
                     "-P", "hermeslocal",
                     "-T", codesign, "-T", "/usr/bin/codesign_allocate",
                 ],
-                capture_output=True, text=True, check=False)
+                capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
 
         _export_p12([])
         imported = _import_p12()
@@ -781,7 +781,7 @@ def _macos_create_signing_identity(
         # command exists to front-load.
         trusted = subprocess.run(
             [security, "add-trusted-cert", "-r", "trustRoot", "-p", "codeSign", "-k", keychain, str(crt)],
-            capture_output=True, text=True, check=False)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         if trusted.returncode != 0:
             print(
                 "  (could not trust the certificate for code signing: "

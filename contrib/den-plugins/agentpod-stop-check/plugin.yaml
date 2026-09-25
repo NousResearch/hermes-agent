@@ -1,0 +1,8 @@
+name: agentpod-stop-check
+version: 2.0.0
+description: "Whole-board reconciliation gate: an opted-in supervision turn cannot end quietly while unfinished cards are unattended."
+author: "Den's Hermes"
+provides_hooks:
+  - pre_llm_call
+  - pre_verify
+  - transform_llm_output

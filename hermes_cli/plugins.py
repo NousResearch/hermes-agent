@@ -2065,25 +2065,78 @@ def _dispatch_pre_tool_call_hooks(
     return (block_msg, details.modified_args)
 
 
+def get_pre_verify_directive(
+    *,
+    session_id: str = "",
+    platform: str = "",
+    model: str = "",
+    coding: bool = False,
+    attempt: int = 0,
+    final_response: str = "",
+    changed_paths: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    """Resolve the ``pre_verify`` hooks into ``{message, final_verdict}``.
+
+    Two independent, optional halves of the SAME directive:
+
+    * ``message`` — keep the turn going one more turn (the existing contract;
+      ``{"action": "continue"}`` / the Claude-Code ``{"decision": "block"}``
+      shape). First non-empty wins.
+    * ``final_verdict`` — text this turn may not end without, enforced on the
+      delivered answer by :func:`agent.verify_hooks.apply_pre_verify_verdict`
+      after all output transforms. Carried either as ``{"action": "final"}``
+      (a terminal verdict INSTEAD of continuing) or as a ``final_verdict`` key
+      alongside a continue directive ("keep going, but if you stop quiet
+      anyway, this ships"). First non-empty wins.
+
+    A hook that returns neither, or returns the old continue-only shape, gets
+    exactly the previous behaviour — ``final_verdict`` is then ``""`` and the
+    finalizer is a no-op.
+    """
+    hook_results = invoke_hook(
+        "pre_verify",
+        session_id=session_id,
+        platform=platform,
+        model=model,
+        coding=coding,
+        attempt=attempt,
+        final_response=final_response,
+        changed_paths=list(changed_paths or []),
+    )
+
+    message = ""
+    verdict = ""
+    for result in hook_results:
+        if not isinstance(result, dict):
+            continue
+        action = str(result.get("action") or result.get("decision") or "").strip().lower()
+        text = result.get("message") or result.get("reason")
+        text = text.strip() if isinstance(text, str) else ""
+        explicit = result.get("final_verdict")
+        explicit = explicit.strip() if isinstance(explicit, str) else ""
+        if not verdict:
+            if explicit:
+                verdict = explicit
+            elif action in ("final", "verdict") and text:
+                verdict = text
+        if not message and action in ("continue", "block") and text:
+            message = text
+        if message and verdict:
+            break
+    return {"message": message, "final_verdict": verdict}
+
+
 def get_pre_verify_continue_message(
     *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False,
     attempt: int = 0, final_response: str = "", changed_paths: Optional[List[str]] = None,
 ) -> Optional[str]:
     """Check ``pre_verify`` hooks for ``{"action": "continue", "message"}`` (or Claude-Code Stop
     ``{"decision": "block", "reason"}``) to keep the turn going; first non-empty message wins, any
-    other return lets the turn finish. ``coding``/``attempt`` let hooks scope and self-throttle."""
-    hook_results = invoke_hook(
-        "pre_verify", session_id=session_id, platform=platform, model=model, coding=coding,
-        attempt=attempt, final_response=final_response, changed_paths=list(changed_paths or []),
-    )
-    for result in hook_results:
-        if not isinstance(result, dict):
-            continue
-        action = str(result.get("action") or result.get("decision") or "").strip().lower()
-        message = result.get("message") or result.get("reason")
-        if action in ("continue", "block") and isinstance(message, str) and message.strip():
-            return message.strip()
-    return None
+    other return lets the turn finish. Thin wrapper over :func:`get_pre_verify_directive`."""
+    return get_pre_verify_directive(
+        session_id=session_id, platform=platform, model=model, coding=coding,
+        attempt=attempt, final_response=final_response, changed_paths=changed_paths,
+    )["message"] or None
 
 
 def get_plugin_error_classification(

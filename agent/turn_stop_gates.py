@@ -54,23 +54,34 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     more turn; no default continuation cost."""
     _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
     try:
-        from agent.verify_hooks import max_verify_nudges
+        from agent.verify_hooks import (
+            max_verify_nudges,
+            pre_verify_on_no_edit_turns,
+            record_pre_verify_verdict,
+        )
         from hermes_cli.lifecycle import has_hook
-        from hermes_cli.plugins import get_pre_verify_continue_message
+        from hermes_cli.plugins import get_pre_verify_directive
 
-        if _edited and has_hook("pre_verify") and attempt < max_verify_nudges():
+        # Default: edited-code turns only. With `agent.pre_verify_on_no_edit_turns`
+        # the gate also fires on no-edit turns with changed_paths=[].
+        _fires = bool(_edited) or pre_verify_on_no_edit_turns()
+        if _fires and has_hook("pre_verify") and attempt < max_verify_nudges():
             # Posture is fixed for the session — resolve once + cache.
             coding = getattr(agent, "_resolved_is_coding", None)
             if coding is None:
                 from agent.coding_context import is_coding_context
                 coding = bool(is_coding_context(platform=getattr(agent, "platform", "") or ""))
                 agent._resolved_is_coding = coding
-            return get_pre_verify_continue_message(
+            _directive = get_pre_verify_directive(
                 session_id=getattr(agent, "session_id", None) or "",
                 platform=getattr(agent, "platform", "") or "",
                 model=getattr(agent, "model", "") or "", coding=coding, attempt=attempt,
                 final_response=final_response, changed_paths=_edited,
             )
+            # Enforced half: recorded (replaced) each evaluation, delivered by
+            # the finalizer after all output transforms.
+            record_pre_verify_verdict(agent, _directive.get("final_verdict"))
+            return _directive.get("message") or None
     except Exception:
         logger.debug("pre_verify hook check failed", exc_info=True)
     return None

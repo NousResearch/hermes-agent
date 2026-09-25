@@ -342,12 +342,16 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             shutil.rmtree(path, ignore_errors=True)
             removed_ws += 1
 
+    from hermes_cli.kanban import _reclaim_worktrees
+    reclaimed_wt = _reclaim_worktrees(args)
+
     removed_events = 0
     if event_days:
         with kbc.connect_closing() as conn:
             removed_events = kb.gc_events(conn, older_than_seconds=event_days * 24 * 3600)
     removed_logs = kb.gc_worker_logs(older_than_seconds=log_days * 24 * 3600) if log_days else 0
     print(f"GC complete: {removed_ws} workspace(s), "
+          f"{reclaimed_wt} done-card worktree(s), "
           f"{removed_events} event row(s), {removed_logs} log file(s) removed")
     return 0
 

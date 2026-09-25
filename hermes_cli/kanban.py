@@ -206,7 +206,7 @@ def _profile_author() -> str:
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
+    "claim", "comment", "attach", "attach-rm", "complete", "edit", "set-workspace", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
@@ -378,10 +378,14 @@ def _cmd_create(args: argparse.Namespace) -> int:
                              if is_dispatcher_owned_worker_context() else None),
         )
         task = kb.get_task(conn, task_id)
+        # Gateway sessions that run `hermes kanban create` (rather than the kanban_create
+        # tool) get the same completion/block notifications; no-op for plain CLI/cron.
+        subscribed = kbn.auto_subscribe_session(conn, task_id)
     if getattr(args, "json", False):
-        _print_json(_task_to_dict(task))
+        _print_json({**_task_to_dict(task), "subscribed": subscribed})
     else:
-        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'}, "
+              f"subscribed={'true' if subscribed else 'false'})")
         # Warn only for ready+assigned tasks that would sit without a dispatcher (triage/todo idle
         # by design, unassigned can't dispatch); skipped under --json so stdout stays parseable.
         if task.status == "ready" and task.assignee:
@@ -597,7 +601,65 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
     return 0
 
 
+def _reclaim_roots(args: argparse.Namespace) -> list:
+    """``--worktree-root`` when given, else the globbed/board-derived defaults."""
+    from hermes_cli import kanban_reclaim as kbr
+    explicit = getattr(args, "worktree_roots", None)
+    if explicit:
+        return [Path(p).expanduser() for p in explicit]
+    return kbr.default_roots()
+
+
+def _reclaim_worktrees(args: argparse.Namespace) -> int:
+    """Reap done cards' worktrees, printing the reason for every refusal (a pass
+    that silently removes nothing is the failure mode this replaces)."""
+    from hermes_cli import kanban_reclaim as kbr
+    if getattr(args, "no_worktrees", False):
+        return 0
+    roots = _reclaim_roots(args)
+    if not roots:
+        return 0
+    dry_run = bool(getattr(args, "dry_run", False))
+    # Before/after free space is measured in the scheduled path and recorded on the card.
+    before_mb = kbr.free_space_mb(roots[0])
+    decisions = kbr.reclaim_done_worktrees(
+        roots=roots, min_age_hours=getattr(args, "worktree_min_age_hours", 6), dry_run=dry_run,
+    )
+    after_mb = kbr.free_space_mb(roots[0])
+    print(f"Worktree reclaim over {len(roots)} root(s):")
+    for line in kbr.format_decisions(decisions):
+        print(line)
+    removed = sum(1 for d in decisions if d.removed)
+    print(f"  -> {removed} removed, {len(decisions) - removed} kept")
+    print(f"  -> free before {before_mb}MB, after {after_mb}MB")
+    if removed and not dry_run and not getattr(args, "no_comment", False):
+        written = kbr.record_reclaim_comments(decisions, before_mb=before_mb, after_mb=after_mb)
+        print(f"  -> recorded the before/after df on {written} card(s)")
+    return removed
+
+
+def _cmd_reclaim_worktrees(args: argparse.Namespace) -> int:
+    """``hermes kanban reclaim`` with no task id — the disk-guard entry point."""
+    from hermes_cli import kanban_reclaim as kbr
+    _reclaim_worktrees(args)
+    if getattr(args, "logs", False):
+        for root in _reclaim_roots(args):
+            decisions = kbr.reclaim_stale_sibling_logs(
+                root=Path(root).expanduser(),
+                min_age_days=getattr(args, "log_min_age_days", 7),
+                dry_run=bool(getattr(args, "dry_run", False)),
+            )
+            if decisions:
+                print(f"Sibling logs under {root}:")
+                for line in kbr.format_decisions(decisions):
+                    print(line)
+    return 0
+
+
 def _cmd_reclaim(args: argparse.Namespace) -> int:
+    # No task id: reclaim the worktrees of done cards (the disk-guard tick).
+    if not getattr(args, "task_id", None):
+        return _cmd_reclaim_worktrees(args)
     with kbc.connect_closing() as conn:
         ok = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None))
     return _ok_or_err(ok, f"cannot reclaim {args.task_id} (not running or unknown id)",
@@ -969,6 +1031,27 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_set_workspace(args: argparse.Namespace) -> int:
+    """``hermes kanban set-workspace`` — audited workspace-metadata correction."""
+    with kbc.connect_closing() as conn:
+        try:
+            applied = kbw.set_task_workspace(
+                conn, args.task_id, workspace_kind=args.kind,
+                workspace_path=getattr(args, "path", None), actor=_profile_author(),
+            )
+        except kbw.WorkspaceUpdateRefused as exc:
+            print(f"kanban set-workspace: {exc}", file=sys.stderr)
+            return 1
+    if getattr(args, "json", False):
+        print(json.dumps(applied, ensure_ascii=False))
+    else:
+        old, new = applied["old"], applied["new"]
+        print(f"{args.task_id}: workspace "
+              f"{old['workspace_kind']}:{old['workspace_path'] or '-'} -> "
+              f"{new['workspace_kind']}:{new['workspace_path'] or '-'}")
+    return 0
+
+
 def _commented(conn, reason: Optional[str], author, prefix: str, op):
     """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
     def run(tid):
@@ -1325,7 +1408,8 @@ _HANDLERS = {
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
-    "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
+    "complete": _cmd_complete, "edit": _cmd_edit, "set-workspace": _cmd_set_workspace,
+    "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,

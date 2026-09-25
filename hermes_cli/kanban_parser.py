@@ -89,6 +89,19 @@ _NOTIFY_TARGET = (
     _arg("--chat-id", required=True),
     _arg("--thread-id"),
 )
+# Shared by ``gc`` and ``reclaim`` so the disk guard and the GC sweep run the same
+# code path with the same knobs.
+_WORKTREE_RECLAIM_ARGS = (
+    _arg("--worktree-min-age-hours", type=int, default=6,
+         help="Only reclaim worktrees of cards completed longer ago than N hours (default: 6)"),
+    _arg("--worktree-root", dest="worktree_roots", action="append", metavar="DIR",
+         help="Worktree root to sweep (repeatable). Default: ~/workspace/*-worktrees, "
+              "~/workspace/*/.worktrees and the board's own worktree parents."),
+    _arg("--no-worktrees", action="store_true", help="Skip the done-card worktree reclaim"),
+    _arg("--dry-run", action="store_true", help="Report what would be reclaimed, remove nothing"),
+    _arg("--no-comment", action="store_true",
+         help="Do not record the before/after free space on the reclaimed cards"),
+)
 _STEP_HANDOFF = (
     _arg("--summary", help="Structured handoff summary. Falls back to --result if omitted."),
     _arg("--metadata", help="JSON dict of structured facts to store on the latest completed run."),
@@ -257,7 +270,17 @@ _SPECS = [
              help="Provider the model belongs to (worker is spawned with "
                   "--provider <name>). Cleared together with the model."),
     ], help="Set or clear a task's model/provider override (takes effect on the next dispatch)"),
-    _cmd("reclaim", [_TASK_ID, _RECLAIM_REASON], help="Release an active worker claim on a running task"),
+    _cmd("reclaim", [
+        _arg("task_id", nargs="?",
+             help="Task id whose worker claim to release. Omit to reclaim the "
+                  "worktrees of done cards instead."),
+        _RECLAIM_REASON,
+        *_WORKTREE_RECLAIM_ARGS,
+        _arg("--logs", action="store_true",
+             help="Also move finished cards' sibling *-pi*.log / *-spec*.md files into <root>/logs/"),
+        _arg("--log-min-age-days", type=int, default=7,
+             help="With --logs: only move sibling files of cards done longer ago than N days (default: 7)"),
+    ], help="Release an active worker claim on a running task"),
     _cmd("reassign", [
         _TASK_ID,
         _arg("profile", help="New profile name (or 'none' to unassign)"),
@@ -312,6 +335,21 @@ _SPECS = [
         _arg("--result", help="Backfilled task result text for a done task"),
         *_STEP_HANDOFF,
     ], help="Edit task fields or recovery fields on an already-completed task"),
+    _cmd("set-workspace", [
+        _TASK_ID,
+        _arg("--kind", required=True, choices=sorted(kb.VALID_WORKSPACE_KINDS),
+             help="Workspace kind to record"),
+        _arg("--path", default=None,
+             help="Absolute path to an EXISTING directory (dir/worktree kinds)"),
+        _json_flag(help="Emit the applied change as JSON"),
+    ], help="Correct a task's recorded workspace metadata (moves no files)",
+       description=(
+           "Rewrite workspace_kind/workspace_path on an existing task so the row describes "
+           "the workspace that task actually owns. Nothing is created, moved or removed on "
+           "disk and no worker is started; status, assignee, claim, links and history are "
+           "untouched. Refused when the task is running / holds an active claim, when the "
+           "kind is unknown, when a dir/worktree path is missing, relative, or does not "
+           "already exist, and when a scratch kind is given an explicit path.")),
     _cmd("block", [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason (also appended as a comment)"),
@@ -439,6 +477,7 @@ _SPECS = [
              help="Delete task_events older than N days for terminal tasks (default: 30; 0 disables)"),
         _arg("--log-retention-days", type=_nonnegative_int, default=30,
              help="Delete worker log files older than N days (default: 30; 0 disables)"),
+        *_WORKTREE_RECLAIM_ARGS,
     ], help="Garbage-collect archived-task workspaces, old events, and old logs"),
     _cmd("repair", [_json_flag(help="Emit the repair report as JSON")],
          help="Check kanban.db integrity and auto-repair index-only corruption",

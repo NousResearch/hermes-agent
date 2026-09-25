@@ -8,6 +8,7 @@ late-bound via ``_kb`` (import-cycle breaking) so monkeypatching
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import re
 import signal
@@ -86,6 +87,182 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
     re.IGNORECASE,
 )
+
+# Parses owner/repo/number back out of a matched PR URL.
+_PR_URL_PARTS_RE = re.compile(
+    r"https?://github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)/pull/(?P<number>\d+)",
+    re.IGNORECASE,
+)
+
+# Per-process cache of guard verdicts: pr_url -> ((applies, reason), cached_at).
+# The dispatcher re-checks the same handful of PR URLs every tick; an uncached
+# ``gh`` call per task per tick makes dispatch unusably slow.
+_PR_GUARD_CACHE: dict = {}
+_PR_GUARD_CACHE_TTL = 120  # seconds
+
+# ``conclusion`` values (CheckRun shape) that mean the check failed.
+_PR_CHECK_FAILURE_CONCLUSIONS = {
+    "FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE",
+}
+# ``state`` values (StatusContext shape) that mean the check failed.
+_PR_CHECK_FAILURE_STATES = {"FAILURE", "ERROR"}
+
+# GraphQL: per-context ``isRequired`` is the ONLY source of truth for "does this
+# check gate the merge". Deliberately NOT a list of check names — a hand-kept
+# list silently misses new checks, and round 1 of this fix was rejected for
+# treating the advisory ``review-gate`` signal check as merge-blocking, which
+# un-guarded 24 of 40 live PRs.
+_PR_STATUS_GQL = """
+query($owner:String!, $repo:String!, $number:Int!) {
+  repository(owner:$owner, name:$repo) {
+    pullRequest(number:$number) {
+      state
+      reviewDecision
+      commits(last:1) { nodes { commit { statusCheckRollup { contexts(first:100) { nodes {
+        __typename
+        ... on CheckRun { name conclusion status isRequired(pullRequestNumber:$number) }
+        ... on StatusContext { context state isRequired(pullRequestNumber:$number) }
+      } } } } } }
+    }
+  }
+}
+"""
+
+
+def _fetch_pr_status(owner: str, repo: str, number: str) -> Optional[dict]:
+    """Return ``{'state','reviewDecision','statusCheckRollup'}`` for a PR, or None.
+
+    None means indeterminate (no ``gh``, network failure, non-zero exit, bad
+    JSON); callers must fail CLOSED. Each rollup entry carries its own
+    ``isRequired`` so the caller can tell a merge-gating failure from an
+    advisory/signal check with no hand-maintained name list.
+
+    Module-level so tests can monkeypatch it without network or a GitHub account.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                "gh", "api", "graphql",
+                "-f", f"query={_PR_STATUS_GQL}",
+                "-F", f"owner={owner}", "-F", f"repo={repo}", "-F", f"number={number}",
+            ],
+            capture_output=True, text=True, timeout=20,
+            env={**os.environ, "PAGER": "cat", "GH_PAGER": "cat"},
+        )
+        if proc.returncode != 0:
+            _kb._log.debug(
+                "gh pr status fetch failed (%s/%s#%s): %s",
+                owner, repo, number, (proc.stderr or "").strip()[:200],
+            )
+            return None
+        pr = (json.loads(proc.stdout) or {})["data"]["repository"]["pullRequest"]
+    except Exception as exc:  # noqa: BLE001 - any failure is "indeterminate"
+        _kb._log.debug(
+            "gh pr status fetch errored (%s/%s#%s): %s", owner, repo, number, exc
+        )
+        return None
+    if not isinstance(pr, dict):
+        return None
+    rollup: list = []
+    try:
+        nodes = pr["commits"]["nodes"]
+        if nodes:
+            sc = nodes[0]["commit"]["statusCheckRollup"]
+            if sc:
+                rollup = sc["contexts"]["nodes"] or []
+    except Exception:  # noqa: BLE001 - absent rollup is simply empty
+        rollup = []
+    return {
+        "state": pr.get("state"),
+        "reviewDecision": pr.get("reviewDecision"),
+        "statusCheckRollup": rollup,
+    }
+
+
+def _entry_failed(entry: dict) -> bool:
+    """True when this rollup entry is in a failed terminal state.
+
+    Derived from the entry's own fields: a CheckRun carries ``conclusion``, a
+    StatusContext carries ``state``. A missing value on a still-running check is
+    NOT a failure.
+    """
+    if (entry.get("conclusion") or "").upper() in _PR_CHECK_FAILURE_CONCLUSIONS:
+        return True
+    return (entry.get("state") or "").upper() in _PR_CHECK_FAILURE_STATES
+
+
+def _rollup_has_gating_failure(rollup: Any) -> bool:
+    """True when a check that actually GATES THE MERGE has failed.
+
+    Only ``isRequired`` entries count. On a repo with no branch protection
+    nothing is required, so no check can block a merge — and a check that cannot
+    block a merge cannot justify un-guarding the card. That case returns False
+    (keep guarding) rather than exempting on advisory noise.
+    """
+    if not isinstance(rollup, list):
+        return False
+    for entry in rollup:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("isRequired") is not True:
+            continue
+        if _entry_failed(entry):
+            return True
+    return False
+
+
+def _active_pr_guard_applies(pr_url: str) -> tuple:
+    """``(guard_applies, exemption_reason)`` for one PR URL, cached per-process.
+
+    See :func:`_compute_active_pr_guard`.
+    """
+    now = time.time()
+    cached = _PR_GUARD_CACHE.get(pr_url)
+    if cached is not None and (now - cached[1]) < _PR_GUARD_CACHE_TTL:
+        return cached[0]
+    verdict = _compute_active_pr_guard(pr_url)
+    _PR_GUARD_CACHE[pr_url] = (verdict, now)
+    return verdict
+
+
+def _compute_active_pr_guard(pr_url: str) -> tuple:
+    """Uncached verdict for :func:`_active_pr_guard_applies`.
+
+    The ``active_pr`` guard exists to stop a duplicate-PR storm while a PR is
+    green and awaiting review/merge. It must NOT fire when the PR is in a state
+    only the IMPLEMENTER can clear, or the card deadlocks by construction:
+    t_108177c6 emitted ``respawn_guarded {"reason":"active_pr"}`` every 60-90s
+    for 4+ hours while its PR sat OPEN on CHANGES_REQUESTED — clearing that
+    verdict needs a new commit, and the guard was precisely what kept the
+    implementer from being respawned to push one.
+
+    Guard applies -> (True, None)
+    Exempt        -> (False, reason), when:
+      * PR is not OPEN (MERGED/CLOSED: the work is finished; guarding freezes it)
+      * ``reviewDecision == CHANGES_REQUESTED``  (author action required)
+      * a REQUIRED status check has failed       (author action required)
+    Indeterminate (unparsable URL, or fetch returned None) -> (True, None):
+    fail CLOSED, preserving the conservative behaviour so a network blip cannot
+    stampede duplicate workers onto a task whose PR is genuinely in flight. This
+    is an exemption, NOT "always respawn".
+    """
+    m = _PR_URL_PARTS_RE.match(pr_url)
+    if m is None:
+        return (True, None)
+    status = _fetch_pr_status(m.group("owner"), m.group("repo"), m.group("number"))
+    if status is None:
+        _kb._log.debug(
+            "active_pr guard: indeterminate PR status for %s; failing closed", pr_url
+        )
+        return (True, None)
+
+    if (status.get("state") or "").upper() != "OPEN":
+        return (False, "pr_not_open")
+    if (status.get("reviewDecision") or "").upper() == "CHANGES_REQUESTED":
+        return (False, "pr_needs_author_action")
+    if _rollup_has_gating_failure(status.get("statusCheckRollup")):
+        return (False, "pr_needs_author_action")
+    return (True, None)
 
 
 @dataclass
@@ -430,14 +607,402 @@ def _poll_worker_exit(pid: int, started_at: Optional[int] = None) -> bool:
     return False
 
 
-def _sigkill(kill, pid: int) -> bool:
-    """Best-effort SIGKILL; True when the signal was delivered."""
+def _sigkill(kill, pid: int, *, killpg=None, snapshot=None) -> bool:
+    """Best-effort SIGKILL of the worker tree; True when the signal was delivered."""
     try:
         # signal.SIGKILL doesn't exist on Windows; SIGTERM maps to TerminateProcess.
-        kill(int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))
+        _sig = getattr(signal, "SIGKILL", signal.SIGTERM)
+        if snapshot is None:
+            kill(int(pid), _sig)
+        else:
+            _signal_worker_tree(int(pid), _sig, kill=kill, killpg=killpg, snapshot=snapshot)
         return True
     except (ProcessLookupError, OSError):
         return False
+
+
+def _default_scan_pids():
+    """Enumerate live pids on this host. Derived from the OS, never a list.
+
+    psutil is a declared dependency (pyproject.toml), but this must degrade
+    gracefully rather than hard-fail if it is missing: fall back to ``/proc``
+    on Linux, then to an empty enumeration (the group/pid signal still runs).
+    """
+    try:
+        import psutil  # type: ignore
+
+        return list(psutil.pids())
+    except Exception:
+        pass
+    try:
+        return [int(name) for name in os.listdir("/proc") if name.isdigit()]
+    except Exception:
+        return []
+
+
+def _default_proc_table() -> dict:
+    """Map live pid -> ``(ppid, create_time)``. Derived from the OS.
+
+    This is the ancestry/identity source: ``ppid`` gives the parent chain and
+    ``create_time`` gives a pid-reuse-proof identity that SURVIVES
+    reparenting (unlike the session id, which a descendant can leave by
+    calling ``setsid()``).
+
+    psutil is a declared dependency but this must degrade gracefully: an
+    empty table simply disables the ancestry arm, leaving the group and
+    session arms exactly as they were.
+    """
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return {}
+    table: dict[int, tuple[int, float]] = {}
+    try:
+        for proc in psutil.process_iter(["pid", "ppid", "create_time"]):
+            try:
+                info = proc.info
+                table[int(info["pid"])] = (
+                    int(info["ppid"]), float(info["create_time"]),
+                )
+            except Exception:
+                continue
+    except Exception:
+        return {}
+    return table
+
+
+def _ancestry_reaches(cand: int, worker: int, table: dict, limit: int = 64) -> bool:
+    """True when walking ``cand``'s parent chain reaches ``worker``.
+
+    Bounded and cycle-guarded; a missing table entry ends the walk.
+    """
+    seen: set[int] = set()
+    cur = int(cand)
+    for _ in range(limit):
+        entry = table.get(cur)
+        if entry is None:
+            return False
+        parent = int(entry[0])
+        if parent == worker:
+            return True
+        if parent <= 1 or parent in seen:
+            return False
+        seen.add(parent)
+        cur = parent
+    return False
+
+
+def _capture_worker_tree(
+    pid: int,
+    *,
+    getpgid=None,
+    getsid=None,
+    scan_pids=None,
+    proc_table=None,
+) -> dict:
+    """Snapshot every pid owned by worker ``pid``, BEFORE it is signalled.
+
+    Ownership is the UNION of three derived sources (never a hand-maintained
+    list):
+
+    a) the worker's own process GROUP (handled by the caller's ``killpg``),
+    b) the SESSION the worker leads (``getsid(pid) == pid``),
+    c) ANCESTRY: every live pid whose parent chain reaches the worker pid.
+
+    (c) exists because neither the group nor the session is a complete
+    boundary — any descendant may call ``setsid()``/``start_new_session``
+    and leave the session entirely. Measured live:
+
+        worker 90579 pgid 90579 sid 90579
+          desc 90580 ppid 90579 pgid 90580 sid 90580
+        NEW-SESSION descendants: [90580]
+
+    Production workers do this routinely (node, zsh job control, MCP stdio
+    servers).
+
+    Why a SNAPSHOT and not a live derivation at kill time: once the worker
+    dies its descendants are reparented to init(1) and the ancestry chain to
+    the worker is GONE. The escalation pass (SIGKILL) therefore reuses this
+    snapshot instead of re-deriving from a chain that no longer exists.
+
+    PID-reuse safety travels with the snapshot: each entry carries the
+    ``create_time`` captured here, re-verified immediately before the signal.
+    """
+    pid = int(pid)
+    if getpgid is None:
+        getpgid = getattr(os, "getpgid", None)
+    if getsid is None:
+        getsid = getattr(os, "getsid", None)
+    if proc_table is None:
+        proc_table = _default_proc_table
+    try:
+        table = proc_table() if callable(proc_table) else dict(proc_table)
+    except Exception:
+        table = {}
+    if not isinstance(table, dict):
+        table = {}
+
+    owns_session = False
+    if getsid is not None:
+        try:
+            owns_session = int(getsid(pid)) == pid
+        except Exception:
+            owns_session = False
+
+    # pid -> [create_time|None, via_session]
+    owned: dict[int, list] = {}
+
+    def _ctime(cand: int):
+        entry = table.get(cand)
+        return None if entry is None else float(entry[1])
+
+    # (b) SESSION arm — only a session we can prove we created. The scan is
+    # not even consulted otherwise.
+    if owns_session:
+        scanner = _default_scan_pids if scan_pids is None else scan_pids
+        try:
+            candidates = scanner() if callable(scanner) else scanner
+            candidates = list(candidates)
+        except Exception:
+            candidates = []
+        for raw in candidates:
+            try:
+                cand = int(raw)
+            except Exception:
+                continue
+            if cand <= 0 or cand == pid:
+                continue
+            try:
+                if int(getsid(cand)) != pid:
+                    continue
+            except Exception:
+                continue
+            owned.setdefault(cand, [_ctime(cand), False])[1] = True
+
+    # (c) ANCESTRY arm — derived from the OS parent chain.
+    for cand in list(table.keys()):
+        cand = int(cand)
+        if cand <= 0 or cand == pid or cand in owned:
+            continue
+        if _ancestry_reaches(cand, pid, table):
+            owned[cand] = [_ctime(cand), False]
+    # Group leaders among the owned set: a separate process GROUP (the
+    # `set -m` job case, or a new-session descendant) gets a group signal so
+    # children appearing after this enumeration are still covered.
+    groups: list[tuple[int, Any, bool]] = []
+    if getpgid is not None:
+        for cand, (ctime, via_session) in owned.items():
+            try:
+                cand_pgid = int(getpgid(cand))
+            except Exception:
+                continue
+            if cand_pgid != cand or cand_pgid == pid:
+                continue
+            groups.append((cand_pgid, ctime, via_session))
+
+    return {
+        "pid": pid,
+        "owns_session": owns_session,
+        "pids": [
+            (cand, ctime, via_session)
+            for cand, (ctime, via_session) in sorted(owned.items())
+        ],
+        "groups": groups,
+    }
+
+
+def _verify_snapshot_identity(
+    cand: int,
+    ctime,
+    via_session: bool,
+    *,
+    worker: int,
+    getsid,
+    fresh: dict,
+) -> bool:
+    """Re-verify a snapshotted pid immediately before signalling it.
+
+    ``create_time`` is the authoritative check: it survives reparenting,
+    which the session id does not (a descendant that called ``setsid()`` was
+    never in our session, and after the worker dies the ancestry chain is
+    gone). A pid whose ``create_time`` changed has been RECYCLED and must be
+    skipped. Session-derived entries additionally keep the session re-check.
+    """
+    if via_session and getsid is not None:
+        try:
+            if int(getsid(cand)) != worker:
+                return False
+        except Exception:
+            return False
+    if ctime is not None:
+        cur = fresh.get(int(cand))
+        if cur is None:
+            return False
+        try:
+            if abs(float(cur[1]) - float(ctime)) > 1e-6:
+                return False
+        except Exception:
+            return False
+        return True
+    # No identity proof available (no psutil): only session-derived entries
+    # are signallable, and they were just re-verified above.
+    return bool(via_session and getsid is not None)
+
+
+def _signal_captured_tree(
+    snapshot: dict,
+    sig: int,
+    *,
+    kill,
+    killpg,
+    getsid,
+    proc_table=None,
+) -> None:
+    """Signal every pid in a pre-death snapshot, identity-verified."""
+    worker = int(snapshot.get("pid", 0))
+    entries = list(snapshot.get("pids") or ())
+    groups = list(snapshot.get("groups") or ())
+    if not entries and not groups:
+        return
+    if proc_table is None:
+        proc_table = _default_proc_table
+    try:
+        fresh = proc_table() if callable(proc_table) else dict(proc_table)
+    except Exception:
+        fresh = {}
+    if not isinstance(fresh, dict):
+        fresh = {}
+
+    for cand, ctime, via_session in entries:
+        if not _verify_snapshot_identity(
+            cand, ctime, via_session,
+            worker=worker, getsid=getsid, fresh=fresh,
+        ):
+            continue
+        try:
+            kill(cand, sig)
+        except Exception:
+            continue
+
+    if killpg is None:
+        return
+    for pgid, ctime, via_session in groups:
+        if not _verify_snapshot_identity(
+            pgid, ctime, via_session,
+            worker=worker, getsid=getsid, fresh=fresh,
+        ):
+            continue
+        try:
+            killpg(pgid, sig)
+        except Exception:
+            continue
+
+
+def _signal_worker_tree(
+    pid: int,
+    sig: int,
+    *,
+    kill=None,
+    killpg=None,
+    getpgid=None,
+    getsid=None,
+    scan_pids=None,
+    proc_table=None,
+    snapshot=None,
+) -> None:
+    """Signal a dispatcher worker AND its descendants.
+
+    Workers are spawned with ``start_new_session=True``, which makes each
+    worker the leader of its own session/process GROUP. Signalling only the
+    worker pid leaves its children (e.g. ``gtimeout`` -> ``pi``) running
+    against a task that has already been handed to a new worker — the
+    observed descendant leak.
+
+    Safety property (load-bearing): we only ever group-signal when the pid
+    is ITSELF the group leader (``os.getpgid(pid) == pid``), i.e. the group
+    is one we created for that worker. If the pid is not the leader it
+    belongs to somebody else's group, and ``killpg`` on it would take out
+    unrelated processes — in that case we signal the single pid only.
+    Never assume ``pgid == pid``: derive it.
+
+    Falls back to a plain pid signal on ProcessLookupError / OSError /
+    AttributeError (Windows has neither ``getpgid`` nor ``killpg``).
+
+    The group signal is NOT sufficient on its own. The real worker chain is
+    a job-control shell (``sh -c 'set -m; gtimeout ... pi ... &'``), and
+    ``set -m`` puts the ``gtimeout`` -> ``pi`` pair in a *separate process
+    group* that ``killpg(worker_pgid)`` never reaches. Measured live:
+
+        worker 80761 pgid 80761 sid 80761
+          desc 80762 ppid 80761 pgid 80762 sid 80761
+          desc 80763 ppid 80762 pgid 80762 sid 80761
+        LEAKED after killpg-only: [80762, 80763]
+
+    The session is a better invariant, but it is STILL not complete: any
+    descendant may call ``setsid()``/``start_new_session`` and leave the
+    session (node, zsh job control and MCP stdio servers all do). Measured
+    live:
+
+        worker 90579 pgid 90579 sid 90579
+          desc 90580 ppid 90579 pgid 90580 sid 90580
+        LEAKED after the session-only sweep: [90580]
+
+    So ownership is the UNION of three DERIVED sources: the owned process
+    group, the owned session, and process ANCESTRY (see
+    ``_capture_worker_tree``). The owned set is snapshotted BEFORE the
+    worker is signalled, because the worker's death reparents its
+    descendants to init(1) and destroys the ancestry chain; callers pass
+    that same ``snapshot`` back in for the SIGKILL escalation.
+
+    ``kill`` / ``killpg`` / ``getpgid`` / ``getsid`` / ``scan_pids`` /
+    ``proc_table`` are injectable for tests; they default to the ``os``
+    equivalents and a live psutil-derived enumeration. Raises whatever the
+    underlying signal call raises (callers already handle
+    ProcessLookupError/OSError).
+    """
+    pid = int(pid)
+    if kill is None:
+        kill = getattr(os, "kill", None)
+    if kill is None:
+        return
+    if killpg is None:
+        killpg = getattr(os, "killpg", None)
+    if getpgid is None:
+        getpgid = getattr(os, "getpgid", None)
+    if getsid is None:
+        getsid = getattr(os, "getsid", None)
+
+    # ── Owned-set sweep: the descendants killpg cannot reach ─────────────
+    # Runs BEFORE the worker signal so the worker's death (and the ensuing
+    # reparent-to-init) cannot race the enumeration.
+    if snapshot is None:
+        snapshot = _capture_worker_tree(
+            pid,
+            getpgid=getpgid, getsid=getsid,
+            scan_pids=scan_pids, proc_table=proc_table,
+        )
+    _signal_captured_tree(
+        snapshot, sig,
+        kill=kill, killpg=killpg, getsid=getsid, proc_table=proc_table,
+    )
+
+    if killpg is not None and getpgid is not None:
+        try:
+            pgid = getpgid(pid)
+        except (ProcessLookupError, OSError, AttributeError):
+            pgid = None
+        if pgid is not None and int(pgid) == pid:
+            # We own this group (worker is its own session/group leader):
+            # signal the whole tree.
+            try:
+                killpg(int(pgid), sig)
+                return
+            except (OSError, AttributeError) as exc:
+                if isinstance(exc, ProcessLookupError):
+                    raise
+                # killpg unsupported/failed -> fall through to pid signal.
+
+    kill(pid, sig)
 
 
 def _terminate_reclaimed_worker(
@@ -480,8 +1045,14 @@ def _terminate_reclaimed_worker(
         return info
 
     info["termination_attempted"] = True
+    # An injected ``signal_fn`` must intercept the group signal too, or a real
+    # ``os.killpg`` would fire at the test runner's own group.
+    killpg = signal_fn if signal_fn is not None else None
+    # Snapshot the owned set BEFORE signalling: the worker's death reparents its
+    # descendants to init(1), so the SIGKILL escalation reuses this snapshot.
+    tree = _capture_worker_tree(int(pid))
     try:
-        kill(int(pid), signal.SIGTERM)
+        _signal_worker_tree(int(pid), signal.SIGTERM, kill=kill, killpg=killpg, snapshot=tree)
     except ProcessLookupError:
         # Already gone = successful termination. Leaving terminated=False would
         # make the reclaim guard misread a dead worker as alive and defer forever.
@@ -494,7 +1065,7 @@ def _terminate_reclaimed_worker(
         info["terminated"] = True
         return info
     if _worker_alive(pid, started_at):
-        if not _sigkill(kill, pid):
+        if not _sigkill(kill, pid, killpg=killpg, snapshot=tree):
             return info
         info["sigkill"] = True
     info["terminated"] = not _worker_alive(pid, started_at)
@@ -693,12 +1264,15 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         killed = False
         kill = _kill_fn(signal_fn)
         if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
+            killpg = signal_fn if signal_fn is not None else None
+            # Pre-death snapshot; reused by the SIGKILL escalation.
+            tree = _capture_worker_tree(pid)
             with contextlib.suppress(ProcessLookupError, OSError):
-                kill(pid, signal.SIGTERM)
+                _signal_worker_tree(pid, signal.SIGTERM, kill=kill, killpg=killpg, snapshot=tree)
             # Short polling wait — no time.sleep on the write txn.
             _poll_worker_exit(pid, started_at)
             if _worker_alive(pid, started_at):
-                killed = _sigkill(kill, pid)
+                killed = _sigkill(kill, pid, killpg=killpg, snapshot=tree)
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):
@@ -921,6 +1495,13 @@ def _error_fingerprint(error_text: str) -> str:
 # independent of ``consecutive_failures``: other failure kinds neither consume
 # nor extend it. Per-task ``max_retries`` overrides it.
 _PROTOCOL_VIOLATION_FAILURE_LIMIT = 3
+
+# Bounded retry budget for reclaims where we could NOT determine why the worker
+# died (``_classify_worker_exit`` -> "unknown"). The reap registry is in-memory,
+# so any dispatcher/host restart turns every in-flight worker into an "unknown"
+# exit — a fact about our own lifecycle, not the task. Give those their own,
+# larger budget so infrastructure churn cannot trip the breaker.
+_UNKNOWN_EXIT_FAILURE_LIMIT = 6
 
 # Closed runs to walk when counting the streak; it trips at a handful anyway.
 _PROTOCOL_VIOLATION_SCAN_LIMIT = 50
@@ -1274,7 +1855,10 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if is_systemic else None,
+                failure_limit=(
+                    1 if is_systemic
+                    else (_UNKNOWN_EXIT_FAILURE_LIMIT if error_text.endswith("not alive") else None)
+                ),
                 release_claim=False,
                 end_run=False,
                 event_payload_extra=extra,
@@ -1490,6 +2074,7 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 
 def check_respawn_guard(
     conn: sqlite3.Connection, task_id: str, *, lane: str = "ready",
+    exempt_out: Optional[list] = None,
 ) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -1527,7 +2112,8 @@ def check_respawn_guard(
     latest_run = conn.execute(
         "SELECT outcome, ended_at, metadata FROM task_runs "
         "WHERE task_id = ? AND ended_at IS NOT NULL "
-        "ORDER BY ended_at DESC LIMIT 1",
+        # ``id DESC`` tiebreak: handoff and verdict runs routinely end in the same second.
+        "ORDER BY ended_at DESC, id DESC LIMIT 1",
         (task_id,),
     ).fetchone()
     if latest_run is not None and latest_run["outcome"] == "spawn_failed":
@@ -1598,7 +2184,8 @@ def check_respawn_guard(
         (task_id, pr_cutoff),
     ).fetchall():
         body = _kb._lossy_text(c["body"])
-        if not (body and _RESPAWN_GUARD_PR_URL_RE.search(body)):
+        match = _RESPAWN_GUARD_PR_URL_RE.search(body) if body else None
+        if not match:
             continue
         events = conn.execute(
             # Strictly after: a same-second tie stays guarded (fail closed).
@@ -1609,7 +2196,14 @@ def check_respawn_guard(
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
             return None
-        return "active_pr"
+        # Exempt PRs only the implementer can unblock (not OPEN, CHANGES_REQUESTED,
+        # failing REQUIRED check); indeterminate status fails closed.
+        applies, reason = _active_pr_guard_applies(match.group(0))
+        if applies:
+            return "active_pr"
+        if exempt_out is not None and reason:
+            exempt_out.append({"reason": reason, "pr_url": match.group(0)})
+        return None
 
     return None
 
@@ -2023,7 +2617,8 @@ def _dispatch_lane_task(
         if current >= per_profile_cap:
             result.skipped_per_profile_capped.append((task_id, assignee, current))
             return False
-    guard_reason = check_respawn_guard(conn, task_id, lane=lane)
+    guard_exemptions: list = []
+    guard_reason = check_respawn_guard(conn, task_id, lane=lane, exempt_out=guard_exemptions)
     if guard_reason is not None:
         result.respawn_guarded.append((task_id, guard_reason))
         # Event so ``hermes kanban tail`` shows why the task looks stuck.
@@ -2037,6 +2632,12 @@ def _dispatch_lane_task(
             with _kb.write_txn(conn):
                 _kb._append_event(conn, task_id, "respawn_guarded", {"reason": guard_reason})
         return False
+    # Observability: a card that respawns despite a PR comment is otherwise
+    # indistinguishable in task_events from one that never had a PR.
+    if guard_exemptions and not dry_run:
+        with _kb.write_txn(conn):
+            for _ex in guard_exemptions:
+                _kb._append_event(conn, task_id, "respawn_allowed", _ex)
 
     def _count_spawn(name: str) -> None:
         # Later rows in this tick respect the per-profile cap; subsequent

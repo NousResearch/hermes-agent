@@ -588,6 +588,20 @@ def finalize_turn(
             turn_id=turn_id, original_user_message=original_user_message, messages=messages,
         )
 
+    # pre_verify enforced verdict (agent/verify_hooks.py).
+    # Runs AFTER the transforms on purpose: a hook that declared text this turn
+    # may not end without gets it into the DELIVERED answer regardless of
+    # transform ordering or of the model ignoring the last continuation.
+    # No-op (and no attribute) unless a pre_verify hook asked for one.
+    try:
+        from agent.verify_hooks import apply_pre_verify_verdict
+
+        final_response = apply_pre_verify_verdict(
+            agent, final_response, interrupted=interrupted
+        )
+    except Exception as exc:
+        logger.warning("pre_verify verdict enforcement failed: %s", exc)
+
     # Context engine observation hook: the turn finished with the finalized transcript.
     # Fail-open. ``_last_turn_usage`` is the last response's canonical usage dict, or
     # ``None`` on turns that never reached a provider response — by contract.

@@ -1,8 +1,16 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { introZhHant } from './intro-zh-hant'
 
 export const zhHant = defineLocale({
+  externalOpenFailed: {
+    title: '無法開啟此連結',
+    message: '沒有註冊用於開啟此位址的瀏覽器。請複製連結並手動開啟。',
+    copyUrl: '複製連結',
+    close: '關閉'
+  },
+  intro: introZhHant,
   sessionImport: {
     title: '從其他應用程式繼續',
     subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',
@@ -157,6 +165,8 @@ export const zhHant = defineLocale({
   },
 
   notifications: {
+    sharedProfileWarning:
+      '另一個 Hermes 安裝實例正在使用此設定檔。兩個實例共用此設定檔的設定和資料，因此變更可能發生衝突。你可以繼續使用，也可以在變更前關閉另一個實例。',
     region: '通知',
     hide: '隱藏',
     show: '顯示',
@@ -350,6 +360,7 @@ export const zhHant = defineLocale({
     plugins: {
       openFolder: '開啟桌面外掛資料夾',
       installModal: {
+        installUncertain: 'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
         repoPlaceholder: 'https://github.com/owner/repo',
@@ -379,6 +390,7 @@ export const zhHant = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: '已封存聊天',
+      sessions: '工作階段',
       about: '關於',
       billing: '帳單',
       notifications: '通知',
@@ -589,6 +601,10 @@ export const zhHant = defineLocale({
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
       userBubbleTitle: '訊息氣泡',
       userBubbleDesc: '你自己的訊息有多透明。0 為不透明，100 時只保留邊框。',
+      textDirectionTitle: '文字方向',
+      textDirectionDesc:
+        '設定聊天訊息和輸入框的文字方向。「自動」依每段的第一個字母判斷；混合文字排列不對時，可手動選擇方向。程式碼一律從左到右顯示。',
+      textDirection: { auto: '自動', rtl: '從右到左', ltr: '從左到右' },
       introSplashTitle: '開場標識',
       introSplashDesc: '空白對話中顯示的字標和提示語。',
       reactionsTitle: '訊息回應',
@@ -637,8 +653,6 @@ export const zhHant = defineLocale({
         scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
         roamTitle: '漫遊',
         roamDesc: '閒置時讓寵物自己在視窗內四處走動。',
-        on: '開啟',
-        off: '關閉',
         chooseTitle: '選擇寵物',
         chooseDesc: '選擇後會自動安裝（如需）並設為目前寵物。',
         searchPlaceholder: '搜尋寵物…',
@@ -730,7 +744,6 @@ export const zhHant = defineLocale({
         maxSnapshots: '檢查點上限'
       },
       voice: {
-        recordKey: '語音快捷鍵',
         maxRecordingSeconds: '最長錄音時間',
         autoTts: '朗讀回覆',
         voiceChatMode: '語音聊天模式',
@@ -1025,40 +1038,7 @@ export const zhHant = defineLocale({
       driverHealth: '驅動程式健康狀態'
     },
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `版本 ${value}`,
-      versionUnavailable: '版本不可用',
-      bundleOutOfSync: '應用程式建置版本過舊',
-      bundleOutOfSyncDesc:
-        'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
-      bundleOutOfSyncAction: '取得安裝程式',
-      bundleSwapPending: '重新啟動以完成更新',
-      bundleSwapPendingDesc:
-        '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
-      bundleSwapPendingAction: '重新啟動 Hermes',
-      updates: '更新',
-      checkNow: '立即檢查',
-      checking: '檢查中…',
-      seeWhatsNew: '查看新增內容',
-      updateNow: '立即更新',
-      releaseNotes: '發行說明',
-      onLatest: '你已是最新版本。',
-      installing: '正在安裝更新。',
-      cantUpdate: '此版本無法從應用程式內自行更新。',
-      cantReach: '無法連線到更新伺服器。',
-      tapCheck: '點選「立即檢查」以尋找更新。',
-      updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
-      updateReadyUnknown: '新更新已就緒。',
-      lastChecked: age => `上次檢查：${age}`,
-      justNowSuffix: ' · 剛剛',
-      automaticUpdates: '自動更新',
-      automaticUpdatesDesc: 'Hermes 會在背景自動檢查更新，並在有可用更新時通知你。',
-      branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
-      never: '從未',
-      justNow: '剛剛',
-      minAgo: count => `${count} 分鐘前`,
-      hoursAgo: count => `${count} 小時前`,
-      daysAgo: count => `${count} 天前`
+      updates: '更新'
     },
     config: {
       minimizeToTrayTitle: '最小化至系統匣',
@@ -1082,6 +1062,9 @@ export const zhHant = defineLocale({
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      voiceShortcutHintTitle: '語音錄製快捷鍵',
+      voiceShortcutHintDesc:
+        '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
       showOptions: '顯示選項'
     },
     hudModifier: {
@@ -1312,6 +1295,9 @@ export const zhHant = defineLocale({
       moaSetDefault: '設為預設',
       moaNewPresetPlaceholder: '新預設',
       moaAddPreset: '新增預設',
+      customModel: '自訂模型…',
+      customModelPlaceholder: '模型 ID',
+      chooseFromList: '從清單中選擇',
       moaDefault: '預設：',
       moaReferenceToggle: (enabled, index) => `${enabled ? '停用' : '啟用'}參考 ${index}`,
       moaReferenceTitle: index => `參考 ${index}`,
@@ -1356,6 +1342,7 @@ export const zhHant = defineLocale({
       }
     },
     localModels: {
+      connectionChanged: '本地模型連線已變更',
       title: '本地模型',
       runtimeTitle: '本地執行環境',
       runtimeReady: backend => `就緒 · ${backend}`,
@@ -1387,7 +1374,13 @@ export const zhHant = defineLocale({
       quickstartConfigure: '讓我選擇',
       downloaded: '已下載',
       downloadAction: size => `下載 · ${size}`,
-      downloadProgress: (done, total) => `正在下載 ${done} / ${total}`,
+      downloadProgress: (done, total) => `${done} / ${total}`,
+      downloadStatusRunning: '下載中',
+      downloadSpeed: rate => `${rate}`,
+      downloadEta: time => `剩餘約 ${time}`,
+      downloadPausedLabel: '已暫停',
+      downloadPauseAction: '暫停',
+      downloadResumeAction: '繼續',
       downloadDoneToast: model => `${model} 已就緒。`,
       installDoneToast: '本地執行環境已安裝就緒。',
       useAction: '使用',
@@ -1398,7 +1391,7 @@ export const zhHant = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——已設定的組建。`,
+      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend})。`,
       activeDetail: '新對話使用此模型——傳送首條訊息時載入',
       activeNotLoaded: '首條訊息時載入',
       loadedPill: '已載入',
@@ -1565,9 +1558,10 @@ export const zhHant = defineLocale({
         notice: {
           loggedOut: {
             title: '連接你的 Nous 帳戶',
-            message: '在 TUI 中執行 /portal，或開啟 Nous 入口網站連接帳戶。',
-            action: '開啟入口網站 ↗'
+            message: '登入你的 Nous 帳戶，即可在此查看餘額、方案和用量。',
+            action: '登入'
           },
+          openPortal: '開啟入口網站 ↗',
           noCard: {
             title: '尚未新增付款方式',
             message: '新增銀行卡後才能購買額度和使用自動儲值。請在入口網站中新增。',
@@ -1830,6 +1824,16 @@ export const zhHant = defineLocale({
   skills: {
     plugins: {
       pageBlurb: '外掛可以擴充本應用程式、代理，或兩者 — 每一部分都有自己的開關。'
+    },
+    hub: {
+      search: '搜尋',
+      searching: '搜尋中…',
+      noResults: '技能中心沒有符合的技能。',
+      installed: '已安裝',
+      installStarted: name => `正在安裝「${name}」…`,
+      pickerBrowse: '瀏覽完整技能中心',
+      pickerHide: '隱藏技能中心瀏覽器',
+      pickerHint: '按下任一技能的「+ Add to this Agent」，即可安裝並顯示在上方清單中。'
     },
     tabSkills: '技能',
     tabToolsets: '工具集',
@@ -2267,6 +2271,16 @@ export const zhHant = defineLocale({
     switchToConnection: name => `切換至 ${name}`,
     switchConnectionFailed: name => `無法連線至 ${name}`,
     manageProfiles: '管理設定檔…',
+    fleet: {
+      localDevice: '此裝置（本機後端——若未安裝 Hermes 則會安裝，否則開啟新的工作階段）',
+      switchDeviceTitle: '切換到此裝置？',
+      switchDeviceDesc: '這會在這台電腦上開啟新的工作階段。目前的對話仍留在另一個閘道。',
+      switchDeviceConfirm: '切換',
+      installDeviceTitle: '切換到此裝置？',
+      installDeviceDesc: '這會在本機安裝 Hermes，然後在這台電腦上開啟新的工作階段。確認之前不會開始安裝。',
+      installDeviceConfirm: '本機安裝',
+      connectExistingInstead: '改為連線現有環境'
+    },
     remoteOverride: {
       menuItem: '連線至遠端主機…',
       badge: (host: string) => `執行於 ${host}`,
@@ -2569,6 +2583,39 @@ export const zhHant = defineLocale({
   },
 
   sidebar: {
+    profileRail: '設定檔列',
+    markAllRead: '全部標示為已讀',
+    filter: {
+      grouping: '分組',
+      ordering: '排序',
+      show: '顯示',
+      filters: '篩選',
+      status: '狀態',
+      pullRequest: '提取請求',
+      profile: '設定檔',
+      project: '專案',
+      archived: '已封存',
+      resetToDefaults: '重設為預設值',
+      expandAll: '全部展開',
+      collapseAll: '全部收合',
+      inboxStyle: '收件匣樣式',
+      updated: '已更新',
+      created: '已建立',
+      tokens: '詞元數',
+      cost: '費用',
+      manual: '手動',
+      preview: '預覽',
+      pr: 'PR',
+      needsInput: '需要輸入',
+      working: '運作中',
+      unread: '未讀',
+      draft: '草稿',
+      idle: '閒置',
+      open: '開啟',
+      merged: '已合併',
+      closed: '已關閉',
+      noPR: '無 PR'
+    },
     gatewayGroups: {
       grouping: '閘道與設定檔',
       rename: '重新命名群組',
@@ -2697,6 +2744,7 @@ export const zhHant = defineLocale({
       branchFrom: '分支',
       rename: '重新命名…',
       archive: '封存',
+      unarchive: '取消封存',
       newWindow: '新視窗',
       openInTerminal: '在終端機中開啟',
       copyIdFailed: '無法複製工作階段 ID',
@@ -3098,6 +3146,13 @@ export const zhHant = defineLocale({
   },
 
   updates: {
+    discontinuedTitle: '此版本的 Hermes 已停止支援',
+    discontinuedBody: '此版本的 Hermes 已停止支援，可能無法正常運作——請解除安裝。您的資料仍保留在磁碟上。',
+    channels: { stable: '穩定版', canary: '預覽版' },
+    bundleSwapPending: '重新啟動以完成更新',
+    bundleSwapPendingDesc:
+      '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
+    bundleSwapPendingAction: '重新啟動 Hermes',
     stages: {
       idle: '準備中…',
       prepare: '準備中…',
@@ -3120,6 +3175,7 @@ export const zhHant = defineLocale({
     connectionRetry: '請檢查網路連線後重試。',
     gitUnusable: 'Hermes 無法在這台電腦上執行 Git，因此無法檢查更新。',
     latestBody: '您正在執行最新版本。',
+    versionDetailsDistributionStore: 'Microsoft Store',
     latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',
@@ -3179,7 +3235,31 @@ export const zhHant = defineLocale({
       notAvailable: '此後端無法更新。',
       failed: '後端更新失敗。',
       noReturn: '後端未恢復連線。更新可能未完成——請檢查後端主機。'
-    }
+    },
+    // Restored About-card strings (moved from `settings.about.*` to `updates.*`).
+    version: value => `版本 ${value}`,
+    versionUnavailable: '版本不可用',
+    checkNow: '立即檢查',
+    seeWhatsNew: '查看新增內容',
+    releaseNotes: '發行說明',
+    onLatest: '你已是最新版本。',
+    installing: '正在安裝更新。',
+    cantReach: '無法連線到更新伺服器。',
+    tapCheck: '點選「立即檢查」以尋找更新。',
+    updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
+    updateReadyUnknown: '新更新已就緒。',
+    lastChecked: age => `上次檢查：${age}`,
+    never: '從未',
+    justNow: '剛剛',
+    minAgo: count => `${count} 分鐘前`,
+    hoursAgo: count => `${count} 小時前`,
+    daysAgo: count => `${count} 天前`,
+    justNowSuffix: ' · 剛剛',
+    bundleOutOfSync: '應用程式建置版本過舊',
+    bundleOutOfSyncDesc:
+      'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
+    bundleOutOfSyncAction: '取得安裝程式',
+    checkingShort: '檢查中…'
   },
 
   guidedGreeting: {
@@ -3345,14 +3425,19 @@ export const zhHant = defineLocale({
     free: '免費',
     freeTier: '免費層',
     priceTitle: '每百萬 Token 的輸入/輸出價格',
-    wasPrice: '原價'
+    wasPrice: '原價',
+    customModel: '自訂模型',
+    addCustomModelAction: '新增自訂模型…',
+    customModelPlaceholder: '輸入模型 ID，例如 openai/gpt-5'
   },
 
   modelVisibility: {
     title: '模型',
     search: '搜尋模型',
     noAuthenticatedProviders: '沒有已驗證的提供方。',
-    addProvider: '新增提供方…'
+    addProvider: '新增提供方…',
+    addCustomModel: '新增自訂模型',
+    removeCustomModel: '移除自訂模型'
   },
 
   shell: {
@@ -3478,7 +3563,8 @@ export const zhHant = defineLocale({
         title: '上下文使用量',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-      session: '工作階段',
+      focusedSince: '聚焦以來',
+      focusedSinceTitle: '自本次聚焦此對話以來的時間，不是回合執行時長',
       yoloOn: 'YOLO 已開啟 — 自動核准危險指令。Shift+點擊可全域切換。',
       yoloOff: 'YOLO 已關閉。Shift+點擊可全域切換。',
       modelNone: '無',
@@ -3501,6 +3587,11 @@ export const zhHant = defineLocale({
     remotePickerTitle: '選擇遠端資料夾',
     remotePickerDescription: '瀏覽已連線後端上的資料夾。',
     remotePickerSelect: '選擇資料夾',
+    remotePickerNewFolder: '新增資料夾',
+    remotePickerFolderName: '資料夾名稱',
+    remotePickerCreateFolder: '建立資料夾',
+    remotePickerInvalidFolderName: '請輸入單一資料夾名稱，不要包含斜線。',
+    remotePickerCreateFolderFailed: error => `無法建立資料夾 (${error})。`,
     folderTip: cwd => cwd,
     openFolder: '開啟資料夾',
     refreshTree: '重新整理檔案樹',
@@ -4024,6 +4115,8 @@ export const zhHant = defineLocale({
     sessionUnavailable: '工作階段不可用',
     createSessionFailed: '無法建立新工作階段',
     promptFailed: '提示詞傳送失敗',
+    staleSessionTitle: '對話已過期',
+    staleSessionBody: '此視窗落後於同一對話的其他視窗。已載入最新訊息。若仍要傳送請再試一次。',
     providerCredentialRequired: '傳送第一則訊息前請先新增提供方憑證。',
     emptySlashCommand: '空的斜線指令',
     desktopCommands: '桌面端指令',
@@ -4065,6 +4158,8 @@ export const zhHant = defineLocale({
     deleteFailed: '刪除失敗',
     archived: '已封存',
     archiveFailed: '封存失敗',
+    restored: '已還原',
+    unarchiveFailed: '取消封存失敗',
     cwdChangeFailed: '工作目錄變更失敗',
     cwdStagedTitle: '工作目錄已暫存',
     cwdStagedMessage: '重新啟動桌面後端後，工作目錄變更才會套用至此作用中工作階段。',
@@ -4168,9 +4263,9 @@ export const zhHant = defineLocale({
 
   ui: {
     search: {
-      clear: '清除搜尋'
+      clear: '清除搜尋',
       logs: '搜尋記錄…',
-      matches: count => `${count} 個相符項目`,
+      matches: count => `${count} 個相符項目`
     },
     pagination: {
       label: '分頁',

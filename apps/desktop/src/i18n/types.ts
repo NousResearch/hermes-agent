@@ -8,7 +8,7 @@
 import type { ErrorCodeKey } from '@/lib/error-surface'
 import type { TipId } from '@/lib/tips/catalog'
 
-export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru'
+export type Locale = 'en' | 'zh' | 'zh-hant' | 'ja' | 'ar' | 'ru' | 'fr' | 'de' | 'es'
 
 /** One error-card entry: a short title and one plain sentence. Either may
  *  take the failing provider's display name (falls back to "the AI service"). */
@@ -59,6 +59,16 @@ interface AuxTaskCopy {
 }
 
 export interface Translations {
+  externalOpenFailed: {
+    title: string
+    message: string
+    copyUrl: string
+    close: string
+  };
+  intro: {
+    stock: Record<string, string[]>
+    custom: (label: string) => string[]
+  }
   connectors: {
     title: string
     connect: string
@@ -457,6 +467,8 @@ export interface Translations {
       back: string
       openLogs: string
       repairHint: string
+      bundledReinstallHint: string
+      reinstallApp: string
       remoteSignInHint: (signInLabel: string) => string
       signOutAndSignIn: string
       remoteFailureHint: string
@@ -479,6 +491,7 @@ export interface Translations {
   }
 
   notifications: {
+    sharedProfileWarning: string
     region: string
     hide: string
     show: string
@@ -487,6 +500,7 @@ export interface Translations {
     dismiss: string
     details: string
     copyDetail: string
+    compressDeferredDone: string
     copyDetailFailed: string
     backendOutOfDateTitle: string
     backendOutOfDateMessage: string
@@ -495,6 +509,7 @@ export interface Translations {
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
     updateReadyMessageUnknown: string
+    updateReadyMessageAppInstaller: string
     seeWhatsNew: string
     mcp: {
       needsAuthTitle: string
@@ -633,6 +648,7 @@ export interface Translations {
     rebind: string
     reset: string
     resetAll: string
+    clear: string
     pressKey: string
     set: string
     conflictWith: (label: string) => string
@@ -678,6 +694,7 @@ export interface Translations {
       keysSettings: string
       mcp: string
       archivedChats: string
+      sessions: string
       about: string
       billing: string
       notifications: string
@@ -744,6 +761,7 @@ export interface Translations {
         agentSuccess: (name: string) => string
         desktopSuccess: (name: string) => string
         agentFailed: string
+        installUncertain: string
         desktopFailed: string
         missingEnv: (name: string, vars: string) => string
       }
@@ -903,6 +921,9 @@ export interface Translations {
       backdropDesc: string
       userBubbleTitle: string
       userBubbleDesc: string
+      textDirectionTitle: string
+      textDirectionDesc: string
+      textDirection: { auto: string; rtl: string; ltr: string }
       introSplashTitle: string
       introSplashDesc: string
       reactionsTitle: string
@@ -945,8 +966,6 @@ export interface Translations {
         title: string
         intro: string
         restartHint: string
-        on: string
-        off: string
         scaleTitle: string
         scaleDesc: string
         roamTitle: string
@@ -1051,38 +1070,7 @@ export interface Translations {
       driverHealth: string
     }
     about: {
-      heading: string
-      version: (value: string) => string
-      versionUnavailable: string
-      bundleOutOfSync: string
-      bundleOutOfSyncDesc: string
-      bundleOutOfSyncAction: string
-      bundleSwapPending: string
-      bundleSwapPendingDesc: string
-      bundleSwapPendingAction: string
       updates: string
-      checkNow: string
-      checking: string
-      seeWhatsNew: string
-      updateNow: string
-      releaseNotes: string
-      onLatest: string
-      installing: string
-      cantUpdate: string
-      cantReach: string
-      tapCheck: string
-      updateReady: (count: number) => string
-      updateReadyUnknown: string
-      lastChecked: (age: string) => string
-      justNowSuffix: string
-      automaticUpdates: string
-      automaticUpdatesDesc: string
-      branchCommit: (branch: string, commit: string) => string
-      never: string
-      justNow: string
-      minAgo: (count: number) => string
-      hoursAgo: (count: number) => string
-      daysAgo: (count: number) => string
     }
     config: {
       minimizeToTrayTitle: string
@@ -1108,10 +1096,14 @@ export interface Translations {
       keepAwakeDesc: string
       disableF12Title: string
       disableF12Desc: string
+      alwaysExternalLinksTitle: string
+      alwaysExternalLinksDesc: string
       attachmentSizeTitle: string
       attachmentSizeDesc: string
       attachmentSizeUnit: string
       attachmentSizeLabel: string
+      voiceShortcutHintTitle: string
+      voiceShortcutHintDesc: string
       showOptions: string
     }
     hudModifier: {
@@ -1442,6 +1434,9 @@ export interface Translations {
       moaSetDefault: string
       moaNewPresetPlaceholder: string
       moaAddPreset: string
+      customModel: string
+      customModelPlaceholder: string
+      chooseFromList: string
       moaDefault: string
       moaReferenceToggle: (enabled: boolean, index: number) => string
       moaReferenceTitle: (index: number) => string
@@ -1480,6 +1475,7 @@ export interface Translations {
       tasks: Record<string, AuxTaskCopy>
     }
     localModels: {
+      connectionChanged: string
       title: string
       runtimeTitle: string
       runtimeReady: (backend: string) => string
@@ -1507,6 +1503,17 @@ export interface Translations {
       downloaded: string
       downloadAction: (size: string) => string
       downloadProgress: (done: string, total: string) => string
+      downloadStatusRunning: string
+      downloadSpeed: (rate: string) => string
+      downloadEta: (time: string) => string
+      /** Duration units the ETA is composed from; hours carries its
+       *  remainder so a locale orders the two parts itself. */
+      downloadEtaSeconds: (count: number) => string
+      downloadEtaMinutes: (count: number) => string
+      downloadEtaHours: (hours: number, minutes: number) => string
+      downloadPausedLabel: string
+      downloadPauseAction: string
+      downloadResumeAction: string
       downloadDoneToast: (model: string) => string
       installDoneToast: string
       quickstartTitle: string
@@ -1549,6 +1556,8 @@ export interface Translations {
       activateFailed: (model: string) => string
       activateDoneToast: (model: string) => string
       downloadFailed: (model: string) => string
+      downloadPauseFailed: (model: string) => string
+      downloadResumeFailed: (model: string) => string
       pillFitsGpu: string
       pillUsesRam: string
       pillTooBig: string
@@ -1697,6 +1706,7 @@ export interface Translations {
       state: {
         notice: {
           loggedOut: { title: string; message: string; action: string }
+          openPortal: string
           noCard: { title: string; message: string; action: string }
         }
         paymentMethod: {
@@ -2576,6 +2586,20 @@ export interface Translations {
       onGateway: (name: string, gateway: string) => string
       switchTo: (name: string, gateway: string) => string
       deleteOn: (gateway: string) => string
+      /** At-rest local default pill: device, not Home, and the click's consequence. */
+      localDevice: string
+      switchDeviceTitle: string
+      switchDeviceDesc: string
+      switchDeviceConfirm: string
+      installDeviceTitle: string
+      installDeviceDesc: string
+      installDeviceConfirm: string
+      connectExistingInstead: string
+    }
+    status: {
+      unread: (count: number) => string
+      needsInput: (count: number) => string
+      working: (count: number) => string
     }
     remoteOverride: {
       menuItem: string
@@ -2843,6 +2867,37 @@ export interface Translations {
   }
 
   sidebar: {
+    filter: {
+      grouping: string
+      ordering: string
+      show: string
+      filters: string
+      status: string
+      pullRequest: string
+      profile: string
+      project: string
+      archived: string
+      resetToDefaults: string
+      expandAll: string
+      collapseAll: string
+      inboxStyle: string
+      updated: string
+      created: string
+      tokens: string
+      cost: string
+      manual: string
+      preview: string
+      pr: string
+      needsInput: string
+      working: string
+      unread: string
+      draft: string
+      idle: string
+      open: string
+      merged: string
+      closed: string
+      noPR: string
+    }
     gatewayGroups: {
       grouping: string
       rename: string
@@ -2979,6 +3034,7 @@ export interface Translations {
       branchFrom: string
       rename: string
       archive: string
+      unarchive: string
       newWindow: string
       openInTerminal: string
       hideTabBar: string
@@ -3318,6 +3374,12 @@ export interface Translations {
   }
 
   updates: {
+    discontinuedTitle: string
+    discontinuedBody: string
+    channels: { stable: string; canary: string }
+    bundleSwapPending: string
+    bundleSwapPendingDesc: string
+    bundleSwapPendingAction: string
     stages: Record<string, string>
     checking: string
     checkFailedTitle: string
@@ -3336,6 +3398,7 @@ export interface Translations {
     availableTitleBackend: string
     availableBodyBackend: string
     availableBodyNoChangelog: string
+    availableBodyAppInstaller: string
     updateNow: string
     maybeLater: string
     moreChanges: (count: number) => string
@@ -3352,6 +3415,10 @@ export interface Translations {
     applyingBody: string
     applyingBodyBackend: string
     applyingClose: string
+    applyingBodyAppInstaller: string
+    applyingCloseAppInstaller: string
+    checkUnknownTitleAppInstaller: string
+    checkUnknownBodyAppInstaller: string
     errorTitle: string
     errorBody: string
     blockerTitle: string
@@ -3390,6 +3457,52 @@ export interface Translations {
       failed: string
       noReturn: string
     }
+    /** Update-status overlay + version-details (mechanism-aware update UI):
+     * the overlay reads these off t.updates directly. */
+    appName: string
+    version: (value: string) => string
+    versionUnavailable: string
+    checkNow: string
+    seeWhatsNew: string
+    releaseNotes: string
+    onLatest: string
+    installing: string
+    cantReach: string
+    tapCheck: string
+    updateReady: (count: number) => string
+    updateReadyUnknown: string
+    availableBodyRelease: (tag: string) => string
+    lastChecked: (age: string) => string
+    never: string
+    justNow: string
+    minAgo: (count: number) => string
+    hoursAgo: (count: number) => string
+    daysAgo: (count: number) => string
+    justNowSuffix: string
+    bundleOutOfSync: string
+    bundleOutOfSyncDesc: string
+    bundleOutOfSyncAction: string
+    checkingShort: string
+    releaseAvailable: (tag: string) => string
+    versionDetailsTitle: string
+    versionDetailsBody: string
+    versionDetailsVersion: string
+    versionDetailsCommit: string
+    versionDetailsBuildOrigin: string
+    versionDetailsDistribution: string
+    versionDetailsDistributionDesktop: string
+    versionDetailsDistributionDesktopMsix: string
+    versionDetailsDistributionDesktopInstaller: string
+    versionDetailsDistributionSourceInstaller: string
+    versionDetailsDistributionSourceInstallerDesktop: string
+    versionDetailsDistributionSource: string
+    versionDetailsDistributionSourceDesktop: string
+    versionDetailsDistributionStore: string
+    versionDetailsRuntime: string
+    versionDetailsRuntimeEmbedded: string
+    versionDetailsRuntimeExternal: string
+    versionDetailsInstallId: string
+    versionDetailsUncommittedChanges: string
   }
 
   /** The guided first run's pre-written opening line — banked, not generated,
@@ -3420,11 +3533,15 @@ export interface Translations {
     retryAfterRun: string
     setupChoiceTitle: string
     setupChoiceDesc: string
+    setupChoiceDescLocal: string
     connectExistingTitle: string
     connectExistingShort: string
     connectExistingDesc: string
     installLocalTitle: string
     installLocalDesc: string
+    useLocalTitle: string
+    useLocalDesc: string
+    bundledLocalDesc: string
     localStartUnavailable: string
     remoteSetupTitle: string
     remoteSetupDesc: string
@@ -3625,6 +3742,9 @@ export interface Translations {
     freeTier: string
     priceTitle: string
     wasPrice: string
+    customModel: string
+    addCustomModelAction: string
+    customModelPlaceholder: string
   }
 
   modelVisibility: {
@@ -3632,6 +3752,8 @@ export interface Translations {
     search: string
     noAuthenticatedProviders: string
     addProvider: string
+    addCustomModel: string
+    removeCustomModel: string
   }
 
   shell: {
@@ -3695,6 +3817,7 @@ export interface Translations {
       update: string
       updateInProgress: string
       commitsBehind: (count: number, branch: string) => string
+      releaseAvailable: (tag: string) => string
       desktopVersion: (version: string) => string
       backendVersion: (version: string) => string
       clientLabel: (version: string) => string
@@ -3777,7 +3900,8 @@ export interface Translations {
         title: string
         tokenSummary: (used: string, max: string) => string
       }
-      session: string
+      focusedSince: string
+      focusedSinceTitle: string
       yoloOn: string
       yoloOff: string
       modelNone: string
@@ -3800,6 +3924,11 @@ export interface Translations {
     remotePickerTitle: string
     remotePickerDescription: string
     remotePickerSelect: string
+    remotePickerNewFolder: string
+    remotePickerFolderName: string
+    remotePickerCreateFolder: string
+    remotePickerInvalidFolderName: string
+    remotePickerCreateFolderFailed: (error: string) => string
     folderTip: (cwd: string) => string
     openFolder: string
     refreshTree: string
@@ -4310,6 +4439,8 @@ export interface Translations {
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string
+    staleSessionTitle: string
+    staleSessionBody: string
     providerCredentialRequired: string
     emptySlashCommand: string
     desktopCommands: string
@@ -4349,6 +4480,8 @@ export interface Translations {
     deleteFailed: string
     archived: string
     archiveFailed: string
+    restored: string
+    unarchiveFailed: string
     cwdChangeFailed: string
     cwdStagedTitle: string
     cwdStagedMessage: string

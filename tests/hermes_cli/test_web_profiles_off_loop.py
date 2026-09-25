@@ -35,7 +35,6 @@ BLOCK_SECONDS = 5.0
 # large (a served request takes milliseconds) so the bound is not timing-fragile.
 CONCURRENT_BUDGET = BLOCK_SECONDS / 2
 
-
 @pytest.fixture()
 def profile_dir(tmp_path, monkeypatch) -> Path:
     """A real profile directory under a throwaway HERMES_HOME."""
@@ -46,7 +45,6 @@ def profile_dir(tmp_path, monkeypatch) -> Path:
     d.mkdir(parents=True, exist_ok=True)
     (d / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
     return d
-
 
 @pytest.fixture()
 def client(profile_dir):
@@ -65,7 +63,6 @@ def client(profile_dir):
         c.headers["Authorization"] = f"Bearer {web_server._SESSION_TOKEN}"
         yield c
 
-
 class _Blocker:
     """A stand-in for a slow library call, released by the test."""
 
@@ -79,7 +76,6 @@ class _Blocker:
         # Bounded on purpose: a regression must not hang the suite.
         self.release.wait(timeout=BLOCK_SECONDS)
         return self._result
-
 
 def assert_serves_concurrently(client, blocker: _Blocker, fire) -> None:
     """Fire a request that blocks inside its handler, then time another one.
@@ -107,11 +103,7 @@ def assert_serves_concurrently(client, blocker: _Blocker, fire) -> None:
         f"busy — the event loop was parked by the blocking call"
     )
 
-
 # ── DELETE /api/profiles/{name} — the 10 s gateway-stop sleep ────────────────
-
-
-
 
 def test_delete_profile_does_not_block_the_dashboard(client, monkeypatch, tmp_path):
     """``delete_profile`` stops a running gateway by polling for up to 10 s.
@@ -128,17 +120,12 @@ def test_delete_profile_does_not_block_the_dashboard(client, monkeypatch, tmp_pa
         client, blocker, lambda: client.delete("/api/profiles/demo")
     )
 
-
 # ── POST /api/profiles/{name}/describe-auto — the 60 s LLM round-trip ────────
-
 
 def _outcome(ok=True, reason="described", description="a demo profile"):
     from hermes_cli.profile_describer import DescribeOutcome
 
     return DescribeOutcome("demo", ok, reason, description=description)
-
-
-
 
 def test_describe_auto_does_not_block_the_dashboard(client, monkeypatch):
     """The auxiliary provider call has a 60 s ceiling — six times the
@@ -156,11 +143,7 @@ def test_describe_auto_does_not_block_the_dashboard(client, monkeypatch):
         ),
     )
 
-
 # ── PATCH /api/profiles/{name} — rename walks and rewrites the profile tree ──
-
-
-
 
 def test_rename_profile_does_not_block_the_dashboard(client, monkeypatch, tmp_path):
     from hermes_cli import profiles as profiles_mod
@@ -174,23 +157,11 @@ def test_rename_profile_does_not_block_the_dashboard(client, monkeypatch, tmp_pa
         lambda: client.patch("/api/profiles/demo", json={"new_name": "renamed"}),
     )
 
-
 # ── /api/profiles/active — sticky active-profile state file ──────────────────
-
-
-
-
-
 
 # ── PUT /api/profiles/{name}/description — profile.yaml read/modify/write ────
 
-
-
-
 # ── GET /api/profiles/{name}/desktop-overlay — reads desktop.json ────────────
-
-
-
 
 def test_desktop_overlay_absent_still_reports_missing(client):
     """The offloaded read must keep distinguishing "no file" from "no data"."""
@@ -198,7 +169,6 @@ def test_desktop_overlay_absent_still_reports_missing(client):
 
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"exists": False, "desktop": None}
-
 
 def test_desktop_overlay_null_document_still_reports_present(client, profile_dir):
     """A ``desktop.json`` holding literal ``null`` exists, it is just empty —
@@ -210,7 +180,6 @@ def test_desktop_overlay_null_document_still_reports_present(client, profile_dir
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"exists": True, "desktop": None}
 
-
 def test_desktop_overlay_unreadable_document_is_a_500(client, profile_dir):
     """A malformed overlay still surfaces as a 500, not a silent success."""
     (profile_dir / "desktop.json").write_text("{not json", encoding="utf-8")
@@ -219,9 +188,7 @@ def test_desktop_overlay_unreadable_document_is_a_500(client, profile_dir):
 
     assert resp.status_code == 500, resp.text
 
-
 # ── Status-code mapping must survive the move into a worker thread ───────────
-
 
 def test_delete_missing_profile_is_still_404(client, monkeypatch):
     from hermes_cli import profiles as profiles_mod
@@ -232,7 +199,6 @@ def test_delete_missing_profile_is_still_404(client, monkeypatch):
     monkeypatch.setattr(profiles_mod, "delete_profile", fake_delete)
 
     assert client.delete("/api/profiles/demo").status_code == 404
-
 
 def test_rename_to_existing_profile_is_still_400(client, monkeypatch):
     from hermes_cli import profiles as profiles_mod
@@ -245,7 +211,6 @@ def test_rename_to_existing_profile_is_still_400(client, monkeypatch):
     resp = client.patch("/api/profiles/demo", json={"new_name": "taken"})
     assert resp.status_code == 400, resp.text
 
-
 def test_set_active_missing_profile_is_still_404(client, monkeypatch):
     from hermes_cli import profiles as profiles_mod
 
@@ -256,7 +221,6 @@ def test_set_active_missing_profile_is_still_404(client, monkeypatch):
 
     assert client.post("/api/profiles/active", json={"name": "demo"}).status_code == 404
 
-
 def test_describe_auto_unknown_profile_is_still_404(client):
     """``_resolve_profile_dir`` still runs before the worker hop, so an
     unknown profile is a 404 rather than a 500 from the wrapped call."""
@@ -264,7 +228,4 @@ def test_describe_auto_unknown_profile_is_still_404(client):
         client.post("/api/profiles/nope/describe-auto", json={}).status_code == 404
     )
 
-
 # ── PUT /api/profiles/{name}/model — config.yaml read-modify-write ───────────
-
-

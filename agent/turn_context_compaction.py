@@ -101,7 +101,8 @@ def _apply_grown_window(agent: Any, compressor: Any, grown: int) -> None:
 
 
 def _refund_api_call(agent: Any, api_call_count: int) -> int:
-    """A pass that never reached the provider refunds the call count and budget."""
+    """Refund the call count and iteration budget for a pass that should not consume it:
+    one that never reached the provider (preflight) or a provider-switch fallback hop."""
     # Host progress-aware timeout (#98722, salvaged from #98741): this preflight iteration never reached the
     # provider. Refund its provisional call/budget exactly like a successful pre-API compaction, then stop
     # before the unchanged oversized request reaches the provider — its overflow error would only invoke

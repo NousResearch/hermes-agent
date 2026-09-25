@@ -6,6 +6,10 @@ description: "Configure Hermes Agent — config.yaml, providers, models, API key
 
 # Hermes Agent Configuration
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 All settings are stored in the `~/.hermes/` directory for easy access.
 
 :::tip Easiest path to a working `config.yaml`
@@ -170,7 +174,9 @@ Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERM
 Passive update checks (CLI banner, TUI badge, dashboard, desktop app) ask the
 GitHub REST API for the tip of `main` and, when it differs from your checkout,
 the compare endpoint for the exact count and changelog. They never run
-`git fetch`, and every install asks at most **once per 24 hours** (a failed check
+`git fetch` — in a partial (`--filter=blob:none`) clone they also never
+download missing objects from the promisor remote (Git 2.44 or newer) — and
+every install asks at most **once per 24 hours** (a failed check
 retries after an hour). Applying an update (`hermes update`, or the desktop's
 Update button) always fetches fresh and invalidates the cached answer. Explicit
 checks — `hermes update --check`, the desktop's "Check for Updates…" menu item,
@@ -543,7 +549,7 @@ terminal:
 **Required install:** Install the optional SDK extra:
 
 ```bash
-pip install 'hermes-agent[vercel]'
+python -c "import pm; pm.sync_venv(['vercel'], explicit=True)"
 ```
 
 **Required authentication:** Configure access-token auth with all three of `VERCEL_TOKEN`, `VERCEL_PROJECT_ID`, and `VERCEL_TEAM_ID`. This is the supported setup for deployments and normal long-running Hermes processes on Render, Railway, Docker, and similar hosts.
@@ -1472,6 +1478,8 @@ This is the per-task counterpart of the global `agent.reasoning_effort`: run com
 
 If the endpoint rejects the reasoning field outright (a chat-only model behind an OpenAI-compatible relay answering `400 Unrecognized request argument supplied: reasoning_effort`, or the reversed wording `400 reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh`), the auxiliary call is retried once with every reasoning field omitted, so the task (for example the session title) still completes with the endpoint's default behaviour. The main conversation applies the same recovery: when a route rejects the reasoning-off request Hermes sends for a thinking-only truncated continuation, the disable is dropped for the rest of the session and the request is retried with the route's default.
 
+Some models cannot turn thinking off at all (`400 Reasoning is mandatory for this endpoint and cannot be disabled`). For those, a thinking-off auxiliary call (title generation, or any task set to `reasoning_effort: none`) goes out at the lowest effort (`low`) instead of the disable. Hermes knows ahead of time when the route's model catalog marks the model mandatory (OpenRouter and Nous Portal `/v1/models`, cached in `cache/reasoning_caps.json`), or when the route already answered an earlier disable that way in the same process. So the rejected request is not sent. A fresh install with no cached catalog can still see that 400 once: the lookup fetches the catalog in the background and later calls use it.
+
 **Background review is different:** a same-model review fork always inherits the parent's reasoning effort. `auxiliary.background_review.reasoning_effort` is ignored on that path, including when the parent provider/model is explicitly selected. This preserves byte-identical reasoning settings, system prompt, full conversation snapshot, and tool definitions for prompt-cache parity; there is no independent-effort switch for same-model reviews. See [background review reasoning](./features/memory.md#same-model-review-reasoning). When the review is routed to a different provider/model, `reasoning_effort` applies to that routed fork (unset = the routed provider's default). Hermes prints a one-time warning when the key is set but the review runs on the main model.
 
 **MoA also uses a different configuration:** reasoning depth for Mixture-of-Agents is configured **per slot** in the MoA preset (`moa.presets.<name>.reference_models[].reasoning_effort` / `aggregator.reasoning_effort`), not on the `moa_reference`/`moa_aggregator` auxiliary blocks — see [Mixture of Agents](./features/mixture-of-agents.md).
@@ -2111,6 +2119,7 @@ Legitimately slow work is not penalized: streaming responses, tool heartbeats (e
 tts:
   provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper" | "deepinfra"
   speed: 1.0                    # Global speed multiplier (fallback for all providers)
+  keep_warm_seconds: 60         # Keep a local engine loaded this long after the last speech toggle turns off (0 = unload at once)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
     speed: 1.0                  # Speed multiplier (converted to rate percentage, e.g. 1.5 → +50%)
@@ -2439,7 +2448,7 @@ Set `stt.echo_transcripts: false` when the gateway should transcribe voice notes
 
 Provider behavior:
 
-- `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`. Silence-hallucination hardening is on by default: a Silero VAD filter keeps silence/noise from ever reaching Whisper, cross-window conditioning is disabled, and segments the model itself flags as probably-not-speech *and* low-confidence are dropped. Set `stt.local.vad: false` to transcribe non-speech audio (music, ambient) with the raw behavior. The model stays loaded in memory between voice messages for low-latency transcription; set `stt.local.unload_after_idle_seconds` (e.g. `300` for 5 minutes) to automatically release the model when idle. This frees GPU memory on CUDA hosts (the main win when a local LLM shares the GPU); on CPU the memory becomes reusable by the process, though the OS-visible footprint may not shrink until the process needs the space for something else. The next voice message reloads the model transparently.
+- `local` uses `faster-whisper` running on your machine. Install it separately with `python -c "import pm; pm.sync_venv(['stt-whisper'], explicit=True)"`. Silence-hallucination hardening is on by default: a Silero VAD filter keeps silence/noise from ever reaching Whisper, cross-window conditioning is disabled, and segments the model itself flags as probably-not-speech *and* low-confidence are dropped. Set `stt.local.vad: false` to transcribe non-speech audio (music, ambient) with the raw behavior. The model stays loaded in memory between voice messages for low-latency transcription; set `stt.local.unload_after_idle_seconds` (e.g. `300` for 5 minutes) to automatically release the model when idle. This frees GPU memory on CUDA hosts (the main win when a local LLM shares the GPU); on CPU the memory becomes reusable by the process, though the OS-visible footprint may not shrink until the process needs the space for something else. The next voice message reloads the model transparently.
 - `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`. Pass `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip auto-detection and reduce latency.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
 
@@ -2625,7 +2634,7 @@ quick_commands:
     command: df -h /
   update:
     type: exec
-    command: cd ~/.hermes/hermes-agent && git pull && uv pip install -e .
+    command: hermes update
   gpu:
     type: exec
     command: nvidia-smi --query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader

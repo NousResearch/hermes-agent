@@ -113,6 +113,37 @@ def _flush_sessions_before_exit(budget_s: float | None = None) -> int:
     return result["flushed"]
 
 
+# Bounded wait for interrupted turns on the way out; the SIGTERM path hard-exits after a ~1s grace.
+_EXIT_TURN_SETTLE_S = 0.5
+
+
+def _stop_turns_before_exit(budget_s: float | None = None) -> None:
+    """Interrupt every in-flight turn and give it ``budget_s`` to settle, so a running tool call ends
+    with a result the teardown's final persist records. A foreground command runs in its own process
+    group and would outlive the gateway, reparented to init. One still alive halfway through the budget
+    ignored the interrupt's SIGTERM: SIGKILL it then, early enough for its result to land as well (the
+    interrupt's own TERM, 1s, KILL outlasts the SIGTERM path's ~1s grace)."""
+    with _sessions_lock:
+        running = [(sid, s) for sid, s in _sessions.items() if s.get("running")]
+    threads = []
+    for sid, session in running:
+        with contextlib.suppress(Exception):
+            _interrupt_session_turn(sid, session)
+        if (t := session.get("_run_thread")) is not None and t is not threading.current_thread():
+            threads.append(t)
+    budget = _EXIT_TURN_SETTLE_S if budget_s is None else max(0.0, budget_s)
+    deadline = time.monotonic() + budget
+
+    def _join(until: float) -> None:
+        for t in threads:
+            t.join(max(0.0, until - time.monotonic()))
+
+    _join(deadline - budget / 2)
+    from tools.environments.base import kill_live_foreground_processes
+    kill_live_foreground_processes(now=True)
+    _join(deadline)
+
+
 _exit_flush_prev_handlers: dict[int, Any] = {}
 _exit_flush_handlers_installed = False
 
@@ -120,13 +151,21 @@ _exit_flush_handlers_installed = False
 def _handle_exit_flush_signal(signum, frame) -> None:
     """Flush in-memory sessions, then hand off to the prior handler (uvicorn's graceful shutdown, a supervisor's
     handler, or the default disposition) — this only *prepends* a bounded flush."""
-    with contextlib.suppress(Exception):
-        _flush_sessions_before_exit()
     import signal as _signal
     prev = _exit_flush_prev_handlers.get(signum)
+    if prev is _signal.SIG_IGN:
+        # An inherited ignore (`cmd &` from a non-interactive shell) ends nothing: stopping turns here
+        # would raise the one-way exit fence in a process that keeps running and refuses every command.
+        return
+    with contextlib.suppress(Exception):
+        _flush_sessions_before_exit()
+    # The group signal that stopped us never reaches a command in its own session: reap it now,
+    # before a supervisor's SIGKILL can cut the graceful shutdown (and its atexit) short.
+    with contextlib.suppress(Exception):
+        _stop_turns_before_exit()
     if callable(prev):
         prev(signum, frame)
-    elif prev is not _signal.SIG_IGN:
+    else:
         # Default disposition: restore it and re-raise so the process dies with the correct signal (exit status
         # visible to supervisors).
         try:
@@ -368,7 +407,8 @@ def _sweep_orphaned_session_rows() -> list[str]:
                 candidates += [getattr(session.get("agent"), "session_id", None), session.get("session_key")]
             live_ids.update(str(c) for c in candidates if c)
     swept = db.sweep_orphaned_sessions(
-        max_idle_seconds=_SESSION_TTL_S, sources=_ORPHAN_SWEEP_SOURCES, exclude_ids=tuple(sorted(live_ids)))
+        max_idle_seconds=_SESSION_TTL_S, sources=_ORPHAN_SWEEP_SOURCES,
+        exclude_ids=tuple(sorted(live_ids)), exclude_pinned=True)
     if swept:
         logger.info(
             "Closed %d orphaned session row(s) from a previous gateway process (startup_orphan_reap): %s",

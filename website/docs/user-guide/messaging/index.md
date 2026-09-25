@@ -862,6 +862,8 @@ Set `typing_indicator: false` on any platform where the indicator is unwanted. S
 
 When the gateway shuts down with an in-flight tool call or generation, the affected sessions are flagged as `restart_interrupted`. On the next startup, the gateway schedules an auto-resume for each one — the user gets a short heads-up in the chat ("Send any message after restart and I'll try to resume where you left off.") and the session picks up from the last committed turn when they reply.
 
+Only turns that were actually in flight are resumed, and each resumes once. A chat whose turn had already finished is never answered again just because it was active shortly before a crash. If the gateway was killed after the agent finished a reply but before it was sent, the stored reply is delivered (with a "Recovered reply" notice) instead of being regenerated.
+
 This behaviour is on by default and is logged at gateway start:
 
 ```
@@ -878,6 +880,8 @@ Telegram is usually a mobile inbox, so the defaults are tuned for that surface:
 - **`busy_ack_detail`** defaults to **`off`** — busy-state acknowledgments and long-running heartbeats stay terse (no `iteration 21/60` debug detail).
 - **`interim_assistant_messages`** stays **on** — real mid-turn assistant commentary (the model literally telling you what it's about to do) is signal, not noise.
 - **`long_running_notifications`** stays **on** — a single edit-in-place "⏳ Working — N min" bubble updates every few minutes so you have a heartbeat instead of staring at `typing…` for half an hour.
+
+These per-platform defaults apply only while the same key is unset directly under `display:`. A global `display.tool_progress`, `display.show_reasoning`, `display.busy_ack_detail`, `display.interim_assistant_messages` or `display.long_running_notifications` applies to every platform and replaces its default. A `config.yaml` copied from an older `cli-config.yaml.example` sets all five globally, and an older first-time `hermes setup` wrote `tool_progress: all`; delete those lines to get the per-platform defaults back.
 
 Opt out of either of the kept-on defaults or opt back into verbose progress per platform:
 

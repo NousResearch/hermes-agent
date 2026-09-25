@@ -131,7 +131,7 @@ ai.hermes.gateway = {
 """
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 class TestServicePidSweepExclusion:
     """Regression for the PR #75021 review: `_get_service_pids()` must not
     rely on `launchctl list` alone.

@@ -7,9 +7,8 @@ PRs #9850, #9934, #7536):
 1. When a gateway restart drain times out and agents are force-interrupted,
    the affected sessions are flagged ``resume_pending=True`` — not
    ``suspended`` — so the next user message on the same session_key
-   auto-resumes from the existing transcript instead of getting routed
-   through ``suspend_recently_active()`` and converted into a fresh
-   session.
+   auto-resumes from the existing transcript instead of being converted
+   into a fresh session.
 
 2. ``suspended=True`` (from ``/stop`` or stuck-loop escalation) still
    wins over ``resume_pending`` — the forced-wipe path is preserved.
@@ -244,25 +243,6 @@ class TestGetOrCreateResumePending:
         assert second.session_id == "child-session"
         assert second.resume_pending is True
         mock_tip.assert_called_with(original_sid)
-
-
-# ---------------------------------------------------------------------------
-# SessionStore.suspend_recently_active skip behaviour
-# ---------------------------------------------------------------------------
-
-
-class TestSuspendRecentlyActiveSkipsResumePending:
-    def test_resume_pending_entries_not_suspended(self, tmp_path):
-        store = _make_store(tmp_path)
-        source = _make_source()
-        entry = store.get_or_create_session(source)
-        store.mark_resume_pending(entry.session_key)
-
-        count = store.suspend_recently_active()
-        assert count == 0
-        e = store._entries[entry.session_key]
-        assert e.suspended is False
-        assert e.resume_pending is True
 
 
 # ---------------------------------------------------------------------------
@@ -552,7 +532,7 @@ class TestFreshnessHelpers:
 async def test_drain_timeout_marks_resume_pending():
     """End-to-end: a drain timeout during gateway stop should flag every
     active session as resume_pending BEFORE the interrupt fires, so the
-    next startup's suspend_recently_active() does not destroy them."""
+    next startup auto-resumes them."""
     runner, adapter = make_restart_runner()
     adapter.disconnect = AsyncMock()
     runner._restart_drain_timeout = 0.05
@@ -984,8 +964,8 @@ async def test_restart_home_channel_notification_not_deduped_across_threads():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 2
-    assert adapter.sent_calls[0][2] == {"thread_id": "topic-7"}
-    assert adapter.sent_calls[1][2] is None
+    assert adapter.sent_calls[0][2] == {"thread_id": "topic-7", "_interim_send": True}
+    assert adapter.sent_calls[1][2] == {"_interim_send": True}
 
 
 # ---------------------------------------------------------------------------

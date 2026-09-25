@@ -920,9 +920,6 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     if turn_isolation:
-        if turn_author:
-            logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
-                         turn_author.get("id"))
         # The isolated dispatch returns BELOW before the inline persist, so the reopen
         # cannot live only in _persist_session_row_for_submit: the turn is already
         # admitted here (running, in flight, active-slot lease claimed, truncation
@@ -937,7 +934,8 @@ def _(rid, params: dict) -> dict:
             logger.debug("finalized-session reopen before isolated dispatch failed for %s",
                          sid, exc_info=True)
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
+            turn_author=turn_author)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)

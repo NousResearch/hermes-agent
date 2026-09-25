@@ -169,6 +169,19 @@ const SAFE_HTML_TAG_NAMES = new Set([
 ])
 
 const CITATION_MARKER_RE = /(?<=[\p{L}\p{N})\].,!?:;"'”’])\[(?:\d+(?:\s*,\s*\d+)*)\](?!\()/gu
+
+// Web-citation transport markers (Gemini-style grounding): private-use
+// delimiters U+E200/U+E201 wrap a `citeturn<n>search<m>` id list, with U+E202
+// separating ids — `\uE200citeturn0search11\uE202turn2search0\uE201`, or the
+// single-id `\uE200citeturn0search0\uE201`. The delimiters paint as
+// replacement glyphs (the reported "triple bars") and the ids are protocol
+// noise a reader cannot follow to a source (#120587). Strip the whole marker;
+// a marker that cannot be resolved is dropped, never invented into a link.
+// The bare no-delimiter alternative only fires with the `cite` head, so plain
+// prose can't trip it. Scoped to this shape: stray private-use characters
+// (icon fonts, user content) are left alone.
+const CITATION_TRANSPORT_MARKER_RE =
+  /\uE200(?:cite)?(?:\uE202?turn\d+search\d+)+\uE201?|citeturn\d+search\d+(?:turn\d+search\d+)*/gu
 // Markdown links whose target is a filesystem path on the agent's machine:
 // `[report](/home/user/report.md)`, `[notes](file:///srv/notes.txt)`,
 // `[todo](~/todo.md)`, `[log](C:\logs\run.txt)`. Negative lookbehind keeps
@@ -421,7 +434,11 @@ function rewriteProseSegment(segment: string): string {
       autoLinkRawUrls(
         routeFileLinksToPreview(
           escapeUnknownHtmlLikeTags(
-            segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+            segment
+              .replace(/`{3,}/g, '')
+              .replace(LOCAL_PREVIEW_URL_RE, '$1')
+              .replace(CITATION_TRANSPORT_MARKER_RE, '')
+              .replace(CITATION_MARKER_RE, '')
           )
         )
       )

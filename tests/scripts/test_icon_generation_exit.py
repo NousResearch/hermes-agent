@@ -88,7 +88,7 @@ def test_write_status_includes_every_target(tmp_path, monkeypatch, capsys, failu
     assert ("FAILED" in output) is (failure is not None)
 
 
-@pytest.mark.parametrize("platform", ["", "mac-"])
+@pytest.mark.parametrize("platform", ["", "linux-", "mac-"])
 @pytest.mark.parametrize("appearance,girl", [("light", "black"), ("dark", "white")])
 @pytest.mark.parametrize("colors", [None, ("#f5cc32", "#443808"), ("#e34850", "#4a1117")])
 def test_icon_portrait_overlays_border_inside_outer_silhouette(monkeypatch, platform, appearance, girl, colors):

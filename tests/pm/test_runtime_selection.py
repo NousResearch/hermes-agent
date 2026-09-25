@@ -110,6 +110,49 @@ def test_manual_repair_bypasses_damaged_generation_activation(tmp_path, monkeypa
     assert "hermes pm repair" in result.stdout
 
 
+@pytest.mark.parametrize("interpreter", ["store", "venv"])
+@pytest.mark.parametrize("with_state", [True, False])
+def test_boot_never_activates_the_pre_pm_venv(tmp_path, monkeypatch, interpreter, with_state):
+    """Nothing committed must not mean "load the in-tree venv": it was built for another
+    interpreter, so PM's store Python lost every compiled module from it after an update."""
+    import os
+    import subprocess
+    import sys
+    from pm import environments as runtime_paths
+
+    base_python = getattr(sys, "_base_executable", sys.executable)
+    base_prefix = Path(sys.base_prefix).resolve()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    # The store interpreter is PM's: a non-venv Python living under the runtime dir.
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(base_prefix.parent))
+    root = tmp_path / "repo"
+    legacy = root / "venv"
+    (legacy / "pyvenv.cfg").parent.mkdir(parents=True)
+    (legacy / "pyvenv.cfg").write_text("home = test\n")
+    runtime_paths.site_packages(legacy).mkdir(parents=True)
+    (runtime_paths.site_packages(legacy) / "legacy_only.py").write_text("")
+    if with_state:
+        runtime_paths.install_state_dir(root).mkdir(parents=True)
+    python = base_python
+    if interpreter == "venv":
+        subprocess.run([base_python, "-m", "venv", "--without-pip", str(tmp_path / "dev")], check=True, timeout=60)
+        python = str(runtime_paths.venv_python(tmp_path / "dev"))
+    repo = Path(__file__).resolve().parents[2]
+    code = (
+        "import sys, importlib.util; from pathlib import Path; sys.path.insert(0, sys.argv[1]); "
+        "from pm.environments import activate_dependencies\n"
+        "try:\n    activate_dependencies(Path(sys.argv[2]))\n"
+        "except RuntimeError as exc:\n    print('refused:', exc); raise SystemExit(0)\n"
+        "print('legacy importable:', importlib.util.find_spec('legacy_only') is not None)"
+    )
+    result = subprocess.run([python, "-I", "-c", code, str(repo), str(root)], env=dict(os.environ),
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    expected = ("refused: no dependency environment is committed" if interpreter == "store"
+                else "legacy importable: False")
+    assert result.stdout.strip().startswith(expected), result.stdout
+
+
 @pytest.mark.parametrize("data", [[], {"packages": []}, {"packages": {"venv": []}}])
 def test_malformed_selection_has_actionable_error(tmp_path, monkeypatch, data):
     from pm import environments as runtime_paths

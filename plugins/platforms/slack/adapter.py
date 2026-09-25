@@ -4087,7 +4087,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _should_wake_on_unmentioned_message(
         self, event_thread_ts, channel_id: str, user_id: str, is_thread_reply: bool,
-        team_id: str = "", chat_type: str = "group") -> bool:
+        team_id: str = "", chat_type: str = "group", remember: bool = False) -> bool:
         """Return True if the bot should wake on an un-mentioned message. Checks, in order: root
         sent via send() (_bot_message_ts); thread previously @-mentioned; active session;
         bot-authored root via raw chat.postMessage; thread parent @-mentioned the bot.
@@ -4126,7 +4126,7 @@ class SlackAdapter(BasePlatformAdapter):
                     strip_bot_mention=False)
                 if parent_text and f"<@{bot_uid}>" in parent_text:
                     # Remember so later replies skip the fetch.
-                    if not self._slack_strict_mention():
+                    if remember or not self._slack_strict_mention():
                         self._register_mentioned_thread(event_thread_ts)
                     return True
         return False
@@ -4195,6 +4195,20 @@ class SlackAdapter(BasePlatformAdapter):
         thread_gated = self._slack_thread_require_mention() and is_thread_reply and not is_mentioned
         if force_process:
             return True
+        if is_thread_reply and not is_mentioned and event_thread_ts:
+            chat_type = "dm" if is_dm else "group"
+            # A typed answer to this thread's pending clarify is addressed to the bot.
+            if self._thread_has_pending_clarify(
+                    channel_id=channel_id, thread_ts=event_thread_ts, user_id=user_id,
+                    team_id=team_id, chat_type=chat_type, text=routing_text):
+                return True
+            # natural_thread_channels: one top-level @mention engages the thread; later
+            # replies need no mention even under strict_mention / thread_require_mention.
+            if channel_id in self._slack_natural_thread_channels():
+                return await self._should_wake_on_unmentioned_message(
+                    event_thread_ts=event_thread_ts, channel_id=channel_id, user_id=user_id,
+                    team_id=team_id, is_thread_reply=is_thread_reply, chat_type=chat_type,
+                    remember=True)
         free_channel = self._slack_is_free_channel(channel_id)
         if not free_channel and self._slack_strict_mention() and not is_mentioned:
             return False  # Strict mode: ignore until @-mentioned again
@@ -4540,7 +4554,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     def _apply_bot_mention(
         self, text: str, original_text: str, command_probe_text: str, is_command_text: bool,
-        bot_uid: str, thread_ts: Optional[str], team_id: str) -> Tuple[str, str, str, bool]:
+        bot_uid: str, thread_ts: Optional[str], team_id: str, channel_id: str = "",
+    ) -> Tuple[str, str, str, bool]:
         """Strip our mention, re-probe for a command hidden behind it, remember the thread.
         Returns updated ``(text, original_text, command_probe_text, is_command_text)``."""
         text = text.replace(f"<@{bot_uid}>", "").strip()
@@ -4557,9 +4572,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Remember the thread so follow-ups auto-trigger (skipped under strict_mention /
         # thread_require_mention, which it would defeat). Session-scoped ``thread_ts`` because a
         # top-level @mention STARTS a thread whose replies must trigger too.
-        if (
-            thread_ts and not self._slack_strict_mention()
-            and not self._slack_thread_require_mention()):
+        if thread_ts and (
+            channel_id in self._slack_natural_thread_channels()
+            or (not self._slack_strict_mention() and not self._slack_thread_require_mention())):
             self._register_mentioned_thread(thread_ts, team_id=team_id)
         return text, original_text, command_probe_text, is_command_text
 
@@ -4646,7 +4661,7 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned:
             text, original_text, command_probe_text, is_command_text = self._apply_bot_mention(
                 text, original_text, command_probe_text, is_command_text, bot_uid, thread_ts,
-                team_id)
+                team_id, channel_id=channel_id)
         # Thread history stays out of ``text``: prepending would push a command off char zero.
         (
             channel_context, thread_root_media_urls, thread_root_media_types,
@@ -6188,6 +6203,35 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception:
             logger.debug("[Slack] Failed to persist thread watermark", exc_info=True)
 
+    def _thread_has_pending_clarify(
+        self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "", *,
+        chat_type: str = "group", text: str = "") -> bool:
+        """True when ``text`` from ``user_id`` answers this thread's pending clarify: the replier
+        must be the session's originating user and the text must be a valid answer (a listed
+        choice, or any text for an open-ended prompt). Bystanders in a shared thread session and
+        chatter that is not an answer never bypass the mention gate. Fails closed."""
+        try:
+            session_key = self._build_thread_session_key(
+                channel_id, thread_ts, user_id, team_id=team_id, chat_type=chat_type)
+            if not session_key or not user_id:
+                return False
+            from tools import clarify_gateway
+            entry = clarify_gateway.get_pending_for_session(session_key, include_choice_prompts=True)
+            if entry is None:
+                return False
+            store = getattr(self, "_session_store", None)
+            if store is None:
+                return False
+            store._ensure_loaded()
+            session = store._entries.get(session_key)
+            origin = getattr(session, "origin", None) if session else None
+            if str(getattr(origin, "user_id", "") or "") != str(user_id):
+                return False
+            value, _reason = clarify_gateway._coerce_text_response_detailed(entry, text)
+            return value is not None
+        except Exception:
+            return False
+
     def _has_active_session_for_thread(
         self, channel_id: str, thread_ts: str, user_id: str, team_id: str = "", *,
         chat_type: str = "group") -> bool:
@@ -6404,6 +6448,9 @@ class SlackAdapter(BasePlatformAdapter):
         "require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS")
     _slack_ignored_channels = _extra_or_env_channel_set_getter(
         "ignored_channels", "SLACK_IGNORED_CHANNELS", coerce_scalar=True)
+    # natural_thread_channels: top-level @mention required; engaged thread replies need none.
+    _slack_natural_thread_channels = _extra_or_env_channel_set_getter(
+        "natural_thread_channels", "SLACK_NATURAL_THREAD_CHANNELS", coerce_scalar=True)
 
     def _slack_mention_patterns(self) -> List["re.Pattern"]:
         """Compile (cached) wake-word regexes from ``slack.mention_patterns`` (list/str) or
@@ -6858,6 +6905,7 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS", "csv"),
     ("reaction_triggers", "SLACK_REACTION_TRIGGERS", "csv"), ("reaction_trigger_target", "SLACK_REACTION_TRIGGER_TARGET", "str"),
     ("allowed_channels", "SLACK_ALLOWED_CHANNELS", "csv"), ("ignored_channels", "SLACK_IGNORED_CHANNELS", "csv"),
+    ("natural_thread_channels", "SLACK_NATURAL_THREAD_CHANNELS", "csv"),
 )
 
 

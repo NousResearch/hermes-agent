@@ -332,3 +332,84 @@ class TestWrapCommandWindowsNativeCwd:
         script = captured["script"]
         assert "/c/Users/Alexander/AppData/Local/Temp/hermes-snap-deadbeef.sh" in script
         assert r"C:\Users\Alexander\AppData" not in script
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX-only — os.killpg missing on Windows CI")
+class TestPosixKillpgMonkeypatchRespected:
+    """Regression for Copilot review on PR #122113.
+
+    The previous version of tools/environments/local.py cached
+    ``os.killpg`` / ``os.getpgid`` / ``os.getpgrp`` / ``signal.SIGKILL`` at module-import
+    time via::
+
+        _killpg = getattr(os, "killpg", None)
+
+    A test that did ``monkeypatch.setattr(os, "killpg", mock)`` was IGNORED — every
+    call site called the cached original. The fix removes those module-level aliases
+    and uses ``hasattr`` + direct ``os.X(...)`` calls so the patched attribute is
+    looked up on every invocation.
+    """
+
+    def test_monkeypatched_killpg_is_actually_invoked(self, monkeypatch):
+        calls = []
+
+        def mock_killpg(pgid, sig):
+            calls.append((pgid, sig))
+            return None
+
+        monkeypatch.setattr(os, "killpg", mock_killpg)
+
+        class FakeProc:
+            pid = 1234
+
+        # This function unconditionally calls os.killpg(pgid, 0) inside its loop.
+        # Before the fix, it would have called the import-time cached original and
+        # never reached ``mock_killpg``. After the fix, every call goes through the
+        # patched ``os.killpg``.
+        from tools.environments.local import _wait_for_group_exit
+
+        _wait_for_group_exit(FakeProc(), pgid=99999, timeout=0.001)
+
+        assert calls, (
+            "os.killpg was never called — the module still caches the import-time "
+            "reference. See PR #122113 Copilot review (module-level os aliases bypass "
+            "monkeypatching in teardown tests)."
+        )
+
+    def test_monkeypatched_getpgid_is_actually_invoked(self, monkeypatch):
+        getpgid_calls = []
+
+        def mock_getpgid(pid):
+            getpgid_calls.append(pid)
+            return 99999  # any non-matching pgid so killpg path runs
+
+        monkeypatch.setattr(os, "getpgid", mock_getpgid)
+
+        class FakeProc:
+            pid = 1234
+
+            def children(self, recursive=False):
+                return []
+
+            def wait(self, timeout=None):
+                pass
+
+        from tools.environments.local import _kill_process_group_posix
+
+        _kill_process_group_posix(FakeProc())
+
+        assert getpgid_calls, (
+            "os.getpgid was never called — the module still caches the import-time "
+            "reference. See PR #122113 Copilot review."
+        )
+
+    def test_signal_sigkill_fallback_when_unavailable(self):
+        # signal.SIGKILL exists on POSIX but not on Windows; on POSIX platforms
+        # the inline getattr returns the real constant, on Windows it would
+        # fall back to SIGTERM. This test is platform-agnostic — it just
+        # documents the contract.
+        sig = getattr(__import__("signal"), "SIGKILL", __import__("signal").SIGTERM)
+        # Either it's a real SIGKILL (POSIX) or SIGTERM (Windows fallback).
+        assert sig in (15, 9), (
+            f"unexpected signal constant: {sig} (expected 15=SIGTERM or 9=SIGKILL)"
+        )

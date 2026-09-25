@@ -12,6 +12,7 @@ import {
   setWorkspaceOwnerLabel,
   setWorkspaceScope,
   workspaceOwnerTitle,
+  workspaceSessionRenamable,
   workspaceSessionTitle
 } from './workspace-scope'
 
@@ -71,6 +72,7 @@ describe('workspace owner title', () => {
 
   it('uses the Bot Chat identity when its hidden row is absent from the visible session list', () => {
     setWorkspaceOwnerLabel('bot:hermes', 'Hermes')
+
     const botChat = {
       workspaceMode: 'bots' as const,
       workspaceOwnerKey: 'bot:hermes',
@@ -79,6 +81,8 @@ describe('workspace owner title', () => {
 
     expect(workspaceSessionTitle(null, 'New session', botChat)).toBe('Hermes')
     expect(workspaceSessionTitle(null, 'New session', undefined)).toBe('New session')
+    expect(workspaceSessionRenamable(botChat)).toBe(false)
+    expect(workspaceSessionRenamable(undefined)).toBe(true)
   })
 })
 

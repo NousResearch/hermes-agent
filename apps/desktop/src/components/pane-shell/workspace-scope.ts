@@ -88,6 +88,13 @@ export function workspaceSessionTitle(
   return workspaceOwnerTitle(title, scope)
 }
 
+/** Canonical Bot Chat titles are registry keys, not user-facing labels. */
+export function workspaceSessionRenamable(
+  scope: { workspaceMode?: WorkspaceMode; workspaceTabTitle?: string } | undefined
+): boolean {
+  return scope?.workspaceMode !== 'bots' || scope.workspaceTabTitle !== 'Bot Chat'
+}
+
 /** One key for window-local active-pane memory. Owner keys stay opaque. */
 export function workspaceScopeKey(mode: WorkspaceMode, ownerKey: string | null): string {
   return mode === 'sessions' ? 'sessions' : `bots:${ownerKey ?? ''}`

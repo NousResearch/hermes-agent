@@ -165,6 +165,24 @@ describe('SessionActionsMenu', () => {
     expect(document.activeElement).not.toBe(trigger)
   })
 
+  it('omits rename when the session title is a fixed workspace identity', async () => {
+    render(
+      <SessionActionsMenu align="end" renamable={false} sessionId="bot-chat" sideOffset={6} title="Hermes">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    expect(await screen.findByRole('menu')).toBeTruthy()
+    expect(screen.queryByRole('menuitem', { name: /rename/i })).toBeNull()
+  })
+
   it('confirms before deleting — cancel keeps the session, confirm deletes it', async () => {
     const onDelete = vi.fn()
     render(

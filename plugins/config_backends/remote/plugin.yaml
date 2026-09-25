@@ -1,0 +1,9 @@
+name: remote
+description: >-
+  Remote Config — serves each profile's config from the config-config plane
+  (the agent's effective document for this instance and profile) instead of
+  config.yaml: fetched at boot (fail closed), refreshed by an ETag poller,
+  written back as key-level changes with compare-and-swap. Selected only by
+  HERMES_CONFIG_BACKEND=remote in the environment; never loaded as a general plugin.
+version: 1.0.0
+author: Nous Research

@@ -296,11 +296,15 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
 @doctor_check()
 def _check_config_file(should_fix: bool, f: Finding) -> None:
     """config.yaml presence (project cli-config.yaml as fallback); model/provider validation."""
-    from hermes_cli.config_backend import config_exists
+    from hermes_cli.config_backend import config_exists, get_config_backend
     from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
     config_path = HERMES_HOME / 'config.yaml'
+    backend = get_config_backend()
+    if not backend.supports_file_tooling() and not _check_config_backend(backend, HERMES_HOME, f):
+        return
     if config_exists(config_path):
-        check_ok(f"{_DHH}/config.yaml exists")
+        if backend.supports_file_tooling():
+            check_ok(f"{_DHH}/config.yaml exists")
         with warn_on_error("Could not validate model/provider config"):
             _validate_model_config(config_path, f.issues)
         with warn_on_error("Could not validate auxiliary task routing"):
@@ -314,6 +318,24 @@ def _check_config_file(should_fix: bool, f: Finding) -> None:
         f.fixed += 1
     else:
         check_warn("config.yaml not found", "(using defaults)")
+
+
+def _check_config_backend(backend, home, f: Finding) -> bool:
+    """Remote mode (§4.7): report where config comes from instead of the file checks, and flag a
+    managed /etc/hermes/config.yaml, which remote mode ignores (D18)."""
+    try:
+        backend.read_user_layer(home)
+        check_ok(f"Config backend: {backend.describe(home)}")
+    except SystemExit as exc:  # ConfigBackendUnavailable: the plane cannot serve this profile
+        check_fail(f"Config backend {backend.name!r} unavailable", str(exc.code or ""))
+        f.issues.append(f"Config backend {backend.name!r} cannot serve config for {home}")
+        return False
+    from plugins.config_backends.remote.backend import managed_config_file
+    managed = managed_config_file() if backend.name == "remote" else None
+    if managed is not None:
+        check_warn(f"{managed} exists but is ignored in remote config mode", "(remove it)")
+        f.issues.append(f"Remove {managed}: remote config mode takes config and locks only from Remote Config")
+    return True
 
 
 def _drift_config_version(f: Finding, should_fix: bool, config_path) -> None:

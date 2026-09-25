@@ -752,11 +752,11 @@ def _discover_all_plugins() -> list:
     in ``PluginManager.discover_and_load`` order: bundled, user, then entry points — which never
     displace a directory plugin of the same key (see ``PluginManager._discover_and_load_inner``)."""
     seen: dict = {}
-    # memory/, context_engine/ and model-providers/ load through dedicated registries, not the
+    # memory/, context_engine/, model-providers/ and config_backends/ load through dedicated paths, not the
     # PluginManager opt-in surface, so listing them as toggleable plugins would mislead.
     from hermes_cli.plugins import discover_entrypoint_manifests, get_bundled_plugins_dir
     for base, source, skip in (
-        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "model-providers"}),
+        (get_bundled_plugins_dir(), "bundled", {"memory", "context_engine", "model-providers", "config_backends"}),
         (_plugins_dir(), "user", set()),
     ):
         _scan_level(base, source, skip, "", 0, seen)

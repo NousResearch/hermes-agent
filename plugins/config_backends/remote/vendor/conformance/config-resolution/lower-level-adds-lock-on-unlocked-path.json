@@ -1,0 +1,128 @@
+{
+  "fixtureVersion": 1,
+  "name": "lower-level-adds-lock-on-unlocked-path",
+  "description": "Proves rule-4, rule-3: A principal lock on a path no upper level locked binds agent and profile, but not the levels above the principal.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "web": {
+          "use_gateway": true
+        }
+      },
+      "locks": [
+        "web.use_gateway"
+      ]
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "model": {
+          "default": "hermes-4-405b"
+        }
+      },
+      "locks": [
+        "model"
+      ]
+    },
+    {
+      "kind": "agent",
+      "values": {
+        "model": {
+          "default": "hermes-4-70b"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "model": {
+          "provider": "openrouter"
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "web": {
+        "use_gateway": true
+      },
+      "model": {
+        "default": "hermes-4-405b"
+      }
+    },
+    "provenance": {
+      "web.use_gateway": "global",
+      "model.default": "principal"
+    },
+    "locks": [
+      {
+        "path": "web.use_gateway",
+        "level": "global"
+      },
+      {
+        "path": "model",
+        "level": "principal"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "model.default",
+      "value": "hermes-4-8b",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "model",
+        "lockedBy": "principal"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "model.provider",
+      "value": "nous",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "model",
+        "lockedBy": "principal"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "model.default",
+      "value": "hermes-3",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "model.default",
+      "value": "hermes-4-70b",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "lock",
+      "path": "model.default",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

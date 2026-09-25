@@ -457,10 +457,11 @@ def load_hermes_dotenv(
 
     # The config backend is selected here — after the .env files, before the first config.yaml read
     # (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
-    # process before any reader could fall back to defaults (config-config design §4.4, D11/D32).
+    # process before any reader could fall back to defaults (config-config design §4.4, D11/D32). A
+    # remote backend fetches this home's config here, failing closed; the file backend does nothing.
     from hermes_cli.config_backend import get_config_backend
 
-    get_config_backend()
+    get_config_backend().boot(home_path)
 
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing
@@ -525,6 +526,26 @@ def _apply_managed_env(*, load_pass: int | None = None) -> None:
     _load_dotenv_with_fallback(managed_env, override=True, load_pass=load_pass)
 
 
+def _refuse_protected_env_from_sources(report) -> None:
+    """D32: the config backend's own credential (which plane, which agent, which token) must never
+    come from a secret source — a source that could change it could point config at another plane.
+    Exits (the backend is unusable), even when the pre-existing value won."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable, get_config_backend
+
+    protected = get_config_backend().protected_env_names()
+    if not protected:
+        return
+    supplied = set(report.provenance)
+    for src in report.sources:
+        supplied.update(getattr(src, "skipped_existing", ()) or ())
+    clash = sorted(supplied & protected)
+    if clash:
+        raise ConfigBackendUnavailable(
+            f"A secrets: source supplies {', '.join(clash)}, which the {get_config_backend().name!r} config "
+            "backend uses to reach its config plane. That credential must come from auth.json or .env, never "
+            "from a secret source; remove the mapping. Hermes does not start with it.")
+
+
 def _apply_external_secret_sources(home_path: Path) -> None:
     """Pull secrets from every enabled external source into env — AFTER dotenv (sources need .env bootstrap
     tokens), BEFORE Hermes reads credentials; failures never block startup. Precedence/conflicts/provenance
@@ -564,6 +585,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
 
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
         return
+    _refuse_protected_env_from_sources(report)
 
     # A real fetch attempt happened (success OR error): mark the home so the 3-5 import-time calls per
     # startup don't re-fetch / re-print (error retries are opt-in via reset_secret_source_cache()).

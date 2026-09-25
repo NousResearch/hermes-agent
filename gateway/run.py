@@ -6012,6 +6012,8 @@ def main():
 
     config = None
     if args.config:
+        from hermes_cli.config_backend import require_file_tooling
+        require_file_tooling("gateway --config <file>")
         import hermes_yaml as yaml
         with open(args.config, encoding="utf-8-sig") as f:
             config = GatewayConfig.from_dict(yaml.safe_load(f) or {})

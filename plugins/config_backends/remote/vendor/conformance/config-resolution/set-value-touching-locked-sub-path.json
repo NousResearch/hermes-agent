@@ -1,0 +1,133 @@
+{
+  "fixtureVersion": 1,
+  "name": "set-value-touching-locked-sub-path",
+  "description": "Proves rule-3, r7: A set of a mapping is checked at every path inside the value: a key under an upper lock is refused, keys beside it are accepted.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "mcp_servers": {
+          "github": {
+            "command": "gh-mcp",
+            "env": {
+              "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+            }
+          }
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": [
+        "mcp_servers.github.env"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "mcp_servers": {
+        "github": {
+          "command": "gh-mcp",
+          "env": {
+            "GITHUB_TOKEN": "${GITHUB_TOKEN}"
+          }
+        }
+      }
+    },
+    "provenance": {
+      "mcp_servers.github.command": "global",
+      "mcp_servers.github.env.GITHUB_TOKEN": "global"
+    },
+    "locks": [
+      {
+        "path": "mcp_servers.github.env",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "mcp_servers",
+      "value": {
+        "github": {
+          "env": {
+            "DEBUG": "1"
+          }
+        }
+      },
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "mcp_servers.github.env",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "mcp_servers",
+      "value": {
+        "other": {
+          "command": "x"
+        }
+      },
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "mcp_servers.github",
+      "value": {
+        "command": "gh-mcp-2"
+      },
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "mcp_servers.github",
+      "value": "off",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "mcp_servers.github.env",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "mcp_servers.github.env.GITHUB_TOKEN",
+      "value": "${OTHER_TOKEN}",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "mcp_servers.github.env",
+        "lockedBy": "tenant"
+      }
+    }
+  ]
+}

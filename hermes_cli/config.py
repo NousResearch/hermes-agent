@@ -48,7 +48,8 @@ from hermes_constants import (  # noqa: F401
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
 from utils import atomic_replace, fast_safe_load, file_signature
 from hermes_cli.config_backend import (
-    config_exists, config_version, read_config_doc, supports_file_tooling, write_config_document)
+    ConfigWriteError, config_exists, config_version, get_config_backend, read_config_doc,
+    supports_file_tooling, write_config_document)
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
@@ -1318,6 +1319,7 @@ def _persist_migration(config: Dict[str, Any]) -> None:
     ON, no ``merge_existing``) so the invariant cannot regress one migration at a time.
     A backend without file tooling migrates in memory on read and never writes back (D12)."""
     if not supports_file_tooling():
+        get_config_backend().apply_in_memory(get_config_path().parent, config)
         return
     save_config(config)
 
@@ -3444,6 +3446,11 @@ def _exit_if_key_managed(key: str, action: str) -> None:
             f"Cannot {action} '{key}': it is managed by your administrator ({_managed_source('config.yaml')}) "
             f"and cannot be changed. Contact your administrator to modify it.", file=sys.stderr)
         sys.exit(1)
+    level = get_config_backend().locked(get_config_path().parent, key)  # remote locks, prefix-aware (D7)
+    if level:
+        print(f"Cannot {action} '{key}': it is locked by the {level} level of Remote Config and cannot be "
+              "changed from this agent.", file=sys.stderr)
+        sys.exit(1)
 
 
 def _guard_section_overwrite(key: str, value: Any, user_config: Dict[str, Any], force: bool) -> str:
@@ -3923,7 +3930,11 @@ def config_command(args):
     subcmd = getattr(args, 'config_command', None)
     handler = _CONFIG_SUBCOMMANDS.get(subcmd)
     if handler is not None:
-        handler(args)
+        try:
+            handler(args)
+        except ConfigWriteError as exc:  # a backend refusal (a remote lock, a secret literal): nothing changed
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
         return
     print(f"Unknown config command: {subcmd}")
     print()

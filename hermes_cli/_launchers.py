@@ -259,9 +259,24 @@ def mint_launcher(
     import base64
     encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
     code = f"import base64; exec(base64.b64decode('{encoded}'))"
+    # cmd.exe parses a .cmd file with the console's OEM code page, so a literal
+    # non-ASCII interpreter path (a profile containing "、" or any CJK
+    # character) is corrupted before the line ever runs: the launcher reports
+    # "cannot find the path", the desktop's `--version` probe fails, and the
+    # install is misread as missing so the first-run bootstrap re-runs forever.
+    # Derive the interpreter from the batch file's own location whenever that
+    # keeps the body ASCII -- repo_root still rides in the base64 payload, which
+    # is ASCII by construction.
+    interpreter = str(python_exe)
+    try:
+        relative = os.path.relpath(python_exe, out_dir)
+    except ValueError:  # different drive: no relative form exists
+        relative = None
+    if relative is not None and relative.isascii():
+        interpreter = f"%~dp0{relative}"
     body = (
         "@echo off\r\n"
-        f'"{python_exe}" -I -c "{code}" %*\r\n'
+        f'"{interpreter}" -I -c "{code}" %*\r\n'
     )
     return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
 

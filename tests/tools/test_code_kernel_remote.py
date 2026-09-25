@@ -13,6 +13,8 @@ import os
 import sys
 import time
 import unittest
+
+import pytest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -338,6 +340,140 @@ class TestDispatchIntegration(unittest.TestCase):
             result = json.loads(_execute_remote("print()", "t", ["read_file"]))
         self.assertEqual(result["status"], "success")
         self.assertIn("per-call ran", result["output"])
+
+
+class TestAcquireRace(RemoteKernelBase):
+    """Two concurrent first-time acquires on the same key must not both keep a
+    spawned kernel: the loser tears its duplicate down and falls open to a
+    stateless per-call run rather than sharing the winner's kernel."""
+
+    def test_concurrent_first_acquire_registers_one_and_kills_loser(self):
+        import itertools
+        import threading
+        import tools.code_kernel_remote as ckr
+
+        env = ScriptedEnv([])
+        barrier = threading.Barrier(2, timeout=10)
+        spawned = []
+        dirs = itertools.count()
+
+        def fake_spawn(*a, **kw):
+            barrier.wait()                    # both racers reach spawn before either registers
+            kernel = RemoteKernel(env=env, env_type="ssh",
+                                  kernel_dir=f"/tmp/rk{next(dirs)}",
+                                  pid="4242", rpc_token="t", owner="o")
+            spawned.append(kernel)
+            return kernel
+
+        results, errors = [], []
+
+        def race():
+            try:
+                results.append(ckr._acquire_remote_kernel(
+                    env, "ssh", "owner", "t1", frozenset({"read_file"}),
+                    reset=False, idle_exit=900))
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(ckr, "_spawn_remote_kernel", side_effect=fake_spawn):
+            threads = [threading.Thread(target=race, daemon=True) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(15)
+            for t in threads:
+                self.assertFalse(t.is_alive())
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(spawned), 2)                 # the race really happened
+        kept = [r[0] for r in results if r[0] is not None]
+        self.assertEqual(len(kept), 1)                    # loser fell open to per-call
+        winner = kept[0]
+        key = ckr._kernel_key("owner", "ssh", "t1", frozenset({"read_file"}))
+        self.assertIs(_REMOTE_KERNELS[key], winner)
+        loser = next(k for k in spawned if k is not winner)
+        self.assertTrue(any(f"rm -rf {loser.kernel_dir}" in c for c in env.commands),
+                        "loser's detached kernel_dir was never torn down")
+        self.assertFalse(any(f"rm -rf {winner.kernel_dir}" in c for c in env.commands))
+
+    def test_failed_spawn_falls_back_to_per_call(self):
+        """Spawn failure returns None (caller falls open to a per-call run)."""
+        import tools.code_kernel_remote as ckr
+
+        env = ScriptedEnv([])
+        with patch.object(ckr, "_spawn_remote_kernel", return_value=None):
+            kernel, reused, _, _ = ckr._acquire_remote_kernel(
+                env, "ssh", "owner", "t1", frozenset({"read_file"}),
+                reset=False, idle_exit=900)
+        self.assertIsNone(kernel)
+        self.assertFalse(reused)
+
+
+@pytest.mark.platforms("posix")
+class TestAcquireRaceE2E(RemoteKernelBase):
+    """Real-transport e2e: two concurrent same-key acquires through a real
+    LocalEnvironment spawn real detached kernel_runner processes; the loser must
+    kill its runner + rm -rf its kernel_dir and fall open to per-call."""
+
+    def test_concurrent_acquire_tears_down_duplicate_on_real_transport(self):
+        self._ship.stop()
+        self._poll.stop()
+        import threading
+        import tools.code_kernel_remote as ckr
+        from tools.environments.local import LocalEnvironment
+
+        env = LocalEnvironment(cwd="/", timeout=90)
+        barrier = threading.Barrier(2, timeout=30)
+        spawned = []
+        real_spawn = ckr._spawn_remote_kernel
+
+        def gated(*a, **kw):
+            barrier.wait()   # both racers observe the empty map before either registers
+            kernel = real_spawn(*a, **kw)
+            if kernel is not None:
+                spawned.append(kernel)
+            return kernel
+
+        results, errors = [], []
+
+        def race():
+            try:
+                results.append(ckr._acquire_remote_kernel(
+                    env, "local", "owner-e2e", "t-e2e-acq", frozenset(),
+                    reset=False, idle_exit=120))
+            except Exception as exc:
+                errors.append(exc)
+
+        with patch.object(ckr, "_spawn_remote_kernel", side_effect=gated):
+            threads = [threading.Thread(target=race, daemon=True) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(90)
+            for t in threads:
+                self.assertFalse(t.is_alive())
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(spawned), 2)                 # the race really happened
+        kept = [r[0] for r in results if r[0] is not None]
+        self.assertEqual(len(kept), 1)
+        winner = kept[0]
+        self.assertIs(_REMOTE_KERNELS[ckr._kernel_key(
+            "owner-e2e", "local", "t-e2e-acq", frozenset())], winner)
+        loser = next(k for k in spawned if k is not winner)
+        # The duplicate's detached runner was killed and its dir removed for real.
+        self.assertFalse(os.path.exists(loser.kernel_dir))
+        deadline = time.monotonic() + 10
+        while True:
+            try:
+                os.kill(int(loser.pid), 0)
+            except OSError:
+                break
+            if time.monotonic() > deadline:
+                self.fail("loser's detached runner still alive after teardown")
+            time.sleep(0.05)
+        self.assertTrue(os.path.isdir(winner.kernel_dir))
+        self.assertTrue(winner.is_alive())
 
 
 if __name__ == "__main__":

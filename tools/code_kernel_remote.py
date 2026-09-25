@@ -271,12 +271,22 @@ def _acquire_remote_kernel(env, env_type: str, owner: str, task_env_id: str,
         kernel, state_lost = None, True
     reused = kernel is not None
     if kernel is None:
-        kernel = _spawn_remote_kernel(env, env_type, owner, task_env_id, sandbox_tools, idle_exit=idle_exit)
-        if kernel is not None:
-            from agent.delegation_context import is_delegated_child_context
-            kernel.pinned = is_delegated_child_context()
+        spawned = _spawn_remote_kernel(env, env_type, owner, task_env_id, sandbox_tools, idle_exit=idle_exit)
+        if spawned is not None:
             with _REGISTRY.lock:
-                _REMOTE_KERNELS[key] = kernel
+                if _REMOTE_KERNELS.get(key) is None:
+                    from agent.delegation_context import is_delegated_child_context
+                    spawned.pinned = is_delegated_child_context()
+                    _REMOTE_KERNELS[key] = spawned
+                    kernel = spawned
+            if kernel is None:
+                # Lost a same-key first-spawn race: a racer registered meanwhile.
+                # Tear our duplicate down (a dropped RemoteKernel leaves its
+                # detached remote runner and kernel_dir orphaned until idle
+                # self-exit) and fail open to per-call rather than run on the
+                # winner's kernel: cells on one kernel are not serialized, so
+                # sharing it would race cell_seq minting and the rpc-dir sweep.
+                spawned.kill()
     return kernel, reused, state_reset, state_lost
 
 

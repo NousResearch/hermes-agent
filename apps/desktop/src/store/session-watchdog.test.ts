@@ -11,9 +11,11 @@ import {
   $workingSessionIds,
   clearAllSessionStates,
   LIVE_TURN_EVENT_SILENCE_MS,
+  LIVE_TURN_PROBE_GRACE_MS,
   noteSessionEvent,
   publishSessionState,
-  SESSION_WATCHDOG_TIMEOUT_MS
+  SESSION_WATCHDOG_TIMEOUT_MS,
+  setSilentTurnProbe
 } from './session-states'
 
 // Read from the store rather than restated here: these assert what happens on
@@ -268,5 +270,47 @@ describe('live turn event silence', () => {
 
     expect($sessionStates.get()['rt-done']?.messages.some(message => message.errorSurface)).toBe(false)
     expect($workingSessionIds.get()).not.toContain('s-done')
+  })
+  it('asks the live-status probe before settling, and a working answer keeps the turn', () => {
+    publishSessionState('rt-probe', partial('long tool call', { storedSessionId: 's-probe' }))
+    const probe = vi.fn(() => noteSessionEvent('rt-probe'))
+    const release = setSilentTurnProbe(probe)
+    noteSessionEvent('rt-probe')
+
+    vi.advanceTimersByTime(SILENCE_MS + LIVE_TURN_PROBE_GRACE_MS)
+
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect($workingSessionIds.get()).toContain('s-probe')
+    expect($sessionStates.get()['rt-probe']?.interrupted).toBeFalsy()
+    release()
+  })
+
+  it('settles after the grace when the probe gets no answer', () => {
+    $activeSessionId.set('rt-dead')
+    publishSessionState('rt-dead', partial('partial', { storedSessionId: 's-dead' }))
+    const probe = vi.fn()
+    const release = setSilentTurnProbe(probe)
+    noteSessionEvent('rt-dead')
+
+    vi.advanceTimersByTime(SILENCE_MS)
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect($workingSessionIds.get()).toContain('s-dead')
+
+    vi.advanceTimersByTime(LIVE_TURN_PROBE_GRACE_MS)
+    expect($workingSessionIds.get()).not.toContain('s-dead')
+    expect($sessionStates.get()['rt-dead']?.messages.some(message => message.errorSurface?.retryable)).toBe(true)
+    release()
+  })
+
+  it('stops using a probe once it is released', () => {
+    publishSessionState('rt-gone', partial('partial', { storedSessionId: 's-gone' }))
+    const probe = vi.fn()
+    setSilentTurnProbe(probe)()
+    noteSessionEvent('rt-gone')
+
+    vi.advanceTimersByTime(SILENCE_MS)
+
+    expect(probe).not.toHaveBeenCalled()
+    expect($workingSessionIds.get()).not.toContain('s-gone')
   })
 })

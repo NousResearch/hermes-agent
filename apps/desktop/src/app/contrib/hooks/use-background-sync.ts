@@ -32,7 +32,8 @@ import {
   noteSessionEvent,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
-  setSessionStalled
+  setSessionStalled,
+  setSilentTurnProbe
 } from '@/store/session-states'
 import { loadArchivedSessions } from '@/store/sidebar-archive'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
@@ -1033,6 +1034,9 @@ export function useBackgroundSync({
     }
 
     const unsubscribe = $sessionsChangeTick.listen(() => void refreshLiveStatuses())
+    // The visible poll below pauses while the window is not viewed; a turn gone
+    // silent that long is checked here directly before it is settled.
+    const releaseProbe = setSilentTurnProbe(() => void refreshLiveStatuses())
 
     const dispose = visiblePoll(
       changeEventsAvailable ? LIVE_SESSION_STATUS_BACKSTOP_INTERVAL_MS : LIVE_SESSION_STATUS_POLL_INTERVAL_MS,
@@ -1044,6 +1048,7 @@ export function useBackgroundSync({
     return () => {
       cancelled = true
       unsubscribe()
+      releaseProbe()
       dispose()
     }
     // Keep the in-flight guard alive across change ticks; a slow response must

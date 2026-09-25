@@ -366,14 +366,35 @@ export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
 // A live turn that stops producing events — including after a partial payload —
 // must not wait out the presentation hint above. The clock resets on every
 // session event and on a live-status poll that still reports the turn working,
-// so a quiet tool call is left alone. The window outlasts the 30s live-status
-// backstop: a dead backend stops both events and polls, and this settles it
-// instead of leaving the spinner up. Not keyed on a model name or an error string.
+// so a quiet tool call is left alone. A dead backend stops both events and
+// polls, and this settles it instead of leaving the spinner up. Not keyed on a
+// model name or an error string.
 export const LIVE_TURN_EVENT_SILENCE_MS = 45_000
+// The backstop poll pauses while the window is not being viewed and stretches
+// to 2 min on battery, so it cannot be relied on to have run inside the window
+// above. When the window runs out, ask the backend once (the probe) and give
+// its answer this long to reset the clock before settling.
+export const LIVE_TURN_PROBE_GRACE_MS = 15_000
 const sessionEventSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const probedSilentTurns = new Set<string>()
+let silentTurnProbe: (() => void) | null = null
+
+/** Register the live-status refresh a silent turn is checked against before it
+ *  is settled. Returns the unregister function. */
+export function setSilentTurnProbe(probe: () => void): () => void {
+  silentTurnProbe = probe
+
+  return () => {
+    if (silentTurnProbe === probe) {
+      silentTurnProbe = null
+    }
+  }
+}
 
 function clearEventSilence(runtimeId: string) {
   const timer = sessionEventSilenceTimers.get(runtimeId)
+
+  probedSilentTurns.delete(runtimeId)
 
   if (timer) {
     clearTimeout(timer)
@@ -460,11 +481,34 @@ export function noteSessionEvent(runtimeId: string) {
 
   sessionEventSilenceTimers.set(
     runtimeId,
-    setTimeout(() => {
-      sessionEventSilenceTimers.delete(runtimeId)
-      settleSilentLiveTurn(runtimeId)
-    }, LIVE_TURN_EVENT_SILENCE_MS)
+    setTimeout(() => onEventSilence(runtimeId), LIVE_TURN_EVENT_SILENCE_MS)
   )
+}
+
+function onEventSilence(runtimeId: string) {
+  sessionEventSilenceTimers.delete(runtimeId)
+  const probe = silentTurnProbe
+
+  // Silence alone does not prove the turn is dead: a long tool call emits
+  // nothing. A poll that still lists it working resets the clock through
+  // noteSessionEvent; a dead backend fails or omits it and the grace runs out.
+  if (probe && !probedSilentTurns.has(runtimeId) && isLiveTurnAwaitingEvents($sessionStates.get()[runtimeId])) {
+    probedSilentTurns.add(runtimeId)
+    sessionEventSilenceTimers.set(
+      runtimeId,
+      setTimeout(() => {
+        sessionEventSilenceTimers.delete(runtimeId)
+        probedSilentTurns.delete(runtimeId)
+        settleSilentLiveTurn(runtimeId)
+      }, LIVE_TURN_PROBE_GRACE_MS)
+    )
+    probe()
+
+    return
+  }
+
+  probedSilentTurns.delete(runtimeId)
+  settleSilentLiveTurn(runtimeId)
 }
 
 const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -828,6 +872,7 @@ export function clearAllSessionStates() {
   }
 
   sessionEventSilenceTimers.clear()
+  probedSilentTurns.clear()
   settledExpiry.clear()
   unconfirmedReconnectSettles.clear()
   clearAllProviderWaits()

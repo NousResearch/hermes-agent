@@ -507,6 +507,15 @@ def _finalize_routing(agent, api_mode, credential_pool):
             target=fetch_model_metadata, daemon=True, name="openrouter-prewarm",
         ).start()
 
+    # Single-threaded import of the SDK's lazily-resolved resource packages. The auto-title
+    # thread and the main turn thread first-touch ``client.responses`` / ``client.chat``
+    # concurrently on cold starts; the SDK's import graph (``resources`` ↔ ``beta`` ↔
+    # ``chat``) then deadlocks on module locks and the title upgrade dies with
+    # ``_DeadlockError``. Warming here serializes the imports before either thread runs.
+    with suppress(Exception):
+        from agent.process_bootstrap import prewarm_openai_resource_modules
+        prewarm_openai_resource_modules()
+
 
 def _set_defaults(agent, table: Dict[str, Any]) -> None:
     """Assign each ``name -> value`` on ``agent``; callables are factories (fresh per agent)."""

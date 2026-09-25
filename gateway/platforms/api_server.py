@@ -204,16 +204,9 @@ async def _call_verifier(verifier, *args, **kwargs):
 
 
 def _hermes_version() -> str:
-    """Canonical Hermes version: ``hermes_cli.__version__`` (dist-info can be stale on
-    source checkouts), then distribution metadata, then "dev". Never raises."""
-    with suppress(Exception):
-        from hermes_cli import __version__
-        return __version__
-    try:
-        from importlib.metadata import version
-        return version("hermes-agent")
-    except Exception:
-        return "dev"
+    """Canonical base version for API protocol and compatibility payloads."""
+    from hermes_cli.version_info import get_version_info
+    return get_version_info().base_version
 
 
 # Default settings
@@ -257,10 +250,12 @@ class ThreadSafeAsyncQueue(asyncio.Queue):
         self._loop_ref = asyncio.get_running_loop()
 
 
-def _sse_frame(data: Any, *, event: str = None, ensure_ascii: bool = True) -> bytes:
-    """Encode one SSE frame (``event:`` line if given, then ``data: <json>\n\n``) for every
-    SSE writer. ``ensure_ascii=False`` keeps raw non-ASCII on the wire."""
-    prefix = f"event: {event}\n" if event else ""
+def _sse_frame(
+    data: Any, *, event: str = None, ensure_ascii: bool = True, id: Optional[int] = None
+) -> bytes:
+    """Encode one SSE frame (``id:``/``event:`` lines if given, then ``data: <json>\n\n``) for
+    every SSE writer. ``ensure_ascii=False`` keeps raw non-ASCII on the wire."""
+    prefix = (f"id: {id}\n" if id is not None else "") + (f"event: {event}\n" if event else "")
     return f"{prefix}data: {json.dumps(data, ensure_ascii=ensure_ascii)}\n\n".encode()
 
 
@@ -1206,6 +1201,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False)
+        # ``platforms.api_server.tool_progress_events: false`` drops the custom
+        # ``hermes.tool.progress`` SSE frames from Chat Completions streams for strict OpenAI
+        # clients that choke on named events (#12020). Default on.
+        self._tool_progress_events: bool = _coerce_request_bool(
+            extra.get("tool_progress_events"), default=True)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None

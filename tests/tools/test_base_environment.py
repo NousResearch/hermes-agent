@@ -9,8 +9,19 @@ from unittest.mock import MagicMock
 import pytest
 
 import tools.terminal_tool_sudo as terminal_tool_sudo
-from tools.environments.base import BaseEnvironment
+from tools.environments.base import BaseEnvironment, _load_json_store
 from tools.environments.base_output import _BoundedOutputCollector
+
+
+def test_snapshot_store_reads_dict_and_tolerates_missing_or_damaged_file(tmp_path):
+    path = tmp_path / "snapshots.json"
+    assert _load_json_store(path) == {}
+    path.write_text('{"task": "snapshot"}', encoding="utf-8")
+    assert _load_json_store(path) == {"task": "snapshot"}
+    path.write_text('["not a mapping"]', encoding="utf-8")
+    assert _load_json_store(path) == {}
+    path.write_text("{bad json", encoding="utf-8")
+    assert _load_json_store(path) == {}
 
 
 class _TestableEnv(BaseEnvironment):
@@ -170,7 +181,8 @@ class TestSnapshotFileModes:
         import shutil
         import stat
         import subprocess
-        if not shutil.which("bash"):
+        bash = shutil.which("bash")
+        if not bash:
             import pytest
             pytest.skip("bash required")
 
@@ -184,7 +196,7 @@ class TestSnapshotFileModes:
 
             def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
                 proc = subprocess.Popen(
-                    ["/bin/bash", "-lc", cmd_string],
+                    [bash, "-lc", cmd_string],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     stdin=subprocess.DEVNULL,

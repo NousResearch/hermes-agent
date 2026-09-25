@@ -109,13 +109,8 @@ def format_voice_record_key_for_status(raw: Any) -> str:
     return prefix + key[0].upper() + key[1:]
 
 
-from tools.voice_mode import (
-    create_audio_recorder,
-    is_voice_stop_phrase,
-    is_whisper_hallucination,
-    play_audio_file,
-    transcribe_recording,
-)
+from tools.voice_mode_transcript import is_voice_stop_phrase, is_whisper_hallucination
+from tools.voice_mode import create_audio_recorder, play_audio_file, transcribe_recording
 
 logger = logging.getLogger(__name__)
 

@@ -143,7 +143,7 @@ _LOGGED_UNSUPPORTED_OAUTH_KEYS: set = set()
 
 def _resolve_aux_verify(base_url: Optional[str]) -> Any:
     """httpx ``verify`` for an aux base_url, mirroring the main client (per-provider ``ssl_ca_cert`` /
-    ``ssl_verify``, ``HERMES_CA_BUNDLE`` / ``SSL_CERT_FILE``); any failure → httpx default (``True``)."""
+    ``ssl_verify``; otherwise the OS trust store); any failure → httpx default (``True``)."""
     try:
         from agent.ssl_verify import resolve_httpx_verify
         from hermes_cli.config import get_custom_provider_tls_settings, load_config_readonly
@@ -932,16 +932,16 @@ def build_nvidia_nim_headers(base_url: str | None) -> dict:
 
 
 # Vercel AI Gateway attribution (HTTP-Referer → referrerUrl, X-Title → appName).
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 
 _AI_GATEWAY_HEADERS = {
     "HTTP-Referer": "https://hermes-agent.nousresearch.com",
     "X-Title": "Hermes Agent",
-    "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    "User-Agent": f"HermesAgent/{get_version_info().base_version}",
 }
 
 # Nous Portal attribution extra_body. Tags come from agent.portal_tags so the client= marker
-# tracks hermes_cli.__version__ — never inline a literal here.
+# tracks the canonical base version — never inline a literal here.
 from agent.portal_tags import nous_portal_tags as _nous_portal_tags
 
 
@@ -6817,7 +6817,8 @@ def _managed_local_netloc() -> str:
         return cached
     try:
         from hermes_cli.local_runtime.supervisor import state_path
-        raw = state_path().read_text(encoding="utf-8")
+
+        raw = state_path().read_text(encoding="utf-8-sig")
         base = str((json.loads(raw) or {}).get("base_url", ""))
         netloc = urlparse(base).netloc.lower()
     except Exception:

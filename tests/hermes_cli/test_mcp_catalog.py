@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 # ---------------------------------------------------------------------------
@@ -284,11 +284,6 @@ class TestManifestParsing:
             _parse_manifest(path)
 
 
-
-
-
-
-
     def test_tools_default_excluded_parsed(self, catalog_dir):
         body = _basic_manifest(
             tools={"default_excluded": ["docs", "*_radar_*"]},
@@ -357,8 +352,9 @@ class TestInstall:
         assert server["tools"]["exclude"] == ["docs", "*_radar_*"]
         assert "include" not in server["tools"]
 
+    @pytest.mark.parametrize('stale', [False, True])
     def test_reinstall_prior_include_wins_over_default_excluded(
-        self, catalog_dir, monkeypatch
+        self, catalog_dir, monkeypatch, stale
     ):
         """A user's prior include selection survives reinstall of an
         exclude-mode manifest (prior selection > manifest default)."""
@@ -378,6 +374,9 @@ class TestInstall:
         }
         save_config(cfg)
 
+        if stale:
+            cfg['mcp_servers']['demo']['tools']['exclude'] = ['tool_a']
+            save_config(cfg)
         import sys as _sys
         probed = [("tool_a", "a"), ("tool_b", "b")]
         monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
@@ -421,38 +420,6 @@ class TestInstall:
         assert server["tools"]["exclude"] == user_exclude
         assert "include" not in server["tools"]
 
-    def test_include_mode_reinstall_ignores_stale_exclude(
-        self, catalog_dir, monkeypatch
-    ):
-        """When the user previously chose an include selection, a leftover
-        exclude value must not shadow it on reinstall of an exclude-mode
-        manifest — include (explicit user checklist choice) wins."""
-        body = _basic_manifest(
-            tools={"default_excluded": ["*_radar_*"]},
-        )
-        _write_manifest(catalog_dir, "demo", body)
-        import hermes_cli.mcp_catalog as mc
-        from hermes_cli.config import load_config, save_config
-
-        cfg = load_config()
-        cfg.setdefault("mcp_servers", {})["demo"] = {
-            "command": "npx",
-            "args": ["-y", "demo-mcp"],
-            "enabled": True,
-            "tools": {"include": ["tool_a"]},
-        }
-        save_config(cfg)
-
-        import sys as _sys
-        probed = [("tool_a", "a"), ("tool_b", "b")]
-        monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
-        monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
-
-        mc.install_entry(_entry("demo"), enable=True)
-
-        server = load_config()["mcp_servers"]["demo"]
-        assert server["tools"]["include"] == ["tool_a"]
-        assert "exclude" not in server["tools"]
 
     def test_probe_fail_reinstall_preserves_prior_selection(self, catalog_dir):
         """A failed probe during reinstall (e.g. OAuth not yet completed)
@@ -646,8 +613,6 @@ class TestInstall:
             mcp_catalog._parse_manifest(path)
 
 
-
-
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
@@ -738,8 +703,6 @@ class TestToolSelection:
         install_entry(_entry("demo"), enable=True)
         server = load_config()["mcp_servers"]["demo"]
         assert server["tools"]["include"] == ["a", "b", "c"]
-
-
 
 
     def test_reinstall_preserves_prior_user_selection(
@@ -954,7 +917,41 @@ class TestToolsConfigIncludeMode:
         assert "exclude" not in srv, srv
 
 
+def _is_exact_package_pin(package: str) -> bool:
+    # GitHub codeload archives use the same immutable SHA contract as git
+    # installs. Keep this restricted to that host and a full commit, not
+    # arbitrary URLs whose path happens to contain a version or hash.
+    return any(re.fullmatch(pattern, package) for pattern in (
+        r"[^=@\s]+==\d[\w.\-+]*",
+        r"(@[\w.\-]+/)?[\w.\-]+@\d[\w.\-+]*",
+        r"https://codeload\.github\.com/[\w.\-]+/[\w.\-]+/tar\.gz/[0-9a-f]{40}",
+    ))
+
+
 class TestShippedCatalog:
+
+    @pytest.mark.parametrize("package", [
+        "demo==1.2.3", "demo@1.2.3", "@scope/demo@1.2.3",
+        "demo==1.2.3rc1", "demo@1.2.3-beta.1",
+        "https://codeload.github.com/example/demo/tar.gz/" + "a1" * 20,
+    ])
+    def test_exact_package_pins_accept_versions_and_commit_archives(self, package):
+        assert _is_exact_package_pin(package)
+
+    @pytest.mark.parametrize("package", [
+        "demo", "demo@latest", "demo@next", "demo@^1.2.3", "demo@~1.2.3",
+        "demo>=1.2.3", "demo==1.*",
+        *["https://codeload.github.com/example/demo/tar.gz/" + ref for ref in (
+            "main", "v1.2.3", "abc1234", "a" * 39, "a" * 41, "g" * 40,
+            "a" * 40 + "?ref=main", "a" * 40 + "#main", "a" * 40 + "/main",
+        )],
+        "http://codeload.github.com/example/demo/tar.gz/" + "a" * 40,
+        "https://codeload.github.com.evil.test/example/demo/tar.gz/" + "a" * 40,
+        "https://codeload.github.com@evil.test/example/demo/tar.gz/" + "a" * 40,
+        "https://example.com/demo/tar.gz/" + "a" * 40,
+    ])
+    def test_exact_package_pins_reject_floating_or_untrusted_sources(self, package):
+        assert not _is_exact_package_pin(package)
 
     def test_manifest_connector_slugs_are_valid_and_unique(self, monkeypatch):
         from hermes_cli.mcp_catalog import catalog_diagnostics, list_catalog
@@ -1001,7 +998,8 @@ class TestShippedCatalog:
           can be moved by the upstream owner; SHAs cannot).
         - package-launcher stdio transports (uvx/npx and their pkg-manager
           equivalents) must carry an exact version specifier on the package
-          arg (``pkg==X`` for Python, ``pkg@X`` for npm).
+          arg (``pkg==X`` for Python, ``pkg@X`` for npm), or a GitHub codeload
+          archive URL pinned to a full 40-char commit SHA.
 
         http transports and ${INSTALL_DIR}-anchored commands have nothing to
         pin at the transport layer (the server runs elsewhere / comes from the
@@ -1037,13 +1035,11 @@ class TestShippedCatalog:
                 # @scope/pkg@1.2.3 (npx/bunx/pnpx). The version must start
                 # with a digit — a bare name, a range operator, or an npm
                 # dist-tag (@latest, @next) floats and is rejected.
-                exact = re.fullmatch(r"[^=@\s]+==\d[\w.\-+]*", pkg) or re.fullmatch(
-                    r"(@[\w.\-]+/)?[\w.\-]+@\d[\w.\-+]*", pkg
-                )
-                if not exact:
+                if not _is_exact_package_pin(pkg):
                     problems.append(
                         f"{entry.name}: package arg {pkg!r} is not pinned to an "
-                        "exact version (expected pkg==X or pkg@X)"
+                        "exact version or full GitHub commit "
+                        "(expected pkg==X, pkg@X, or a commit-pinned codeload URL)"
                     )
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)

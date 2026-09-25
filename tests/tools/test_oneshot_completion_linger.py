@@ -226,9 +226,11 @@ def test_default_timeout_read_from_config(registry, monkeypatch):
 
 # ── CLI exit paths invoke the linger ─────────────────────────────────────────
 
-def test_finalize_single_query_lingers_before_teardown(monkeypatch):
-    """cli._finalize_single_query must call the registry wait BEFORE the
-    durable flush / cleanup so deliveries land while the parent is alive."""
+def test_finalize_single_query_releases_lease_then_lingers_before_teardown(monkeypatch):
+    """cli._finalize_single_query releases the session lease FIRST (a finished turn
+    must not keep refusing deliveries through the exit linger, #118826), then calls
+    the registry wait BEFORE the durable flush / cleanup so deliveries land while
+    the parent is alive."""
     import cli as cli_mod
 
     order = []
@@ -255,7 +257,7 @@ def test_finalize_single_query_lingers_before_teardown(monkeypatch):
             order.append("release")
 
     cli_mod._finalize_single_query(_FakeCli())
-    assert order[0] == "wait"
+    assert order == ["release", "wait", "flush", "finalize", "cleanup"]
 
 def test_finalize_single_query_survives_wait_failure(monkeypatch):
     """A raising wait must not break the durable flush path."""
@@ -284,7 +286,7 @@ def test_finalize_single_query_survives_wait_failure(monkeypatch):
             order.append("release")
 
     cli_mod._finalize_single_query(_FakeCli())
-    assert "flush" in order and "release" in order
+    assert order == ["release", "flush", "finalize", "cleanup"]
 
 # ── real-process E2E ─────────────────────────────────────────────────────────
 

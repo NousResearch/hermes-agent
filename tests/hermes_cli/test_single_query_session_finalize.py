@@ -13,7 +13,9 @@ def reset_single_query_finalize_state(monkeypatch):
 
 
 
-def test_finalize_single_query_releases_session_when_cleanup_fails(monkeypatch):
+def test_finalize_single_query_releases_lease_before_cleanup(monkeypatch):
+    """The lease release precedes every remaining step, so a cleanup failure can
+    never skip it (the old finally-release could only promise 'eventually')."""
     calls = []
     fake_cli = SimpleNamespace(_release_active_session=lambda: calls.append("release"))
 
@@ -31,7 +33,7 @@ def test_finalize_single_query_releases_session_when_cleanup_fails(monkeypatch):
     with pytest.raises(RuntimeError, match="cleanup failed"):
         cli._finalize_single_query(fake_cli)
 
-    assert calls == ["finalize", "cleanup", "release"]
+    assert calls == ["release", "finalize", "cleanup"]
 
 
 def test_finalize_single_query_runs_cleanup_when_finalize_hook_fails(monkeypatch):
@@ -52,7 +54,47 @@ def test_finalize_single_query_runs_cleanup_when_finalize_hook_fails(monkeypatch
 
     cli._finalize_single_query(fake_cli)
 
-    assert calls == ["finalize", "cleanup", "release"]
+    assert calls == ["release", "finalize", "cleanup"]
+
+
+def test_finalize_single_query_frees_the_lease_ahead_of_the_linger(tmp_path, monkeypatch):
+    """The #118826 contract with a REAL lease: once the one-shot's turns are done,
+    the session entry must be gone from the active-session registry BEFORE the
+    bounded exit linger runs — a alive-but-idle process must not keep refusing
+    deliveries ("Refused active session") for minutes after its turn ended."""
+    from hermes_cli import active_sessions
+
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    lease, message = active_sessions.try_acquire_active_session(
+        session_id="s1", surface="cli", config={}, metadata={"live_session_id": "s1"}
+    )
+    assert lease is not None, message
+
+    def wait_only_if_released(_cli):
+        entries = active_sessions._read_entries(active_sessions._state_path(home))
+        # The linger step swallows exceptions by design, so RECORD instead of
+        # asserting here — the assertion below is what must fail on unfixed code.
+        seen["held_during_linger"] = any(
+            str(e.get("session_id") or "") == "s1" for e in entries
+        )
+
+    seen: dict[str, bool] = {}
+    fake_cli = SimpleNamespace(
+        session_id="s1", agent=None, _release_active_session=lease.release
+    )
+    monkeypatch.setattr(cli, "_wait_for_oneshot_background_completions", wait_only_if_released)
+    monkeypatch.setattr(cli, "_flush_one_shot_session_store", lambda _cli: None)
+    monkeypatch.setattr(cli, "_notify_single_query_session_finalize", lambda _cli: None)
+    monkeypatch.setattr(cli, "_run_cleanup", lambda **_k: None)
+
+    cli._finalize_single_query(fake_cli)
+
+    assert seen.get("held_during_linger") is False, (
+        "session lease still held when the exit linger began"
+    )
+    entries = active_sessions._read_entries(active_sessions._state_path(home))
+    assert not any(str(e.get("session_id") or "") == "s1" for e in entries)
 
 
 

@@ -302,22 +302,29 @@ def _wait_for_oneshot_background_completions(cli) -> None:
 
 
 def _finalize_single_query(cli) -> None:
-    """Close one-shot CLI resources before releasing the active session lease."""
+    """Close one-shot CLI resources after releasing the active-session lease.
+
+    Release order is the point of this routine: by the time finalize runs, every turn
+    of the run (main turn, kanban goal loop, notify-completion follow-ups) has
+    finished, and none of the remaining steps — the bounded linger for
+    notify_on_complete children, the durable flush, cleanup — runs a turn. The lease
+    means "a turn may run on this session", so it is released FIRST; holding it
+    through the linger let an alive-but-idle one-shot keep refusing new deliveries
+    ("Refused active session") for minutes after its turn had ended (#118826).
+    """
     from cli import _flush_one_shot_session_store, _notify_single_query_session_finalize, _run_cleanup, _wait_for_oneshot_background_completions
-    try:
-        # Order matters: linger for spawned background work BEFORE any teardown (the
-        # parent owns those children's stdout pipes); then the durable flush, since
-        # memory-provider shutdown inside _run_cleanup can issue aux-LLM calls and
-        # nothing after it may fail in a way that loses the turn.
-        for step, what in (
-            (_wait_for_oneshot_background_completions, "background completion wait"),
-            (_flush_one_shot_session_store, "session store flush"),
-        ):
-            try:
-                step(cli)
-            except Exception:
-                logger.debug("one-shot %s failed", what, exc_info=True)
-        _notify_single_query_session_finalize(cli)
-        _run_cleanup(notify_session_finalize=False)
-    finally:
-        cli._release_active_session()
+    cli._release_active_session()
+    # Order matters: linger for spawned background work BEFORE any teardown (the
+    # parent owns those children's stdout pipes); then the durable flush, since
+    # memory-provider shutdown inside _run_cleanup can issue aux-LLM calls and
+    # nothing after it may fail in a way that loses the turn.
+    for step, what in (
+        (_wait_for_oneshot_background_completions, "background completion wait"),
+        (_flush_one_shot_session_store, "session store flush"),
+    ):
+        try:
+            step(cli)
+        except Exception:
+            logger.debug("one-shot %s failed", what, exc_info=True)
+    _notify_single_query_session_finalize(cli)
+    _run_cleanup(notify_session_finalize=False)

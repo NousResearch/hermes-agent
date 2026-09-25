@@ -18,8 +18,36 @@ import subprocess
 import sys
 
 
+def _pm_workspace_owner(root: Path, venv: Path) -> Path | None:
+    """Resolve only this generation's workspace through PM's existing input stamp.
+
+    The install key alone is not reversible. Successful PM syncs already persist
+    the canonical source in ``inputs/.project-root``; validate it against the key
+    before letting the updater execute that checkout. Missing or stale records
+    leave the existing update admission path in charge.
+    """
+    generation = venv.parent
+    if root != generation / "workspace" or generation.parent.name != "environments":
+        return None
+    state = generation.parent.parent
+    try:
+        from pm.environments import install_key
+
+        recorded = (state / "inputs" / ".project-root").read_text(encoding="utf-8")
+        owner = Path(recorded)
+        if not recorded or not owner.is_absolute():
+            return None
+        owner = owner.resolve()
+        if (install_key(owner) != state.name or not (owner / ".git").exists()
+                or not (owner / "hermes_cli" / "main.py").is_file()):
+            return None
+        return owner
+    except (OSError, ValueError):
+        return None
+
+
 def owning_install_root(project_root: Path) -> Path | None:
-    """The checkout whose in-tree venv this interpreter is, when that is not *project_root*.
+    """The checkout owning this interpreter, including a recorded PM generation.
 
     ``None`` when this process runs on its own checkout's interpreter, a venv outside any
     checkout, or when *project_root* was put on ``PYTHONPATH`` on purpose (a wrapper that
@@ -32,10 +60,13 @@ def owning_install_root(project_root: Path) -> Path | None:
     root = Path(project_root).resolve()
     if venv.name not in ("venv", ".venv") or owner == root:
         return None
-    if not (owner / "hermes_cli" / "main.py").is_file():
-        return None
     chosen = (Path(p).resolve() for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p)
     if root in chosen:
+        return None
+    pm_owner = _pm_workspace_owner(root, venv)
+    if pm_owner is not None:
+        return pm_owner
+    if not (owner / "hermes_cli" / "main.py").is_file():
         return None
     return owner
 
@@ -45,8 +76,8 @@ def retarget_to_owning_install(project_root: Path) -> None:
     owner = owning_install_root(project_root)
     if owner is None:
         return
-    print(f"⚠ {owner / Path(sys.prefix).name} is running the checkout at {project_root}, not its own code.")
-    print(f"→ Updating {owner} with its own updater; this also points its venv back at it.")
+    print(f"⚠ Interpreter environment {sys.prefix} is running {project_root}, not its owning checkout.")
+    print(f"→ Updating {owner} with its own updater.")
     sys.stdout.flush()
     # PYTHONPATH entries resolve before the editable finder on sys.meta_path, so the
     # owner's hermes_cli wins; in the child, project_root == owner and this is a no-op.

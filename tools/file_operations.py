@@ -124,7 +124,8 @@ class FileOperations(ABC):
     @abstractmethod
     def move_file(self, src: str, dst: str) -> WriteResult:
         """Move/rename a file, never over anything already at ``dst`` (file,
-        directory or symlink). Returns WriteResult with .error set on failure."""
+        directory or symlink), even one created concurrently. Returns WriteResult
+        with .error set on failure."""
 
     @abstractmethod
     def search(self, pattern: str, path: str = ".", target: str = "content",
@@ -148,7 +149,7 @@ NOT_REGULAR_SENTINEL = "__hermes_not_regular__"
 # signal that ``_probe_regular_file`` carries in ``exit 1`` travels in-band.
 MISSING_SENTINEL = "__hermes_missing__"
 
-# Echoed by the lexists probe (``path_exists``, ``move_file``) when anything is at the path.
+# Echoed by the lexists probe (``path_exists``, ``move_file``'s error wording) when anything is at the path.
 EXISTS_SENTINEL = "__hermes_exists__"
 
 _READ_SENTINEL_PREFIX = "__HERMES_RF_"
@@ -1308,12 +1309,19 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             denied = get_write_denied_error(p, verb="Move")
             if denied:
                 return WriteResult(error=denied)
-        # Test and ``mv`` in ONE command: ``mv`` replaces a file or symlink and moves
-        # INTO a directory (clobbering ``dir/<name>``), and a caller's own check is
-        # stale by the time an earlier op of the same patch has applied.
-        d = self._escape_shell_arg(dst)
-        result = self._exec(f"if [ -e {d} ] || [ -L {d} ]; then echo {EXISTS_SENTINEL}; "
-                            f"else mv {self._escape_shell_arg(src)} {d}; fi")
+        # No-clobber must be the mutation's own property: any test before a ``mv`` is
+        # racy, and ``mv`` replaces a file/symlink or moves INTO a directory. link(2)
+        # fails EEXIST on anything at ``dst`` and, unlike ``ln``, the ``link`` utility
+        # never descends into a directory (GNU, BSD/macOS, busybox). The price is
+        # refusing what link(2) cannot do: cross-device, directories, and symlink
+        # sources (BSD link(2) follows them, turning the link into a hard link).
+        # The trailing test only words the error. No ``exit``: the backend wrapper
+        # evals this in its own shell and must still run its epilogue.
+        s, d = self._escape_shell_arg(src), self._escape_shell_arg(dst)
+        result = self._exec(
+            f"if [ -L {s} ]; then echo 'source is a symlink'; false; "
+            f"elif link {s} {d}; then rm -f {s} || {{ [ {s} -ef {d} ] && rm -f {d}; false; }}; "
+            f"elif [ -e {d} ] || [ -L {d} ]; then echo {EXISTS_SENTINEL}; false; else false; fi")
         if EXISTS_SENTINEL in (result.stdout or ""):
             return WriteResult(error=f"Failed to move {src} -> {dst}: destination already exists")
         if result.exit_code != 0:

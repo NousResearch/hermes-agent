@@ -509,6 +509,31 @@ def _normalize_content(content: Dict[str, Any]) -> _Normalized:
     return normalize(content)
 
 
+def _sent_text_key(chat_id: Optional[str]) -> Optional[str]:
+    """DM GUID (``any;-;+1555...``) and bare E.164 address one space; index under the phone."""
+    if not chat_id:
+        return None
+    match = re.match(r"^any;-;(\+\d{6,})$", chat_id)
+    return match.group(1) if match else chat_id
+
+
+async def _record_sent_text_async(chat_id: Optional[str], message_id: Optional[str], text: Optional[str]) -> None:
+    """Remember what we sent so a later threaded reply to it carries the quoted text. Never raises."""
+    try:
+        from gateway import rich_sent_store
+        await rich_sent_store.record_async(_sent_text_key(chat_id), message_id, text)
+    except Exception:
+        logger.debug("[photon] sent-text index record failed", exc_info=True)
+
+
+def _lookup_sent_text(chat_id: Optional[str], message_id: Optional[str]) -> Optional[str]:
+    try:
+        from gateway import rich_sent_store
+        return rich_sent_store.lookup(_sent_text_key(chat_id), message_id)
+    except Exception:
+        return None
+
+
 def _attachment_body(space_id: str, safe_path: str, *, kind: str, name: Optional[str] = None,
                      mime_type: Optional[str] = None, caption: Optional[str] = None) -> Dict[str, Any]:
     """``/send-attachment`` body; spectrum-ts infers name/mimeType from the extension,
@@ -802,11 +827,29 @@ class PhotonAdapter(BasePlatformAdapter):
         sender_id = sender.get("id") or space.get("phone") or space_id
         timestamp = _parse_timestamp(event.get("timestamp") or "")
         message_id = event.get("messageId")
+        # iMessage threaded reply (spectrum 12.x): unwrap to the inner content so the user's
+        # words go through the normal ladder, and keep the quoted target as reply context
+        # (#100663). Malformed envelopes fall through to the unknown-type marker.
+        reply_ctx: Dict[str, Any] = {}
+        if content.get("type") == "reply" and isinstance(content.get("content"), dict) \
+                and content["content"].get("type") not in (None, "unknown"):
+            target_id = content.get("targetMessageId")
+            reply_ctx = {"reply_to_message_id": target_id,
+                         "reply_to_text": content.get("targetText") or None,
+                         "reply_to_is_own_message": content.get("targetDirection") == "outbound" or bool(
+                             target_id and target_id in self._sent_message_ids)}
+            if target_id and not reply_ctx["reply_to_text"]:
+                # spectrum often can't hydrate the target's text (e.g. our own sends, older
+                # bubbles): fall back to the local index of what we sent.
+                reply_ctx["reply_to_text"] = _lookup_sent_text(space_id, target_id)
+            content = content["content"]
         ctype = content.get("type")
 
         def _event(text: str, mtype: MessageType = MessageType.TEXT, **kwargs: Any) -> MessageEvent:
             source = self.build_source(chat_id=space_id, chat_name=space_id, chat_type=chat_type,
                                        user_id=sender_id, user_name=sender_id or None, message_id=message_id)
+            for key, value in reply_ctx.items():
+                kwargs.setdefault(key, value)
             return MessageEvent(text=text, message_type=mtype, source=source, message_id=message_id,
                                 raw_message=event, timestamp=timestamp, **kwargs)
         if ctype in {"read", "read_receipt"}:  # presence signal, not a user turn (receipts for our sends)
@@ -1204,7 +1247,11 @@ class PhotonAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        formatted = self.format_message(content)
+        result = await self._sidecar_send(chat_id, formatted)
+        if result.success:
+            await _record_sent_text_async(chat_id, result.message_id, formatted)
+        return result
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -1464,7 +1511,11 @@ class PhotonAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"unsafe or missing attachment path: {path}")
         body = _attachment_body(
             space_id, safe_path, kind=kind, name=name, mime_type=mime_type or _guess_mime(safe_path), caption=caption)
-        return await self._post_send("/send-attachment", body, structured=True)
+        result = await self._post_send("/send-attachment", body, structured=True)
+        if result.success:
+            label = caption or f"[{kind}: {name or os.path.basename(safe_path)}]"
+            await _record_sent_text_async(space_id, result.message_id, label)
+        return result
 
     async def _sidecar_call(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
         if self._http_client is None:
@@ -1611,6 +1662,7 @@ async def _standalone_send(
                     if not data:
                         return _standalone_error(resp)
                 last_message_id = data.get("messageId")
+                await _record_sent_text_async(chat_id, last_message_id, message)
             # 2. Each attachment as a separate /send-attachment call; media_files is
             #    List[Tuple[path, is_voice]] (filter_media_delivery_paths).
             for media_path, is_voice in media_files or []:

@@ -1,0 +1,21 @@
+name: gigamail
+repo: https://github.com/adecubed/hermes-plugin-gigamail
+sha: a056fe1a5ac09595a97952ab6062dba7504b57af
+description: >-
+  Email and calendar through an existing local GigaMail MCP server, with a
+  workflow skill and stdio launcher. Requires Python and a separately
+  configured backend; no automatic backend installation or updates. Reads
+  real mail and attachments; sending, deletion and calendar writes use
+  GigaMail's out-of-band human approval.
+maintainer: adecubed
+tier: community
+category: tools
+docs_url: https://github.com/adecubed/hermes-plugin-gigamail#readme
+version: "0.1.0"
+readme: true
+platforms: [windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

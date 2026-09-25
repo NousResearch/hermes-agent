@@ -30,13 +30,12 @@ def _personalities_from_cli_config() -> Dict[str, Any]:
     Falls back to a fresh load when the file cannot be stat'ed."""
     global _personalities_memo
     from cli import load_cli_config
-    from utils import file_signature
     from hermes_cli.personality import available_personalities
     try:
         from hermes_cli.config import get_config_path
+        from hermes_cli.config_backend import config_version
         cfg_path = get_config_path()
-        st = cfg_path.stat()
-        sig = (str(cfg_path), *file_signature(st))
+        sig = (str(cfg_path), *config_version(cfg_path))
     except Exception:
         sig = (None, None, None, None, None)
     if _personalities_memo is None or _personalities_memo[0] != sig:

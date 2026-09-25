@@ -47,6 +47,8 @@ from hermes_constants import (  # noqa: F401
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
 from utils import atomic_replace, fast_safe_load, file_signature
+from hermes_cli.config_backend import (
+    config_exists, config_version, read_config_doc, supports_file_tooling, write_config_document)
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
@@ -449,8 +451,7 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
 
     config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8-sig") as f:
-            data = fast_safe_load(f)
+        data = read_config_doc(config_path)
     except FileNotFoundError:
         return
     except Exception as exc:
@@ -951,12 +952,11 @@ def _read_config_version_stamp(*, raise_on_parse_error: bool = False) -> Tuple[O
     ``latest`` exactly as ``check_config_version()`` always reported it."""
     latest = _coerce_config_version(DEFAULT_CONFIG.get("_config_version", 1)) or 1
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_exists(config_path):
         return latest, latest
 
     try:
-        with open(config_path, encoding="utf-8-sig") as f:
-            config = fast_safe_load(f)
+        config = read_config_doc(config_path)
     except Exception as e:
         _warn_config_parse_failure(config_path, e)
         if raise_on_parse_error:
@@ -1315,7 +1315,10 @@ def _persist_migration(config: Dict[str, Any]) -> None:
     """Persist a migrated config under THE migration write invariant: a migration may only
     persist values that DIFFER from the schema default, plus explicit removals/renames of user
     data. Every migration step MUST write through here (``save_config`` with default-stripping
-    ON, no ``merge_existing``) so the invariant cannot regress one migration at a time."""
+    ON, no ``merge_existing``) so the invariant cannot regress one migration at a time.
+    A backend without file tooling migrates in memory on read and never writes back (D12)."""
+    if not supports_file_tooling():
+        return
     save_config(config)
 
 
@@ -1938,6 +1941,12 @@ def _raw_config_cache_hit(path_key: str, cache_key: Tuple[Any, ...]) -> Optional
     return None
 
 
+def _raw_config_cache_store(path_key: str, cache_key: Tuple[Any, ...], data: Dict[str, Any]) -> None:
+    """Publish ``data`` (caller-owned copy) as the raw config for ``path_key`` at ``cache_key``.
+    One whole-tuple replace, so the lock-free readers see either the old or the new entry."""
+    _RAW_CONFIG_CACHE[path_key] = (*cache_key, data)
+
+
 def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     # Lock-free fast path for cache hits — same shape as `_load_config_impl`. `_RAW_CONFIG_CACHE`
     # publishes each entry as ONE `(*sig, data)` tuple replaced wholesale, so a reader sees either
@@ -1946,7 +1955,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     # every cached read for the duration). A lost race just falls through to the locked re-check.
     try:
         config_path = get_config_path()
-        cache_key = file_signature(config_path.stat())
+        cache_key = config_version(config_path)
         hit = _raw_config_cache_hit(str(config_path), cache_key)
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit
@@ -1956,7 +1965,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     with _CONFIG_LOCK:
         config_path = get_config_path()
         try:
-            cache_key = file_signature(config_path.stat())
+            cache_key = config_version(config_path)
         except FileNotFoundError:
             return {}
         except OSError as e:
@@ -1968,8 +1977,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
         try:
-            with open(config_path, encoding="utf-8-sig") as f:
-                data = fast_safe_load(f) or {}
+            data = read_config_doc(config_path) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return FailedConfigRead(error=e)
@@ -1980,7 +1988,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         # The cache stores its own deepcopy. The readonly path returns THAT object (identity
         # invariant: later cache hits return the same dict); the mutable path returns the parse.
         cached_copy = copy.deepcopy(data)
-        _RAW_CONFIG_CACHE[path_key] = (*cache_key, cached_copy)
+        _raw_config_cache_store(path_key, cache_key, cached_copy)
         return data if want_deepcopy else cached_copy
 
 
@@ -1997,8 +2005,7 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> Dict[str, Any]:
     if config_path is None:
         config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8-sig") as f:
-            data = fast_safe_load(f) or {}
+        data = read_config_doc(config_path) or {}
     except FileNotFoundError:
         return {}
     return data if isinstance(data, dict) else {}
@@ -2020,15 +2027,14 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     if config_path is None:
         config_path = get_config_path()
     try:
-        config_path.stat()
+        config_version(config_path)
     except FileNotFoundError:
         return {}
     except OSError as exc:
         raise _refuse_overwrite(config_path, "cannot be accessed", exc, _FIX_PERMS) from exc
 
     try:
-        with open(config_path, encoding="utf-8-sig") as f:
-            loaded = fast_safe_load(f)
+        loaded = read_config_doc(config_path)
     except OSError as exc:
         raise _refuse_overwrite(config_path, "cannot be read", exc, _FIX_PERMS) from exc
     except Exception as exc:
@@ -2052,10 +2058,8 @@ def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_conten
     path that persists a config.yaml — ``save_config``, ``config set``, migrations, plugin
     bookkeeping, gateway/TUI RPCs, auth resets — goes through here; a PyYAML dump of a config
     path anywhere else is rejected by ``scripts/check_config_yaml_writers.py`` (#92554)."""
-    from utils import atomic_roundtrip_yaml_save
-
     _refuse_failed_read(config_path, data)
-    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+    write_config_document(config_path, data, extra_content_on_create=extra_content_on_create)
 
 
 def load_config() -> Dict[str, Any]:
@@ -2188,13 +2192,12 @@ def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, 
     The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
     the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
     try:
-        st = config_path.stat()
-        user_sig: Optional[Tuple[int, int, int, int]] = file_signature(st)
+        user_sig: Optional[Tuple[Any, ...]] = config_version(config_path)
     except FileNotFoundError:
         user_sig = None
     managed_dir = managed_scope.get_managed_dir()
     try:
-        mst = (managed_dir / "config.yaml").stat() if managed_dir else None
+        mst = (managed_dir / "config.yaml").stat() if managed_dir else None  # config-reader: ok — managed overlay, not a user layer
         managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
     except OSError:
         managed_sig = (0, 0, 0, 0)
@@ -2266,19 +2269,23 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[Dict[str, 
     pin unexpanded literals (e.g. auxiliary.<task>.api_key) for the process lifetime (#58514).
     Shared by the lock-free fast path and the locked re-check of ``_load_config_impl``."""
     cached = _LOAD_CONFIG_CACHE.get(path_key)
-    if cached is None or cache_sig is None or cached[:8] != cache_sig:
+    if cached is None or cache_sig is None:
         return None
-    hit = cached[8]
+    n = len(cache_sig)  # the backend's version tuple + the managed file's signature
+    if cached[:n] != cache_sig:
+        return None
+    hit = cached[n]
     if isinstance(hit, FailedConfigRead) and isinstance(hit.read_error, OSError):
         # A read error (EMFILE/EIO/sharing violation) can clear without touching the file's
         # signature: serve the fallback only while the file still cannot be read.
         try:
-            with open(path_key, "rb") as f:
-                f.read()
-            return None
+            read_config_doc(path_key)
         except OSError:
             return hit
-    env_snapshot = cached[9] if len(cached) > 9 else {}
+        except Exception:
+            pass  # readable again; the reload reports the parse error
+        return None
+    env_snapshot = cached[n + 1] if len(cached) > n + 1 else {}
     if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
         return hit
     return None
@@ -2317,8 +2324,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         if user_sig is not None:
             try:
-                with open(config_path, encoding="utf-8-sig") as f:
-                    user_config = fast_safe_load(f) or {}
+                user_config = read_config_doc(config_path) or {}
                 _CONFIG_PARSE_FAILURES.pop(path_key, None)  # the file reads now (a transient error left the record)
 
                 if "max_turns" in user_config:
@@ -3082,8 +3088,12 @@ def edit_config():
     if is_managed():
         managed_error("edit configuration")
         return
+    if not supports_file_tooling():
+        print("`hermes config edit` opens the local config file, and this config backend has none. "
+              "Use `hermes config set <key> <value>` instead.", file=sys.stderr)
+        return
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_path.exists():  # config-reader: ok — file tooling, gated on supports_file_tooling()
         seed_config_file(config_path)
         print(f"Created {config_path}")
 

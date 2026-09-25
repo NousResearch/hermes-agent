@@ -220,10 +220,11 @@ def _shared_adapters_active(source_dir: Optional[Path]) -> Set[str]:
     """Shared-prefix platforms the SOURCE runs as a channel: explicitly enabled in its config.yaml, or
     auto-enabled by a complete credential set in its ``.env`` and not explicitly disabled — the same
     gate ``gateway.config_env._Cred`` applies at gateway start."""
+    from hermes_cli.config_backend import config_exists
     if source_dir is None:
         return set(_SHARED_WITH_TOOLS)  # no source to consult: the historical (strip) behaviour
     raw: dict = {}
-    if (source_dir / "config.yaml").is_file():
+    if config_exists(source_dir / "config.yaml"):
         from hermes_cli.config import read_user_config_raw
         with contextlib.suppress(Exception):
             raw = read_user_config_raw(source_dir / "config.yaml") or {}
@@ -328,7 +329,8 @@ def _channel_config_paths(raw: dict, platforms: Iterable[str]) -> List[Tuple[str
 
 def strip_channel_config(config_path: Path, index: Optional[ChannelKeyIndex] = None) -> List[str]:
     """Remove platform sections from a raw ``config.yaml`` in place. Returns the dotted paths removed."""
-    if not config_path.is_file():
+    from hermes_cli.config_backend import config_exists
+    if not config_exists(config_path):
         return []
     from hermes_cli.config import atomic_config_write, read_user_config_raw
     index = index or ChannelKeyIndex()
@@ -392,6 +394,7 @@ def strip_channel_settings(profile_dir: Path, *, include_state: bool, source_dir
 def channel_platforms_configured(profile_dir: Path) -> List[str]:
     """Platform ids with any channel setting in ``profile_dir`` (.env keys or config.yaml sections) —
     what a channel-less clone of it leaves behind. Pure read, in ``profile_dir``'s plugin scope."""
+    from hermes_cli.config_backend import config_exists
     index = ChannelKeyIndex(profile_dir)
     found: Set[str] = set()
     env_path = profile_dir / ".env"
@@ -402,7 +405,7 @@ def channel_platforms_configured(profile_dir: Path) -> List[str]:
             if platform and platform != GATEWAY_POLICY_ID:
                 found.add(platform)
     config_path = profile_dir / "config.yaml"
-    if config_path.is_file():
+    if config_exists(config_path):
         from hermes_cli.config import read_user_config_raw
         raw = read_user_config_raw(config_path)
         for path in _channel_config_paths(raw, index.platforms):
@@ -441,8 +444,9 @@ def clone_channels_refusal(source_dir: Path, source_label: str) -> Optional[str]
 
 def _config_platform_tokens(config_path: Path) -> Dict[str, str]:
     """``{platform: token}`` from ``platforms.<p>.token|api_key`` (both nesting spellings)."""
+    from hermes_cli.config_backend import config_exists
     tokens: Dict[str, str] = {}
-    if not config_path.is_file():
+    if not config_exists(config_path):
         return tokens
     from hermes_cli.config import read_user_config_raw
     raw = read_user_config_raw(config_path)

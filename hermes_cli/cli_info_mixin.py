@@ -16,7 +16,7 @@ import time
 
 from hermes_constants import is_termux as _is_termux_environment
 from rich.markup import escape as _escape
-from utils import base_url_hostname, file_signature
+from utils import base_url_hostname
 
 from hermes_cli.cli_modal_mixin import _gated_confirm
 from hermes_cli.colors import Colors as _Colors
@@ -835,7 +835,7 @@ class CLIInfoMixin:
         cache** (the next message re-sends the full input prefix, expensive on long-context / high-reasoning
         models). See #1474.
         """
-        import hermes_yaml as _yaml
+        from hermes_cli.config_backend import config_exists, config_version, read_config_doc
 
         now = time.monotonic()
         if now - self._last_config_check < CONFIG_WATCH_INTERVAL:
@@ -844,10 +844,10 @@ class CLIInfoMixin:
 
         from hermes_cli.config import get_config_path as _get_config_path
         cfg_path = _get_config_path()
-        if not cfg_path.exists():
+        if not config_exists(cfg_path):
             return
         try:
-            sig = file_signature(cfg_path.stat())
+            sig = config_version(cfg_path)
         except OSError:
             return
         if sig == self._config_sig:
@@ -855,8 +855,7 @@ class CLIInfoMixin:
 
         self._config_sig = sig
         try:
-            with open(cfg_path, encoding="utf-8-sig") as f:
-                new_cfg = _yaml.safe_load(f) or {}
+            new_cfg = read_config_doc(cfg_path) or {}
         except Exception:
             return
 

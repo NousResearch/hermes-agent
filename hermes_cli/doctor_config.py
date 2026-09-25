@@ -296,9 +296,10 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
 @doctor_check()
 def _check_config_file(should_fix: bool, f: Finding) -> None:
     """config.yaml presence (project cli-config.yaml as fallback); model/provider validation."""
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.doctor import HERMES_HOME, PROJECT_ROOT, _DHH
     config_path = HERMES_HOME / 'config.yaml'
-    if config_path.exists():
+    if config_exists(config_path):
         check_ok(f"{_DHH}/config.yaml exists")
         with warn_on_error("Could not validate model/provider config"):
             _validate_model_config(config_path, f.issues)
@@ -490,9 +491,10 @@ def _check_config_drift(should_fix: bool, f: Finding) -> None:
 
     Each step is independent and best-effort: a failure in one never hides the next.
     """
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.doctor import HERMES_HOME
     config_path = HERMES_HOME / 'config.yaml'
-    if not config_path.exists():
+    if not config_exists(config_path):
         config_path = None
     for step in _CONFIG_DRIFT_STEPS if config_path else (_drift_deprecations,):
         with warn_on_error(""):

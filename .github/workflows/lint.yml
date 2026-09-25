@@ -187,6 +187,11 @@ jobs:
       - name: Forbid config.yaml writers that bypass the comment-preserving writer
         run: python scripts/check_config_yaml_writers.py
 
+      # Every read of a user config.yaml goes through hermes_cli.config_backend, so a non-file
+      # config backend (config-config design §4.1) sees every reader.
+      - name: Forbid config.yaml readers that bypass the config backend
+        run: python scripts/check_config_yaml_readers.py
+
       # The OS lanes import only files carrying the matching marker, so a test that fakes
       # macOS (is_macos -> True, sys.platform -> "darwin") without `platforms("macos")` is green on
       # Linux over a faked branch and never runs on macOS (#111866, AGENTS.md § Don't fake the host OS).

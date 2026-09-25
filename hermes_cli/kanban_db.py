@@ -4377,7 +4377,7 @@ def list_profiles_on_disk() -> list[str]:
         names.add("default")
     if profiles_dir.is_dir():
         try:
-            names.update(e.name for e in profiles_dir.iterdir() if e.is_dir() and (e / "config.yaml").is_file())
+            names.update(e.name for e in profiles_dir.iterdir() if e.is_dir() and (e / "config.yaml").is_file())  # config-reader: ok — profile directory discovery marker
         except OSError:
             pass
     return sorted(names)

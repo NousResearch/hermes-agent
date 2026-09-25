@@ -131,8 +131,13 @@ def apply_migration(
     Unless ``backup=False`` a copy goes to ``backups/config/`` (reason ``pre-migrate-xai``).
     """
     from ruamel.yaml import YAML  # local import — avoid hard dep at module load
+    from hermes_cli.config_backend import ConfigBackendUnavailable, supports_file_tooling
+    if not supports_file_tooling():
+        # A type-literal-preserving rewrite of the file itself; a non-file backend has no file.
+        raise ConfigBackendUnavailable("the xAI model migration rewrites the local config.yaml, and "
+                                       "this config backend has none")
     config_path = Path(config_path)
-    if not config_path.exists():
+    if not config_path.exists():  # config-reader: ok — file tooling, gated on supports_file_tooling()
         raise FileNotFoundError(config_path)
     unchanged = ApplyResult(file_path=config_path, backup_path=None, issues_resolved=[], config_changed=False)
     if not issues:
@@ -142,7 +147,7 @@ def apply_migration(
     yaml = YAML(typ="rt")
     yaml.width = ROUNDTRIP_YAML_WIDTH
     yaml.preserve_quotes = True
-    with config_path.open("r", encoding="utf-8-sig") as fh:
+    with config_path.open("r", encoding="utf-8-sig") as fh:  # config-reader: ok — file tooling (gated above)
         doc = yaml.load(fh)
     if doc is None:
         return unchanged
@@ -175,5 +180,5 @@ def apply_migration(
     # 0640 / container installs; a root-run migration must not flip ownership).
     buf = io.StringIO()
     yaml.dump(doc, buf)
-    atomic_write_text(config_path, buf.getvalue(), preserve_mode=True)
+    atomic_write_text(config_path, buf.getvalue(), preserve_mode=True)  # config-reader: ok — file tooling (gated above)
     return ApplyResult(file_path=config_path, backup_path=backup_path, issues_resolved=resolved, config_changed=True)

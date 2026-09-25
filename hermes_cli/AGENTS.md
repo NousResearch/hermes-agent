@@ -95,6 +95,13 @@ set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_
   `atomic_yaml_write` / `yaml.dump` / `yaml.safe_dump` on a config path — `scripts/check_config_yaml_writers.py`
   (CI lint) rejects it, and `tests/hermes_cli/test_config_yaml_comment_preservation.py` guards each
   path (#92554). The commented example blocks are appended only when the file is created.
+- **Config backend seam:** every read, stat, existence check and write of a user `config.yaml`
+  goes through `hermes_cli/config_backend.py` (`read_config_doc`, `read_config_doc_readonly`,
+  `config_version`, `config_exists`, `write_config_key`, `write_config_document`). The backend
+  is chosen by `HERMES_CONFIG_BACKEND` only (default `file`; never by a config value). Tools that
+  copy, edit or back up the file itself check `supports_file_tooling()` first.
+  `scripts/check_config_yaml_readers.py` (CI lint) rejects a direct `open`/`read_text`/`stat`/
+  `exists`/YAML load of a config path; mark a true false positive `# config-reader: ok — <why>`.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via

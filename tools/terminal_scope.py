@@ -102,6 +102,7 @@ def build_profile_terminal_scope(
     closes. It sits where the process env sits in the standalone bridge — explicit YAML keys
     still win (``apply_terminal_config_to_env``).
     """
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.config import TERMINAL_CONFIG_ENV_MAP, _terminal_env_value
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
@@ -139,15 +140,15 @@ def build_profile_terminal_scope(
     # "unparseable" into {}): present-but-unparseable must fail closed.
     config_path = home / "config.yaml"
     try:
-        config_exists = config_path.exists()
+        config_exists = config_exists(config_path)
     except Exception as exc:
         raise TerminalPolicyUnavailable(f"cannot resolve terminal config in {home}: {exc}") from exc
     if config_exists:
-        from utils import load_yaml_file_readonly
+        from hermes_cli.config_backend import read_config_doc_readonly
 
         try:
             # Signature-cached: a scope is rebuilt per routed turn/poll, the file rarely changes.
-            raw = load_yaml_file_readonly(config_path)
+            raw = read_config_doc_readonly(config_path)
         except Exception as exc:
             raise TerminalPolicyUnavailable(f"cannot parse {config_path}: {exc}") from exc
         raw_terminal = raw.get("terminal") if isinstance(raw, dict) else None

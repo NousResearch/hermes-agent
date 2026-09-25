@@ -1583,11 +1583,12 @@ def _bridge_max_turns_from_config(home: "Path") -> None:
     """Re-bridge agent.max_turns (+ sessions.*) per turn; managed overlay applies or it reverts.
     Skipped inside a served secondary's scope: the env slots are the launch profile's and
     hermes_state reads the routed profile's ``sessions.*`` from its own config under scope."""
+    from hermes_cli.config_backend import config_exists
     from gateway.platforms._shared import profile_scoped
     if profile_scoped():
         return
     config_path = home / 'config.yaml'
-    if not config_path.exists():
+    if not config_exists(config_path):
         return
     try:
         cfg = _load_bridge_config(config_path)
@@ -1603,13 +1604,14 @@ def _current_max_iterations() -> int:
     ``int()`` crash. A routed profile (HERMES_HOME override, multiplexed turns) reads ITS
     ``agent.max_turns`` straight from config: the ``HERMES_MAX_ITERATIONS`` bridge is one process-wide
     slot holding the launch profile's value, so every secondary would inherit the default's budget."""
+    from hermes_cli.config_backend import config_exists
     _reload_runtime_env_preserving_config_authority()
     from hermes_cli.config import resolve_turn_limit as _resolve_turn_limit
     override = get_hermes_home_override()
     if override:
         config_path = Path(override) / 'config.yaml'
         try:
-            cfg = _load_bridge_config(config_path) if config_path.exists() else {}
+            cfg = _load_bridge_config(config_path) if config_exists(config_path) else {}
         except Exception:
             cfg = {}
         agent_cfg = cfg.get("agent")
@@ -2069,7 +2071,8 @@ def _load_bridge_config(config_path: Path) -> dict:
 
 _config_path = _hermes_home / 'config.yaml'
 _cfg: dict = {}
-if _config_path.exists():
+from hermes_cli.config_backend import config_exists
+if config_exists(_config_path):
     try:
         _cfg = _load_bridge_config(_config_path)
         _bridge_config_to_env(_cfg)

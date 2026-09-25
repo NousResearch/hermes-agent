@@ -2939,7 +2939,7 @@ class TestNewEndpoints:
         import tools.skills_tool as skills_tool
         from hermes_cli.config import load_config
 
-        def _fake_find_all_skills(*, skip_disabled=False):
+        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False):
             return [
                 {"name": "skill-a", "description": "a", "category": "demo"},
                 {"name": "skill-b", "description": "b", "category": "demo"},
@@ -2963,11 +2963,32 @@ class TestNewEndpoints:
         monkeypatch.setattr(
             skills_tool,
             "_find_all_skills",
-            lambda *, skip_disabled=False: [{"name": "skill-a", "description": "a", "category": "demo"}],
+            lambda *, skip_disabled=False, include_gated=False: [{"name": "skill-a", "description": "a", "category": "demo"}],
         )
 
         resp = self.client.put("/api/skills/toggle-category", json={"category": "nope", "enabled": False})
         assert resp.status_code == 400
+
+    def test_toggle_skill_category_membership_ignores_environment_gating(self, monkeypatch):
+        # Regression: kanban-* skills declare `environments:` — when the Kanban
+        # environment is inactive the default discovery filters them out, and the
+        # category toggle answered 400 "Unknown skill category" for a section the
+        # UI had rendered moments earlier. Membership must come from the
+        # unfiltered (include_gated) discovery.
+        import tools.skills_tool as skills_tool
+
+        calls: list[dict] = []
+
+        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False):
+            calls.append({"skip_disabled": skip_disabled, "include_gated": include_gated})
+            return [{"name": "kanban-orchestrator", "description": "a", "category": "devops"}]
+
+        monkeypatch.setattr(skills_tool, "_find_all_skills", _fake_find_all_skills)
+
+        resp = self.client.put("/api/skills/toggle-category", json={"category": "devops", "enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["names"] == ["kanban-orchestrator"]
+        assert calls and calls[0]["include_gated"] is True
 
     def test_toggle_skill_category_null_matches_uncategorized(self, monkeypatch):
         import tools.skills_tool as skills_tool
@@ -2976,7 +2997,7 @@ class TestNewEndpoints:
         monkeypatch.setattr(
             skills_tool,
             "_find_all_skills",
-            lambda *, skip_disabled=False: [
+            lambda *, skip_disabled=False, include_gated=False: [
                 {"name": "categorized", "description": "a", "category": "demo"},
                 {"name": "uncategorized", "description": "b", "category": None},
             ],

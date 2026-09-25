@@ -403,8 +403,11 @@ async def toggle_skill_category(body: SkillCategoryToggle, profile: Optional[str
 
     def _run():
         with _profile_scope(scope_profile):
+            # include_gated: category membership is independent of the
+            # platform/environment/app gates — a Kanban-environment skill stays
+            # toggleable when the Kanban environment is inactive.
             names = sorted(
-                s["name"] for s in _find_all_skills(skip_disabled=True)
+                s["name"] for s in _find_all_skills(skip_disabled=True, include_gated=True)
                 if s.get("category") == body.category)
         if not names:
             raise HTTPException(status_code=400, detail=f"Unknown skill category: {body.category}")

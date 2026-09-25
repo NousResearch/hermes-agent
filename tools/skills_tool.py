@@ -181,11 +181,11 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
     return project_dirs, all_dirs, active_skills_dir
 
 
-def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(*, skip_disabled: bool = False, include_gated: bool = False) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
     by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
     from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
-    cache_key = "with_disabled" if skip_disabled else "filtered"
+    cache_key = ("gated:" if include_gated else "") + ("with_disabled" if skip_disabled else "filtered")
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     project_dirs, dirs_to_scan, _ = _skill_search_dirs()
     signature = _skills_scan_signature(dirs_to_scan, disabled)
@@ -204,7 +204,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 continue
             try:
                 frontmatter, body = _parse_frontmatter(_read_skill_text(skill_md)[:4000])
-                if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
+                if not include_gated and (
+                    not skill_matches_platform(frontmatter)
+                    or not skill_matches_environment(frontmatter)
+                    or not skill_matches_apps(frontmatter)
+                ):
                     continue
                 name = frontmatter.get("name", skill_md.parent.name)[:MAX_NAME_LENGTH]
                 if name in seen_names or name in disabled:

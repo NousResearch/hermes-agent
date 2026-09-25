@@ -1681,15 +1681,15 @@ try {
             $manualMsg = "Update complete, but Hermes could not restart every messaging gateway. Run `hermes gateway start --all` in a terminal."
             Write-HandoffLog $manualMsg
         }
-    }
 
-    # G3 guard rail: verify config parity / gateway liveness / MCP fingerprints
-    # against the pre-update snapshot BEFORE declaring success. The verifier
-    # rolls back (git reset + config restore) and exits non-zero on failure;
-    # the receipt's verification section carries the per-check detail.
-    $verifyStep = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.update_verification") "post-update-verify"
-    if ($verifyStep.Code -ne 0) {
-        $manualMsg = "Update verification failed and the update was rolled back. See logs/update_receipts/ for the per-check detail, then run 'hermes update' again."
+        # G3 guard rail: verify config parity / gateway liveness / MCP fingerprints
+        # against the pre-update snapshot BEFORE declaring success. The verifier
+        # rolls back (git reset + config restore) and exits non-zero on failure;
+        # the receipt's verification section carries the per-check detail.
+        $verifyStep = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.update_verification") "post-update-verify"
+        if ($verifyStep.Code -ne 0) {
+            $manualMsg = "Update verification failed and the update was rolled back. See logs/update_receipts/ for the per-check detail, then run 'hermes update' again."
+        }
     }
 
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {

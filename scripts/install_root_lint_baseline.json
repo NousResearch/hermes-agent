@@ -52,7 +52,7 @@
     "hermes_cli/web_server_static_assets.py": 1,
     "hermes_constants.py": 2,
     "plugins/platforms/whatsapp/adapter.py": 1,
-    "pm/environments.py": 1,
+    "pm/environments.py": 2,
     "pm/launch.py": 1,
     "pm/paths.py": 1,
     "pm/worker.py": 1,

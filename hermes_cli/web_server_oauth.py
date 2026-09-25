@@ -74,14 +74,21 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
 
 
 def _claude_code_only_status() -> Dict[str, Any]:
-    """Claude Code CLI credentials as their own entry, independent of the Anthropic card."""
+    """Claude Code CLI credentials as their own entry, independent of the Anthropic card.
+
+    Connected follows the same local validity gate as Anthropic resolution. A
+    persisted access token that has already expired is not a usable login.
+    """
     try:
-        from agent.anthropic_credentials import read_claude_code_credentials
+        from agent.anthropic_credentials import (
+            is_claude_code_token_valid,
+            read_claude_code_credentials,
+        )
         creds = read_claude_code_credentials()
+        if creds and is_claude_code_token_valid(creds):
+            return _token_status("claude_code_cli", "~/.claude/.credentials.json", creds)
     except Exception:
-        creds = None
-    if creds and creds.get("accessToken"):
-        return _token_status("claude_code_cli", "~/.claude/.credentials.json", creds)
+        pass
     return dict(_LOGGED_OUT)
 
 

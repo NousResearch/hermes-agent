@@ -88,10 +88,7 @@ class TestProfileScopedDiscovery:
 
 class TestSaveJsonFile:
 
-    @pytest.mark.skipif(
-        sys.platform.startswith("win"),
-        reason="POSIX file modes are not enforced on Windows",
-    )
+    @pytest.mark.platforms("posix")  # POSIX file modes are not enforced on Windows
     def test_sets_file_permissions(self, tmp_path):
         target = tmp_path / "secret.json"
         _save_json_file(target, {"data": 1})

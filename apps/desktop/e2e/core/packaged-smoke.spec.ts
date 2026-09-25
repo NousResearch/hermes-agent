@@ -7,7 +7,7 @@
  * was never generated — #121097) ships green. This spec reads the Linux
  * `electron-builder --dir` output in release/ and asserts:
  *
- *  1. asarUnpack contract, derived from apps/desktop/package.json at test time
+ *  1. asar.unpack contract, derived from electron-builder.config.cjs at test time
  *     (never a file-list snapshot): for every declared glob, matched with the
  *     packager's own matcher semantics (minimatch, dot: true), every archive
  *     entry it matches is flagged unpacked AND present on disk under
@@ -22,7 +22,7 @@
  *     the LLM faked (scripted loopback provider) completes a first turn: the
  *     reply is rendered, persisted (state.db + REST), and passes the core
  *     transcript oracle. The packaged app is pointed at THIS checkout's
- *     Python backend (HERMES_DESKTOP_HERMES_ROOT = repo root, its .venv), so
+ *     Python backend (HERMES_DESKTOP_HERMES_ROOT = repo root, selected PM interpreter), so
  *     this proves the packaged Electron shell + renderer, not a bundled
  *     backend/runtime install.
  *
@@ -32,6 +32,7 @@
  * by the sabotage proofs on a copied release).
  */
 
+import { execFileSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import { createRequire } from 'node:module'
 import * as path from 'node:path'
@@ -44,7 +45,6 @@ import {
   currentSessionId,
   DESKTOP_ROOT,
   recordWebSockets,
-  REPO_ROOT,
   sandboxProcesses,
   send,
   storedSessionForMarker,
@@ -66,20 +66,20 @@ const A = (n: number) => `A${n}-${nonce}`
 // ─── Locating the packaged build ────────────────────────────────────────
 
 interface BuildConfig {
-  productName?: string
   executableName?: string
-  asarUnpack?: string | string[]
+  asar?: { unpack?: string | string[] }
   directories?: { output?: string }
-  linux?: { executableName?: string; asarUnpack?: string | string[] }
+  linux?: { executableName?: string }
 }
 
-interface DesktopPackageJson {
-  name: string
-  main: string
-  build: BuildConfig
-}
+const builderRequire = createRequire(path.join(DESKTOP_ROOT, 'package.json'))
 
-const PKG = JSON.parse(fs.readFileSync(path.join(DESKTOP_ROOT, 'package.json'), 'utf8')) as DesktopPackageJson
+// Playwright's TS loader intercepts CJS require() of the config's ESM hooks.
+// Load it in plain Node, exactly as electron-builder does.
+const BUILD = JSON.parse(
+  execFileSync(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(require(process.argv[1])))',
+    path.join(DESKTOP_ROOT, 'electron-builder.config.cjs')], { encoding: 'utf8' })
+) as BuildConfig
 
 /** electron-builder's Linux `--dir` output: `linux-unpacked` for x64, `linux-<arch>-unpacked` otherwise. */
 function unpackedDir(): string {
@@ -87,7 +87,7 @@ function unpackedDir(): string {
     return path.resolve(process.env.HERMES_E2E_PACKAGED_DIR)
   }
 
-  const out = path.resolve(DESKTOP_ROOT, PKG.build.directories?.output ?? 'dist')
+  const out = path.resolve(DESKTOP_ROOT, BUILD.directories?.output ?? 'dist')
   const arch = process.arch === 'x64' ? '' : `-${process.arch}`
 
   return path.join(out, `linux${arch}-unpacked`)
@@ -95,7 +95,7 @@ function unpackedDir(): string {
 
 /** electron-builder's Linux executable name: linux.executableName > executableName > lowercased package name. */
 function executableName(): string {
-  return PKG.build.linux?.executableName ?? PKG.build.executableName ?? PKG.name.toLowerCase()
+  return BUILD.linux?.executableName ?? BUILD.executableName ?? 'hermes'
 }
 
 function asArray(value: string | string[] | undefined): string[] {
@@ -254,9 +254,8 @@ type Matcher = (rel: string) => boolean
  * that a literal, extension-less pattern also covers `<pattern>/**\/*`.
  */
 function packagerMatcher(pattern: string): Matcher {
-  const desktopRequire = createRequire(path.join(DESKTOP_ROOT, 'package.json'))
-  const builderRequire = createRequire(desktopRequire.resolve('app-builder-lib/package.json'))
-  const { Minimatch } = builderRequire('minimatch') as { Minimatch: new (p: string, o: object) => any }
+  const packagerRequire = createRequire(builderRequire.resolve('app-builder-lib'))
+  const { Minimatch } = packagerRequire('minimatch') as { Minimatch: new (p: string, o: object) => any }
   const normalized = path.posix.normalize(pattern.replace(/\\/g, '/').replace(/^\.\//, ''))
   const matchers = [new Minimatch(normalized, { dot: true })]
 
@@ -290,14 +289,13 @@ function otherPlatformsOnly(match: Matcher, archive: AsarArchive): null | string
     }
   }
 
-  const desktopRequire = createRequire(path.join(DESKTOP_ROOT, 'package.json'))
   const hits: string[] = []
 
   for (const name of staged) {
     let root: string
 
     try {
-      root = path.dirname(desktopRequire.resolve(`${name}/package.json`))
+      root = path.dirname(builderRequire.resolve(`${name}/package.json`))
     } catch {
       continue
     }
@@ -332,14 +330,14 @@ interface GlobReport {
 }
 
 function asarUnpackViolations(build: PackagedBuild): { problems: string[]; reports: GlobReport[] } {
-  const globs = [...asArray(PKG.build.asarUnpack), ...asArray(PKG.build.linux?.asarUnpack)]
+  const globs = asArray(BUILD.asar?.unpack)
   const archive = readAsar(build.asarPath)
   const disk = walkFiles(build.unpackedRoot)
   const problems: string[] = []
   const reports: GlobReport[] = []
 
   if (globs.length === 0) {
-    problems.push('package.json build.asarUnpack declares no patterns (nothing to verify; did the config move?)')
+    problems.push('electron-builder.config.cjs asar.unpack declares no patterns (nothing to verify)')
   }
 
   for (const glob of globs) {
@@ -468,17 +466,6 @@ async function launchPackaged(
   return { app, page, logs }
 }
 
-function assertPythonRuntime(): void {
-  const candidates = ['.venv/bin/python', 'venv/bin/python'].map(rel => path.join(REPO_ROOT, rel))
-
-  if (!candidates.some(file => fs.existsSync(file))) {
-    throw new Error(
-      `no Hermes Python venv at ${candidates.join(' or ')}: run 'uv sync' at the repo root ` +
-        '(the packaged app runs the backend from HERMES_DESKTOP_HERMES_ROOT)'
-    )
-  }
-}
-
 // ─── Specs ──────────────────────────────────────────────────────────────
 
 test('packaged build honours every declared asarUnpack pattern and ships its main entry', async () => {
@@ -498,7 +485,6 @@ test('packaged build honours every declared asarUnpack pattern and ships its mai
 
 test('packaged binary boots against a scripted provider and completes a first chat', async () => {
   const build = packagedBuildOrSkip()
-  assertPythonRuntime()
   const provider = await startScriptedProvider()
   const sandbox = createCoreSandbox('packaged')
   writeProviderHome(sandbox.hermesHome, provider.url)

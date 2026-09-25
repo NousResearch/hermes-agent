@@ -85,6 +85,64 @@ describe('collectArtifactsForSession', () => {
     expect(artifacts).toHaveLength(0)
   })
 
+  it('indexes files reported in terminal output text', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'terminal-session' }), [
+      {
+        content: JSON.stringify({
+          output: 'wrote: /home/example/project/figure_variance.png and /home/example/project/report.pdf',
+          exit_code: 0
+        }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    const values = artifacts.map(artifact => artifact.value)
+
+    expect(values).toContain('/home/example/project/figure_variance.png')
+    expect(values).toContain('/home/example/project/report.pdf')
+  })
+
+  it('indexes MEDIA-delivered files from terminal stdout', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'terminal-media-session' }), [
+      {
+        content: JSON.stringify({ output: 'done\nMEDIA:/tmp/plot.png', exit_code: 0 }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toContain('/tmp/plot.png')
+  })
+
+  it('does not scan generic keys of non-terminal tools as shell output', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'search-noise-session' }), [
+      {
+        content: JSON.stringify({ output: 'see /tmp/generated/figure.png for details', query: 'x' }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'web_search'
+      }
+    ])
+
+    expect(artifacts).toHaveLength(0)
+  })
+
+  it('indexes files under a path-only key from terminal output', () => {
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'terminal-path-session' }), [
+      {
+        content: JSON.stringify({ path: '/tmp/generated/results.csv', exit_code: 0 }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value)).toContain('/tmp/generated/results.csv')
+  })
+
   it('keeps explicit generated artifacts from tool output', () => {
     const artifacts = collectArtifactsForSession(makeSession({ id: 'generated-session' }), [
       {
@@ -191,6 +249,36 @@ ${payload}
       '/tmp/hermes browser/summary screenshot.png',
       'C:\\Users\\Example User\\.hermes\\screenshot.png'
     ])
+  })
+
+  // #52972: pip logs every download with its full URL when the index is not
+  // files.pythonhosted.org (a mirror), and on Windows reports sdists under
+  // its cache dir. None of that is something the session produced.
+  it('does not index pip downloads or cache files from terminal output', () => {
+    const mirror = 'https://mirror.example.com/pypi/packages/7a/1b/0f3c'
+    const report = '/home/example/project/report.pdf'
+    const release = 'https://github.com/example/tool/archive/refs/tags/v1.0.tar.gz'
+
+    const artifacts = collectArtifactsForSession(makeSession({ id: 'pip-session' }), [
+      {
+        content: JSON.stringify({
+          output: [
+            'Collecting anthropic',
+            `  Downloading ${mirror}/anthropic-0.46.0-py3-none-any.whl.metadata (23 kB)`,
+            `  Downloading ${mirror}/anthropic-0.46.0-py3-none-any.whl (223 kB)`,
+            `  Downloading ${mirror}/jiter-0.8.2.tar.gz (163 kB)`,
+            '  Saved C:\\Users\\Alice\\AppData\\Local\\pip\\Cache\\http-v2\\a\\b\\docstring_parser-0.16.tar.gz',
+            `Wrote ${report}; upstream release: ${release}`
+          ].join('\n'),
+          exit_code: 0
+        }),
+        role: 'tool',
+        timestamp: 1_781_774_001,
+        tool_name: 'terminal'
+      }
+    ])
+
+    expect(artifacts.map(artifact => artifact.value).sort()).toEqual([report, release].sort())
   })
 
   it('does not treat an arbitrary dotted absolute path as an artifact', () => {

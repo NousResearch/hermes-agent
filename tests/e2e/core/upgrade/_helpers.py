@@ -31,7 +31,7 @@ WORKTREE = Path(__file__).resolve().parents[4]
 REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
 UID = os.getuid()
 
-_ENV_ALLOW = ("LANG", "LC_ALL", "TZ", "TERM", "SHELL", "USER", "LOGNAME", "TMPDIR")
+_ENV_ALLOW = ("LANG", "LC_ALL", "TZ", "TERM", "SHELL", "USER", "LOGNAME", "TMPDIR", "SSL_CERT_FILE")
 _SHIMMED = ("systemctl", "launchctl", "sudo", "loginctl", "journalctl")
 
 
@@ -101,6 +101,8 @@ def isolated_env(
     env.update(
         HOME=str(home),
         HERMES_HOME=str(hermes_home),
+        # The pytest ancestor marks this child as guarded; its HOME is already the sandbox.
+        HERMES_STATE_DB_GUARD_BYPASS="1",
         XDG_RUNTIME_DIR=str(root / "run"),
         XDG_CONFIG_HOME=str(home / ".config"),
         XDG_DATA_HOME=str(home / ".local" / "share"),
@@ -141,7 +143,9 @@ def sandbox_argv(argv: Sequence[str], *, writable: Iterable[Path]) -> list[str]:
     """Wrap ``argv`` in the bwrap sandbox (no-op when bubblewrap is unusable)."""
     if not BWRAP_OK:
         return list(argv)
-    cmd = ["bwrap", "--dev-bind", "/", "/"]
+    # The child's allowlisted PATH may omit the Nix-provided bwrap (notably a login shell
+    # with a clean distro PATH); resolve it in the parent before wrapping the command.
+    cmd = [shutil.which("bwrap") or "bwrap", "--dev-bind", "/", "/"]
     real_hermes = REAL_HOME / ".hermes"
     if real_hermes.is_dir():
         cmd += ["--ro-bind", str(real_hermes), str(real_hermes)]

@@ -299,7 +299,7 @@ class RepairPlan:
     def _scan_voice_modes(self, session: _Session, store: Store) -> None:
         path = store.home / _VOICE_MODE_FILE
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return
         if not isinstance(data, dict):
@@ -328,7 +328,7 @@ class RepairPlan:
         from hermes_state_profile_repair import session_key_profile
         path = store.home / "sessions" / "sessions.json"
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return
         if not isinstance(data, dict):
@@ -445,7 +445,7 @@ def _parents_first(payloads: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def _rekey_voice_mode_entry(path: Path, key: str, owner: str) -> Dict[str, int]:
     from utils import atomic_json_write
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     if key not in data:
         return {}
     data.setdefault(f"{owner}:{key}", data.pop(key))
@@ -456,7 +456,7 @@ def _rekey_voice_mode_entry(path: Path, key: str, owner: str) -> Dict[str, int]:
 
 def _drop_sessions_json_entry(path: Path, key: str) -> Dict[str, int]:
     from utils import atomic_json_write
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
     if key not in data:
         return {}
     del data[key]

@@ -17,15 +17,61 @@ See also:
 - [Bundled Skills Catalog](../../reference/skills-catalog.md)
 - [Official Optional Skills Catalog](../../reference/optional-skills-catalog.md)
 
+## Browse and install in Desktop
+
+Open **Capabilities → Skills** and switch between **Installed** and **Browse**.
+Search stays at the top; the tab switch and actions share one row.
+**Installed** reads the selected profile's actual skills and enabled state;
+it is not inferred from the public catalog. **Browse** is a native catalog UI,
+not an embedded website or a second, smaller catalog.
+
+Desktop and the public [Skills Hub](/skills) read the same published CDN
+snapshot: [`/docs/api/skills.json`](https://hermes-agent.nousresearch.com/docs/api/skills.json).
+The public docs alias serves the same snapshot as Desktop's fetch URL,
+`https://nousresearch.github.io/hermes-agent/docs/api/skills.json`. The docs
+build generates it from bundled `skills/`, `optional-skills/`, and the
+centralized skills index. Browsing does not crawl GitHub or query upstream
+marketplaces live; installation still retrieves the selected skill through
+its source's installer.
+
+### Install from the website
+
+The Skills Hub has an **Install in Hermes** button on each installable card. It opens the
+installed Hermes Desktop app with a URL-encoded, source-qualified skill target:
+for example, `official/...` for optional skills or `clawhub/...` for ClawHub.
+Bundled skills use an explicit repository path rather than an ambiguous bare
+name. When an older snapshot lacks that explicit bundled target, the website
+omits its install link and native Browse disables installation rather than
+resolving an ambiguous name. The next docs publish supplies those targets.
+The same target is used by native Browse and the card's CLI fallback:
+
+```text
+hermes://skill/install?identifier=official%2Fsecurity%2F1password
+```
+
+Hermes shows **Install “skill-name”?** with separate **Source** and **Install to**
+rows. Cancel makes no changes. After confirmation, the same dialog shows
+**Installing…**, then **Installed** and a completion notification. Errors stay
+in the dialog so you can read them and retry. Installation uses the existing
+Skills Hub pipeline, including security scanning, action logs, and installed-list
+refresh. If you switch profile or connection while the confirmation is open,
+reopen the link for the new destination. Changes apply to
+new sessions; a link cannot bypass scanning or select a different profile.
+
+The public links use `hermes://`, not the development-only `hermes-dev://`
+scheme. The `skill/install` route requires an updated Desktop build. If the
+app is missing or the link is not recognized, update Desktop or expand the
+card to copy its CLI install command instead.
+
 ## Starting with a blank slate
 
 By default every profile is seeded with the bundled skill catalog, and each `hermes update` adds any newly bundled skills. If you want a profile with **no bundled skills** — and that stays empty across updates — you have two paths:
 
-**At install time** (applies to the default `~/.hermes` profile):
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --no-skills
-```
+**At install time** (applies to the default `~/.hermes` profile): the
+installer has no `--no-skills` flag. Its setup stage asks whether to seed the
+bundled catalog when you pick the Blank Slate setup; answering no writes the
+opt-out marker described below. Non-interactive installs seed the catalog, so
+run `hermes skills opt-out` afterwards if you want the profile empty.
 
 **At profile-create time** (named profiles):
 
@@ -41,7 +87,7 @@ hermes skills opt-out --remove   # also delete UNMODIFIED bundled skills (confir
 hermes skills opt-in --sync      # undo: remove the marker and re-seed now
 ```
 
-All three paths write a `.no-bundled-skills` marker into the profile directory. While the marker is present, the installer, `hermes update`, and any skill sync all skip bundled-skill seeding for that profile. Delete the marker (or run `hermes skills opt-in`) to re-enable.
+All of these paths write a `.no-bundled-skills` marker into the profile directory. While the marker is present, the installer, `hermes update`, and any skill sync all skip bundled-skill seeding for that profile. Delete the marker (or run `hermes skills opt-in`) to re-enable.
 
 :::note Safe by default
 `hermes skills opt-out` only stops *future* seeding — it never deletes anything already on disk. The optional `--remove` flag deletes bundled skills **only** when they are unmodified (byte-identical to the version Hermes installed). Skills you have edited, skills installed from the hub, and skills you wrote yourself are always kept.

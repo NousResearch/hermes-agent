@@ -5,6 +5,7 @@ are imported lazily inside method bodies (import cycle) so ``patch("gateway.run.
 
 from __future__ import annotations
 
+from pm import install_hint
 import logging
 from typing import TYPE_CHECKING
 import asyncio
@@ -1321,6 +1322,10 @@ class GatewayTurnMixin:
                     task_id=session_entry.session_id or "default",
                 ),
             )
+            # Register the live worker with shutdown NOW, not only once it is deferred: the default
+            # executor is outside self._executor's quiesce, so an untracked in-flight summary would let
+            # stop() close/checkpoint state.db under its late write (mirrors run_codex_hygiene_compaction).
+            self._track_deferred_agent_worker(attempt.future, _hyg_agent)
             attempt.wait_started = time.monotonic()
             try:
                 _compressed = await self._hmwa_hygiene_wait_for_summary(attempt, hs, session_entry)
@@ -2760,7 +2765,8 @@ class GatewayTurnMixin:
         try:
             from aiohttp import ClientSession as _AioClientSession, ClientTimeout
         except ImportError:
-            return self._proxy_error_result("⚠️ Proxy mode requires aiohttp. Install with: pip install aiohttp")
+            return self._proxy_error_result("⚠️ Proxy mode requires aiohttp. Run: "
+                                            f"{install_hint('messaging')}")
 
         proxy_url = self._get_proxy_url()
         if not proxy_url:

@@ -222,6 +222,8 @@ def select_checkout_fills(classified: List[ClassifiedLoginControl], secret: Dict
 # Inspection stamps every input with ``<nonce>:<index>`` under a per-inspection attribute; the fill
 # script resolves targets by the stamp of ITS OWN inspection instead of re-querying by position, so
 # neither a DOM reflow nor a second inspection in between can redirect the password into another field.
+# Both sides collect across open Shadow Roots (host → shadowRoot depth-first); closed roots are
+# deliberately unreachable from JS and stay invisible.
 INSPECTION_STAMP_ATTR = "data-hermes-vault-slot"
 
 
@@ -247,8 +249,21 @@ def build_inspection_js(nonce: str) -> str:
 
 _LOGIN_CONTROL_INSPECTION_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
-  const elements = Array.from(document.querySelectorAll("input, select"));
-  const forms = Array.from(document.forms);
+  // ``querySelectorAll`` never crosses a shadow boundary, so a login form rendered inside an open
+  // shadow root (web-component login pages) is invisible to a flat ``document`` query. Walk host →
+  // shadowRoot depth-first: each layer contributes its controls and its forms, so a widget living
+  // inside one shadow root keeps consecutive indexes and its own form association (OTP-box
+  // adjacency and same-form checks keep their meaning). Closed roots stay unreachable by design.
+  const elements = [];
+  const forms = [];
+  const collect = (root) => {
+    elements.push(...root.querySelectorAll("input, select"));
+    forms.push(...root.querySelectorAll("form"));
+    for (const host of root.querySelectorAll("*")) {
+      if (host.shadowRoot) collect(host.shadowRoot);
+    }
+  };
+  collect(document);
   elements.forEach((element, index) => element.setAttribute("data-hermes-vault-slot", nonce + ":" + index));
   const out = elements.flatMap((element, index) => {
     if (element.disabled || element.readOnly) return [];
@@ -309,8 +324,21 @@ _FILL_JS_TEMPLATE = """(() => {
   const nonce = __NONCE__;
   let filled = 0;
   const norm = (t) => String(t || "").trim().toLowerCase();
+  // Stamps live wherever the inspection put them, including inside open shadow roots, so the
+  // lookup walks the same host → shadowRoot depth-first (the inspection's collect).
+  const findByStamp = (root, selector) => {
+    const hit = root.querySelector(selector);
+    if (hit) return hit;
+    for (const host of root.querySelectorAll("*")) {
+      if (host.shadowRoot) {
+        const inner = findByStamp(host.shadowRoot, selector);
+        if (inner) return inner;
+      }
+    }
+    return null;
+  };
   for (const f of fills) {
-    const el = document.querySelector('[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
+    const el = findByStamp(document, '[data-hermes-vault-slot="' + nonce + ':' + f.index + '"]');
     if (!el || (f.token === "current-password" && el.type !== "password")) continue;
     try {
       if (el.tagName === "SELECT") {
@@ -328,6 +356,12 @@ _FILL_JS_TEMPLATE = """(() => {
       if (el.value.length > 0) filled += 1;
     } catch (e) { /* skip */ }
   }
-  document.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+  const stripStamps = (root) => {
+    root.querySelectorAll("[data-hermes-vault-slot]").forEach((n) => n.removeAttribute("data-hermes-vault-slot"));
+    for (const host of root.querySelectorAll("*")) {
+      if (host.shadowRoot) stripStamps(host.shadowRoot);
+    }
+  };
+  stripStamps(document);
   return JSON.stringify({ filled });
 })()"""

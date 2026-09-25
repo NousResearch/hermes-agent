@@ -29,6 +29,7 @@ from agent.vault_login_classifier import (  # noqa: E402
     ClassifiedLoginControl,
     LoginControl,
     build_fill_js,
+    build_inspection_js,
     classify_login_control,
     select_password_fill,
 )
@@ -248,6 +249,36 @@ class TestClassifier:
         assert "window.location.origin" in js
         assert "origin_changed" in js
         assert js.index("origin_changed") < js.index("querySelectorAll")
+
+    def test_inspection_js_collects_controls_and_forms_across_open_shadow_roots(self):
+        # #122561: ``querySelectorAll`` never crosses a shadow boundary, so a login form rendered
+        # inside an open shadow root (web-component login pages) was invisible to the inspection —
+        # vault fill saw zero eligible controls. The inspection walks host → shadowRoot
+        # depth-first; each layer contributes its controls AND its forms, so a widget living
+        # inside one shadow root keeps consecutive indexes and its own form association (OTP
+        # adjacency / same-form checks keep their meaning). Closed roots stay unreachable.
+        js = build_inspection_js("n0nc3")
+        assert "shadowRoot" in js
+        assert "const collect = (root) =>" in js and "collect(document)" in js
+        assert 'root.querySelectorAll("input, select")' in js
+        assert 'root.querySelectorAll("form")' in js
+        # the flat single-layer queries are gone — both for controls and for forms
+        assert 'Array.from(document.querySelectorAll("input, select"))' not in js
+        assert "Array.from(document.forms)" not in js
+
+    def test_fill_js_resolves_and_strips_stamps_across_shadow_roots(self):
+        # The fill resolves the inspection's stamps wherever they live, including inside open
+        # shadow roots, and strips every stamp afterwards in BOTH trees: a stamp left inside a
+        # shadow root would be exactly the persistent marker the no-marker contract forbids.
+        js = build_fill_js(
+            [{"index": 0, "token": "current-password", "value": "x"}],
+            expected_origin="https://example.com",
+        )
+        assert "const findByStamp = (root, selector) =>" in js
+        assert "findByStamp(document," in js
+        assert "document.querySelector('[data-hermes-vault-slot=" not in js
+        assert "const stripStamps = (root) =>" in js and "stripStamps(document)" in js
+        assert 'document.querySelectorAll("[data-hermes-vault-slot]")' not in js
 
 
 # ---------------------------------------------------------------------------

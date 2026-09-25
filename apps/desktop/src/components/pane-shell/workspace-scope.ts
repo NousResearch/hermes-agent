@@ -126,9 +126,10 @@ export function workspaceSessionRenamable(
  * would mutate the backend registry key (and fail for hidden aliases). */
 export function workspaceMainSessionRenamable(
   workspaceMode: WorkspaceMode,
+  hasStoredSession: boolean,
   scope: { workspaceMode?: WorkspaceMode; workspaceTabTitle?: string } | undefined
 ): boolean {
-  return workspaceMode !== 'bots' && workspaceSessionRenamable(scope)
+  return (workspaceMode !== 'bots' || hasStoredSession) && workspaceSessionRenamable(scope)
 }
 
 /** One key for window-local active-pane memory. Owner keys stay opaque. */

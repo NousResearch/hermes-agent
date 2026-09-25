@@ -847,6 +847,7 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
   const selected = useStore($selectedStoredSessionId)
   const botChatScopes = useStore($botChatScopes)
   const workspaceMode = useStore($workspaceMode)
+  const sessions = useStore($sessions)
 
   const hideTabBar = () => {
     const tree = $layoutTree.get()
@@ -865,7 +866,11 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
     <SessionTabMenu
       onClose={() => closeTreePane('workspace')}
       onHideTabBar={hideTabBar}
-      renamable={workspaceMainSessionRenamable(workspaceMode, botChatScopes[selected])}
+      renamable={workspaceMainSessionRenamable(
+        workspaceMode,
+        sessions.some(session => sessionMatchesStoredId(session, selected)),
+        botChatScopes[selected]
+      )}
       storedSessionId={selected}
       tabPaneId="workspace"
     >

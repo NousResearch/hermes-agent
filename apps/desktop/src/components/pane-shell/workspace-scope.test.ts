@@ -103,7 +103,7 @@ describe('workspace owner title', () => {
     })
     expect(workspaceSessionTitle(null, 'New session', scope)).toBe('Wallstreetscout')
     expect(workspaceSessionUsesDraftTitle(false, scope)).toBe(false)
-    expect(workspaceMainSessionRenamable('bots', undefined)).toBe(false)
+    expect(workspaceMainSessionRenamable('bots', false, undefined)).toBe(false)
   })
 
   it('keeps an ordinary Sessions main draft titled and renamable as before', () => {
@@ -112,7 +112,8 @@ describe('workspace owner title', () => {
     expect(scope).toBeUndefined()
     expect(workspaceSessionTitle(null, 'New session', scope)).toBe('New session')
     expect(workspaceSessionUsesDraftTitle(false, scope)).toBe(true)
-    expect(workspaceMainSessionRenamable('sessions', scope)).toBe(true)
+    expect(workspaceMainSessionRenamable('sessions', false, scope)).toBe(true)
+    expect(workspaceMainSessionRenamable('bots', true, scope)).toBe(true)
   })
 })
 

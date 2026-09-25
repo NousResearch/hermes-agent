@@ -1027,6 +1027,7 @@ export const en: Translations = {
       completionSoundPreview: 'Preview'
     },
     sections: {
+      browser: 'Browser',
       model: 'Model',
       chat: 'Chat',
       appearance: 'Appearance',

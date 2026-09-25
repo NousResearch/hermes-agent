@@ -12,7 +12,7 @@ import tempfile
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from scripts.releases.stable import read_admitted_candidate, accepted_smoke_results, validate_candidates
 
@@ -85,9 +85,9 @@ def record(platform: str, arch: str, root: Path, tag: str, commit: str, out: Pat
                 version_sidecar.read_text(encoding="utf-8-sig"),
             )["productVersion"]
         elif os.name == "nt":
-            executable_name = (stamp.get("identity") or {}).get("windowsExecutableName")
-            executables = list(root.rglob(f"{executable_name}.exe")) if executable_name else []
-            executable = single(executables)
+            # The stamp carries no executable name; the package's own manifest does.
+            executable_name = PureWindowsPath(application.attrib["Executable"]).name
+            executable = single(root.glob(f"*-unpacked/{executable_name}"))
             row["executableVersion"] = subprocess.check_output([
                 "powershell", "-NoProfile", "-Command",
                 "(Get-Item -LiteralPath $args[0]).VersionInfo.ProductVersion", str(executable),

@@ -84,7 +84,7 @@ jobs:
           # the verified Git pin once, before per-file parallelism; otherwise
           # each isolated PowerShell stage races to download/extract the archive.
           packages: ${{ matrix.marker == 'windows' && 'git,ripgrep' || 'ripgrep' }}
-          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "hindsight", "parallel-web"]'
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
           test-environment: 'true'
           prune-python-cache: true
 
@@ -194,7 +194,7 @@ jobs:
         uses: ./.github/actions/setup-pm
         with:
           packages: git,ripgrep
-          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "hindsight", "parallel-web"]'
+          extras: '["all", "telegram", "anthropic", "mistral", "fal", "modal", "daytona", "parallel-web"]'
           test-environment: 'true'
           prune-python-cache: true
 

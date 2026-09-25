@@ -722,6 +722,70 @@ class TeamsAdapter(BasePlatformAdapter):
             with suppress(Exception):
                 await self._app.send(chat_id, TypingActivityInput())
 
+    async def edit_message(
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False, metadata: Optional[Dict[str, Any]] = None
+    ) -> SendResult:
+        """Edit a previously sent Teams message so the gateway can stream responses in place.
+
+        Bot Framework activity update: ``PUT {serviceUrl}/v3/conversations/{cid}/activities/{aid}``.
+        The SDK has no typed update surface, so this goes through the connector REST API with the
+        cached Bot Framework bearer token (same client-credentials flow as attachment auth) and the
+        same ``_validate_teams_service_url`` allowlist as the standalone send path.
+
+        Oversized content follows the Telegram ``edit_message`` pattern: the first chunk is edited
+        into the original activity, the remaining chunks are sent as continuations, and the last
+        continuation's id is returned as the next edit target."""
+        if not self._app:
+            return SendResult(success=False, error="Teams app not initialized")
+        if not (chat_id and message_id):
+            return SendResult(success=False, error="edit_message requires chat_id and message_id")
+        if not (_TEAMS_CONV_ID_RE.match(chat_id) and _TEAMS_CONV_ID_RE.match(message_id)):
+            return SendResult(success=False, error="chat_id/message_id outside the Bot Framework ID set")
+
+        service_url = None
+        conv_ref = self._conv_refs.get(chat_id)
+        for candidate in (
+            getattr(conv_ref, "service_url", None),
+            getattr(getattr(conv_ref, "conversation_reference", None), "service_url", None),
+            self._extra.get("service_url"),
+            _get_scoped_secret("TEAMS_SERVICE_URL", ""),
+            _DEFAULT_TEAMS_SERVICE_URL,
+        ):
+            if candidate:
+                service_url = _validate_teams_service_url(str(candidate))
+                if service_url:
+                    break
+        if not service_url:
+            return SendResult(
+                success=False,
+                error=f"TEAMS_SERVICE_URL host is not on the Bot Framework allowlist; expected one of {sorted(_ALLOWED_TEAMS_SERVICE_HOSTS)}",
+            )
+
+        import httpx
+
+        chunks = self.truncate_message(self.format_message(content))
+        try:
+            token = await self._get_botframework_token()
+            edit_url = f"{service_url}v3/conversations/{chat_id}/activities/{message_id}"
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.put(
+                    edit_url,
+                    json={"type": "message", "text": chunks[0]},
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+            if resp.status_code >= 400:
+                return SendResult(success=False, error=f"activity update failed: HTTP {resp.status_code}", retryable=True)
+            last_id = message_id
+            for continuation in chunks[1:]:
+                sent = await self.send(chat_id, continuation, reply_to=None, metadata=metadata)
+                if sent.success and sent.message_id:
+                    last_id = sent.message_id
+                else:
+                    return SendResult(success=False, error=sent.error or "continuation failed", retryable=True)
+            return SendResult(success=True, message_id=last_id)
+        except Exception as exc:
+            return SendResult(success=False, error=str(exc), retryable=True)
+
     async def _send_media_attachment(
         self, chat_id: str, source: str, default_mime: str, caption: Optional[str] = None, media_label: str = "media"
     ) -> SendResult:

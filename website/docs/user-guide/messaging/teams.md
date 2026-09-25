@@ -192,6 +192,21 @@ platforms:
 
 ## Features
 
+### Streamed Responses
+
+Teams supports editing a message the bot already sent, so streamed answers work like Telegram's: the bot posts a short preview, then edits it in place as tokens arrive, with a final edit carrying the complete response. Enable it with the per-platform streaming override:
+
+```yaml
+streaming:
+  enabled: true
+display:
+  platforms:
+    teams:
+      streaming: true
+```
+
+`display.platforms.teams.streaming: true` streams Teams even when the top-level `streaming.enabled` is off, so you can opt this platform in without changing others.
+
 ### Interactive Approval Cards
 
 When the agent needs to run a potentially dangerous command, it sends an Adaptive Card with four buttons instead of asking you to type `/approve`:

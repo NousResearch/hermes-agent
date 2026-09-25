@@ -729,17 +729,21 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
 
 
 # --- Process-group teardown (POSIX) ---
-_killpg = getattr(os, "killpg", None)
-_getpgid = getattr(os, "getpgid", None)
-_getpgrp = getattr(os, "getpgrp", None)
-_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+# We deliberately do NOT cache ``os.killpg`` / ``os.getpgid`` / ``os.getpgrp`` /
+# ``signal.SIGKILL`` at import time the way the previous version of this module did:
+# a module-level ``_killpg = getattr(os, "killpg", None)`` would freeze a reference
+# at import, and tests using ``monkeypatch.setattr(os, "killpg", mock)`` would
+# still see the original (Copilot review on PR #122113 — module-level ``os``
+# aliases bypass monkeypatching in teardown tests). The existence checks use
+# ``hasattr`` (also runtime-resolved) and the actual calls go straight through
+# ``os.<name>(...)`` so each test sees the patched value on every invocation.
 
 
 def _wait_for_group_exit(proc, pgid: int, timeout: float) -> bool:
     """Wait until the process group is gone, reaping the wrapper as we go (a dead
     but unreaped group leader still makes ``killpg(pgid, 0)`` succeed).
     POSIX-only; callers are behind the _IS_WINDOWS gate."""
-    if _killpg is None:
+    if not hasattr(os, "killpg"):
         return True
     deadline = time.monotonic() + timeout
     while True:
@@ -748,7 +752,7 @@ def _wait_for_group_exit(proc, pgid: int, timeout: float) -> bool:
         except Exception:
             pass
         try:
-            _killpg(pgid, 0)  # windows-footgun: ok — POSIX process-group alive probe
+            os.killpg(pgid, 0)  # windows-footgun: ok — POSIX process-group alive probe
         except ProcessLookupError:
             return True
         except PermissionError:
@@ -762,14 +766,14 @@ def _sweep_escaped_descendants(descendants: list, pgid: int) -> None:
     """SIGKILL snapshotted survivors that escaped the process group via ``setsid``
     — after TERM→KILL so in-group members keep their grace; psutil's identity-aware
     Process skips recycled PIDs. POSIX-only (see _IS_WINDOWS gate in caller)."""
-    if _getpgid is None:
+    if not hasattr(os, "getpgid"):
         return
     for child in descendants:
         try:
             if not child.is_running():
                 continue
             try:
-                if _getpgid(child.pid) == pgid:
+                if os.getpgid(child.pid) == pgid:
                     continue  # group-kill already covers it
             except OSError:  # ProcessLookupError / PermissionError included
                 pass
@@ -784,9 +788,9 @@ def _kill_process_group_posix(proc) -> None:
     init — and we wait on the group, not the wrapper, which can exit before
     grandchildren under load. POSIX-only (_IS_WINDOWS handled by the caller)."""
     try:
-        if _getpgid is None:
+        if not hasattr(os, "getpgid"):
             raise ProcessLookupError
-        pgid = _getpgid(proc.pid)
+        pgid = os.getpgid(proc.pid)
     except ProcessLookupError:
         if (pgid := getattr(proc, "_hermes_pgid", None)) is None:
             raise
@@ -795,15 +799,15 @@ def _kill_process_group_posix(proc) -> None:
         descendants = psutil.Process(proc.pid).children(recursive=True)
     except Exception:
         descendants = []
-    if _getpgrp is not None and pgid == _getpgrp():
+    if hasattr(os, "getpgrp") and pgid == os.getpgrp():
         # The child shares OUR group (a spawner that skipped setsid — the Darwin gateway's
         # posix_spawn shim, #107029): killpg would signal the caller itself. Tear down by PID.
         _kill_known_pids(proc, descendants)
-    elif _killpg is not None:
+    elif hasattr(os, "killpg"):
         try:
-            _killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
             if not _wait_for_group_exit(proc, pgid, 1.0):
-                _killpg(pgid, _SIGKILL)  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
+                os.killpg(pgid, getattr(signal, "SIGKILL", signal.SIGTERM))  # windows-footgun: ok — POSIX only (see _IS_WINDOWS gate in caller)
                 _wait_for_group_exit(proc, pgid, 2.0)
                 with contextlib.suppress(subprocess.TimeoutExpired, OSError):
                     proc.wait(timeout=0.2)
@@ -949,9 +953,9 @@ class LocalEnvironment(BaseEnvironment):
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             start_new_session=True, cwd=self.cwd,
             **extra_kwargs)
-        if not _IS_WINDOWS and _getpgid is not None:
+        if not _IS_WINDOWS and hasattr(os, "getpgid"):
             with contextlib.suppress(ProcessLookupError):
-                setattr(proc, "_hermes_pgid", _getpgid(proc.pid))
+                setattr(proc, "_hermes_pgid", os.getpgid(proc.pid))
         if stdin_data is not None:
             _pipe_stdin(proc, stdin_data)
         return proc
@@ -969,9 +973,13 @@ class LocalEnvironment(BaseEnvironment):
         if _IS_WINDOWS:  # already a forced tree kill
             return self._kill_process(proc)
         with contextlib.suppress(OSError):
-            pgid = getattr(proc, "_hermes_pgid", None) or (_getpgid(proc.pid) if _getpgid else None)
-            if pgid and _getpgrp and pgid != _getpgrp() and _killpg:
-                _killpg(pgid, _SIGKILL)  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
+            cached = getattr(proc, "_hermes_pgid", None)
+            if hasattr(os, "getpgid"):
+                pgid = cached or os.getpgid(proc.pid)
+            else:
+                pgid = cached
+            if pgid and hasattr(os, "getpgrp") and pgid != os.getpgrp() and hasattr(os, "killpg"):
+                os.killpg(pgid, getattr(signal, "SIGKILL", signal.SIGTERM))  # windows-footgun: ok — POSIX only (_IS_WINDOWS returned above)
         with contextlib.suppress(OSError):
             proc.kill()
 

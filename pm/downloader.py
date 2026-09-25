@@ -138,11 +138,19 @@ class DownloadTransportError(DownloadError):
         # origin-down codes (520-527) are what a dead third-party host returns.
         self.fallback_allowed = (
             self.status in (401, 403, 404, 410) or (self.status or 0) >= 500
-            or unresolved or is_transient(cause)
+            or unresolved or is_transient(cause) or _is_tls_failure(cause)
         )
         refused = edge_block(cause) or ("the host refused access" if self.status in (401, 403) else None)
         reason = f"{cause}; {refused}" if refused else str(cause)
         super().__init__(f"download failed from {url}: {reason}")
+
+
+def _is_tls_failure(exc: Exception) -> bool:
+    while isinstance(exc, urllib.error.URLError):
+        if not isinstance(exc.reason, Exception):
+            return False
+        exc = exc.reason
+    return isinstance(exc, ssl.SSLError)
 
 
 @dataclass(frozen=True)

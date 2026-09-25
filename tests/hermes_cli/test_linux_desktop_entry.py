@@ -1254,6 +1254,49 @@ def test_resolver_skips_incapable_primary_for_wrapper(tmp_path, xdg_home):
     assert resolution == str(wrapper)
 
 
+def test_install_skips_write_when_exec_provably_cannot_serve_desktop(tmp_path, xdg_home, monkeypatch):
+    """The fallback must not create a dead entry: no entry on disk stays that way."""
+    root = _make_project(tmp_path)
+    env_tree = _env_shaped_tree(tmp_path)
+    monkeypatch.setattr(lde, "_launcher_entry_management_enabled", lambda: True)
+    monkeypatch.setattr(
+        lde,
+        "resolve_exec_command",
+        lambda project_root=None: f"{env_tree / 'venv' / 'bin' / 'hermes'} desktop",
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    assert lde.install_desktop_entry(root) is None
+    assert not lde.desktop_entry_path().exists()
+
+
+def test_install_leaves_existing_entry_untouched_when_exec_incapable(tmp_path, xdg_home, monkeypatch):
+    """A provably dead Exec skips instead of churning an entry that is already on disk."""
+    root = _make_project(tmp_path)
+    env_tree = _env_shaped_tree(tmp_path)
+    entry_path = lde.desktop_entry_path()
+    entry_path.parent.mkdir(parents=True, exist_ok=True)
+    entry_path.write_text("hand-tuned\n", encoding="utf-8")
+    monkeypatch.setattr(lde, "_launcher_entry_management_enabled", lambda: True)
+    monkeypatch.setattr(
+        lde,
+        "resolve_exec_command",
+        lambda project_root=None: f"{env_tree / 'venv' / 'bin' / 'hermes'} desktop",
+    )
+    monkeypatch.setattr(lde, "refresh_desktop_databases", lambda _dir: [])
+
+    assert lde.install_desktop_entry(root) is None
+    assert entry_path.read_text(encoding="utf-8") == "hand-tuned\n"
+
+
+def test_module_form_passes_the_gate(tmp_path):
+    """The module fallback is not second-guessed: only a process that already passed the desktop
+    launch checks (or the bundled payload) ever writes it."""
+    env_tree = _env_shaped_tree(tmp_path)
+    module_form = f'"{env_tree / "venv" / "bin" / "python"}" -m hermes_cli.main desktop'
+    assert lde._persisted_exec_serves_desktop(module_form) is None
+
+
 def test_install_through_wrapper_when_primary_is_incapable(tmp_path, xdg_home, monkeypatch):
     """End to end: the PATH-first env launcher is skipped and the wrapper's Exec is persisted."""
     root = _full_tree(tmp_path, "checkout")

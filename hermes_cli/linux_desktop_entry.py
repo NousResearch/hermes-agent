@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import os
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -418,6 +419,30 @@ def _can_serve_desktop(candidate: str, _depth: int = 2) -> Optional[bool]:
     return _tree_desktop_state(_launcher_tree(path))
 
 
+def _persisted_exec_serves_desktop(exec_command: str) -> Optional[bool]:
+    """Desktop-capability of a rendered ``Exec`` line, ignoring an interpreter prefix.
+
+    ``[<interpreter>, <launcher>, desktop]`` is judged by the launcher. The module fallback
+    ``[<interpreter>, -m, hermes_cli.main, desktop]`` passes: it is only ever written by a
+    process that already passed the desktop launch checks.
+    """
+    try:
+        tokens = shlex.split(exec_command)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    candidate = tokens[0]
+    if _is_interpreter(Path(candidate)):
+        if len(tokens) > 1 and tokens[1] != "-m":
+            candidate = tokens[1]  # `[<interpreter>, <launcher>, desktop]` prefix form
+        else:
+            # Module fallback `[<interpreter>, -m, hermes_cli.main, desktop]`: only a process
+            # that already passed the desktop launch checks writes it, so it is not
+            # second-guessed here.
+            return None
+    return _can_serve_desktop(candidate)
+
 
 def _known_wrapper_candidates():
     """Durable installed-launcher locations, most likely first.
@@ -681,8 +706,8 @@ def _launcher_entry_management_enabled() -> bool:
 def install_desktop_entry(project_root: Path) -> Optional[Path]:
     """Create or refresh the entry, respecting the opt-out for existing entries.
 
-    ``None`` on non-Linux platforms or when the write fails — a convenience, never a reason to
-    fail a launch.
+    ``None`` on non-Linux platforms, when the write fails, or when the resolved ``Exec`` provably
+    cannot serve ``hermes desktop`` — a convenience, never a reason to fail a launch.
     """
     if not is_supported():
         return None
@@ -694,6 +719,13 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     if entry_path.is_file() and not _launcher_entry_management_enabled():
         return entry_path
 
+    exec_command = resolve_exec_command(project_root)
+    # Never persist an Exec the entry provably cannot launch from: a dead entry looks broken
+    # (a click that does nothing) while skipping leaves whatever is already on disk instead of
+    # churning it. Unknown shapes still write — only a proven mismatch skips.
+    if _persisted_exec_serves_desktop(exec_command) is False:
+        return None
+
     icon = icon_path(project_root)
     # Prefer the themed name: the icon is COPIED into the hicolor tree, so the entry outlives the
     # checkout (an absolute Icon= path breaks when the checkout moves). Absolute path only when
@@ -701,7 +733,7 @@ def install_desktop_entry(project_root: Path) -> Optional[Path]:
     icon_value = str(icon) if icon.is_file() else "hermes"
     if icon.is_file() and _install_icon_to_hicolor(icon):
         icon_value = "hermes"
-    contents = render_desktop_entry(resolve_exec_command(project_root), icon_value)
+    contents = render_desktop_entry(exec_command, icon_value)
 
     try:
         entry_path.parent.mkdir(parents=True, exist_ok=True)

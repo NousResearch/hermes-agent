@@ -35,6 +35,7 @@ test('explicit Windows session values survive recovery; non-Windows remains unch
     USERPROFILE: 'E:\\custom', LOCALAPPDATA: 'F:\\local', SystemRoot: 'G:\\Windows'
   }
   const readSystemRoot = () => { throw new Error('should not read the registry') }
+
   restoreWindowsSessionEnv(env, { platform: 'win32', homedir: () => 'D:\\other', readSystemRoot })
   assert.equal(env.USERPROFILE, 'E:\\custom')
   assert.equal(env.LOCALAPPDATA, 'F:\\local')

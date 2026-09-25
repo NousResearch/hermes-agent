@@ -10,6 +10,7 @@ function restoreWindowsSessionEnv(
       const output = execFileSync('reg.exe', [
         'query', 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion', '/v', 'SystemRoot'
       ], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
+
       return output.match(/^\s*SystemRoot\s+REG_\w+\s+(.+?)\s*$/im)?.[1] || ''
     } catch {
       return ''
@@ -20,9 +21,12 @@ function restoreWindowsSessionEnv(
     readSystemRoot?: () => string
   } = {}
 ): void {
-  if (platform !== 'win32') return
+  if (platform !== 'win32') {
+    return
+  }
 
   const profile = env.USERPROFILE || homedir()
+
   if (path.win32.isAbsolute(profile)) {
     env.USERPROFILE ||= profile
     env.LOCALAPPDATA ||= path.win32.join(profile, 'AppData', 'Local')
@@ -33,7 +37,10 @@ function restoreWindowsSessionEnv(
 
   if (!env.SystemRoot) {
     const root = env.WINDIR || readSystemRoot()
-    if (path.win32.isAbsolute(root)) env.SystemRoot = root
+
+    if (path.win32.isAbsolute(root)) {
+      env.SystemRoot = root
+    }
   }
 }
 

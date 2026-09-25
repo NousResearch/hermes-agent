@@ -302,7 +302,16 @@ def _run_remote_cell(kernel: RemoteKernel, code: str, timeout: int) -> Tuple[str
                 status = payload.get("status", "error")
             except ValueError:
                 payload, status = {}, "protocol-error"
-            kernel.sh(f"rm -f {q_cells}/{q_res}", timeout=10)
+            try:
+                kernel.sh(f"rm -f {q_cells}/{q_res}", timeout=10)
+            except Exception:
+                # The result is already in hand; a transport failure here must
+                # not convert it into an exception. The caller treats any raise
+                # past cell admission as "safe to re-execute per-call", which
+                # would run the already-admitted cell a second time (#122317).
+                # Stale res files are harmless (sequence-keyed). The contract:
+                # past the admission mv above, this function returns, never raises.
+                logger.debug("Could not remove consumed cell result %s", q_res, exc_info=True)
             return status, payload
         time.sleep(_CELL_POLL_INTERVAL)
     return "timeout", {}

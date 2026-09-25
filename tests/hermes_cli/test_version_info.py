@@ -7,6 +7,7 @@ from hermes_cli.version_info import (
     _derived_version,
     _reset_version_info_cache,
     _resolve_stamp_file,
+    _run_git,
     _stamp_version_info,
     get_version_info,
 )
@@ -249,3 +250,21 @@ def test_old_updater_version_stub_reads_the_same_stamp_as_version_info(tmp_path)
     unstamped = tmp_path / "unstamped"
     unstamped.mkdir()
     assert read(unstamped)[0] == "0.0.0"
+
+
+def test_run_git_decodes_utf8_output_as_utf8(tmp_path):
+    """Regression for #122239: git emits UTF-8, so ``_run_git`` must decode as
+    UTF-8 — under a non-UTF-8 locale (e.g. Windows cp936) the default codec
+    mangles or crashes on CJK branch/tag names."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run = lambda *argv: subprocess.run(
+        ["git", *argv], cwd=str(repo), capture_output=True, timeout=30, check=True)
+    run("init")
+    run("config", "user.email", "test@example.com")
+    run("config", "user.name", "test")
+    (repo / "file.txt").write_text("x", encoding="utf-8")
+    run("add", ".")
+    run("commit", "-m", "init")
+    run("branch", "-M", "功能分支")
+    assert _run_git(repo, "rev-parse", "--abbrev-ref", "HEAD") == "功能分支"

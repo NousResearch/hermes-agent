@@ -50,7 +50,7 @@ def _write_config(home: Path, *, base_url: str = "") -> None:
     model = {"provider": "openai-codex", "default": "gpt-5.5"}
     if base_url:
         model["base_url"] = base_url
-    import yaml
+    import hermes_yaml as yaml
     (home / "config.yaml").write_text(yaml.safe_dump({"model": model}))  # load cache keys on stat
 
 

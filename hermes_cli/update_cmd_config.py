@@ -50,7 +50,7 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
         from hermes_cli.backup import _sibling_profile_homes
         active_home = Path(get_process_hermes_home())
         for name, profile_home in _sibling_profile_homes(active_home):
-            if not (profile_home / "config.yaml").is_file():
+            if not (profile_home / "config.yaml").is_file():  # config-reader: ok — profile directory discovery marker
                 continue  # profile never configured — nothing to migrate
             token = set_hermes_home_override(profile_home)
             try:

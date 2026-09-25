@@ -755,32 +755,36 @@ def _schedule_ws_orphan_reap(
 
     The grace is measured in AWAKE (monotonic) time: ``threading.Timer``'s wait elapses in wall-clock time on
     platforms without a monotonic condvar (macOS lacks ``pthread_condattr_setclock``), so a system sleep makes
-    the timer fire "early" in awake-time terms. Without the monotonic deadline check below, closing a laptop lid
-    for longer than the grace reaped the parked session at the instant of wake — before the Desktop's WS
-    reconnect or ``session.resume`` could re-bind a transport — so every sleep/wake cycle 404'd the open chat
-    (#44183)."""
+    the timer fire "early" in awake-time terms. Without the sleep check below, closing a laptop lid for longer
+    than the grace reaped the parked session at the instant of wake — before the Desktop's WS reconnect or
+    ``session.resume`` could re-bind a transport — so every sleep/wake cycle 404'd the open chat (#44183)."""
     if _WS_ORPHAN_REAP_GRACE_S <= 0:
         return
-    # time.monotonic() (mach_absolute_time / CLOCK_MONOTONIC) does not advance while the
-    # host is asleep, so this deadline measures awake time only.
-    deadline = time.monotonic() + (_WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s))
+    grace_s = _WS_ORPHAN_REAP_GRACE_S if delay_s is None else max(0.0, delay_s)
+    # Sample both clocks at arm time: time.monotonic() (mach_absolute_time / CLOCK_MONOTONIC)
+    # does not advance while the host is asleep, so the divergence between the two clocks'
+    # elapsed times at fire time is exactly the time the host spent asleep.
+    armed_monotonic = time.monotonic()
+    armed_wall = time.time()
 
     def _reap() -> None:
-        # The wall-clock timer fired. If the monotonic (awake-time) clock says the grace
-        # hasn't actually elapsed — the host slept through the wait — re-arm for the
-        # remainder so the Desktop reconnect gets its full grace of awake time. The
-        # slack keeps ordinary timer jitter and wall-clock NTP nudges from re-arming
-        # a legitimately-expired reap.
-        remaining = deadline - time.monotonic()
-        if remaining > _WS_ORPHAN_REAP_SLEEP_SLACK_S:
-            with _sessions_lock:
-                if _pending_ws_reaps.get(sid) is not timer:
-                    return
-                rearm = threading.Timer(remaining, _reap)
-                rearm.daemon = True
-                _pending_ws_reaps[sid] = rearm
-            rearm.start()
-            return
+        # The timer fired. If more wall-clock than monotonic time elapsed, the host
+        # slept through the wait: the grace has NOT been granted in awake time, so
+        # re-arm for the remaining awake grace instead of reaping. The slack keeps
+        # ordinary timer jitter and NTP slew from re-arming a legitimately-expired
+        # reap, and a fired-without-elapsed timer (tests, spurious dispatch) shows
+        # zero divergence and reaps normally.
+        slept_s = (time.time() - armed_wall) - (time.monotonic() - armed_monotonic)
+        if slept_s > _WS_ORPHAN_REAP_SLEEP_SLACK_S:
+            rearm_delay = max(0.0, grace_s - (time.monotonic() - armed_monotonic))
+            if rearm_delay <= 0:
+                pass  # no awake grace left — fall through and reap
+            else:
+                # Re-arm through the public scheduler with THIS timer as the expected
+                # one: the fresh closure's identity guard then matches the entry it
+                # installs, so the awake-remainder fire proceeds to the real reap.
+                _schedule_ws_orphan_reap(sid, delay_s=rearm_delay, _expected_timer=timer)
+                return
         # Serialize the re-check against session.resume (rebinds under _session_resume_lock). Claim teardown by popping
         # under both locks, then release the resume lock before slow finalization. Order: resume_lock -> sessions_lock.
         reschedule_delay = interrupt_session = session = None

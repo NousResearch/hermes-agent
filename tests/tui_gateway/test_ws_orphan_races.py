@@ -294,12 +294,24 @@ def test_ws_orphan_reap_rearms_after_system_sleep(monkeypatch):
 
     sid = "slept-through-grace"
     reaped = []
-    clock = {"now": 1000.0}
+    # Two clocks. monotonic advances only while the host is awake; wall
+    # advances through sleep too. Their divergence is the host sleep time.
+    clocks = {"monotonic": 1000.0, "wall": 5000.0}
+
+    def sleep_host(seconds):
+        clocks["wall"] += seconds  # the wall clock runs during sleep
+        clocks["monotonic"] += 0.0  # mach_absolute_time does not
+
+    def stay_awake(seconds):
+        clocks["wall"] += seconds
+        clocks["monotonic"] += seconds
+
     session = dict(transport=server._detached_ws_transport, running=False)
     monkeypatch.setattr(server, "_sessions", {sid: session})
     monkeypatch.setattr(server, "_pending_ws_reaps", {})
     monkeypatch.setattr(server.threading, "Timer", Timer)
-    monkeypatch.setattr(server.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(server.time, "monotonic", lambda: clocks["monotonic"])
+    monkeypatch.setattr(server.time, "time", lambda: clocks["wall"])
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20)
     monkeypatch.setattr(server, "_pop_session_by_id", lambda s: reaped.append(s) or session)
 
@@ -309,8 +321,9 @@ def test_ws_orphan_reap_rearms_after_system_sleep(monkeypatch):
 
     # Host sleeps 2s into the grace: the wall-clock wait expires during the
     # sleep and the timer fires at wake with only 2s of awake time elapsed —
-    # spared, re-armed for the remaining 18s.
-    clock["now"] += 2.0
+    # spared, re-armed for the remaining 18s of AWAKE grace.
+    stay_awake(2.0)
+    sleep_host(40.0)
     timers[0].callback()
     assert reaped == []
     assert len(timers) == 2
@@ -318,7 +331,7 @@ def test_ws_orphan_reap_rearms_after_system_sleep(monkeypatch):
     assert server._pending_ws_reaps[sid] is timers[1]
 
     # The re-armed timer runs its full remainder awake: reap proceeds.
-    clock["now"] += 18.0
+    stay_awake(18.0)
     timers[1].callback()
     assert reaped == [sid]
 
@@ -345,17 +358,20 @@ def test_ws_orphan_reap_rearm_spares_post_wake_reconnect(monkeypatch):
 
     sid = "woke-and-reconnected"
     reaped = []
-    clock = {"now": 1000.0}
+    clocks = {"monotonic": 1000.0, "wall": 5000.0}
     session = dict(transport=server._detached_ws_transport, running=False)
     monkeypatch.setattr(server, "_sessions", {sid: session})
     monkeypatch.setattr(server, "_pending_ws_reaps", {})
     monkeypatch.setattr(server.threading, "Timer", Timer)
-    monkeypatch.setattr(server.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(server.time, "monotonic", lambda: clocks["monotonic"])
+    monkeypatch.setattr(server.time, "time", lambda: clocks["wall"])
     monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20)
     monkeypatch.setattr(server, "_pop_session_by_id", lambda s: reaped.append(s) or session)
 
     server._schedule_ws_orphan_reap(sid)
-    clock["now"] += 2.0
+    clocks["monotonic"] += 2.0
+    clocks["wall"] += 2.0
+    clocks["wall"] += 40.0  # host sleeps through the wall-clock wait
     timers[0].callback()
     assert len(timers) == 2  # slept through the wait — re-armed
 
@@ -363,6 +379,7 @@ def test_ws_orphan_reap_rearm_spares_post_wake_reconnect(monkeypatch):
     # the re-armed remainder elapses: the reap is a no-op and the chain stops.
     server._cancel_ws_orphan_reap(sid)
     session["transport"] = LiveTransport()
-    clock["now"] += 18.0
+    clocks["monotonic"] += 18.0
+    clocks["wall"] += 18.0
     timers[1].callback()
     assert reaped == []

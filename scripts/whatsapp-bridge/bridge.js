@@ -25,7 +25,7 @@ import rateLimit from 'express-rate-limit';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, existsSync, unlinkSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execFileSync } from 'child_process';
@@ -246,22 +246,6 @@ function emitDebugEvent(payload) {
 
 mkdirSync(SESSION_DIR, { recursive: true });
 
-// Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
-function buildLidMap() {
-  const map = {};
-  try {
-    for (const f of readdirSync(SESSION_DIR)) {
-      const m = f.match(/^lid-mapping-(\d+)\.json$/);
-      if (!m) continue;
-      const phone = m[1];
-      const lid = JSON.parse(readFileSync(path.join(SESSION_DIR, f), 'utf8'));
-      if (lid) map[String(lid)] = phone;
-    }
-  } catch {}
-  return map;
-}
-let lidToPhone = buildLidMap();
-
 const logger = pino({ level: 'warn' });
 
 // Message queue for polling
@@ -420,7 +404,7 @@ async function startSocket() {
     },
   });
 
-  sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });
+  sock.ev.on('creds.update', () => { saveCreds(); });
 
   sock.ev.on('connection.update', (update) => {
     const { connection, lastDisconnect, qr } = update;

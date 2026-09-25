@@ -191,11 +191,30 @@ def _current_page_origin(task_id: str) -> Optional[str]:
         return None
 
 
+def _open_shadow_form_probe(selector: str) -> str:
+    """A tab-selection probe that sees a form in document or nested *open* shadow roots.
+
+    The supervisor evaluates this before vault inspection.  It must therefore find the same
+    open-root controls that inspection can classify, but deliberately cannot traverse closed
+    roots or frames.
+    """
+    return (
+        "(()=>{const seen=new Set;const walk=root=>{if(seen.has(root))return false;"
+        "seen.add(root);if(root.querySelector(" + json.dumps(selector) + "))return true;"
+        "for(const el of root.querySelectorAll('*')){if(el.shadowRoot&&walk(el.shadowRoot))return true;}"
+        "return false;};return walk(document)})()"
+    )
+
+
 # Per kind: a JS probe that is truthy on a tab holding the form this kind fills.
 _TAB_PROBES = {
-    "login": "!!document.querySelector('input[type=password]')",
-    "payment": "!!document.querySelector('input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]')",
-    "address": "!!document.querySelector('input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]')",
+    "login": _open_shadow_form_probe("input[type=password]"),
+    "payment": _open_shadow_form_probe(
+        "input[autocomplete^=cc-], [name*=card i], [placeholder*=card i], [name*=cvc i], [name*=cvv i]"
+    ),
+    "address": _open_shadow_form_probe(
+        "input[autocomplete^=address-], [autocomplete=postal-code], [name*=address i], [name*=zip i], [name*=postal i]"
+    ),
 }
 
 
@@ -328,8 +347,10 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                       ensure_ascii=False)
 
 
-_TAB_PROBES["otp"] = ("!!document.querySelector('input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
-                      "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]')")
+_TAB_PROBES["otp"] = _open_shadow_form_probe(
+    "input[autocomplete=one-time-code], input[name*=otp i], input[name*=code i], "
+    "input[id*=otp i], input[id*=code i], input[name*=totp i], input[aria-label*=code i]"
+)
 
 
 def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) -> str:

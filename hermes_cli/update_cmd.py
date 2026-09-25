@@ -565,6 +565,43 @@ def _source_update_channel(args=None, *, channel=None, branch_explicit=False) ->
     return resolve_update_channel(config, _m().PROJECT_ROOT)
 
 
+def _pm_workspace_guidance(root: Path) -> str | None:
+    """PM-workspace guidance for a .git-less *root*, or ``None`` when it is another tree.
+
+    A committed PM environment's venv imports ``hermes_cli`` from the generation's
+    ``workspace/`` snapshot — a build copy that deliberately carries no ``.git``
+    (#122627). Both git gates below would then report the generic "not a git
+    repository, please reinstall" advice against a healthy install. The install key
+    is a one-way hash of the owning checkout, so it cannot be re-derived here; the
+    generation is recognized by its shape under PM's installs root instead.
+    """
+    if root.name != "workspace":
+        return None
+    generation = root.parent
+    if generation.parent.name != "environments":
+        return None
+    if not ((generation / "venv").is_dir() or (generation / ".lease-managed").is_file()):
+        return None
+    try:
+        from pm.environments import installs_root
+
+        key_dir = generation.parent.parent
+        key = key_dir.name
+        if (key_dir.parent != installs_root() or len(key) != 16
+                or any(c not in "0123456789abcdef" for c in key)):
+            return None
+    except Exception:
+        return None
+    return (
+        "✗ Not a git repository — this hermes runs a PM environment's workspace\n"
+        "  snapshot, which deliberately has no .git. The install itself is healthy;\n"
+        "  re-running the installer is not the fix.\n"
+        "  Update from the checkout that owns this environment instead: run the\n"
+        "  hermes of your install (the one first on your default PATH), not this\n"
+        "  environment's venv."
+    )
+
+
 def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, channel=None):
     """Implement ``hermes update --check``: fetch and report without installing.
 
@@ -592,6 +629,10 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False, ch
 
     root = _m().PROJECT_ROOT
     if not (root / ".git").exists():
+        pm_guidance = _pm_workspace_guidance(root)
+        if pm_guidance is not None:
+            print(pm_guidance)
+            sys.exit(1)
         print("✗ Not a git repository — cannot check for updates.")
         sys.exit(1)
 
@@ -1099,6 +1140,10 @@ def _prepare_git_command() -> tuple[bool, list, bool]:
     git_dir = _m().PROJECT_ROOT / ".git"
     use_zip_update = not git_dir.exists()
     if use_zip_update and sys.platform != "win32":
+        pm_guidance = _pm_workspace_guidance(_m().PROJECT_ROOT)
+        if pm_guidance is not None:
+            print(pm_guidance)
+            sys.exit(1)
         print("✗ Not a git repository. Please reinstall:")
         print("  curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash")
         sys.exit(1)

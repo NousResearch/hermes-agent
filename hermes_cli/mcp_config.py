@@ -299,9 +299,13 @@ def _replace_mcp_servers(servers: Dict[str, dict]) -> Tuple[bool, List[str]]:
     config = load_config()
     if servers:
         config["mcp_servers"] = dict(servers)
+        save_config(config)
     else:
+        # An empty map is a DECLARED removal of the whole mcp_servers key —
+        # surrender it explicitly so the save_config guard does not
+        # re-preserve it (spec §3.1 step 3).
         config.pop("mcp_servers", None)
-    save_config(config)
+        save_config(config, removed_keys={"mcp_servers"})
     return True, []
 
 

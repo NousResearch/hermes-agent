@@ -1,0 +1,14 @@
+@keyframes guide-controls-arrive {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+[data-guide-arrived] [data-slot='composer-dock'] {
+  animation: guide-controls-arrive 100ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-guide-arrived] [data-slot='composer-dock'] {
+    animation: none;
+  }
+}

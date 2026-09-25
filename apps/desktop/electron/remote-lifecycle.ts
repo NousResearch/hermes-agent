@@ -1135,12 +1135,10 @@ function buildSpawnCommandParts(hermesPath, profile, opts: any = {}) {
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
     `exec env HERMES_DESKTOP=1${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''} ${hermes} ${profileArgs}${subCmd}`
 
-  // Keep Hermes in the foreground of the detached setsid/nohup shell. The outer
-  // shell backgrounds that process and emits the only PID. If this inner shell
-  // also echoes `$!`, command substitution captures two PIDs and the lockfile
-  // substitution becomes invalid under POSIX sh.
-  const detachedShell = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1`
-  const detachedSpawn = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1" & echo $!)`
+  const detachedShell: string = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
+  // The inner shell backgrounds Hermes and reports its PID; backgrounding the
+  // launcher too adds its unrelated PID to the value published in the lock.
+  const detachedSpawn: string = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1")`
 
   if (!opts.ownershipId || !opts.lockMetadata) {
     return {

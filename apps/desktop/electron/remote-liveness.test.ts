@@ -9,9 +9,34 @@ import {
   REMOTE_LIVENESS_TIMEOUT_MS,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
+  resolveRemoteLivenessTimeoutMs,
   revalidatePooledRemoteBackends,
   revalidateRemoteConnection
 } from './remote-liveness'
+
+describe('resolveRemoteLivenessTimeoutMs', () => {
+  it('defaults to 10s and matches the module constant when unset', () => {
+    expect(resolveRemoteLivenessTimeoutMs({})).toBe(10_000)
+    // Module constant is read from process.env at load time; tests run
+    // without HERMES_REMOTE_LIVENESS_TIMEOUT_MS set.
+    expect(REMOTE_LIVENESS_TIMEOUT_MS).toBe(10_000)
+    expect(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS).toBe(REMOTE_LIVENESS_TIMEOUT_MS)
+  })
+
+  it('honours a configured HERMES_REMOTE_LIVENESS_TIMEOUT_MS', () => {
+    expect(resolveRemoteLivenessTimeoutMs({ HERMES_REMOTE_LIVENESS_TIMEOUT_MS: '30000' })).toBe(30_000)
+  })
+
+  it('falls back to the default on missing, zero, or unparsable values', () => {
+    expect(resolveRemoteLivenessTimeoutMs({ HERMES_REMOTE_LIVENESS_TIMEOUT_MS: '0' })).toBe(10_000)
+    expect(resolveRemoteLivenessTimeoutMs({ HERMES_REMOTE_LIVENESS_TIMEOUT_MS: 'nope' })).toBe(10_000)
+    expect(resolveRemoteLivenessTimeoutMs({ HERMES_REMOTE_LIVENESS_TIMEOUT_MS: '' })).toBe(10_000)
+  })
+
+  it('clamps runaway values so a typo cannot hang dispatch forever', () => {
+    expect(resolveRemoteLivenessTimeoutMs({ HERMES_REMOTE_LIVENESS_TIMEOUT_MS: '999999' })).toBe(120_000)
+  })
+})
 
 describe('RemoteLivenessTracker', () => {
   it('requires consecutive failures before resetting a connection', () => {

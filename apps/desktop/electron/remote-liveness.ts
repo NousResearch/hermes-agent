@@ -1,6 +1,31 @@
 import { isMissingHealthEndpointError } from './backend-health'
 
-export const REMOTE_LIVENESS_TIMEOUT_MS = 10_000
+const DEFAULT_REMOTE_LIVENESS_TIMEOUT_MS = 10_000
+
+/**
+ * Resolve the remote liveness/dispatch probe timeout (ms).
+ * Honours HERMES_REMOTE_LIVENESS_TIMEOUT_MS when it parses as a positive
+ * integer, so a host under transient load (spawn-under-load starvation, #121941)
+ * can raise the budget without a code change.
+ */
+export function resolveRemoteLivenessTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.HERMES_REMOTE_LIVENESS_TIMEOUT_MS
+
+  if (raw == null || raw === '') {
+    return DEFAULT_REMOTE_LIVENESS_TIMEOUT_MS
+  }
+
+  const n = Number.parseInt(String(raw), 10)
+
+  if (!Number.isFinite(n) || n <= 0) {
+    return DEFAULT_REMOTE_LIVENESS_TIMEOUT_MS
+  }
+
+  // Clamp absurd values (ms) so a typo can't hang dispatch/reconnect forever.
+  return Math.min(n, 120_000)
+}
+
+export const REMOTE_LIVENESS_TIMEOUT_MS = resolveRemoteLivenessTimeoutMs()
 // Dispatch is synchronous user intent: a cached descriptor must prove its
 // forwarded endpoint is alive before it can be returned. Probe cheap
 // /api/health — not /api/status, whose cold payload (gateway probe, topology,

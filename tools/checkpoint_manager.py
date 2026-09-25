@@ -137,6 +137,17 @@ DEFAULT_EXCLUDES = [
     "*.mov",
     "*.mkv",
     "*.webm",
+    # Still images: a workdir holding thousands of screenshots re-ingests all
+    # of them into the shared packfiles on every write/patch snapshot — the
+    # dominant store-bloat source in practice, and rolling images back is
+    # almost never the point of a checkpoint.
+    "*.jpg",
+    "*.jpeg",
+    "*.png",
+    "*.gif",
+    "*.bmp",
+    "*.webp",
+    "*.ico",
     "*.zip",
     "*.tar",
     "*.tar.gz",

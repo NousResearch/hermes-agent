@@ -159,6 +159,29 @@ class TestTakeCheckpoint:
         (work_dir / "main.py").write_text("print('modified')\n")
         assert mgr.ensure_checkpoint(str(work_dir), "turn 2") is True
 
+    def test_still_images_never_enter_the_store(self, mgr, work_dir, checkpoint_base):
+        """A workdir holding thousands of screenshots re-ingests every one of them
+        into the shared packfiles on each write/patch snapshot — the dominant
+        store-bloat source in practice. The still-image excludes must keep them
+        out entirely while the rest of the tree keeps checkpointing."""
+        (work_dir / "shot.jpg").write_bytes(b"\xff\xd8\xff\xe0fake-jpg")
+        (work_dir / "icon.png").write_bytes(b"\x89PNGfake-png")
+        assert mgr.ensure_checkpoint(str(work_dir), "images present") is True
+
+        store = _store_path(checkpoint_base)
+        exclude_text = (store / "info" / "exclude").read_text(encoding="utf-8")
+        assert "*.jpg" in exclude_text and "*.png" in exclude_text
+
+        ref = _ref_name(_project_hash(str(work_dir)))
+        ok, out, err = _run_git(["ls-tree", "-r", "--name-only", ref], store, str(work_dir))
+        assert ok, err
+        names = [n for n in out.splitlines() if n.strip()]
+        assert "main.py" in names and "README.md" in names
+        assert not any(
+            n.endswith((".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".ico"))
+            for n in names
+        ), names
+
 
 # =========================================================================
 # CheckpointManager — listing

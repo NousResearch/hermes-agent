@@ -921,11 +921,37 @@ def _is_exact_package_pin(package: str) -> bool:
     # GitHub codeload archives use the same immutable SHA contract as git
     # installs. Keep this restricted to that host and a full commit, not
     # arbitrary URLs whose path happens to contain a version or hash.
+    # Dotted repository names remain valid; this checks immutability, not
+    # canonical repository spelling or remote reachability.
     return any(re.fullmatch(pattern, package) for pattern in (
         r"[^=@\s]+==\d[\w.\-+]*",
         r"(@[\w.\-]+/)?[\w.\-]+@\d[\w.\-+]*",
         r"https://codeload\.github\.com/[\w.\-]+/[\w.\-]+/tar\.gz/[0-9a-f]{40}",
     ))
+
+
+def _launcher_package_args(command: str, args: list[str]) -> list[str]:
+    if command != "npx":
+        return [arg for arg in args if not arg.startswith("-")][:1]
+
+    # npx accepts repeated package options before the command. Once the
+    # command starts, its arguments must not be interpreted as npx options.
+    packages = []
+    remaining = iter(args)
+    for arg in remaining:
+        if arg == "--":
+            return packages or [next(remaining, "")]
+        if arg in ("--package", "-p"):
+            packages.append(next(remaining, ""))
+        elif arg.startswith("--package="):
+            packages.append(arg.partition("=")[2])
+        elif arg.startswith("-p"):
+            packages.append(arg[2:])
+        elif arg in ("--call", "-c"):
+            next(remaining, None)
+        elif not arg.startswith("-"):
+            return packages or [arg]
+    return packages
 
 
 class TestShippedCatalog:
@@ -952,6 +978,40 @@ class TestShippedCatalog:
     ])
     def test_exact_package_pins_reject_floating_or_untrusted_sources(self, package):
         assert not _is_exact_package_pin(package)
+
+    @pytest.mark.parametrize("extra", [
+        ["--package", "floating@latest"],
+        ["--package=floating@latest"],
+        ["-p", "floating@latest"],
+        ["-pfloating@latest"],
+    ])
+    def test_version_contract_rejects_floating_additional_npx_packages(
+        self, tmp_path, monkeypatch, extra,
+    ):
+        archive = "https://codeload.github.com/example/demo/tar.gz/" + "a" * 40
+        _write_manifest(tmp_path, "demo", _basic_manifest(transport={
+            "type": "stdio", "command": "npx",
+            "args": ["--yes", "--package", archive, *extra, "demo"],
+        }))
+        monkeypatch.setattr("hermes_cli.mcp_catalog._catalog_root", lambda: tmp_path)
+        with pytest.raises(AssertionError, match="floating@latest"):
+            self.test_all_shipped_manifests_are_version_locked(monkeypatch)
+
+    @pytest.mark.parametrize("args", [
+        ["--yes", "--package", "demo@1.2.3", "--package=other@2.3.4", "demo"],
+        ["-p", "demo@1.2.3", "-pother@2.3.4", "--", "demo"],
+        ["--package=demo@1.2.3", "demo", "--package", "command-argument@latest"],
+        ["--", "demo@1.2.3", "--package", "command-argument@latest"],
+        ["demo@1.2.3", "--package=command-argument@latest"],
+    ])
+    def test_version_contract_accepts_pinned_packages_and_ignores_command_args(
+        self, tmp_path, monkeypatch, args,
+    ):
+        _write_manifest(tmp_path, "demo", _basic_manifest(transport={
+            "type": "stdio", "command": "npx", "args": args,
+        }))
+        monkeypatch.setattr("hermes_cli.mcp_catalog._catalog_root", lambda: tmp_path)
+        self.test_all_shipped_manifests_are_version_locked(monkeypatch)
 
     def test_manifest_connector_slugs_are_valid_and_unique(self, monkeypatch):
         from hermes_cli.mcp_catalog import catalog_diagnostics, list_catalog
@@ -998,7 +1058,7 @@ class TestShippedCatalog:
           can be moved by the upstream owner; SHAs cannot).
         - package-launcher stdio transports (uvx/npx and their pkg-manager
           equivalents) must carry an exact version specifier on the package
-          arg (``pkg==X`` for Python, ``pkg@X`` for npm), or a GitHub codeload
+          arguments (``pkg==X`` for Python, ``pkg@X`` for npm), or a GitHub codeload
           archive URL pinned to a full 40-char commit SHA.
 
         http transports and ${INSTALL_DIR}-anchored commands have nothing to
@@ -1026,20 +1086,20 @@ class TestShippedCatalog:
 
             t = entry.transport
             if t.type == "stdio" and (t.command or "") in launcher_commands:
-                pkg_args = [a for a in t.args if not a.startswith("-")]
+                pkg_args = _launcher_package_args(t.command, t.args)
                 if not pkg_args:
                     problems.append(f"{entry.name}: launcher {t.command} has no package arg")
                     continue
-                pkg = pkg_args[0]
                 # Exact-pin shapes: pkg==1.2.3 (uvx/pipx) or pkg@1.2.3 /
                 # @scope/pkg@1.2.3 (npx/bunx/pnpx). The version must start
                 # with a digit — a bare name, a range operator, or an npm
                 # dist-tag (@latest, @next) floats and is rejected.
-                if not _is_exact_package_pin(pkg):
-                    problems.append(
-                        f"{entry.name}: package arg {pkg!r} is not pinned to an "
-                        "exact version or full GitHub commit "
-                        "(expected pkg==X, pkg@X, or a commit-pinned codeload URL)"
-                    )
+                for pkg in pkg_args:
+                    if not _is_exact_package_pin(pkg):
+                        problems.append(
+                            f"{entry.name}: package arg {pkg!r} is not pinned to an "
+                            "exact version or full GitHub commit "
+                            "(expected pkg==X, pkg@X, or a commit-pinned codeload URL)"
+                        )
 
         assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)

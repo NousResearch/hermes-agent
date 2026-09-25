@@ -180,3 +180,78 @@ def test_inventory_classifies_launchd_job_owned_serve(monkeypatch):
     assert row.restart_via == "launchd"
     assert row.detail["launchd_domain"] == "gui/501"
     assert row.detail["launchd_label"] == "ai.hermes.dashboard"
+
+# ---------------------------------------------------------------------------
+# update_inventory: systemd-unit-owned serve/dashboard classification
+# ---------------------------------------------------------------------------
+
+_USER_UNIT_CGROUP = "/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-dashboard-web.service"
+
+def _systemd_host(monkeypatch, *, cgroup: str, main_pid: int):
+    """Fake ``/proc/<pid>/cgroup`` and ``systemctl show -p MainPID`` for the ledger PID."""
+    calls: list[list[str]] = []
+
+    def fake_probe(cmd, *, timeout):
+        calls.append(list(cmd))
+        return SimpleNamespace(returncode=0, stdout=f"{main_pid}\n", stderr="")
+
+    monkeypatch.setattr(main_dashboard, "_pid_unified_cgroup_entries", lambda pid: iter([cgroup]))
+    monkeypatch.setattr(main_dashboard, "_run_probe", fake_probe)
+    return calls
+
+def _ledger_serve_rows(monkeypatch, entry):
+    fake_pi = SimpleNamespace(
+        ledger_entries=lambda **k: [entry],
+        spawner_is_dead=lambda e: None,
+        _pid_alive_matches=lambda pid, created: True,  # the ledger PID is the live incarnation
+    )
+    monkeypatch.setitem(sys.modules, "hermes_cli.process_identity", fake_pi)
+    plan = update_inventory.UpdatePlan()
+    update_inventory._collect_ledger_runtimes(plan, set())
+    return plan.runtimes
+
+def test_inventory_classifies_systemd_unit_owned_dashboard(monkeypatch):
+    """A dashboard run as its own systemd unit records no spawner, so the spawner probe alone
+    reads it as manual-serve: the plan proposes a respawn-argv restart and the CLI files a
+    "manual restart still pending" reminder that tells the operator to relaunch a process
+    systemd owns. The unit whose MainPID IS the ledger PID is the supervisor."""
+    calls = _systemd_host(monkeypatch, cgroup=_USER_UNIT_CGROUP, main_pid=4321)
+    rows = _ledger_serve_rows(monkeypatch, _ledger_entry(purpose="dashboard"))
+    assert len(rows) == 1
+    row = rows[0]
+    assert (row.kind, row.supervisor, row.restart_via) == ("dashboard", "systemd", "systemd")
+    assert row.detail["systemd_unit"] == "hermes-dashboard-web.service"
+    assert row.detail["systemd_scope"] == "user"
+    assert calls == [["systemctl", "--user", "show", "hermes-dashboard-web.service", "--property=MainPID", "--value"]]
+
+def test_inventory_asks_the_system_manager_for_a_system_unit(monkeypatch):
+    calls = _systemd_host(monkeypatch, cgroup="/system.slice/hermes-serve.service", main_pid=4321)
+    [row] = _ledger_serve_rows(monkeypatch, _ledger_entry())
+    assert (row.supervisor, row.detail["systemd_scope"]) == ("systemd", "system")
+    assert calls == [["systemctl", "show", "hermes-serve.service", "--property=MainPID", "--value"]]
+
+def test_serve_inside_another_units_cgroup_stays_manual(monkeypatch):
+    """A serve started from a shell that lives in some unit's cgroup (the gateway's own agent
+    terminal, a desktop session service) is NOT supervised by that unit: restarting the unit
+    would restart the wrong process. Only MainPID ownership classifies."""
+    gateway_cgroup = "/user.slice/user-1000.slice/user@1000.service/app.slice/hermes-gateway.service"
+    _systemd_host(monkeypatch, cgroup=gateway_cgroup, main_pid=777)
+    [row] = _ledger_serve_rows(monkeypatch, _ledger_entry())
+    assert (row.supervisor, row.restart_via) == ("manual-serve", "respawn-argv")
+    assert "systemd_unit" not in row.detail
+
+def test_systemd_owned_dashboard_files_no_manual_restart_reminder(tmp_path, monkeypatch):
+    """The user-visible symptom: every CLI start printed "manual restart still pending" for a
+    unit-run dashboard. A systemd row is its supervisor's to restart, so it is outside the
+    gateway matrix's evidence without a durable manual reminder being written."""
+    from dataclasses import asdict
+
+    from hermes_cli.update_cmd_fleet_gatewayless import runtime_outside_gateway_evidence
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _systemd_host(monkeypatch, cgroup=_USER_UNIT_CGROUP, main_pid=4321)
+    [row] = _ledger_serve_rows(monkeypatch, _ledger_entry(purpose="dashboard"))
+    assert runtime_outside_gateway_evidence(asdict(row))
+    assert not (home / "serve_restart_pending").exists()

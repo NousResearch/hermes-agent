@@ -923,21 +923,28 @@ class SessionSchemaMixin:
         child's ``model_config`` onto the main row. Idempotent and safe to
         run on every open (no version gate).
         """
+        safe_mc = (
+            "CASE WHEN json_valid(COALESCE(model_config, '{}')) "
+            "THEN COALESCE(model_config, '{}') ELSE json_object() END"
+        )
+        delegate_present = (
+            f"{_sql_json_extract('model_config', '$._delegate_from')} IS NOT NULL"
+        )
         try:
             # Probe first: the UPDATE takes the write lock even when it
             # matches no rows and would block every open behind a sibling's
             # transaction.
             if cursor.execute(
                 "SELECT 1 FROM sessions WHERE session_key IS NOT NULL AND session_key != '' "
-                "AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NOT NULL LIMIT 1"
+                f"AND {delegate_present} LIMIT 1"
             ).fetchone() is None:
                 return
             cur = cursor.execute(
                 "UPDATE sessions SET model_config = "
-                "CASE WHEN json_remove(COALESCE(model_config, '{}'), '$._delegate_from') = '{}' "
-                "THEN NULL ELSE json_remove(COALESCE(model_config, '{}'), '$._delegate_from') END "
+                f"CASE WHEN json_remove({safe_mc}, '$._delegate_from') = '{{}}' "
+                f"THEN NULL ELSE json_remove({safe_mc}, '$._delegate_from') END "
                 "WHERE session_key IS NOT NULL AND session_key != '' "
-                "AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NOT NULL"
+                f"AND {delegate_present}"
             )
             if cur.rowcount:
                 logger.warning(

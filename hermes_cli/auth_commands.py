@@ -27,7 +27,8 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "openrouter"}
+# Providers that support OAuth login in addition to API keys.
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "xai-oauth", "qwen-oauth", "minimax-oauth", "openrouter", "commandcode-oauth", "command-code"}
 # ...and default to it when ``--type`` is omitted. OpenRouter stays API-key-first: the documented
 # ``hermes auth add openrouter --api-key sk-or-...`` must keep working with no ``--type``.
 _OAUTH_DEFAULT_PROVIDERS = _OAUTH_CAPABLE_PROVIDERS - {"openrouter"}
@@ -292,6 +293,30 @@ _OAUTH_ADD_SPECS: dict[str, _OAuthAddSpec] = {
         source=f"{SOURCE_MANUAL}:openrouter_pkce",
         fields=lambda creds, provider: {"base_url": _provider_base_url(provider)},
         auth_type=AUTH_TYPE_API_KEY),
+    "commandcode-oauth": _OAuthAddSpec(
+        login=lambda args: auth_mod._commandcode_oauth_login(args),
+        token=lambda creds: creds["api_key"],
+        source=f"{SOURCE_MANUAL}:commandcode_cli",
+        fields=lambda creds, provider: {
+            "base_url": "https://api.commandcode.ai",
+            "extra": {
+                "user_id": creds.get("userId"),
+                "user_name": creds.get("userName"),
+                "key_name": creds.get("keyName"),
+            },
+        }),
+    "command-code": _OAuthAddSpec(
+        login=lambda args: auth_mod._commandcode_oauth_login(args),
+        token=lambda creds: creds["api_key"],
+        source=f"{SOURCE_MANUAL}:commandcode_cli",
+        fields=lambda creds, provider: {
+            "base_url": "https://api.commandcode.ai",
+            "extra": {
+                "user_id": creds.get("userId"),
+                "user_name": creds.get("userName"),
+                "key_name": creds.get("keyName"),
+            },
+        }),
 }
 
 

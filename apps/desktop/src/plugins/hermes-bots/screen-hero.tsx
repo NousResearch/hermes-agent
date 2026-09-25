@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { botSelectionKey } from './data'
 import { useBots } from './i18n'
-import { displayRequest, isManagedBackend, type DisplayThumbnail } from './screen-connection'
+import { displayRequest, type DisplayThumbnail, isManagedBackend } from './screen-connection'
 import { openBotScreen } from './screen-open'
 import { type PortalTone, useScreenPortalState } from './screen-portal'
 import type { BotMeta, RosterRow } from './types'

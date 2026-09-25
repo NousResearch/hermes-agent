@@ -807,6 +807,86 @@ class TestReviewRound3:
         assert matched[0].info["name"] == "chrome.exe"
         assert f"--user-data-dir={ud}" in " ".join(matched[0].info["cmdline"])
 
+    def test_processes_holding_profile_default_profile_main_process(self, tmp_path, monkeypatch):
+        """A browser launched normally carries NO --user-data-dir; its main process must still
+        bind when the profile is that install's default dir — but not a helper, and not a
+        different install that happens to share the binary name."""
+        import hermes_cli.browser_connect as bc
+
+        class FakeProc:
+            def __init__(self, pid, cmdline):
+                self.pid = pid
+                self.info = {"name": "chrome.exe", "cmdline": cmdline}
+
+            def cmdline(self):
+                return self.info["cmdline"]
+
+            def parent(self):
+                return None
+
+        local = tmp_path / "Local"
+        monkeypatch.setenv("LOCALAPPDATA", str(local))
+        monkeypatch.setattr(bc.platform, "system", lambda: "Windows")
+        ud = bc.real_profile_data_dir("chrome", "Windows")
+        chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        procs = [
+            FakeProc(1, [chrome, "about:blank"]),                                   # match
+            FakeProc(2, [chrome, "--type=renderer"]),                               # helper
+            FakeProc(3, [r"C:\Apps\Chromium\Application\chrome.exe"]),              # other install
+            FakeProc(4, [chrome, "--user-data-dir=C:\\Other"]),                     # other dir
+        ]
+
+        class FakePsutil:
+            NoSuchProcess = type("E", (Exception,), {})
+            AccessDenied = type("E2", (Exception,), {})
+
+            def process_iter(self, attrs=None):
+                return iter(procs)
+
+        import sys as _sys
+        monkeypatch.setitem(_sys.modules, "psutil", FakePsutil())
+        assert [p.pid for p in bc._processes_holding_profile(ud)] == [1]
+
+    def test_processes_holding_profile_climbs_helper_to_browser_root(self, tmp_path, monkeypatch):
+        """Only a helper (crashpad) names the dir; the matcher must yield the main browser
+        process above it, once, so the close takes the whole browser down."""
+        import hermes_cli.browser_connect as bc
+
+        ud = str(tmp_path / "ud")
+
+        class FakeProc:
+            def __init__(self, pid, name, cmdline, parent=None):
+                self.pid, self._name, self._parent = pid, name, parent
+                self.info = {"name": name, "cmdline": cmdline}
+
+            def name(self):
+                return self._name
+
+            def cmdline(self):
+                return self.info["cmdline"]
+
+            def parent(self):
+                return self._parent
+
+        shell = FakeProc(10, "explorer.exe", ["explorer.exe"])
+        main = FakeProc(20, "chrome.exe", ["chrome.exe"], parent=shell)
+        crashpad = FakeProc(21, "chrome.exe", ["chrome.exe", "--type=crashpad-handler",
+                                               f"--database={ud}\\Crashpad"], parent=main)
+        crashpad2 = FakeProc(22, "chrome.exe", ["chrome.exe", "--type=crashpad-handler",
+                                                f"--database={ud}\\Crashpad"], parent=crashpad)
+        procs = [shell, main, crashpad, crashpad2]
+
+        class FakePsutil:
+            NoSuchProcess = type("E", (Exception,), {})
+            AccessDenied = type("E2", (Exception,), {})
+
+            def process_iter(self, attrs=None):
+                return iter(procs)
+
+        import sys as _sys
+        monkeypatch.setitem(_sys.modules, "psutil", FakePsutil())
+        assert [p.pid for p in bc._processes_holding_profile(ud)] == [20]
+
     def test_consent_off_triggers_cleanup(self, tmp_path, monkeypatch):
         called = {"n": 0}
         with patch.object(bt_cloud, "_use_real_profile", return_value=False), \

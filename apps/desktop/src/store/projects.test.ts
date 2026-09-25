@@ -172,18 +172,23 @@ describe('projects RPC profile forwarding', () => {
     })
   })
 
-  it('skips project reads in the all-profiles view rather than forwarding its sentinel', async () => {
+  it('hydrates a merged project over REST rather than forwarding the all-profiles sentinel', async () => {
     const request = vi.fn()
     const gateway = { connectionState: 'open', request }
     activeGateway.mockReturnValue(gateway as never)
     gatewayAtom.set(gateway as never)
     setShowAllProfiles(true)
+    vi.mocked(hermes.hermesApi).mockResolvedValue({ project: { id: NO_PROJECT_ID, sessionCount: 15 } } as never)
 
     await refreshProjects()
     await refreshProjectTree()
-    await fetchProjectSessions('p_123')
+    const expanded = await fetchProjectSessions(NO_PROJECT_ID)
 
     expect(request).not.toHaveBeenCalled()
+    expect(hermes.hermesApi).toHaveBeenCalledWith(
+      expect.objectContaining({ path: `/api/profiles/projects/sessions?project_id=${encodeURIComponent(NO_PROJECT_ID)}` })
+    )
+    expect(expanded?.sessionCount).toBe(15)
     setShowAllProfiles(false)
   })
 })

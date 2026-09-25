@@ -65,6 +65,7 @@ import {
 import { dashboardFallbackArgs } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
 import { BackendDialClaims } from './backend-dial-claim'
+import type { HostBackendRecord } from './backend-discovery'
 import { buildDesktopBackendEnv, profileBackendParentEnv } from './backend-env'
 import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
@@ -277,6 +278,7 @@ import {
   type SpawnReservation
 } from './host-backend-attach'
 import { assertNoSecondLocalBackend, assertNotPassiveSpawn } from './host-backend-singleton'
+import { lookupPublishedSessionToken } from './host-published-token'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -12106,6 +12108,21 @@ function hostBackendAttachDeps() {
       }
     },
     probeWebSocket: (wsUrl: string) => probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket }),
+    publishedTokenFor: (record: HostBackendRecord) =>
+      lookupPublishedSessionToken(
+        record,
+        {
+          home: os.homedir(),
+          lockDir: process.env.HERMES_GATEWAY_LOCK_DIR,
+          platform: process.platform,
+          stateHome: process.env.XDG_STATE_HOME
+        },
+        {
+          lstat: target => fs.lstatSync(target),
+          readFile: target => fs.readFileSync(target, 'utf8'),
+          uid: typeof process.getuid === 'function' ? process.getuid() : null
+        }
+      ),
     resolveServedToken: (baseUrl: string) => resolveServedDashboardToken(baseUrl, ''),
     waitForReady: (baseUrl: string, token: string) => waitForHermes(baseUrl, token, undefined, 'token', {})
   }

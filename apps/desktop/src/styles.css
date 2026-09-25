@@ -1678,6 +1678,21 @@ body.guest-pointer-lock :is(webview, iframe) {
   text-align: start;
 }
 
+/* Keyed on the UI language, not installed fonts: PingFang/YaHei ship on every
+   Mac/Windows box and would restyle Latin text for everyone. CJK-first is what
+   makes shared codepoints (…—“”) render full-width. */
+[data-slot='composer-rich-input']:lang(zh) {
+  font-family: 'PingFang SC', 'Microsoft YaHei', 'Noto Sans CJK SC', var(--dt-font-sans);
+}
+
+[data-slot='composer-rich-input']:lang(zh-hant) {
+  font-family: 'PingFang TC', 'Microsoft JhengHei', 'Noto Sans CJK TC', var(--dt-font-sans);
+}
+
+[data-slot='composer-rich-input']:lang(ja) {
+  font-family: 'Hiragino Sans', 'Yu Gothic UI', 'Noto Sans CJK JP', var(--dt-font-sans);
+}
+
 /* Appearance → Text direction. An explicit RTL/LTR choice stamps dir on the
    markdown root, each user line block and both composers; the first-strong
    plaintext vote is exactly what the reader overrode, so it steps aside and
@@ -2396,6 +2411,10 @@ button[data-slot='aui_msg-reactions'] svg {
 .tool-ticker {
   height: var(--conversation-line-height);
   overflow: hidden;
+  /* clip beats hidden when an ancestor opacity stacking context would
+     otherwise let the transformed reel paint old rows through the window. */
+  overflow: clip;
+  isolation: isolate;
 }
 
 .tool-ticker__reel {

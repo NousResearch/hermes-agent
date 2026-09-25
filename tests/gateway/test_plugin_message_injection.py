@@ -768,3 +768,184 @@ async def test_plugin_context_exposes_keyed_gateway_receipt(tmp_path, monkeypatc
         assert context.injection_status("evt_api")["state"] == "dispatched"
         assert context.injection_status("missing") is None
         runner._clear_plugin_message_injector()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("notice_succeeds", [True, False])
+async def test_session_notice_is_bound_to_delivered_turn_and_ledgered(
+    tmp_path, monkeypatch, notice_succeeds,
+):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "plugins": {"entries": {"notify-plugin": {"allow_gateway_injection": True}}}}))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+
+    async def answer(event):
+        event._heartbeat_execution_started = True
+        return "The exact answer"
+
+    sent = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+        success = notice_succeeds if len(sent) >= 3 else True
+        return SendResult(success=success, error=None if success else "send_path_degraded")
+
+    adapter.set_message_handler(answer)
+    adapter.send = send
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    manager = PluginManager()
+    context = PluginContext(
+        PluginManifest(name="notify-plugin", key="notify-plugin", source="user"), manager)
+
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+        runner._install_plugin_message_injector()
+        assert context.inject_message(
+            "Question", session_key=entry.session_key,
+            idempotency_key="evt_notice") is True
+        while runner._background_tasks or adapter._background_tasks:
+            await asyncio.gather(*list(runner._background_tasks | adapter._background_tasks),
+                                 return_exceptions=True)
+        receipt = context.injection_status("evt_notice")
+        assert receipt["delivery_state"] == "delivered"
+        assert context.send_session_notice(
+            entry.session_key, "Approve digest abc", idempotency_key="evt_notice") is True
+        while runner._background_tasks:
+            await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+        receipt = context.injection_status("evt_notice")
+        assert receipt["notice_state"] == "ledgered"
+        assert receipt["notice_delivery_state"] == (
+            "delivered" if notice_succeeds else "failed")
+        assert sent[2] == "Approve digest abc"
+        send_count = len(sent)
+        assert context.send_session_notice(
+            entry.session_key, "Approve digest abc", idempotency_key="evt_notice") is True
+        assert len(sent) == send_count
+        assert context.send_session_notice(
+            "agent:main:telegram:dm:other", "Approve digest abc",
+            idempotency_key="evt_notice") is False
+        assert context.send_session_notice(
+            entry.session_key, "different text", idempotency_key="evt_notice") is False
+        runner._clear_plugin_message_injector()
+
+
+@pytest.mark.asyncio
+async def test_session_notice_refuses_changed_session_generation(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from gateway import delivery_ledger as delivery
+    from gateway import plugin_injection_ledger as injection
+    entry = _entry()
+    assert injection.claim("notify-plugin", "evt_generation_notice", entry.session_key,
+                           "Question") == "new"
+    assert injection.bind_session("notify-plugin", "evt_generation_notice", entry.session_id)
+    delivery.record_obligation(
+        obligation_id="answer-1", session_key=entry.session_key,
+        platform="telegram", chat_id="42", thread_id=None, content="Answer")
+    delivery.mark_delivered("answer-1")
+    injection.advance("notify-plugin", "evt_generation_notice", "turn_complete",
+                      obligation_id="answer-1")
+
+    adapter = _RoutingAdapter()
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    entry.session_id = "session-after-new"
+
+    assert runner._schedule_plugin_session_notice(
+        session_key=entry.session_key, content="Approve digest abc",
+        plugin_id="notify-plugin", idempotency_key="evt_generation_notice") is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    assert injection.state("notify-plugin", "evt_generation_notice")["notice_state"] == "refused"
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transient", ["draining", "adapter_unavailable"])
+async def test_session_notice_retries_transient_pre_delivery_failure(
+    tmp_path, monkeypatch, transient,
+):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from gateway import delivery_ledger as delivery
+    from gateway import plugin_injection_ledger as injection
+    entry = _entry()
+    key = f"evt_notice_retry_{transient}"
+    assert injection.claim("notify-plugin", key, entry.session_key, "Question") == "new"
+    assert injection.bind_session("notify-plugin", key, entry.session_id)
+    delivery.record_obligation(
+        obligation_id="answer-1", session_key=entry.session_key,
+        platform="telegram", chat_id="42", thread_id=None, content="Answer")
+    delivery.mark_delivered("answer-1")
+    injection.advance("notify-plugin", key, "turn_complete", obligation_id="answer-1")
+
+    adapter = _RoutingAdapter()
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner = _runner(entry, adapter if transient == "draining" else None)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    if transient == "draining":
+        runner._draining = True
+
+    request = dict(session_key=entry.session_key, content="Approve digest abc",
+                   plugin_id="notify-plugin", idempotency_key=key)
+    assert runner._schedule_plugin_session_notice(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    assert injection.state("notify-plugin", key)["notice_state"] == "deferred"
+    adapter.send.assert_not_awaited()
+
+    runner._draining = False
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    assert runner._schedule_plugin_session_notice(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    receipt = injection.state("notify-plugin", key)
+    assert receipt["notice_delivery_state"] == "delivered"
+    adapter.send.assert_awaited_once()
+
+
+def test_dead_notice_scheduler_reclaims_only_before_delivery_ledger(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from gateway import delivery_ledger as delivery
+    from gateway import plugin_injection_ledger as injection
+    from hermes_cli.sqlite_util import transaction
+    session_key = "agent:main:telegram:dm:42"
+    assert injection.claim("notify-plugin", "evt_notice_crash", session_key, "Question") == "new"
+    assert injection.bind_session("notify-plugin", "evt_notice_crash", "session-42")
+    delivery.record_obligation(
+        obligation_id="answer-1", session_key=session_key,
+        platform="telegram", chat_id="42", thread_id=None, content="Answer")
+    delivery.mark_delivered("answer-1")
+    injection.advance("notify-plugin", "evt_notice_crash", "turn_complete",
+                      obligation_id="answer-1")
+
+    claim = lambda: injection.claim_notice(
+        "notify-plugin", "evt_notice_crash", session_key, "Approve digest abc")
+    assert claim() == "new"
+    with transaction(injection._connect()) as conn:
+        conn.execute("""
+            UPDATE plugin_injections SET notice_owner_pid=99999999,
+                notice_owner_started_at=1 WHERE idempotency_key='evt_notice_crash'
+        """)
+    assert claim() == "new"  # killed before any ledger row; safe to schedule
+    notice_id = injection.state("notify-plugin", "evt_notice_crash")["notice_obligation_id"]
+    delivery.record_obligation(
+        obligation_id=notice_id, session_key=session_key, platform="telegram",
+        chat_id="42", thread_id=None, content="Approve digest abc")
+    with transaction(injection._connect()) as conn:
+        conn.execute("""
+            UPDATE plugin_injections SET notice_owner_pid=99999999,
+                notice_owner_started_at=1 WHERE idempotency_key='evt_notice_crash'
+        """)
+    assert claim() == "existing"  # ledger now owns recovery; never send twice

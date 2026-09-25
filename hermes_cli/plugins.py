@@ -673,6 +673,25 @@ class PluginContext:
                            exc_info=True)
             return None
 
+    def send_session_notice(self, session_key: str, text: str, *, idempotency_key: str) -> bool:
+        """Send one ledgered Telegram notice for this plugin's completed keyed turn.
+
+        The gateway verifies the injection's original session and generation.
+        ``True`` is scheduling acceptance; ``injection_status`` reports delivery.
+        """
+        if (not self._gateway_injection_allowed() or not self._manager.has_gateway_message_injector
+                or not session_key or not idempotency_key or not isinstance(text, str)
+                or not text or len(text) > 8192):
+            return False
+        try:
+            return self._manager.send_gateway_notice(
+                session_key=session_key, content=text, plugin_id=self.plugin_id,
+                idempotency_key=idempotency_key)
+        except Exception:
+            logger.warning("send_session_notice: scheduling failed for plugin %s", self.plugin_id,
+                           exc_info=True)
+            return False
+
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns."""
         try:
@@ -1301,6 +1320,14 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         """Submit a plugin-triggered turn to the live gateway."""
         registered = self._gateway_message_injector
         return registered is not None and bool(registered[1](**kwargs))
+
+    def send_gateway_notice(self, **kwargs: Any) -> bool:
+        """Submit a session-bound post-turn notice to the live gateway owner."""
+        registered = self._gateway_message_injector
+        if registered is None:
+            return False
+        scheduler = getattr(registered[0], "_schedule_plugin_session_notice", None)
+        return callable(scheduler) and bool(scheduler(**kwargs))
 
     @property
     def has_tui_message_injector(self) -> bool:

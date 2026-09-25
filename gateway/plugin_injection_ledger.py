@@ -30,6 +30,11 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             content_sha256 TEXT NOT NULL,
             state TEXT NOT NULL,
             delivery_obligation_id TEXT,
+            notice_sha256 TEXT,
+            notice_obligation_id TEXT,
+            notice_state TEXT,
+            notice_owner_pid INTEGER,
+            notice_owner_started_at INTEGER,
             last_error TEXT,
             created_at REAL NOT NULL,
             updated_at REAL NOT NULL,
@@ -43,6 +48,15 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         add_column_if_missing(conn, "plugin_injections", "owner_pid", "owner_pid INTEGER")
     if "owner_started_at" not in columns:
         add_column_if_missing(conn, "plugin_injections", "owner_started_at", "owner_started_at INTEGER")
+    for column, ddl in (
+        ("notice_sha256", "notice_sha256 TEXT"),
+        ("notice_obligation_id", "notice_obligation_id TEXT"),
+        ("notice_state", "notice_state TEXT"),
+        ("notice_owner_pid", "notice_owner_pid INTEGER"),
+        ("notice_owner_started_at", "notice_owner_started_at INTEGER"),
+    ):
+        if column not in columns:
+            add_column_if_missing(conn, "plugin_injections", column, ddl)
 
 
 def _connect() -> sqlite3.Connection:
@@ -115,15 +129,18 @@ def state(plugin_id: str, idempotency_key: str) -> dict | None:
     with closing(_connect()) as conn:
         row = conn.execute("""
             SELECT session_key, session_id, state, delivery_obligation_id, last_error,
+                   notice_state, notice_obligation_id,
                    created_at, updated_at FROM plugin_injections
             WHERE plugin_id=? AND idempotency_key=?
         """, (plugin_id, idempotency_key)).fetchone()
         if row is None:
             return None
-        session_key, session_id, lifecycle, obligation_id, error, created, updated = row
+        (session_key, session_id, lifecycle, obligation_id, error,
+         notice_state, notice_obligation_id, created, updated) = row
         result = {
             "session_key": session_key, "session_id": session_id, "state": lifecycle,
             "delivery_obligation_id": obligation_id, "last_error": error,
+            "notice_state": notice_state, "notice_obligation_id": notice_obligation_id,
             "created_at": created, "updated_at": updated,
         }
         if obligation_id:
@@ -132,7 +149,78 @@ def state(plugin_id: str, idempotency_key: str) -> dict | None:
             """, (obligation_id,)).fetchone()
             if delivery:
                 result["delivery_state"], result["delivery_error"], result["response"] = delivery
+        if notice_obligation_id:
+            delivery = conn.execute("""
+                SELECT state, last_error FROM delivery_obligations WHERE obligation_id=?
+            """, (notice_obligation_id,)).fetchone()
+            if delivery:
+                result["notice_delivery_state"], result["notice_delivery_error"] = delivery
         return result
+
+
+def claim_notice(plugin_id: str, idempotency_key: str, session_key: str, content: str) -> str:
+    """Claim one post-turn notice only after the keyed answer reached Telegram."""
+    from gateway.delivery_ledger import compute_obligation_id
+
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    obligation_id = compute_obligation_id(
+        session_key, f"plugin-notice:{plugin_id}:{idempotency_key}", content)
+    pid, started = _owner_stamp()
+    with transaction(_connect()) as conn:
+        row = conn.execute("""
+            SELECT session_key, session_id, state, delivery_obligation_id,
+                   notice_sha256, notice_obligation_id, notice_state,
+                   notice_owner_pid, notice_owner_started_at
+            FROM plugin_injections WHERE plugin_id=? AND idempotency_key=?
+        """, (plugin_id, idempotency_key)).fetchone()
+        if row is None or row[0] != session_key or not row[1] or row[2] != "turn_complete":
+            raise ValueError("notice requires a completed injection in its original session")
+        answer = conn.execute("""
+            SELECT state FROM delivery_obligations WHERE obligation_id=?
+        """, (row[3],)).fetchone()
+        if answer is None or answer[0] != "delivered":
+            raise ValueError("notice requires delivered answer")
+        if row[4] is not None:
+            if row[4] != digest or row[5] != obligation_id:
+                raise ValueError("notice key already belongs to different content")
+            # A transient failure before the delivery obligation is recorded
+            # may retry in the same gateway process. A queued live owner or a
+            # terminal refusal must not schedule another send.
+            if row[6] != "deferred" and (row[6] != "queued" or _owner_alive(row[7], row[8])):
+                return "existing"
+            # A killed scheduler never began the send. If a delivery row exists,
+            # the ordinary ledger owns recovery and another send would duplicate it.
+            if conn.execute("""
+                SELECT 1 FROM delivery_obligations WHERE obligation_id=?
+            """, (obligation_id,)).fetchone():
+                return "existing"
+        cursor = conn.execute("""
+            UPDATE plugin_injections
+            SET notice_sha256=?, notice_obligation_id=?, notice_state='queued',
+                notice_owner_pid=?, notice_owner_started_at=?, updated_at=?
+            WHERE plugin_id=? AND idempotency_key=?
+              AND notice_owner_pid IS ? AND notice_owner_started_at IS ?
+        """, (digest, obligation_id, pid, started, time.time(), plugin_id,
+              idempotency_key, row[7], row[8]))
+        return "new" if cursor.rowcount else "existing"
+
+
+def mark_notice(plugin_id: str, idempotency_key: str, notice_state: str) -> None:
+    with transaction(_connect()) as conn:
+        conn.execute("""
+            UPDATE plugin_injections SET notice_state=?, updated_at=?
+            WHERE plugin_id=? AND idempotency_key=?
+        """, (notice_state, time.time(), plugin_id, idempotency_key))
+
+
+def release_notice_claim(plugin_id: str, idempotency_key: str) -> None:
+    with transaction(_connect()) as conn:
+        conn.execute("""
+            UPDATE plugin_injections
+            SET notice_sha256=NULL, notice_obligation_id=NULL,
+                notice_state=NULL, notice_owner_pid=NULL, notice_owner_started_at=NULL
+            WHERE plugin_id=? AND idempotency_key=? AND notice_state='queued'
+        """, (plugin_id, idempotency_key))
 
 
 def advance(plugin_id: str, idempotency_key: str, state: str, *,

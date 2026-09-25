@@ -21,6 +21,8 @@ from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_common import _UNSET
+from gateway.run_inbound_enrich import GatewayInboundEnrichMixin
+from gateway.run_inbound_prepend import GatewayInboundPrependMixin
 from gateway.run_inbound_unauthorized import (
     PAIRING_RATE_LIMITED_REPLY, UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg,
     unauthorized_owner_hint,
@@ -61,7 +63,7 @@ def strip_discord_triggering_note(event: Any, message_text: Any) -> Any:
     return message_text[len(prefix):] if message_text.startswith(prefix) else message_text
 
 
-class GatewayInboundMixin:
+class GatewayInboundMixin(GatewayInboundEnrichMixin, GatewayInboundPrependMixin):
     """Inbound message pipeline (_handle_message, text/media preparation, durable-turn markers, plugin injection) for GatewayRunner."""
 
     async def _hm_pre_gateway_dispatch_hook(
@@ -1461,42 +1463,6 @@ class GatewayInboundMixin:
                 video_paths.append(path)
         return image_paths, audio_paths, audio_file_paths, video_paths
 
-    async def _enrich_inbound_images(
-        self, source: SessionSource, session_key: str, message_text: str, image_paths: list[str]
-    ) -> str:
-        """Route images natively (attach pixels at run_conversation) or pre-analyze them into text."""
-        # See agent/image_routing.py. Offloaded to a thread: the decision does blocking network I/O
-        # (models.dev fetch on cache miss, Ollama /api/show probe) that would stall the event loop.
-        _img_mode = await asyncio.to_thread(
-            self._decide_image_input_mode, source=source, session_key=session_key,
-        )
-        if _img_mode == "native":
-            self._session_state(session_key).persistent.native_image_paths = list(image_paths)
-            logger.info(
-                "Image routing: native (model supports vision). %d image(s) will be attached inline.",
-                len(image_paths),
-            )
-            return message_text
-        logger.info(
-            "Image routing: text (mode=%s). Pre-analyzing %d image(s) via vision_analyze.",
-            _img_mode, len(image_paths),
-        )
-        # Vision enrichment runs before AIAgent.run_conversation(), so bind this session's resolved
-        # runtime explicitly rather than consulting process-global compatibility mirrors.
-        vision_runtime = None
-        try:
-            turn_model, runtime_kwargs = self._resolve_session_agent_runtime(
-                source=source, session_key=session_key,
-            )
-            vision_runtime = {**(runtime_kwargs or {}), "model": turn_model}
-        except Exception:
-            logger.debug("vision enrichment: session runtime resolution failed", exc_info=True)
-
-        from agent.auxiliary_client import scoped_runtime_main
-
-        with scoped_runtime_main(vision_runtime):
-            return await self._enrich_message_with_vision(message_text, image_paths)
-
     async def _echo_stt_transcripts(
         self, adapter, source: SessionSource, transcripts: List[str], *, metadata=None, log_context: str = "Transcript"
     ) -> None:
@@ -1507,22 +1473,6 @@ class GatewayInboundMixin:
             except Exception as echo_exc:
                 logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
 
-    async def _enrich_inbound_voice(
-        self, event: MessageEvent, source: SessionSource, message_text: str, audio_paths: list[str]
-    ) -> str:
-        message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-            message_text, audio_paths,
-        )
-        # Echo each successful transcript back immediately when configured so users can verify STT
-        # quality in real time. On transcription failure do NOT send a hardcoded notice: that
-        # bypassed the LLM and produced two replies; enrichment leaves one neutral marker instead.
-        if _successful_transcripts and self._should_echo_stt_transcripts():
-            _echo_adapter = self._delivery_adapter_for(source)
-            if _echo_adapter:
-                _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                await self._echo_stt_transcripts(_echo_adapter, source, _successful_transcripts, metadata=_echo_meta)
-        return message_text
-
     @staticmethod
     def _inbound_attachment_display_name(path: str) -> Tuple[str, str]:
         """``(display_name, agent_visible_path)``: cache filename is ``<id>_<id>_<original>``; the
@@ -1531,85 +1481,6 @@ class GatewayInboundMixin:
         basename = os.path.basename(path)
         parts = basename.split("_", 2)
         return re.sub(r'[^\w.\- ]', '_', parts[2] if len(parts) >= 3 else basename), to_agent_visible_cache_path(path)
-
-    @classmethod
-    def _prepend_inbound_media_file_notes(cls, message_text: str, audio_file_paths: list[str], video_paths: list[str]) -> str:
-        """Prepend a path-pointing note per audio-file / video attachment (content is not inlined)."""
-        for kind, noun, verb, tool, paths in (
-            ("an audio file attachment", "audio", "transcribe or process", "a transcription or media tool", audio_file_paths),
-            ("a video attachment", "video", "inspect or process", "a video analysis or media tool", video_paths),
-        ):
-            for _path in paths:
-                _display, _agent_path = cls._inbound_attachment_display_name(_path)
-                message_text = (
-                    f"[The user sent {kind}: '{_display}'. "
-                    f"It is saved at: {_agent_path}. "
-                    f"Its content is not inlined here. If the user's request involves "
-                    f"what the {noun} contains, {verb} it yourself — for "
-                    f"example by passing the path to {tool} — "
-                    f"instead of asking the user to describe it. Only ask what to do "
-                    f"with it if their intent is genuinely unclear.]"
-                    f"\n\n{message_text}"
-                )
-        return message_text
-
-    @classmethod
-    def _prepend_inbound_document_notes(cls, event: MessageEvent, message_text: str) -> str:
-        """Prepend a context note per non-media attachment (anything not routed as image/audio/video)."""
-        from gateway.run import (
-            _build_document_context_note, _event_media_is_audio, _event_media_is_image,
-            _event_media_is_video,
-        )
-        if not event.media_urls:
-            return message_text
-        import mimetypes as _mimetypes
-
-        _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
-        inline_flags = getattr(event, "media_text_inlined", None) or []
-        for i, path in enumerate(event.media_urls):
-            # A document mixed into a PHOTO/VOICE message (message-level type != DOCUMENT) still
-            # reaches the agent; only genuine non-media files get a note.
-            if any(f(event, i) for f in (_event_media_is_image, _event_media_is_audio, _event_media_is_video)):
-                continue
-            mtype = event.media_types[i] if i < len(event.media_types) else ""
-            if mtype in {"", "application/octet-stream"}:
-                _is_text = os.path.splitext(path)[1].lower() in _TEXT_EXTENSIONS
-                mtype = "text/plain" if _is_text else (_mimetypes.guess_type(path)[0] or "application/octet-stream")
-            # Every accepted file gets a note — a non-text/non-application MIME (font/*, model/*)
-            # must still tell the agent the file exists.
-            display_name, agent_path = cls._inbound_attachment_display_name(path)
-            inline_flag = inline_flags[i] if i < len(inline_flags) else None
-            context_note = _build_document_context_note(
-                display_name, agent_path, mtype, content_inlined=inline_flag is not False,
-            )
-            message_text = f"{context_note}\n\n{message_text}"
-        return message_text
-
-    @staticmethod
-    def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
-        """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
-        if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer even when the quoted text is already in history:
-            # it's disambiguation (*which* prior message), not deduplication.
-            # Adapters resolve the original message (or the user's native partial quote).
-            # A preview here silently loses later list items and code; keep that context intact.
-            reply_text = event.reply_to_text
-            _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
-            message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
-
-        # Discord: the triggering message id goes on the per-turn user message, never the cached
-        # system prompt — it changes every turn and would bust the agent-cache signature. It is
-        # the OUTERMOST prefix so strip_discord_triggering_note can peel exactly it off the
-        # persisted transcript row without touching the reply pointer.
-        if (
-            source is not None
-            and getattr(source, "platform", None) == Platform.DISCORD
-            and getattr(event, "message_id", None)
-        ):
-            from gateway.session import _discord_tools_loaded as _disc_tools_loaded
-            if _disc_tools_loaded():
-                message_text = f"{discord_triggering_note(event.message_id)}\n\n{message_text}"
-        return message_text
 
     async def _inbound_model_context_length(self, source: SessionSource, session_key: str) -> int:
         """Context length of the model this turn runs on. A global ``model.context_length`` pin
@@ -1960,59 +1831,7 @@ class GatewayInboundMixin:
             logger.debug("image_routing: decision failed, falling back to text — %s", exc)
             return "text"
 
-    async def _enrich_message_with_vision(self, user_text: str, image_paths: List[str]) -> str:
-        """Auto-analyze user-attached images with the vision tool and prepend the descriptions.
-        Description *and* local cache path are injected so the model understands the image without
-        a tool call and can re-examine it with vision_analyze."""
-        from tools.vision_tools import vision_analyze_tool
-        from agent.memory_manager import sanitize_context
-
-        analysis_prompt = (
-            "Concisely describe this image in 2-4 sentences "
-            "(~200 Chinese characters or ~150 English words). "
-            "Cover the main subject, key visible text/data/code, and overall context. "
-            "If it is a chart, diagram, or scientific figure, include the important "
-            "labels, legend, and key values. Skip decorative details."
-        )
-        enriched_parts = []
-        for path in image_paths:
-            try:
-                logger.debug("Auto-analyzing user image: %s", path)
-                result = json.loads(await vision_analyze_tool(image_url=path, user_prompt=analysis_prompt))
-                if result.get("success"):
-                    description = sanitize_context(result.get("analysis", ""))
-                    note = (
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
-                    )
-                else:
-                    note = (
-                        "[The user sent an image but I couldn't quite see it "
-                        "this time (>_<) You can try looking at it yourself "
-                        f"with vision_analyze using image_url: {path}]"
-                    )
-            except Exception as e:
-                logger.error("Vision auto-analysis error: %s", e)
-                note = (
-                    f"[The user sent an image but something went wrong when I "
-                    f"tried to look at it~ You can try examining it yourself "
-                    f"with vision_analyze using image_url: {path}]"
-                )
-            enriched_parts.append(note)
-        if not enriched_parts:
-            return user_text
-        prefix = "\n\n".join(enriched_parts)
-        return f"{prefix}\n\n{user_text}" if user_text else prefix
-
     _EMPTY_TEXT_PLACEHOLDER = "(The user sent a message with no text content)"
-
-    @classmethod
-    def _prepend_media_prefix(cls, prefix: str, user_text: str) -> str:
-        """``prefix`` + the user's text; the Discord empty-content placeholder is dropped as redundant."""
-        if user_text and user_text.strip() != cls._EMPTY_TEXT_PLACEHOLDER:
-            return f"{prefix}\n\n{user_text}"
-        return prefix
 
     @staticmethod
     def _untranscribed_audio_note(path: str) -> str:
@@ -2047,50 +1866,6 @@ class GatewayInboundMixin:
         # Plain quoted line: a "The user sent a voice message..." wrapper read as a meta-instruction
         # and made the LLM comment on voice mode instead.
         return transcript, f'"{transcript}"'
-
-    async def _enrich_message_with_transcription(
-        self, user_text: str, audio_paths: List[str]
-    ) -> tuple[str, List[str]]:
-        """Transcribe voice clips with the configured STT provider and prepend the transcripts →
-        ``(enriched_text, successful_transcripts)``; the transcripts (input order; empty if every clip
-        failed or STT is disabled) let callers echo them back before the agent loop."""
-        from gateway.run import _probe_audio_duration
-        audio_paths = list(dict.fromkeys(audio_paths))
-        if not getattr(self.config, "stt_enabled", True):
-            notes = []
-            for path in audio_paths:
-                abs_path = os.path.abspath(path)
-                duration_str = await _probe_audio_duration(abs_path)
-                suffix = f" (duration: {duration_str})" if duration_str else ""
-                notes.append(f"[The user sent a voice message: {abs_path}{suffix}]")
-            return (self._prepend_media_prefix("\n\n".join(notes), user_text) if notes else user_text), []
-
-        try:
-            from tools.transcription_tools import (
-                transcribe_audio, transcribe_audio_local_fallback
-            )
-        except ModuleNotFoundError as e:
-            logger.error("Transcription module unavailable: %s", e)
-            return self._prepend_media_prefix("[voice message could not be transcribed]", user_text), []
-
-        enriched_parts = []
-        successful_transcripts: List[str] = []
-        for path in audio_paths:
-            try:
-                logger.debug("Transcribing user voice: %s", path)
-                transcript, note = await self._transcribe_one_clip(
-                    path, transcribe_audio, transcribe_audio_local_fallback,
-                )
-                if transcript is not None:
-                    successful_transcripts.append(transcript)
-                enriched_parts.append(note)
-            except Exception as e:
-                logger.error("Transcription error: %s", e)
-                enriched_parts.append(self._untranscribed_audio_note(path))
-
-        if enriched_parts:
-            user_text = self._prepend_media_prefix("\n\n".join(enriched_parts), user_text)
-        return user_text, successful_transcripts
 
     def _pending_event_audio_paths(self, event) -> List[str]:
         """Return STT-eligible paths from a pending voice message."""

@@ -839,10 +839,15 @@ class SessionDB(
             self._conn = self._open_writer_conn()
         except Exception as exc:
             raise sqlite3.OperationalError(
-                f"state.db connection was closed while a {context} was still "
-                f"in flight (a session-teardown path called close() before "
-                f"this worker finished — #94736) and the automatic reopen failed: {exc}"
+                f"state.db connection was closed while a {context} was still in "
+                "flight (a session-teardown path called close() before this worker "
+                "finished — #94736) and the automatic reopen failed: {exc}"
             ) from exc
+        # The close ended the WAL generation (the last-connection close unlinks the
+        # sidecars) and the reopen starts a new one; refresh the recorded identity so
+        # the next write's generation probe compares against the new generation instead
+        # of the retired one (#101064).
+        self._record_db_file_identity()
 
     def _execute_write(
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,

@@ -455,3 +455,20 @@ def test_refuse_helper_raises_while_deleted_wal_held(tmp_path, force_wal):
         assert not wal.exists()
     finally:
         raw.close()
+
+
+# ── Close/reopen identity refresh (#101064) ─────────────────────────────────────────────────────
+
+def test_close_reopen_refreshes_the_recorded_sidecar_identity(tmp_path, force_wal):
+    """A close() during a worker's lifetime ends the WAL generation (the last-connection
+    close unlinks the sidecars); the automatic reopen must re-record the identity so the
+    next write does not quarantine against the retired generation (field 07:24, #101064)."""
+    path = tmp_path / "state.db"
+    db = make_db(path, "s", "before")
+    require_wal(db)
+    db.close()
+    db._reopen_after_close_locked("write")
+    db.append_message("s", role="user", content="post-reopen")  # must NOT raise
+    contents = [m["content"] for m in db.get_messages("s")]
+    assert "post-reopen" in contents
+    db.close()

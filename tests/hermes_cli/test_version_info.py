@@ -249,3 +249,22 @@ def test_old_updater_version_stub_reads_the_same_stamp_as_version_info(tmp_path)
     unstamped = tmp_path / "unstamped"
     unstamped.mkdir()
     assert read(unstamped)[0] == "0.0.0"
+
+
+def test_run_git_uses_utf8_encoding_and_replace_errors(tmp_path, monkeypatch):
+    from hermes_cli.version_info import _run_git
+
+    recorded_kwargs = {}
+
+    def mock_run(*args, **kwargs):
+        recorded_kwargs.update(kwargs)
+        mock_res = subprocess.CompletedProcess(args, 0, stdout="test-sha\n", stderr="")
+        return mock_res
+
+    monkeypatch.setattr(subprocess, "run", mock_run)
+    res = _run_git(tmp_path, "rev-parse", "HEAD")
+
+    assert res == "test-sha"
+    assert recorded_kwargs.get("encoding") == "utf-8"
+    assert recorded_kwargs.get("errors") == "replace"
+

@@ -274,6 +274,13 @@ class PythonEnvironment:
         env = _base_environment(self.env)
         env.update(UV_PYTHON=str(self.python), UV_PROJECT_ENVIRONMENT=str(self.destination),
                    UV_CACHE_DIR=str(self.cache), UV_PYTHON_DOWNLOADS="never")
+        # A default-index override (bridged pip index-url included) makes uv
+        # re-resolve and reject a lock that still records the previous registry.
+        # Verification must keep that registry; the pins are what --locked checks.
+        # Extra indexes and transport knobs stay. A resolving `uv lock` does too.
+        if "--locked" in args or (args[:1] == ["lock"] and "--check" in args):
+            env.pop("UV_INDEX_URL", None)
+            env.pop("UV_DEFAULT_INDEX", None)
         with tempfile.TemporaryDirectory(prefix="pm-uv-config-") as config:
             env.update(XDG_CONFIG_HOME=config, XDG_CONFIG_DIRS=config)
             command = [str(self.uv), *args]

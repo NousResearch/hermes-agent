@@ -32,10 +32,10 @@ def sample_wav(tmp_path):
 
 @pytest.fixture
 def temp_voice_dir(tmp_path, monkeypatch):
-    """Redirect _TEMP_DIR to a temporary path."""
+    """Redirect the recordings dir to a temporary path."""
     voice_dir = tmp_path / "hermes_voice"
     voice_dir.mkdir()
-    monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(voice_dir))
+    monkeypatch.setattr("tools.voice_mode._recordings_dir", lambda: str(voice_dir))
     return voice_dir
 
 
@@ -580,6 +580,26 @@ class TestMacOSAudioOutputPolicy:
 # ============================================================================
 # cleanup_temp_recordings
 # ============================================================================
+
+class TestRecordingLocation:
+    def test_recordings_land_under_hermes_home_even_when_tmpdir_points_elsewhere(self, tmp_path, monkeypatch):
+        import tempfile
+
+        from hermes_constants import get_hermes_home
+        from tools.voice_mode import _new_recording_path
+
+        shared_tmp = tmp_path / "shared-tmp"
+        shared_tmp.mkdir()
+        for var in ("TMPDIR", "TMP", "TEMP"):
+            monkeypatch.setenv(var, str(shared_tmp))
+        monkeypatch.setattr(tempfile, "tempdir", None)
+
+        recording = Path(_new_recording_path("wav"))
+
+        assert recording.parent.is_dir()
+        assert recording.resolve().is_relative_to(get_hermes_home().resolve())
+        assert not recording.resolve().is_relative_to(shared_tmp.resolve())
+
 
 class TestCleanupTempRecordings:
     def test_old_files_deleted(self, temp_voice_dir):

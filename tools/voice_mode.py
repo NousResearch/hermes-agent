@@ -35,7 +35,21 @@ DTYPE = "int16"
 SAMPLE_WIDTH = 2  # bytes per sample (int16)
 SILENCE_RMS_THRESHOLD = 200  # RMS below this = silence (int16 range 0-32767)
 SILENCE_DURATION_SECONDS = 3.0  # continuous silence before auto-stop
-_TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
+
+
+def _recordings_dir() -> str:
+    """``<HERMES_HOME>/cache/hermes_voice``, created owner-only and resolved per call.
+
+    Not the temp dir: a user-exported ``TMPDIR`` is often the shared ``/tmp``, where a
+    fixed-name directory may already exist and belong to another account. Resolved per
+    call so a long-lived TUI/Desktop backend follows the active profile (#98749)."""
+    from hermes_constants import apply_secure_dir_policy, get_hermes_home
+
+    path = get_hermes_home() / "cache" / "hermes_voice"
+    path.mkdir(parents=True, exist_ok=True)
+    if sys.platform != "win32":
+        apply_secure_dir_policy(path)
+    return str(path)
 
 
 # ── Lazy audio imports ──
@@ -518,9 +532,8 @@ def stop_thinking_sound() -> None:
 
 # ── Recorders ──
 def _new_recording_path(ext: str) -> str:
-    """Timestamped ``recording_*.<ext>`` path under _TEMP_DIR (created on demand)."""
-    os.makedirs(_TEMP_DIR, exist_ok=True)
-    return os.path.join(_TEMP_DIR, f"recording_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
+    """Timestamped ``recording_*.<ext>`` path under :func:`_recordings_dir`."""
+    return os.path.join(_recordings_dir(), f"recording_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
 
 
 class _RecorderBase:
@@ -921,7 +934,7 @@ def _transcribe_wav_in_chunks(wav_path: str, *, model: Optional[str], max_file_s
 
 def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[str]:
     """Write WAV chunks small enough to pass the shared STT file-size gate."""
-    os.makedirs(_TEMP_DIR, exist_ok=True)
+    chunk_dir = _recordings_dir()
     chunk_paths: List[str] = []
     with wave.open(wav_path, "rb") as source:
         params = source.getparams()
@@ -938,7 +951,7 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
             index += 1
             with tempfile.NamedTemporaryFile(
                     prefix=f"{os.path.splitext(os.path.basename(wav_path))[0]}_chunk{index:03d}_",
-                    suffix=".wav", dir=_TEMP_DIR, delete=False) as temp:
+                    suffix=".wav", dir=chunk_dir, delete=False) as temp:
                 chunk_path = temp.name
             try:
                 with wave.open(chunk_path, "wb") as chunk:
@@ -1514,10 +1527,8 @@ def check_voice_requirements() -> Dict[str, Any]:
 # ── Temp file cleanup ──
 def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
     """Remove ``recording_*.wav`` temp files older than *max_age_seconds*; returns the count."""
-    if not os.path.isdir(_TEMP_DIR):
-        return 0
     deleted, now = 0, time.time()
-    for entry in os.scandir(_TEMP_DIR):
+    for entry in os.scandir(_recordings_dir()):
         if entry.is_file() and entry.name.startswith("recording_") and entry.name.endswith(".wav"):
             with suppress(OSError):
                 if now - entry.stat().st_mtime > max_age_seconds:

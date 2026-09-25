@@ -9,7 +9,7 @@ import type { SessionInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import { $sidebarShowAllSessions } from '@/store/layout'
-import { fetchProjectSessions, projectProfile } from '@/store/projects'
+import { fetchProjectSessions } from '@/store/projects'
 
 import {
   SIDEBAR_LEAD_ICON_SIZE,
@@ -137,14 +137,6 @@ export function ProjectOverviewRow({
   const offerShowAll = !showAllSessions && !expanded && preview.length > 0 && hiddenCount > 0
 
   const showAll = () => {
-    // All-profiles view has no single backend to ask for one project's lanes;
-    // drilling in is the reach there.
-    if (!projectProfile()) {
-      onEnter?.(project.id)
-
-      return
-    }
-
     setExpanding(true)
     fetchProjectSessions(project.id, { supersedable: false })
       .then(tree => void (tree && setExpanded(tree)))

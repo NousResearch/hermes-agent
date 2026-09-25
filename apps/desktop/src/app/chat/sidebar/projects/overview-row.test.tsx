@@ -125,6 +125,31 @@ describe('ProjectOverviewRow', () => {
     expect(screen.queryByRole('button', { name: 'Show all 5 sessions' })).toBeNull()
   })
 
+  it('expands Home in all-profiles scope instead of drilling into an unhydrated preview', async () => {
+    workspaceOpen.value = true
+    projectsStore.projectProfile.mockReturnValue(null)
+    const rows = Array.from({ length: 15 }, (_, index) => session(`s${index}`, 100 - index))
+    const home = { ...project, id: '__no_project__', isNoProject: true, sessionCount: 15 } as SidebarProjectTree
+    projectsStore.fetchProjectSessions.mockResolvedValue({
+      ...home,
+      repos: [{ groups: [{ sessions: rows }] }]
+    } as unknown as SidebarProjectTree)
+    const onEnter = vi.fn()
+    render(
+      <ProjectOverviewRow
+        onEnter={onEnter}
+        previewSessions={rows.slice(0, 3)}
+        project={home}
+        renderRows={items => <div data-testid="rows">{items.map(item => item.id).join(',')}</div>}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 15 sessions' }))
+    await waitFor(() => expect(screen.getByTestId('rows').textContent?.split(',')).toHaveLength(15))
+    expect(projectsStore.fetchProjectSessions).toHaveBeenCalledWith(home.id, { supersedable: false })
+    expect(onEnter).not.toHaveBeenCalled()
+  })
+
   // The hydrated lanes are the raw backend payload: pinned, filtered-out and
   // just-deleted sessions must go through the same exclusion the previews did,
   // and N must not promise rows the view hides.

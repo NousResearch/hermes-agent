@@ -626,6 +626,25 @@ def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000
     return {"projects": projects, "active_id": None, "scoped_session_ids": scoped_session_ids,
             "errors": errors}
 
+@sessions_router.get("/api/profiles/projects/sessions")
+def get_profiles_project_sessions(project_id: str, session_limit: int = 5000):
+    """Hydrate a merged project across profiles, including Home, on demand."""
+    from tui_gateway import server as gateway_server
+    merged: Dict[str, Dict[str, Any]] = {}
+    errors: List[Dict[str, str]] = []
+
+    for name, home in _profile_targets("GET /api/profiles/projects/sessions"):
+        def _read(db, name=name, home=home):
+            with _hermes_home_scope(home):
+                tree, _active_id = gateway_server._build_project_tree(
+                    db, preview_limit=0, hydrate=True,
+                    session_limit=session_limit, include_discovered=False)
+                _merge_profile_tree(merged, tree["projects"], name, 0)
+        _read_profile_db(name, home, errors, _read)
+
+    return {"project": next((p for p in merged.values() if p["id"] == project_id), None),
+            "errors": errors}
+
 
 # `gh pr create` prints the PR url and nothing else, so a tool result whose whole output IS a
 # PR url means this session opened that PR; a url inside prose is a session TALKING about one.

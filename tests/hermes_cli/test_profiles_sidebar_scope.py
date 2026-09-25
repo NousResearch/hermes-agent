@@ -210,6 +210,23 @@ class TestCrossProfileProjectTree:
         assert len(homes) == 1
         assert homes[0]["sessionCount"] == 2
 
+    def test_home_expansion_hydrates_every_profile_beyond_preview(self, client, profiles_on_disk):
+        for name, home in profiles_on_disk.items():
+            for index in range(8):
+                _seed_session(home, f"{name}-{index}", source="desktop")
+
+        overview = client.get("/api/profiles/projects/tree").json()
+        home = next(project for project in overview["projects"] if project["isNoProject"])
+        assert home["sessionCount"] == 16
+        assert len(home["previewSessions"]) == 3
+
+        expanded = client.get("/api/profiles/projects/sessions", params={"project_id": home["id"]}).json()
+        assert expanded["errors"] == []
+        rows = [session for repo in expanded["project"]["repos"]
+                for group in repo["groups"] for session in group["sessions"]]
+        assert len(rows) == home["sessionCount"]
+        assert {row["profile"] for row in rows} == set(profiles_on_disk)
+
     def test_each_profile_contributes_its_own_projects_db(self, client, profiles_on_disk, tmp_path):
         """Proves the per-profile scoping, not just that two trees got merged.
 

@@ -541,7 +541,17 @@ export async function fetchProjectSessions(
   const profile = projectProfile()
 
   if (!profile) {
-    return null
+    if ($profileScope.get() !== ALL_PROFILES) {
+      return null
+    }
+    const res = await hermesApi<{ project: SidebarProjectTree | null }>({
+      path: `/api/profiles/projects/sessions?project_id=${encodeURIComponent(projectId)}`,
+      timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
+    })
+    if ((generation !== null && generation !== projectSessionsRefreshGeneration) || $profileScope.get() !== ALL_PROFILES) {
+      return null
+    }
+    return res.project ?? null
   }
 
   let context: ActiveProjectsContext | undefined

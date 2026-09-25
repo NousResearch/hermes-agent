@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Callable, NamedTuple, Optional
 
 from hermes_constants import _get_platform_default_hermes_home, get_hermes_home, get_process_hermes_home
+from hermes_state_errors import is_disk_full_error
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -964,10 +965,20 @@ def acquire_gateway_runtime_lock() -> bool:
     if not _try_acquire_file_lock(handle):
         handle.close()
         return False
-    handle.seek(0)
-    handle.truncate()
-    json.dump(_build_pid_record(), handle)
-    handle.flush()
+    try:
+        handle.seek(0)
+        handle.truncate()
+        json.dump(_build_pid_record(), handle)
+        handle.flush()
+    except OSError as exc:
+        if not is_disk_full_error(exc):
+            raise
+        logger.warning(
+            "Gateway runtime lock metadata could not be written to %s because the disk is full; "
+            "continuing with the lock held: %s",
+            path,
+            exc,
+        )
     with contextlib.suppress(OSError):
         os.fsync(handle.fileno())
     _gateway_lock_handle = handle
@@ -1051,7 +1062,17 @@ def write_pid_file() -> None:
     propagates for the caller to decide."""
     path = _get_pid_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_json_excl(path, _build_pid_record())
+    try:
+        _write_json_excl(path, _build_pid_record())
+    except OSError as exc:
+        if not is_disk_full_error(exc):
+            raise
+        logger.warning(
+            "Gateway PID metadata could not be written to %s because the disk is full; "
+            "continuing without the record: %s",
+            path,
+            exc,
+        )
     _clear_running_pid_cache()
 
 

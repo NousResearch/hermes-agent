@@ -227,6 +227,19 @@ class TestReaderGate:
             problems = guard.scan_file(bad)
         assert sorted(int(p.split(":")[1]) for p in problems) == [4, 6, 13], problems
 
+    @pytest.mark.parametrize("call", [
+        "yaml.full_load(config_path)", "yaml.unsafe_load(config_path)", "yaml.compose(config_path)",
+        "yaml.load_all(config_path)", "os.path.getsize(config_path)",
+        "config_path.stat()  # config-reader: ok",  # an escape without a reason does not suppress
+    ])
+    def test_every_read_form_is_flagged(self, tmp_path, call):
+        guard = self._guard()
+        bad = tmp_path / "hermes_cli" / "bad_reader.py"
+        bad.parent.mkdir()
+        bad.write_text(f"import os, yaml\ndef a(config_path):\n    return {call}\n", encoding="utf-8")
+        with patch.object(guard, "ROOT", tmp_path):
+            assert len(guard.scan_file(bad)) == 1
+
     def test_backend_calls_are_clean(self, tmp_path):
         guard = self._guard()
         good = tmp_path / "hermes_cli" / "good_reader.py"

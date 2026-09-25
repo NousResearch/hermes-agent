@@ -150,15 +150,18 @@ class GatewayInboundMixin(GatewayInboundEnrichMixin, GatewayInboundPrependMixin)
         sender's ID and the allowlist fix in the WARNING log and, once per sender, in the home channel."""
         from hermes_constants import display_hermes_home
         platform_name = source.platform.value if source.platform else "unknown"
+        receiver = self._adapter_profile_for_source(source)
+        authorization_home = self._authorization_home_for_source(source)
         hint = unauthorized_owner_hint(
-            platform_name, source.user_id, source.user_name or "", hermes_home=display_hermes_home(),
+            platform_name, source.user_id, source.user_name or "",
+            hermes_home=display_hermes_home(authorization_home),
         )
         logger.warning("Unauthorized user (ignored): %s", hint)
         notifier = getattr(self, "_unauthorized_owner_notifier", None)
         if notifier is None:
             notifier = self._unauthorized_owner_notifier = UnauthorizedOwnerNotifier()
-        if notifier.first_time(platform_name, source.user_id) and getattr(self, "config", None) is not None:
-            await notifier.notify(self, source, hint)
+        if notifier.first_time(platform_name, source.user_id, profile=receiver) and getattr(self, "config", None) is not None:
+            await notifier.notify(self, source, hint, profile=receiver)
 
     async def _hm_admit_event(
         self, event: "MessageEvent"

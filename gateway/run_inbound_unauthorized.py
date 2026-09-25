@@ -6,7 +6,7 @@ Two audiences, two rules:
   ``ignore``: an allowlist is configured, so any reply would leak that the bot exists).
 * The **owner** is the one who can fix a mis-typed allowlist, so an ignored DM is logged at
   WARNING with the sender's ID and the allowlist / pairing-mode fix, and surfaced once per
-  (platform, user) per gateway process in the platform's home channel when one is configured.
+  (receiving profile, platform, user) per gateway process in the platform's home channel when one is configured.
   No pairing request is minted for an ignored sender: strangers must not create server state
   when the owner has restricted access.
 """
@@ -21,7 +21,7 @@ from gateway.pairing import CODE_TTL_SECONDS, _allowlist_env_for_platform
 # Display names come from the stranger. Bound them and keep the mention/markdown surface small in
 # the owner's channel: a name is never a reason to render a link, mention or new section.
 _MAX_SENDER_NAME_CHARS = 64
-# Distinct (platform, user_id) senders remembered per process; a bot rotating IDs evicts the oldest
+# Distinct (receiving profile, platform, user_id) senders remembered per process; a bot rotating IDs evicts the oldest
 # instead of growing the set without limit.
 _MAX_SEEN_SENDERS = 2048
 
@@ -85,16 +85,16 @@ def unauthorized_owner_hint(
 class UnauthorizedOwnerNotifier:
     """Tells the owner's home channel about the first drop of each unrecognized DM sender.
 
-    One notice per (platform, user_id) per gateway process: the first drop is the useful signal (an
+    One notice per (receiving profile, platform, user_id) per gateway process: the first drop is the useful signal (an
     owner who typo'd their own ID); repeats would only let a stranger spam the home channel.
     """
 
     def __init__(self, max_seen: int = _MAX_SEEN_SENDERS) -> None:
-        self._seen: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._seen: OrderedDict[tuple[str | None, str, str], None] = OrderedDict()
         self._max_seen = max(1, int(max_seen))
 
-    def first_time(self, platform_name: str, user_id: str) -> bool:
-        key = (platform_name, str(user_id))
+    def first_time(self, platform_name: str, user_id: str, *, profile: str | None = None) -> bool:
+        key = (profile, platform_name, str(user_id))
         if key in self._seen:
             self._seen.move_to_end(key)
             return False
@@ -103,10 +103,10 @@ class UnauthorizedOwnerNotifier:
             self._seen.popitem(last=False)
         return True
 
-    async def notify(self, runner, source, hint: str) -> None:
-        """Best-effort post to the source platform's home channel; silent when none is configured."""
-        for platform, _cfg, home, transport in runner._home_channel_transports():
-            if platform != source.platform:
+    async def notify(self, runner, source, hint: str, *, profile: str | None = None) -> None:
+        """Notify only the receiving profile's owner; never fall back to another profile."""
+        for owner, platform, _cfg, home, transport in runner._served_home_channel_transports():
+            if owner != profile or platform != source.platform:
                 continue
             if str(home.chat_id) == str(source.chat_id):
                 # The stranger's DM *is* the home channel (misconfiguration); posting there would

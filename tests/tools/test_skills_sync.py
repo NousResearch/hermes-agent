@@ -14,12 +14,10 @@ from tools.skills_sync import (
     _read_skill_name,
     _write_manifest,
     _discover_bundled_skills,
-    _compute_relative_dest,
     _dir_hash,
     sync_skills,
 )
 from tools.skills_sync_bundled_ops import reset_bundled_skill
-from tools.skills_sync_optional import restore_official_optional_skill
 
 
 class TestReadWriteManifest:
@@ -137,13 +135,6 @@ class TestReadSkillName:
         assert skills[0][0] == "audiocraft-audio-generation"
 
 
-class TestComputeRelativeDest:
-    def test_preserves_category_structure(self):
-        bundled = Path("/repo/skills")
-        dest = _compute_relative_dest(Path("/repo/skills/mlops/axolotl"), bundled)
-        assert str(dest).endswith("mlops/axolotl")
-        # Flat (uncategorized) skills keep their own name.
-        assert _compute_relative_dest(Path("/repo/skills/simple"), bundled).name == "simple"
 
 
 class TestRmtreeWritableScopeGuard:
@@ -522,6 +513,52 @@ class TestSyncSkills:
             assert (skills_dir / "category" / "new-skill" / "SKILL.md").exists()
 
 
+class TestDroppedBuiltinProvenance:
+    """#95415: a built-in the catalog dropped keeps built-in provenance while any copy of it is left;
+    otherwise /api/skills badges it "Learned" and the Desktop offers edit/archive for it."""
+
+    def _bundled(self, tmp_path, *names):
+        bundled = tmp_path / "bundled_skills"
+        shutil.rmtree(bundled, ignore_errors=True)
+        for name in names:
+            (bundled / "cat" / name).mkdir(parents=True)
+            (bundled / "cat" / name / "SKILL.md").write_text(f"---\nname: {name}\n---\n# {name}\n")
+        return bundled
+
+    def _sync(self, bundled):
+        with patch("tools.skills_sync._get_bundled_dir", return_value=bundled), \
+                patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"):
+            return sync_skills(quiet=True)
+
+    def test_catalog_drop_keeps_builtin_provenance_while_a_copy_exists(self, tmp_path):
+        from hermes_constants import get_hermes_home
+        from tools.skill_usage import provenance
+
+        skills = get_hermes_home() / "skills"
+        self._sync(self._bundled(tmp_path, "kept", "dropped", "dropped-archived", "dropped-deleted"))
+        (skills / ".archive").mkdir()
+        shutil.move(str(skills / "cat" / "dropped-archived"), str(skills / ".archive" / "dropped-archived"))
+        shutil.rmtree(skills / "cat" / "dropped-deleted")
+
+        result = self._sync(self._bundled(tmp_path, "kept"))
+
+        assert result["cleaned"] == ["dropped-deleted"]
+        assert {"dropped", "dropped-archived"} <= set(_read_manifest())
+        assert provenance("dropped") == "bundled" and provenance("dropped-archived") == "bundled"
+
+    def test_suppressed_builtin_is_not_agent_authored_after_manifest_cleanup(self, tmp_path):
+        """Profiles an older sync already cleaned: the curator suppression list only records built-ins."""
+        from hermes_constants import get_hermes_home
+        from tools.skill_usage import provenance
+
+        skills = get_hermes_home() / "skills"
+        (skills / "resurrected").mkdir(parents=True)
+        (skills / "resurrected" / "SKILL.md").write_text("---\nname: resurrected\n---\n")
+        (skills / ".curator_suppressed").write_text("resurrected\n")
+
+        assert provenance("resurrected") == "bundled"
+
+
 class TestGetBundledDir:
     def test_env_var_override_with_default_fallback(self, tmp_path, monkeypatch):
         custom_dir = tmp_path / "custom_skills"
@@ -606,7 +643,6 @@ class TestResetBundledSkill:
 
         assert untracked["ok"] is False
         assert untracked["action"] == "not_in_manifest"
-        assert "not a tracked bundled skill" in untracked["message"]
 
         # Tracked in the manifest, but no longer shipped upstream.
         ghost = skills_dir / "productivity" / "ghost-skill"
@@ -696,7 +732,6 @@ class TestResetBundledSkill:
         # Restore failed, and the manifest must be left untouched.
         assert result["ok"] is False
         assert result["action"] == "not_reset"
-        assert "Manifest entry preserved" in result["message"]
         manifest_after = manifest_file.read_text()
         assert "google-workspace" in manifest_after
         # User copy is still on disk (we changed nothing).

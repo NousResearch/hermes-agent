@@ -4,7 +4,7 @@ import logging
 from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Tuple, Union
 
-from agent.skill_utils import extract_skill_editorial_metadata, is_excluded_skill_path
+from agent.skill_utils import is_excluded_skill_path
 from tools.skills_hub_github import GitHubAuth, GitHubSource, _skip_bundle_file, _tree_members
 from tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _hermes_tags, _matches_query, _memo_json, _parse_frontmatter, hub,
@@ -24,6 +24,11 @@ def _clean_rel_parts(path: str) -> Optional[List[str]]:
     """Split a relative path, dropping ``.``/empty parts; None on traversal or empty."""
     parts = [p for p in path.split("/") if p not in ("", ".")]
     return None if not parts or ".." in parts else parts
+
+
+def _entry_provider(entry: dict) -> str:
+    """Normalized ``extra.provider`` label of a raw index entry."""
+    return str((entry.get("extra") or {}).get("provider", "")).lower()
 
 
 class OptionalSkillSource(SkillSource):
@@ -112,7 +117,7 @@ class OptionalSkillSource(SkillSource):
         # Catalog stubs point at the real skill in an upstream-maintained repo
         # (metadata.hermes.upstream); install pulls the live content from there.
         try:
-            skill_md = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+            skill_md = (skill_dir / "SKILL.md").read_text(encoding="utf-8-sig")
         except (OSError, UnicodeDecodeError):
             skill_md = None
         upstream = None if skill_md is None else self._upstream_pointer_from_content(skill_md)
@@ -264,20 +269,13 @@ class OptionalSkillSource(SkillSource):
         for skill_md in self._local_skill_mds():
             parent = skill_md.parent
             try:
-                content = skill_md.read_text(encoding="utf-8")
+                content = skill_md.read_text(encoding="utf-8-sig")
             except (OSError, UnicodeDecodeError):
                 continue
             fm = _parse_frontmatter(content)
             tags = _hermes_tags(fm)
-            name = fm.get("name", parent.name)
-            description = fm.get("description", "")[:200]
-            meta = self._meta(parent.relative_to(self._optional_dir).as_posix(), name,
-                              description, tags if isinstance(tags, list) else [])
-            editorial = extract_skill_editorial_metadata(
-                fm, fallback_name=name, fallback_description=description)
-            meta.editorial_name = editorial["editorial_name"]
-            meta.editorial_description = editorial["editorial_description"]
-            results.append(meta)
+            results.append(self._meta(parent.relative_to(self._optional_dir).as_posix(), fm.get("name", parent.name),
+                                      fm.get("description", "")[:200], tags if isinstance(tags, list) else []))
         return results
 
 
@@ -318,12 +316,16 @@ class HermesIndexSource(SkillSource):
         entry = next((s for s in self._skills() if s.get("identifier") == identifier), None)
         return entry.get("trust_level", "community") if entry else "community"
 
-    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+    def search(self, query: str, limit: int = 10, *, provider_filter: str = "") -> List[SkillMeta]:
         """Search the cached index (zero API calls). Matches name, description, tags, identifier and
         ``extra.provider`` (so ``nvidia`` finds ``NVIDIA/skills/...`` entries stored as source
         "github"). Ranked exact name > name prefix > provider > whole-word > name substring > other,
-        index order as tiebreaker — a raw break-at-limit slice buried the most relevant skills."""
+        index order as tiebreaker — a raw break-at-limit slice buried the most relevant skills.
+        Provider filters narrow the catalog before ranking and limiting."""
         skills = self._skills()
+        want = provider_filter.strip().lower()
+        if want:
+            skills = [s for s in skills if _entry_provider(s) == want]
         if not skills:
             return []
         if not query.strip():
@@ -332,7 +334,7 @@ class HermesIndexSource(SkillSource):
         scored: List[Tuple[int, int, dict]] = []
         for i, s in enumerate(skills):
             name = str(s.get("name", "")).lower()
-            provider = str((s.get("extra") or {}).get("provider", "")).lower()
+            provider = _entry_provider(s)
             haystack = " ".join([
                 name, str(s.get("description", "")).lower(), " ".join(str(t).lower() for t in s.get("tags", [])),
                 str(s.get("identifier", "")).lower(), provider,
@@ -383,6 +385,4 @@ class HermesIndexSource(SkillSource):
             source=entry.get("source", "hermes-index"), identifier=entry.get("identifier", ""),
             trust_level=entry.get("trust_level", "community"), repo=entry.get("repo"), path=entry.get("path"),
             tags=entry.get("tags", []), extra=entry.get("extra", {}),
-            editorial_name=entry.get("editorial_name"),
-            editorial_description=entry.get("editorial_description"),
         )

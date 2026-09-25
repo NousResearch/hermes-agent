@@ -39,7 +39,9 @@ _EMAIL_FS_RE = re.compile(r"[^a-z0-9._@-]+")
 # subsequent messages.create; no drive.file or other scopes.
 SCOPES: List[str] = ["https://www.googleapis.com/auth/chat.messages.create"]
 
-# Pip packages required by the Google Chat adapter and its OAuth flow.
+# Declared extras (pyproject) and the exact pins they carry; the pins double as the
+# staleness probe so a half-synced interpreter is repaired instead of trusted.
+_DEPENDENCY_EXTRAS = ["google", "google-chat"]
 _REQUIRED_PACKAGES = [
     "google-cloud-pubsub==2.39.0",
     "google-api-python-client==2.194.0",
@@ -195,7 +197,8 @@ def _chmod_quiet(path: Path, mode: int) -> None:
 
 def _write_private_json(path: Path, data: Any) -> None:
     """Atomically write JSON with 0o600 permissions (0o700 parent) where supported."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
     _chmod_quiet(path.parent, 0o700)
     # mkstemp's 0o600 temp + atomic rename never exposes the token at process umask.
     atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False), create_mode=0o600)
@@ -237,15 +240,12 @@ def install_deps() -> bool:
         return True
     print("Installing Google Chat dependencies...")
     try:
-        from hermes_cli.tools_config import _pip_install
-
-        result = _pip_install(["--quiet"] + missing)
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or "install failed").strip()[:300])
+        import pm
+        pm.sync_venv(_DEPENDENCY_EXTRAS, explicit=True)
         remaining = _missing_required_packages()
         if remaining:
             raise RuntimeError("dependencies remain stale after install: " + " ".join(remaining))
-        print("Dependencies installed.")
+        print("Dependencies installed. Restart Hermes to activate any new dependency environment.")
         return True
     except Exception as exc:
         print(f"ERROR: Failed to install dependencies: {exc}")
@@ -272,7 +272,7 @@ def store_client_secret(path: str) -> None:
     if not src.exists():
         _fail(f"ERROR: File not found: {src}")
     try:
-        data = json.loads(src.read_text(encoding="utf-8"))
+        data = json.loads(src.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         _fail("ERROR: File is not valid JSON.")
     if "installed" not in data and "web" not in data:
@@ -296,7 +296,7 @@ def _load_pending_auth(email: Optional[str] = None) -> dict:
     if not pending.exists():
         _fail("ERROR: No pending OAuth session found. Run --auth-url first.")
     try:
-        data = json.loads(pending.read_text(encoding="utf-8"))
+        data = json.loads(pending.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         _fail(f"ERROR: Could not read pending OAuth session: {exc}", "Run --auth-url again to start a fresh session.")
     if not data.get("state") or not data.get("code_verifier"):

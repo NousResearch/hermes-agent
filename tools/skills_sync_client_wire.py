@@ -94,7 +94,7 @@ def _entry(name: str, kind: str, hash_: str, mode: str) -> Dict[str, str]:
 
 def _add_tree(entries: List[Dict[str, str]], objects: ObjectSet) -> str:
     """Canonicalize *entries* (sorted by name, byte order) into a tree object."""
-    entries.sort(key=lambda e: e["name"].encode("utf-8"))
+    entries.sort(key=lambda e: e["name"])
     return objects.add(KIND_TREE, canonical_json_bytes({"type": KIND_TREE, "entries": entries}))
 
 

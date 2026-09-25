@@ -12,6 +12,7 @@ import { Toast } from "@nous-research/ui/ui/components/toast";
 import { api } from "@/lib/api";
 import type { AutomationBlueprint, AutomationBlueprintField } from "@/lib/api";
 import { cn, themedBody } from "@/lib/utils";
+import { errorMessage } from "@/lib/api-error";
 
 interface AutomationBlueprintsProps {
   profile: string;
@@ -178,17 +179,20 @@ export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprint
   useEffect(() => {
     let cancelled = false;
     api
-      .getAutomationBlueprints()
+      .getAutomationBlueprints(profile)
       .then((r) => {
-        if (!cancelled) setBlueprints(r.blueprints);
+        if (!cancelled) {
+          setLoadError(null);
+          setBlueprints(r.blueprints);
+        }
       })
       .catch((e) => {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setLoadError(errorMessage(e));
       });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [profile]);
 
   if (loadError) {
     return <p className="text-sm text-red-500">Couldn't load blueprints: {loadError}</p>;

@@ -33,7 +33,7 @@ async def test_gateway_boot_discovers_mcp_under_every_profile_home(
 
     monkeypatch.setattr(
         "hermes_cli.profiles.profiles_to_serve",
-        lambda multiplex, profile_allowlist=None: homes,
+        lambda multiplex: homes,
     )
     monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", fake_discover)
 
@@ -100,6 +100,54 @@ async def test_reload_mcp_only_touches_requesting_profile(
         ("discover", worker_home),
     ]
     assert "default-srv" not in result
+
+
+@pytest.mark.asyncio
+async def test_reload_mcp_formats_scoped_connection_keys_before_refreshing_cached_agents(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Connection-ledger tuple keys are internal; reload reports server names and completes refresh."""
+    from gateway.run import GatewayRunner
+    from tools import mcp_tool
+    from tools import mcp_tool_discovery as _mcp_discovery
+    from tools import mcp_tool_lifecycle as _mcp_lifecycle
+
+    launch_scope = hermes_home_key(tmp_path / "default")
+    worker_home = tmp_path / "profiles" / "worker"
+    worker_home.mkdir(parents=True)
+    worker_scope = hermes_home_key(worker_home)
+    launch_key = (launch_scope, "default-srv")
+    worker_key = (worker_scope, "worker-srv")
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+    runner._resolve_profile_home_for_source = MagicMock(return_value=worker_home)
+    runner._mcp_reload_refresh_cached_agents = MagicMock()
+    runner._async_session_store = SimpleNamespace(
+        get_or_create_session=MagicMock(side_effect=RuntimeError("skip transcript")),
+    )
+
+    monkeypatch.setattr(mcp_tool, "_servers", {launch_key: object(), worker_key: object()})
+    monkeypatch.setattr(
+        mcp_tool, "_server_scope_keys",
+        {launch_key: launch_scope, worker_key: worker_scope},
+    )
+    monkeypatch.setattr(_mcp_lifecycle, "shutdown_mcp_servers", lambda **_kwargs: None)
+    monkeypatch.setattr(_mcp_discovery, "discover_mcp_tools", lambda: [])
+
+    event = MessageEvent(
+        text="/reload-mcp", message_id="m1",
+        source=SessionSource(
+            platform=Platform.TELEGRAM, user_id="u1", chat_id="c1",
+            chat_type="dm", profile="worker",
+        ),
+    )
+    result = await runner._execute_mcp_reload(event)
+
+    assert "MCP reload failed" not in result
+    assert "worker-srv" in result
+    assert "default-srv" not in result
+    runner._mcp_reload_refresh_cached_agents.assert_called_once_with(True, "worker")
 
 
 @pytest.mark.asyncio
@@ -302,7 +350,8 @@ def test_deregister_scope_kwarg_targets_overlay_and_keeps_plugin_confinement() -
     assert reg.snapshot_registration("mcp__s__t", scope="/home/p1") is None
 
     # A plugin module may not name another profile's overlay.
-    reg._plugin_module_scopes["hermes_plugins.p"] = {"/home/p1"}
+    from hermes_constants import hermes_home_key
+    reg._plugin_module_scopes["hermes_plugins.p"] = {hermes_home_key("/home/p1")}
     reg._caller_module = staticmethod(lambda: "hermes_plugins.p")
     with pytest.raises(PermissionError):
         reg.deregister("anything", scope="/home/p2")

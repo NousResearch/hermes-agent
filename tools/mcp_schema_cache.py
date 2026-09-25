@@ -43,7 +43,7 @@ def _load_all() -> Dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
         return data if isinstance(data, dict) else {}
     except Exception as exc:
         logger.debug("Could not read MCP schema cache %s: %s", path, exc)

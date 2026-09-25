@@ -16,14 +16,20 @@ const unreachable: DesktopAgentRoster = {
 }
 
 const recovered: DesktopAgentRoster = {
-  agents: [{ connectionId: 'lab', connectionLabel: 'Lab', connectionKind: 'remote', profile: 'default', handle: 'default' }],
+  agents: [
+    { connectionId: 'lab', connectionLabel: 'Lab', connectionKind: 'remote', profile: 'default', handle: 'default' }
+  ],
   sources: [{ connectionId: 'lab', label: 'Lab', kind: 'remote', reachable: true }]
 }
 
 describe('fleet roster recovery', () => {
   it('queues one fresh enumeration when recovery overlaps an older request', async () => {
     let finish!: (roster: DesktopAgentRoster) => void
-    const pending = new Promise<DesktopAgentRoster>(resolve => { finish = resolve })
+
+    const pending = new Promise<DesktopAgentRoster>(resolve => {
+      finish = resolve
+    })
+
     const getAgentRoster = vi.fn().mockReturnValueOnce(pending).mockResolvedValue(recovered)
     vi.stubGlobal('window', { hermesDesktop: { getAgentRoster } })
 
@@ -38,10 +44,12 @@ describe('fleet roster recovery', () => {
   })
   it('keeps on-demand sources cached but lets explicit recovery bypass the cooldown', async () => {
     vi.useFakeTimers()
+
     const onDemand: DesktopAgentRoster = {
       agents: [],
       sources: [{ connectionId: 'ssh', label: 'Box', kind: 'ssh', reachable: false, error: 'connect-on-demand' }]
     }
+
     const getAgentRoster = vi.fn().mockResolvedValueOnce(onDemand).mockResolvedValue(recovered)
     vi.stubGlobal('window', { hermesDesktop: { getAgentRoster } })
 

@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      Opción [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ Tiempo agotado — comando denegado"
+  timeout:         "      ⏱ Sin respuesta en {waited} — el comando no se ejecutó. Pide de nuevo para reintentar, o sube el límite: hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ Permitido una vez"
   allowed_session: "      ✓ Permitido en esta sesión"
   allowed_always:  "      ✓ Añadido a la lista de permitidos permanente"
@@ -86,6 +86,9 @@ gateway:
     switch_failed:         "Rama creada pero no se pudo cambiar a ella."
     branched_one:          "⑂ Ramificado a **{title}** ({count} mensaje copiado)\nOriginal: `{parent}`\nRama: `{new}`\nUsa `/resume` para volver al original."
     branched_many:         "⑂ Ramificado a **{title}** ({count} mensajes copiados)\nOriginal: `{parent}`\nRama: `{new}`\nUsa `/resume` para volver al original."
+    branched_thread_one:   "⑂ Ramificado a **{title}** en un hilo nuevo ({count} mensaje copiado)\nHilo: {thread}\nOriginal: `{parent}` — este chat permanece en él\nRama: `{new}`\nUsa `/branch --here` para ramificar en este chat."
+    branched_thread_many:  "⑂ Ramificado a **{title}** en un hilo nuevo ({count} mensajes copiados)\nHilo: {thread}\nOriginal: `{parent}` — este chat permanece en él\nRama: `{new}`\nUsa `/branch --here` para ramificar en este chat."
+    thread_fallback:       "No se pudo crear un hilo aquí, así que la rama reemplazó la sesión de este chat."
 
   commands:
     usage:                 "Uso: `/commands [page]`"
@@ -179,7 +182,7 @@ gateway:
       blocked:             "blocked; needs attention"
       review_requested:    "handed off for review; the implementation is done"
       changes_requested:   "review requested changes (BLOCK); implementation is not approved"
-      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
+      block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."
@@ -384,7 +387,7 @@ gateway:
     not_git_repo:            "✗ No es un repositorio git — no se puede actualizar."
     hermes_cmd_not_found:    "✗ No se pudo localizar el comando `hermes`. Hermes está en ejecución, pero el comando de actualización no encontró el ejecutable en PATH ni a través del intérprete de Python actual. Intenta ejecutar `hermes update` manualmente en tu terminal."
     start_failed:            "✗ No se pudo iniciar la actualización: {error}"
-    starting:                "⚕ Iniciando la actualización de Hermes… Transmitiré el progreso aquí."
+    starting:                "☤ Iniciando la actualización de Hermes… Transmitiré el progreso aquí."
 
   usage:
     rate_limits:              "⏱️ **Límites de tasa:** {state}"

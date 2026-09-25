@@ -109,13 +109,21 @@ def _maybe_schedule_auto_continue(sid: str, session: dict, session_key: str) -> 
             # nested notes). Set here, not at schedule time, so a bail above leaves nothing for a racing user turn.
             session["_auto_continue_attempt"], session["_auto_continue_prompt"] = attempt, marker["prompt"]
         try:
-            _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
-            _emit("message.start", sid)
-            _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue")
+            from gateway.warning_notifications import render_notification
+            diagnostic = marker.get("notification_category") == "diagnostic"
+            with _session_profile_runtime_scope(session):
+                def announce():
+                    _emit("status.update", sid, {"kind": "process", "text": "Resuming interrupted turn…"})
+                    _emit("message.start", sid)
+                render_notification(announce, platform="tui", diagnostic=diagnostic)
+                _run_prompt_submit(rid, sid, session, text, display_kind="auto_continue",
+                    **({"display_metadata": {"notification_category": "diagnostic"}} if diagnostic else {}))
         except Exception as exc:
             _notif_log_failure("auto-continue dispatch failed", exc)
             _notif_release_turn(session)  # rebound from session_notifications
-    threading.Thread(target=kickoff, daemon=True).start()
+    if _start_session_work(kickoff, name=f"auto-continue-{sid}") is None:
+        session["_auto_continue_scheduled"] = False
+        return None
     logger.info("auto-continue scheduled for session %s (attempt %d, interrupted %.0fs ago)", session_key, attempt, age)
     return {"attempt": attempt, "interrupted_at": marker["started_at"]}
 
@@ -237,6 +245,34 @@ def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: 
     return _ok(rid, {"status": status})
 
 
+def _session_compression_in_flight(session: dict) -> bool:
+    """True when a compression lock is held for this session's durable id.
+
+    Context compression is interrupt-protected (#23975), but a correction that reaches the
+    provider mid-compression still aborts it with ``explicit_interrupt`` — the user's
+    follow-up kills the very turn that would answer it (#61042). The channel-side busy
+    path demotes interrupt→queue for the same reason (gateway/run_busy.py
+    ``_session_has_compression_in_flight``, #56391); this is the local-RPC twin. Both
+    blocking reads run off the event loop so a large state.db never freezes the dispatcher.
+    """
+    agent = session.get("agent")
+    sid = str(getattr(agent, "session_id", "") or "") or str(session.get("session_key") or "")
+    if not sid:
+        return False
+    try:
+        with _session_db(session) as db:
+            get_holder = getattr(db, "get_compression_lock_holder", None)
+            if not callable(get_holder):
+                return False
+            holder = get_holder(sid)
+    except Exception:
+        logger.debug("compression in-flight check failed for session %s", sid, exc_info=True)
+        return False
+    # Production returns Optional[str]. Reject non-strings so a MagicMock auto-attr cannot
+    # look like a held lock and needlessly demote every submit (see #96953).
+    return isinstance(holder, str) and bool(holder)
+
+
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
                         turn_author: dict | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
@@ -245,6 +281,11 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     after" message must NEVER become a live correction."""
     mode = "queue" if queued else _load_busy_input_mode()
     agent = session.get("agent")
+    # Compression in flight demotes steer/interrupt to queue: a correction delivered
+    # mid-compression aborts the compression instead of waiting for it (#61042). The
+    # follow-up drains when compression finishes — the Discord-gateway contract.
+    if mode in ("steer", "interrupt") and _session_compression_in_flight(session):
+        mode = "queue"
     with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session
@@ -286,8 +327,8 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
 def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     """Fire a queued next-turn prompt if one is waiting and the session is idle. True when dispatched: the caller
     skips lower-priority follow-ups this cycle (the user's message wins)."""
-    with session["history_lock"]:
-        if session.get("_closing") or not (queued := session.get("queued_prompt")) or session.get("running"):
+    with _session_turn_admission(session) as admitted:
+        if not admitted or session.get("_closing") or not (queued := session.get("queued_prompt")) or session.get("running"):
             return False
         queue_generation = int(session.get("_queued_prompt_generation", 0))
         _ac_set_queue(session, session.get("queued_prompts") or [])
@@ -345,6 +386,10 @@ def _inflight_snapshot(session: dict) -> dict | None:
     if not (user or assistant or streaming or error):
         return None
     snapshot = {"assistant": assistant, "streaming": streaming, "user": user}
+    if isinstance(display_kind := turn.get("display_kind"), str) and display_kind:
+        snapshot["display_kind"] = display_kind
+    if isinstance(display_metadata := turn.get("display_metadata"), dict):
+        snapshot["display_metadata"] = dict(display_metadata)
     raw_offsets = turn.get("correction_offsets") or []
     correction_pairs = [(str(c), raw_offsets[i] if i < len(raw_offsets) else None)
                         for i, c in enumerate(turn.get("corrections") or []) if str(c).strip()]
@@ -373,13 +418,14 @@ def _emit_terminal_turn_error(
         with contextlib.suppress(Exception):
             from agent.error_surface import build_error_surface_from_exception
             error_surface = build_error_surface_from_exception(
-                error, provider=str(getattr(agent, "provider", "") or ""), model=str(getattr(agent, "model", "") or ""))
+                error, provider=str(getattr(agent, "provider", "") or ""), model=str(getattr(agent, "model", "") or ""),
+                api_key=getattr(agent, "api_key", None))
     with session["history_lock"]:
         _fail_inflight_turn(session, error, error_surface=error_surface)
         turn = session.get("inflight_turn") or {}
         message, partial = str(turn.get("error") or "turn failed"), str(turn.get("assistant") or "")
         cols = int(session.get("cols", 80))
-    text = partial or f"Error: {message}"
+    text = partial or turn_error_text(message, error_surface)
     rendered = ""
     with contextlib.suppress(Exception):
         rendered = render_message(text, cols)

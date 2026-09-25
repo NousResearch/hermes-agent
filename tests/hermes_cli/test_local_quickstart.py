@@ -1,7 +1,7 @@
 """Quickstart route: one POST from nothing to a working local default.
 
 Contract, not implementation: the route must (a) preflight-fail
-synchronously when nothing fits, (b) report which legs the job will run
+synchronously when automatic setup has no recommendation, (b) report which legs the job will run
 (runtime install / model download), skipping legs already satisfied,
 and (c) run install -> download -> activate through the same code paths
 the individual routes use. The slow legs are stubbed at their module
@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from hermes_cli.local_runtime.binaries import Engine
 
 
 @pytest.fixture
@@ -42,6 +43,74 @@ def test_quickstart_unknown_model_404s(client):
     assert r.status_code == 404
 
 
+def test_quickstart_without_recommendation_requires_explicit_choice(client, monkeypatch):
+    """One budget: automatic setup refuses; an explicit spilled choice reaches activation."""
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+    import hermes_cli.web_routers.local_models as lm
+
+    gib = 1 << 30
+    budget = HardwareBudget(
+        usable_vram_bytes=14 * gib, total_device_bytes=16 * gib,
+        ram_available_bytes=64 * gib, uma=False,
+    )
+    monkeypatch.setattr(lm.hardware, "probe_budget", lambda **kw: budget)
+    monkeypatch.setattr(lm.catalog, "refresh_catalog_soon", lambda: None)
+    monkeypatch.setattr(lm.binaries, "installed_engine",
+                        lambda *args, **kwargs: lm.binaries.Engine("cpu", "b1", Path("unused")))
+    monkeypatch.setattr(lm, "_runtime_target", lambda requested=None: ("b1", "cpu"))
+    monkeypatch.setattr(lm.bootstrap, "staged_model_ids", lambda: set())
+    config = lm.config_mod.load_config()
+    config.setdefault("local_runtime", {})["backend"] = "cpu"
+    config["local_runtime"]["enabled"] = False
+    lm.config_mod.save_config(config)
+
+    calls: list[tuple] = []
+
+    def download(job, plan, label):
+        calls.append(("download", label))
+
+    class Server:
+        def models(self):
+            return [chosen["model_id"]]
+
+    def start_server(config, force=False):
+        calls.append(("server", config["local_runtime"]["enabled"], force))
+        return Server()
+
+    # Stub only slow external legs. Catalog, HTTP preflight, job sequencing,
+    # runtime-enabled persistence and assignment dispatch remain real.
+    monkeypatch.setattr(lm, "_run_download_plan", download)
+    monkeypatch.setattr(lm.bootstrap, "ensure_local_runtime", start_server)
+    monkeypatch.setattr(
+        "hermes_cli.web_server_config._apply_model_assignment_sync",
+        lambda *args: calls.append(("assign", *args)),
+    )
+    rows = client.get("/api/local-models/catalog").json()["models"]
+    assert not any(row["recommended"] for row in rows)
+    chosen = next(row for row in rows if row["id"] == "qwen3.8-27b")
+    assert chosen["fits"] and chosen["spilled"]
+
+    automatic = client.post("/api/local-models/quickstart", json={})
+    assert automatic.status_code == 409
+    assert "no automatic recommendation" in automatic.json()["detail"].lower()
+    assert calls == []
+    assert lm.config_mod.load_config()["local_runtime"]["enabled"] is False
+
+    explicit = client.post("/api/local-models/quickstart", json={"model_id": chosen["id"]})
+    assert explicit.status_code == 200, explicit.text
+    result = explicit.json()
+    assert result["model_id"] == chosen["id"]
+    assert result["needs_download"] and not result["needs_runtime"]
+    job = _wait_job(client, result["job_id"])
+    assert job["status"] == "done", job["error"]
+    assert calls == [
+        ("download", chosen["display_name"]),
+        ("server", True, True),
+        ("assign", "main", "llamacpp", chosen["model_id"], "", "", ""),
+    ]
+    assert lm.config_mod.load_config()["local_runtime"]["enabled"] is True
+
+
 def test_quickstart_refuses_when_nothing_fits(client, monkeypatch):
     """Preflight is synchronous: a machine no catalog entry fits gets a 409
     with guidance, not a doomed background job."""
@@ -52,7 +121,21 @@ def test_quickstart_refuses_when_nothing_fits(client, monkeypatch):
     assert "Local Models" in r.json()["detail"]
 
 
-def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
+@pytest.fixture
+def capable_hardware(monkeypatch):
+    """Success-path orchestration tests need a model to fit, independent of host load."""
+    from hermes_cli.local_runtime import hardware
+    from hermes_cli.local_runtime.estimator import HardwareBudget
+
+    gib = 1 << 30
+    budget = HardwareBudget(
+        usable_vram_bytes=64 * gib, total_device_bytes=64 * gib,
+        ram_available_bytes=128 * gib, uma=False,
+    )
+    monkeypatch.setattr(hardware, "probe_budget", lambda **kw: budget)
+
+
+def test_quickstart_runs_all_three_legs(client, capable_hardware, monkeypatch, tmp_path):
     """Fresh machine: install runtime -> download recommended -> activate.
     Each leg is asserted by its observable call, in order."""
     calls: list[str] = []
@@ -67,19 +150,20 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
 
     # Leg 1: no runtime installed yet; install is the stubbed binaries call.
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_tags", lambda: [])
+        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
-        lambda tag, backend, progress=None: calls.append("install"))
+        "hermes_cli.local_runtime.binaries.ensure_engine",
+        lambda backend, **kwargs: calls.append("install"))
 
     # Leg 2: nothing staged; the download writes the files the plan names.
-    def _fake_download(url, dest, job, *, base_done=0, keep_totals=False):
-        Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        Path(dest).write_bytes(b"GGUF\x00")
+    def _fake_download(job, plan):
+        for _url, dest, _size in plan:
+            Path(dest).parent.mkdir(parents=True, exist_ok=True)
+            Path(dest).write_bytes(b"GGUF\x00")
         calls.append("download")
 
     monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models.download_file", _fake_download)
+        "hermes_cli.web_routers.local_models._download_job", _fake_download)
 
     # Leg 3: activation — stub the server start and the model assignment.
     monkeypatch.setattr(
@@ -113,25 +197,28 @@ def test_quickstart_runs_all_three_legs(client, monkeypatch, tmp_path):
     assert load_config()["local_runtime"]["enabled"] is True
 
 
-def test_quickstart_skips_satisfied_legs(client, monkeypatch):
+def test_quickstart_skips_satisfied_legs(client, capable_hardware, monkeypatch):
     """Runtime present and model already staged: the response says so and
     the job goes straight to activation."""
     calls: list[str] = []
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
+        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.ensure_runtime_installed",
-        lambda tag, backend, progress=None: calls.append("install"))
+        "hermes_cli.local_runtime.binaries.ensure_engine",
+        lambda backend, **kwargs: calls.append("install"))
 
-    # Every catalog variant reads as staged.
+    # Every model file and companion is already present.
     from hermes_cli.local_runtime.catalog import CATALOG
+    from hermes_cli.web_routers.local_models import _download_plan
 
-    all_ids = {v.model_id for e in CATALOG for v in e.variants}
+    for entry in CATALOG:
+        for variant in entry.variants:
+            for _, dest, _ in _download_plan(entry, variant):
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(b"downloaded fixture")
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.bootstrap.staged_model_ids", lambda: all_ids)
-    monkeypatch.setattr(
-        "hermes_cli.web_routers.local_models.download_file",
+        "hermes_cli.web_routers.local_models._download_job",
         lambda *a, **k: calls.append("download"))
     monkeypatch.setattr(
         "hermes_cli.local_runtime.bootstrap.ensure_local_runtime",
@@ -165,7 +252,7 @@ def quickstart_ready(monkeypatch):
     from hermes_cli.local_runtime.catalog import VariantChoice
 
     monkeypatch.setattr(
-        "hermes_cli.local_runtime.binaries.installed_tags", lambda: ["b10362"])
+        "hermes_cli.local_runtime.binaries.installed_engine", lambda *args, **kwargs: Engine("cpu", "b10362", Path("unused")))
     monkeypatch.setattr(
         "hermes_cli.local_runtime.catalog.select_variant",
         lambda entry, budget: VariantChoice(variant=entry.variants[0],

@@ -1,3 +1,4 @@
+import type { GatewayEvent } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 
 import {
@@ -5,6 +6,7 @@ import {
   notifyPairingChanged,
   notifyPetChanged,
   notifyPlatformsChanged,
+  notifyProjectsChanged,
   notifySessionsChanged,
   notifySetupReady,
   type PetChangeMeta,
@@ -23,12 +25,13 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
   const { deps, event, payload, fromActiveSource } = ctx
 
   if (event.type === 'gateway.ready') {
+    const ready = (event as GatewayEvent<'gateway.ready'>).payload
     // Seed the active skin into the desktop theme registry without applying,
     // so a fresh connect never overrides the user's persisted desktop theme.
-    ingestBackendSkin((payload as { skin?: HermesSkin } | undefined)?.skin, { apply: false })
+    ingestBackendSkin(ready?.skin, { apply: false })
     // Backends with the change watcher broadcast pet/cron/sessions change
     // events; consumers demote their legacy polls to slow backstops.
-    setChangeEventsAvailable(Boolean((payload as { change_events?: boolean } | undefined)?.change_events))
+    setChangeEventsAvailable(Boolean(ready?.change_events))
 
     return true
   }
@@ -61,6 +64,7 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
     event.type === 'pet.changed' ||
     event.type === 'cron.changed' ||
     event.type === 'sessions.changed' ||
+    event.type === 'projects.changed' ||
     event.type === 'platforms.changed' ||
     event.type === 'pairing.changed'
   ) {
@@ -74,6 +78,8 @@ export function handleLifecycleEvent(ctx: GatewayEventContext): boolean {
         notifyPetChanged(payload as PetChangeMeta | undefined)
       } else if (event.type === 'cron.changed') {
         notifyCronChanged()
+      } else if (event.type === 'projects.changed') {
+        notifyProjectsChanged()
       } else if (event.type === 'platforms.changed') {
         notifyPlatformsChanged()
       } else if (event.type === 'pairing.changed') {

@@ -10,9 +10,16 @@ import sys
 import time
 from typing import Any
 
+from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
+
+
+# Persisted title provenance: automatic display labels are not user-selected identities.
+TITLE_SOURCE_DERIVED = "derived"
+TITLE_SOURCE_LLM = "llm"
+TITLE_SOURCE_USER = "user"
 
 
 # Session preview = head of the first user message (shown when a session has no title).  A /skill invocation
@@ -21,6 +28,26 @@ from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _ME
 _PREVIEW_HEAD_CHARS = 63
 _PREVIEW_SCAFFOLD_WINDOW = 400
 _PREVIEW_MAX_CHARS = 60
+
+
+def routed_sessions_setting(key: str, env_var: str) -> Any:
+    """``sessions.<key>`` for the profile whose state.db this process is touching.
+
+    ``gateway/run.py`` bridges the LAUNCH profile's ``sessions.*`` into ``env_var`` (the cross-process
+    carrier CLI/cron children read). Under a multiplexer a routed turn runs with a HERMES_HOME override
+    and that env slot holds the default profile's value, so a served profile with different
+    ``sessions.*`` settings must read its own config.yaml. Unscoped: the env bridge, as before.
+    Returns ``None`` when neither source sets the key.
+    """
+    from hermes_constants import get_hermes_home_override
+
+    if get_hermes_home_override():
+        try:
+            from hermes_cli.config import load_config_readonly
+            return (load_config_readonly().get("sessions") or {}).get(key)
+        except Exception:
+            return None
+    return os.environ.get(env_var)
 
 
 def escape_like(text: str) -> str:
@@ -36,6 +63,16 @@ _SQL_WHITESPACE = "CHAR(9) || CHAR(10) || CHAR(13) || CHAR(32)"
 
 def _sql_literal(text: str) -> str:
     return "'" + text.replace("'", "''") + "'"
+
+
+def _sql_json_extract(expression: str, path: str) -> str:
+    """Build a non-throwing JSON marker lookup for a JSON TEXT column."""
+
+    safe_json = (
+        f"(CASE WHEN json_valid({expression}) "
+        f"THEN {expression} ELSE json_object() END)"
+    )
+    return f"json_extract({safe_json}, {_sql_literal(path)})"
 
 
 def _sql_ltrim_whitespace(expression: str) -> str:
@@ -112,7 +149,7 @@ _PREVIEW_RAW_SUBQUERY_SQL = (f"COALESCE((SELECT {_PREVIEW_RAW_SELECT} FROM messa
 # ── Session lineage predicates ({a} = sessions alias) ───────────────────────
 
 # /branch child (kept visible, never cascade-deleted): stable marker OR legacy end_reason heuristic.
-_BRANCH_CHILD_SQL = ("json_extract(COALESCE({a}.model_config, '{{}}'), '$._branched_from') IS NOT NULL"
+_BRANCH_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._branched_from')} IS NOT NULL"
     " OR EXISTS (SELECT 1 FROM sessions p            WHERE p.id = {a}.parent_session_id"
     "            AND p.end_reason = 'branched'            AND {a}.started_at >= p.ended_at)")
 _COMPRESSION_CHILD_SQL = ("EXISTS (SELECT 1 FROM sessions p        WHERE p.id = {a}.parent_session_id"
@@ -127,7 +164,7 @@ _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASON
 # never heal one of these (#106459); tools/session_search_tool.py derives its fresh-reset set from it.
 _BOUNDARY_END_REASONS = frozenset(_RESET_END_REASONS) | {"new_session"}
 
-# Accidental end reasons recovery treats as resumable (docs/session-lifecycle.md); single source of truth for
+# Accidental end reasons recovery treats as resumable (website/docs/developer-guide/gateway-session-lifecycle.md); single source of truth for
 # recovery SQL and SessionDB.RECOVERABLE_END_REASONS.  superseded_by_resume = sentinel-parked runtime replaced
 # by a fresh session.resume; startup_orphan_reap = dead-gateway sweep, same class as ws_orphan_reap but kept
 # distinct for forensics.
@@ -166,7 +203,7 @@ def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
 
 # A reset starts a separate user-visible conversation though rows keep parent_session_id for lineage.
 # Stable marker, or the same-key fallback for pre-marker rows (exact key keeps subagent children out).
-_RESET_CHILD_SQL = ("json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NOT NULL"
+_RESET_CHILD_SQL = (f"{_sql_json_extract('{a}.model_config', '$._reset_from')} IS NOT NULL"
     " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL))
 
 # Picker-visible rows: roots + branch/reset children (not subagent runs or compression continuations).
@@ -180,12 +217,24 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
         f" AND NOT ({_COMPRESSION_CHILD_SQL.format(a=alias)}) AND NOT ({_RESET_CHILD_SQL.format(a=alias)}))")
 
 
+_SQL_IN_WINDOW = f"BETWEEN {EPOCH_MIN!r} AND {EPOCH_MAX!r}"
+
+
+def _sql_in_window(expr: str) -> str:
+    """*expr* when it is inside the ``coerce_epoch`` window, else NULL."""
+    return f"(SELECT _win.v FROM (SELECT {expr} AS v) _win WHERE _win.v {_SQL_IN_WINDOW})"
+
+
 def _sql_freshest_of(activity: str, session_id_expr: str, started: str) -> str:
     """Freshest of *activity* and the latest message timestamp for *session_id_expr*, else *started*.
-    Heartbeats are rate-limited (~60s) so ``last_activity_at`` can lag a newer message; never use it alone."""
-    msg_max = f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr})"
-    return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v), "
-        f"{started})")
+    Heartbeats are rate-limited (~60s) so ``last_activity_at`` can lag a newer message; never use it alone.
+    Cells outside the ``coerce_epoch`` window (garbage doubles salvaged from a damaged page, TEXT) are
+    skipped, fallback included, or one bad row pins the session's recency to ``5e+246`` (#91536); a
+    session with no trusted cell at all is NULL."""
+    msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr}"
+        f" AND _act_m.timestamp {_SQL_IN_WINDOW})")
+    return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v"
+        f" WHERE _act_v.v {_SQL_IN_WINDOW}), {_sql_in_window(started)})")
 
 
 def _sql_session_last_active(alias: str = "s") -> str:
@@ -217,23 +266,27 @@ AUTO_VACUUM_MIN_FREELIST_RATIO = 0.25
 # layout 0 (marker absent) with a working inline index until the user opts in.
 #   1 = v23 external-content layout with a tool-row-excluded trigram
 #   2 = trigram also excludes structured tool_calls JSON
-FTS_STORAGE_VERSION = 2
+#   3 = messages_fts source aligned to a stable projection view
+#       (``messages_fts_src``): always-truncate tool rows to the prefix, no
+#       moving high-water boundary. The external-content source now reads
+#       back EXACTLY what the triggers indexed, so the rank=1
+#       'integrity-check' probe cannot drift from the stored index (the
+#       recurring fts5 "checksum mismatch" / leaked-token failures).
+FTS_STORAGE_VERSION = 3
 
-# Tool results are often multi-megabyte machine payloads. Index a useful
-# prefix for new tool rows instead of tokenizing the entire body while the
-# canonical message write holds SQLite's single writer lock. The high-water
-# marker lets upgraded databases retain the exact token stream already stored
-# for historical rows, so external-content delete/update commands stay valid
-# without an eager full-index rebuild.
+# Tool results are often multi-megabyte machine payloads. The base FTS index
+# stores only a bounded prefix of every tool row; tool rows are skipped by
+# default in search, and explicit tool-only search uses a LIKE fallback over
+# the full stored content, so no search capability is lost. The projection
+# below is STABLE — it depends only on the row being written, never on
+# mutable ``state_meta`` markers — which is what keeps the external-content
+# integrity checker and the trigger 'delete'/'update' commands in agreement
+# with the stored index forever.
 FTS_TOOL_CONTENT_PREFIX_CHARS = 8_192
-FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY = "fts_tool_full_content_high_water"
 
 
 def _fts_indexed_content_sql(alias: str) -> str:
     return f"""CASE WHEN {alias}.role = 'tool'
-              AND {alias}.id > COALESCE((SELECT CAST(value AS INTEGER)
-                                         FROM state_meta
-                                         WHERE key = '{FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY}'), -1)
          THEN substr(COALESCE({alias}.content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS})
          ELSE {alias}.content END"""
 
@@ -267,6 +320,19 @@ def _ended_by_compression(row) -> bool:
 def _placeholders(items) -> str:
     """``?,?,?`` for one bound parameter per element of *items* (a sequence or an int count)."""
     return ",".join("?" for _ in range(items if isinstance(items, int) else len(items)))
+
+
+# Ids per ``IN (?,...)`` list: SQLite caps bound parameters at SQLITE_MAX_VARIABLE_NUMBER (999 on builds
+# < 3.32, 32766 after); a bulk prune of a cron-heavy store bound tens of thousands of ids into one list and
+# died with "too many SQL variables". Every IN-list over session ids goes through ``_id_chunks``.
+_SQL_IN_CHUNK = 900
+
+
+def _id_chunks(ids, size: int = _SQL_IN_CHUNK):
+    """Yield *ids* (any iterable) as lists of at most *size* elements."""
+    ids = list(ids)
+    for start in range(0, len(ids), size):
+        yield ids[start:start + size]
 
 
 _FTS_TRIGGERS = ("messages_fts_insert", "messages_fts_delete", "messages_fts_update",
@@ -335,6 +401,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_ineffective_count INTEGER NOT NULL DEFAULT 0,
     compression_recovery_deadline REAL,
     profile_name TEXT,
+    transport_profile TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     pinned INTEGER NOT NULL DEFAULT 0,
@@ -492,7 +559,16 @@ CREATE TABLE IF NOT EXISTS async_delegations (
     owner_started_at INTEGER,
     task_json TEXT,
     delivery_claim TEXT,
-    delivery_claimed_at REAL
+    delivery_claimed_at REAL,
+    -- Mirrors the delegation tool's own CREATE TABLE (tools/async_delegation.py
+    -- _initialize_schema). Keeping the canonical fresh-install shape identical
+    -- to the tool's avoids a silent schema drift: the tool's lazy
+    -- ALTER TABLE ADD COLUMN used to be the only source of this column, so two
+    -- databases at the same schema_version had different
+    -- async_delegations shapes depending on whether the delegation tool had
+    -- ever run, breaking rebuild/replay pipelines that reconstruct state.db
+    -- from the canonical schema (#94691).
+    origin_session_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -570,7 +646,14 @@ END;
 DROP TRIGGER IF EXISTS messages_display_identity_update;
 CREATE TRIGGER IF NOT EXISTS messages_display_identity_update
 AFTER UPDATE OF role, content, timestamp, tool_call_id, tool_calls, tool_name,
-                display_kind, display_metadata ON messages
+                display_kind ON messages
+WHEN new.role IS NOT old.role
+  OR new.content IS NOT old.content
+  OR new.timestamp IS NOT old.timestamp
+  OR new.tool_call_id IS NOT old.tool_call_id
+  OR new.tool_calls IS NOT old.tool_calls
+  OR new.tool_name IS NOT old.tool_name
+  OR new.display_kind IS NOT old.display_kind
 BEGIN
     UPDATE messages SET display_identity = NULL, display_order = NULL
     WHERE id = new.id OR (
@@ -599,6 +682,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_handoff_state
     ON sessions(handoff_state, started_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_system_prompt_hash
     ON sessions(system_prompt_hash);
+CREATE INDEX IF NOT EXISTS idx_sessions_tool_names
+    ON sessions(tool_names);
 -- Recent-session browsing must never derive recency by scanning messages.
 -- This expression is the durable, indexable approximation used to preselect
 -- a small candidate set before compression-chain and preview hydration.
@@ -626,12 +711,32 @@ CREATE INDEX IF NOT EXISTS idx_sessions_effective_activity
 # predicate into a tautology (id > -1 OR id <= -1), i.e. normal operation.
 # The two state_meta PK probes per write are negligible next to the FTS
 # insert itself.
+#
+# messages_fts_src: the base word index no longer reads raw `messages` as its
+# external content. Tool rows are indexed as a bounded prefix, so the index
+# must read that SAME projection back or FTS5's 'integrity-check' / 'delete'
+# commands disagree with the stored tokens and corrupt the index (the
+# recurring fts5 checksum-mismatch drift: the projection used to depend on a
+# moving state_meta high-water key). The view/trigger/backfill all share the
+# one expression in `_fts_indexed_content_sql` — a fixed per-row function
+# with no marker lookups — so the boundary can never move again.
 FTS_SQL = f"""
+-- Stable projection the base word index reads and writes through: the view
+-- computes EXACTLY what the triggers/backfill insert, so 'rebuild' and the
+-- integrity checker always agree with the stored index.
+CREATE VIEW IF NOT EXISTS messages_fts_src AS
+    SELECT id,
+           CASE WHEN role = 'tool'
+                THEN substr(COALESCE(content, ''), 1, {FTS_TOOL_CONTENT_PREFIX_CHARS})
+                ELSE content END AS content,
+           tool_name, tool_calls
+    FROM messages;
+
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
     tool_name,
     tool_calls,
-    content='messages',
+    content='messages_fts_src',
     content_rowid='id'
 );
 
@@ -724,22 +829,20 @@ END;
 # ``parent_session_id`` but NOT the marker, so they stay trigram-indexed.
 FTS_TRIGRAM_EXCLUDED_SOURCES = ("cron", "subagent")
 
-# Predicate over a ``sessions`` row (unqualified column names) selecting
-# sessions whose rows belong in the trigram index. Shared by the view, the
-# sync triggers, and the deferred-backfill INSERT ... SELECTs so they can
-# never disagree about the index boundary.
-FTS_TRIGRAM_SESSION_SQL = (
-    "source NOT IN ("
-    + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
-    + ") AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL"
-)
-
-
-def fts_trigram_session_sql(alias: str) -> str:
-    """``FTS_TRIGRAM_SESSION_SQL`` with every column qualified by ``alias``."""
-    return FTS_TRIGRAM_SESSION_SQL.replace("source ", f"{alias}.source ").replace(
-        "COALESCE(model_config", f"COALESCE({alias}.model_config"
+def fts_trigram_session_sql(alias: str = "") -> str:
+    """Predicate over a ``sessions`` row selecting sessions whose rows belong in
+    the trigram index; ``alias`` qualifies every column for joins. Shared by the
+    view, the sync triggers, and the deferred-backfill INSERT ... SELECTs so they
+    can never disagree about the index boundary."""
+    q = f"{alias}." if alias else ""
+    return (
+        f"{q}source NOT IN ("
+        + ", ".join(f"'{src}'" for src in FTS_TRIGRAM_EXCLUDED_SOURCES)
+        + f") AND {_sql_json_extract(q + 'model_config', '$._delegate_from')} IS NULL"
     )
+
+
+FTS_TRIGRAM_SESSION_SQL = fts_trigram_session_sql()
 
 
 FTS_TRIGRAM_SQL = f"""

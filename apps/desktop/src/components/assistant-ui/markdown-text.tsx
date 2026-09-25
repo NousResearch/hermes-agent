@@ -8,14 +8,17 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
+import { TranscriptVideo } from '@/components/chat/transcript-video'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { ErrorBoundary } from '@/components/error-boundary'
+import { useMediaImage } from '@/hooks/use-media-image'
 import { detectArtifact } from '@/lib/artifact-detect'
+import { renderMediaTags } from '@/lib/chat-messages/parts'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { parseMarkdownIntoBlocksCached } from '@/lib/markdown-blocks'
@@ -23,21 +26,21 @@ import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
   downloadGatewayMediaFile,
   isFileMediaPath,
-  isInlineMediaSrc,
   isMarkdownDocumentPath,
   isRemoteGateway,
   mediaExternalUrl,
   mediaKind,
   mediaName,
   mediaPathFromMarkdownHref,
-  resolveMediaDisplaySrc,
-  resolveMediaPlaybackSrc
+  resolveMediaPlaybackSrc,
+  validImageDimensions
 } from '@/lib/media'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
 import { sessionRefFromMarkdownHref } from '@/lib/session-refs'
 import { isDirectiveInProgress } from '@/lib/transcript-directives'
 import { cn } from '@/lib/utils'
+import { useForcedTextDirection } from '@/store/text-direction'
 
 import { ArtifactCard } from './artifact-card'
 import { SessionRefLink } from './directive-text'
@@ -148,6 +151,14 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
 }
 
 function MediaAttachment({ path }: { path: string }) {
+  return mediaKind(path) === 'image' ? (
+    <MarkdownImage alt={mediaName(path)} src={path} />
+  ) : (
+    <MediaPlaybackAttachment path={path} />
+  )
+}
+
+function MediaPlaybackAttachment({ path }: { path: string }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
   const { open, openFailed } = useOpenMediaFile(path)
@@ -196,14 +207,6 @@ function MediaAttachment({ path }: { path: string }) {
     }
   }, [kind, path])
 
-  if (kind === 'image' && src) {
-    return (
-      <span className="block">
-        <MarkdownImage alt={name} src={src} />
-      </span>
-    )
-  }
-
   if (kind === 'audio' && src) {
     return (
       <span className="my-3 block max-w-md rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
@@ -218,7 +221,7 @@ function MediaAttachment({ path }: { path: string }) {
     return (
       <span className="my-3 block max-w-2xl rounded-xl border border-(--ui-stroke-tertiary) bg-muted/35 p-3">
         <span className="mb-2 block truncate text-xs font-medium text-muted-foreground">{name}</span>
-        <video
+        <TranscriptVideo
           className="block max-h-112 w-full rounded-lg bg-black"
           controls
           onError={() => setFailed(true)}
@@ -267,7 +270,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     // rendered/source toggle) instead of the download-link fallback that
     // `mediaKind() === 'file'` would produce. (#84951)
     if (isMarkdownDocumentPath(mediaPath)) {
-      return <PreviewAttachment source="tool-result" target={mediaPath} />
+      return <PreviewAttachment target={mediaPath} />
     }
 
     // Non-media files (PDFs, data files, anything outside MEDIA_BY_EXT):
@@ -277,7 +280,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
     // branch below produces — so MEDIA: uniformly delivers the richest
     // rendering for every file type.
     if (mediaKind(mediaPath) === 'file') {
-      return <PreviewAttachment source="tool-result" target={mediaPath} />
+      return <PreviewAttachment target={mediaPath} />
     }
 
     return <MediaAttachment path={mediaPath} />
@@ -286,7 +289,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   const previewTarget = previewTargetFromMarkdownHref(href)
 
   if (previewTarget) {
-    return <PreviewAttachment source="explicit-link" target={previewTarget} />
+    return <PreviewAttachment target={previewTarget} />
   }
 
   const sessionRef = sessionRefFromMarkdownHref(href)
@@ -311,7 +314,7 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
     if (fileHref) {
       return mediaKind(fileHref) === 'file' ? (
-        <PreviewAttachment source="explicit-link" target={fileHref} />
+        <PreviewAttachment target={fileHref} />
       ) : (
         <MediaAttachment path={fileHref} />
       )
@@ -371,49 +374,38 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
   return <MarkdownImageContent {...props} />
 }
 
-function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<'img'>) {
+// A cold frame is ~4:3 because that is the envelope an image can occupy here
+// (--image-preview-max-width x --image-preview-height, 34rem x 26.25rem): every
+// shape, portrait included, fits at the size it would have without a reserved
+// frame. A 16:9 box shrank every narrower image (a 1080x1920 portrait to
+// 172x306). Warm mounts use the measured size instead.
+const COLD_IMAGE_RATIO = 4 / 3
+
+function MarkdownImageContent({
+  className,
+  src,
+  alt,
+  width,
+  height,
+  onLoad,
+  onError,
+  style,
+  ...props
+}: ComponentProps<'img'>) {
   const rawSrc = typeof src === 'string' ? src : ''
-  const [resolvedSrc, setResolvedSrc] = useState(() => (rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : ''))
-  const [failed, setFailed] = useState(false)
+  const image = useMediaImage(rawSrc, COLD_IMAGE_RATIO, validImageDimensions(width, height))
   const { open, openFailed } = useOpenMediaFile(rawSrc)
   const name = mediaName(rawSrc || String(alt || 'image'))
-
-  useEffect(() => {
-    let cancelled = false
-
-    setFailed(false)
-    setResolvedSrc(rawSrc && isInlineMediaSrc(rawSrc) ? rawSrc : '')
-
-    if (!rawSrc || isInlineMediaSrc(rawSrc)) {
-      return () => {
-        cancelled = true
-      }
-    }
-
-    void resolveMediaDisplaySrc(rawSrc)
-      .then(value => {
-        if (!cancelled) {
-          setResolvedSrc(value)
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setFailed(true)
-        }
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [rawSrc])
 
   if (!rawSrc) {
     return null
   }
 
-  if (failed) {
+  // A broken link has nothing to reserve space for: one line, not an empty
+  // frame. The one-time shift on error is the lesser cost.
+  if (image.failed) {
     return (
-      <span className="my-2 block text-sm text-muted-foreground">
+      <span className="my-2 block text-sm text-muted-foreground" data-slot="aui_markdown-image">
         Couldn&apos;t load {name}.{' '}
         <button className="ref font-medium text-foreground" onClick={open} type="button">
           Open image
@@ -423,26 +415,45 @@ function MarkdownImageContent({ className, src, alt, ...props }: ComponentProps<
     )
   }
 
-  if (!resolvedSrc) {
-    return <span className="my-2 block text-sm text-muted-foreground">Loading {name}...</span>
-  }
+  // The image keeps its natural size (never upscaled) inside the fixed frame;
+  // the w-fit container hugs it so the download button and shadow sit on the
+  // image, not on the letterbox. Without a frame (a source that failed last
+  // time) it lays out as a plain capped image, like before frames existed.
+  const framed = Boolean(image.frameStyle)
 
-  // The width cap belongs on the container, not the <img>: a percentage
-  // max-width resolves to none while the container measures its fit-content
-  // width, so the box overshoots the rendered image and strands the download
-  // button — which anchors to the container — out in the margin.
   return (
-    <ZoomableImage
-      alt={alt}
-      className={cn(
-        'm-0 block h-auto w-auto max-h-(--image-preview-height) max-w-full rounded-lg object-contain shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
-        className
+    <span className="relative my-2 block max-w-full" data-slot="aui_markdown-image" style={image.frameStyle}>
+      {image.src ? (
+        <ZoomableImage
+          {...props}
+          alt={alt}
+          className={cn(
+            'm-0 block h-auto w-auto max-w-full rounded-lg object-scale-down shadow-[0_0.0625rem_0.125rem_color-mix(in_srgb,#000_4%,transparent),0_0.625rem_1.5rem_color-mix(in_srgb,#000_5%,transparent)]',
+            framed ? 'max-h-full' : 'max-h-(--image-preview-height)',
+            className
+          )}
+          containerClassName={
+            framed
+              ? 'absolute left-0 top-0 block h-full w-fit'
+              : 'block w-fit max-w-[min(100%,var(--image-preview-max-width))]'
+          }
+          onError={event => {
+            image.onError()
+            onError?.(event)
+          }}
+          onLoad={event => {
+            image.onLoad(event.currentTarget)
+            onLoad?.(event)
+          }}
+          src={image.src}
+          style={style}
+        />
+      ) : (
+        <span className={cn('block overflow-hidden text-sm text-muted-foreground', framed && 'absolute inset-0')}>
+          Loading {name}...
+        </span>
       )}
-      containerClassName="my-2 block w-fit max-w-[min(100%,var(--image-preview-max-width))]"
-      slot="aui_markdown-image"
-      src={resolvedSrc}
-      {...props}
-    />
+    </span>
   )
 }
 
@@ -461,6 +472,15 @@ interface MarkdownTextSurfaceProps {
   disableArtifacts?: boolean
   /** Foreign history must not load images or mount live transcript directives. */
   previewOnly?: boolean
+  /** Re-render the direct text nodes of paragraph-level containers (p / li /
+   *  td) — a transcript surface styles its own inline tokens (a Bot Mode room's
+   *  routed @mentions) without owning the Markdown pipeline. Nested inline
+   *  markup and code are left as rendered. */
+  decorateText?: (children: ReactNode) => ReactNode
+  /** The reader's explicit Text direction (Appearance). Stamped on the root
+   *  and on list/quote boxes in place of their `dir="auto"`, so every prose
+   *  block follows it; undefined is Auto and leaves the DOM attribute-free. */
+  textDirection?: 'ltr' | 'rtl'
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -576,12 +596,23 @@ function MarkdownParagraph({
 function MarkdownTextSurface({
   containerClassName,
   containerProps,
+  decorateText,
   defer,
   disableArtifacts,
   previewOnly,
-  scratchpad
+  scratchpad,
+  textDirection
 }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
+  // List/quote boxes resolve from content under Auto (see the ul/ol/blockquote
+  // notes below); an explicit choice replaces that vote rather than nesting it.
+  const boxDir = textDirection ?? 'auto'
+
+  const surfaceContainerProps = useMemo(
+    () => (textDirection ? { ...containerProps, dir: textDirection } : containerProps),
+    [containerProps, textDirection]
+  )
+
   const isStreaming = status.type === 'running'
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
@@ -606,11 +637,13 @@ function MarkdownTextSurface({
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
           <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
         ),
-        p: (props: ComponentProps<'p'>) =>
+        p: ({ children, ...props }: ComponentProps<'p'>) =>
           previewOnly ? (
-            <p {...props} />
+            <p {...props}>{decorateText ? decorateText(children) : children}</p>
           ) : (
-            <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming} />
+            <MarkdownParagraph {...props} scratchpad={scratchpad} streaming={isStreaming}>
+              {decorateText ? decorateText(children) : children}
+            </MarkdownParagraph>
           ),
         a: previewOnly ? ({ children }: ComponentProps<'a'>) => <span>{children}</span> : MarkdownLink,
         // Inline code must not vote when an ancestor resolves `dir="auto"`
@@ -644,7 +677,7 @@ function MarkdownTextSurface({
           return (
             <blockquote
               className={cn('border-s-2 border-(--ui-stroke-tertiary) ps-3 text-muted-foreground italic', className)}
-              dir="auto"
+              dir={boxDir}
               {...props}
             >
               {children}
@@ -652,13 +685,15 @@ function MarkdownTextSurface({
           )
         },
         ul: ({ className, ...props }: ComponentProps<'ul'>) => (
-          <ul className={cn('my-1 gap-0', className)} dir="auto" {...props} />
+          <ul className={cn('my-1 gap-0', className)} dir={boxDir} {...props} />
         ),
         ol: ({ className, ...props }: ComponentProps<'ol'>) => (
-          <ol className={cn('my-1 gap-0', className)} dir="auto" {...props} />
+          <ol className={cn('my-1 gap-0', className)} dir={boxDir} {...props} />
         ),
-        li: ({ className, ...props }: ComponentProps<'li'>) => (
-          <li className={cn('leading-(--dt-line-height)', className)} {...props} />
+        li: ({ children, className, ...props }: ComponentProps<'li'>) => (
+          <li className={cn('leading-(--dt-line-height)', className)} {...props}>
+            {decorateText ? decorateText(children) : children}
+          </li>
         ),
         // Columns are drag-resizable; the widths live outside the transcript
         // (see markdown-table-widths.ts) so a new turn or a session switch
@@ -668,8 +703,10 @@ function MarkdownTextSurface({
           <thead className={cn('m-0 bg-muted/35 text-muted-foreground', className)} {...props} />
         ),
         th: ResizableMarkdownTh,
-        td: ({ className, ...props }: ComponentProps<'td'>) => (
-          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
+        td: ({ children, className, ...props }: ComponentProps<'td'>) => (
+          <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props}>
+            {decorateText ? decorateText(children) : children}
+          </td>
         ),
         img: previewOnly ? ({ alt }: ComponentProps<'img'>) => <span>{alt}</span> : MarkdownImage,
         // ```mermaid / ```svg fences route to their lazy renderers; substantial
@@ -694,7 +731,7 @@ function MarkdownTextSurface({
           )
         }
       }) as StreamdownTextComponents,
-    [disableArtifacts, isStreaming, previewOnly, scratchpad]
+    [boxDir, decorateText, disableArtifacts, isStreaming, previewOnly, scratchpad]
   )
 
   if (text.length > MAX_MARKDOWN_CHARS) {
@@ -727,7 +764,7 @@ function MarkdownTextSurface({
       <StreamdownTextPrimitive
         components={components}
         containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
-        containerProps={containerProps}
+        containerProps={surfaceContainerProps}
         defer={defer}
         lineNumbers={false}
         mode="streaming"
@@ -750,6 +787,30 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
   text: string
 }
 
+/** Render raw assistant-style message text through the complete Desktop text
+ * pipeline. `MEDIA:` directives must be transformed before Markdown rendering
+ * so the canonical link component can route them to inline players/previews.
+ * Fenced blocks stay plain code (`disableArtifacts`): a transcript rendered
+ * outside a session — a Bot Mode group room — has no session to own artifact
+ * versions. `media={false}` leaves `MEDIA:` lines as prose: media paths resolve
+ * against the ACTIVE gateway, so a message written on another machine (a
+ * Connections Bot in a cross-machine room) must not have its path read here —
+ * that is a broken image at best and a same-path local file at worst. */
+export function MessageTextContent({
+  decorateText,
+  media = true,
+  text
+}: Pick<MarkdownTextSurfaceProps, 'decorateText'> & { media?: boolean; text: string }) {
+  return (
+    <MarkdownTextContent
+      decorateText={decorateText}
+      disableArtifacts
+      isRunning={false}
+      text={media ? renderMediaTags(text) : text}
+    />
+  )
+}
+
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
   // No `smooth` on purpose — same as the assistant answer. `TextMessagePartProvider`
   // mints a fresh part object on every `text` change, and useSmooth resets its
@@ -765,7 +826,9 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
 }
 
 const MarkdownTextImpl = () => {
-  return <MarkdownTextSurface defer />
+  const textDirection = useForcedTextDirection()
+
+  return <MarkdownTextSurface defer textDirection={textDirection} />
 }
 
 export const MarkdownText = memo(MarkdownTextImpl)

@@ -6,23 +6,13 @@ import { FIELD_LABELS, SECTIONS } from './constants'
 import { credentialRowLabel } from './credential-key-ui'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { prettyName, sectionFieldEntries, voiceFieldVisible } from './helpers'
+import { settingsSubpageForTarget } from './subpages'
 import type { DesktopConfigSection, SettingsView } from './types'
 
 export type CredentialSettingsView = 'settings' | 'tools'
 
-export const APPEARANCE_SETTING_IDS = {
-  backdrop: 'appearance.backdrop',
-  embeds: 'appearance.embeds',
-  introSplash: 'appearance.intro-splash',
-  language: 'appearance.language',
-  theme: 'appearance.theme',
-  toolView: 'appearance.tool-view',
-  translucency: 'appearance.translucency',
-  uiScale: 'appearance.ui-scale',
-  userBubble: 'appearance.user-bubble'
-} as const
-
 export interface SettingsSearchTarget {
+  subpage?: string
   field?: string
   key?: string
   keysView?: CredentialSettingsView
@@ -199,6 +189,11 @@ export function filterSettingsSearchEntries(entries: SettingsSearchEntry[], quer
 export function settingsSearchTargetQuery(target: SettingsSearchTarget): string {
   const params = new URLSearchParams()
   params.set('tab', target.view)
+  const subpage = target.subpage ?? settingsSubpageForTarget(target.view, target.field, target.setting)
+
+  if (subpage) {
+    params.set('page', subpage)
+  }
 
   if (target.providerView) {
     params.set('pview', target.providerView)

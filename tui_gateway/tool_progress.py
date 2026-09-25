@@ -188,8 +188,14 @@ def _todo_state_from_history(history) -> dict | None:
         return None
 
 
+def _tool_labels(name: str, args: dict) -> list[dict] | None:
+    from agent.display import tool_labels_for_call
+
+    return [label.as_payload() for label in tool_labels_for_call(name, args)] or None
+
+
 def _connector_tool_lifecycle(name: str, args: dict) -> bool:
-    from tools.tool_gateway.names import is_connector_name
+    from tools.connectors import is_connector_name
 
     if name == "manage_connections" or is_connector_name(name):
         return True
@@ -224,6 +230,8 @@ def _emit_tool_lifecycle(event, sid, name, args, payload):
             transport = current_transport() or _stdio_transport
     frame = _event_frame(event, sid, payload)
     _stamp_event(frame)
+    from tui_gateway.hosted_room_member_activity import project_room_member_activity
+    project_room_member_activity(frame, _sessions)
     transport.write(frame)
 
 
@@ -234,13 +242,19 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     if session is not None:
         with contextlib.suppress(Exception):
             from agent.display import capture_local_edit_snapshot
-            snapshot = capture_local_edit_snapshot(name, args)
+            task_id = session.get("session_key") or getattr(session.get("agent"), "session_id", None) or sid
+            snapshot = capture_local_edit_snapshot(name, args, task_id=task_id)
             if snapshot is not None:
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
+        # A preview prepared for an earlier call whose completion never fired (failed
+        # flush) must not attach to a provider that reuses the same call id.
+        session.setdefault("tool_result_metadata", {}).pop(tool_call_id, None)
     if (_tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name)
             or _connector_tool_lifecycle(name, args)):
         payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
+        if (labels := _tool_labels(name, args)) is not None:
+            payload["labels"] = labels
         # Full args (not just the 80-char `context` preview) so the desktop's expanded tool row is complete
         # while the tool runs. args.todos may be a partial merge — tool.complete is the truth.
         if args:
@@ -250,12 +264,40 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         _emit_tool_lifecycle("tool.start", sid, name, args, payload)
 
 
+def _prepare_tool_result_metadata(sid: str, tool_call_id: str, name: str, args: dict, result: str) -> dict:
+    """Non-emitting preview preparation for the canonical tool-result append.
+
+    Retain the exact preview for the post-flush event, including an empty preview
+    for failed/no-op edits. A cold client reads the same sidecar from SQLite.
+    """
+    session = _sessions.get(sid)
+    snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
+    metadata = {}
+    with contextlib.suppress(Exception):
+        from agent.display import render_edit_diff_with_delta
+        rendered: list[str] = []
+        if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
+            metadata["inline_diff"] = "\n".join(rendered)
+    if session is not None:
+        session.setdefault("tool_result_metadata", {})[tool_call_id] = metadata
+    return {"tool_result_metadata": metadata} if metadata else {}
+
+
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
+    session = _sessions.get(sid)
+    prepared = session.setdefault("tool_result_metadata", {}) if session is not None else {}
+    # Consume the pre-flush preview even when this completion is dropped as stale.
+    metadata = prepared.pop(tool_call_id, None)
     if _connector_lifecycle_is_stale(sid, name, args):
         return
     payload = {"tool_id": tool_call_id, "name": name, "args": args}
-    session = _sessions.get(sid)
-    snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
+    if (labels := _tool_labels(name, args)) is not None:
+        payload["labels"] = labels
+    if metadata is None:
+        # Native runtimes may emit lifecycle callbacks without the tool executor.
+        metadata = _prepare_tool_result_metadata(sid, tool_call_id, name, args, result).get("tool_result_metadata", {})
+        prepared.pop(tool_call_id, None)
+    payload.update(metadata)
     started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None) if session is not None else None
     duration_s = time.time() - started_at if started_at else None
     if duration_s is not None:
@@ -274,11 +316,6 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
-    with contextlib.suppress(Exception):
-        from agent.display import render_edit_diff_with_delta
-        rendered: list[str] = []
-        if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
-            payload["inline_diff"] = "\n".join(rendered)
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)

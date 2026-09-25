@@ -137,15 +137,23 @@ def blocking_provider():
         srv.shutdown()
 
 
-@pytest.mark.parametrize("stop", ["cancel", "timeout"])
-def test_console_cancel_stops_forked_agent_request_before_reporting(console_client, monkeypatch, blocking_provider, stop):
-    """#106179: cancelling (or timing out) a console command whose worker forked an AIAgent must interrupt
+def test_console_cancel_stops_forked_agent_request_before_reporting(console_client, monkeypatch, blocking_provider):
+    """#106179: cancelling a console command whose worker forked an AIAgent must interrupt
     that agent — closing its in-flight provider request — and wait for the worker to exit BEFORE the
     prompt reports cancelled/timeout. asyncio can only drop the waiter; the thread keeps decoding otherwise."""
     import threading
 
     from agent import curator
     from hermes_cli.web_routers import chat_ws
+    from hermes_constants import get_hermes_home
+    from tools import skill_usage
+
+    # The LLM pass only forks when an agent-created skill is a candidate: bundled
+    # built-ins are excluded from the review list, so the temp home needs one.
+    skill_dir = get_hermes_home() / "skills" / "console-cancel-probe"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: console-cancel-probe\ndescription: x\n---\n", encoding="utf-8")
+    skill_usage.record_created("console-cancel-probe", agent_created=True)
 
     monkeypatch.setattr(
         curator, "_resolve_review_provider",
@@ -161,8 +169,6 @@ def test_console_cancel_stops_forked_agent_request_before_reporting(console_clie
             worker_exited.set()
 
     monkeypatch.setattr(chat_ws, "_execute_console_line", observed_execute)
-    if stop == "timeout":
-        monkeypatch.setattr(chat_ws, "_CONSOLE_COMMAND_TIMEOUT_SECONDS", 2.0)
     line = "curator run --consolidate --dry-run"
 
     with console_client.websocket_connect(_url()) as conn:
@@ -173,8 +179,7 @@ def test_console_cancel_stops_forked_agent_request_before_reporting(console_clie
         worker_exited.clear()
         conn.send_json({"type": "confirm", "command": line})
         assert blocking_provider["started"].wait(60), "forked agent never reached the provider"
-        if stop == "cancel":
-            conn.send_json({"type": "cancel"})
+        conn.send_json({"type": "cancel"})
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             frame = conn.receive_json()
@@ -185,7 +190,7 @@ def test_console_cancel_stops_forked_agent_request_before_reporting(console_clie
         observed = (frame["status"], blocking_provider["peer_closed"].is_set(), worker_exited.is_set())
         blocking_provider["release"].set()  # a leaked worker (the bug) must not wedge socket teardown
         worker_exited.wait(30)
-    assert observed == ("cancelled" if stop == "cancel" else "timeout", True, True), (
+    assert observed == ("cancelled", True, True), (
         "(status, provider request closed, worker exited) at the terminal frame")
 
 

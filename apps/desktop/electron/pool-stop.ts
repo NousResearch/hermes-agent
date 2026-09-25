@@ -17,10 +17,12 @@
  *  - spawn paths can await inFlight(key) so a fresh child never overlaps a
  *    dying one on the same HERMES_HOME.
  *
- * Extracted into a dependency-free module (same pattern as backend-child.ts /
- * pool-eviction.ts) so the dedup and handle-retention semantics are asserted
+ * Extracted into a dependency-free module (same pattern as backend-child.ts)
+ * so the dedup and handle-retention semantics are asserted
  * directly instead of grepping main.ts source text.
  */
+
+import type { WaitableChild } from './backend-child'
 
 export interface PoolStopEntry {
   process?: unknown
@@ -33,6 +35,11 @@ export interface PoolStopperDeps {
   stopChild: (child: unknown) => void
   /** Bounded wait: resolves when the child exits, escalating to SIGKILL. */
   waitForExit: (child: unknown) => Promise<void>
+  /**
+   * Extra per-key work that must finish before a replacement may spawn.
+   * Held on the same in-flight promise as child exit (SSH teardown, etc.).
+   */
+  afterStop?: (key: string) => Promise<void>
 }
 
 export interface PoolStopper {
@@ -66,11 +73,31 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
     // below retains the process handle until the bounded exit completes.
     deps.pool.delete(key)
 
+    const clear = () => {
+      if (stops.get(key) === stopping) {
+        stops.delete(key)
+      }
+    }
+
     const stopping = (async () => {
       deps.stopChild(entry.process)
       await deps.waitForExit(entry.process)
-    })().finally(() => {
-      stops.delete(key)
+
+      if (deps.afterStop) {
+        await deps.afterStop(key)
+      }
+    })().then(clear, error => {
+      const child = entry.process as Partial<WaitableChild> | undefined
+
+      if (child?.once && child.exitCode === null && child.signalCode === null) {
+        // Keep rejecting reuse of this profile while the old child is alive.
+        // The real late exit, not the teardown deadline, releases this fence.
+        child.once('exit', clear)
+      } else {
+        clear()
+      }
+
+      throw error
     })
 
     stops.set(key, stopping)

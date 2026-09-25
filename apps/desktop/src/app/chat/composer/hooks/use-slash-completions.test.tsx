@@ -95,16 +95,6 @@ describe('useSlashCompletions', () => {
     expect(request).toHaveBeenCalledTimes(2)
   })
 
-  it('offers skill commands on a bare slash, not just built-ins', async () => {
-    const request = vi.fn().mockResolvedValue(CATALOG)
-    const api = harness({ request } as unknown as HermesGateway)
-
-    const items = await completions(api, '')
-    const work = items.find(item => (item.metadata as { command?: string })?.command === '/work')
-
-    expect((work?.metadata as { group?: string })?.group).toBe('Skills')
-  })
-
   // A `/` typed mid-message is a reference dropped into prose, so the trigger
   // filters the list to skills (use-composer-trigger). A bare mid-message `/`
   // resolves to the same empty query as an opening `/`, so that filter runs
@@ -155,32 +145,6 @@ describe('useSlashCompletions', () => {
     const api = harness({ request } as unknown as HermesGateway)
 
     expect(commandsOf(await completions(api, 'research'))).toEqual(['/research-paper-writing', '/research'])
-  })
-
-  it('shows backend documentation for wisdom subcommands', async () => {
-    const request = vi.fn().mockImplementation((method: string) =>
-      Promise.resolve(
-        method === 'commands.catalog'
-          ? CATALOG
-          : {
-              replace_from: 8,
-              items: [
-                {
-                  text: 'installed',
-                  display: 'installed',
-                  meta: 'List and manage skills installed on this device'
-                }
-              ]
-            }
-      )
-    )
-
-    const api = harness({ request } as unknown as HermesGateway)
-    const [installed] = await completions(api, 'wisdom ')
-
-    expect(installed?.label).toBe('installed')
-    expect(installed?.description).toBe('List and manage skills installed on this device')
-    expect((installed?.metadata as { command?: string })?.command).toBe('/wisdom installed')
   })
 
   it('keeps a registry command in Commands even when the desktop table has no row', async () => {

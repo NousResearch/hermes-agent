@@ -1,6 +1,5 @@
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { atom } from 'nanostores'
-
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 
 import type { ComposerAttachment } from './composer'
 
@@ -11,6 +10,9 @@ export interface QueuedPromptEntry {
    *  text the agent receives. A queued `/skill` invocation carries the whole
    *  expanded skill body as `text` — the UI shows the invocation instead. */
   displayText?: string
+  /** A hidden note (a setup line for the model) parked while the turn ran. The panel
+   *  shows a neutral label and the drain submits it hidden again. */
+  displayKind?: 'hidden'
   attachments: ComposerAttachment[]
   queuedAt: number
 }
@@ -89,20 +91,42 @@ const setParked = (sid: string, parked: boolean) => {
 }
 
 const writeSession = (sid: string, queue: QueuedPromptEntry[]) => {
-  const current = $queuedPromptsBySession.get()
-  const next = { ...current }
+  // Merge over the LIVE persisted map, not the in-memory atom: another window
+  // may have written its own sessions' queues between our last sync and now,
+  // and writing our whole snapshot back would clobber those entries (#46732).
+  const live = load()
+  const next: QueueState = { ...live }
 
   if (queue.length === 0) {
     delete next[sid]
-    // An empty queue has nothing to hold back — drop the park so it can't
-    // linger as stale state and silently gate entries queued much later.
-    setParked(sid, false)
   } else {
     next[sid] = queue
   }
 
   $queuedPromptsBySession.set(next)
   save(next)
+
+  if (queue.length === 0) {
+    // An empty queue has nothing to hold back — drop the park so it can't
+    // linger as stale state and silently gate entries queued much later.
+    setParked(sid, false)
+  }
+}
+
+if (typeof window !== 'undefined') {
+  // Cross-window sync (#46732): every desktop window boots the queue atom from
+  // the same localStorage key. The `storage` event fires in every window EXCEPT
+  // the writer, so there is no self-echo to guard — adopting the fresh map here
+  // keeps the other windows' entries from vanishing (their writes clobbered
+  // ours) or resurrecting (our stale snapshot re-queued what they drained).
+  // `event.key === null` is the full-clear signal (localStorage.clear()).
+  window.addEventListener('storage', event => {
+    if (event.key !== null && event.key !== STORAGE_KEY) {
+      return
+    }
+
+    $queuedPromptsBySession.set(load())
+  })
 }
 
 const sidOf = (key: string | null | undefined): null | string => {
@@ -125,7 +149,7 @@ export const getQueuedPrompts = (key: string | null | undefined): QueuedPromptEn
 
 export const enqueueQueuedPrompt = (
   key: string | null | undefined,
-  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string }
+  payload: { text: string; attachments: ComposerAttachment[]; displayText?: string; displayKind?: 'hidden' }
 ): null | QueuedPromptEntry => {
   const sid = sidOf(key)
 
@@ -137,6 +161,7 @@ export const enqueueQueuedPrompt = (
     id: nextId(),
     text: payload.text,
     ...(payload.displayText ? { displayText: payload.displayText } : {}),
+    ...(payload.displayKind ? { displayKind: payload.displayKind } : {}),
     attachments: cloneAttachments(payload.attachments),
     queuedAt: Date.now()
   }
@@ -285,9 +310,12 @@ export const migrateQueuedPrompts = (fromKey: string | null | undefined, toKey: 
     return false
   }
 
-  const next = { ...$queuedPromptsBySession.get() }
+  // Merge over the live persisted map (see writeSession) so the migration can't
+  // clobber entries another window queued meanwhile — including into `to`.
+  const live = load()
+  const next: QueueState = { ...live }
   delete next[from]
-  next[to] = [...queueFor(to), ...pending]
+  next[to] = [...(live[to] ?? queueFor(to)), ...pending]
 
   $queuedPromptsBySession.set(next)
   save(next)

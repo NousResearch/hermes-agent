@@ -298,7 +298,7 @@ def merge_output_to_single_jsonl(input_dir: Path, output_file: Path):
     for jsonl_file in sorted(input_dir.glob("*.jsonl")):
         if jsonl_file.name == output_file.name:
             continue
-        with open(jsonl_file, 'r', encoding='utf-8') as f:
+        with open(jsonl_file, 'r', encoding='utf-8-sig') as f:
             for line in f:
                 line = line.strip()
                 if line:

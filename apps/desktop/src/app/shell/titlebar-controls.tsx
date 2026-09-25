@@ -1,3 +1,4 @@
+import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
@@ -11,11 +12,11 @@ import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { Slot } from '@/contrib/react/slot'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
-import { compactNumber } from '@/lib/format'
 import { triggerHaptic } from '@/lib/haptics'
 import { formatModifierToken } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { toggleHud } from '@/store/hud'
+import { $interfaceMode, shownInMode, type Tiered } from '@/store/interface-mode'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -25,10 +26,12 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 import { $unreadSessionCount } from '@/store/session-dot-state'
+import { $titlebarAppActionsSide, TITLEBAR_FIXED_TOOLS } from '@/store/titlebar-app-actions'
 
 import { appViewForPath, hidesFixedTitlebarClusters, isOverlayView } from '../routes'
 
 import {
+  TITLEBAR_CHROME_CHANGED_EVENT,
   TITLEBAR_ICON_BADGE_SCALE,
   titlebarButtonClass,
   titlebarIconSizeCss,
@@ -36,7 +39,7 @@ import {
 } from './titlebar'
 import { TitlebarIcon } from './titlebar-icon'
 
-export interface TitlebarTool {
+export interface TitlebarTool extends Tiered {
   id: string
   label: string
   active?: boolean
@@ -139,16 +142,20 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const panesFlipped = useStore($panesFlipped)
   const sidebarOpen = useStore($sidebarOpen)
   const unreadCount = useStore($unreadSessionCount)
+  const appActionsSide = useStore($titlebarAppActionsSide)
+  const interfaceMode = useStore($interfaceMode)
   const unreadBadge = unreadCount > 0 ? unreadCount : undefined
   const unreadHint = unreadBadge ? ` · ${t.titlebar.unreadSessions(unreadBadge)}` : ''
+  // One filter for every cluster: a tool's own `hidden`, then the mode's tier.
+  const shown = shownInMode(interfaceMode)
+  const visibleTool = (tool: TitlebarTool) => !tool.hidden && shown(tool)
 
   // `titleBar.*` slot content is mount-scoped — a page's <Contribute> registers
   // only while that surface is up — so a non-empty area means a page is
   // actively projecting chrome into the band right now.
   const titleBarLeft = useContributions('titleBar.left')
-  const titleBarCenter = useContributions('titleBar.center')
   const titleBarRight = useContributions('titleBar.right')
-  const pageOwnsTitlebar = titleBarLeft.length + titleBarCenter.length + titleBarRight.length > 0
+  const pageOwnsTitlebar = titleBarLeft.length + titleBarRight.length > 0
 
   // POSITIONAL toggles: each button shows/hides everything on its physical
   // side of the main zone (the layout tree collapses the whole side), so they
@@ -161,6 +168,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const rightLabel = rightEdge.open ? t.titlebar.hideRightSidebar : t.titlebar.showRightSidebar
 
   const sidebarTool: TitlebarTool = {
+    ...TITLEBAR_FIXED_TOOLS.sidebar,
     actionId: 'view.toggleSidebar',
     badge: panesFlipped ? undefined : unreadBadge,
     icon: <TitlebarIcon name="layout-sidebar-left" />,
@@ -173,6 +181,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   }
 
   const flipTool: TitlebarTool = {
+    ...TITLEBAR_FIXED_TOOLS['flip-panes'],
     actionId: 'view.flipPanes',
     icon: <TitlebarIcon name="arrow-swap" />,
     id: 'flip-panes',
@@ -184,6 +193,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   }
 
   const rightSidebarTool: TitlebarTool = {
+    ...TITLEBAR_FIXED_TOOLS['right-sidebar'],
     actionId: 'view.toggleRightSidebar',
     badge: panesFlipped ? unreadBadge : undefined,
     icon: <TitlebarIcon name="layout-sidebar-right" />,
@@ -196,9 +206,11 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     tour: 'right-pane-toggle'
   }
 
-  // App actions stay visible beside the left sidebar toggle.
+  // Static system tools — always pinned to the screen's right edge so the
+  // left titlebar stays free for tabs (#107351).
   const systemTools: TitlebarTool[] = [
     {
+      ...TITLEBAR_FIXED_TOOLS.settings,
       actionId: 'nav.settings',
       icon: <TitlebarIcon name="settings-gear" />,
       id: 'settings',
@@ -209,6 +221,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       }
     },
     {
+      ...TITLEBAR_FIXED_TOOLS.layout,
       className: 'group/tool',
       // Hover + held ⌘/Ctrl morphs the glyph into its reset form (see
       // LayoutGlyph) — the mod-click telegraphs itself before it happens.
@@ -229,6 +242,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       title: t.titlebar.layoutEditorTitle(formatModifierToken('mod'))
     },
     {
+      ...TITLEBAR_FIXED_TOOLS.hud,
       // No `title`: TitlebarToolButton passes `title` to TipKeybindLabel as a
       // text OVERRIDE, so a long sentence there replaces the short label and
       // crowds the ⌘⇧H hint off the tooltip. Label only — the hint is appended
@@ -246,20 +260,17 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
 
   const view = appViewForPath(location.pathname)
 
+  // Route changes can replace measured clusters without resizing the panels.
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(TITLEBAR_CHROME_CHANGED_EVENT))
+  }, [location.pathname, pageOwnsTitlebar])
+
   // Overlays own the window. These clusters are `fixed` at a higher z-index
   // than the overlay card, so they'd otherwise bleed over it — hide them (and
   // the nested titleBar slots) and let the overlay's own chrome take over.
   if (isOverlayView(view)) {
     return null
   }
-
-  const titlebarSlots = (
-    <>
-      <Slot area="titleBar.left" />
-      <Slot area="titleBar.center" />
-      <Slot area="titleBar.right" />
-    </>
-  )
 
   const leftClusterClass = cn(
     titlebarToolClusterClass,
@@ -273,19 +284,34 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   // route. Contributed `titleBar.tools` items keep rendering here too, so a
   // chrome-owning page never silently drops a registered item.
   if (hidesFixedTitlebarClusters(view) && pageOwnsTitlebar) {
-    const pageTools = [...leftTools, ...tools].filter(tool => !tool.hidden)
+    const pageTools = [...leftTools, ...tools].filter(visibleTool)
 
+    // Both markers are required even when a page contributes to only one side.
     return (
-      <div className={leftClusterClass}>
-        {pageTools.map(tool => (
-          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
-        ))}
-        {titlebarSlots}
-      </div>
+      <>
+        <div className={leftClusterClass} data-titlebar-cluster="left">
+          {pageTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+          <Slot area="titleBar.left" />
+        </div>
+        <div
+          className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
+          data-titlebar-cluster="right"
+        >
+          <Slot area="titleBar.right" />
+        </div>
+      </>
     )
   }
 
-  const visibleLeftTools = [sidebarTool, ...systemTools, ...leftTools, ...tools].filter(tool => !tool.hidden)
+  const visibleLeftTools = (
+    appActionsSide === 'left' ? [sidebarTool, ...systemTools, ...leftTools] : [sidebarTool, ...leftTools]
+  ).filter(visibleTool)
+
+  const visibleSystemTools = appActionsSide === 'right' ? systemTools.filter(visibleTool) : []
+  const visiblePaneTools = tools.filter(visibleTool)
+  const visibleRightFixedTools = [flipTool, rightSidebarTool].filter(visibleTool)
 
   return (
     <>
@@ -293,16 +319,36 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
         {visibleLeftTools.map(tool => (
           <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
         ))}
-        {titlebarSlots}
+        <Slot area="titleBar.left" />
+        <Slot area="titleBar.center" />
       </div>
+
+      {visiblePaneTools.length > 0 && (
+        <div
+          aria-label={t.shell.appControls}
+          className={cn(
+            titlebarToolClusterClass,
+            'top-[calc(var(--titlebar-controls-top)+var(--right-rail-top-inset,0px))] right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))]'
+          )}
+        >
+          {visiblePaneTools.map(tool => (
+            <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+          ))}
+        </div>
+      )}
 
       <div
         aria-label={t.shell.appControls}
         className={cn(titlebarToolClusterClass, 'right-(--titlebar-tools-right) top-(--titlebar-controls-top)')}
         data-titlebar-cluster="right"
       >
-        <TitlebarToolButton navigate={navigate} tool={flipTool} />
-        <TitlebarToolButton navigate={navigate} tool={rightSidebarTool} />
+        {visibleSystemTools.map(tool => (
+          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+        ))}
+        {visibleRightFixedTools.map(tool => (
+          <TitlebarToolButton key={tool.id} navigate={navigate} tool={tool} />
+        ))}
+        <Slot area="titleBar.right" />
       </div>
     </>
   )
@@ -322,7 +368,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
 
   if (tool.href) {
     return (
-      <Tip label={tooltipLabel}>
+      <Tip label={tooltipLabel} placement="toolbar">
         <Button asChild className={className} size="icon-titlebar" variant="ghost">
           <a
             aria-label={tool.label}
@@ -340,7 +386,7 @@ function TitlebarToolButton({ navigate, tool }: { navigate: ReturnType<typeof us
   }
 
   return (
-    <Tip label={tooltipLabel}>
+    <Tip label={tooltipLabel} placement="toolbar">
       <Button
         aria-label={tool.label}
         aria-pressed={tool.active ?? undefined}

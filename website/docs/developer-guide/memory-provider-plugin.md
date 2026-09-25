@@ -221,6 +221,15 @@ class MyArchivingProvider(MemoryProvider):
         return f"checkpoint: {ids}"     # forwarded into the summary prompt
 ```
 
+For a checkpoint that must retain tool messages and other original transcript
+details, a v2 provider may additionally declare `raw_messages` as a keyword
+argument. Hermes passes the original message list only when the provider accepts
+that keyword (or `**kwargs`); the positional `messages` argument remains the
+normalized evidence list. Existing v2 providers without the keyword and v1
+providers keep their previous call shape. A provider that requires complete
+raw evidence should reject a missing `raw_messages` value before reporting a
+successful checkpoint.
+
 Operators enable enforcement per deployment:
 
 ```yaml

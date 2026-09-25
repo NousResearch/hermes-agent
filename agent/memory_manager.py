@@ -746,6 +746,10 @@ class MemoryManager:
             # v1 providers and bare-shape v2 providers never see the signal.
             if is_checkpoint_provider and _accepts_require_checkpoint(provider.on_pre_compress):
                 kwargs["require_checkpoint"] = require_checkpoint
+            if is_checkpoint_provider and evidence_messages is not None:
+                params = _signature_params(provider.on_pre_compress)
+                if params is not None and (_has_var_kwargs(params) or "raw_messages" in params):
+                    kwargs["raw_messages"] = messages
             try:
                 result = provider.on_pre_compress(provider_messages, **kwargs)
                 if result and result.strip():

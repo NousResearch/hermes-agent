@@ -1051,6 +1051,11 @@ class SessionSessionsMixin:
                 merged["title"] = s.get("title")
             merged["_lineage_root_id"] = s["id"]
             merged["_lineage_ids"] = chain
+            # #121148: the projected row IS an automatic continuation, not a fresh conversation and
+            # not a user branch. The server already classifies the edge (_COMPRESSION_CHILD_SQL) but
+            # only ever used it to hide rows — surface the kind so clients can label the provenance
+            # instead of rendering a sealed-and-rotated chat as a brand-new session.
+            merged["continuation_kind"] = "compression"
             projected.append(merged)
         return projected
 

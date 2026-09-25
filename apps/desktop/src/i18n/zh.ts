@@ -3468,6 +3468,7 @@ export const zh = defineLocale({
       backgroundRunning: '后台任务运行中',
       draftSession: '草稿 — 尚未发送',
       handoffOrigin: platform => `从 ${platform} 转接`,
+      continuationOrigin: '自动延续 — 此对话已压缩并延续',
       ownedByProfile: profile => `配置档：${profile}`,
       renamed: '已重命名',
       renameFailed: '重命名失败',

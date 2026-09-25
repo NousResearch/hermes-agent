@@ -540,7 +540,25 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
+        # The gateway may rotate a worker-owned profile log while running under
+        # another uid. Keep the replaced inode's access policy, not the
+        # rotating process's umask/ownership (which can lock workers out).
+        previous = os.fstat(self.stream.fileno()) if os.name == "posix" and self.stream else None
         super().doRollover()
+        if previous is not None and self.stream is not None:
+            current = os.fstat(self.stream.fileno())
+            if (current.st_uid, current.st_gid) != (previous.st_uid, previous.st_gid):
+                try:
+                    os.fchown(self.stream.fileno(), previous.st_uid, previous.st_gid)
+                except PermissionError:
+                    # A group-writable writer may not assume the old owner's uid,
+                    # but can restore a shared supplementary group independently.
+                    if current.st_gid != previous.st_gid:
+                        try:
+                            os.fchown(self.stream.fileno(), -1, previous.st_gid)
+                        except PermissionError:
+                            pass
+            os.fchmod(self.stream.fileno(), previous.st_mode & 0o777)
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot so
         # the next emit doesn't mistake it for external rotation.

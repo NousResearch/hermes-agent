@@ -4,6 +4,7 @@ import io
 import logging
 import os
 import stat
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -366,6 +367,89 @@ class TestAddRotatingHandler:
         assert log_path.exists()
         assert stat.S_IMODE(log_path.stat().st_mode) == 0o660
 
+
+
+@pytest.mark.linux_only
+def test_profile_rollover_keeps_previous_file_access(tmp_path):
+    """The replacement must not inherit the gateway's tighter umask."""
+    path = tmp_path / "agent.log"
+    handler = hermes_logging._ManagedRotatingFileHandler(
+        str(path), maxBytes=10, backupCount=1, encoding="utf-8",
+    )
+    try:
+        os.chmod(path, 0o660)
+        original = path.stat()
+        old_umask = os.umask(0o077)
+        try:
+            handler.emit(logging.LogRecord("agent", logging.INFO, __file__, 0, "rollover", (), None))
+            handler.emit(logging.LogRecord("agent", logging.INFO, __file__, 0, "next", (), None))
+        finally:
+            os.umask(old_umask)
+        replacement = path.stat()
+        assert (replacement.st_uid, replacement.st_gid) == (original.st_uid, original.st_gid)
+        assert stat.S_IMODE(replacement.st_mode) == stat.S_IMODE(original.st_mode)
+    finally:
+        handler.close()
+
+
+@pytest.mark.linux_only
+def test_profile_rollover_keeps_shared_group_access_across_uids(tmp_path):
+    """An unprivileged rotator must not lock out another shared-group worker."""
+    if os.geteuid() != 0:
+        pytest.skip("requires root to exercise distinct real Linux UIDs")
+
+    path = tmp_path / "agent.log"
+    path.touch()
+    os.chown(path, 2000, 4)
+    os.chmod(path, 0o660)
+    os.chown(tmp_path, -1, 4)
+    os.chmod(tmp_path, 0o770)
+    directory_fd = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        rotator = """
+import logging, os, sys
+from unittest.mock import patch
+import hermes_cli.config
+from hermes_logging import _ManagedRotatingFileHandler
+directory_fd = int(sys.argv[1])
+os.setgroups([4])
+os.setgid(1000)
+os.setuid(1000)
+path = f'/proc/self/fd/{directory_fd}/agent.log'
+with patch('hermes_cli.config.is_managed', return_value=False):
+    handler = _ManagedRotatingFileHandler(path, maxBytes=10, backupCount=1, encoding='utf-8')
+try:
+    for message in ('rollover', 'next'):
+        handler.emit(logging.LogRecord('agent', logging.INFO, '<rollover>', 0, message, (), None))
+finally:
+    handler.close()
+"""
+        subprocess.run(
+            [sys.executable, "-c", rotator, str(directory_fd)],
+            pass_fds=(directory_fd,), check=True,
+        )
+        assert path.stat().st_gid == 4
+        assert stat.S_IMODE(path.stat().st_mode) == 0o660
+
+        worker = """
+import os, sys
+directory_fd = int(sys.argv[1])
+os.setgroups([4])
+os.setgid(2001)
+os.setuid(2001)
+fd = os.open('agent.log', os.O_WRONLY | os.O_APPEND, dir_fd=directory_fd)
+try:
+    os.write(fd, b'worker append\\n')
+finally:
+    os.close(fd)
+"""
+        subprocess.run(
+            [sys.executable, "-c", worker, str(directory_fd)],
+            pass_fds=(directory_fd,), check=True,
+        )
+        assert "worker append" in path.read_text()
+    finally:
+        os.close(directory_fd)
 
 
 class TestWindowsConcurrentLogLockTimeout:

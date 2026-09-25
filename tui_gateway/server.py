@@ -2161,13 +2161,17 @@ def _session_info(agent, session: dict | None = None) -> dict:
     pending_switch = sess.get("pending_model_switch") or {}
     pending_model = str(pending_switch.get("display_model") or "").strip()
     pending_provider = str(pending_switch.get("display_provider") or "").strip()
-    provider = mirror.get("provider", getattr(agent, "provider", ""))
+    override = sess.get("model_override") or {}
+    provider = mirror.get("provider") or getattr(agent, "provider", "") or str(override.get("provider") or "")
     if provider == "custom" and "provider" not in mirror and agent is not None:
         # Clients reuse this identity for new chats without carrying the endpoint or key.
         # Broadcast/resume callers need not be bound to this session's profile.
         with _profile_build_scope(sess.get("profile_home") or _hermes_home):
             provider = _runtime_model_config(agent).get("provider", provider)
-    model = pending_model or mirror.get("model", getattr(agent, "model", ""))
+    # The override rung mirrors `_live_session_identity`: a pre-first-turn session has no agent,
+    # and its pinned /model pick is the route the next build consumes — reporting "" here repaints
+    # the Desktop picker blank instead of switched (#122678).
+    model = pending_model or mirror.get("model") or getattr(agent, "model", "") or str(override.get("model") or "")
     # The level the route's entry clamp actually sends (== reasoning_effort when verbatim), so the
     # Desktop can say "ultra sends max on this route" like `/reasoning` does instead of presenting a
     # Hermes-internal step (#61634) as a wire level the route does not have.

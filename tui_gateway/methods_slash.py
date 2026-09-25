@@ -197,6 +197,11 @@ def _format_live_model_output(session: dict) -> str:
     agent = session.get("agent")
     model = getattr(agent, "model", "") if agent is not None else ""
     provider = getattr(agent, "provider", "") if agent is not None else ""
+    if agent is None and (override := session.get("model_override") or {}):
+        # A pre-first-turn session has no agent; the pinned route is the answer (matches
+        # _live_session_identity, which is also what a cold resume reports for this session).
+        model = str(override.get("model") or "")
+        provider = str(override.get("provider") or "")
     if not model:
         return "Current model: (unknown)"
     return f"Current model: {model}" + (f" ({provider})" if provider else "")
@@ -343,10 +348,36 @@ def _mirror_stop(sid, session, agent, arg) -> None:
     process_registry.kill_all()
 
 
+def _mirror_model(sid, session, agent, arg) -> str:
+    """Mirror a typed ``/model`` onto the live session; returns the switch's warning, if any.
+
+    With a built agent, ``_apply_model_switch`` commits in place and its own announce emits
+    ``session.info``. Without one — a pre-first-turn (lazy) session, Desktop's default state for
+    every fresh or watch-window pane — the commit was skipped entirely, so the route the slash
+    worker just applied and reported only reaches this process as the pinned ``model_override``.
+    Re-emit ``session.info`` for that case (same pin + announce the MoA one-shot makes at its lazy
+    branch): without it the Desktop picker keeps painting the old model until an app restart, while
+    later turns bill the switched one (#122678).
+
+    A prewarm build may be in flight (``session.create`` starts one before the first prompt): a pin
+    applied mid-build loses to it — the build resolves its kwargs earlier and the finished agent
+    re-announces the OLD model, inverting the mismatch the switch just reported. Wait for the
+    build, then take the live-agent path, the same order ``config.set``'s picker applies in."""
+    if agent is None:
+        ready = session.get("agent_ready")
+        # Only wait on a build that actually started: a lazy watch-window resume never
+        # prewarms, and its unset event would park this for the full ceiling.
+        if ready is not None and session.get("agent_build_started") and not ready.is_set():
+            ready.wait(timeout=30.0)
+    warning = _apply_model_switch(sid, session, arg).get("warning", "")
+    if session.get("agent") is None and session.get("model_override"):
+        _emit("session.info", sid, _session_info(None, session))
+    return warning
+
+
 # name → mirror(sid, session, agent, arg); a falsy return means "no warning".
 _SLASH_MIRRORS = {
-    "model": lambda sid, session, agent, arg: (
-        _apply_model_switch(sid, session, arg).get("warning", "") if arg and agent else ""),
+    "model": lambda sid, session, agent, arg: (_mirror_model(sid, session, agent, arg) if arg else ""),
     "approvals": _mirror_approvals, "personality": _mirror_personality, "prompt": _mirror_prompt,
     "compress": lambda sid, session, agent, arg: (
         _compress_live_with_feedback(sid, session, agent, arg, snapshot_kwargs=False) if agent else ""),

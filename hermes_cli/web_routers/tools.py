@@ -498,9 +498,14 @@ async def select_toolset_provider(
 
     ``web`` only: ``capability`` ('search' | 'extract') writes
     ``web.<capability>_backend`` (the override the dispatchers resolve first);
-    omitted -> legacy ``web.backend``.  Managed Nous rows report Portal
-    entitlement (``needs_nous_auth`` + ``feature``): the GUI has no inline
-    login, so an unentitled selection would write config and never activate.
+    omitted -> legacy ``web.backend``.  A managed-row capability pick instead
+    promotes the toolset-level selection (``web.backend: nous``) — a
+    per-capability vendor pin would read as a DIRECT vendor selection and
+    bypass the managed route — keeping the other capability's pin, or pinning
+    it to the previous shared vendor when it had none.  Managed Nous rows
+    report Portal entitlement (``needs_nous_auth`` + ``feature``): the GUI has
+    no inline login, so an unentitled selection would write config and never
+    activate.
     """
     from hermes_cli.tools_config import apply_provider_selection, web_provider_capabilities
     from hermes_cli.nous_subscription import (
@@ -539,15 +544,25 @@ async def select_toolset_provider(
                         # the runtime reads ``web.<capability>_backend`` as a DIRECT vendor
                         # selection ("a stored vendor selection never is" the managed
                         # route), so writing the row's servicing vendor here demoted the
-                        # managed route to a direct keyless call. The managed route is the
-                        # toolset-level selection — promote it and clear both
-                        # per-capability overrides so both capabilities resolve through it.
+                        # managed route to a direct keyless call. Promote the
+                        # toolset-level selection instead. The other capability's pin is
+                        # independent (the GUI exposes separate search/extract picks) and
+                        # survives; when that other key is empty but the shared backend it
+                        # was riding was a real vendor, pin it there first so the
+                        # promotion does not silently flip the other capability.
                         from hermes_cli.tools_config_providers import _select_into
+                        from tools.tool_backend_helpers import NOUS_MANAGED_PROVIDER
 
-                        _select_into(config, "web", "backend", backend, True)
                         web_cfg = _dict_section(config, "web")
-                        web_cfg.pop("search_backend", None)
-                        web_cfg.pop("extract_backend", None)
+                        other_key = (
+                            "extract_backend" if body.capability == "search"
+                            else "search_backend")
+                        if not str(web_cfg.get(other_key) or "").strip():
+                            previous_shared = str(web_cfg.get("backend") or "").strip().lower()
+                            if previous_shared and previous_shared != NOUS_MANAGED_PROVIDER:
+                                web_cfg[other_key] = previous_shared
+                        web_cfg.pop(f"{body.capability}_backend", None)
+                        _select_into(config, "web", "backend", backend, True)
                         response_managed = True
                     else:
                         # Per-capability path writes web.<capability>_backend only —

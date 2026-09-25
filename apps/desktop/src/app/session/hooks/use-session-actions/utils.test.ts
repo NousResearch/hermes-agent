@@ -711,6 +711,61 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserveLocalPendingTurnMessages([answer], [...previous, unacknowledged])).toEqual([answer, unacknowledged])
   })
 
+  it('drops the acknowledged prompt when a compaction handoff precedes its committed copy', () => {
+    // #121088: an in-place compaction handoff (or preserved-task notice) is a
+    // synthetic USER-role row, so the committed copy of the prompt is no
+    // longer the newest user row — and one lands after the reply too. A
+    // newest-only compare misses the committed copy and re-appends the
+    // optimistic row below the whole refreshed turn.
+    const previous = [
+      msg('1-user', 'user', 'first', { rowId: 100 }),
+      msg('2-assistant', 'assistant', 'first answer', { rowId: 101 }),
+      msg('user-optimistic', 'user', 'unable to publish')
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first', { rowId: 100 }),
+      msg('2-assistant-stored', 'assistant', 'first answer', { rowId: 101 }),
+      msg('3-handoff', 'user', 'Context was compacted; continuing.'),
+      msg('4-user-stored', 'user', 'unable to publish', { rowId: 200 }),
+      msg('5-assistant-stored', 'assistant', 'stored answer', { rowId: 201 }),
+      msg('6-notice', 'user', 'Preserved task notice')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-handoff',
+      '4-user-stored',
+      '5-assistant-stored',
+      '6-notice'
+    ])
+  })
+
+  it('still keeps a genuinely unacknowledged repetition of an older question', () => {
+    // The committed twin of a genuine repeat predates the acknowledged
+    // boundary and never enters the newly committed window, so widening
+    // the acknowledged-prompt compare must not swallow it.
+    const previous = [
+      msg('1-user', 'user', 'what time is it?', { rowId: 100 }),
+      msg('2-assistant', 'assistant', 'noon', { rowId: 101 }),
+      msg('user-optimistic', 'user', 'what time is it?')
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'what time is it?', { rowId: 100 }),
+      msg('2-assistant-stored', 'assistant', 'noon', { rowId: 101 }),
+      msg('3-system-user', 'user', 'Preserved task notice')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-system-user',
+      'user-optimistic'
+    ])
+  })
+
   it('keeps a newer equal reply and its prompt until that occurrence is persisted', () => {
     const previousAnswer = msg('stored-answer', 'assistant', 'Completed.', { rowId: 10 })
     const prompt = msg('user-new', 'user', 'Repeat the check', { rowId: 11 })

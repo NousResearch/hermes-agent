@@ -782,7 +782,24 @@ export function preserveLocalPendingTurnMessages(
     }
   }
 
-  const latestAuthoritativeUser = [...remainingNext].reverse().find(message => message.role === 'user')
+  // #121088: the acknowledged prompt's committed twin can sit anywhere in the
+  // newly committed window — a compaction handoff or preserved-task notice
+  // (synthetic user rows) may be NEWER than it, so the newest-only compare
+  // misses the committed copy and the optimistic row is re-appended below the
+  // whole refreshed turn. Dedupe against EVERY newly committed durable user
+  // row, plus the newest user row as it was before (a rowId-less positional
+  // hydration window keeps parity with the legacy compare). Every candidate
+  // is identity-gated: a rowId-bearing optimistic row is never matched
+  // against a committed row it provably is not, so a genuinely
+  // unacknowledged repeat whose committed twin predates the acknowledged
+  // boundary (and never enters this window) still survives.
+  const newestAuthoritativeUser = [...remainingNext].reverse().find(message => message.role === 'user')
+  const acknowledgedUserCandidates = remainingNext.filter(
+    message =>
+      message.role === 'user' &&
+      !isGatewaySystemMarker(message) &&
+      (message.rowId !== undefined || message === newestAuthoritativeUser)
+  )
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
@@ -866,10 +883,11 @@ export function preserveLocalPendingTurnMessages(
 
     if (
       isOptimisticUser &&
-      latestAuthoritativeUser &&
-      !conflictingTranscriptIdentity(message, latestAuthoritativeUser) &&
-      textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
-        textWithoutReferenceLines(chatMessageText(message))
+      acknowledgedUserCandidates.some(
+        candidate =>
+          !conflictingTranscriptIdentity(message, candidate) &&
+          textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
+      )
     ) {
       continue
     }

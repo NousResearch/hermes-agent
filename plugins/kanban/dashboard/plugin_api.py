@@ -113,11 +113,33 @@ def _require(getter: Callable, conn: sqlite3.Connection, ident, label: str):
     return obj
 
 
+def _resolve_task_profile_home(assignee: Optional[str] = None) -> str:
+    """Resolve the hermes_home for a task's assignee, falling back to the process home."""
+    if assignee:
+        try:
+            from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+            return str(resolve_profile_env(normalize_profile_name(assignee)))
+        except Exception:
+            pass
+    from hermes_constants import get_process_hermes_home
+    return str(get_process_hermes_home())
+
+
 def _run_aux(board: Optional[str], module: str, fn: str, task_id: str, author: Optional[str]) -> Any:
     """Run a slow auxiliary-LLM task helper (``hermes_cli.<module>.<fn>``) with the board pinned;
     the module is imported lazily so a missing aux client can't break plugin load."""
     def _run():
-        return getattr(importlib.import_module(f"hermes_cli.{module}"), fn)(task_id, author=(author or None))
+        assignee = None
+        try:
+            with _board_conn(board) as (_, conn):
+                t = kanban_db.get_task(conn, task_id)
+                if t:
+                    assignee = t.assignee
+        except Exception:
+            pass
+        profile_home = _resolve_task_profile_home(assignee)
+        with kbd._worker_profile_scope(profile_home):
+            return getattr(importlib.import_module(f"hermes_cli.{module}"), fn)(task_id, author=(author or None))
     return _with_board_pinned(board, _run)
 
 
@@ -1040,12 +1062,13 @@ _ESTIMATE_SYSTEM_PROMPT = (
 class EstimateBody(BaseModel):
     title: str = ""
     body: Optional[str] = None
+    assignee: Optional[str] = None
 
 
 @router.post("/estimate")
 def estimate_text_endpoint(payload: EstimateBody):
     """Estimate from raw title/body (create dialog, before a task exists)."""
-    return _run_estimate(payload.title, payload.body, task_id=None)
+    return _run_estimate(payload.title, payload.body, task_id=None, assignee=payload.assignee)
 
 
 @router.post("/tasks/{task_id}/estimate")
@@ -1053,7 +1076,7 @@ def estimate_task_endpoint(task_id: str, board: Optional[str] = Query(None)):
     """Estimate for an existing task; ``{ok, est_tokens, complexity, rationale, model}``."""
     with _board_conn(board) as (board, conn):
         task = _require_task(conn, task_id)
-    return _run_estimate(task.title, task.body, task_id=task_id)
+    return _run_estimate(task.title, task.body, task_id=task_id, assignee=task.assignee)
 
 
 def _cap(s: Optional[str], n: int) -> str:
@@ -1061,7 +1084,7 @@ def _cap(s: Optional[str], n: int) -> str:
     return s if len(s) <= n else s[:n] + "…"
 
 
-def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str]) -> dict:
+def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str], assignee: Optional[str] = None) -> dict:
     """Never raises — config/parse/API errors become ``{"ok": False, "reason"}`` so the UI renders them inline."""
     if not (title or "").strip():
         return {"ok": False, "reason": "a title is required to estimate"}
@@ -1075,11 +1098,13 @@ def _run_estimate(title: str, body: Optional[str], *, task_id: Optional[str]) ->
     # create dialog has no task yet, so it shares one stable key.
     from agent.portal_tags import get_affinity_scope, reset_affinity_scope, set_affinity_scope
     affinity_token = None if get_affinity_scope() else set_affinity_scope(f"kanban:{task_id or 'estimate'}")
+    profile_home = _resolve_task_profile_home(assignee)
     try:
-        resp = call_llm(
-            task="kanban_estimator",
-            messages=[{"role": "system", "content": _ESTIMATE_SYSTEM_PROMPT}, {"role": "user", "content": user_msg}],
-            temperature=0.0, max_tokens=300, timeout=60)
+        with kbd._worker_profile_scope(profile_home):
+            resp = call_llm(
+                task="kanban_estimator",
+                messages=[{"role": "system", "content": _ESTIMATE_SYSTEM_PROMPT}, {"role": "user", "content": user_msg}],
+                temperature=0.0, max_tokens=300, timeout=60)
     except Exception as exc:
         return {"ok": False, "reason": f"LLM error: {type(exc).__name__}"}
     finally:

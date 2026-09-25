@@ -302,9 +302,7 @@ export function BootFailureOverlay() {
       notify({
         kind: 'warning',
         title: t.boot.failure.signInIncompleteTitle,
-        message: error
-          ? `${t.boot.failure.signInIncompleteMessage}: ${error}`
-          : t.boot.failure.signInIncompleteMessage
+        message: error ? `${t.boot.failure.signInIncompleteMessage}: ${error}` : t.boot.failure.signInIncompleteMessage
       })
     } catch (err) {
       notifyError(err, t.boot.failure.signInFailed)

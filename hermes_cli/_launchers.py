@@ -1,8 +1,18 @@
 """Source-install launchers shared by setup, installers, and Windows repair.
 
-Launchers execute store Python in isolated mode. They set the install's
-default home and load hermes_bootstrap before the entry point. Bootstrap
-reads the selected dependency generation at each start.
+Launchers execute the install's runtime interpreter in isolated mode. That
+runtime is the interpreter of the dependency generation PM committed for the
+install -- resolved from the selection record at publish time, never persisted --
+with the store Python as the answer while nothing is committed yet. They set the
+install's default home and load hermes_bootstrap before the entry point.
+Bootstrap reads the selected dependency generation at each start.
+
+Why the runtime carries dependencies: a supervisor re-spawns the commands a
+launcher publishes as ``sys.executable -m hermes_cli.main`` (kanban workers,
+external cron workers), and such a child enters neither this launcher nor
+``activate_dependencies``. On 2026-09-25 a publish embedded the store Python,
+whose site-packages holds pip and nothing else, and every child of the gateway
+died importing ``hermes_cli`` while the gateway itself kept working.
 
 Windows uses distlib executables or a command-file fallback. POSIX uses
 an executable shell wrapper. The standalone writer requires PM's store
@@ -20,7 +30,7 @@ from pathlib import Path
 if __name__ == "__main__":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pm.environments import store_root
+from pm.environments import committed_venv, store_root, venv_python
 
 
 def runtime_command(repo_root: Path, args=(), *, module: str = "hermes_cli.main",
@@ -114,6 +124,47 @@ def resolve_store_python(repo_root: Path) -> Path | None:
     return None
 
 
+def resolve_launcher_python(repo_root: Path) -> Path | None:
+    """The interpreter a published launcher embeds, or ``None`` without one.
+
+    The store Python owns the ABI, but a supervisor also re-spawns the commands
+    this install publishes as ``sys.executable -m hermes_cli.main`` (kanban
+    workers, external cron workers). That child runs no launcher body, so it
+    enters neither this install's root nor ``activate_dependencies``: whatever
+    interpreter is embedded has to import ``hermes_cli`` and every dependency on
+    its own. The committed generation's interpreter does. The store interpreter
+    does not -- its site-packages holds pip and nothing else -- which is exactly
+    how the 2026-09-25 publish left the gateway unable to spawn any child for
+    twelve minutes while the gateway itself stayed healthy.
+
+    Read from the install's selection record at every publish, never persisted in
+    the launcher beyond the file it writes: a generation is collectable and the
+    store interpreter is repinned independently of the application's
+    dependencies, so a baked-in path from either is what re-breaks this on the
+    next sync. Nothing committed yet (a first install) keeps the store
+    interpreter, which the launcher body's ``activate_dependencies`` completes.
+
+    Unusable answers (a record a caller cannot read, a generation whose venv or
+    site-packages is gone) fall back to the store interpreter rather than failing
+    the publish; the store interpreter is what such an install has.
+    """
+    store_python = resolve_store_python(repo_root)
+    if store_python is None:
+        return None
+    from pm.environments import site_packages
+
+    try:
+        environment = committed_venv(Path(repo_root))
+        if environment is None:
+            return store_python
+        candidate = venv_python(environment)
+        if candidate.is_file() and site_packages(environment).is_dir():
+            return candidate
+    except (OSError, RuntimeError, ValueError):
+        return store_python
+    return store_python
+
+
 def _load_script_maker():
     """distlib's ScriptMaker — standalone first, then pip's vendored copy."""
     try:
@@ -181,14 +232,21 @@ def mint_launcher(
     out_dir: Path,
     python_exe: Path,
     site_packages: Path | None,
+    *,
+    fallback_python: Path | None = None,
 ) -> Path | None:
-    """Write a native launcher with the shared bootstrap script, or return None."""
+    """Write a native launcher with the shared bootstrap script, or return None.
+
+    *fallback_python* is the interpreter a POSIX launcher execs when the
+    embedded one is no longer there (see ``_guarded_shell_body``). Windows
+    trampolines carry no such fallback: republishing is their repair path.
+    """
     module, func = ENTRY_POINTS[name]
     out_dir = Path(out_dir)
     script = _launcher_script(name, Path(repo_root), site_packages)
 
     if not _is_windows():
-        return _mint_shell_launcher(name, out_dir, python_exe, script)
+        return _mint_shell_launcher(name, out_dir, python_exe, script, fallback_python=fallback_python)
 
     script_maker_cls = _load_script_maker()
     if script_maker_cls is not None:
@@ -298,7 +356,11 @@ def _launcher_script(name: str, repo_root: Path, dependencies: Path | None) -> s
 
 
 def _write_shell(target: Path, command: list[str]) -> Path | None:
-    body = f'#!/bin/sh\nexec {shlex.join(command)} "$@"\n'
+    return _write_shell_body(target, f'#!/bin/sh\nexec {shlex.join(command)} "$@"\n')
+
+
+def _write_shell_body(target: Path, body: str) -> Path | None:
+    """Idempotently replace a launcher file with *body*, exec bit included."""
     try:
         if not target.is_symlink() and target.read_bytes() == body.encode("utf-8"):
             if os.access(target, os.X_OK):
@@ -313,8 +375,37 @@ def _write_shell(target: Path, command: list[str]) -> Path | None:
     return _write_atomic(target, write)
 
 
-def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str) -> Path | None:
-    return _write_shell(out_dir / name, [str(python_exe), "-I", "-c", script])
+def _guarded_shell_body(python_exe: Path, fallback_python: Path, script: str) -> str:
+    """Launcher shell body whose embedded runtime degrades instead of vanishing.
+
+    The embedded interpreter lives in a dependency generation, and a generation
+    can be collected, or replaced by a sync that did not reach the republish. A
+    bare ``exec`` of a path that is no longer there exits with ENOENT before any
+    of our code runs, which reads as "Hermes is deleted" to everything upstream.
+    The store interpreter is a worse runtime for children but a working one for
+    the process itself -- ``hermes_bootstrap`` selects whichever generation is
+    committed now -- so it is the fallback, and only a install with neither is an
+    error worth failing loudly on.
+    """
+    return (
+        "#!/bin/sh\n"
+        f"# Hermes launcher for {python_exe} (dependency generation runtime).\n"
+        f"hermes_python={shlex.quote(str(python_exe))}\n"
+        f'[ -x "$hermes_python" ] || hermes_python={shlex.quote(str(fallback_python))}\n'
+        'if [ ! -x "$hermes_python" ]; then\n'
+        '    echo "hermes: this install has no usable interpreter; run `hermes pm install`" >&2\n'
+        "    exit 1\n"
+        "fi\n"
+        f'exec "$hermes_python" -I -c {shlex.quote(script)} "$@"\n'
+    )
+
+
+def _mint_shell_launcher(name: str, out_dir: Path, python_exe: Path, script: str,
+                         *, fallback_python: Path | None = None) -> Path | None:
+    target = out_dir / name
+    if fallback_python is None:
+        return _write_shell(target, [str(python_exe), "-I", "-c", script])
+    return _write_shell_body(target, _guarded_shell_body(Path(python_exe), Path(fallback_python), script))
 
 
 def _owns_launcher(target: Path, root: Path) -> bool:
@@ -363,11 +454,13 @@ def _publish_conveniences(root: Path, out_dir: Path, names, *, create: bool = Tr
 
 
 def stage_launcher(name: str, repo_root: Path, out_dir: Path) -> Path | None:
-    """Publish one launcher bound to store Python, or refuse missing tools."""
+    """Publish one launcher bound to the install's runtime, or refuse missing tools."""
     repo_root = Path(repo_root)
-    store_python = resolve_store_python(repo_root)
-    if store_python is not None:
-        path = mint_launcher(name, repo_root, out_dir, store_python, None)
+    python = resolve_launcher_python(repo_root)
+    if python is not None:
+        store_python = resolve_store_python(repo_root)
+        fallback = store_python if store_python is not None and store_python != python else None
+        path = mint_launcher(name, repo_root, out_dir, python, None, fallback_python=fallback)
         if path is not None and path.suffix == ".cmd":
             # cmd.exe prefers .exe. An older launcher must not shadow the
             # newly published command when distlib is unavailable.

@@ -177,3 +177,91 @@ class TestCliContract:
 
         assert proc.returncode == 1
         assert json.loads(proc.stdout)["state"] == "failed"
+
+
+class TestTheLauncherRuntimeIsNotReEntered:
+    """A launcher's runtime must be complete, because its children run no launcher body.
+
+    A supervisor re-spawns the commands an install publishes as
+    ``sys.executable -m hermes_cli.main`` -- kanban workers and external cron workers --
+    and such a child enters neither the launcher nor ``activate_dependencies``. The
+    interpreter the published launcher embeds therefore has to import the application and
+    its dependencies on its own (2026-09-25: a publish embedded the dependency-less store
+    Python and every child died importing ``hermes_cli`` for twelve minutes). Re-entering a
+    process that already runs the embedded runtime would swap it for the store Python and
+    hand that same interpreter to every child spawned afterwards.
+    """
+
+    @staticmethod
+    def _install(tmp_path: Path, generation: tuple[int, int], *, monkeypatch=None):
+        """A self-managed source install whose committed generation records *generation*.
+
+        Only the layout is fabricated: ``pm.environments`` reads it for real.
+        """
+        import pm
+        from pm.environments import install_state_dir, runtime_facts_path
+
+        home, store = tmp_path / "home", tmp_path / "store"
+        if monkeypatch is not None:
+            monkeypatch.setattr(Path, "home", lambda: home)
+            monkeypatch.setenv("HOME", str(home))
+            monkeypatch.setenv("HERMES_HOME", str(home))
+            monkeypatch.setenv("HERMES_RUNTIME_DIR", str(store))
+            monkeypatch.delenv("HERMES_DISABLE_LAZY_INSTALLS", raising=False)
+            # Currency is a neighbour of this subject, not part of it: never sync here.
+            monkeypatch.setattr(pm, "venv_is_current", lambda **kwargs: True)
+
+        root = tmp_path / "hermes-agent"
+        (root / ".git").mkdir(parents=True)
+        (root / "pyproject.toml").write_text("[project]\nname = 'x'\n", encoding="utf-8")
+        (root / "install-stamp.json").write_text(
+            json.dumps({"updateMechanism": "self"}), encoding="utf-8",
+        )
+
+        environment = install_state_dir(root) / "environments" / "generation" / "venv"
+        (environment / "lib" / f"python{generation[0]}.{generation[1]}" / "site-packages").mkdir(parents=True)
+        (environment / "pyvenv.cfg").write_text(
+            f"home = /managed\nversion_info = {generation[0]}.{generation[1]}.0\n", encoding="utf-8",
+        )
+        runtime_facts_path(root).write_text(
+            json.dumps({"packages": {"venv": {"environment": str(environment)}}}), encoding="utf-8",
+        )
+
+        # The managed interpreter: a distinct path, as _launchers resolves it from the store.
+        store_python = store / "python-managed" / "bin" / "python3"
+        store_python.parent.mkdir(parents=True)
+        store_python.symlink_to(sys._base_executable)
+        (store / "facts.json").write_text(
+            json.dumps({"packages": {"python": {"entry": "python-managed"}}}), encoding="utf-8",
+        )
+        return root, environment, store_python
+
+    @staticmethod
+    def _caller() -> tuple[int, int]:
+        return (sys.version_info[0], sys.version_info[1])
+
+    @staticmethod
+    def _generation_interpreter(environment: Path) -> Path:
+        """Give the committed generation a real interpreter, as PM builds one."""
+        binary = environment / "bin" / "python"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.symlink_to(sys._base_executable)
+        return binary
+
+    @pytest.mark.platforms("posix")
+    def test_the_launcher_runtime_is_not_re_entered(self, tmp_path, monkeypatch):
+        """Re-entry here would hand every future child the dependency-less store Python."""
+        root, environment, _ = self._install(tmp_path, self._caller(), monkeypatch=monkeypatch)
+        self._generation_interpreter(environment)
+        monkeypatch.setattr(sys, "prefix", str(environment))
+
+        assert venv_sync.prepare_launch(root, []) is None
+
+    @pytest.mark.platforms("posix")
+    def test_re_entry_lands_on_the_runtime_the_launcher_embeds(self, tmp_path, monkeypatch):
+        """When re-entry is owed, it must not land on the store interpreter."""
+        root, environment, store_python = self._install(tmp_path, self._caller(), monkeypatch=monkeypatch)
+        interpreter = self._generation_interpreter(environment)
+
+        assert venv_sync.prepare_launch(root, []) == interpreter
+        assert venv_sync.prepare_launch(root, []) != store_python

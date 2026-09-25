@@ -211,6 +211,49 @@ def refuse_foreign_owned_venv(project_root: Path) -> None:
             )
 
 
+def _committed_generation_venv(root: Path) -> Path | None:
+    """The dependency generation PM committed for this install, or ``None``.
+
+    Best-effort by design: a broken record must not turn a launch into a crash, and
+    this runs before any dependency of that generation is importable.
+    """
+    try:
+        from pm.environments import committed_venv
+    except ImportError:  # a tree whose PM cannot be imported has nothing to disagree with
+        return None
+    try:
+        return committed_venv(Path(root))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _running_the_launcher_runtime(root: Path) -> bool:
+    """Is this process already the interpreter a published launcher embeds?
+
+    A launcher embeds the committed generation's interpreter, because the children a
+    supervisor re-spawns as ``sys.executable -m hermes_cli.main`` run no launcher body
+    and cannot complete a dependency-less interpreter (2026-09-25: every kanban and cron
+    worker died importing ``hermes_cli`` while the gateway itself stayed healthy).
+    Re-entering such a process under the store interpreter would strip the runtime that
+    carries its own dependencies -- and hand that same interpreter to every child it
+    spawns afterwards.
+
+    ``sys.prefix`` is the signal, not ``sys.executable``: ``activate_dependencies`` puts
+    a generation's site-packages on a foreign interpreter's path without changing which
+    interpreter it booted from, and only a launcher's own interpreter reports the
+    generation as its prefix.
+    """
+    import sys
+
+    environment = _committed_generation_venv(root)
+    if environment is None:
+        return False
+    try:
+        return Path(sys.prefix).resolve() == environment.resolve()
+    except (OSError, ValueError):
+        return False
+
+
 def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """Finish a self-managed source update before importing app dependencies.
 
@@ -219,7 +262,9 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     so a tail that failed is retried on the next launch WITHOUT rebuilding
     dependencies that are already current. Old updaters need not write a
     marker (and cannot accidentally clear this obligation).
-    Return the store interpreter when this process must restart cleanly.
+    Return the interpreter this process must restart cleanly under -- the one the
+    published launcher embeds (``_launchers.resolve_launcher_python``), never the
+    dependency-less store interpreter while a generation is committed.
     """
     import os
     import sys
@@ -243,7 +288,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
         return None  # Developer checkouts and packaged runtimes retain their owner.
 
     import pm
-    from hermes_cli._launchers import resolve_store_python
+    from hermes_cli._launchers import resolve_launcher_python
     from hermes_cli.update_lock import UpdateLock, read_live_update
 
     current = pm.venv_is_current(project_root=root)
@@ -270,9 +315,14 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
                 _finish_source_update(root, current=current, pending=pending)
         finally:
             lock.release()
-    python = resolve_store_python(root)
+    python = resolve_launcher_python(root)
     if python is None:
         raise RuntimeError("source update has no managed Python; run `hermes pm install`")
+    if current and _running_the_launcher_runtime(root):
+        # Already the interpreter the published launcher embeds: re-entering would swap
+        # the runtime that carries this process's dependencies for the store
+        # interpreter, which cannot carry a child.
+        return None
     if not current or python.absolute() != Path(sys.executable).absolute():
         publish_launchers(root)
         return python

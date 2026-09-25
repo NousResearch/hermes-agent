@@ -1299,10 +1299,6 @@ export function patchSessionTile(storedSessionId: string, patch: Partial<Session
   saveTiles($sessionTiles.get().map(t => (t.storedSessionId === storedSessionId ? { ...t, ...patch } : t)))
 }
 
-function isSessionOwnerRoute(value: SessionOwnerScope): value is SessionOwnerRoute {
-  return Boolean(value && typeof value === 'object' && 'connectionId' in value)
-}
-
 function sameSessionOwner(left: SessionOwnerScope, right: SessionOwnerScope): boolean {
   if (isSessionOwnerRoute(left) && isSessionOwnerRoute(right)) {
     return (

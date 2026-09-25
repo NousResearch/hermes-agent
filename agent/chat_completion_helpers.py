@@ -2153,6 +2153,35 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
 _SUMMARY_FOREIGN_MESSAGE_KEYS = PERSISTENCE_ONLY_MESSAGE_FIELDS | {"reasoning", "finish_reason", "tool_name",
     "codex_reasoning_items", "codex_message_items", "platform_message_id"}
 _EMPTY_SUMMARY_RESPONSE = "I reached the iteration limit and couldn't generate a summary."
+_INTERNAL_SUMMARY_LEADING_BLOCK_PATTERN = re.compile(
+    r"\A\s*<(?:analysis|summary)\b[^>]*>.*?</(?:analysis|summary)>\s*",
+    re.DOTALL | re.IGNORECASE,
+)
+_INTERNAL_SUMMARY_UNTERMINATED_PATTERN = re.compile(
+    r"\A\s*<(?:analysis|summary)\b[^>]*>.*\Z",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _strip_iteration_summary_artifacts(agent, text: str) -> str:
+    """Remove private summary-call wrappers without changing global display sanitizers."""
+    if not text:
+        return ""
+    try:
+        strip_reasoning = getattr(agent, "_strip_think_blocks", None)
+        cleaned = strip_reasoning(text) if callable(strip_reasoning) else text
+    except Exception:
+        cleaned = text
+    if not isinstance(cleaned, str):
+        cleaned = flatten_message_text(cleaned)
+    cleaned = cleaned or ""
+    while True:
+        without_block = _INTERNAL_SUMMARY_LEADING_BLOCK_PATTERN.sub("", cleaned, count=1)
+        if without_block == cleaned:
+            break
+        cleaned = without_block
+    cleaned = _INTERNAL_SUMMARY_UNTERMINATED_PATTERN.sub("", cleaned)
+    return cleaned.strip()
 
 
 def _iteration_summary_api_messages(agent, messages: list) -> list:
@@ -2321,14 +2350,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
         attempt = build_attempt(agent, api_messages, summary_api_request_id)
 
-        # One retry on an empty summary; a summary empty once its <think> block is stripped is NOT retried.
+        # One retry on an empty summary; a summary empty once private artifacts are stripped is NOT retried.
         final_response = _EMPTY_SUMMARY_RESPONSE
         for retry_count in (0, 1):
             text = attempt(retry_count)
             if not text:
                 continue
-            if "<think>" in text:
-                text = re.sub(r'<think>.*?</think>\s*', '', text, flags=re.DOTALL).strip()
+            text = _strip_iteration_summary_artifacts(agent, text)
             if text:
                 summary_call_outcome = "success"
                 append_message(messages, {"role": "assistant", "content": text})

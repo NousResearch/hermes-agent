@@ -37,8 +37,13 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
             shutil.copyfile(project / name, snapshot / name)
         environment.create()
         if wheelhouse is None:
-            environment.sync(snapshot, locked=True, no_default_groups=True,
-                             no_install_project=True, timeout=600)
+            from pm.index_config import has_lock_index_override
+
+            if has_lock_index_override(environment.env):
+                environment.install_locked_requirements(snapshot, all_packages=True, timeout=600)
+            else:
+                environment.sync(snapshot, locked=True, no_default_groups=True,
+                                 no_install_project=True, timeout=600)
         else:
             environment.install_wheelhouse(snapshot, wheelhouse, timeout=600)
     checked = subprocess.run(

@@ -8,7 +8,7 @@ from __future__ import annotations
 import codecs
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import io
 import os
 from pathlib import Path
@@ -374,15 +374,36 @@ class PythonEnvironment:
             raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
 
     def export_requirements(self, source: Path, out: Path, *, extras: Sequence[str] = (),
+                            all_packages: bool = False, include_hashes: bool = False,
                             timeout: int = 1800) -> None:
         command = ["export", "--frozen", "--python", str(self.python), "--no-default-groups",
-                   "--no-emit-project", "--no-hashes", "--no-annotate", "--no-header",
+                   "--no-emit-project", "--no-annotate", "--no-header",
                    "--format", "requirements-txt", "--output-file", str(out)]
+        if all_packages:
+            command.append("--all-packages")
+        if not include_hashes:
+            command.append("--no-hashes")
         for extra in sorted(set(extras)):
             command += ["--extra", extra]
         result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("export", result.returncode, result.stderr or result.stdout)
+
+    def install_locked_requirements(self, source: Path, *, all_packages: bool = False,
+                                    timeout: int = 1800) -> None:
+        """Install locked hashes through a configured index without rewriting the lock."""
+        from pm.index_config import without_lock_index_overrides
+
+        locked_environment = replace(self, env=without_lock_index_overrides(self.env))
+        locked_environment.check_lock(source)
+        with tempfile.TemporaryDirectory(prefix="pm-locked-requirements-") as temporary:
+            requirements = Path(temporary) / "requirements.txt"
+            locked_environment.export_requirements(
+                source, requirements, all_packages=all_packages, include_hashes=True, timeout=timeout,
+            )
+            self._install_requirements_file(
+                requirements, require_hashes=True, compile_bytecode=True, timeout=timeout,
+            )
 
     def install_requirements(self, requirements: Sequence[str], *, wheelhouse: Path | None = None) -> None:
         if not requirements:
@@ -394,9 +415,14 @@ class PythonEnvironment:
             self._install_requirements_file(requirements_file, wheelhouse=wheelhouse)
 
     def _install_requirements_file(self, requirements: Path, *, wheelhouse: Path | None = None,
+                                   require_hashes: bool = False, compile_bytecode: bool = False,
                                    timeout: int = 1800) -> None:
         command = ["pip", "install", "--no-config", "--python", str(self.executable),
                    "--requirements", str(requirements)]
+        if require_hashes:
+            command.append("--require-hashes")
+        if compile_bytecode:
+            command.append("--compile-bytecode")
         if wheelhouse is not None:
             command += ["--no-index", "--only-binary", ":all:",
                         "--find-links", str(wheelhouse.absolute())]

@@ -573,6 +573,116 @@ async def test_retry_after_busy_race_does_not_repeat_telegram_notice(tmp_path, m
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("after_notice", [False, True])
+async def test_deferred_key_is_bound_to_original_session_generation(
+    tmp_path, monkeypatch, after_notice,
+):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock())
+    if not after_notice:
+        adapter._active_sessions[entry.session_key] = asyncio.Event()
+    sends = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sends.append(content)
+        if after_notice:
+            adapter._active_sessions[entry.session_key] = asyncio.Event()
+        return SendResult(success=True)
+
+    adapter.send = send
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    request = dict(session_key=entry.session_key, content="Question",
+                   plugin_id="notify-plugin", idempotency_key="evt_generation", idle_only=True)
+
+    assert runner._schedule_plugin_message_injection(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    from gateway.plugin_injection_ledger import state
+    assert state("notify-plugin", "evt_generation")["session_id"] == "session-42"
+    assert state("notify-plugin", "evt_generation")["state"] == (
+        "notice_deferred" if after_notice else "deferred")
+
+    adapter._active_sessions.clear()
+    entry.session_id = "session-after-new"
+    assert runner._schedule_plugin_message_injection(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    assert state("notify-plugin", "evt_generation")["state"] == "refused"
+    assert state("notify-plugin", "evt_generation")["last_error"] == "session generation changed"
+    assert len(sends) == (1 if after_notice else 0)
+    adapter._message_handler.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pre_turn_state,expected_notice_count", [
+    ("scheduled", 1), ("notice_sent", 0),
+])
+async def test_dead_owner_pre_turn_state_resumes_once(
+    tmp_path, monkeypatch, pre_turn_state, expected_notice_count,
+):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock(return_value=None))
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    request = dict(session_key=entry.session_key, content="Question",
+                   plugin_id="notify-plugin", idempotency_key="evt_crash")
+    from gateway import plugin_injection_ledger as ledger
+    from hermes_cli.sqlite_util import transaction
+    assert ledger.claim("notify-plugin", "evt_crash", entry.session_key, "Question") == "new"
+    assert ledger.bind_session("notify-plugin", "evt_crash", entry.session_id) is True
+    with transaction(ledger._connect()) as conn:
+        conn.execute("""
+            UPDATE plugin_injections SET state=?, owner_pid=99999999, owner_started_at=1
+            WHERE plugin_id='notify-plugin' AND idempotency_key='evt_crash'
+        """, (pre_turn_state,))
+
+    assert runner._schedule_plugin_message_injection(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    assert ledger.state("notify-plugin", "evt_crash")["state"] == "dispatched"
+    assert adapter.send.await_count == expected_notice_count
+    assert runner._schedule_plugin_message_injection(**request) is True
+    assert adapter.send.await_count == expected_notice_count
+
+
+def test_injection_status_closes_its_database_connection(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from gateway import plugin_injection_ledger as ledger
+    ledger.claim("notify-plugin", "evt_close", "session-key", "Question")
+    original_connect = ledger._connect
+    closed = []
+
+    class TrackedConnection:
+        def __init__(self):
+            self.connection = original_connect()
+
+        def execute(self, *args):
+            return self.connection.execute(*args)
+
+        def close(self):
+            closed.append(True)
+            self.connection.close()
+
+    monkeypatch.setattr(ledger, "_connect", TrackedConnection)
+    assert ledger.state("notify-plugin", "evt_close")["state"] == "scheduled"
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("final_succeeds", [True, False])
 async def test_keyed_injection_reports_actual_final_delivery(tmp_path, monkeypatch, final_succeeds):
     home = tmp_path / "hermes"

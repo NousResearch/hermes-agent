@@ -11,9 +11,38 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import time
+from contextlib import closing
 
+from gateway.delivery_ledger import _owner_alive, _owner_stamp
 from hermes_constants import get_process_hermes_home
-from hermes_cli.sqlite_util import open_db, transaction
+from hermes_cli.sqlite_util import add_column_if_missing, open_db, transaction
+
+
+def _initialize_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS plugin_injections (
+            plugin_id TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            session_key TEXT NOT NULL,
+            session_id TEXT,
+            owner_pid INTEGER,
+            owner_started_at INTEGER,
+            content_sha256 TEXT NOT NULL,
+            state TEXT NOT NULL,
+            delivery_obligation_id TEXT,
+            last_error TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            PRIMARY KEY (plugin_id, idempotency_key)
+        )
+    """)
+    if "session_id" not in {row[1] for row in conn.execute("PRAGMA table_info(plugin_injections)")}:
+        add_column_if_missing(conn, "plugin_injections", "session_id", "session_id TEXT")
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(plugin_injections)")}
+    if "owner_pid" not in columns:
+        add_column_if_missing(conn, "plugin_injections", "owner_pid", "owner_pid INTEGER")
+    if "owner_started_at" not in columns:
+        add_column_if_missing(conn, "plugin_injections", "owner_started_at", "owner_started_at INTEGER")
 
 
 def _connect() -> sqlite3.Connection:
@@ -21,20 +50,7 @@ def _connect() -> sqlite3.Connection:
         get_process_hermes_home() / "state.db",
         db_label="state.db (plugin_injection_ledger)",
         busy_timeout_ms=10_000,
-        initialize=lambda conn: conn.execute("""
-            CREATE TABLE IF NOT EXISTS plugin_injections (
-                plugin_id TEXT NOT NULL,
-                idempotency_key TEXT NOT NULL,
-                session_key TEXT NOT NULL,
-                content_sha256 TEXT NOT NULL,
-                state TEXT NOT NULL,
-                delivery_obligation_id TEXT,
-                last_error TEXT,
-                created_at REAL NOT NULL,
-                updated_at REAL NOT NULL,
-                PRIMARY KEY (plugin_id, idempotency_key)
-            )
-        """),
+        initialize=_initialize_schema,
     )
 
 
@@ -47,45 +63,66 @@ def claim(plugin_id: str, idempotency_key: str, session_key: str, content: str) 
     """
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
     now = time.time()
+    pid, started = _owner_stamp()
     with transaction(_connect()) as conn:
         cursor = conn.execute("""
             INSERT OR IGNORE INTO plugin_injections
                 (plugin_id, idempotency_key, session_key, content_sha256,
-                 state, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'scheduled', ?, ?)
-        """, (plugin_id, idempotency_key, session_key, digest, now, now))
+                 state, owner_pid, owner_started_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'scheduled', ?, ?, ?, ?)
+        """, (plugin_id, idempotency_key, session_key, digest, pid, started, now, now))
         if cursor.rowcount:
             return "new"
         row = conn.execute("""
-            SELECT session_key, content_sha256, state FROM plugin_injections
+            SELECT session_key, content_sha256, state, owner_pid, owner_started_at
+            FROM plugin_injections
             WHERE plugin_id=? AND idempotency_key=?
         """, (plugin_id, idempotency_key)).fetchone()
         if row is None or tuple(row[:2]) != (session_key, digest):
             raise ValueError("injection key already belongs to a different request")
         previous = row[2]
-        if previous in {"deferred", "notice_deferred"}:
-            next_state = "scheduled" if previous == "deferred" else "notice_sent"
+        retryable = previous in {"deferred", "notice_deferred"}
+        abandoned_pre_turn = (previous in {"scheduled", "notice_sent"}
+                              and not _owner_alive(row[3], row[4]))
+        if retryable or abandoned_pre_turn:
+            next_state = "scheduled" if previous in {"deferred", "scheduled"} else "notice_sent"
             cursor = conn.execute("""
-                UPDATE plugin_injections SET state=?, updated_at=?, last_error=NULL
+                UPDATE plugin_injections
+                SET state=?, owner_pid=?, owner_started_at=?, updated_at=?, last_error=NULL
                 WHERE plugin_id=? AND idempotency_key=? AND state=?
-            """, (next_state, now, plugin_id, idempotency_key, previous))
+                  AND owner_pid IS ? AND owner_started_at IS ?
+            """, (next_state, pid, started, now, plugin_id, idempotency_key,
+                  previous, row[3], row[4]))
             if cursor.rowcount:
-                return "retry" if previous == "deferred" else "retry_after_notice"
+                return "retry" if next_state == "scheduled" else "retry_after_notice"
         return "existing"
 
 
+def bind_session(plugin_id: str, idempotency_key: str, session_id: str) -> bool:
+    """Pin the first resolved session generation; reject a later /new replay."""
+    if not session_id:
+        return False
+    with transaction(_connect()) as conn:
+        cursor = conn.execute("""
+            UPDATE plugin_injections SET session_id=COALESCE(session_id, ?), updated_at=?
+            WHERE plugin_id=? AND idempotency_key=?
+              AND (session_id IS NULL OR session_id=?)
+        """, (session_id, time.time(), plugin_id, idempotency_key, session_id))
+        return bool(cursor.rowcount)
+
+
 def state(plugin_id: str, idempotency_key: str) -> dict | None:
-    with _connect() as conn:
+    with closing(_connect()) as conn:
         row = conn.execute("""
-            SELECT session_key, state, delivery_obligation_id, last_error,
+            SELECT session_key, session_id, state, delivery_obligation_id, last_error,
                    created_at, updated_at FROM plugin_injections
             WHERE plugin_id=? AND idempotency_key=?
         """, (plugin_id, idempotency_key)).fetchone()
         if row is None:
             return None
-        session_key, lifecycle, obligation_id, error, created, updated = row
+        session_key, session_id, lifecycle, obligation_id, error, created, updated = row
         result = {
-            "session_key": session_key, "state": lifecycle,
+            "session_key": session_key, "session_id": session_id, "state": lifecycle,
             "delivery_obligation_id": obligation_id, "last_error": error,
             "created_at": created, "updated_at": updated,
         }

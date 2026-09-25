@@ -1909,6 +1909,11 @@ class GatewayInboundMixin:
         if entry is None or entry.origin is None or not _accepting():
             _mark("refused", "session unavailable")
             return False
+        if idempotency_key is not None:
+            from gateway.plugin_injection_ledger import bind_session
+            if not bind_session(plugin_id, idempotency_key, entry.session_id):
+                _mark("refused", "session generation changed")
+                return False
 
         from gateway.session_identity import replace_source
         source = replace_source(self._restored_source(entry))

@@ -1,4 +1,18 @@
-"""Hermetic test for kanban-pipeline: complete a card with a PR URL -> two chained cards appear once."""
+"""Hermetic fixture for kanban-pipeline (PRESERVED from the pre-repair revision).
+
+Original assertions kept verbatim in intent: completing a card that carries a
+PR URL chains exactly one merge-gate + one deploy card, is idempotent, never
+chains off a `pipeline:` card, and never chains a card with no PR.
+
+Two mechanical updates after the 2026-09-16 stale-handoff repair:
+  * it loads the TRACKED source (contrib/den-plugins/...), not the live
+    installed plugin, so running it can never depend on or disturb the
+    installed copy;
+  * it injects a local fake artifact transport, because the repaired plugin
+    validates the artifact's delivery phase before chaining. The fixture's
+    PR is modelled as OPEN + APPROVED — the legitimate approved-but-unmerged
+    handoff this fixture was written for.
+"""
 import importlib.util, os, sys, tempfile
 
 home = tempfile.mkdtemp(prefix="kp_test_")
@@ -7,12 +21,24 @@ for v in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_HOME", "HERM
     os.environ.pop(v, None)
 for prof in ("reviewer", "software-engineer", "default"):
     os.makedirs(os.path.join(home, "profiles", prof), exist_ok=True)
-sys.path.insert(0, "/Users/engineer/.hermes/hermes-agent")
+# The observer is OFF unless a board owner opts in AND allow-lists the repo.
+with open(os.path.join(home, "config.yaml"), "w") as fh:
+    fh.write("kanban_pipeline:\n  enabled: true\n  repos:\n"
+             "    VibeTechnologies/AgentPod:\n"
+             "      merge_command: scripts/safe-merge.sh\n")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+sys.path.insert(0, REPO)
 from hermes_cli import kanban_db as kb
 assert home in str(kb.kanban_db_path()), kb.kanban_db_path()
 
-spec = importlib.util.spec_from_file_location("kp", "/Users/engineer/.hermes/plugins/kanban-pipeline/__init__.py")
+spec = importlib.util.spec_from_file_location("kp", os.path.join(HERE, "__init__.py"))
 kp = importlib.util.module_from_spec(spec); spec.loader.exec_module(kp)
+kp.ARTIFACT_STATE_FN = lambda url: {
+    "merged": False, "deployed": False, "approved": True, "state": "OPEN",
+    "detail": "state=OPEN reviewDecision=APPROVED (local fake transport)",
+}
 
 with kb.connect() as conn:
     src = kb.create_task(conn, title="impl thing", assignee="software-engineer",

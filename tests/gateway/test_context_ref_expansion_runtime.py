@@ -19,6 +19,7 @@ the hygiene-compression block already uses) and must actually reach
 import logging
 import threading
 from contextlib import contextmanager
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -359,3 +360,39 @@ async def test_at_reference_ignores_global_context_for_session_model_override(mo
         event=MessageEvent(text="@file:note", source=source), source=source, history=[]
     )
     assert captured["config_context_length"] is None
+
+
+@pytest.mark.asyncio
+async def test_blocked_context_reference_is_silent_when_delivery_is_suppressed(monkeypatch):
+    runner = _make_runner()
+    source = _source()
+    _patch_runtime_resolution(monkeypatch)
+    adapter = type("Adapter", (), {})()
+    adapter.send = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: adapter}
+
+    import agent.context_references as ctx_mod
+
+    async def _blocked(message, **_kwargs):
+        return ContextReferenceResult(
+            message=message,
+            original_message=message,
+            blocked=True,
+            warnings=["PRIVATE CONTEXT BLOCKED"],
+        )
+
+    monkeypatch.setattr(ctx_mod, "preprocess_context_references_async", _blocked)
+    event = MessageEvent(
+        text="inspect @file:outside.txt",
+        source=source,
+        delivery_mode="suppress",
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is None
+    adapter.send.assert_not_awaited()

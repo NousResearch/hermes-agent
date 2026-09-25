@@ -10013,7 +10013,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             try:
                 adapter = self._adapter_for_source(source)
-                if adapter:
+                if adapter and event.delivery_mode != "suppress":
                     _ack_meta = self._thread_metadata_for_source(source)
                     await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
             except Exception:
@@ -10067,7 +10067,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _ack:
                     try:
                         adapter = self._adapter_for_source(source)
-                        if adapter:
+                        if adapter and event.delivery_mode != "suppress":
                             _ack_meta = self._thread_metadata_for_source(source)
                             await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
                     except Exception:
@@ -10918,7 +10918,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 if _ctx_result.blocked:
                     _adapter = self._adapter_for_source(source)
-                    if _adapter:
+                    if _adapter and event.delivery_mode != "suppress":
                         await _adapter.send(
                             source.chat_id,
                             "\n".join(_ctx_result.warnings) or "Context injection refused.",

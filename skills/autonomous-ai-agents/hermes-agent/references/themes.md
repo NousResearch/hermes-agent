@@ -46,6 +46,7 @@ key in its row (element-specific keys fall back to the shared one when unset).
 | Body / label text, user messages | `ui_text` / `banner_text`, `ui_label` | — |
 | Muted / secondary, tree connectors | `banner_dim` | — |
 | Borders, rules, gutters | `ui_border` / `banner_border` | — |
+| **Turn rule** (`───` above each new user message, TUI) | `user_rule` | `ui_border` |
 | Prompt symbol color | `prompt` | `banner_text` |
 | Success / warn / error | `ui_ok` / `ui_warn` / `ui_error` | — |
 | Status bar text + usage | `status_bar_text`, `status_bar_good/warn/bad/critical` | — |

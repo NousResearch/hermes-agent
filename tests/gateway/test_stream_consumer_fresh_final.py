@@ -18,7 +18,6 @@ import pytest
 
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
-
 def _make_adapter(*, supports_delete: bool = True) -> MagicMock:
     """Build a minimal MagicMock adapter wired for send/edit/delete."""
     adapter = MagicMock()
@@ -37,7 +36,6 @@ def _make_adapter(*, supports_delete: bool = True) -> MagicMock:
         # should still work, it just leaves the stale preview in place.
         del adapter.delete_message  # type: ignore[attr-defined]
     return adapter
-
 
 class TestFreshFinalForLongLivedPreviews:
     """openclaw#72038 port — send fresh final when preview is old."""
@@ -59,7 +57,6 @@ class TestFreshFinalForLongLivedPreviews:
         assert adapter.send.call_count == 1  # only the initial send
         adapter.edit_message.assert_called_once()
 
-
     @pytest.mark.asyncio
     async def test_fresh_final_without_delete_support_is_best_effort(self):
         """Adapter lacking ``delete_message`` still gets the fresh send."""
@@ -80,7 +77,6 @@ class TestFreshFinalForLongLivedPreviews:
         adapter.edit_message.assert_not_called()
         # No delete attempt — just the fresh send.
         assert consumer._message_id == "fresh_final"
-
 
 class TestSegmentBreakDoesNotMarkFinalSent:
     """Regression for #29346 — silent response loss after tool calls.
@@ -169,7 +165,6 @@ class TestSegmentBreakDoesNotMarkFinalSent:
         assert len(final_sends) <= 1
         assert any("answer is 42" in t for t in self._delivered_texts(adapter))
 
-
 class TestCancelledBestEffortDeliveryFinalizes:
     """Cancel-path best-effort delivery must go through the finalize path.
 
@@ -180,7 +175,6 @@ class TestCancelledBestEffortDeliveryFinalizes:
     rendered with raw markdown markers — while the success flags still
     suppressed the gateway's formatted re-send.
     """
-
 
     @pytest.mark.asyncio
     async def test_cancel_with_fresh_final_enabled_delivers_and_flags_via_handler(self):
@@ -217,7 +211,6 @@ class TestCancelledBestEffortDeliveryFinalizes:
         assert consumer.final_response_sent is True
         assert consumer.final_content_delivered is True
 
-
 class TestGotDoneOverflowSplitNotRefinalized:
     """A got_done finalize edit that split-and-delivered across continuation
     messages must not be followed by the redundant requires-finalize edit.
@@ -239,7 +232,6 @@ class TestGotDoneOverflowSplitNotRefinalized:
                 edit_interval=10.0, buffer_threshold=10_000, cursor=" ▉",
             ),
         )
-
 
     @pytest.mark.asyncio
     async def test_non_split_finalize_edit_still_gets_explicit_refinalize(self):
@@ -264,7 +256,6 @@ class TestGotDoneOverflowSplitNotRefinalized:
         ]
         assert len(finalize_edits) == 2
         assert consumer.final_response_sent is True
-
 
 class TestFinalCleanupEditFloodControl:
     """Regression for duplicate final sends when the cursor-strip edit fails."""
@@ -301,12 +292,8 @@ class TestFinalCleanupEditFloodControl:
         assert adapter.send.call_count == 1
         assert adapter.edit_message.call_count >= 1
 
-
-
-
 class TestStreamingConfigFreshFinalField:
     """The gateway-level StreamingConfig carries the setting."""
-
 
     def test_from_dict_respects_explicit_zero(self):
         from gateway.config import StreamingConfig
@@ -315,6 +302,3 @@ class TestStreamingConfigFreshFinalField:
             "fresh_final_after_seconds": 0,
         })
         assert cfg.fresh_final_after_seconds == 0.0
-
-
-

@@ -4,7 +4,6 @@ import json
 
 from tools.todo_tool import TodoStore, todo_tool
 
-
 class TestWriteAndRead:
     def test_write_replaces_list(self):
         store = TodoStore()
@@ -17,7 +16,6 @@ class TestWriteAndRead:
         assert result[0]["id"] == "2"
         assert result[0]["status"] == "in_progress"
         assert result[1]["id"] == "1"
-
 
     def test_write_deduplicates_duplicate_ids(self):
         store = TodoStore()
@@ -44,7 +42,6 @@ class TestWriteAndRead:
             {"id": "2", "content": "Verify freed space", "status": "pending"},
         ]
 
-
 class TestHasItems:
     def test_empty_store(self):
         store = TodoStore()
@@ -54,7 +51,6 @@ class TestHasItems:
         store = TodoStore()
         store.write([{"id": "1", "content": "x", "status": "pending"}])
         assert store.has_items() is True
-
 
 class TestFormatForInjection:
     def test_empty_returns_none(self):
@@ -77,7 +73,6 @@ class TestFormatForInjection:
         assert "[>]" in text
         assert "Next" in text
         assert "Working" in text
-
 
 class TestMergeMode:
     def test_update_existing_by_id(self):
@@ -121,7 +116,6 @@ class TestMergeMode:
             {"id": "2", "content": "Verify freed space", "status": "pending"},
         ]
 
-
 class TestTodoToolFunction:
     def test_read_mode(self):
         store = TodoStore()
@@ -131,11 +125,9 @@ class TestTodoToolFunction:
         assert result["summary"]["pending"] == 1
         assert result["revision"] == 1
 
-
     def test_no_store_returns_error(self):
         result = json.loads(todo_tool())
         assert "error" in result
-
 
 class TestTodoStoreSnapshots:
     def test_revision_only_advances_when_state_changes(self):
@@ -159,7 +151,6 @@ class TestTodoStoreSnapshots:
 
         store.write([{"id": "1", "content": "Task", "status": "completed"}])
         assert store.snapshot()["revision"] == 8
-
 
 class TestTodoStoreBounds:
     """Bounds on persisted todo state (GHSA-5g4g-6jrg-mw3g hardening).
@@ -188,7 +179,6 @@ class TestTodoStoreBounds:
         # Before the fix this was ~50085 chars; now it tracks the cap.
         assert len(inj) < MAX_TODO_CONTENT_CHARS + 200
 
-
     def test_item_count_is_bounded(self):
         from tools.todo_tool import MAX_TODO_ITEMS
         store = TodoStore()
@@ -197,4 +187,3 @@ class TestTodoStoreBounds:
             for i in range(5000)
         ])
         assert len(store.read()) == MAX_TODO_ITEMS
-

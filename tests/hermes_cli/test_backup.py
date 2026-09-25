@@ -5,6 +5,7 @@ import os
 import socket
 import sqlite3
 import stat
+import struct
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -304,7 +305,7 @@ class TestIterBackupFiles:
         assert "models" in skipped
         assert "hermes-agent" in skipped
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_skips_unix_sockets(self, tmp_path, monkeypatch):
         from hermes_cli.backup import _iter_backup_files
 
@@ -552,6 +553,180 @@ class TestImport:
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
         assert (hermes_home / "config.yaml").read_text() == "model: test\n"
+
+    @staticmethod
+    def _corrupt_member(zip_path: Path, name: str, damage: str) -> None:
+        """Damage *name*'s data in place, leaving ``is_zipfile``/``namelist`` happy.
+
+        ``deflate``: reserved block type 3 (``zlib.error``); ``stored``: one payload byte
+        flipped (``Bad CRC-32``); ``bzip2``: block CRC flipped (``OSError`` Invalid data
+        stream); ``truncated``: the central directory's compressed size halved, so the
+        deflate stream is cut short (``Bad CRC-32``). A real archive cannot make the read hit
+        physical EOF (``EOFError``): zipfile refuses overlapping entries first, so that case
+        -- media going bad under the archive -- is covered by the rot-after-pre-flight test.
+        """
+        with zipfile.ZipFile(zip_path) as zf:
+            info = zf.getinfo(name)
+            data_offset = info.header_offset + 30 + len(info.filename) + len(info.extra)
+        raw = bytearray(zip_path.read_bytes())
+        if damage == "truncated":
+            # Central record = local header fields shifted by 2 ("version made by"); the CRC keeps
+            # the match unique. compress_size sits at +20 in the central record.
+            local = raw[info.header_offset + 4:info.header_offset + 26]
+            entry = raw.index(local, info.header_offset + 26) - 6
+            struct.pack_into("<I", raw, entry + 20, info.compress_size // 2)
+        elif damage == "deflate":
+            raw[data_offset] |= 0b110
+        else:
+            raw[data_offset + (10 if damage == "bzip2" else 0)] ^= 0xFF
+        zip_path.write_bytes(bytes(raw))
+
+    def _home_for_corrupt_import(self, tmp_path, monkeypatch) -> Path:
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: live\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        return hermes_home
+
+    @pytest.mark.parametrize("damage, compression", [
+        ("deflate", zipfile.ZIP_DEFLATED),
+        ("stored", zipfile.ZIP_STORED),
+        ("bzip2", zipfile.ZIP_BZIP2),
+        ("truncated", zipfile.ZIP_DEFLATED),
+    ])
+    def test_import_refuses_damaged_archive_before_touching_home(
+        self, tmp_path, monkeypatch, capsys, damage, compression
+    ):
+        """#121258: members that fail to decompress, fail their CRC or are cut short must all be
+        found BEFORE the first file is replaced -- not surface as a traceback half-way through
+        -- listed (capped) in one run, and the command must exit 1 without "restored" wording."""
+        hermes_home = self._home_for_corrupt_import(tmp_path, monkeypatch)
+        zip_path = tmp_path / "backup.zip"
+        names = [f"skills/s{i}/SKILL.md" for i in range(12)]
+        with zipfile.ZipFile(zip_path, "w", compression=compression) as zf:
+            zf.writestr("config.yaml", "model: restored\n")
+            for name in names:
+                zf.writestr(name, f"# {name}\n" * 20)
+            zf.writestr("sessions/after.json", '{"restored": true}')
+        for name in names:
+            self._corrupt_member(zip_path, name, damage)
+        assert zipfile.is_zipfile(zip_path)
+
+        from hermes_cli.backup import run_import
+        from hermes_cli.main import cmd_import
+
+        assert run_import(Namespace(zipfile=str(zip_path), force=True)) == 1
+        out = capsys.readouterr().out
+        assert "backup archive is damaged (12 member(s)" in out
+        assert sum(1 for line in out.splitlines() if line.strip().startswith("skills/s")) == 10
+        assert "... and 2 more" in out
+        assert "Importing" not in out
+        assert "restored" not in out.replace("nothing was restored", "")
+        # The home is exactly as it was.
+        assert (hermes_home / "config.yaml").read_text() == "model: live\n"
+        assert sorted(p.name for p in hermes_home.iterdir()) == ["config.yaml"]
+        assert cmd_import(Namespace(zipfile=str(zip_path), force=True)) == 1
+
+    def test_import_ignores_damaged_pm_runtime_but_keeps_portable_data(
+        self, tmp_path, monkeypatch
+    ):
+        """Machine-local interpreter/dependency state is not a reason to refuse a backup."""
+        hermes_home = self._home_for_corrupt_import(tmp_path, monkeypatch)
+        zip_path = tmp_path / "backup.zip"
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("config.yaml", "model: restored\n")
+            zf.writestr("profiles/coder/installs/python.zip", "machine-specific\n" * 20)
+            zf.writestr("skills/demo/SKILL.md", "# portable\n")
+        self._corrupt_member(zip_path, "profiles/coder/installs/python.zip", "deflate")
+
+        from hermes_cli.backup import run_import
+
+        assert run_import(Namespace(zipfile=str(zip_path), force=True)) is None
+        assert (hermes_home / "config.yaml").read_text() == "model: restored\n"
+        assert (hermes_home / "skills/demo/SKILL.md").read_text() == "# portable\n"
+        assert not (hermes_home / "profiles/coder/installs").exists()
+
+    def test_import_skips_member_that_rots_after_preflight_and_reports_incomplete(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A member that passes the integrity pass but fails while being written (media going
+        bad under the archive) warns, leaves the damaged target absent, restores the rest and
+        exits 1 -- rather than escaping as a traceback. A damaged member the restore skips
+        anyway (runtime ``gateway.pid``) does not make the pre-flight refuse the archive."""
+        hermes_home = self._home_for_corrupt_import(tmp_path, monkeypatch)
+        zip_path = tmp_path / "backup.zip"
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("config.yaml", "model: restored\n")
+            zf.writestr("damaged.json", '{"will": "fail"}')
+            zf.writestr("gateway.pid", "12345\n" * 20)
+            zf.writestr("sessions/after.json", '{"restored": true}')
+        self._corrupt_member(zip_path, "gateway.pid", "deflate")
+
+        import hermes_cli.backup as backup_mod
+
+        real_extract = backup_mod._extract_member_atomically
+
+        def flaky_extract(zf, member, target, new_file_mode=None):
+            if member == "damaged.json":
+                raise EOFError("Compressed file ended before the end-of-stream marker was reached")
+            return real_extract(zf, member, target, new_file_mode)
+
+        monkeypatch.setattr(backup_mod, "_extract_member_atomically", flaky_extract)
+
+        assert backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True)) == 1
+
+        out = capsys.readouterr().out
+        assert "damaged (" not in out
+        assert (hermes_home / "config.yaml").read_text() == "model: restored\n"
+        assert not (hermes_home / "damaged.json").exists()
+        assert not (hermes_home / "gateway.pid").exists()
+        assert not list(hermes_home.glob(".damaged.json.*.partial"))
+        assert (hermes_home / "sessions" / "after.json").read_text() == '{"restored": true}'
+        assert "Warnings (1 files skipped):" in out
+        assert "Import incomplete" in out
+        assert "has been restored" not in out
+
+    def test_skipped_member_reports_incomplete_and_exits_1(self, tmp_path, monkeypatch, capsys):
+        """A member that could not be written is a partial restore: the CLI must not print
+        "restored" or exit 0, or a script and the dashboard's "done" badge carry on over it.
+        Runtime files the import deliberately keeps are not failures."""
+        hermes_home = tmp_path / ".hermes"
+        locked = hermes_home / "skills" / "demo"
+        locked.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: test\n",
+            "gateway.pid": "123\n",
+            "skills/demo/SKILL.md": "# demo\n",
+        })
+        args = Namespace(zipfile=str(zip_path), force=True)
+
+        from hermes_cli.backup import run_import
+        from hermes_cli.main import cmd_import
+
+        locked.chmod(0o555)
+        try:
+            if os.access(locked, os.W_OK):
+                pytest.skip("root or Windows: chmod 0555 does not make the directory read-only")
+            assert run_import(args) == 1
+            out = capsys.readouterr().out
+            assert "Import incomplete" in out
+            assert "Import complete" not in out
+            assert "skills/demo/SKILL.md" in out
+            assert "has been restored" not in out
+            assert cmd_import(args) == 1
+        finally:
+            locked.chmod(0o755)
+
+        capsys.readouterr()
+        assert cmd_import(args) is None
+        out = capsys.readouterr().out
+        assert "Preserved 1 runtime state file(s)" in out
+        assert "Done. Your Hermes configuration has been restored." in out
 
 
 
@@ -873,13 +1048,20 @@ class _ExplodingMember:
 
 
 def _break_member(monkeypatch, failing_member: str) -> None:
-    """Make ``ZipFile.open`` hand back a dying stream for one member only."""
+    """Make ``ZipFile.open`` hand back a dying stream for one member only.
+
+    The first open of that member (run_import's integrity pre-flight, which reads every
+    member before anything is written) is served for real; the restore's own open dies.
+    """
     real_open = zipfile.ZipFile.open
+    seen: list[str] = []
 
     def _patched(self, name, *args, **kwargs):
         filename = name.filename if isinstance(name, zipfile.ZipInfo) else name
         if filename == failing_member:
-            return _ExplodingMember()
+            seen.append(filename)
+            if len(seen) > 1:
+                return _ExplodingMember()
         return real_open(self, name, *args, **kwargs)
 
     monkeypatch.setattr(zipfile.ZipFile, "open", _patched)
@@ -1033,7 +1215,7 @@ class TestImportAtomicWrites:
         assert target.read_text() == "model: restored\n"
         assert (target.stat().st_mode & 0o777) == 0o644
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX ownership")
+    @pytest.mark.platforms("posix")
     def test_restore_preserves_existing_file_owner(self, tmp_path, monkeypatch):
         """A root-run import must not re-own the user's files to root.
 
@@ -1054,7 +1236,7 @@ class TestImportAtomicWrites:
 
         chown_calls: list[tuple[Path, int, int]] = []
         monkeypatch.setattr(
-            "hermes_cli.backup._preserve_file_owner",
+            "hermes_cli.backup_restore._preserve_file_owner",
             lambda p: (123, 456) if Path(p).exists() else None,
         )
         monkeypatch.setattr(
@@ -1070,28 +1252,21 @@ class TestImportAtomicWrites:
         # state.db is newly created, so there is no prior owner to restore.
         assert chown_calls == [(target, 123, 456)]
 
-    @pytest.mark.skipif(not hasattr(os, "fchmod"), reason="needs fchmod present to remove it")
-    def test_mode_is_applied_before_the_replace_without_fchmod(self, tmp_path, monkeypatch):
-        """Covers the Windows branch: no ``fchmod``, so ``chmod`` the temp path.
-
-        Applying the mode only *after* ``atomic_replace`` leaves the published
-        file at mkstemp's 0600 until that chmod lands (and permanently if the
-        process dies in between), and ``atomic_replace``'s EXDEV/EBUSY
-        ``shutil.copystat`` fallback would copy 0600 onto the target. Mirrors
-        the transit-window fix ``atomic_yaml_write`` already carries.
-        """
+    def test_mode_is_applied_before_the_replace(self, tmp_path, monkeypatch):
+        """Publish the correct native permission bits with no permissive window."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         target = hermes_home / "config.yaml"
         target.write_text("model: original\n")
         os.chmod(target, 0o644)
+        expected_mode = target.stat().st_mode & 0o777
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
         zip_path = tmp_path / "backup.zip"
         self._zip(zip_path, {"config.yaml": "model: restored\n", "state.db": ""})
 
-        import hermes_cli.backup as backup_mod
+        import hermes_cli.backup_restore as backup_mod
 
         real_replace = backup_mod.atomic_replace
         staged_modes: list[int] = []
@@ -1101,17 +1276,15 @@ class TestImportAtomicWrites:
                 staged_modes.append(os.stat(tmp).st_mode & 0o777)
             return real_replace(tmp, dst)
 
-        monkeypatch.delattr(os, "fchmod")
         monkeypatch.setattr(backup_mod, "atomic_replace", spying_replace)
 
         from hermes_cli.backup import run_import
         run_import(Namespace(zipfile=str(zip_path), force=True))
 
-        # Without the pre-replace chmod this reads 0o600 (mkstemp's mode).
-        assert staged_modes == [0o644]
-        assert (target.stat().st_mode & 0o777) == 0o644
+        assert staged_modes == [expected_mode]
+        assert (target.stat().st_mode & 0o777) == expected_mode
 
-    @pytest.mark.skipif(os.name != "posix", reason="POSIX setuid/setgid bits")
+    @pytest.mark.platforms("posix")
     def test_restore_does_not_carry_setuid_onto_archive_content(
         self, tmp_path, monkeypatch
     ):
@@ -1146,7 +1319,7 @@ class TestImportAtomicWrites:
             {"helper.sh": "#!/bin/sh\necho attacker\n", "state.db": ""},
         )
 
-        import hermes_cli.backup as backup_mod
+        import hermes_cli.backup_restore as backup_mod
 
         real_replace = backup_mod.atomic_replace
         staged_modes: list[int] = []
@@ -1726,7 +1899,7 @@ class TestRunPreUpdateBackup:
 
     @staticmethod
     def _set_mode(hermes_home, value):
-        import yaml
+        import hermes_yaml as yaml
         (hermes_home / "config.yaml").write_text(yaml.safe_dump({
             "_config_version": 22,
             "updates": {"pre_update_backup": value},
@@ -1918,7 +2091,7 @@ class TestRestoreConfigModelSettingsIfRewritten:
         return cfg
 
     def test_restores_rewritten_provider_and_dropped_moa(self, tmp_path):
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.backup import restore_config_model_settings_if_rewritten
 
         hermes_home = tmp_path / ".hermes"
@@ -1969,7 +2142,7 @@ class TestRestoreConfigModelSettingsIfRewritten:
     def test_preserves_legitimate_update_writes(self, tmp_path):
         """Only protected keys are restored — a version bump or a new section
         the migration legitimately wrote must survive the restore."""
-        import yaml
+        import hermes_yaml as yaml
         from hermes_cli.backup import restore_config_model_settings_if_rewritten
 
         hermes_home = tmp_path / ".hermes"
@@ -2320,18 +2493,24 @@ class TestImportLiveSessionDatabase:
         assert os.stat(live_db).st_ino == inode_before
         assert _count_rows(live_db) == (2, 4)
 
-
-
     def test_refused_restore_is_reported_and_leaves_db_intact(
         self, tmp_path, monkeypatch, capsys
     ):
         """A refused live-safe restore is a warning, not a counted success."""
         import hermes_cli.backup as backup_mod
+        # _import_db_member (the run_import .db publish path) lives in
+        # hermes_cli.backup_restore and resolves _safe_restore_db there.
+        import hermes_cli.backup_restore as backup_restore_mod
 
         home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
-        monkeypatch.setattr(backup_mod, "_safe_restore_db", lambda src, dst: False)
+        monkeypatch.setattr(backup_restore_mod, "_safe_restore_db", lambda src, dst: False)
 
-        backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+        assert backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True)) == 1
+
+        out = capsys.readouterr().out
+        assert "files skipped" in out
+        assert "state.db" in out
+        assert "has been restored" not in out
 
         # The pre-import database is still the one on disk.
         assert _count_rows(live_db) == (3, 12)

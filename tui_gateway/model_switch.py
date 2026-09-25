@@ -83,8 +83,10 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
             # launch profile"); single-profile, only its secrets need binding. Once multiplexing is
             # active the override is bound too: an unset override is the "unbound context" signal
             # plugin runtime bindings and per-home slots fail closed on (#118538).
+            # Resolve at call time like the launch state.db handle: a harness that
+            # re-homes the process after import must not read the old home's .env.
             from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
-            home = Path(_hermes_home)
+            home = _launch_home()
             secrets = launch_secret_scope(home)
             # No home stamp: this IS the process's own profile, and the stamp exists only to
             # mark a FOREIGN home for serves_routed_profile().

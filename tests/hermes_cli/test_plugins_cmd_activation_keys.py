@@ -31,6 +31,17 @@ def home(tmp_path, monkeypatch):
     return hermes_home
 
 
+@pytest.fixture(autouse=True)
+def _commit_plugin_selection_without_building_an_environment(monkeypatch):
+    """These tests cover selection keys; PM's real publication path has its own integration tests."""
+    def admit(enabled, disabled, **_kwargs):
+        cfg = load_config()
+        cfg["plugins"] = {"enabled": sorted(enabled), "disabled": sorted(disabled)}
+        save_config(cfg)
+
+    monkeypatch.setattr("hermes_cli.plugins_admission.admit_plugin_set_change", admit)
+
+
 def _lists():
     plugins = load_config().get("plugins") or {}
     return set(plugins.get("enabled") or []), set(plugins.get("disabled") or [])

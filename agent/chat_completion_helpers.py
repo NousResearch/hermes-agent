@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import re
+import sys
 import threading
 import time
 import uuid
@@ -26,7 +27,8 @@ from typing import Any, Dict, Optional
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
-    FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE)
+    FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
+    _extract_status_code)
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
@@ -45,6 +47,7 @@ from agent.message_sanitization import (
     sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
+from agent.repetition_guard import is_repetition_dominated
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -61,6 +64,11 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 # provider again (memory/swap exhaustion on constrained hosts). Rate-limit /
 # billing reasons keep their own longer cooldown.
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+
+# Streaming 5xx unmask probe: one non-streaming re-issue per this window. Covers the
+# outer retry loop (up to ~3 attempts x backoff, well under 60s) so an outage doesn't
+# double traffic every attempt, while later turns re-arm automatically.
+_STREAM_5XX_PROBE_WINDOW_S = 60.0
 
 
 def _context_thread_target(callback):
@@ -788,7 +796,7 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
         from urllib.parse import urlparse
         from hermes_cli.local_runtime.load_progress import get_loading_progress, get_prefill_progress
         from hermes_cli.local_runtime.supervisor import state_path
-        state = json.loads(state_path().read_text(encoding="utf-8"))
+        state = json.loads(state_path().read_text(encoding="utf-8-sig"))
         managed = urlparse(str(state.get("base_url", ""))).netloc.lower()
         if not managed or urlparse(base).netloc.lower() != managed:
             return None
@@ -1098,6 +1106,13 @@ class _RequestClientRegistry:
 # timeout's run-budget cap is applied AFTER this floor (AIAgent._compute_non_stream_stale_timeout).
 HIGH_EFFORT_SILENCE_FLOOR_SECONDS = 300.0
 
+# First-progress budget for a lifecycle-only stream on an official-Codex large request: the
+# stream opened but no substantive model event has arrived. Measured from the physical-attempt
+# start (a reconnect restarts it; lifecycle frames do not), and applied regardless of reasoning
+# effort. Equal to the high-effort floor today, but a separate knob so tuning one cannot silently
+# retune the other.
+CODEX_FIRST_PROGRESS_TIMEOUT_SECONDS = 300.0
+
 
 def _high_effort_silence_floor(agent) -> float:
     """``HIGH_EFFORT_SILENCE_FLOOR_SECONDS`` when the wire reasoning config is enabled at ``high`` or any
@@ -1124,6 +1139,7 @@ class _NonStreamWatchdogs:
     idle_enabled: bool
     idle_timeout: float
     idle_requires_progress: bool
+    progress_timeout: float = 0.0
 
 
 def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs:
@@ -1149,7 +1165,11 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     est_tokens = estimate_request_context_tokens(api_kwargs)
     effort_floor = _high_effort_silence_floor(agent) if codex else 0.0
     codex_floor = 0.0
-    if codex and openai_codex_backend:
+    # Local Responses servers keep their configured local stale/TTFB grace: the hosted
+    # large-context floor, hard ceiling and TTFB scale-up/cap below must not tighten it.
+    base_url = getattr(agent, "base_url", None)
+    local = bool(base_url) and is_local_endpoint(base_url)
+    if codex and not local:
         # Raise the stale floor for large payloads so healthy gateway-scale
         # requests aren't aborted mid-prefill.
         codex_floor = openai_codex_stale_timeout_floor(est_tokens)
@@ -1172,13 +1192,13 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     ttfb_timeout = env_float("HERMES_CODEX_TTFB_TIMEOUT_SECONDS", 120.0)
     if ttfb_timeout <= 0:
         ttfb_enabled = False
-    elif openai_codex_backend:
+    elif codex and not local:
         # Large requests legitimately spend tens of seconds in admission/prefill before the
         # first SSE event: scale the cutoff up to the idle default unless TTFB_STRICT is set.
         disable_above = env_float("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", 10_000.0)
         strict = os.environ.get("HERMES_CODEX_TTFB_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
         if not strict and disable_above > 0 and est_tokens >= disable_above and ttfb_timeout < idle_default:
-            logger.info("Scaling openai-codex no-event TTFB watchdog from %.0fs to %.0fs "
+            logger.info("Scaling codex-responses no-event TTFB watchdog from %.0fs to %.0fs "
                 "for large request (context=~%s tokens >= %.0f). "
                 "Set HERMES_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.", ttfb_timeout, idle_default,
                 f"{est_tokens:,}", disable_above)
@@ -1186,11 +1206,11 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
         # Opt-in ceiling (0 = off): a 120s default here silently undid the scale-up above (#91621).
         ttfb_cap = env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 0.0)
         if ttfb_cap > 0 and ttfb_timeout > ttfb_cap:
-            logger.info("Capping openai-codex no-event TTFB timeout from %.0fs to %.0fs "
+            logger.info("Capping codex-responses no-event TTFB timeout from %.0fs to %.0fs "
                 "(context=~%s tokens) per HERMES_CODEX_TTFB_MAX_SECONDS.", ttfb_timeout, ttfb_cap,
                 f"{est_tokens:,}")
             ttfb_timeout = ttfb_cap
-    elif not ttfb_explicit and (base_url := getattr(agent, "base_url", None)) and is_local_endpoint(base_url):
+    elif not ttfb_explicit and local:
         # A local server prefills for minutes before its first event; the chat-completions
         # siblings already grant local endpoints the local stale ceiling, so the Responses
         # transport gets the same grace instead of the 120s hosted cutoff (#92302).
@@ -1209,12 +1229,13 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     # default for unset AND unparseable values, so both count as implicit.
     idle_explicit = env_float("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", -1.0) != -1.0
     idle_timeout = env_float("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", idle_default)
+    progress_gated = codex and openai_codex_backend and codex_floor > 0 and not idle_explicit
     return _NonStreamWatchdogs(stale_timeout=stale_timeout, codex=codex, est_tokens=est_tokens,
         ttfb_enabled=ttfb_enabled, ttfb_timeout=ttfb_timeout, idle_enabled=codex and idle_timeout > 0,
-        idle_timeout=idle_timeout,
-        idle_requires_progress=(
-            codex and openai_codex_backend and codex_floor > 0 and not idle_explicit
-        ))
+        idle_timeout=idle_timeout, idle_requires_progress=progress_gated,
+        # A lifecycle frame proves transport liveness, not model progress. Bound that phase
+        # from the physical-attempt start; events cannot restart the grace period.
+        progress_timeout=CODEX_FIRST_PROGRESS_TIMEOUT_SECONDS if progress_gated else 0.0)
 
 
 def _codex_silent_hang_hint(agent, api_kwargs: dict) -> Optional[str]:
@@ -2233,7 +2254,10 @@ def _codex_summary_attempt(agent, api_messages: list, api_request_id: str):
         codex_kwargs.pop("tools", None)
         codex_kwargs.pop("tool_choice", None)
         codex_kwargs.pop("parallel_tool_calls", None)
-        return _summary_text(agent, agent._run_codex_stream(codex_kwargs))
+        # Route through the same seam as normal Codex turns: a direct _run_codex_stream
+        # bypasses the stale/TTFB watchdogs, interrupt handling and client cleanup, so an
+        # unattended cron summary could wedge forever (#70943).
+        return _summary_text(agent, agent._interruptible_api_call(codex_kwargs))
     return _attempt
 
 
@@ -2349,7 +2373,7 @@ def cleanup_task_resources(agent, task_id: str) -> None:
 
 
 def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, usage_obj, *,
-    dropped_tool_names=None, overflow_terminal=False):
+    dropped_tool_names=None, overflow_terminal=False, api_mode=None):
     """Stub for an SSE stream that ended without ``finish_reason`` after
     delivering content. Tagged ``PARTIAL_STREAM_STUB_ID`` + ``FINISH_REASON_LENGTH``
     so the loop enters its continuation/retry path instead of accepting
@@ -2359,7 +2383,26 @@ def _build_partial_stream_stub(role, full_content, full_reasoning, model_name, u
     context-overflow error. Seeding the recovered text as a continuation stub
     would grow every later request into the same overflow (#106260); the loop
     treats the marker as terminal and ends the turn via the recovery contract.
+
+    ``api_mode="anthropic_messages"`` returns a Messages-shaped stub (``content``
+    block list + ``stop_reason="max_tokens"``) so AnthropicTransport validates it
+    and the loop continues instead of entering the invalid-response retry ladder
+    (#45908). Empty content keeps one empty text block: validate_response rejects
+    an empty list for ``max_tokens``.
     """
+    if api_mode == "anthropic_messages":
+        return SimpleNamespace(
+            id=PARTIAL_STREAM_STUB_ID,
+            type="message",
+            role=role,
+            model=model_name,
+            content=[SimpleNamespace(type="text", text=full_content or "")],
+            stop_reason="max_tokens",
+            stop_sequence=None,
+            usage=usage_obj,
+            _dropped_tool_names=dropped_tool_names or None,
+            _overflow_terminal=overflow_terminal,
+        )
     return SimpleNamespace(
         id=PARTIAL_STREAM_STUB_ID,
         model=model_name,
@@ -2394,6 +2437,25 @@ def _rejects_stream_options(exc: BaseException) -> bool:
     body = f"{getattr(exc, 'body', '') or ''} {exc}".lower()
     return "stream_options" in body and any(
         k in body for k in ("extra", "not supported", "unrecognized", "unexpected", "unknown"))
+
+
+def _wait_stream_retry_backoff(agent, delay: float) -> None:
+    """Sleep ``delay`` seconds in 0.1s steps, returning early as soon as the agent
+    is interrupted (so /stop is never held hostage by a backoff; the retry loop's
+    own interrupt check then ends the call)."""
+    deadline = time.monotonic() + max(0.0, delay)
+    while not getattr(agent, "_interrupt_requested", False):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.1, remaining))
+
+
+def _anthropic_connection_error_types() -> tuple:
+    # An Anthropic error instance implies the SDK is already imported; never import
+    # (or lazy-install) it from inside an error handler.
+    anthropic = sys.modules.get("anthropic")
+    return (anthropic.APIConnectionError,) if anthropic is not None else ()
 
 
 def _is_sse_connection_error(exc: BaseException) -> bool:
@@ -2463,6 +2525,16 @@ def _stream_codex_passthrough(agent, api_kwargs: dict, on_first_delta):
         return _with_stream_emitters(agent, lambda: agent._interruptible_api_call(api_kwargs))
     finally:
         agent._codex_on_first_delta = None
+
+
+def _finalize_bedrock_relay_events(events):
+    """Relay finalizer for Bedrock: a stream without messageStop has no complete
+    response to record, so return None and let the live consumer raise (#109988)."""
+    from agent.bedrock_adapter import stream_converse_with_callbacks
+    try:
+        return stream_converse_with_callbacks({"stream": list(events)})
+    except EmptyStreamError:
+        return None
 
 
 class _BedrockStream:
@@ -2547,17 +2619,23 @@ class _BedrockStream:
 
             stream = relay_llm.stream(dict(self.api_kwargs), self._open_stream,
                 **_relay_stream_identity(agent, "bedrock"),
-                finalizer=lambda: stream_converse_with_callbacks({"stream": list(intercepted_events)}),
+                finalizer=lambda: _finalize_bedrock_relay_events(intercepted_events),
                 on_stream_created=_stream_created, on_chunk=intercepted_events.append,
                 chunk_adapter=lambda chunk: chunk, accept_chunk=_accept_event,
                 completed_response_predicate=lambda response: bool(getattr(response, "choices", None)),
                 metadata=_relay_stream_metadata(agent, "custom"), defer_logical_completion=True)
             wants_reasoning = agent.reasoning_callback or agent.stream_delta_callback or plugin_reasoning_observer
-            streamed_response = stream_converse_with_callbacks({"stream": stream},
-                on_text_delta=self._after_first(agent._fire_stream_delta) if agent._has_stream_consumers() else None,
-                on_tool_start=self._after_first(agent._fire_tool_gen_started),
-                on_reasoning_delta=self._after_first(agent._fire_reasoning_delta) if wants_reasoning else None,
-                on_interrupt_check=lambda: agent._interrupt_requested, on_event=_stamp_event)
+            try:
+                streamed_response = stream_converse_with_callbacks({"stream": stream},
+                    on_text_delta=self._after_first(agent._fire_stream_delta) if agent._has_stream_consumers() else None,
+                    on_tool_start=self._after_first(agent._fire_tool_gen_started),
+                    on_reasoning_delta=self._after_first(agent._fire_reasoning_delta) if wants_reasoning else None,
+                    on_interrupt_check=lambda: agent._interrupt_requested, on_event=_stamp_event)
+            except EmptyStreamError:
+                # IAM-denied fallback: no stream events, but converse() already completed.
+                if stream.final_response is None:
+                    raise
+                streamed_response = None
             self.result["response"] = stream.final_response or streamed_response
         except Exception as e:
             self.result["error"] = e
@@ -3046,6 +3124,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 response_id = chunk.id
             if upstream_provider is None and isinstance(getattr(chunk, "provider", None), str) and chunk.provider:
                 upstream_provider = chunk.provider  # OpenRouter stamps who served
+                _diag["serving_provider"] = upstream_provider.strip()[:64]  # attribute a mid-stream drop (#90216)
             if not chunk.choices:
                 usage, finish_reason = self._choiceless_chunk(chunk, finish_reason)
                 usage_obj = usage or usage_obj
@@ -3135,6 +3214,10 @@ class _StreamingCall(StreamingWaitMonitor):
             "switching %s/%s to non-streaming for this session.", self.agent.provider or "unknown",
             self.agent.model or "unknown")
         self.agent._disable_streaming = True
+        return self._replay_final_response(final_response)
+
+    def _replay_final_response(self, final_response):
+        """Replay a completed chat-completions response's reasoning/content as deltas."""
         choices = final_response.choices
         message = getattr(choices[0] if isinstance(choices, (list, tuple)) and choices else None, "message", None)
         if message is not None:
@@ -3167,6 +3250,14 @@ class _StreamingCall(StreamingWaitMonitor):
                         arguments = repaired
                     else:
                         has_truncated_tool_args = True
+                # Parseable JSON does not prove that a dropped stream completed its
+                # action. Treat degenerate argument loops as partial calls too.
+                # A provider-confirmed call may legitimately write repetitive data.
+                if finish_reason is None and is_repetition_dominated(arguments):
+                    logger.warning(
+                        "Tool call '%s' has repetition-dominated arguments without a "
+                        "finish_reason; treating as a dropped tool call.", tc["function"]["name"] or "?")
+                    has_truncated_tool_args = True
             elif finish_reason is None:
                 # Name arrived, zero arg bytes, no finish_reason: unflagged this
                 # becomes a "stop" turn executing "{}" with no retry.
@@ -3185,6 +3276,12 @@ class _StreamingCall(StreamingWaitMonitor):
         args or stamping "stop"."""
         full_content = "".join(content_parts) or None
         full_reasoning = "".join(reasoning_parts) or None
+        if not full_reasoning and full_content:
+            # Inline-reasoning providers (MiniMax-M3 streams <think>…</think> in content) send no
+            # reasoning delta; fill the structured field from the raw content (#89647).
+            from agent.agent_runtime_helpers import extract_reasoning
+
+            full_reasoning = extract_reasoning(self.agent, SimpleNamespace(content=full_content))
         mock_tool_calls, has_truncated_tool_args = self._assemble_tool_calls(tool_calls_acc, finish_reason)
         # Zero-chunk guard: nothing usable = upstream error / malformed SSE.
         if finish_reason is None and not content_parts and not reasoning_parts and not refusal_parts and not tool_calls_acc:
@@ -3257,9 +3354,9 @@ class _StreamingCall(StreamingWaitMonitor):
         per-request ``request_client`` so the watchdog can abort this socket
         without closing the shared client mid-flight."""
         has_tool_use = False
-        # Eventless stream: the SDK's get_final_message() raises AssertionError (no
-        # message_start); shims may fabricate a contentless Message. All -> EmptyStreamError.
+        # No message_stop -> EmptyStreamError; saw_stream_event only picks the message.
         saw_stream_event = False
+        saw_message_stop = False
         self.last_chunk_time["t"] = time.time()
         _diag = self._new_diag()
         self._writer_token = self._attempt_stream_response = None
@@ -3268,7 +3365,7 @@ class _StreamingCall(StreamingWaitMonitor):
         base_final_message = None
 
         from agent import relay_llm
-        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+        from agent.anthropic_adapter import normalize_stream_usage, sanitize_anthropic_kwargs
         accumulator = relay_llm.AnthropicStreamAccumulator()
 
         def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
@@ -3276,7 +3373,7 @@ class _StreamingCall(StreamingWaitMonitor):
             sanitize_anthropic_kwargs(final_kwargs, log_prefix=getattr(self.agent, "log_prefix", ""))
             manager = request_client.messages.stream(**final_kwargs)
             _stream_context["manager"] = manager
-            return manager.__enter__()
+            return normalize_stream_usage(manager.__enter__())
 
         def _anthropic_stream_created(raw_stream: Any) -> None:
             _stream_context["stream"] = raw_stream
@@ -3300,6 +3397,8 @@ class _StreamingCall(StreamingWaitMonitor):
                 if self.agent._interrupt_requested:
                     break
                 event_type = getattr(event, "type", None)
+                if event_type == "message_stop":
+                    saw_message_stop = True
                 if event_type == "content_block_start":
                     block = getattr(event, "content_block", None)
                     if block and getattr(block, "type", None) == "tool_use":
@@ -3320,18 +3419,17 @@ class _StreamingCall(StreamingWaitMonitor):
                         self._emit_reasoning(delta.thinking)
             raw_stream = _stream_context["stream"]
             if not self.agent._interrupt_requested and raw_stream is not None:
-                try:
-                    base_final_message = raw_stream.get_final_message()
-                    # The SDK snapshot keeps only stop_reason/stop_sequence from message_delta; the
-                    # refusal's stop_details (category/explanation) survives only in our accumulator.
-                    _stop_details = accumulator.finalize().get("stop_details")
-                    if _stop_details is not None and getattr(base_final_message, "stop_details", None) is None:
-                        base_final_message.stop_details = _stop_details
-                except AssertionError:
-                    if not saw_stream_event:
-                        raise EmptyStreamError(
-                            "Provider returned an empty stream with no events (possible upstream error or malformed event stream).") from None
-                    raise
+                if not saw_message_stop:
+                    raise EmptyStreamError(
+                        "Anthropic Messages stream ended before message_stop (possible upstream stream drop)."
+                        if saw_stream_event else
+                        "Provider returned an empty stream with no events (possible upstream error or malformed event stream).")
+                base_final_message = raw_stream.get_final_message()
+                # The SDK snapshot keeps only stop_reason/stop_sequence from message_delta; the
+                # refusal's stop_details (category/explanation) survives only in our accumulator.
+                _stop_details = accumulator.finalize().get("stop_details")
+                if _stop_details is not None and getattr(base_final_message, "stop_details", None) is None:
+                    base_final_message.stop_details = _stop_details
         finally:
             try:
                 self._close_managed_stream()
@@ -3361,11 +3459,20 @@ class _StreamingCall(StreamingWaitMonitor):
             buffer_anthropic_tool_input(self.api_kwargs, getattr(self.agent, "_anthropic_base_url", None))
         self._cancel_current_stream_attempt(reason)
         self.clients.close_once(reason)
+        # Exponential backoff between stream-level reconnects (back-to-back retries
+        # hammer a provider that just dropped us). Interruptible: /stop exits at once.
+        from agent.retry_utils import jittered_backoff
+        _wait_stream_retry_backoff(
+            self.agent, jittered_backoff(attempt + 1, base_delay=1.0, max_delay=4.0, jitter_ratio=0.0))
+        # The backoff is not the dead attempt's silence: restart the stale clock so the
+        # stale monitor cannot kill (and strike) a stream that has not reopened yet.
+        self.last_chunk_time["t"] = time.time()
 
     def _maybe_disable_streaming(self, e) -> None:
         """Flip to non-streaming for failures streaming itself cannot survive, or that
         re-streaming can only repeat: the provider rejecting streams outright,
-        AnthropicBedrock IAM lacking InvokeModelWithResponseStream, or a gateway answering
+        AnthropicBedrock IAM lacking InvokeModelWithResponseStream, a custom anthropic_messages
+        provider emitting SSE events out of order (#72833), or a gateway answering
         with contentless SSE keepalive frames (a degraded gateway answers every
         streaming request that way, so the retry must change channel to make progress)."""
         if _is_provider_stream_empty_frame_error(e):
@@ -3381,23 +3488,32 @@ class _StreamingCall(StreamingWaitMonitor):
                 "⚠️ Provider stream returned an empty keepalive frame — retrying this turn "
                 "without streaming (streaming stays off for this session).")
             return
+        from agent.anthropic_adapter import _is_stream_unavailable_error
+        if not _is_stream_unavailable_error(e):
+            return
         _err_lower = str(e).lower()
         _is_stream_unsupported = "stream" in _err_lower and "not supported" in _err_lower
-        _is_bedrock_stream_denied = False
-        if not _is_stream_unsupported and "invokemodelwithresponsestream" in _err_lower:
-            # Message pre-check first: importing bedrock_adapter triggers a lazy boto3 install.
-            from agent.bedrock_adapter import is_streaming_access_denied_error
-            _is_bedrock_stream_denied = is_streaming_access_denied_error(e)
-        if _is_stream_unsupported or _is_bedrock_stream_denied:
+        if "unexpected event order" in _err_lower and not _is_stream_unsupported:
+            # Custom anthropic_messages SSE out of order (#72833): re-streaming repeats it.
+            # Bedrock keeps turn_recovery's sticky Converse switch instead.
+            if self.agent.api_mode != "anthropic_messages" or self.agent.provider == "bedrock":
+                return
             self.agent._disable_streaming = True
             self.agent._safe_print(
-                "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. Switching to non-streaming.\n"
-                "   Grant that action to restore streaming output.\n"
-                if _is_bedrock_stream_denied else
-                "\n⚠  Streaming is not supported for this model/provider. Switching to non-streaming.\n"
-                "   To avoid this delay, set display.streaming: false in config.yaml\n",
+                "\n⚠  Provider sent Anthropic stream events out of order. Switching to non-streaming.\n",
                 diagnostic=True,
             )
+            return
+        # Remaining matches: stream rejected outright, or Bedrock IAM stream denial.
+        self.agent._disable_streaming = True
+        self.agent._safe_print(
+            "\n⚠  Streaming is not supported for this model/provider. Switching to non-streaming.\n"
+            "   To avoid this delay, set display.streaming: false in config.yaml\n"
+            if _is_stream_unsupported else
+            "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. Switching to non-streaming.\n"
+            "   Grant that action to restore streaming output.\n",
+            diagnostic=True,
+        )
 
     def _handle_stream_error(self, e: Exception, attempt: int, max_retries: int) -> bool:
         """Classify a failed attempt: True = retry; False = stop with
@@ -3412,7 +3528,10 @@ class _StreamingCall(StreamingWaitMonitor):
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
         # ReadError: abort/reset mid-body (stale-kill shutdown under a parked reader,
         # ECONNRESET) — the retry loop owns recovery.
-        _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.ReadError, _httpx.RemoteProtocolError, ConnectionError))
+        # anthropic.APIConnectionError: the Anthropic SDK wraps connect/read drops
+        # (incl. stale-kill aborts) in its own type, not httpx's.
+        _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.ReadError, _httpx.RemoteProtocolError, ConnectionError,
+                                      *_anthropic_connection_error_types()))
         _is_stream_parse_err = self.agent._is_provider_stream_parse_error(e)
         _is_empty_stream = isinstance(e, EmptyStreamError)
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)
@@ -3483,9 +3602,78 @@ class _StreamingCall(StreamingWaitMonitor):
         else:
             self._maybe_disable_streaming(e)
             logger.exception("Streaming failed before delivery: %s", e)
+            if self._unmask_server_error_with_nonstreaming(e):
+                return False
         # Propagate to the main retry loop (credential rotation, fallback, backoff).
         self.result["error"] = e
         return False
+
+    def _unmask_server_error_with_nonstreaming(self, e: Exception) -> bool:
+        """One non-streaming re-issue when a 5xx killed the stream before any delta.
+
+        Some gateways validate the request only on their non-streaming path and crash
+        opaquely ("500 something went wrong") when streaming — the real 4xx, with its
+        actionable message, never reaches the user through stream retries. One
+        non-streaming probe per 60s window (timestamped on the agent: each outer retry
+        builds a fresh _StreamingCall, so an instance flag would re-probe every attempt)
+        surfaces it: on success the response is delivered for this turn WITHOUT latching
+        non-streaming (a transient gateway 500 must not permanently disable streaming);
+        on a probe 4xx that error REPLACES the opaque 5xx; any other probe failure keeps
+        the original error. The successful delivery is bracketed by its own stream
+        start/end pair (the failed attempt already emitted a terminal end), and a response
+        that cannot be replayed propagates ``e``. The probe runs on this worker thread while
+        the stream monitor still polls, so its stale check is suspended for the probe's
+        duration (the probe has its own non-streaming watchdog). Interrupts re-raise (the outer handler routes them), and a /stop that arrived before
+        this point suppresses the probe entirely — the loop's pre-retry interrupt check owns
+        that decision, so a pending stop must not buy one more request.
+        True = handled (caller must not overwrite result); False = propagate ``e``.
+        """
+        if getattr(self.agent, "_interrupt_requested", False):
+            return False
+        status = _extract_status_code(e)
+        if status is None or status < 500 or self.deltas_were_sent["yes"]:
+            return False
+        if getattr(self.agent, "api_mode", "") not in ("", "chat_completions"):
+            return False  # replay handles chat-completions shapes only
+        now = time.monotonic()
+        last_probe = self.agent._stream_5xx_probe_ts
+        if last_probe is not None and now - last_probe < _STREAM_5XX_PROBE_WINDOW_S:
+            return False  # one probe per 60s window
+        self.agent._stream_5xx_probe_ts = now
+        probe_kwargs = {k: v for k, v in self.api_kwargs.items() if k not in ("stream", "stream_options")}
+        stale_timeout = self._stream_stale_timeout
+        self._stream_stale_timeout = float("inf")  # no chunks arrive during the probe
+        try:
+            probe = interruptible_api_call(self.agent, probe_kwargs)
+        except (KeyboardInterrupt, InterruptedError):
+            raise  # the outer handler routes user interrupts; never swallow them
+        except Exception as probe_err:
+            probe_status = _extract_status_code(probe_err)
+            if probe_status is not None and probe_status < 500:
+                # The provider's REAL validation error beats the opaque 5xx.
+                logger.info("Non-streaming unmask probe surfaced the underlying error: %s", probe_err)
+                self.result["error"] = probe_err
+                return True
+            logger.info("Non-streaming unmask probe failed: %s", probe_err)
+            return False
+        finally:
+            self._stream_stale_timeout = stale_timeout
+        logger.info("Streaming 5xx re-issued non-streaming successfully for %s/%s "
+                    "(not latched: the 5xx may be transient).",
+                    self.agent.provider or "unknown", self.agent.model or "unknown")
+        self._quiet(self.agent._buffer_status,
+                    "⚠  Streaming failed with a provider server error; the non-streaming retry succeeded.")
+        try:
+            # The failed attempt already emitted its terminal on_stream_end(finished=False),
+            # so the recovered delivery opens and closes its OWN stream pair — consumers must
+            # never see deltas after that error event.
+            replayed = _with_stream_emitters(self.agent, lambda: self._replay_final_response(probe))
+        except Exception as replay_err:
+            # A response we cannot replay must not escape into _call()'s except block.
+            logger.exception("Non-streaming unmask probe response could not be replayed: %s", replay_err)
+            return False
+        self.result["response"] = replayed
+        return True
 
     def _call_wire(self, stream_attempt_id: int):
         if self.agent.api_mode != "anthropic_messages":
@@ -3688,6 +3876,7 @@ class _StreamingCall(StreamingWaitMonitor):
             return _build_partial_stream_stub(
                 "assistant", None, None, getattr(self.agent, "model", "unknown"), None,
                 dropped_tool_names=_partial_names, overflow_terminal=True,
+                api_mode=getattr(self.agent, "api_mode", None),
             )
         if not _partial_names:
             logger.warning(
@@ -3695,7 +3884,8 @@ class _StreamingCall(StreamingWaitMonitor):
                 "recovered content so the loop can continue from where the stream died: %s",
                 len(_partial_text or ""), error)
         _stub = _build_partial_stream_stub("assistant", _partial_text, None,
-            getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names)
+            getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names,
+            api_mode=getattr(self.agent, "api_mode", None))
         if _cls is not None and _cls.reason == FailoverReason.content_policy_blocked:
             _stub._content_filter_terminated = True
         return _stub

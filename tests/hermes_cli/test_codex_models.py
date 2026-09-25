@@ -300,8 +300,7 @@ def test_catalog_requests_ask_as_the_newest_client(monkeypatch):
     get = _gated_codex_catalog(seen_urls)
     monkeypatch.setitem(sys.modules, "httpx", type("_FakeHttpx", (), {"get": staticmethod(get)}))
     assert "gpt-6-sol" in codex_models._fetch_models_from_api(access_token="tok")
-    monkeypatch.setattr(model_metadata, "requests", type("_FakeRequests", (), {"get": staticmethod(get)}))
-    monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
+    monkeypatch.setattr(model_metadata.model_metadata_http, "get", get)
     monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
     live, fresh = model_metadata._fetch_codex_oauth_context_lengths_with_source("tok")
     assert fresh and "gpt-6-sol" in live

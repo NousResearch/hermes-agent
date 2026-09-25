@@ -1,6 +1,6 @@
 name: entropicmem
 repo: https://github.com/Ufonik88/EntropicMem
-sha: 437c89b7da625928c41171e88d86f45af41342e1
+sha: f15fe1216cbb8cec3ddd61e8ff12936180cc5f42
 subdir: "plugins/entropicmem"
 description: >-
   Durable local memory for Hermes agents: SQLite FTS5 facts with cited, explainable recall; a
@@ -17,15 +17,15 @@ maintainer: Ufonik88
 tier: community
 category: memory
 requires_hermes: ">=0.21"
-docs_url: https://github.com/Ufonik88/EntropicMem/blob/437c89b7da625928c41171e88d86f45af41342e1/docs/SELF_INSTALL.md
-version: "2.7.0"
-image: https://raw.githubusercontent.com/Ufonik88/EntropicMem/437c89b7da625928c41171e88d86f45af41342e1/docs/assets/banner.png
+docs_url: https://github.com/Ufonik88/EntropicMem/blob/f15fe1216cbb8cec3ddd61e8ff12936180cc5f42/docs/SELF_INSTALL.md
+version: "2.8.0"
+image: https://raw.githubusercontent.com/Ufonik88/EntropicMem/f15fe1216cbb8cec3ddd61e8ff12936180cc5f42/docs/assets/banner.png
 screenshots:
-  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/437c89b7da625928c41171e88d86f45af41342e1/docs/assets/graph-galaxy.png
-  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/437c89b7da625928c41171e88d86f45af41342e1/docs/assets/note-modal.png
-  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/437c89b7da625928c41171e88d86f45af41342e1/docs/assets/cli-recall.png
-  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/437c89b7da625928c41171e88d86f45af41342e1/docs/assets/timeline.png
-  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/437c89b7da625928c41171e88d86f45af41342e1/docs/assets/prefetch-context.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/f15fe1216cbb8cec3ddd61e8ff12936180cc5f42/docs/assets/graph-galaxy.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/f15fe1216cbb8cec3ddd61e8ff12936180cc5f42/docs/assets/note-modal.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/f15fe1216cbb8cec3ddd61e8ff12936180cc5f42/docs/assets/cli-recall.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/f15fe1216cbb8cec3ddd61e8ff12936180cc5f42/docs/assets/timeline.png
+  - https://raw.githubusercontent.com/Ufonik88/EntropicMem/f15fe1216cbb8cec3ddd61e8ff12936180cc5f42/docs/assets/prefetch-context.png
 readme: true
 platforms: []
 capabilities:

@@ -497,6 +497,8 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     A top-level owned directory is merged per authored root. ``cron/jobs.json`` is
     special: it is one multi-record runtime store, so shipped definitions merge by job id
     instead of replacing the file."""
+    from hermes_cli.config_backend import require_file_tooling
+    require_file_tooling("Profile distribution install")
     target.mkdir(parents=True, exist_ok=True)
     entries = list(_owned_entries(staged, manifest))
     _refuse_symlinked_targets(target, entries)

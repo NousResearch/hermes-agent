@@ -549,6 +549,8 @@ def run_backup(args) -> bool:
     the caller turns False into exit status 1 so a cron/systemd timer never publishes a "successful"
     archive that is missing state.db. Hard failures keep raising ``SystemExit``.
     """
+    from hermes_cli.config_backend import require_file_tooling
+    require_file_tooling("`hermes backup`")
     hermes_root = get_default_hermes_root()
 
     if not hermes_root.is_dir():
@@ -685,6 +687,8 @@ def _import_member_rel(member: str, prefix: str) -> tuple[str, bool]:
 
 def run_import(args) -> Optional[int]:
     """Restore a Hermes backup; return 1 on damaged archives or incomplete restores."""
+    from hermes_cli.config_backend import require_file_tooling
+    require_file_tooling("`hermes import`")
     zip_path = Path(args.zipfile).expanduser().resolve()
 
     if not zip_path.is_file():
@@ -1457,6 +1461,8 @@ def restore_quick_snapshot(
     Overwrites current state files with the snapshot's copies.
     Returns True if at least one file was restored.
     """
+    from hermes_cli.config_backend import require_file_tooling
+    require_file_tooling("Snapshot restore")
     home = hermes_home or get_hermes_home()
     root = _quick_snapshot_root(home)
 

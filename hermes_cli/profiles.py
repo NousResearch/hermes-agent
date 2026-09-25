@@ -1139,6 +1139,8 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
 
 def _resolve_clone_source(clone_from: Optional[str]) -> Path:
     """Directory to clone from: the named profile, or the active profile when ``None``."""
+    from hermes_cli.config_backend import require_file_tooling
+    require_file_tooling("Profile clone")
     if clone_from is None:
         from hermes_constants import get_hermes_home
         source_dir = get_hermes_home()

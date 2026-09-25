@@ -24,7 +24,7 @@ describe('updateFailureRetryAction', () => {
     expect(action.waitMessage).toContain('50214')
     expect(action.waitMessage.toLowerCase()).toContain('still running')
     expect(action.waitMessage.toLowerCase()).toContain('wait')
-    expect(action.stopLabel.toLowerCase()).toContain('stop')
+    expect(action.stopLabel?.toLowerCase()).toContain('stop')
     expect(action.stopLabel).toContain('50214')
   })
 

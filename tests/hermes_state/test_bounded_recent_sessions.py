@@ -105,6 +105,30 @@ def test_bounded_recent_keeps_reset_child_user_visible(db):
     assert "after-reset" in [row["id"] for row in rows]
 
 
+def test_bounded_recent_reset_fork_does_not_steal_compression_tip(db):
+    """A reset fork of a compressed session is its own conversation: it must not
+    become the root's lineage tip and hide the real continuation (#114271)."""
+    now = time.time()
+    db.create_session("root", source="cli")
+    db.append_message("root", role="user", content="root preview")
+    db.end_session("root", "compression")
+    db.create_session("canonical", source="cli", parent_session_id="root")
+    db.append_message("canonical", role="user", content="continuation preview")
+    db.create_session(
+        "reset", source="cli", parent_session_id="root", model_config={"_reset_from": "root"},
+    )
+    db.append_message("reset", role="user", content="fresh conversation")
+    _set_activity(db, "root", now - 1000)
+    _set_activity(db, "canonical", now - 100)
+    _set_activity(db, "reset", now)
+
+    rows = {row["id"]: row for row in db.list_recent_sessions_bounded(limit=5)}
+
+    assert set(rows) == {"reset", "canonical"}
+    assert rows["canonical"]["_lineage_root_id"] == "root"
+    assert rows["reset"].get("_lineage_root_id") is None
+
+
 def test_bounded_recent_keeps_branch_separate_from_compression_parent(db):
     now = time.time()
     db.create_session("branch-parent", source="cli")

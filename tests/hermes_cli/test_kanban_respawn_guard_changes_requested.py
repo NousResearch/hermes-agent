@@ -19,7 +19,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db as kb
+from tests.hermes_cli._kanban_modules import KanbanModules
+
+kb = KanbanModules()
 
 
 PR_COMMENT = "Opened https://github.com/example/repo/pull/123 for review."
@@ -32,7 +34,7 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Deterministic: never shell out to `gh` from a test. The PR is OPEN.
-    monkeypatch.setattr(kb, "_pr_url_is_open", lambda _url: True)
+    monkeypatch.setattr(kb, "_active_pr_guard_applies", lambda _url: (True, None))
     kb.init_db()
     return home
 

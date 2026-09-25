@@ -204,17 +204,18 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     HEALTH_WINDOW = 6  # ticks (default 30s at interval=5)
     health_state = {"bad_ticks": 0, "last_warn_at": 0}
 
-    def _ready_queue_nonempty() -> bool:
+    def _ready_queue_nonempty(exclude_ids=None) -> bool:
         """Is there a ready+assigned+unclaimed task the dispatcher would spawn for?
         Control-plane lanes pulled via ``claim_task`` are correctly idle, not stuck."""
         try:
             with kbc.connect_closing() as conn:
-                return kbd.has_spawnable_ready(conn)
+                return kbd.has_spawnable_ready(conn, exclude_ids)
         except Exception:
             return False
 
     def _on_tick(res):
-        ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty()
+        # Guard-deferred cards are a deliberate decision, not a stuck dispatcher.
+        ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty(kbd.guard_deferred_ids(res))
         if ready_pending and not res.spawned:
             health_state["bad_ticks"] += 1
         else:

@@ -44,8 +44,11 @@ def kb(monkeypatch):
             or mod == "hermes_constants"
         ):
             del sys.modules[mod]
-    from hermes_cli import kanban_db
-    yield kanban_db
+    from tests.hermes_cli._kanban_modules import KanbanModules
+    from hermes_cli import profiles
+    # profile_exists resolves from HOME, not HERMES_HOME: treat assignees as real.
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    yield KanbanModules()
 
 
 @pytest.fixture(autouse=True)

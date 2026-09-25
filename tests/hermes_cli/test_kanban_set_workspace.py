@@ -22,7 +22,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db as kb
+from tests.hermes_cli._kanban_modules import KanbanModules
+
+kb = KanbanModules()
 
 
 @pytest.fixture

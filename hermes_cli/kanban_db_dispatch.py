@@ -1178,20 +1178,53 @@ def _defer_reclaim_for_live_worker(
         _kb._append_event(conn, task_id, "reclaim_deferred", payload, run_id=run_id)
 
 
+# Heartbeat outcome kinds: the old bare ``False`` collapsed "no such task" and
+# "your run was superseded" together (card t_6a6ac2d3's worker ran 4h45m past its run).
+HEARTBEAT_OK = "ok"
+HEARTBEAT_UNKNOWN_TASK = "unknown_task"
+HEARTBEAT_SUPERSEDED = "superseded"
+
+
+@dataclass(frozen=True)
+class HeartbeatResult:
+    """Structured outcome of :func:`heartbeat_worker`; truthy iff ``ok`` so legacy
+    ``if not heartbeat_worker(...)`` callers keep working."""
+
+    ok: bool
+    kind: str
+    task_status: Optional[str] = None
+    expected_run_id: Optional[int] = None
+    current_run_id: Optional[int] = None
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+    @property
+    def superseded(self) -> bool:
+        return self.kind == HEARTBEAT_SUPERSEDED
+
+    @property
+    def unknown_task(self) -> bool:
+        return self.kind == HEARTBEAT_UNKNOWN_TASK
+
+
 def heartbeat_worker(
     conn: sqlite3.Connection,
     task_id: str,
     *,
     note: Optional[str] = None,
     expected_run_id: Optional[int] = None,
-) -> bool:
+) -> HeartbeatResult:
     """Record a ``heartbeat`` event + touch ``last_heartbeat_at``.
 
     Liveness signal orthogonal to the PID check: a worker whose forked child
     (train loop, crawl) is stuck can still have a live Python process.
-    Returns False if the task is not running or its claim expired.
+    Returns a :class:`HeartbeatResult`: ``ok``; ``unknown_task`` (no such row);
+    or ``superseded`` (task exists but this run no longer owns it — the caller
+    must tell the worker to stop and exit).
     """
     now = int(time.time())
+    held = int(expected_run_id) if expected_run_id is not None else None
     with _kb.write_txn(conn):
         sql = "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ? AND status = 'running'"
         params: tuple = (now, task_id)
@@ -1200,12 +1233,17 @@ def heartbeat_worker(
             params += (int(expected_run_id),)
         cur = conn.execute(sql, params)
         if cur.rowcount != 1:
-            return False
-        run_id = (
-            int(expected_run_id)
-            if expected_run_id is not None
-            else _kb._current_run_id(conn, task_id)
-        )
+            row = conn.execute(
+                "SELECT status, current_run_id FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            if row is None:
+                return HeartbeatResult(ok=False, kind=HEARTBEAT_UNKNOWN_TASK, expected_run_id=held)
+            return HeartbeatResult(
+                ok=False, kind=HEARTBEAT_SUPERSEDED, task_status=row["status"],
+                expected_run_id=held,
+                current_run_id=int(row["current_run_id"]) if row["current_run_id"] else None,
+            )
+        run_id = held if held is not None else _kb._current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute("UPDATE task_runs SET last_heartbeat_at = ? WHERE id = ?", (now, run_id))
         _kb._append_event(
@@ -1213,7 +1251,8 @@ def heartbeat_worker(
             {"note": note} if note else None,
             run_id=run_id,
         )
-    return True
+    return HeartbeatResult(ok=True, kind=HEARTBEAT_OK, task_status="running",
+                           expected_run_id=held, current_run_id=run_id)
 
 
 def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str]:
@@ -2177,6 +2216,12 @@ def check_respawn_guard(
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
+    # A latest run that ended ``changes_requested`` IS the reviewer handing the card
+    # back to the implementer to push to the same PR; release even when the PR
+    # comment and the verdict land in the same second (the event rule below is
+    # strictly-after and would otherwise hold the rework).
+    if latest_outcome == "changes_requested":
+        return None
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body, created_at FROM task_comments "
@@ -2191,7 +2236,9 @@ def check_respawn_guard(
             # Strictly after: a same-second tie stays guarded (fail closed).
             "SELECT kind, payload FROM task_events "
             "WHERE task_id = ? AND created_at > ? "
-            "AND kind IN ('assigned', 'changes_requested', 'review_reopened')",
+            # ``unblocked``: an operator clearing a block after the PR comment is a
+            # deliberate re-queue (card t_6a6ac2d3 deadlocked ~170 ticks without it).
+            "AND kind IN ('assigned', 'changes_requested', 'review_reopened', 'unblocked')",
             (task_id, int(c["created_at"] or 0)),
         ).fetchall()
         if any(_is_handoff_event(e["kind"], e["payload"]) for e in events):
@@ -2321,12 +2368,18 @@ def dispatch_profile_allowlist_summary() -> str:
             "profile, or the config could not be read — omit the key to allow any)")
 
 
-def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
-    rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
-        (status,),
-    ).fetchall()
+def _has_spawnable(
+    conn: sqlite3.Connection, status: str, exclude_ids: Optional[Iterable[str]] = None,
+) -> bool:
+    skip = set(exclude_ids or ())
+    rows = [
+        row for row in conn.execute(
+            "SELECT id, assignee FROM tasks "
+            "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
+            (status,),
+        ).fetchall()
+        if row["id"] not in skip
+    ]
     if not rows:
         return False
     profile_exists = _profile_exists_fn()
@@ -2336,19 +2389,47 @@ def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     return any(profile_exists(row["assignee"]) for row in rows)
 
 
-def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
+def guard_deferred_ids(results) -> set[str]:
+    """Task ids the respawn guard deliberately deferred in ``results`` (a
+    :class:`DispatchResult`, an iterable of them, or ``(slug, result)`` pairs).
+
+    A ``respawn_guarded`` deferral is a healthy dispatcher making a decision,
+    not a stuck tick; health telemetry excludes these ids. Defined next to the
+    guard so the gateway and the ``--force`` CLI daemon cannot drift.
+    """
+    if results is None:
+        return set()
+    items = [results] if isinstance(results, DispatchResult) else list(results)
+    out: set[str] = set()
+    for item in items:
+        if isinstance(item, tuple):
+            item = item[-1]
+        if item is None:
+            continue
+        for entry in getattr(item, "respawn_guarded", None) or []:
+            out.add(entry[0] if isinstance(entry, tuple) else entry)
+    return out
+
+
+def has_spawnable_ready(
+    conn: sqlite3.Connection, exclude_ids: Optional[Iterable[str]] = None,
+) -> bool:
     """True iff a ready+assigned+unclaimed task maps to a real Hermes profile.
 
     Lets health telemetry tell "stuck" (``0 spawned`` with spawnable work) from
     "correctly idle" (only control-plane lanes waiting on ``claim_task``). Falls
     back to "any assigned" when ``profile_exists`` is unimportable.
+    ``exclude_ids`` drops ids the respawn guard deferred this tick
+    (:func:`guard_deferred_ids`): a queue of only deferred cards is idle, not stuck.
     """
-    return _has_spawnable(conn, "ready")
+    return _has_spawnable(conn, "ready", exclude_ids)
 
 
-def has_spawnable_review(conn: sqlite3.Connection) -> bool:
+def has_spawnable_review(
+    conn: sqlite3.Connection, exclude_ids: Optional[Iterable[str]] = None,
+) -> bool:
     """:func:`has_spawnable_ready` for the review column."""
-    return _has_spawnable(conn, "review")
+    return _has_spawnable(conn, "review", exclude_ids)
 
 
 def review_dispatch_enabled() -> bool:

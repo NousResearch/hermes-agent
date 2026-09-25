@@ -22,7 +22,9 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db as kb
+from tests.hermes_cli._kanban_modules import KanbanModules
+
+kb = KanbanModules()
 
 
 pytestmark = [
@@ -502,14 +504,16 @@ def test_injected_signal_fn_intercepts_the_group_signal(
                 "WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
                 (old, tid),
             )
-        orig_alive = kb._pid_alive
+        orig_alive, orig_worker_alive = kb._pid_alive, kb._worker_alive
         kb._pid_alive = lambda _pid: False
+        # Upstream escalation checks the fingerprinted ``_worker_alive``.
+        kb._worker_alive = lambda _pid, _started=None: False
         try:
             assert tid in kb.enforce_max_runtime(
                 conn, signal_fn=lambda p, s: seen.append((p, s)),
             )
         finally:
-            kb._pid_alive = orig_alive
+            kb._pid_alive, kb._worker_alive = orig_alive, orig_worker_alive
 
     assert seen, "signal_fn must still be called"
     assert all(s == signal.SIGTERM for _p, s in seen)

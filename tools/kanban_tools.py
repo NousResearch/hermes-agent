@@ -865,9 +865,22 @@ def _handle_heartbeat(args: dict, **kw) -> str:
         # The dispatcher pins HERMES_KANBAN_CLAIM_LOCK at spawn; the default
         # claimer covers locally-driven workers that bypassed the dispatcher.
         kb.heartbeat_claim(conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))
-        ok = kbd.heartbeat_worker(
+        hb = kbd.heartbeat_worker(
             conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not heartbeat {tid} (unknown id or not running)")
+        if getattr(hb, "superseded", False):
+            # Generic wording here let a superseded worker keep working for 4h45m
+            # (card t_6a6ac2d3) — say exactly what happened and what to do.
+            return tool_error(
+                f"kanban_heartbeat: run superseded — STOP WORKING ON {tid} AND EXIT "
+                f"IMMEDIATELY. This worker holds run "
+                f"{hb.expected_run_id if hb.expected_run_id is not None else '(unknown)'}, "
+                f"but the task is now status={hb.task_status!r} with current_run_id="
+                f"{hb.current_run_id if hb.current_run_id is not None else 'NULL'}. "
+                "Your run was closed (blocked / completed / reclaimed) and any further "
+                "work, commits, comments or PRs from this process are unowned and will "
+                "conflict. Do not retry the heartbeat. A fresh dispatch will pick the "
+                "card up with up-to-date context.")
+        _check(hb, f"could not heartbeat {tid} (unknown id — no such task on this board)")
         return _ok(task_id=tid)
 
 

@@ -310,9 +310,16 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        ok = kbd.heartbeat_worker(conn, args.task_id, note=getattr(args, "note", None),
+        hb = kbd.heartbeat_worker(conn, args.task_id, note=getattr(args, "note", None),
                                  expected_run_id=_worker_run_id_for(args.task_id))
-    return _ok_or_err(ok, f"cannot heartbeat {args.task_id} (not running?)",
+    if getattr(hb, "superseded", False):
+        return _err(
+            f"cannot heartbeat {args.task_id}: run superseded — stop and exit. You hold run "
+            f"{hb.expected_run_id if hb.expected_run_id is not None else '(unknown)'}, "
+            f"task is now status={hb.task_status!r} with current_run_id="
+            f"{hb.current_run_id if hb.current_run_id is not None else 'NULL'}. "
+            "A fresh dispatch will pick the card up.", 1)
+    return _ok_or_err(hb, f"cannot heartbeat {args.task_id} (unknown id — no such task)",
                       f"Heartbeat recorded for {args.task_id}")
 
 

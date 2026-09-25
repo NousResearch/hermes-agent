@@ -2169,6 +2169,16 @@ def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None
     home = Path(hermes_home or str(get_hermes_home())).resolve()
     default = Path(default_root).resolve() if default_root else get_default_hermes_root().resolve()
     if home == default:
+        # A default-home launcher must anchor the profile explicitly: the spawned child re-resolves
+        # its profile at boot, and a sticky non-default ``active_profile`` would re-home a host
+        # gateway to that profile, which the multiplexer refuses (#22502 adoption vs service argv).
+        try:
+            from hermes_cli.profiles import get_active_profile
+
+            if get_active_profile() != "default":
+                return "--profile default"
+        except Exception:
+            pass
         return ""
     name = _profile_name_from_home(home, default)
     return f"--profile {name}" if name else ""

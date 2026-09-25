@@ -194,20 +194,71 @@ def _nvidia_smi_path() -> str | None:
     return found
 
 
-def _nvidia_vram() -> tuple[int, int] | None:
-    """(total, free) MiB->bytes from nvidia-smi, or None."""
+_gpu_query_cache: "tuple[float, dict | None] | None" = None
+_GPU_QUERY_TTL_S = 4.0
+
+
+def _cached_nvidia_gpu_query(ttl_s: float = _GPU_QUERY_TTL_S) -> dict | None:
+    """Consolidated GPU metrics from nvidia-smi with short TTL cache.
+
+    Returns dict with keys:
+        - gpu_name: str
+        - total_bytes: int
+        - free_bytes: int
+        - used_bytes: int
+        - gpu_util_percent: int
+    Or None if nvidia-smi is unavailable, fails, or non-NVIDIA.
+    """
+    global _gpu_query_cache
+    now = time.monotonic()
+    if _gpu_query_cache is not None:
+        stamp, cached = _gpu_query_cache
+        if now - stamp < ttl_s:
+            return cached
+
     exe = _nvidia_smi_path()
     if exe is None:
+        _gpu_query_cache = (now, None)
         return None
+
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
         out = subprocess.run(
-            [exe, "--query-gpu=memory.total,memory.free",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10)
-        if out.returncode != 0 or not out.stdout.strip():
-            return None
-        total_mib, free_mib = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))
-        return total_mib << 20, free_mib << 20
+            [
+                exe,
+                "--query-gpu=name,memory.total,memory.free,memory.used,utilization.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=windows_hide_flags(),
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            first_line = out.stdout.strip().splitlines()[0]
+            parts = [p.strip() for p in first_line.split(",")]
+            if len(parts) >= 5:
+                name, total_mib, free_mib, used_mib, util = parts[:5]
+                data = {
+                    "gpu_name": name,
+                    "total_bytes": int(total_mib) << 20,
+                    "free_bytes": int(free_mib) << 20,
+                    "used_bytes": int(used_mib) << 20,
+                    "gpu_util_percent": int(util),
+                }
+                _gpu_query_cache = (now, data)
+                return data
+
+    _gpu_query_cache = (now, None)
+    return None
+
+
+def _nvidia_vram() -> tuple[int, int] | None:
+    """(total, free) MiB->bytes from nvidia-smi, or None."""
+    query = _cached_nvidia_gpu_query()
+    if query is not None:
+        return query["total_bytes"], query["free_bytes"]
     return None
 
 

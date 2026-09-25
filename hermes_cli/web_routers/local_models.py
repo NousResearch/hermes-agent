@@ -524,15 +524,14 @@ def local_models_status():
 # ── hardware: what this machine can do ───────────────────────
 def _nvidia_smi_facts() -> dict:
     """GPU identity + live utilization (NVIDIA only; other vendors degrade to {} and the UI hides those readouts)."""
-    smi_exe = hardware._nvidia_smi_path()
-    if not smi_exe:
+    query = hardware._cached_nvidia_gpu_query()
+    if query is None:
         return {}
-    smi = subprocess.run([smi_exe, "--query-gpu=name,utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True, timeout=5)
-    if smi.returncode != 0 or not smi.stdout.strip():
-        return {}
-    name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))
-    return dict(gpu_name=name, gpu_util_percent=int(util), vram_used_bytes=int(used_mib) << 20)
+    return dict(
+        gpu_name=query["gpu_name"],
+        gpu_util_percent=query["gpu_util_percent"],
+        vram_used_bytes=query["used_bytes"],
+    )
 
 
 @router.get("/api/local-models/hardware")

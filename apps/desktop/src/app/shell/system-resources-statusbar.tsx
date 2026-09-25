@@ -67,6 +67,12 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
     let timer: number | null = null
 
     const poll = async () => {
+      // Pause polling while the window is hidden (e.g. backgrounded or during in-game play);
+      // automatically resumes on visibilitychange.
+      if (typeof document !== 'undefined' && document.hidden) {
+        return
+      }
+
       try {
         const next = await getLocalHardware()
 
@@ -84,10 +90,28 @@ export function useSystemResourcesStatusbarItem(): StatusbarItem {
       }
     }
 
+    const onVisibilityChange = () => {
+      if (typeof document !== 'undefined' && !document.hidden && !cancelled) {
+        if (timer !== null) {
+          window.clearTimeout(timer)
+          timer = null
+        }
+        void poll()
+      }
+    }
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange)
+    }
+
     void poll()
 
     return () => {
       cancelled = true
+
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange)
+      }
 
       if (timer !== null) {
         window.clearTimeout(timer)

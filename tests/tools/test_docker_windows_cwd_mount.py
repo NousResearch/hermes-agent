@@ -97,3 +97,15 @@ class TestToolsFollowTheMount:
         ops = ShellFileOperations(env, cwd="/host-cwd")
         assert ops._expand_path(WIN_FILE) == "/host-cwd/Downloads/clip.jpg"
         assert ops._expand_path("/workspace/keep") == "/workspace/keep"
+
+    def test_absolute_mounted_host_dir_follows_the_second_mount(self, monkeypatch):
+        """A /mnt or /srv host dir (no /Users prefix) bound beside a claimed /workspace."""
+        host, mount = "/mnt/d/projects/app", "/host-cwd"
+        env = type("E", (), {"env_type": "docker", "host_cwd": host, "host_cwd_mount": mount})()
+        assert tt._sanitize_cwd_for_live_env(env, host) == mount
+
+        monkeypatch.setattr(tt, "_session_cwd", {"sess": host})
+        assert tt._resolve_command_cwd(
+            workdir=None, default_cwd=mount, session_key="sess", env_type="docker",
+            mounted_host=host, env=env,
+        ) == mount

@@ -172,6 +172,12 @@ class TestLinuxProfileDir:
         (tmp_path / ".var" / "app" / "com.brave.Browser" / "config" / "BraveSoftware" / "Brave-Browser").mkdir(parents=True)
         assert bc.real_profile_data_dir("brave", "Linux") == str(native)
 
+    def test_unsupported_platform_browser_fails_closed(self, tmp_path, monkeypatch):
+        # Comet has no Windows/Linux profile table entries (macOS only) — resolution
+        # must return None rather than a generic path built from empty tuples.
+        self._env(monkeypatch, tmp_path)
+        assert bc.real_profile_data_dir("comet", "Linux") is None
+
     def test_xdg_config_home_is_honoured(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("XDG_CONFIG_HOME", "/home/t/.config")

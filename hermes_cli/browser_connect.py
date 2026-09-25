@@ -192,10 +192,16 @@ def real_profile_data_dir(browser: str, system: str | None = None) -> str | None
     system = system or platform.system()
     home = os.path.expanduser("~")
     if system == "Darwin":
+        if not b.mac_support:
+            return None
         return posixpath.join(home, "Library", "Application Support", *b.mac_support)
     if system == "Windows":
+        if not b.win_profile:
+            return None
         local = os.environ.get("LOCALAPPDATA") or ntpath.join(home, "AppData", "Local")
         return ntpath.join(local, *b.win_profile)
+    if not b.linux_config:
+        return None
     config = os.environ.get("XDG_CONFIG_HOME") or posixpath.join(home, ".config")
     linux_parts = b.linux_config.split("/")
     candidates = [posixpath.join(config, *linux_parts)]

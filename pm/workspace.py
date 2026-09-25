@@ -20,11 +20,194 @@ from pm import paths
 from pm.package import InstallError
 from pm.plugin_declarations import read_python_declaration, manifest_version_error
 
-_MEMBER_EXCLUDE = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__"})
+import functools
+import re
+
+_MEMBER_EXCLUDE = frozenset({
+    ".git", ".venv", "venv", "node_modules", "__pycache__",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache", ".coverage", ".tox", ".nox",
+})
+_DEFAULT_FILE_EXCLUDES = frozenset({".DS_Store", "Thumbs.db"})
+_DEFAULT_SUFFIX_EXCLUDES = (
+    ".egg-info", ".pyc", ".pyo", ".pyd",
+    ".db", ".sqlite", ".sqlite3", ".db-wal", ".db-shm", ".db-journal",
+    ".log",
+)
+
+
+def _gitignore_pattern_to_regex(pattern: str, anchored: bool) -> re.Pattern:
+    i, n = 0, len(pattern)
+    res = []
+    while i < n:
+        c = pattern[i]
+        if c == "*":
+            if i + 1 < n and pattern[i + 1] == "*":
+                i += 2
+                if i < n and pattern[i] == "/":
+                    i += 1
+                    res.append("(?:.*/)?")
+                else:
+                    res.append(".*")
+            else:
+                res.append("[^/]*")
+                i += 1
+        elif c == "?":
+            res.append("[^/]")
+            i += 1
+        elif c == "[":
+            j = i + 1
+            if j < n and pattern[j] in "!^":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 1
+            if j < n:
+                res.append(pattern[i : j + 1])
+                i = j + 1
+            else:
+                res.append(r"\[")
+                i += 1
+        else:
+            res.append(re.escape(c))
+            i += 1
+    body = "".join(res)
+    if not anchored:
+        pattern_str = f"(?:^|.*/){body}(?:/.*)?$"
+    else:
+        pattern_str = f"^{body}(?:/.*)?$"
+    return re.compile(pattern_str)
+
+
+def _parse_ignore_lines(lines: list[str]) -> list[tuple[re.Pattern, bool, bool]]:
+    rules = []
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        negated = line.startswith("!")
+        if negated:
+            line = line[1:].strip()
+            if not line or line.startswith("#"):
+                continue
+        dir_only = line.endswith("/")
+        if dir_only:
+            line = line.rstrip("/")
+        if not line:
+            continue
+        anchored = line.startswith("/") or ("/" in line)
+        line = line.lstrip("/")
+        regex = _gitignore_pattern_to_regex(line, anchored)
+        rules.append((regex, negated, dir_only))
+    return rules
+
+
+def _find_member_root(start_dir: Path) -> Path:
+    current = start_dir
+    while True:
+        if (
+            (current / "pyproject.toml").is_file()
+            or (current / "plugin.yaml").is_file()
+            or (current / "plugin.yml").is_file()
+            or (current / "plugin.json").is_file()
+            or (current / ".git").exists()
+        ):
+            return current
+        if current.parent == current:
+            return start_dir
+        current = current.parent
+
+
+@functools.lru_cache(maxsize=1024)
+def _member_ignore_rules(dir_str: str) -> tuple[tuple[re.Pattern, bool, bool, Path], ...]:
+    dir_path = Path(dir_str)
+    root = _find_member_root(dir_path)
+    chain = []
+    curr = dir_path
+    while True:
+        chain.append(curr)
+        if curr == root or curr.parent == curr:
+            break
+        curr = curr.parent
+    chain.reverse()
+
+    all_rules: list[tuple[re.Pattern, bool, bool, Path]] = []
+    for folder in chain:
+        for fname in (".gitignore", ".hermesignore"):
+            ignore_file = folder / fname
+            if ignore_file.is_file():
+                try:
+                    lines = ignore_file.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+                except OSError:
+                    continue
+                for regex, negated, dir_only in _parse_ignore_lines(lines):
+                    all_rules.append((regex, negated, dir_only, folder))
+        if folder == root:
+            manifest_in = folder / "MANIFEST.in"
+            if manifest_in.is_file():
+                try:
+                    lines = manifest_in.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+                    m_lines = []
+                    for raw in lines:
+                        raw = raw.strip()
+                        if raw.startswith("exclude "):
+                            m_lines.append(raw.split(None, 1)[1].strip())
+                        elif raw.startswith("prune "):
+                            m_lines.append(raw.split(None, 1)[1].strip() + "/")
+                        elif raw.startswith("global-exclude "):
+                            m_lines.append(raw.split(None, 1)[1].strip())
+                    for regex, negated, dir_only in _parse_ignore_lines(m_lines):
+                        all_rules.append((regex, negated, dir_only, folder))
+                except OSError:
+                    pass
+            pyproject = folder / "pyproject.toml"
+            if pyproject.is_file():
+                try:
+                    import tomllib
+
+                    doc = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+                    excludes = doc.get("tool", {}).get("hermes", {}).get("build", {}).get("exclude", [])
+                    if isinstance(excludes, list):
+                        for regex, negated, dir_only in _parse_ignore_lines([str(x) for x in excludes]):
+                            all_rules.append((regex, negated, dir_only, folder))
+                except Exception:
+                    pass
+
+    return tuple(all_rules)
 
 
 def _member_ignored(directory, names):
-    return [name for name in names if name in _MEMBER_EXCLUDE or name.endswith(".egg-info")]
+    dir_path = Path(directory)
+    dir_str = str(dir_path.resolve())
+    rules = _member_ignore_rules(dir_str)
+
+    ignored = set()
+    for name in names:
+        if name in _MEMBER_EXCLUDE or name in _DEFAULT_FILE_EXCLUDES or name.endswith(_DEFAULT_SUFFIX_EXCLUDES):
+            is_ignored = True
+        else:
+            is_ignored = False
+
+        if rules:
+            item_path = dir_path / name
+            is_dir = None
+            for regex, negated, dir_only, base_dir in rules:
+                if dir_only:
+                    if is_dir is None:
+                        is_dir = item_path.is_dir()
+                    if not is_dir:
+                        continue
+                try:
+                    rel = item_path.relative_to(base_dir).as_posix()
+                except ValueError:
+                    rel = name
+                if regex.search(rel):
+                    is_ignored = not negated
+
+        if is_ignored:
+            ignored.add(name)
+
+    return sorted(ignored)
 
 
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap

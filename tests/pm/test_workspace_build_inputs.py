@@ -240,3 +240,59 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
                                 capture_output=True, text=True, check=True, timeout=30)
         assert result.stdout.strip() == "1.0 1.3"
     assert (baseline / "uv.lock").read_bytes() == first_lock
+
+
+def test_member_stamp_and_workspace_ignore_runtime_and_gitignored_files(tmp_path):
+    plugin = tmp_path / "cronalytics"
+    plugin.mkdir()
+    (plugin / "pyproject.toml").write_text(
+        '[project]\nname="cronalytics"\nversion="0.1.0"\nrequires-python=">=3.11"\ndependencies=[]\n',
+        encoding="utf-8",
+    )
+    (plugin / "code.py").write_text("def run(): pass\n", encoding="utf-8")
+    (plugin / ".gitignore").write_text(
+        "# Runtime state and logs\nfacts.db\nwatermark.json\npending.jsonl\nlogs/\n*.sqlite\n",
+        encoding="utf-8",
+    )
+
+    baseline_stamp = workspace.members_stamp([plugin])
+
+    # Write runtime state (DB, watermark, pending queue, logs, cache)
+    (plugin / "facts.db").write_bytes(b"SQLite format 3\x00initial-state")
+    (plugin / "watermark.json").write_text('{"last_sync": 1000}', encoding="utf-8")
+    (plugin / "pending.jsonl").write_text('{"event": "start"}\n', encoding="utf-8")
+    logs_dir = plugin / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "worker.log").write_text("info: started\n", encoding="utf-8")
+    (plugin / "state.sqlite").write_bytes(b"sqlite-state-v1")
+    pytest_cache = plugin / ".pytest_cache"
+    pytest_cache.mkdir()
+    (pytest_cache / "dummy").write_text("cached", encoding="utf-8")
+
+    # Member stamp MUST remain identical despite runtime mutations
+    assert workspace.members_stamp([plugin]) == baseline_stamp
+
+    # Mutate the runtime state again (as would happen on session end or hook execution)
+    (plugin / "facts.db").write_bytes(b"SQLite format 3\x00updated-session-end")
+    (plugin / "watermark.json").write_text('{"last_sync": 2000}', encoding="utf-8")
+    (plugin / "pending.jsonl").write_text('{"event": "start"}\n{"event": "end"}\n', encoding="utf-8")
+    (logs_dir / "worker.log").write_text("info: finished session\n", encoding="utf-8")
+
+    assert workspace.members_stamp([plugin]) == baseline_stamp
+
+    # Workspace member copy must not copy the ignored runtime state into generation sources
+    stage = tmp_path / "generation"
+    stage.mkdir()
+    member_path = workspace._workspace_member(plugin, stage, identity=plugin)
+    assert member_path.is_dir()
+    assert (member_path / "code.py").is_file()
+    assert not (member_path / "facts.db").exists()
+    assert not (member_path / "watermark.json").exists()
+    assert not (member_path / "pending.jsonl").exists()
+    assert not (member_path / "logs").exists()
+    assert not (member_path / "state.sqlite").exists()
+    assert not (member_path / ".pytest_cache").exists()
+
+    # Changing actual build input MUST change the stamp
+    (plugin / "code.py").write_text("def run(): return 42\n", encoding="utf-8")
+    assert workspace.members_stamp([plugin]) != baseline_stamp

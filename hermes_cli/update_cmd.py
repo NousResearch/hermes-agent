@@ -1372,10 +1372,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _m()._warn_orphaned_update_autostashes(git_cmd, _m().PROJECT_ROOT)
 
         print("→ Fetching updates...")
+        # Release tags must travel with the update: the checkout's version identity
+        # is its nearest reachable release tag (hermes_cli.version_info), so a fetch
+        # that never brings new tags keeps identifying as the previous release and
+        # trips the plugin `requires_hermes` gates the new tree itself advertises
+        # (#122054). Non-forced tag refs never clobber a tag the checkout has.
+        release_tags_refspec = "refs/tags/v*:refs/tags/*"
         if release_sha:
-            fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
+            fetch_result = _git_run(
+                git_cmd, ["fetch", "--no-tags", "origin", target_ref, release_tags_refspec], network=True)
         else:
-            fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+            fetch_result = _git_run(
+                git_cmd, ["fetch", "origin", branch, release_tags_refspec], network=True)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

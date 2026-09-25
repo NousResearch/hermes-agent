@@ -265,6 +265,24 @@ def test_stable_git_uses_remote_identity_without_moving_local_tags(update_tree, 
     assert not git(t.clone, 'status', '--porcelain')
 
 
+def test_update_brings_release_tags_without_moving_local_ones(update_tree, monkeypatch):
+    """The checkout's version identity is its nearest reachable release tag
+    (hermes_cli.version_info), so a fetch that never brings new tags keeps it a
+    release behind and fails the plugin ``requires_hermes`` gates the new tree
+    itself advertises (#122054). New remote release tags travel with the update;
+    a tag the checkout already has never moves."""
+    t = update_tree
+    monkeypatch.setattr(cli_main, '_sync_with_upstream_if_needed', _sync_with_upstream_if_needed)
+    git(t.origin, 'tag', 'v1.2.0', t.wanted)  # published after this checkout was made
+    git(t.clone, 'checkout', '-q', 'main')
+    t.args.channel = 'main'
+    t.args.gateway = True
+    cli_main.cmd_update(t.args)
+    assert git(t.clone, 'rev-parse', 'HEAD') == t.newer
+    assert git(t.clone, 'rev-parse', 'v1.2.0') == t.wanted  # the new release tag arrived
+    assert git(t.clone, 'rev-parse', 'v1.1.0') == t.base    # the local tag stayed put
+
+
 @pytest.mark.platforms('windows')
 @pytest.mark.parametrize('transport', ['gitless', 'no-git', 'git-error', 'dirty'])
 def test_stable_zip_consumes_the_same_commit_through_the_real_swap(update_tree, monkeypatch, tmp_path, transport):

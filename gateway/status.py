@@ -206,9 +206,14 @@ def record_start_and_check_storm(
         now = datetime.now(timezone.utc).timestamp()
         existing: list[float] = []
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                with contextlib.suppress(ValueError):
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
                     existing.append(float(line))
+                except ValueError:
+                    pass  # corrupt/truncated ledger line — skip, never fatal
         existing.append(now)
         recent = [ts for ts in existing if now - ts <= window_s]
         # Ring-buffer the persisted file so it stays bounded.
@@ -509,11 +514,33 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Per-process start-time fingerprint (PID-reuse guard), or None: ``/proc/<pid>/stat`` field 22
-    on Linux, else psutil ``create_time()`` in centiseconds. Units differ per platform; the guard
-    only compares same-host values."""
-    with contextlib.suppress(IndexError, ValueError, OSError):
-        return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21])
+    """Return a stable per-process start-time fingerprint, or None.
+
+    Used as a PID-reuse guard: a ``(pid, start_time)`` pair uniquely identifies
+    a process, so a recycled PID (same number, different process) yields a
+    different value and is never mistaken for the original.
+
+    On Linux this is field 22 of ``/proc/<pid>/stat`` (start time in clock
+    ticks since boot, an int).  On platforms without ``/proc`` (macOS, Windows)
+    we fall back to ``psutil.Process(pid).create_time()`` — a float epoch
+    timestamp — quantized to an int (centiseconds) for stable equality.
+
+    The two sources are never mixed on a single platform: ``/proc`` always
+    succeeds first on Linux, and always fails on macOS/Windows so psutil is
+    always used there.  Because the guard only compares the value recorded at
+    spawn against the live value *on the same host*, the differing units across
+    platforms are irrelevant — only same-source equality matters.
+    """
+    stat_path = Path(f"/proc/{pid}/stat")
+    try:
+        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
+        return int(stat_path.read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
+    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+
+    # No /proc (macOS / Windows): psutil is a hard dependency and exposes a
+    # cross-platform creation time.  Quantize to centiseconds so repeated reads
+    # of the same process compare equal without float-precision fragility.
     try:
         import psutil  # type: ignore
         return int(round(psutil.Process(pid).create_time() * 100))
@@ -554,6 +581,66 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
+
+def inline_source_flag_index(tokens: list[str]) -> int | None:
+    """Index of the ``-c`` token when *tokens* is an interpreter running INLINE SOURCE, else None.
+
+    Everything after ``-c`` is data the inline program receives, not this process's own identity.
+    The detached gateway restart watcher (``gateway._spawn_gateway_restart_watcher``) is spawned as
+    ``python -c <watcher source> <old_pid> <python> -m hermes_cli.main gateway run``: its trailing
+    argv is the command the watcher will LATER spawn, so every argv matcher used to read it as a
+    live gateway. See #107002 and the "never infer process identity from argv substrings" rule.
+
+    Only interpreter options may precede ``-c``; the first non-option token ends the option block
+    (``python -m hermes_cli.main …`` therefore never matches).
+
+    The walk is VALUE-AWARE: ``-X``/``-W``/``-Q`` and ``--check-hash-based-pycs``/``--jit`` take a
+    SEPARATE operand, so a naive "first non-option token ends the block" walk mistakes that operand
+    for the end of the block and never reaches the ``-c`` behind it (``python -X utf8 -c <src> …``
+    was still read as a live gateway). The operand sets are the canonical ones in
+    ``hermes_state_holders``, not a second hand-rolled copy.
+
+    *tokens* must be CASE-PRESERVING: the operand-taking ``-Q``/``-W``/``-X`` differ from the
+    operand-less ``-q``/``-b``, so a lowercased argv would skip the token after a plain ``-q``.
+    """
+    from hermes_state_holders import (
+        _PYTHON_LONG_OPTIONS_WITH_OPERANDS,
+        _PYTHON_SHORT_OPTIONS_WITH_OPERANDS,
+    )
+
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return None
+        if token in _PYTHON_LONG_OPTIONS_WITH_OPERANDS:
+            index += 2  # the next token is this option's operand, not the end of the option block
+            continue
+        if token.startswith("--"):
+            index += 1  # ``--opt=value`` and operand-less long options
+            continue
+        if not token.startswith("-") or token == "-":
+            return None
+        # Clustered short options (``-uc``, ``-IsB``). An operand-taking letter consumes the rest of
+        # the cluster as its attached value, or the following token when the cluster ends there --
+        # so ``-Xc`` is ``-X c``, NOT an inline-source ``-c``.
+        cluster = token[1:]
+        for position, letter in enumerate(cluster):
+            if letter == "c":
+                return index
+            if letter in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
+                index += 1 if cluster[position + 1 :] else 2
+                break
+        else:
+            index += 1
+    return None
+
+
+def command_line_runs_inline_source(tokens: list[str]) -> bool:
+    """True when *tokens* is an interpreter running INLINE SOURCE (``python -c <src> [args]``)."""
+    return inline_source_flag_index(tokens) is not None
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -567,16 +654,28 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     except ValueError:
         raw_tokens = command.split()
     # Strip surrounding quotes, normalize slashes + case per token.
-    tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
+    cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    tokens = [t.lower() for t in cased_tokens]
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
+    # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
+    # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
+    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
+    if command_line_runs_inline_source(cased_tokens):
+        return None
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
         return None
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
+        return "run"
+    # Atomic Hermes' bundled desktop runner shares HERMES_HOME with the CLI; without this,
+    # `gateway run --replace` does not recognise it as a running gateway, skips the
+    # terminate-and-scoped-lock-handoff path, and collides with its still-held scoped locks
+    # (e.g. the Discord bot-token lock). See #22418.
+    if any(b == "desktop-gateway.py" for b in basenames):
         return "run"
     if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
         return "run"
@@ -599,6 +698,40 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         if token == "gateway":
             # Bare `hermes gateway` defaults to `run`.
             return filtered[i + 1] if i + 1 < len(filtered) else "run"
+    return None
+
+
+def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
+    """Gateway lifecycle subcommand a command line would EVENTUALLY launch, or None.
+
+    The identity matcher (``_gateway_command_subcommand``) deliberately refuses ``python -c <src>
+    …``: the trailing argv is the inline program's data, not that process's own identity (#107002).
+    Callers that inspect a command line as SPAWN INTENT — "if I launch this, does a gateway runtime
+    eventually appear?" — need the opposite answer, because
+    ``gateway._spawn_gateway_restart_watcher`` hides a real ``… -m hermes_cli.main gateway run``
+    behind exactly that wrapper. ``tests/_fixtures/live_system_guard.py`` is the canonical caller.
+
+    Still no substring matching: the wrapper is peeled token-wise and each remaining suffix is
+    handed to the same canonical matcher.
+    """
+    direct = _gateway_command_subcommand(command)
+    if direct is not None or not command:
+        return direct
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    flag_index = inline_source_flag_index(cased_tokens)
+    if flag_index is None:
+        return None
+    # Skip the interpreter, its options, ``-c`` and the source literal; then try every suffix —
+    # the embedded argv starts at an unknown offset (the watcher prefixes it with the old PID).
+    start = flag_index + 2
+    for i in range(start, len(cased_tokens)):
+        nested = _gateway_command_subcommand(" ".join(raw_tokens[i:]))
+        if nested is not None:
+            return nested
     return None
 
 
@@ -747,7 +880,8 @@ def _get_code_identity_fields() -> dict[str, Any]:
     degrades to absent fields.
     """
     try:
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
+
         identity = get_code_identity()
         return {"code_sha": identity.get("sha"), "code_version": identity.get("version")}
     except Exception:
@@ -776,8 +910,11 @@ def _read_json_file(path: Path, *, bare_pid_ok: bool = False) -> Optional[dict[s
     """JSON object at ``path``, or None when absent/empty/unreadable/invalid. ``bare_pid_ok`` also
     accepts legacy bare-integer PID files as ``{"pid": N}``."""
     try:
-        raw = path.read_text(encoding="utf-8").strip() if path.exists() else ""
-    except (OSError, UnicodeDecodeError):  # vanished, EACCES, non-UTF-8 garbage
+        raw = path.read_text(encoding="utf-8-sig").strip()
+    except (OSError, UnicodeDecodeError):
+        # OSError: file vanished or permission flipped between exists() and
+        # read. UnicodeDecodeError: file holds non-UTF-8 / binary garbage
+        # (a truncated or clobbered status file). Either way it's unusable.
         return None
     if not raw:
         return None
@@ -922,13 +1059,6 @@ def _posix_is_zombie(pid: int) -> bool:
         return len(stat_fields) > 2 and stat_fields[2] == "Z"
     except FileNotFoundError:
         with contextlib.suppress(Exception):
-            # --compile-bytecode: uv does NOT write __pycache__ by default (pip does), so without it the
-            # first `import <backend>` in the foreground of a user request recompiles every module of the
-            # backend *and* its transitive deps (#100461). This covers the whole install;
-            # _warm_installed_bytecode below is the belt-and-braces pass for the spec's own roots on any
-            # tier.
-            # CREATE_NO_WINDOW on Windows — under the desktop GUI's windowless parent, this spawn otherwise
-            # flashes a console (#56747).
             r = subprocess.run(
                 ["ps", "-o", "state=", "-p", str(pid)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,

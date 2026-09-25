@@ -610,7 +610,7 @@ class TestGetProcessStartTime:
 
 
 class TestTerminatePid:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the real
         # CREATE_NO_WINDOW creationflags value that windows_hide_flags()
@@ -635,7 +635,7 @@ class TestTerminatePid:
             (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
         ]
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_force_refuses_pid_without_start_time_guard(self, monkeypatch):
         calls = []
         monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
@@ -645,7 +645,7 @@ class TestTerminatePid:
 
         assert calls == []
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_force_refuses_reused_pid(self, monkeypatch):
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
         calls = []
@@ -675,7 +675,7 @@ class TestPidExistsZombieProbe:
         monkeypatch.setattr(psutil.Process, "status", spy)
         return calls
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_skips_zombie_status_probe(self, monkeypatch):
         # Faking os.name on POSIX proves nothing about the cost on the real host; the wine2e
         # runner receipt (red on main, green on the fix) is the live repro for this test.
@@ -683,7 +683,7 @@ class TestPidExistsZombieProbe:
         assert status._pid_exists(os.getpid()) is True
         assert calls == []
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_posix_still_probes_zombie_status(self, monkeypatch):
         # Control: on POSIX a zombie still answers pid_exists(), so the probe must survive.
         calls = self._spy_status(monkeypatch)
@@ -692,7 +692,7 @@ class TestPidExistsZombieProbe:
 
 
 class TestScopedLocks:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the msvcrt
         # byte-range locking path at all: msvcrt does not exist off Windows,

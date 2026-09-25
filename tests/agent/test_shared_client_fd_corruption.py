@@ -32,7 +32,6 @@ import pytest
 
 from tests.agent.test_streaming import _make_stream_chunk
 
-
 def _make_agent():
     from run_agent import AIAgent
 
@@ -48,7 +47,6 @@ def _make_agent():
     agent.api_mode = "chat_completions"
     agent._interrupt_requested = False
     return agent
-
 
 class TestStaleWatchdogNeverClosesSharedClient:
     """The stale watchdog / retry cleanups must not rebuild (and therefore
@@ -197,7 +195,6 @@ class TestStaleWatchdogNeverClosesSharedClient:
         assert response.choices[0].message.tool_calls
         mock_replace.assert_not_called()
 
-
 class TestReplacePrimaryRetiresInsteadOfClosing:
     """_replace_primary_openai_client (credential rotation / refresh /
     dead-connection cleanup) must retire the old shared client — shutdown
@@ -227,5 +224,3 @@ class TestReplacePrimaryRetiresInsteadOfClosing:
         # …but the old client's pool was NOT hard-closed: no thread owns a
         # replaced shared client, so nobody may release its FDs (#70773).
         old_client.close.assert_not_called()
-
-

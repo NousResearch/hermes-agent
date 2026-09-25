@@ -21,7 +21,6 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli.plugins import get_plugin_manager
 
-
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -30,7 +29,6 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
-
 
 @pytest.fixture
 def captured_ticks(monkeypatch):
@@ -89,7 +87,6 @@ def test_tick_hook_fires_after_dispatch_lock_released(kanban_home):
         mgr._hooks = saved
     assert acquired == [True]
 
-
 def test_misbehaving_subscriber_does_not_break_dispatcher(kanban_home):
     """A hook callback that raises must not break the dispatch tick."""
     mgr = get_plugin_manager()
@@ -108,5 +105,3 @@ def test_misbehaving_subscriber_does_not_break_dispatcher(kanban_home):
             conn.close()
     finally:
         mgr._hooks = saved
-
-

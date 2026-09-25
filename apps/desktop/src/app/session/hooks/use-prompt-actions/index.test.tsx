@@ -4,8 +4,8 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { getSession } from '@/hermes'
-import { textPart } from '@/lib/chat-messages'
+import { getLatestSessionMessages, getSession } from '@/hermes'
+import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
@@ -41,9 +41,12 @@ import { uploadComposerAttachment, usePromptActions } from '.'
 // never-settling in-flight promise from one test into the next.
 beforeEach(() => {
   clearSingleFlightSessionResumeState()
+  vi.mocked(getLatestSessionMessages).mockReset()
+  vi.mocked(getLatestSessionMessages).mockImplementation(async () => ({ messages: [], session_id: 'session' }))
 })
 
 vi.mock('@/hermes', () => ({
+  getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: 'session' })),
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   getSession: vi.fn(),
   PROMPT_SUBMIT_REQUEST_TIMEOUT_MS: 1_800_000,
@@ -1435,6 +1438,64 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     // to /interrupt.
     expect(renderedText).toContain('⊙ Goal set (20-turn budget): ship the release notes')
     expect(renderedText).toContain('queued')
+
+    dropSessionState(RUNTIME_SESSION_ID)
+    $queuedPromptsBySession.set({})
+  })
+
+  it('tells the user how to stop the reply when the busy kickoff cannot queue (#42093)', async () => {
+    // The queue key resolves blank (a stored id that is only whitespace, so
+    // `enqueueQueuedPrompt` trims it to null) — the one reachable 'busy'
+    // return. The refusal copy used to demand `/interrupt`, a slash command
+    // that does not exist on any surface; it must name the controls the user
+    // actually has (Stop button / Esc) instead.
+    $queuedPromptsBySession.set({})
+    publishSessionState(RUNTIME_SESSION_ID, {
+      ...createClientSessionState('   '),
+      busy: true
+    })
+
+    const states: Record<string, unknown>[] = []
+    const busyRef = { current: true }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set (20-turn budget): keep going',
+          message: 'keep going'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal keep going')
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    // Actionable controls, not the non-existent /interrupt dead end.
+    expect(renderedText).toContain('Stop button')
+    expect(renderedText).not.toContain('/interrupt')
 
     dropSessionState(RUNTIME_SESSION_ID)
     $queuedPromptsBySession.set({})
@@ -5850,5 +5911,158 @@ describe('usePromptActions live-owner refusal (#106217)', () => {
     expect(bubble?.errorSurface).toEqual({ layer: 'gateway', code: 'SESSION_NOT_OWNED', retryable: false })
     // Not a stale-runtime symptom: no resume/re-mint attempt hides the refusal.
     expect(requestGateway.mock.calls.map(c => c[0])).toEqual(['prompt.submit'])
+  })
+})
+
+describe('usePromptActions stale multi-window guard (#65047)', () => {
+  afterEach(() => {
+    cleanup()
+    $notifications.set([])
+    setSessions(() => [])
+  })
+
+  it('refuses prompt.submit when the local transcript is behind and refreshes it', async () => {
+    const storedId = 'stored-stale-submit'
+    setSessions(() => [sessionInfo({ id: storedId, profile: 'work-vps', title: 'Remote chat' })])
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: storedId,
+      messages: [
+        { content: 'a', role: 'user', timestamp: 1 },
+        { content: 'b', role: 'assistant', timestamp: 2 },
+        { content: 'c', role: 'user', timestamp: 3 },
+        { content: 'd', role: 'assistant', timestamp: 4 }
+      ]
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const seeds: Record<string, unknown>[] = []
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => seeds.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[
+          { id: 'u1', role: 'user', parts: [textPart('a')] },
+          { id: 'a1', role: 'assistant', parts: [textPart('b')] }
+        ]}
+        storedSessionId={storedId}
+      />
+    )
+
+    expect(await handle!.submitText('stale send from secondary window')).toBe(false)
+    expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, 'work-vps')
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+
+    const last = seeds.at(-1) as { awaitingResponse?: boolean; busy?: boolean; messages?: unknown[] } | undefined
+    expect(last?.busy).toBe(false)
+    expect(last?.awaitingResponse).toBe(false)
+    expect(last?.messages).toHaveLength(4)
+    expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
+  })
+
+  it('allows prompt.submit when the authoritative transcript is not ahead', async () => {
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: RUNTIME_SESSION_ID,
+      messages: [
+        { content: 'a', role: 'user', timestamp: 1 },
+        { content: 'b', role: 'assistant', timestamp: 2 }
+      ]
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[
+          { id: 'u1', role: 'user', parts: [textPart('a')] },
+          { id: 'a1', role: 'assistant', parts: [textPart('b')] }
+        ]}
+      />
+    )
+
+    expect(await handle!.submitText('fresh enough')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: RUNTIME_SESSION_ID, text: 'fresh enough' },
+      1_800_000
+    )
+    expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
+  })
+
+  it('does not refuse when raw session rows are longer only because tools fold into chat messages', async () => {
+    const remoteSessionMessages = [
+      { content: 'check the repo', role: 'user' as const, timestamp: 1 },
+      {
+        content: 'Looking.',
+        role: 'assistant' as const,
+        timestamp: 2,
+        tool_calls: [{ id: 'tc-1', function: { name: 'terminal', arguments: '{"command":"ls"}' } }]
+      },
+      {
+        content: '{"output":"ok"}',
+        role: 'tool' as const,
+        tool_call_id: 'tc-1',
+        tool_name: 'terminal',
+        timestamp: 3
+      },
+      { content: 'Done.', role: 'assistant' as const, timestamp: 4 }
+    ]
+
+    const localChat = toChatMessages(remoteSessionMessages)
+
+    expect(remoteSessionMessages.length).toBeGreaterThan(localChat.length)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({
+      session_id: RUNTIME_SESSION_ID,
+      messages: remoteSessionMessages
+    })
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={localChat}
+      />
+    )
+
+    expect(await handle!.submitText('follow-up after tools')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: RUNTIME_SESSION_ID, text: 'follow-up after tools' },
+      1_800_000
+    )
+  })
+
+  it('does not refuse when the authoritative transcript read fails', async () => {
+    vi.mocked(getLatestSessionMessages).mockRejectedValue(new Error('wrong backend'))
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        seedMessages={[{ id: 'u1', role: 'user', parts: [textPart('a')] }]}
+      />
+    )
+
+    expect(await handle!.submitText('send anyway')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: RUNTIME_SESSION_ID, text: 'send anyway' },
+      1_800_000
+    )
   })
 })

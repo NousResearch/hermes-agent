@@ -86,6 +86,37 @@ describe('kanban connection scope', () => {
     dispose()
   })
 
+  it('an event cursor never crosses to another connection', () => {
+    // Both gateways have a board named `ship`, with unrelated event ids.
+    const storage = {
+      ...noopStorage,
+      get: <T>(key: string, fallback: T) => (key.startsWith('boardSlug') ? 'ship' : fallback) as T
+    }
+
+    const dials: Array<{ onMessage: (data: unknown) => void; path: string }> = []
+
+    const socket = vi.fn((path: string, onMessage: (data: unknown) => void) => {
+      dials.push({ onMessage, path })
+
+      return vi.fn()
+    })
+
+    const dispose = bindApi(async () => ({}) as never, storage, socket)
+
+    dials.at(-1)!.onMessage({ cursor: 14_386, events: [{ id: 14_386, kind: 'created', task_id: 't_1' }] })
+
+    routed.id = 'spark'
+    setConnection({ connectionId: 'spark', mode: 'remote' } as never)
+    expect(dials.at(-1)!.path).toBe('/events?board=ship')
+
+    // Back on local, local's own cursor is still there.
+    routed.id = null
+    setConnection({ mode: 'local' } as never)
+    expect(dials.at(-1)!.path).toBe('/events?board=ship&since=14386')
+
+    dispose()
+  })
+
   it('an observer still keyed to the outgoing scope is not refetched onto the incoming backend', async () => {
     const dispose = bindApi(
       async () => ({}) as never,

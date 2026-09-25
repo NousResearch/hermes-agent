@@ -105,22 +105,25 @@ export const routedToScope = (query: { queryKey: readonly unknown[] }): boolean 
 // on every board switch and reconnect; resuming from the last frame's cursor
 // replays only what was missed, never the board's whole history. Session-only
 // on purpose: events that land while the app is closed are documented as not
-// replayed on the next launch.
-const eventCursorByBoard = new Map<string, number>()
+// replayed on the next launch. Keyed by connection too: a slug names a
+// different board (and event-id sequence) on every gateway.
+const eventCursors = new Map<string, number>()
 
-/** The cursor a fresh socket for `slug` starts from: the last frame this
- *  session saw, else the cached board snapshot's `latest_event_id` (the board
- *  is already rendered from it), else nothing — the server then starts at the
- *  board's current tail. */
-function eventsSince(slug: string): number | undefined {
-  const seen = eventCursorByBoard.get(slug)
+const cursorKey = (scope: string, slug: string) => `${scope}\n${slug}`
+
+/** The cursor a fresh socket for `slug` on `scope` starts from: the last frame
+ *  this session saw, else the cached board snapshot's `latest_event_id` (the
+ *  board is already rendered from it), else nothing — the server then starts
+ *  at the board's current tail. */
+function eventsSince(scope: string, slug: string): number | undefined {
+  const seen = eventCursors.get(cursorKey(scope, slug))
 
   if (typeof seen === 'number') {
     return seen
   }
 
   for (const archived of [false, true]) {
-    const board = queryClient.getQueryData<KanbanBoard>(boardKey(kanbanConnectionScope(), slug, archived))
+    const board = queryClient.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
 
     if (typeof board?.latest_event_id === 'number') {
       return board.latest_event_id
@@ -133,12 +136,12 @@ function eventsSince(slug: string): number | undefined {
 /** One live `task_events` frame → precise cache invalidation: the board, plus
  *  each touched task's detail. The polls (60s board / 30s drawer) stay as the
  *  fallback — the socket just makes the board feel instant. */
-function onEventsFrame(slug: string, data: unknown): void {
+function onEventsFrame(streamScope: string, slug: string, data: unknown): void {
   const frame = data as { cursor?: unknown; events?: CompletionEvent[] }
   const events = frame?.events
 
   if (typeof frame?.cursor === 'number') {
-    eventCursorByBoard.set(slug, frame.cursor)
+    eventCursors.set(cursorKey(streamScope, slug), frame.cursor)
   }
 
   if (!events?.length) {
@@ -205,14 +208,17 @@ export function bindApi(
       params.set('board', slug)
     }
 
-    const since = eventsSince(slug)
+    // The connection this socket dials: a frame arriving after a switch
+    // still belongs to the gateway that sent it.
+    const scope = routedScope()
+    const since = eventsSince(scope, slug)
 
     if (since !== undefined) {
       params.set('since', String(since))
     }
 
     const query = params.toString()
-    close = socket(query ? `/events?${query}` : '/events', data => onEventsFrame(slug, data))
+    close = socket(query ? `/events?${query}` : '/events', data => onEventsFrame(scope, slug, data))
   }
 
   // The local connection keeps the BARE key (the bare-local rule of

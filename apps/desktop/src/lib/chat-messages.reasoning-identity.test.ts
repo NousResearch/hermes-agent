@@ -48,13 +48,16 @@ describe('native reasoning identity without a second commentary projector (#7972
     for (const boundary of [assistantTextPart('Public', 2), toolCallPart('tc')]) {
       expect(appendReasoningPart([first, boundary], 'After', 3, 'rs')).toEqual([
         first,
-        boundary,
+        boundary.type === 'text' ? { ...boundary, completedAt: 3 } : boundary,
         reasoningPart('After', 3, 'rs')
       ])
     }
 
     expect(appendReasoningPart([{ ...first, completedAt: 2 }], 'Later', 3, 'rs')).toHaveLength(2)
-    expect(appendReasoningPart([first], 'Legacy', 3)).toEqual([first, reasoningPart('Legacy', 3)])
+    expect(appendReasoningPart([first], 'Legacy', 3)).toEqual([
+      { ...first, completedAt: 3 },
+      reasoningPart('Legacy', 3)
+    ])
     expect(appendReasoningPart([first], ' continuation', 2, 'rs')).toEqual([
       reasoningPart('Before continuation', 1, 'rs')
     ])

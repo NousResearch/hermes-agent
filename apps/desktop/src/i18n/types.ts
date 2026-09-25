@@ -64,7 +64,11 @@ export interface Translations {
     message: string
     copyUrl: string
     close: string
-  };
+    missing: {
+      title: string
+      message: string
+    }
+  }
   intro: {
     stock: Record<string, string[]>
     custom: (label: string) => string[]

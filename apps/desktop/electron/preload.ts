@@ -17,6 +17,7 @@ const hudNativeDrag = hudWindowing?.nativeDrag === true
 
 const launchFlags: { localModels?: boolean; guestOnboarding?: boolean; skipIntro?: boolean } | undefined =
   ipcRenderer.sendSync('hermes:feature-flags')
+
 // Local, sanitized skin payload for the first renderer theme paint. This does
 // not wait on `gateway.ready`, so an unreachable remote primary cannot force
 // the built-in palette over the skin configured on this machine.
@@ -554,6 +555,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:notification-activate', listener)
 
     return () => ipcRenderer.removeListener('hermes:notification-activate', listener)
+  },
+  onExternalOpenFailed: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:external-open-failed', listener)
+
+    return () => ipcRenderer.removeListener('hermes:external-open-failed', listener)
   },
   onPreviewFileChanged: callback => {
     const listener = (_event, payload) => callback(payload)

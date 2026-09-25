@@ -220,6 +220,8 @@ export interface RegistryLocalRoute {
   delegate: boolean
   /** Pool key for the forced-local child when not delegating. */
   poolKey: string
+  /** Set when a concrete remote-only profile must not spawn a local child. */
+  refuse?: string
 }
 
 export interface ResolvedConnectionSshDescriptor {
@@ -522,13 +524,18 @@ function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unk
  * the BARE profile key by design, and that slot may already hold the v1
  * route's REMOTE descriptor — so the forced-local child pools under the
  * `conn:local::<profile>` form instead (colons are invalid in profile names,
- * so it cannot collide).
+ * so it cannot collide). A concrete named profile that does not exist on
+ * this machine is refused instead of spawned. `default` is `$HERMES_HOME`
+ * itself, so it always exists here and is never refused. A per-profile
+ * remote override still delegates to the legacy profile route.
  */
 export function resolveRegistryLocalRoute(
   profile: null | string | undefined,
-  opts: { globalRemote?: boolean; profileRemoteOverride?: boolean } = {}
+  opts: { globalRemote?: boolean; localProfileExists?: boolean; profileRemoteOverride?: boolean } = {}
 ): RegistryLocalRoute {
-  const profileKey = String(profile ?? '').trim() || 'default'
+  const raw = String(profile ?? '').trim()
+  const profileKey = raw || 'default'
+  const concrete = raw.length > 0
 
   // A per-profile SSH/remote override is an explicit per-profile routing
   // decision: the override owns this profile's backend, so the 'local' entry
@@ -541,10 +548,39 @@ export function resolveRegistryLocalRoute(
   }
 
   if (opts.globalRemote) {
-    return { delegate: false, poolKey: `${backendScopePrefix(LOCAL_CONNECTION_ID)}${profileKey}` }
+    const poolKey = `${backendScopePrefix(LOCAL_CONNECTION_ID)}${profileKey}`
+
+    // A concrete named profile that does not exist on this machine is
+    // remote-only. Spawning it locally is the #90477 loop, so refuse. An
+    // unprofiled call is enumeration, not a dial. `default` lives at
+    // $HERMES_HOME, not profiles/default, so This device -> default always
+    // force-locals. A profile that exists locally still force-locals so
+    // "This device" does not dial the remote.
+    if (concrete && profileKey !== 'default' && opts.localProfileExists === false) {
+      return { delegate: false, poolKey, refuse: `Profile "${profileKey}" no longer exists.` }
+    }
+
+    return { delegate: false, poolKey }
   }
 
   return { delegate: true, poolKey: profileKey }
+}
+
+/**
+ * Connection id for a registry dial. A missing id is not `registry.primary`:
+ * substituting primary opens another SSH host when a scoped caller drops the
+ * id (#90477). `primary` is accepted so that substitution stays visible at the
+ * call site and cannot sneak back in.
+ */
+export function registryDialConnectionId(connectionId: unknown, primary: unknown): string {
+  const id = String(connectionId ?? '').trim()
+
+  if (!id) {
+    void primary
+    throw new Error('No connection with id "".')
+  }
+
+  return id
 }
 
 /**

@@ -64,14 +64,37 @@ def _repair_item_envelopes(value: Any) -> Any:
     return _strip_envelopes(value)
 
 
-def _flatten_single_envelope_lists(value: Any) -> Any:
-    """Collapse the ``[[...]]`` left behind after unwrapping an array argument's envelope."""
+def _schema_array_keys(schema: Any) -> frozenset:
+    """Top-level parameter names whose schema declares ``type: array``."""
+    if not isinstance(schema, dict):
+        return frozenset()
+    props = schema.get("properties")
+    if not isinstance(props, dict):
+        return frozenset()
+    return frozenset(
+        name for name, sub in props.items()
+        if isinstance(sub, dict) and sub.get("type") == "array"
+    )
+
+
+def _flatten_single_envelope_lists(value: Any, array_keys: frozenset = frozenset()) -> Any:
+    """Collapse the ``[[...]]`` left behind after unwrapping an array argument's envelope.
+
+    A single-element array whose envelope wrapped the whole array leaves ``{"item": {...}}``
+    unwrapped to a bare dict, which then fails the array schema downstream. Re-wrap those in
+    the one-element list the schema asks for.
+    """
     if isinstance(value, dict):
-        return {k: _flatten_single_envelope_lists(v) for k, v in value.items()}
+        return {
+            k: ([_flatten_single_envelope_lists(v, array_keys)]
+                if k in array_keys and not isinstance(v, list)
+                else _flatten_single_envelope_lists(v, array_keys))
+            for k, v in value.items()
+        }
     if isinstance(value, list):
         if len(value) == 1 and isinstance(value[0], list):
             return value[0]
-        return [_flatten_single_envelope_lists(item) for item in value]
+        return [_flatten_single_envelope_lists(item, array_keys) for item in value]
     return value
 
 
@@ -174,7 +197,8 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         # valid call matches the registered schema (upstream issue #99270, PR #115020).
         try:
             repaired_args = _flatten_single_envelope_lists(
-                _repair_item_envelopes(candidate_args)
+                _repair_item_envelopes(candidate_args),
+                _schema_array_keys(validation_schema),
             )
             if repaired_args != candidate_args:
                 logger.debug(

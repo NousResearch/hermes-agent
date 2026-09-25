@@ -1036,7 +1036,6 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
 
     def fake_call_llm(**kwargs):
         if kwargs["provider"] == "fast":
-            fake_agent._interrupt_requested = True
             return _response("fast output")
         # wedged: blocks past the interrupt, completes later.
         release.wait(timeout=5)
@@ -1056,10 +1055,16 @@ def test_late_completing_interrupted_reference_feeds_accounting_sink(monkeypatch
         ],
         [{"role": "user", "content": "hi"}],
         agent=fake_agent,
+        # Raise the interrupt once the fast slot is RECORDED (progress fires after collect), so
+        # only the wedged slot is in flight at settle time. Raising it inside the fast call
+        # raced the fast future's own completion: a descheduled worker left fast pending too,
+        # and its late accounting could reach the sink first (CI run 35857532727).
+        progress_callback=lambda done, total, label: setattr(fake_agent, "_interrupt_requested", True),
         late_accounting_sink=sink,
     )
 
-    # The wedged slot returned a placeholder with zeroed accounting…
+    # The fast slot was collected for real; the wedged slot returned a placeholder with zeroed accounting…
+    assert out[0][1] == "fast output"
     assert out[1][1] == moa_loop._INTERRUPTED_REFERENCE_NOTE
     assert out[1][2].usage.input_tokens == 0
 

@@ -1082,25 +1082,24 @@ class TestBedrockContextLength:
             assert get_bedrock_context_length("anthropic.claude-opus-4-6") == 1_000_000
             mock_probe.assert_not_called()
 
-    @pytest.mark.parametrize(
-        "model_id",
-        (
-            "anthropic.claude-opus-5",
-            "us.anthropic.claude-opus-5",
-            "eu.anthropic.claude-opus-5",
-            "global.anthropic.claude-opus-5",
-            # Longest-substring lookup: the bare key must keep winning once a dated revision ships.
-            "anthropic.claude-opus-5-v1:0",
-            "eu.anthropic.claude-opus-5-20260724-v1:0",
-        ),
-    )
-    def test_claude_opus_5_uses_offline_context_table(self, model_id):
-        """Claude Opus 5 keeps its documented 1M window without a probe."""
+    def test_static_catalog_claude_ids_match_their_anthropic_window(self):
+        """Every Claude id in the Bedrock static fallback gets the same offline window as its bare
+        Anthropic id, so a model added to the picker can't silently land on the 128K default."""
         from agent.bedrock_adapter import get_bedrock_context_length
+        from agent.model_metadata import DEFAULT_CONTEXT_LENGTHS, _longest_key_match
+        from hermes_cli.models_catalog_static import _PROVIDER_MODELS
 
-        with patch("agent.bedrock_adapter.probe_bedrock_context_length") as mock_probe:
-            assert get_bedrock_context_length(model_id, probe=False) == 1_000_000
-            mock_probe.assert_not_called()
+        mismatched = []
+        for model_id in _PROVIDER_MODELS["bedrock"]:
+            _, sep, bare = model_id.partition("anthropic.")
+            if not sep:
+                continue
+            _, expected = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, bare)
+            actual = get_bedrock_context_length(model_id, probe=False)
+            if actual != expected:
+                mismatched.append((model_id, expected, actual))
+
+        assert not mismatched, f"Bedrock static Claude ids drift from DEFAULT_CONTEXT_LENGTHS: {mismatched}"
 
     def test_million_token_claude_entries_match_model_metadata(self):
         """BEDROCK_CONTEXT_LENGTHS must not drift from DEFAULT_CONTEXT_LENGTHS.

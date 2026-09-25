@@ -553,7 +553,6 @@
     "plugins/platforms/sms/gateway_env.py gateway.platform_env.getenv": 1,
     "plugins/platforms/sms/gateway_env.py gateway.platform_env.home_step": 1,
     "plugins/platforms/teams/adapter.py agent.i18n.t": 1,
-    "plugins/platforms/teams/adapter.py gateway.platforms.base._read_httpx_body_with_limit": 1,
     "plugins/platforms/teams/adapter.py gateway.platforms.base_exec_approval.approval_timeout_seconds": 1,
     "plugins/platforms/teams/adapter.py gateway.platforms.base_exec_approval.format_approval_deadline_line": 1,
     "plugins/platforms/teams/adapter.py gateway.platforms.shared_ingress.bind_listener": 1,

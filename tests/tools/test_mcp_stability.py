@@ -516,6 +516,60 @@ class TestReleaseSpawnedChildrenWindowsDescendants:
 
 
 # ---------------------------------------------------------------------------
+# Fix 2e: an orphan pid recorded for a dead root must not be signalled once the
+# number has been recycled by an unrelated live process (#122391 review follow-up)
+# ---------------------------------------------------------------------------
+#
+# The dead-root sweep reaps by walking a bare PID number (taskkill /T, or
+# kill_process_tree's PPID-based descendant fallback). If that number is recycled
+# before the sweep runs, either path would target the new, unrelated process's tree.
+# _take_reapable_pids now validates the pid's creation time (captured while it was
+# still the MCP root) before handing it to _signal_mcp_process.
+
+class TestDeadRootPidRecycleGuard:
+    """_take_reapable_pids drops an orphan entry whose recorded creation time no longer
+    matches the live process now holding that pid number."""
+
+    def _reset_state(self):
+        from tools.mcp_tool_lifecycle import (
+            _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_create_times, _stdio_pgids, _stdio_pids,
+        )
+        from tools.mcp_tool import _lock
+        with _lock:
+            _stdio_pids.clear()
+            _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
+            _stdio_pgids.clear()
+            _stdio_create_times.clear()
+
+    def test_recycled_pid_is_dropped_without_signalling(self, monkeypatch):
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_create_times
+        from tools.mcp_tool import _lock
+
+        self._reset_state()
+        monkeypatch.delattr(os, "killpg", raising=False)  # simulate Windows: no process groups
+        fake_pid = 909092
+        with _lock:
+            _orphan_stdio_pids.add(fake_pid)
+            _orphan_stdio_pid_servers[fake_pid] = "test-server"
+            _stdio_create_times[fake_pid] = 1000.0  # recorded while the MCP root was still alive
+
+        fake_proc = MagicMock()
+        fake_proc.create_time.return_value = 2000.0  # a different, unrelated process now owns this pid
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("psutil.Process", return_value=fake_proc), \
+             patch("agent.deadline.kill_process_tree") as mock_tree, \
+             patch("tools.mcp_tool_lifecycle.os.kill") as mock_kill:
+            _mcp_lifecycle._kill_orphaned_mcp_children()
+
+        mock_tree.assert_not_called()
+        mock_kill.assert_not_called()
+        with _lock:
+            assert fake_pid not in _orphan_stdio_pids
+            assert fake_pid not in _stdio_create_times
+
+
+# ---------------------------------------------------------------------------
 # Fix 3: MCP reload timeout (cli.py)
 # ---------------------------------------------------------------------------
 

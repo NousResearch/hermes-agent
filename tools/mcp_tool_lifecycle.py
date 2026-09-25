@@ -22,6 +22,12 @@ _orphan_stdio_pid_servers: Dict[int, str] = {}
 # grandchildren keep that PGID after the direct child exits, so killpg still reaches them.
 # Separate from _stdio_pids so the PGID survives the child's removal. Empty on Windows.
 _stdio_pgids: Dict[int, int] = {}
+# pid -> process creation time captured at spawn, while the pid is known to be *this* child
+# (Windows only, where _stdio_pgids stays empty). An already-exited root is reaped by walking
+# PIDs/descendants of a bare number (see _signal_mcp_process); if the number is recycled by an
+# unrelated process before the sweep runs, this lets that reuse be detected and the entry
+# dropped instead of signalling the wrong process (#122391).
+_stdio_create_times: Dict[int, float] = {}
 
 
 def _snapshot_child_pids() -> set:
@@ -219,6 +225,31 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         _close_mcp_stderr_logs(scope=scope)
 
 
+def _drop_recycled_pids(pids: Dict[int, str], create_times: Dict[int, float]) -> Dict[int, str]:
+    """Windows-only guard: an already-exited root is reaped by walking a bare PID number
+    (taskkill /T, or kill_process_tree's PPID-based descendant fallback — see
+    _signal_mcp_process). If that number has since been recycled by an unrelated live process,
+    either path would target that process's tree instead of the MCP orphan's (#122391). Drop
+    any entry whose live process no longer matches the creation time recorded while the
+    original pid was still known to be ours."""
+    if not create_times:
+        return pids
+    from gateway.status import _pid_exists
+    for pid, recorded in create_times.items():
+        if pid not in pids or not _pid_exists(pid):
+            continue  # gone (or gone again) — nothing to reuse, existing kill path handles it
+        try:
+            import psutil
+            current = psutil.Process(pid).create_time()
+        except Exception:
+            continue  # can't verify identity; fall through to the existing kill path
+        if current != recorded:
+            owner = pids.pop(pid)
+            logger.warning("MCP orphan pid %d (%s) was recycled by an unrelated process since "
+                           "it was recorded; dropping without signalling it", pid, owner)
+    return pids
+
+
 def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tuple[Dict[int, str], Dict[int, int]]:
     """Pop the PIDs to reap (and their spawn-time pgids) out of the ledgers under the lock, so
     a future spawn can't collide with stale state. Returns ``(pid -> owner, pid -> pgid)``."""
@@ -236,6 +267,8 @@ def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tup
             for pid in active:
                 _stdio_pids.pop(pid, None)
         pgids = {pid: _stdio_pgids.pop(pid) for pid in pids if pid in _stdio_pgids}
+        create_times = {pid: _stdio_create_times.pop(pid) for pid in pids if pid in _stdio_create_times}
+    pids = _drop_recycled_pids(pids, create_times)
     return pids, pgids
 
 

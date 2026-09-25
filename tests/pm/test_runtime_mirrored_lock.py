@@ -32,7 +32,8 @@ def test_stage_reconciles_mirror_only_in_scratch(tmp_path, monkeypatch, mirror, 
                 'registry = "https://mirror.example/simple"',
             )
             if alter_hash:
-                updated = re.sub(r'(?<=hash = "sha256:)[0-9a-f]', "f", updated, count=1)
+                updated = re.sub(r'(?<=hash = "sha256:)[0-9a-f]',
+                                 lambda match: "f" if match.group() != "f" else "e", updated, count=1)
             lock.write_text(updated, encoding="utf-8")
 
         def sync(self, snapshot, **kwargs):

@@ -57,8 +57,8 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
         if wheelhouse is None:
             # uv considers registry identity part of --locked. Resolve only
             # in the disposable snapshot; retain the pinned graph and bytes.
-            from pm.index_config import _UV_INDEX_KNOBS
-            if any(env.get(key) for key in _UV_INDEX_KNOBS):
+            from pm.index_config import default_index_override
+            if default_index_override(env) is not None:
                 original = _locked_artifacts(snapshot / "uv.lock")
                 environment.lock(snapshot, timeout=600)
                 mirrored = _locked_artifacts(snapshot / "uv.lock")

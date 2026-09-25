@@ -3349,6 +3349,90 @@ export interface SystemBatteryResult {
 }
 /** ``agent/battery.py::battery_category`` colour bucket. */
 export type BatteryCategory = 'good' | 'warn' | 'bad' | 'critical' | 'dim'
+export interface SystemMetricsParams {
+  profile?: string | null
+}
+export interface SystemMetricsResult {
+  available: boolean
+  ts?: number | null
+  interval_s?: number | null
+  host?: MetricsHost | null
+  cpu?: MetricsCpu | null
+  gpus?: MetricsGpu[]
+  memory?: MetricsMemory | null
+  power_w?: Record<string, number>
+  temps?: MetricsTemp[]
+  disk?: MetricsDisk | null
+  net?: MetricsNet | null
+  process?: MetricsProcess | null
+}
+export interface MetricsHost {
+  os: string
+  arch: string
+  cpu_model: string
+  boot_time: number
+  uptime_s: number
+}
+export interface MetricsCpu {
+  percent: number
+  per_core: number[]
+  count_logical?: number | null
+  count_physical?: number | null
+  load_avg?: number[] | null
+  clusters?: MetricsDomain[]
+  cores?: MetricsDomain[]
+}
+/** A DVFS domain (CPU cluster/core or GPU) over the sample window. */
+export interface MetricsDomain {
+  name: string
+  kind: string
+  active: number
+  freq_mhz?: number | null
+}
+export interface MetricsGpu {
+  name: string
+  kind: string
+  active: number
+  freq_mhz?: number | null
+  cores?: number | null
+  power_w?: number | null
+}
+export interface MetricsMemory {
+  total: number
+  used: number
+  available: number
+  percent: number
+  swap_total: number
+  swap_used: number
+}
+export interface MetricsTemp {
+  name: string
+  celsius: number
+}
+export interface MetricsDisk {
+  read_bps?: number | null
+  write_bps?: number | null
+  volumes?: MetricsVolume[]
+}
+export interface MetricsVolume {
+  mount: string
+  fstype: string
+  total: number
+  used: number
+  percent: number
+}
+export interface MetricsNet {
+  rx_bps?: number | null
+  tx_bps?: number | null
+  rx_total?: number | null
+  tx_total?: number | null
+}
+export interface MetricsProcess {
+  pid: number
+  rss: number
+  cpu_percent: number
+  threads: number
+}
 export interface ProcessStopParams {
   session_id?: string | null
   profile?: string | null
@@ -5097,6 +5181,8 @@ export interface RpcMethods {
   'subscription.upgrade': { params: SubscriptionUpgradeParams; result: SubscriptionUpgradeResult }
   /** Host battery for the status bar; always resolves, ``available: false`` when unreadable. */
   'system.battery': { params: SystemBatteryParams; result: SystemBatteryResult }
+  /** Live host telemetry frame (``agent/system_metrics.py``); always resolves, ``available: false`` when unreadable. */
+  'system.metrics': { params: SystemMetricsParams; result: SystemMetricsResult }
   /** Record the client's column width for server-side rendering. */
   'terminal.resize': { params: TerminalResizeParams; result: TerminalResizeResult }
   /** Persist a toolset / MCP enable-disable change and rebuild the session agent so it takes effect now. */
@@ -5360,6 +5446,7 @@ export const RPC_METHODS = [
   'subscription.state',
   'subscription.upgrade',
   'system.battery',
+  'system.metrics',
   'terminal.resize',
   'tools.configure',
   'tools.list',

@@ -1619,6 +1619,26 @@ def test_system_battery_fails_open(monkeypatch):
     assert resp["result"]["percent"] is None
 
 
+def test_system_metrics_frame_satisfies_its_contract():
+    from tui_gateway.contracts.tools_commands import SystemMetricsResult
+
+    server._methods["system.metrics"]("m0", {})
+    frame = server._methods["system.metrics"]("m1", {})["result"]
+
+    parsed = SystemMetricsResult.model_validate(frame)
+    assert parsed.available is True
+    assert parsed.cpu is not None and len(parsed.cpu.per_core) == parsed.cpu.count_logical
+
+
+def test_system_metrics_fails_open(monkeypatch):
+    def boom(**_kw):
+        raise RuntimeError("sensor subsystem gone")
+
+    monkeypatch.setitem(sys.modules, "agent.system_metrics", types.SimpleNamespace(read_system_metrics=boom))
+
+    assert server._methods["system.metrics"]("m2", {})["result"] == {"available": False}
+
+
 def test_config_set_battery_toggles_and_persists(monkeypatch):
     writes: dict[str, object] = {}
     monkeypatch.setattr(server, "_load_cfg", lambda: {"display": {"battery": False}})

@@ -243,6 +243,15 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"available": False, "percent": None, "plugged": None, "category": "dim"})
 
 
+@method("system.metrics")
+def _(rid, params: dict) -> dict:
+    """Live host telemetry for dashboards. Always resolves; ``available: false`` = sampler failed."""
+    try:
+        return _ok(rid, {"available": True, **_tools_mod("agent.system_metrics").read_system_metrics()})
+    except Exception:
+        return _ok(rid, {"available": False})
+
+
 # One-expression handlers: name → (fail_code, payload builder(params)).
 _SIMPLE_RPCS = {
     # Session-scoped view of the background process registry (desktop status stack).

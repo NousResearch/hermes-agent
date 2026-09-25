@@ -3859,6 +3859,24 @@
       }
     },
     {
+      "name": "system.metrics",
+      "summary": "Live host telemetry frame (``agent/system_metrics.py``); always resolves, ``available: false`` when unreadable.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SystemMetricsParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SystemMetricsResult"
+        }
+      }
+    },
+    {
       "name": "terminal.resize",
       "summary": "Record the client's column width for server-side rendering.",
       "params": [
@@ -17891,6 +17909,428 @@
           "role"
         ],
         "title": "MessageReactionPayload",
+        "type": "object"
+      },
+      "MetricsCpu": {
+        "additionalProperties": false,
+        "properties": {
+          "percent": {
+            "title": "Percent",
+            "type": "number"
+          },
+          "per_core": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Per Core",
+            "type": "array"
+          },
+          "count_logical": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Count Logical"
+          },
+          "count_physical": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Count Physical"
+          },
+          "load_avg": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Load Avg"
+          },
+          "clusters": {
+            "items": {
+              "$ref": "#/components/schemas/MetricsDomain"
+            },
+            "title": "Clusters",
+            "type": "array"
+          },
+          "cores": {
+            "items": {
+              "$ref": "#/components/schemas/MetricsDomain"
+            },
+            "title": "Cores",
+            "type": "array"
+          }
+        },
+        "required": [
+          "percent",
+          "per_core"
+        ],
+        "title": "MetricsCpu",
+        "type": "object"
+      },
+      "MetricsDisk": {
+        "additionalProperties": false,
+        "properties": {
+          "read_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Read Bps"
+          },
+          "write_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Write Bps"
+          },
+          "volumes": {
+            "items": {
+              "$ref": "#/components/schemas/MetricsVolume"
+            },
+            "title": "Volumes",
+            "type": "array"
+          }
+        },
+        "title": "MetricsDisk",
+        "type": "object"
+      },
+      "MetricsDomain": {
+        "additionalProperties": false,
+        "description": "A DVFS domain (CPU cluster/core or GPU) over the sample window.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "active": {
+            "description": "0..1 share of the window outside idle states.",
+            "title": "Active",
+            "type": "number"
+          },
+          "freq_mhz": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Freq Mhz"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "active"
+        ],
+        "title": "MetricsDomain",
+        "type": "object"
+      },
+      "MetricsGpu": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "active": {
+            "description": "0..1 share of the window outside idle states.",
+            "title": "Active",
+            "type": "number"
+          },
+          "freq_mhz": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Freq Mhz"
+          },
+          "cores": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cores"
+          },
+          "power_w": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Power W"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "active"
+        ],
+        "title": "MetricsGpu",
+        "type": "object"
+      },
+      "MetricsHost": {
+        "additionalProperties": false,
+        "properties": {
+          "os": {
+            "title": "Os",
+            "type": "string"
+          },
+          "arch": {
+            "title": "Arch",
+            "type": "string"
+          },
+          "cpu_model": {
+            "title": "Cpu Model",
+            "type": "string"
+          },
+          "boot_time": {
+            "title": "Boot Time",
+            "type": "number"
+          },
+          "uptime_s": {
+            "title": "Uptime S",
+            "type": "number"
+          }
+        },
+        "required": [
+          "os",
+          "arch",
+          "cpu_model",
+          "boot_time",
+          "uptime_s"
+        ],
+        "title": "MetricsHost",
+        "type": "object"
+      },
+      "MetricsMemory": {
+        "additionalProperties": false,
+        "properties": {
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "used": {
+            "title": "Used",
+            "type": "integer"
+          },
+          "available": {
+            "title": "Available",
+            "type": "integer"
+          },
+          "percent": {
+            "title": "Percent",
+            "type": "number"
+          },
+          "swap_total": {
+            "title": "Swap Total",
+            "type": "integer"
+          },
+          "swap_used": {
+            "title": "Swap Used",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "used",
+          "available",
+          "percent",
+          "swap_total",
+          "swap_used"
+        ],
+        "title": "MetricsMemory",
+        "type": "object"
+      },
+      "MetricsNet": {
+        "additionalProperties": false,
+        "properties": {
+          "rx_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rx Bps"
+          },
+          "tx_bps": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tx Bps"
+          },
+          "rx_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Rx Total"
+          },
+          "tx_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tx Total"
+          }
+        },
+        "title": "MetricsNet",
+        "type": "object"
+      },
+      "MetricsProcess": {
+        "additionalProperties": false,
+        "properties": {
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "rss": {
+            "title": "Rss",
+            "type": "integer"
+          },
+          "cpu_percent": {
+            "title": "Cpu Percent",
+            "type": "number"
+          },
+          "threads": {
+            "title": "Threads",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid",
+          "rss",
+          "cpu_percent",
+          "threads"
+        ],
+        "title": "MetricsProcess",
+        "type": "object"
+      },
+      "MetricsTemp": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "celsius": {
+            "title": "Celsius",
+            "type": "number"
+          }
+        },
+        "required": [
+          "name",
+          "celsius"
+        ],
+        "title": "MetricsTemp",
+        "type": "object"
+      },
+      "MetricsVolume": {
+        "additionalProperties": false,
+        "properties": {
+          "mount": {
+            "title": "Mount",
+            "type": "string"
+          },
+          "fstype": {
+            "title": "Fstype",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          },
+          "used": {
+            "title": "Used",
+            "type": "integer"
+          },
+          "percent": {
+            "title": "Percent",
+            "type": "number"
+          }
+        },
+        "required": [
+          "mount",
+          "fstype",
+          "total",
+          "used",
+          "percent"
+        ],
+        "title": "MetricsVolume",
         "type": "object"
       },
       "MoaAggregatingPayload": {
@@ -33926,6 +34366,152 @@
           "available"
         ],
         "title": "SystemBatteryResult",
+        "type": "object"
+      },
+      "SystemMetricsParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          }
+        },
+        "title": "SystemMetricsParams",
+        "type": "object"
+      },
+      "SystemMetricsResult": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "ts": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Ts"
+          },
+          "interval_s": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Window the rates cover; null on the first read.",
+            "title": "Interval S"
+          },
+          "host": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricsHost"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "cpu": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricsCpu"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "gpus": {
+            "items": {
+              "$ref": "#/components/schemas/MetricsGpu"
+            },
+            "title": "Gpus",
+            "type": "array"
+          },
+          "memory": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricsMemory"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "power_w": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "description": "cpu / gpu / ane / dram watts (Apple Silicon).",
+            "title": "Power W",
+            "type": "object"
+          },
+          "temps": {
+            "items": {
+              "$ref": "#/components/schemas/MetricsTemp"
+            },
+            "title": "Temps",
+            "type": "array"
+          },
+          "disk": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricsDisk"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "net": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricsNet"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "process": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricsProcess"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "SystemMetricsResult",
         "type": "object"
       },
       "TaskIdResult": {

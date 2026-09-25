@@ -1719,6 +1719,36 @@ def test_strict_gateway_identity_rejects_reused_pid(tmp_path, monkeypatch):
         status.get_running_pid_identity_strict(pid_path)
 
 
+def test_strict_gateway_identity_accepts_windows_redirector_shim(
+    tmp_path, monkeypatch
+):
+    pid_path = tmp_path / "gateway.pid"
+    lock_path = tmp_path / "gateway.lock"
+    record = {
+        "pid": 123,
+        "start_time": 10.0,
+        "kind": "hermes-gateway",
+        "argv": ["python", "-m", "hermes_cli.main", "-p", "worker", "gateway", "run"],
+    }
+    pid_path.write_text(json.dumps(record), encoding="utf-8")
+    lock_path.write_text(json.dumps(record), encoding="utf-8")
+    shim_command = (
+        r"C:\Users\me\hermes\venv\Scripts\python.exe -I -c "
+        "import sys, runpy; "
+        r"sys.argv = ['C:\\Users\\me\\hermes\\venv\\Scripts\\hermes.exe', "
+        "'-p', 'worker', 'gateway', 'run']; "
+        "runpy.run_module('hermes_cli.main', run_name='__main__')"
+    )
+
+    monkeypatch.setattr(status, "_get_gateway_lock_path", lambda _path=None: lock_path)
+    monkeypatch.setattr(status, "_is_gateway_runtime_lock_active_strict", lambda _path=None: True)
+    monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 10.0)
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: shim_command)
+
+    assert status.get_running_pid_identity_strict(pid_path) == (123, 10.0)
+
+
 def test_retained_gateway_state_keeps_watchdog_degraded_like_startup_failed():
     """A watchdog-stamped ``degraded`` of a dead process is a current failure under the same rule as
     ``startup_failed`` (#113372): kept while the operator wants the gateway running, ``stopped`` once

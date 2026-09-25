@@ -351,11 +351,13 @@ async def get_skills(profile: Optional[str] = None):
         with _profile_scope(profile):
             config = load_config()
             disabled = get_disabled_skills(config)
-            # include_gated: this listing is the config surface the Capabilities
-            # tab renders its sections from — the platform/environment/app gates
-            # are offer-time filters for the agent, not reasons to hide a
-            # category the user can still toggle.
-            skills = _find_all_skills(skip_disabled=True, include_gated=True)
+            # include_gated + include_plugin: this listing is the config surface
+            # the Capabilities tab renders its sections from — the
+            # platform/environment/app gates are offer-time filters for the
+            # agent, not reasons to hide a category the user can still toggle,
+            # and plugin-registered skills are toggleable config too.
+            skills = _find_all_skills(
+                skip_disabled=True, include_gated=True, include_plugin=True)
             usage = load_usage()
             # Set-based provenance (same classification as skill_usage.provenance,
             # without a per-skill manifest read): hub > bundled > agent, where
@@ -407,11 +409,13 @@ async def toggle_skill_category(body: SkillCategoryToggle, profile: Optional[str
 
     def _run():
         with _profile_scope(scope_profile):
-            # include_gated: category membership is independent of the
-            # platform/environment/app gates — a Kanban-environment skill stays
-            # toggleable when the Kanban environment is inactive.
+            # include_gated + include_plugin: membership mirrors the listing
+            # above — independent of the platform/environment/app gates (a
+            # Kanban-environment skill stays toggleable when Kanban is inactive)
+            # and inclusive of plugin-registered rows the tab renders.
             names = sorted(
-                s["name"] for s in _find_all_skills(skip_disabled=True, include_gated=True)
+                s["name"] for s in _find_all_skills(
+                    skip_disabled=True, include_gated=True, include_plugin=True)
                 if s.get("category") == body.category)
         if not names:
             raise HTTPException(status_code=400, detail=f"Unknown skill category: {body.category}")

@@ -39,3 +39,30 @@ def test_include_gated_lists_environment_gated_skill(tmp_path, monkeypatch):
 
     assert "kanban-orchestrator" in gated  # membership ignores environment gating
     assert "kanban-orchestrator" not in plain  # default listing stays filtered
+
+
+def test_include_plugin_honours_platform_gate(tmp_path, monkeypatch):
+    """Plugin rows ride the same flags as disk rows: platform-gated plugin
+    skills stay out of the filtered listing and come back with include_gated
+    (the config surface), same as the environment gate test above."""
+    import hermes_cli.plugins as plugins_mod
+
+    class _FakeManager:
+        def list_plugin_skill_metadata(self):
+            return [
+                {"name": "p:open", "description": "d", "category": "plugin", "frontmatter": {}},
+                {"name": "p:tg", "description": "d", "category": "plugin",
+                 "frontmatter": {"platforms": ["telegram"]}},
+            ]
+
+    monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+    monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: _FakeManager())
+    monkeypatch.setattr(skills_tool, "skill_matches_platform", lambda fm: not fm.get("platforms"))
+    monkeypatch.setattr(skills_tool, "_SKILLS_CACHE", {})
+
+    plain = {s["name"] for s in skills_tool._find_all_skills(skip_disabled=True, include_plugin=True)}
+    gated = {s["name"] for s in skills_tool._find_all_skills(
+        skip_disabled=True, include_gated=True, include_plugin=True)}
+
+    assert "p:open" in plain and "p:tg" not in plain
+    assert {"p:open", "p:tg"} <= gated

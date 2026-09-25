@@ -181,11 +181,17 @@ def _skill_search_dirs() -> Tuple[list, list, Path]:
     return project_dirs, all_dirs, active_skills_dir
 
 
-def _find_all_skills(*, skip_disabled: bool = False, include_gated: bool = False) -> List[Dict[str, Any]]:
+def _find_all_skills(
+    *, skip_disabled: bool = False, include_gated: bool = False, include_plugin: bool = False,
+) -> List[Dict[str, Any]]:
     """All skills (name, description, category) across project/local/external dirs, first-wins
-    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI)."""
+    by name; cached per session. ``skip_disabled=True`` ignores disabled state (config UI);
+    ``include_gated=True`` skips the offer-time gates; ``include_plugin=True`` appends
+    plugin-registered skills under the same flags (disk rows shadow same-named plugin rows)."""
     from agent.skill_utils import iter_project_skill_files, iter_skill_index_files
-    cache_key = ("gated:" if include_gated else "") + ("with_disabled" if skip_disabled else "filtered")
+    cache_key = (
+        ("gated:" if include_gated else "") + ("with_disabled" if skip_disabled else "filtered")
+        + ("+plugin" if include_plugin else ""))
     disabled = set() if skip_disabled else _get_disabled_skill_names()
     project_dirs, dirs_to_scan, _ = _skill_search_dirs()
     signature = _skills_scan_signature(dirs_to_scan, disabled)
@@ -226,6 +232,24 @@ def _find_all_skills(*, skip_disabled: bool = False, include_gated: bool = False
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:
                 logger.debug("Skipping skill at %s: failed to parse: %s", skill_md, e, exc_info=True)
+    if include_plugin:
+        try:
+            from hermes_cli.plugins import discover_plugins, get_plugin_manager
+            discover_plugins()
+            for meta in get_plugin_manager().list_plugin_skill_metadata():
+                frontmatter = meta.get("frontmatter") or {}
+                if not include_gated and not skill_matches_platform(frontmatter):
+                    continue
+                name = str(meta.get("name", ""))[:MAX_NAME_LENGTH]
+                if not name or name in seen_names or name in disabled:
+                    continue
+                seen_names.add(name)
+                skills.append({
+                    "name": name,
+                    "description": _truncate_description(str(meta.get("description") or "")),
+                    "category": meta.get("category") or None})
+        except Exception:
+            logger.debug("Plugin skill listing failed", exc_info=True)
     # Keyed by the signature computed BEFORE the scan: a write racing the scan changes the
     # signature, so the next call re-scans instead of serving a torn result.
     _SKILLS_CACHE[cache_key] = (signature, now, skills)

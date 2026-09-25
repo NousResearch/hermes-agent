@@ -2939,7 +2939,7 @@ class TestNewEndpoints:
         import tools.skills_tool as skills_tool
         from hermes_cli.config import load_config
 
-        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False):
+        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False, include_plugin=False):
             return [
                 {"name": "skill-a", "description": "a", "category": "demo"},
                 {"name": "skill-b", "description": "b", "category": "demo"},
@@ -2963,7 +2963,7 @@ class TestNewEndpoints:
         monkeypatch.setattr(
             skills_tool,
             "_find_all_skills",
-            lambda *, skip_disabled=False, include_gated=False: [{"name": "skill-a", "description": "a", "category": "demo"}],
+            lambda *, skip_disabled=False, include_gated=False, include_plugin=False: [{"name": "skill-a", "description": "a", "category": "demo"}],
         )
 
         resp = self.client.put("/api/skills/toggle-category", json={"category": "nope", "enabled": False})
@@ -2979,7 +2979,7 @@ class TestNewEndpoints:
 
         calls: list[dict] = []
 
-        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False):
+        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False, include_plugin=False):
             calls.append({"skip_disabled": skip_disabled, "include_gated": include_gated})
             return [{"name": "kanban-orchestrator", "description": "a", "category": "devops"}]
 
@@ -3004,7 +3004,7 @@ class TestNewEndpoints:
             {"name": "github", "description": "b", "category": "github"},
         ]
 
-        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False):
+        def _fake_find_all_skills(*, skip_disabled=False, include_gated=False, include_plugin=False):
             return [
                 dict(r) for r in rows
                 if include_gated or skills_tool.skill_matches_environment(r)
@@ -3016,6 +3016,50 @@ class TestNewEndpoints:
         names = {s["name"] for s in self.client.get("/api/skills").json()}
         assert {"kanban-orchestrator", "github"} <= names
 
+    def test_get_skills_listing_includes_plugin_skills(self, monkeypatch):
+        # Regression: plugin-registered skills (qualified names, category
+        # "plugin") never reached GET /api/skills, so the Capabilities tab could
+        # neither show nor toggle them. The config surface lists them regardless
+        # of offer-time platform gating, like the disk skills above.
+        import hermes_cli.plugins as plugins_mod
+        import tools.skills_tool as skills_tool
+
+        class _FakeManager:
+            def list_plugin_skill_metadata(self):
+                return [{
+                    "name": "kanban-plugin:board-helper", "description": "d",
+                    "category": "plugin", "frontmatter": {"platforms": ["telegram"]},
+                }]
+
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: _FakeManager())
+
+        rows = {s["name"]: s for s in self.client.get("/api/skills").json()}
+        assert rows["kanban-plugin:board-helper"]["category"] == "plugin"
+
+    def test_toggle_plugin_category_membership(self, monkeypatch):
+        # The section switch must cover every row it renders: membership for the
+        # "plugin" category comes from the same discovery source as the listing,
+        # and toggling lands the qualified plugin name in skills.disabled.
+        import hermes_cli.plugins as plugins_mod
+        from hermes_cli.config import load_config
+
+        class _FakeManager:
+            def list_plugin_skill_metadata(self):
+                return [{
+                    "name": "kanban-plugin:board-helper", "description": "d",
+                    "category": "plugin", "frontmatter": {},
+                }]
+
+        monkeypatch.setattr(plugins_mod, "discover_plugins", lambda: None)
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: _FakeManager())
+
+        resp = self.client.put(
+            "/api/skills/toggle-category", json={"category": "plugin", "enabled": False})
+        assert resp.status_code == 200
+        assert "kanban-plugin:board-helper" in resp.json()["names"]
+        assert "kanban-plugin:board-helper" in load_config()["skills"]["disabled"]
+
     def test_toggle_skill_category_null_matches_uncategorized(self, monkeypatch):
         import tools.skills_tool as skills_tool
         from hermes_cli.config import load_config
@@ -3023,7 +3067,7 @@ class TestNewEndpoints:
         monkeypatch.setattr(
             skills_tool,
             "_find_all_skills",
-            lambda *, skip_disabled=False, include_gated=False: [
+            lambda *, skip_disabled=False, include_gated=False, include_plugin=False: [
                 {"name": "categorized", "description": "a", "category": "demo"},
                 {"name": "uncategorized", "description": "b", "category": None},
             ],

@@ -667,3 +667,60 @@ def test_is_launch_only_env_key_folds_case(name):
 @pytest.mark.parametrize("name", ["HERMES_MANAGED_DIRX", "HERMES_HOMEDIR", "PATH", ""])
 def test_is_launch_only_env_key_rejects_other_names(name):
     assert not hermes_constants.is_launch_only_env_key(name)
+
+
+class TestFirstPartyModuleRoots:
+    """Tree-scan completeness: every top-level module/package the repo ships must
+    classify as first-party (issue #122328 — a shipped root missing from
+    FIRST_PARTY_MODULE_ROOTS silently suppresses the half-update hint)."""
+
+    @staticmethod
+    def _shipped_roots(repo_root: Path) -> set[str]:
+        entries = set()
+        for child in repo_root.iterdir():
+            if child.is_file() and child.suffix == ".py" and child.stem != "__init__":
+                entries.add(child.stem)
+            elif child.is_dir() and (child / "__init__.py").is_file():
+                entries.add(child.name)
+        return entries
+
+    #: Deliberately NOT first-party: dev/eval trees that ship in the repo but are
+    #: never imported by runtime code (tests/evals grep-verified at #122328 fix
+    #: time; lineage_adoption imported only from tests/, 2026-11 rebase census).
+    #: A new top-level module/package must either join FIRST_PARTY_MODULE_ROOTS
+    #: (runtime) or this list (dev-only) — the completeness test below forces
+    #: the decision.
+    DELIBERATELY_EXCLUDED = frozenset({"tests", "evals", "lineage_adoption"})
+
+    def test_every_shipped_top_level_root_is_first_party(self):
+        """The shipped-tree invariant: repo-top modules and packages all resolve True."""
+        repo_root = Path(hermes_constants.__file__).resolve().parent
+        missing = sorted(
+            root for root in self._shipped_roots(repo_root)
+            if root not in self.DELIBERATELY_EXCLUDED
+            and not hermes_constants.is_first_party_module(root)
+        )
+        assert missing == [], (
+            "top-level modules/packages not covered by FIRST_PARTY_MODULE_ROOTS "
+            f"or the hermes_ prefix: {missing}"
+        )
+
+    @pytest.mark.parametrize("root", [
+        "batch_runner", "registration_lifecycle", "setup", "toolset_distributions",
+        "trajectory_compressor", "pm", "persistence", "persistence_assembly",
+        "process_identity", "session_keys", "session_rescue", "session_retention",
+        "session_rules", "sqlite_support", "storage_errors", "storage_limits",
+        "storage_user_copy",
+    ])
+    def test_issue_122328_roots_are_first_party(self, root):
+        assert hermes_constants.is_first_party_module(root) is True
+
+    @pytest.mark.parametrize("name", ["agents", "agentops", "setuptools", "tests", "evals"])
+    def test_third_party_and_test_trees_stay_excluded(self, name):
+        """Roots we deliberately do not ship at runtime stay out of the first-party set."""
+        assert hermes_constants.is_first_party_module(name) is False
+
+    @pytest.mark.parametrize("name", ["mcp_serve", "mini_swe_runner"])
+    def test_removed_upstream_stays_out_of_the_set(self, name):
+        """Roots removed from the shipped tree must not linger in the set (set follows tree)."""
+        assert hermes_constants.is_first_party_module(name) is False

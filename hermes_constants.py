@@ -1531,9 +1531,25 @@ def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:
 
 # First-party roots: an ImportError naming one means our own tree is inconsistent. The
 # update post-probe shares this set so the guard that BLOCKS and the hint that EXPLAINS agree.
+# Kept complete against the shipped tree (see tests/test_hermes_constants.py tree-scan
+# invariant): every repo-top module and runtime package belongs here.
 FIRST_PARTY_MODULE_ROOTS = frozenset({
     "agent", "acp_adapter", "cli", "cron", "gateway", "model_tools", "plugins",
     "providers", "tools", "toolsets", "run_agent", "tui_gateway", "utils", "hermes_agent",
+    # Runtime file modules (entry points / helpers shipped at repo top).
+    "batch_runner", "registration_lifecycle", "toolset_distributions",
+    "trajectory_compressor",
+    # setup.py — build-guard module shipped in the tree; a bare "setup" ImportError
+    # is vanishingly unlikely at runtime, but the classifier means "ships with
+    # Hermes", and it does.
+    "setup",
+    # Runtime package: hermes_constants itself lazy-imports pm.environments.
+    "pm",
+    # State/persistence and session roots (grown in-window, 2026-09..11): runtime
+    # imports live in agent/, gateway/, acp_adapter/ (see the tree-scan invariant).
+    "persistence", "persistence_assembly", "process_identity", "session_keys",
+    "session_rescue", "session_retention", "session_rules", "sqlite_support",
+    "storage_errors", "storage_limits", "storage_user_copy",
 })
 
 

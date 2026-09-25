@@ -1984,6 +1984,8 @@ DEFAULT_CONFIG = {
             # Absolute cap on the embedded listing in tokens (chars/4), regardless of context size.
             # Range 200..60000.
             "listing_max_tokens": 4000,
+            # Opt-in per-turn schema-prefix tradeoff; requires defer: all.
+            "selection": {"enabled": False, "max_tools": 8, "max_schema_tokens": 4096},
             # Tools replaced by the bridge by default. This list intentionally includes cold,
             # event-triggered built-ins; an explicit list replaces it wholesale and [] keeps every
             # tool eager. The runtime fallback in tools/tool_search.py derives from this value.

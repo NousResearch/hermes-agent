@@ -1,7 +1,8 @@
 """Progressive tool disclosure ("tool search"): MCP/plugin tools and a curated set of
 event-triggered core tools are replaced in the model-visible array by three bridge tools —
 tool_search / tool_describe / tool_call. Invariants: core tools (``toolsets._HERMES_CORE_TOOLS``)
-and session-gated GUI toolsets never defer unless named in ``defer``; ANY deferrable tool
+and session-gated GUI toolsets never defer unless named in ``defer`` or explicit
+``defer: all`` is configured; ANY deferrable tool
 activates the bridge (the listing scales with budget, not activation); the catalog is
 stateless — rebuilt from the live tool-defs every assembly (a session-keyed one drifts and
 silently drops tools); bridge calls route through ``model_tools.handle_function_call``."""
@@ -50,10 +51,14 @@ class ToolSearchConfig:
     listing_max_tokens: int = 4000  # budget = min(this, threshold_pct% of context)
     # None = curated default; an explicit list replaces it wholesale ([] = defer no core tools).
     defer_tools: Optional[frozenset] = None
+    defer_all: bool = False
+    selection_enabled: bool = False
+    selection_max_tools: int = 8
+    selection_max_schema_tokens: int = 4096
 
     @property
-    def effective_defer_tools(self) -> frozenset:
-        return _DEFAULT_DEFERRED_TOOLS if self.defer_tools is None else self.defer_tools
+    def effective_defer_tools(self) -> frozenset | str:
+        return "all" if self.defer_all else (_DEFAULT_DEFERRED_TOOLS if self.defer_tools is None else self.defer_tools)
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -63,7 +68,9 @@ class ToolSearchConfig:
             raw = {"enabled": "off" if raw is False else "auto"}
         max_search_limit = _clamped_int(raw.get("max_search_limit"), 25, 1, 50)
         defer_raw = raw.get("defer")
-        if defer_raw is not None and not isinstance(defer_raw, (list, tuple, set)):
+        selection = raw.get("selection")
+        selection = selection if isinstance(selection, dict) else {}
+        if defer_raw is not None and defer_raw != "all" and not isinstance(defer_raw, (list, tuple, set)):
             # Loud, then the curated default: a scalar here means the user tried to shrink the
             # tool surface and got nothing — never silently ignore it (#116404).
             logger.warning(
@@ -72,6 +79,10 @@ class ToolSearchConfig:
                 "using the curated default set.", defer_raw)
             defer_raw = None
         return cls(
+            defer_all=defer_raw == "all",
+            selection_enabled=selection.get("enabled") is True,
+            selection_max_tools=_clamped_int(selection.get("max_tools"), 8, 0, 64),
+            selection_max_schema_tokens=_clamped_int(selection.get("max_schema_tokens"), 4096, 0, 65536),
             enabled=_tri_state(raw.get("enabled", "auto")),
             threshold_pct=max(0.0, min(100.0, _safe_float(raw.get("threshold_pct"), 5.0))),
             search_default_limit=_clamped_int(
@@ -147,12 +158,14 @@ _DIRECT_SURFACE_TOOLSETS = frozenset({"desktop_ui", "project", "setup"})
 _DEFAULT_DEFERRED_TOOLS = frozenset(DEFAULT_CONFIG["tools"]["tool_search"]["defer"])
 
 
-def is_deferrable_tool_name(name: str, defer_tools: Optional[frozenset] = None) -> bool:
+def is_deferrable_tool_name(name: str, defer_tools: frozenset | str | None = None) -> bool:
     """True if a tool is *eligible* for deferral: named in ``defer_tools`` (curated set or
     user override), OR an MCP tool, OR neither core nor a session-gated GUI surface (i.e. a
     plugin tool). Bridge names never defer."""
     if name in BRIDGE_TOOL_NAMES:
         return False
+    if defer_tools == "all":
+        return bool(name)
     if defer_tools is not None and name in defer_tools:
         return True
     if name in _core_tool_names():
@@ -167,7 +180,7 @@ def _tool_def_names(tool_defs: Iterable[Dict[str, Any]]) -> Iterable[str]:
     return (_fn(td).get("name", "") for td in tool_defs)
 
 
-def classify_tools(tool_defs: List[Dict[str, Any]], defer_tools: Optional[frozenset] = None,
+def classify_tools(tool_defs: List[Dict[str, Any]], defer_tools: frozenset | str | None = None,
                    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Split a tool-defs list into (visible, deferrable); bridge tools are dropped (re-added
     after classification)."""

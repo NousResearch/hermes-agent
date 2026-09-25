@@ -590,6 +590,9 @@ class PluginDispatchMixin:
 
     def invoke_middleware(self, kind: str, **kwargs: Any) -> List[Any]:
         """Call middleware callbacks for *kind* (each isolated); return non-``None`` results."""
+        if kind == "tool_selection":
+            from agent.tool_selection import invoke_selection_callbacks
+            return invoke_selection_callbacks(self._middleware.get(kind, ()), kwargs)
         results: List[Any] = []
         for cb in self._middleware.get(kind, []):
             try:

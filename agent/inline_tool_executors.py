@@ -291,11 +291,20 @@ def resolve_invoke_tool_executor(agent, function_name: str) -> Optional[InlineTo
     Precedence: todo_list/session_search/memory, then memory-manager tools, then the
     remaining inline tools (``message_agent`` excluded).
     """
+    from agent.tool_selection import catalog_lookup_executor
+    lookup = catalog_lookup_executor(function_name)
+    if lookup is not None:
+        return lookup
     if function_name in INVOKE_TOOL_PRE_MEMORY_MANAGER_NAMES:
         return INLINE_TOOL_EXECUTORS[function_name]
     memory_manager = agent._memory_manager
     if memory_manager and memory_manager.has_tool(function_name):
         return lambda agent, args, ctx: agent._memory_manager.handle_tool_call(function_name, args)
     if function_name == "message_agent":
-        return None
+        from tools.tool_search import load_config_readonly
+        return INLINE_TOOL_EXECUTORS[function_name] if load_config_readonly().defer_all else None
+    if function_name in getattr(agent, "_context_engine_tool_names", ()):
+        from tools.tool_search import load_config_readonly
+        if load_config_readonly().defer_all:
+            return lambda agent, args, ctx: agent.context_compressor.handle_tool_call(function_name, args, messages=ctx.messages)
     return INLINE_TOOL_EXECUTORS.get(function_name)

@@ -1099,10 +1099,18 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     except Exception:
         agent._tool_snapshot_generation = 0
     import model_tools
+    from tools.tool_search import load_config_readonly, bridge_tool_schemas
+    _ts_config = load_config_readonly()
+    if _ts_config.defer_all and (agent.api_mode == "codex_app_server" or agent.provider == "moa"):
+        raise ValueError("defer: all is not supported by codex_app_server or MoA")
+    from hermes_constants import hermes_home_key
+    agent._tool_catalog_home = hermes_home_key()
     agent.tools = model_tools.get_tool_definitions(
         enabled_toolsets=enabled_toolsets, disabled_toolsets=disabled_toolsets,
-        quiet_mode=agent.quiet_mode,
+        quiet_mode=agent.quiet_mode, skip_tool_search_assembly=_ts_config.defer_all,
     )
+    if _ts_config.defer_all and _ts_config.enabled != "off":
+        agent.tools = list(agent.tools or []) + bridge_tool_schemas(len(agent.tools or []))
     # A finite -q run has no later session to learn for: no skill authoring tool (agent/oneshot_footprint.py).
     from agent.oneshot_footprint import prune_oneshot_tools
     agent.tools = prune_oneshot_tools(agent.tools or [])

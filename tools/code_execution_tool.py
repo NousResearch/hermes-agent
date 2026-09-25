@@ -554,8 +554,15 @@ def _finish_remote_kernel_result(kernel_result: Dict[str, Any], *,
 
 
 def _sandbox_tools_for(enabled_tools: Optional[List[str]]) -> frozenset:
-    """Enabled ∩ SANDBOX_ALLOWED_TOOLS, or every sandbox tool when the intersection is empty."""
-    return frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or ())) or SANDBOX_ALLOWED_TOOLS
+    """Authorized helpers; explicit all-deferral mode never widens an empty intersection.
+
+    Outside that opt-in mode, retain the legacy empty-intersection fallback.
+    """
+    allowed = frozenset(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or ()))
+    from tools.tool_search import load_config_readonly
+    if enabled_tools is not None and load_config_readonly().defer_all:
+        return allowed  # An empty authorized intersection must not expand to every helper.
+    return allowed or SANDBOX_ALLOWED_TOOLS
 
 
 def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,

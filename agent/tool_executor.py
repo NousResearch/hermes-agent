@@ -360,6 +360,9 @@ def _tool_search_scoped_names(agent) -> frozenset:
     except Exception:
         return frozenset()
 
+    if _ts.load_config_readonly().defer_all:
+        from agent.tool_selection import authorized_catalog
+        return frozenset(t["function"]["name"] for t in authorized_catalog(agent))
     enabled = getattr(agent, "enabled_toolsets", None)
     disabled = getattr(agent, "disabled_toolsets", None)
     cache_key = (
@@ -420,7 +423,12 @@ def _unwrap_tool_search_call(
             )
         # Validate before unwrapping: the generic bridge hides the concrete
         # parameter schema from provider-native tool-call validation.
-        scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
+        if _ts.load_config_readonly().defer_all:
+            schemas = getattr(agent, "_authorized_tool_catalog", [])
+            schema = next((s for s in schemas if s["function"]["name"] == underlying), None)
+            scope_block = _ts.validate_deferred_call_args(underlying, underlying_args, schema=schema)
+        else:
+            scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
         if scope_block is None:
             return underlying, underlying_args, None
         if flatten_probe:
@@ -700,7 +708,9 @@ def _dispatch_authorized_once(
         elif callback is not None:
             callback()
 
-    block_message, block_error_type = scope_block, "tool_scope_block"
+    from agent.tool_selection import dispatch_scope_error
+    block_message = scope_block or dispatch_scope_error(agent, ref.name)
+    block_error_type = "tool_scope_block"
     if block_message is None:
         block_error_type = "plugin_block"
         resolve = lambda: _pre_tool_block(agent, ref)  # noqa: E731
@@ -743,7 +753,14 @@ def _dispatch_authorized_once(
     from agent.terminal_approval_batch import prepare_current_terminal
     prepare_current_terminal(ref)
     _advance_start_order(lambda: _begin_tool_execution(agent, ref, display_index))
-    return _run_with_activity_heartbeat(agent, ref.name, lambda: execute(ref.args))
+    def _execute_current():
+        late_block = dispatch_scope_error(agent, ref.name)
+        if late_block is not None:
+            state.blocked = True
+            return _blocked_tool_result(agent, ref, block_body={"error": late_block},
+                                        block_error_type="tool_scope_block", guardrail_decision=None)
+        return execute(ref.args)
+    return _run_with_activity_heartbeat(agent, ref.name, _execute_current)
 
 
 def _run_agent_tool_execution_middleware(
@@ -1641,6 +1658,11 @@ def _resolve_sequential_dispatch(agent, ref: _ToolCallRef, messages: list) -> _S
     function_name, function_args, effective_task_id, tool_call_id, middleware_trace = (
         ref.name, ref.args, ref.task_id, ref.call_id, ref.trace,
     )
+    from agent.tool_selection import catalog_lookup_executor
+    lookup = catalog_lookup_executor(function_name)
+    if lookup is not None:
+        ctx = InlineToolContext(effective_task_id, tool_call_id, messages)
+        return _SequentialDispatch(lambda next_args: lookup(agent, next_args, ctx))
     if function_name != "delegate_task" and function_name in INLINE_TOOL_EXECUTORS:
         # Agent-level tools that need live AIAgent state; table shared with invoke_tool.
         inline_executor = INLINE_TOOL_EXECUTORS[function_name]

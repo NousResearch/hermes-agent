@@ -53,6 +53,7 @@ Supported middleware kinds:
 | `tool_request` | `tool_name`, `args`, `original_args` | `{"args": {...}}` | Replace effective tool args before hooks, guardrails, approvals, and execution. |
 | `llm_execution` | `request`, `original_request`, `next_call` | Any provider response | Wrap or replace the actual provider call. |
 | `tool_execution` | `tool_name`, `args`, `original_args`, `next_call` | Any tool result | Wrap or replace the actual tool call. |
+| `tool_selection` | `catalog`, `catalog_revision`, `task_context`, `budget`, session/turn/profile | `None` or `{"selected_tools": [...], "catalog_revision": ..., "source": ..., "reason": ...}` | Opt-in host-owned working set before conversion/cache; [separate fail-closed contract](./tool-selection.md). |
 
 Request middleware can return optional trace fields:
 
@@ -77,7 +78,7 @@ def on_tool_execution(**kwargs):
 ```
 
 If multiple plugins register the same execution middleware kind, Hermes runs
-them as a nested chain in registration order. Middleware failures are fail-open:
+them as a nested chain in registration order. Execution middleware failures are fail-open:
 Hermes logs a warning and continues with the next middleware or the base
 runtime path. A callback that fails the same way on every call (typically a
 signature naming a field the middleware does not send) is reported **once** at

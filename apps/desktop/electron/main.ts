@@ -83,10 +83,12 @@ import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
   isRetryableRemoteBootFailure,
+  isSshAuthFailedBootFailure,
   shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
-  shouldLatchRemoteReauthFailure
+  shouldLatchRemoteReauthFailure,
+  shouldLatchSshAuthFailure
 } from './backend-start-failure'
 import { describeBootstrapFailure } from './bootstrap-failure-copy'
 import {
@@ -13050,6 +13052,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
 
     const message = error instanceof Error ? error.message : String(error)
     const hostKeyChanged = isHostKeyChangedBootFailure(error)
+    const sshAuthFailed = isSshAuthFailedBootFailure(error)
 
     // Carry structured Cloud-down metadata through the boot-progress / IPC
     // boundary when present, so the renderer overlay can key on it rather than
@@ -13083,6 +13086,14 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       backendStartFailure = error instanceof Error ? error : new Error(message)
     }
 
+    // Rejected SSH credentials are just as terminal (#72698): BatchMode ssh
+    // keeps failing until the user loads the key or edits the connection, and
+    // an unlatched failure lets every api call re-drive boot and hide the
+    // overlay out from under its Gateway settings button.
+    if (shouldLatchSshAuthFailure({ attemptedRemote, isReauth: false, isSshAuthFailed: sshAuthFailed })) {
+      backendStartFailure = error instanceof Error ? error : new Error(message)
+    }
+
     // A confirmed reauth rejection latches separately: it can't self-heal, and
     // leaving it unlatched hides the overlay's "Sign in" button on every retry.
     if (shouldLatchRemoteReauthFailure({ attemptedRemote, isReauth: isReauthRequiredError(error) })) {
@@ -13098,13 +13109,14 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
         // Renderer contract for the self-heal loop (#82679): a transient
         // REMOTE failure (dropped SSH/HTTP registered connection, mint
         // timeout) is retryable — the renderer re-attempts the boot with
-        // bounded backoff. Local failures, confirmed reauth rejections, and
-        // host-key changes are not: those end in the recovery overlay /
-        // sign-in affordance.
+        // bounded backoff. Local failures, confirmed reauth rejections,
+        // host-key changes, and rejected SSH credentials are not: those end in
+        // the recovery overlay / sign-in affordance.
         retryable: isRetryableRemoteBootFailure({
           attemptedRemote,
           isReauth: isReauthRequiredError(error),
-          isHostKeyChanged: hostKeyChanged
+          isHostKeyChanged: hostKeyChanged,
+          isSshAuthFailed: sshAuthFailed
         }),
         running: false,
         statusCode: Number.isInteger(statusCode) ? statusCode : undefined

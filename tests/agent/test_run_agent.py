@@ -5903,6 +5903,49 @@ class TestStreamingApiCall:
         assert "Busy" in str(exc)
         agent.stream_delta_callback.assert_not_called()
 
+    def test_error_finish_sub_400_code_is_not_an_http_status(self, agent):
+        """A relay's error object inside HTTP-200 SSE often carries a sub-400 `code`.
+
+        Stamping `code: 200` onto the exception made error_classifier._by_transport
+        (which gates disconnect handling on `not status_code`) treat a dropped stream
+        as a real HTTP response and classify it `unknown` instead of timeout /
+        context_overflow. Only 4xx/5xx body codes count, matching the structured-body
+        sibling `_status_code_from_body` (#121270).
+        """
+        error_text = (
+            'data: {"error": {"code": 200, "message": '
+            '"Server disconnected without sending a response"}}\n\n'
+        )
+        chunks = [
+            _make_chunk(content=error_text),
+            _make_chunk(finish_reason="error_finish"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        with pytest.raises(Exception) as exc_info:
+            agent._interruptible_streaming_api_call({"messages": []})
+
+        exc = exc_info.value
+        assert type(exc).__name__ == "ProviderStreamError"
+        assert getattr(exc, "status_code", None) is None
+        assert "Server disconnected" in str(exc)
+        agent.stream_delta_callback.assert_not_called()
+
+    def test_error_finish_real_4xx_code_still_counts_as_http_status(self, agent):
+        # The narrowing must not drop genuine error statuses.
+        chunks = [
+            _make_chunk(content='data: {"error": {"code": 403, "message": "Forbidden"}}\n\n'),
+            _make_chunk(finish_reason="error_finish"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+        agent.stream_delta_callback = MagicMock()
+
+        with pytest.raises(Exception) as exc_info:
+            agent._interruptible_streaming_api_call({"messages": []})
+
+        assert getattr(exc_info.value, "status_code", None) == 403
+
     def test_error_finish_bare_sse_error_payload_raises_provider_error(self, agent):
         chunks = [
             _make_chunk(content=_provider_bare_sse_error_text()),

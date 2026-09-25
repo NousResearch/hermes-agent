@@ -22,7 +22,6 @@ import { atom } from 'nanostores'
 import { readJson, writeJson } from '@/lib/storage'
 
 import { BUILTIN_THEMES, DEFAULT_SKIN_NAME } from './presets'
-
 import { skinToDesktopTheme } from './skin'
 import { type DesktopTheme, isValidTheme } from './types'
 

@@ -24,7 +24,6 @@ import { $accentOverride } from './accent-override'
 import { $backendCustomCSS, $backendThemes, $pendingSkinApply, localDisplaySkinName, localDisplaySkinProfile } from './backend-sync'
 import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
 import { harmonize, readableInk } from './color'
-
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import { retintTheme } from './retint'
 import type { DesktopTheme, DesktopThemeColors } from './types'

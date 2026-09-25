@@ -750,15 +750,21 @@ _scratch_pruned_once = False
 SOCKET_TMPDIR_MAX_LEN = 50
 
 
-def socket_safe_tmpdir() -> str:
+def socket_safe_tmpdir(max_len: int | None = None) -> str:
     """Temp root short enough for AF_UNIX sockets. The scratch dir usually fits; macOS
     ``TMPDIR`` never does and a deep profile home may not, so those fall back to the OS
-    default root for sockets only (everything else stays in the scratch dir)."""
+    default root for sockets only (everything else stays in the scratch dir).
+    ``max_len`` tightens the budget for callers that append more than the ~49-byte
+    ``hermes_rpc_<32hex>.sock`` suffix the default is tuned for."""
     import tempfile
+
     if sys.platform == "darwin":
         return "/tmp"  # no-tmp: ok — AF_UNIX 104-byte socket path limit on darwin
+    budget = SOCKET_TMPDIR_MAX_LEN if max_len is None else max_len
     candidate = tempfile.gettempdir()
-    if len(candidate) <= SOCKET_TMPDIR_MAX_LEN or not os.path.isdir("/tmp"):  # no-tmp: ok — probe, not a write target
+    if len(candidate) <= budget or not os.path.isdir(
+        "/tmp"  # no-tmp: ok — probe, not a write target
+    ):
         return candidate
     return "/tmp"  # no-tmp: ok — AF_UNIX 108-byte socket path limit on Linux
 

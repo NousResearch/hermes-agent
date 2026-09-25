@@ -504,6 +504,7 @@ import {
 } from './updater'
 import {
   observeUpdaterHandoff,
+  resolveInstallationLauncher,
   resolveStagedUpdaterBinary,
   resolveVenvDir,
   spawnUpdaterProcess,
@@ -3461,6 +3462,7 @@ function resolveCheckoutUpdateStrategy(): UpdaterStrategy {
 
       preflightStateDb({
         python: await findPythonForRoot(root),
+        launcher: resolveInstallationLauncher(root, IS_WINDOWS, home),
         script: path.join(root, 'hermes_cli', 'backup_sqlite.py'),
         home,
         log

@@ -806,7 +806,7 @@ Plugins
      Context Engine           ▸ compressor
 ```
 
-- **General Plugins section** — checkboxes, toggle with SPACE. Checked = in `plugins.enabled`, unchecked = in `plugins.disabled` (explicit off).
+- **General Plugins section** — checkboxes, toggle with SPACE. A row opens checked when the plugin is active right now: listed in `plugins.enabled`, or a bundled platform, backend or model provider (on without a list entry), or the selected provider of a category. Only rows you flip are written on exit: unticking adds the plugin to `plugins.disabled` (explicit off), ticking adds it to `plugins.enabled` and clears a stale disable. Opening the picker and leaving changes nothing.
 - **Provider Plugins section** — shows current selection. Press ENTER to drill into a radio picker where you choose one active provider.
 - Bundled plugins appear in the same list with a `[bundled]` tag.
 

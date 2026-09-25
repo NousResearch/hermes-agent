@@ -4,7 +4,9 @@ Providers come from the registry; an OAuth provider renders an anchor to
 ``/auth/login?provider=<name>``, a ``supports_password`` provider renders a
 credential form wired by :data:`_PASSWORD_FORM_SCRIPT`. Styling mirrors the
 ``@nous-research/ui`` design system; fonts load from the SPA's ``/fonts/``
-mount, which the gate allowlists pre-auth.
+mount, which the gate allowlists pre-auth. When a user dashboard theme is
+active, :mod:`hermes_cli.dashboard_auth.login_theme` appends validated
+palette/typography overrides so sign-in wears the same theme as the SPA.
 
 The ``class="provider-btn"`` anchor is test-stable: the suite extracts its
 href to walk the OAuth flow.
@@ -15,6 +17,7 @@ import html
 from urllib.parse import quote, urlencode
 
 from hermes_cli.dashboard_auth import list_session_providers
+from hermes_cli.dashboard_auth.login_theme import render_login_theme_css
 
 # Single curly braces are ``str.format`` placeholders; CSS curlies are doubled.
 _LOGIN_HTML_TEMPLATE = """\
@@ -283,7 +286,7 @@ _LOGIN_HTML_TEMPLATE = """\
     background: var(--midground);
     color: var(--background-base);
   }}
-</style>
+{theme_css}</style>
 </head>
 <body>
 <main>
@@ -447,8 +450,9 @@ def render_login_html(*, next_path: str = "") -> str:
     HTML-escaped here as defence in depth.
     """
     providers = list_session_providers()
+    theme_css = render_login_theme_css()
     if not providers:
-        return _EMPTY_HTML
+        return _empty_html(theme_css)
     # URL-encode then HTML-escape, matching the gate's ``_safe_next_target``
     # shape so a round-tripped value is byte-identical.
     next_qs = f"&next={html.escape(quote(next_path, safe=''), quote=True)}" if next_path else ""
@@ -463,6 +467,7 @@ def render_login_html(*, next_path: str = "") -> str:
     return _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
         password_script=_PASSWORD_FORM_SCRIPT if needs_password_script else "",
+        theme_css=theme_css,
     )
 
 
@@ -482,9 +487,16 @@ def render_native_provider_choice_html(
                            quote=True)
         buttons.append(f'      <a class="provider-btn" href="{href}">'
                        f'Sign in with {html.escape(p.display_name)}</a>')
+    theme_css = render_login_theme_css()
     if not buttons:
-        return _EMPTY_HTML
-    return _LOGIN_HTML_TEMPLATE.format(provider_buttons="\n".join(buttons), password_script="")
+        return _empty_html(theme_css)
+    return _LOGIN_HTML_TEMPLATE.format(
+        provider_buttons="\n".join(buttons), password_script="", theme_css=theme_css)
+
+
+def _empty_html(theme_css: str) -> str:
+    """The no-provider page, wearing the active dashboard theme when there is one."""
+    return _EMPTY_HTML.replace("</style>", f"{theme_css}</style>", 1) if theme_css else _EMPTY_HTML
 
 
 def _render_password_form(provider, next_path: str) -> str:

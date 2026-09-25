@@ -780,11 +780,14 @@ def _print_uninstall_dry_run(*, project_root: Path, hermes_home: Path, full_unin
     print(f"  • Code checkout: {project_root}")
     if not full_uninstall:
         print(f"  • Keep Hermes config/data: {hermes_home}")
+        from hermes_cli.gui_uninstall import desktop_userdata_dir
+        if (userdata := desktop_userdata_dir()).exists():
+            print(f"  • Keep desktop app data: {userdata}")
     else:
         print(f"  • Hermes config/data: {hermes_home}")
-    from hermes_cli.gui_uninstall import desktop_userdata_dir
-    if (userdata := desktop_userdata_dir()).exists():
-        print(f"  • {'Keep desktop' if not full_uninstall else 'Desktop'} app data: {userdata}")
+        from hermes_cli.gui_uninstall import desktop_userdata_dir
+        if (userdata := desktop_userdata_dir()).exists():
+            print(f"  • Desktop app data: {userdata}")
         profiles = _discover_named_profiles() if _is_default_hermes_home(hermes_home) else []
         if profiles:
             print("  • Named profiles (interactive uninstall asks before removing):")

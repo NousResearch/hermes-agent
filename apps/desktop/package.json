@@ -156,7 +156,7 @@
     "use-stick-to-bottom": "1.1.6",
     "vfile": "6.0.3",
     "web-haptics": "0.0.6",
-    "yaml": "2.8.1"
+    "yaml": "2.9.0"
   },
   "optionalDependencies": {
     "get-windows": "9.3.0"
@@ -191,7 +191,7 @@
     "tsx": "4.23.1",
     "typescript": "6.0.3",
     "vite": "8.2.0",
-    "vitest": "4.1.10",
+    "vitest": "4.1.11",
     "wait-on": "9.0.10"
   }
 }

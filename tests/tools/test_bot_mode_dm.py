@@ -959,6 +959,24 @@ def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
     assert not dm_file.exists()
 
 
+def test_delivery_command_author_json_survives_the_windows_slash_rewrite(tmp_path, monkeypatch):
+    """The win32 blanket backslash->slash rewrite must never touch the author JSON: it runs on
+    ``sys.executable``/path components only, and the author argument is inserted afterward. A
+    regression here previously ran the rewrite AFTER inserting the author JSON, silently mangling
+    any `\\`-containing author name/id (e.g. "a\\b" -> "a//b") on Windows."""
+    monkeypatch.setattr(bot_mode_dm.sys, "platform", "win32")
+    dm_file = tmp_path / "dm.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+
+    command = bot_mode_dm._delivery_command(
+        ["-p", "test", "chat"], str(dm_file), stdin_file=False,
+        author={"id": "a\\b", "name": "x"},
+    )
+
+    assert '"id":"a\\\\b"' in command
+    assert "a//b" not in command
+
+
 @pytest.mark.parametrize(
     ("terminal_result", "raises"),
     [

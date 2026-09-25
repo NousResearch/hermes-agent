@@ -602,8 +602,6 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
     if profile_home is not None:
         module_args.extend(["--profile-home", str(Path(profile_home).resolve())])
     module_args.extend(argv)
-    if author:
-        module_args[1:1] = ["--author", json.dumps(author, separators=(",", ":"))]
     runner_argv = runtime_command(
         Path(__file__).resolve().parent.parent, module_args, module="tools.bot_mode_dm",
     )
@@ -611,6 +609,11 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
         # The tracked local backend uses Git Bash on native Windows: forward slashes keep drive
         # paths executable there; backslash paths are parsed as command names (exit 127).
         runner_argv = [part.replace("\\", "/") for part in runner_argv]
+    if author:
+        # Inserted after the slash rewrite: JSON escapes are backslashes too, and the rewrite
+        # would otherwise corrupt a `\\`-containing author name/id (e.g. "a\\b" -> "a//b").
+        author_index = runner_argv.index("--run-delivery") + 1
+        runner_argv[author_index:author_index] = ["--author", json.dumps(author, separators=(",", ":"))]
     return shlex.join(runner_argv)
 
 

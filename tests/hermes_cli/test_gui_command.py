@@ -1126,11 +1126,14 @@ def test_gui_foreground_launch_ctrl_c_exits_cleanly(tmp_path, monkeypatch, capsy
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
     # Patching hermes_cli.main.subprocess.run swaps the shared stdlib module's
-    # attribute, so EVERY subprocess.run in the process raises. On Linux the
-    # best-effort desktop-entry install runs refresh_desktop_databases →
-    # subprocess.run BEFORE the attached launch — outside the KeyboardInterrupt
-    # handler under test — so neutralize it like the other foreground tests do.
+    # attribute, so EVERY subprocess.run in the process raises. Two best-effort
+    # pre-launch paths call it BEFORE the attached launch — outside the
+    # KeyboardInterrupt handler under test — so neutralize both the way the
+    # other foreground tests do: the Linux desktop-entry install (its
+    # refresh_desktop_databases probe) and the sandbox fixup's `unshare`
+    # user-namespace probe.
     monkeypatch.setattr(main_desktop, "_register_linux_desktop_entry", lambda **kw: None)
+    monkeypatch.setattr(main_desktop, "_desktop_linux_userns_sandbox_available", lambda: True)
     packaged_exe = _make_packaged_executable(root, monkeypatch)
     ok = subprocess.CompletedProcess([], 0)
 

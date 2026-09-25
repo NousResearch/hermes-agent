@@ -14,6 +14,7 @@ an empty-content assistant turn.
 """
 
 
+from agent.conversation_loop import is_interrupt_waiting_sentinel
 from agent.turn_finalizer import finalize_turn
 
 
@@ -194,3 +195,44 @@ def test_interrupted_turn_with_diagnostic_text_is_not_completed():
     assert result["interrupted"] is True
     assert result["completed"] is False
     assert result["failed"] is False
+
+
+def test_interrupted_turn_output_transform_becomes_delivered_response(monkeypatch):
+    """Interrupted partial text still passes through the egress transform once."""
+    calls = []
+
+    def hook(name, logger, **kwargs):
+        if name == "transform_llm_output":
+            calls.append(kwargs["response_text"])
+            return ["redacted partial reply"]
+        return []
+
+    monkeypatch.setattr("agent.turn_finalizer._invoke_hook_safely", hook)
+    agent = _StubAgent()
+    result = _finalize(
+        agent, [{"role": "user", "content": "hi"}], interrupted=True,
+        final_response="partial reply",
+    )
+
+    assert calls == ["partial reply"]
+    assert result["final_response"] == "redacted partial reply"
+    assert result["response_transformed"] is True
+    assert result["pre_transform_response"] == "partial reply"
+
+
+def test_interrupt_sentinel_uses_pre_transform_text():
+    sentinel = "Operation interrupted: waiting for model response (0.1s elapsed)."
+    assert is_interrupt_waiting_sentinel("已取消", pre_transform=sentinel)
+    assert not is_interrupt_waiting_sentinel("已取消", pre_transform="partial reply")
+
+
+def test_non_interrupted_output_transform_remains_supported(monkeypatch):
+    monkeypatch.setattr(
+        "agent.turn_finalizer._invoke_hook_safely",
+        lambda name, logger, **kwargs: ["rewritten"] if name == "transform_llm_output" else [],
+    )
+    result = _finalize(
+        _StubAgent(), [{"role": "user", "content": "hi"}], interrupted=False,
+        final_response="original",
+    )
+    assert result["final_response"] == "rewritten"

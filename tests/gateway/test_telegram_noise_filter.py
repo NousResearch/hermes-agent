@@ -253,6 +253,26 @@ def test_chat_gateways_drop_interrupt_sentinel(platform):
     assert _sanitize_gateway_final_response("local", sentinel) == sentinel
 
 
+def test_chat_gateway_drops_rewritten_interrupt_sentinel_using_original_text():
+    sentinel = "Operation interrupted: waiting for model response (1.7s elapsed)."
+
+    assert _sanitize_gateway_final_response(
+        "telegram", "已取消", pre_transform=sentinel
+    ) == ""
+
+
+def test_chat_gateway_keeps_rewritten_normal_text_with_original_text():
+    assert _sanitize_gateway_final_response(
+        "telegram", "已取消", pre_transform="partial assistant response"
+    ) == "已取消"
+
+
+def test_chat_gateway_keeps_suppressing_untransformed_interrupt_sentinel():
+    sentinel = "Operation interrupted: waiting for model response (1.7s elapsed)."
+
+    assert _sanitize_gateway_final_response("telegram", sentinel) == ""
+
+
 @pytest.mark.parametrize("platform", [*CHAT_PLATFORMS, Platform.BLUEBUBBLES])
 @pytest.mark.parametrize(
     ("raw", "expected"),

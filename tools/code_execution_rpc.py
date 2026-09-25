@@ -14,6 +14,7 @@ import shlex
 import socket
 import threading
 import time
+from typing import Optional
 
 from agent.thread_scoped_output import thread_scoped_silence
 from tools.registry import tool_error
@@ -23,6 +24,19 @@ logger = logging.getLogger("tools.code_execution_tool")
 
 # Terminal parameters that must not be used from ephemeral sandbox scripts.
 _TERMINAL_BLOCKED_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns", "heartbeat"}
+
+# Bound on one protocol message (a request line on the socket transport, a
+# reply frame body on the kernel transport). On Windows the socket transport
+# is loopback TCP reachable by any local process, and a peer that streams
+# without a newline would otherwise grow the pre-auth read buffer without
+# limit. Sized for the largest legit sandbox tool request (multi-MB
+# write_file/patch payloads); same order as tools.mcp_tool_errors' inbound
+# MCP body cap.
+MAX_RPC_MESSAGE_BYTES = 10 * 1024 * 1024
+_RPC_RECV_POLL_S = 1.0   # recv poll so stop_event teardown is prompt
+_RPC_IDLE_S = 300.0      # no-data idle window per connection
+_RPC_SEND_S = 60.0       # response send budget; the client reads eagerly
+_RPC_DRAIN_S = 5.0       # bounded wait for an oversized line's newline
 
 
 def _default_dispatch(task_id):
@@ -67,13 +81,52 @@ def _handle_rpc_request(request: dict, *, allowed_tools: frozenset, tool_call_co
     return result
 
 
+def _send_line(conn: socket.socket, resp: str) -> bool:
+    """Send one response line under a bounded send budget. False when the peer
+    could not be written to; the caller drops the connection."""
+    conn.settimeout(_RPC_SEND_S)
+    try:
+        conn.sendall((resp + "\n").encode())
+    except OSError:
+        return False
+    finally:
+        conn.settimeout(_RPC_RECV_POLL_S)
+    return True
+
+
+def _drain_oversized_line(conn: socket.socket) -> Optional[bytes]:
+    """Discard incoming bytes until the oversized line's newline so a client
+    still streaming the request can read the error reply. Returns the bytes
+    after the newline, or None when the line never terminated within the drain
+    deadline or the peer went away."""
+    end = time.monotonic() + _RPC_DRAIN_S
+    while time.monotonic() < end:
+        try:
+            chunk = conn.recv(65536)
+        except socket.timeout:
+            continue
+        except OSError:
+            return None
+        if not chunk:
+            return None
+        if b"\n" in chunk:
+            return chunk.split(b"\n", 1)[1]
+    return None
+
+
+def _size_limit_error() -> str:
+    limit = MAX_RPC_MESSAGE_BYTES // (1024 * 1024)
+    return tool_error(f"RPC request exceeds the {limit} MiB size limit; shrink the arguments and retry")
+
+
 def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: list,
                      tool_call_counter: list, max_tool_calls: int, allowed_tools: frozenset,
                      stop_event: threading.Event, rpc_token: str, dispatch=None):
     """Accept one client and serve newline-delimited JSON requests until it disconnects, idles
-    300s, or the call limit is reached. ``tool_call_counter`` is a mutable ``[int]``. ``dispatch``
-    overrides how an allowed, budgeted call runs: per-call sandboxes use the default (the thread
-    carries the cell's context); session kernels rebind each call to the CURRENT cell's authority.
+    _RPC_IDLE_S without data, or stop_event fires. ``tool_call_counter`` is a mutable ``[int]``.
+    ``dispatch`` overrides how an allowed, budgeted call runs: session kernels rebind each call
+    to the CURRENT cell's authority. Requests past MAX_RPC_MESSAGE_BYTES get a size-limit error;
+    the connection is only dropped when the oversized line cannot be resynced.
     """
     if dispatch is None:
         dispatch = _default_dispatch(task_id)
@@ -88,37 +141,69 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                 continue
         if conn is None:
             return
-        conn.settimeout(300)
+        # Short recv poll so stop_event teardown is prompt. The idle contract
+        # is 300s without received bytes, kept by a deadline armed before each
+        # recv: a long dispatch must not consume the client's window.
+        conn.settimeout(_RPC_RECV_POLL_S)
         buf = b""
-        while True:
+        conn_dead = False
+        while not (conn_dead or stop_event.is_set()):
+            idle_deadline = time.monotonic() + _RPC_IDLE_S
             try:
                 chunk = conn.recv(65536)
             except socket.timeout:
-                break
+                if time.monotonic() >= idle_deadline:
+                    break
+                continue
             if not chunk:
                 break
+            # buf entering here has no newline (the inner loop consumes every
+            # complete line), so only the appended bytes can hold the next one:
+            # scanning from the append point keeps the dribble case linear.
+            search_from = len(buf)
             buf += chunk
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                line = line.strip()
-                if not line:
-                    continue
-                call_start = time.monotonic()
-                try:
-                    request = json.loads(line.decode())
-                except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                    resp = tool_error(f"Invalid RPC request: {exc}")
+            newline = buf.find(b"\n", search_from)
+            while newline >= 0 or len(buf) > MAX_RPC_MESSAGE_BYTES:
+                if newline < 0:
+                    # Partial line over cap: drain to its newline (bounded) so
+                    # the error reply reaches a client still streaming it.
+                    tail = _drain_oversized_line(conn)
+                    if not _send_line(conn, _size_limit_error()) or tail is None:
+                        conn_dead = True
+                        break
+                    buf = tail
+                elif newline > MAX_RPC_MESSAGE_BYTES:
+                    buf = buf[newline + 1:]
+                    if not _send_line(conn, _size_limit_error()):
+                        conn_dead = True
+                        break
                 else:
-                    resp = _handle_rpc_request(
-                        request, allowed_tools=allowed_tools, tool_call_counter=tool_call_counter,
-                        max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
-                        call_start=call_start, where="sandbox",
-                    ) if _rpc_token_ok(request, rpc_token) else tool_error("Unauthorized RPC request")
-                conn.sendall((resp + "\n").encode())
-    except socket.timeout:
-        logger.debug("RPC listener socket timeout")
+                    line, buf = buf[:newline].strip(), buf[newline + 1:]
+                    if line:
+                        call_start = time.monotonic()
+                        try:
+                            request = json.loads(line.decode())
+                        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                            resp = tool_error(f"Invalid RPC request: {exc}")
+                        else:
+                            if not isinstance(request, dict):
+                                resp = tool_error("Invalid RPC request")
+                            elif not _rpc_token_ok(request, rpc_token):
+                                resp = tool_error("Unauthorized RPC request")
+                            else:
+                                resp = _handle_rpc_request(
+                                    request, allowed_tools=allowed_tools,
+                                    tool_call_counter=tool_call_counter,
+                                    max_tool_calls=max_tool_calls, dispatch=dispatch,
+                                    tool_call_log=tool_call_log, call_start=call_start,
+                                    where="sandbox",
+                                )
+                        if not _send_line(conn, resp):
+                            conn_dead = True
+                            break
+                newline = buf.find(b"\n")
     except OSError as e:
-        logger.debug("RPC listener socket error: %s", e, exc_info=True)
+        logger.debug("RPC connection socket error: %s", e, exc_info=True)
     finally:
         if conn:
             try:

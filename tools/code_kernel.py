@@ -11,7 +11,8 @@ later passthrough is invisible until ``reset=true`` (the result names the kernel
 Wire protocol: one JSON request per stdin line ``{"id", "code"}``; replies framed on
 stdout as ``<SENTINEL> <byte-length>\\n<json>`` with a per-kernel random SENTINEL from
 the env. Bytes outside frames are raw fd output attributed to the running cell (calls
-are serialized per kernel). A forged frame can only fake its own cell result.
+are serialized per kernel). Replies are correlated to the request id, so a
+forged frame cannot fake any cell result.
 Also hosts what ``tools.code_kernel_remote`` shares: owner resolution, registry, cell core.
 """
 
@@ -65,6 +66,9 @@ def run_cell(request, execution_count):
         status, trace = "error", traceback.format_exc()
     stdout_text, stdout_clipped = _clip(out.getvalue())
     stderr_text, stderr_clipped = _clip(err.getvalue())
+    # The reply must stay under the host's frame bound: exception text is
+    # unbounded otherwise and a legit reply would parse as a forged frame.
+    trace, _ = _clip(trace)
     return {
         "id": request.get("id", ""), "status": status,
         "stdout": stdout_text, "stderr": stderr_text,
@@ -394,6 +398,9 @@ _KERNELS: Dict[Tuple, SessionKernel] = _REGISTRY.kernels
 # stable owner id, owner-teardown disposal, idle reaping, max-live bound.
 # See #88637.
 DEFAULT_MAX_SESSION_KERNELS = 4
+# Frame headers are a small decimal length; anything longer is cell output
+# carrying marker bytes, not a frame.
+_MAX_FRAME_HEADER_BYTES = 64
 DEFAULT_KERNEL_IDLE_TIMEOUT = 1800
 
 
@@ -478,10 +485,10 @@ atexit.register(shutdown_all_kernels)
 
 def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
                  sandbox_tools: frozenset) -> None:
-    """Serve tool RPC for the kernel's whole life: ``_rpc_server_loop`` returns on disconnect or
-    its 300s idle timeout, and a kernel idles longer between cells, so re-accept until teardown
-    (the client stub reconnects: HERMES_RPC_PERSISTENT). The serving thread carries NO frozen
-    authority — every dispatch routes through the CURRENT cell's ``CellAuthority``."""
+    """Serve tool RPC for the kernel's whole life: ``_rpc_server_loop`` returns on disconnect,
+    its idle timeout, or teardown, and a kernel idles longer between cells, so re-accept until
+    teardown (the client stub reconnects: HERMES_RPC_PERSISTENT). The serving thread carries NO
+    frozen authority — every dispatch routes through the CURRENT cell's ``CellAuthority``."""
     from tools.code_execution_rpc import _rpc_server_loop
     from tools.registry import tool_error
     def _dispatch(tool_name: str, tool_args: dict) -> str:
@@ -490,14 +497,24 @@ def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
             return tool_error("No active execute_code cell: this kernel has no cell authority installed.")
         return authority.dispatch(tool_name, tool_args)
     while not kernel.stop_event.is_set():
-        _rpc_server_loop(kernel.server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
-                         max_tool_calls, sandbox_tools, kernel.stop_event, kernel.rpc_token,
-                         dispatch=_dispatch)
+        sock = kernel.server_sock
+        if sock is None:
+            return
+        try:
+            _rpc_server_loop(sock, "", kernel.tool_call_log, kernel.tool_call_counter,
+                             max_tool_calls, sandbox_tools, kernel.stop_event, kernel.rpc_token,
+                             dispatch=_dispatch)
+        except Exception:
+            # This thread is the kernel's only RPC channel; never let one bad
+            # connection kill re-accept for the kernel's remaining lifetime.
+            if not kernel.stop_event.is_set():
+                logger.exception("kernel RPC serving pass failed; re-accepting")
 
 
 def _stdout_reader(kernel: SessionKernel) -> None:
     """Split the child's stdout into protocol frames and raw passthrough."""
     from tools.code_execution_tool import MAX_STDOUT_BYTES
+    from tools.code_execution_rpc import MAX_RPC_MESSAGE_BYTES
     assert kernel.proc is not None and kernel.proc.stdout is not None
     stream = kernel.proc.stdout
     marker = ("\n" + kernel.sentinel + " ").encode("utf-8")
@@ -528,12 +545,29 @@ def _stdout_reader(kernel: SessionKernel) -> None:
             rest = buf[index + len(marker):]
             newline = rest.find(b"\n")
             if newline < 0:
+                if len(rest) > _MAX_FRAME_HEADER_BYTES:
+                    # Marker plus a long newline-free tail is cell output, not
+                    # a frame header; resync so the header bytes cannot grow
+                    # buf without bound either.
+                    raw(marker)
+                    buf = rest
+                    continue
                 buf = buf[index:]
                 break
+            if newline > _MAX_FRAME_HEADER_BYTES:
+                raw(marker)
+                buf = rest
+                continue
             try:
                 length = int(rest[:newline])
             except ValueError:
                 # Not a real frame header (user output containing the marker bytes): raw.
+                raw(marker)
+                buf = rest
+                continue
+            if length <= 0 or length > MAX_RPC_MESSAGE_BYTES:
+                # A cell can print marker bytes; a bogus length would make the
+                # reader buffer an unbounded body. Treat as output and resync.
                 raw(marker)
                 buf = rest
                 continue
@@ -547,7 +581,10 @@ def _stdout_reader(kernel: SessionKernel) -> None:
             try:
                 kernel.response_q.put(json.loads(body[:length].decode("utf-8", errors="replace")))
             except ValueError:
-                kernel.response_q.put({"status": "protocol-error"})
+                # A real frame is always valid JSON; an unparseable body is
+                # forged cell output. Emit it and resync so one forged frame
+                # cannot kill the kernel.
+                raw(body[:length])
             buf = body[length:]
 
 
@@ -756,8 +793,10 @@ def _background_reaper() -> None:
             logger.exception("kernel idle reaper pass failed; retrying next interval")
 
 
-def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted) -> Tuple[str, Dict[str, Any]]:
-    """Wait for the cell's reply; returns (host status, payload)."""
+def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted,
+                request_id: str = "") -> Tuple[str, Dict[str, Any]]:
+    """Wait for the cell's reply; returns (host status, payload). Reply frames
+    carry the request's id; anything else (stale or forged frames) is skipped."""
     deadline = time.monotonic() + timeout if timeout else None
     while True:
         if is_interrupted():
@@ -770,6 +809,8 @@ def _await_cell(kernel: SessionKernel, timeout: int, is_interrupted) -> Tuple[st
             continue
         if payload.get("status") in ("kernel-eof", "protocol-error"):
             return "error", payload
+        if request_id and payload.get("id") != request_id:
+            continue
         return "success", payload
 
 
@@ -883,10 +924,15 @@ def _run_cell(kernel: SessionKernel, key: Tuple, code: str, *, task_id: str, chi
             # Per-cell tool budget: the RPC loop enforces counter < max; reset without restarting.
             kernel.tool_call_counter[0] = 0
             kernel.raw.drain(), kernel.stderr.drain()  # raw output leaked between cells belongs to no cell
+            # Stale or forged frames from an earlier cell are not this cell's
+            # reply; drop them so they cannot mis-attribute results.
+            while not kernel.response_q.empty():
+                kernel.response_q.get_nowait()
             kernel.cell_authority = authority
-            kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))
+            request_id = uuid.uuid4().hex
+            kernel.proc.stdin.write((json.dumps({"id": request_id, "code": code}) + "\n").encode("utf-8"))
             kernel.proc.stdin.flush()
-            status, payload = _await_cell(kernel, timeout, is_interrupted)
+            status, payload = _await_cell(kernel, timeout, is_interrupted, request_id=request_id)
             result = _cell_result(
                 kernel, key, status, payload,
                 timeout=timeout, sandbox_tools=sandbox_tools, reused=reused,

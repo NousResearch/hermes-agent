@@ -590,3 +590,220 @@ class TestStaleStagingDirSweep(unittest.TestCase):
                 self.assertFalse(old.exists())
                 self.assertTrue(young.exists())
                 self.assertTrue(bystander.exists())
+
+class TestStdoutReaderFrameBound(unittest.TestCase):
+    """A cell can print the frame sentinel; a forged length header must not
+    make _stdout_reader buffer an unbounded frame body."""
+
+    def _kernel_with_stream(self, data: bytes):
+        import io
+        import queue
+        from types import SimpleNamespace
+        from tools.code_kernel import _BoundedBuffer
+
+        kernel = SimpleNamespace(
+            proc=SimpleNamespace(stdout=io.BufferedReader(io.BytesIO(data))),
+            sentinel="@@S@@",
+            response_q=queue.Queue(),
+            raw=_BoundedBuffer(),
+        )
+        return kernel
+
+    def test_forged_huge_length_is_output_and_next_frame_parses(self):
+        from tools.code_kernel import _stdout_reader
+        from tools.code_execution_rpc import MAX_RPC_MESSAGE_BYTES
+
+        payload = json.dumps({"status": "ok"}).encode()
+        real_frame = b"\n@@S@@ " + str(len(payload)).encode() + b"\n" + payload
+        data = (b"\n@@S@@ " + str(MAX_RPC_MESSAGE_BYTES + 1).encode() + b"\n"
+                + real_frame)
+        kernel = self._kernel_with_stream(data)
+        _stdout_reader(kernel)
+
+        got = kernel.response_q.get_nowait()
+        self.assertEqual(got, {"status": "ok"})
+        self.assertEqual(kernel.response_q.get_nowait(), {"status": "kernel-eof"})
+        # The forged header is emitted as cell output, not consumed as a frame.
+        self.assertIn(str(MAX_RPC_MESSAGE_BYTES + 1).encode(), kernel.raw.drain().encode())
+
+    def test_negative_length_is_output_and_next_frame_parses(self):
+        from tools.code_kernel import _stdout_reader
+
+        payload = json.dumps({"status": "ok"}).encode()
+        real_frame = b"\n@@S@@ " + str(len(payload)).encode() + b"\n" + payload
+        data = b"\n@@S@@ -1\n" + real_frame
+        kernel = self._kernel_with_stream(data)
+        _stdout_reader(kernel)
+
+        self.assertEqual(kernel.response_q.get_nowait(), {"status": "ok"})
+        self.assertEqual(kernel.response_q.get_nowait(), {"status": "kernel-eof"})
+        self.assertIn("-1", kernel.raw.drain())
+
+    def test_zero_length_is_output_and_next_frame_parses(self):
+        """length <= 0 is always forged: real frames carry a JSON object."""
+        from tools.code_kernel import _stdout_reader
+
+        payload = json.dumps({"status": "ok"}).encode()
+        real_frame = b"\n@@S@@ " + str(len(payload)).encode() + b"\n" + payload
+        data = b"\n@@S@@ 0\n" + real_frame
+        kernel = self._kernel_with_stream(data)
+        _stdout_reader(kernel)
+
+        self.assertEqual(kernel.response_q.get_nowait(), {"status": "ok"})
+        self.assertEqual(kernel.response_q.get_nowait(), {"status": "kernel-eof"})
+        self.assertIn("0", kernel.raw.drain())
+
+    def test_garbage_frame_body_is_output_and_resyncs(self):
+        """A real frame is always valid JSON; an unparseable in-cap body is
+        forged output, not a kernel-fatal protocol error."""
+        from tools.code_kernel import _stdout_reader
+
+        payload = json.dumps({"status": "ok"}).encode()
+        real_frame = b"\n@@S@@ " + str(len(payload)).encode() + b"\n" + payload
+        data = b"\n@@S@@ 3\nxyz" + real_frame
+        kernel = self._kernel_with_stream(data)
+        _stdout_reader(kernel)
+
+        self.assertEqual(kernel.response_q.get_nowait(), {"status": "ok"})
+        self.assertEqual(kernel.response_q.get_nowait(), {"status": "kernel-eof"})
+        self.assertIn("xyz", kernel.raw.drain())
+
+    def test_unterminated_oversized_header_is_bounded(self):
+        """Marker plus a long newline-free tail is output, not a pending
+        header: the bytes must reach raw output while the stream stays open
+        and silent, not accumulate inside the parser's buffer."""
+        import io
+        import queue
+        import threading
+        from types import SimpleNamespace
+        from tools.code_kernel import _BoundedBuffer, _stdout_reader
+
+        release = threading.Event()
+
+        class _Drip(io.RawIOBase):
+            def __init__(self):
+                self._sent = False
+
+            def readable(self):
+                return True
+
+            def readinto(self, buf):
+                if not self._sent:
+                    self._sent = True
+                    data = b"\n@@S@@ " + b"9" * 200
+                    buf[:len(data)] = data
+                    return len(data)
+                release.wait(10)
+                return 0
+
+        kernel = SimpleNamespace(
+            proc=SimpleNamespace(stdout=io.BufferedReader(_Drip())),
+            sentinel="@@S@@", response_q=queue.Queue(), raw=_BoundedBuffer())
+        t = threading.Thread(target=_stdout_reader, args=(kernel,), daemon=True)
+        t.start()
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if b"9" * 100 in b"".join(kernel.raw.chunks):
+                    break
+                time.sleep(0.05)
+            self.assertIn(b"9" * 100, b"".join(kernel.raw.chunks))
+        finally:
+            release.set()
+            t.join(timeout=5)
+
+class TestAwaitCellCorrelation(unittest.TestCase):
+    """Reply frames carry the request's id; stale or forged frames sitting in
+    the queue must not be returned as the current cell's result."""
+
+    def test_stale_and_forged_frames_are_skipped(self):
+        import queue
+        from types import SimpleNamespace
+        from tools.code_kernel import _await_cell
+
+        kernel = SimpleNamespace(response_q=queue.Queue())
+        kernel.response_q.put({"id": "forged", "status": "ok", "stdout": "FORGED"})
+        kernel.response_q.put({"id": "req-1", "status": "ok", "stdout": "REAL"})
+        status, payload = _await_cell(kernel, timeout=5, is_interrupted=lambda: False,
+                                      request_id="req-1")
+        self.assertEqual(status, "success")
+        self.assertEqual(payload["stdout"], "REAL")
+
+    def test_host_signals_still_return_immediately(self):
+        import queue
+        from types import SimpleNamespace
+        from tools.code_kernel import _await_cell
+
+        kernel = SimpleNamespace(response_q=queue.Queue())
+        kernel.response_q.put({"status": "kernel-eof"})
+        status, payload = _await_cell(kernel, timeout=5, is_interrupted=lambda: False,
+                                      request_id="req-1")
+        self.assertEqual(status, "error")
+        self.assertEqual(payload["status"], "kernel-eof")
+
+class TestRpcBoundsE2E(unittest.TestCase):
+    """Real-kernel e2e for the RPC bounds: kernel cells use the socket RPC
+    server for tool calls and the framed stdout protocol for replies."""
+
+    def test_oversized_tool_request_is_rejected_and_kernel_survives(self):
+        with _kernel_config(timeout=30):
+            from tools.code_execution_rpc import MAX_RPC_MESSAGE_BYTES
+            with patch("model_tools.handle_function_call",
+                       side_effect=lambda name, args, **kw: json.dumps({"dispatched": name})):
+                code = (
+                    "from hermes_tools import terminal\n"
+                    f"r = terminal('x' * {MAX_RPC_MESSAGE_BYTES + 1024 * 1024})\n"
+                    "print('ERR:' + str(r.get('error', 'none'))[:80])\n"
+                )
+                out = _run(code)
+                self.assertEqual(out["status"], "success", out)
+                self.assertIn("size limit", out["output"])
+                # The kernel's RPC server keeps serving: a normal call still works.
+                ok = _run("from hermes_tools import terminal\n"
+                          "print(terminal('echo hi').get('dispatched'))")
+                self.assertEqual(ok["status"], "success", ok)
+                self.assertIn("terminal", ok["output"])
+                self.assertTrue(ok["kernel"]["reused"])
+
+    def test_forged_frame_header_is_output_and_kernel_survives(self):
+        """HERMES_KERNEL_SENTINEL sits in the kernel env, so cell code can forge
+        a frame header; the host must bound the claimed length. print() is
+        captured into the reply's stdout field, so the forge must write fd 1
+        directly to reach the frame channel."""
+        with _kernel_config(timeout=30):
+            code = (
+                "import os\n"
+                "s = os.environ['HERMES_KERNEL_SENTINEL']\n"
+                "os.write(1, ('\\n' + s + ' 99999999999\\n').encode())\n"
+                "print('AFTER')\n"
+            )
+            forged = _run(code)
+            self.assertEqual(forged["status"], "success", forged)
+            # Forged header bytes come back as cell output, not a consumed frame.
+            self.assertIn("99999999999", forged["output"])
+            self.assertIn("AFTER", forged["output"])
+            second = _run("print('STILL-ALIVE')")
+            self.assertEqual(second["status"], "success", second)
+            self.assertIn("STILL-ALIVE", second["output"])
+            self.assertTrue(second["kernel"]["reused"])
+
+    def test_forged_complete_frame_cannot_replace_the_result(self):
+        """A forged in-cap frame whose id does not match the live request is
+        skipped: the cell's real reply is what lands, and the forged payload
+        cannot bleed into the next cell either."""
+        with _kernel_config(timeout=30):
+            code = (
+                "import os\n"
+                "s = os.environ['HERMES_KERNEL_SENTINEL']\n"
+                "body = b'{\"id\": \"forged\", \"status\": \"ok\", \"stdout\": \"FORGED\"}'\n"
+                "os.write(1, b'\\n' + s.encode() + b' ' + str(len(body)).encode() + b'\\n' + body)\n"
+                "print('REAL')\n"
+            )
+            out = _run(code)
+            self.assertEqual(out["status"], "success", out)
+            self.assertIn("REAL", out["output"])
+            self.assertNotIn("FORGED", out["output"])
+            second = _run("print('STILL-ALIVE')")
+            self.assertEqual(second["status"], "success", second)
+            self.assertIn("STILL-ALIVE", second["output"])
+            self.assertNotIn("FORGED", second["output"])

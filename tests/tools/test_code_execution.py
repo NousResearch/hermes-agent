@@ -775,6 +775,7 @@ class TestHeadTailTruncation(unittest.TestCase):
         self.assertIn("TAIL", body)
 
 
+@pytest.mark.platforms("posix")
 class TestRpcTokenAuthorization(unittest.TestCase):
     """The per-session RPC token must gate socket dispatch (fail-closed).
 
@@ -783,6 +784,22 @@ class TestRpcTokenAuthorization(unittest.TestCase):
     the tool is dispatched, while a request carrying the correct token
     round-trips normally.
     """
+
+    class _OneShotListener:
+        """Minimal object exposing the .accept()/.settimeout() the loop uses."""
+
+        def __init__(self, conn):
+            self._conn = conn
+            self._served = False
+
+        def settimeout(self, _t):
+            pass
+
+        def accept(self):
+            if self._served:
+                raise socket.timeout()
+            self._served = True
+            return self._conn, ("peer", 0)
 
     def _drive_server(self, rpc_token, requests):
         """Run _rpc_server_loop against a real AF_UNIX socketpair.
@@ -796,23 +813,7 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         # can hand to accept() by wrapping it in a tiny listener shim.
         srv, cli = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
 
-        class _OneShotListener:
-            """Minimal object exposing the .accept()/.settimeout() the loop uses."""
-
-            def __init__(self, conn):
-                self._conn = conn
-                self._served = False
-
-            def settimeout(self, _t):
-                pass
-
-            def accept(self):
-                if self._served:
-                    raise socket.timeout()
-                self._served = True
-                return self._conn, ("peer", 0)
-
-        listener = _OneShotListener(srv)
+        listener = self._OneShotListener(srv)
         stop_event = threading.Event()
         tool_call_log = []
         tool_call_counter = [0]
@@ -859,6 +860,30 @@ class TestRpcTokenAuthorization(unittest.TestCase):
             t.join(timeout=5)
         return responses
 
+    def _start_raw_server(self, rpc_token="secret-token"):
+        """Start _rpc_server_loop on a real socketpair; returns the pieces the
+        test drives (client socket, server thread, stop_event, dispatch log)."""
+        from tools.code_execution_rpc import _rpc_server_loop
+
+        srv, cli = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+
+        stop_event = threading.Event()
+        tool_call_log = []
+        dispatched = []
+
+        def _dispatch(tool_name, tool_args):
+            dispatched.append(tool_name)
+            return _mock_handle_function_call(tool_name, tool_args)
+
+        t = threading.Thread(
+            target=_rpc_server_loop, daemon=True,
+            args=(self._OneShotListener(srv), "test-task", tool_call_log, [0], 10,
+                  frozenset({"terminal"}), stop_event, rpc_token),
+            kwargs={"dispatch": _dispatch},
+        )
+        t.start()
+        return cli, srv, t, stop_event, tool_call_log, dispatched
+
     def test_missing_token_rejected(self):
         """A request with no token is rejected as Unauthorized."""
         resp = self._drive_server(
@@ -866,6 +891,122 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         )
         self.assertEqual(len(resp), 1)
         self.assertIn("Unauthorized", resp[0].get("error", ""))
+
+    @staticmethod
+    def _read_line(cli):
+        buf = b""
+        while b"\n" not in buf:
+            chunk = cli.recv(65536)
+            if not chunk:
+                raise AssertionError("connection closed without a response")
+            buf += chunk
+        return json.loads(buf.split(b"\n", 1)[0].decode())
+
+    def test_oversized_request_rejected_and_connection_closed(self):
+        """A peer streaming a newline-free request past the cap is rejected and
+        the connection is dropped: the pre-auth buffer is bounded. The socket
+        is loopback TCP on Windows, reachable by any local process."""
+        from tools.code_execution_rpc import MAX_RPC_MESSAGE_BYTES
+        cli, srv, t, stop_event, tool_call_log, dispatched = self._start_raw_server()
+        try:
+            cli.settimeout(15)
+            cli.sendall(b"x" * (MAX_RPC_MESSAGE_BYTES + 1))
+            resp = self._read_line(cli)
+            self.assertIn("size limit", resp.get("error", ""))
+            self.assertIn("10 MiB", resp["error"])
+            # A line that never terminates cannot be resynced: conn drops.
+            self.assertEqual(cli.recv(65536), b"")
+            self.assertEqual(dispatched, [])
+            self.assertEqual(tool_call_log, [])
+        finally:
+            stop_event.set()
+            cli.close()
+            srv.close()
+            t.join(timeout=10)
+        self.assertFalse(t.is_alive(), "server loop must exit after the oversized request")
+
+    def test_oversized_terminated_line_resyncs_and_connection_survives(self):
+        """A complete request line past the cap gets the size-limit error and
+        the connection keeps serving: the server resyncs after its newline."""
+        with patch("tools.code_execution_rpc.MAX_RPC_MESSAGE_BYTES", 256):
+            cli, srv, t, stop_event, _, dispatched = self._start_raw_server()
+            try:
+                cli.settimeout(15)
+                cli.sendall(b"x" * 257 + b"\n")
+                resp = self._read_line(cli)
+                self.assertIn("size limit", resp.get("error", ""))
+                self.assertEqual(dispatched, [])
+                cli.sendall((json.dumps(
+                    {"tool": "terminal", "args": {"command": "echo hi"},
+                     "token": "secret-token"}) + "\n").encode())
+                self._read_line(cli)
+                self.assertEqual(dispatched, ["terminal"])
+            finally:
+                stop_event.set()
+                cli.close()
+                srv.close()
+                t.join(timeout=10)
+
+    def test_request_at_exact_cap_boundary(self):
+        """Boundary pin: a line of exactly the cap is processed; one byte over
+        is rejected. A `>` to `>=` flip must go red here."""
+        with patch("tools.code_execution_rpc.MAX_RPC_MESSAGE_BYTES", 128):
+            cli, srv, t, stop_event, _, _ = self._start_raw_server()
+            try:
+                cli.settimeout(15)
+                cli.sendall(b"x" * 128 + b"\n")
+                resp = self._read_line(cli)
+                self.assertIn("Invalid RPC request", resp.get("error", ""))
+                cli.sendall(b"x" * 129 + b"\n")
+                resp = self._read_line(cli)
+                self.assertIn("size limit", resp.get("error", ""))
+            finally:
+                stop_event.set()
+                cli.close()
+                srv.close()
+                t.join(timeout=10)
+
+    def test_non_dict_request_rejected_and_connection_survives(self):
+        """Valid JSON that is not an object must not crash the serving loop;
+        the same connection keeps working afterwards."""
+        cli, srv, t, stop_event, _, dispatched = self._start_raw_server()
+        try:
+            cli.settimeout(15)
+            cli.sendall(b"[1]\n")
+            resp = self._read_line(cli)
+            self.assertIn("Invalid RPC request", resp.get("error", ""))
+            cli.sendall((json.dumps(
+                {"tool": "terminal", "args": {"command": "echo hi"},
+                 "token": "secret-token"}) + "\n").encode())
+            self._read_line(cli)
+            self.assertEqual(dispatched, ["terminal"])
+        finally:
+            stop_event.set()
+            cli.close()
+            srv.close()
+            t.join(timeout=10)
+        self.assertFalse(t.is_alive())
+
+    def test_stop_event_releases_held_connection(self):
+        """A connected peer that stops sending must not pin the server thread
+        past teardown: stop_event is checked between short recv timeouts. One
+        valid exchange first proves the server is inside the conn loop."""
+        cli, srv, t, stop_event, _, _ = self._start_raw_server()
+        try:
+            cli.settimeout(15)
+            cli.sendall((json.dumps(
+                {"tool": "terminal", "args": {"command": "echo hi"},
+                 "token": "secret-token"}) + "\n").encode())
+            self._read_line(cli)
+            stop_event.set()
+            t.join(timeout=10)
+            # Assert before cleanup: closing the client would unblock recv and
+            # mask a thread that ignored stop_event.
+            self.assertFalse(t.is_alive(), "server loop must exit on stop_event even with a held connection")
+        finally:
+            cli.close()
+            srv.close()
+            t.join(timeout=10)
 
 
 

@@ -50,16 +50,21 @@ source: https://github.com/sweetrb/apple-mail-mcp
 #     why their INBOX started failing outright. `list-messages`/
 #     `search-messages` now include the real per-mailbox error text in both
 #     the all-failed exception and the partial-failure note (2.19.14).
-#     mail#246 is REOPENED pending @j5pu's reply with that new detail — the
-#     underlying INBOX-access problem on their account is not yet understood.
-# 2.19.7-2.19.10 and 2.19.13 land only on tools outside default_enabled
-# (dateSent parity on the AppleScript rows, a send/create-draft
-# retry-duplication fix, a search `body` parameter, the new
-# `get-message-rfc822` tool, and a reply/forward saved-draft window-close
-# fix) — capability additions and write-tool fixes, not defects in
-# default_enabled tools, so they don't independently justify a re-pin under
-# this catalog's defect-only carve-out; they ride along because 2.19.11 and
-# 2.19.14 do. 2.18.0 and 2.18.1 land only on send/mutation tools that are
+#     On 2.19.14 the reporter confirmed the INBOX failure no longer
+#     reproduces, and mail#246 was closed as completed (2026-09-23).
+# Two further releases in the range touch default_enabled tools, both as
+# additive capability, not defect fixes: 2.19.7 adds `dateSent` to the
+# AppleScript-backend rows of `list-messages` / `search-messages` (the IMAP
+# rows have had it since 2.19.2), and 2.19.9 gives `search-messages` an
+# optional IMAP-only `body` parameter; an unscoped body search lists
+# AppleScript-only accounts under `notSearchedMailboxes`. A caller that does
+# not pass `body` sees no change. 2.19.8, 2.19.10, 2.19.12 and 2.19.13 land
+# only on tools outside default_enabled: a send / create-draft
+# retry-duplication fix, the new `get-message-rfc822` tool, quoted-original
+# restoration on AppleScript-transport reply/forward, and a reply/forward
+# saved-draft window-close fix. None of these justifies a re-pin on its own
+# under this catalog's defect-only carve-out; they ride along because 2.19.11
+# and 2.19.14 do. 2.18.0 and 2.18.1 land only on send/mutation tools that are
 # disabled below.
 transport:
   type: stdio

@@ -27,9 +27,14 @@ source: https://github.com/sweetrb/apple-numbers-mcp
 # vulnerability, 4 GHSAs high severity, reachable via ajv's JSON-schema
 # validation on every tool call regardless of default_enabled.)
 #
-# npm-current 1.2.3 (2026-09-09) stays declined: it removes three unused
-# imports, leaving esbuild identifier renumbering as the whole shipped delta
-# — no behaviour change, and nothing reachable through default_enabled below.
+# npm-current 1.2.3 (2026-09-09) is declined under the defect-only
+# carve-out: it fixes no defect in a default_enabled tool. It is not an empty
+# release, though. Besides removing three unused imports, it carries a
+# transitive `qs` security override (sweetrb/apple-numbers-mcp#77) and
+# security floors for `hono` and `js-yaml` (#80). Those are dependency-
+# resolution changes in the repo's pnpm workspace and lockfile. In the
+# published package, `build/index.js` differs from 1.2.2 only by esbuild
+# identifier renumbering, and the runtime dependency ranges are unchanged.
 transport:
   type: stdio
   command: "npx"

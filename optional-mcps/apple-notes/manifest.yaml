@@ -94,18 +94,37 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # first improved the failure's error message/cause/remedy, but the read
 # itself still failed; 2.9.12 fixes the actual cause — the AppleScript
 # output cap was 64 MB against a ~110 MB body from the embedded image — by
-# raising the accepted size to 512 MB, so the read now succeeds. Nothing
-# else in 2.9.1-2.9.30 touches a default_enabled tool as a defect fix:
-# 2.9.14 (`search-notes` gains `matchedIn`/`includeWordCount`), 2.9.18
-# (`list-folders` gains a `smartFolder` flag) and 2.9.27 (`list-attachments`
-# gains `stale`/`fallbackStale` flags) are all capability additions, not
-# fixes, so none clears the defect-only carve-out on their own — though all
-# three are additive JSON fields, so nothing here is a compatibility break.
-# 2.9.0 added the opt-in private native-writer foundation
-# (`native-helper-status`, `native-note-state`) and the many #181-roadmap
-# tools since are none of them default-enabled.
+# raising the accepted size to 512 MB, so the read now succeeds. Within
+# 2.9.1-2.9.12 the only other default-surface change is 2.9.10's (a clearer
+# error for that failure, and an optional `timeoutSeconds` on
+# `get-note-content`). 2.9.0 added the opt-in private native-helper foundation
+# (`native-helper-status`, `native-note-state`), and none of the many
+# #181-roadmap tools since is default-enabled.
 # 11 tools added since 2.8.49, none removed: 77 tools, all 20
 # default_enabled entries resolve.
+#
+# Newer than this pin, so NOT in the pinned surface, but a future bump past
+# them must account for them:
+#   - ⚠️ 2.9.25 is a BEHAVIOUR CHANGE on the default surface (a defect fix,
+#     in the safer direction). Error classification used to match the whole
+#     message, and messages quote the note title, so a missing note titled
+#     "Meeting timed out" came back as `timeout_indeterminate` with
+#     `indeterminate: true`, and titles such as "Lost connection plan" or
+#     "Access denied log" read as a dropped connection or a permission
+#     refusal. From 2.9.25 quoted text is ignored and note-not-found sets
+#     `not_found` directly (#185). An unresolvable Notes UUID or numeric key
+#     now carries `not_found` / `full_disk_access_missing` instead of a bare
+#     schema validation error (#190). Default-enabled tools affected:
+#     `get-note-content`, `get-note-by-id`, `get-note-details`,
+#     `get-note-plaintext`, `get-checklist-state`, `get-note-markdown`,
+#     `list-attachments`. A caller keying off `code` / `indeterminate` on
+#     those gets different, more accurate, answers after that bump.
+#   - 2.9.27 changes the opt-in `wordCount` from `search-notes`
+#     `includeWordCount` (punctuation runs no longer count; unspaced CJK,
+#     Thai, Lao, Khmer and Myanmar text is split at word boundaries, #244).
+#   - 2.9.14 (`search-notes` gains `matchedIn` / `includeWordCount`), 2.9.18
+#     (`list-folders` gains `smartFolder`) and 2.9.27 (`list-attachments`
+#     gains `stale` / `fallbackStale`) are additive JSON fields.
 #
 # The 41 tools added since 2.8.3 (native objects and tags, attachments,
 # folder rename and delete-by-id, Shortcut-bridge setup, the read-only

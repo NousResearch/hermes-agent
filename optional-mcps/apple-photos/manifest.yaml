@@ -26,6 +26,18 @@ source: https://github.com/sweetrb/apple-photos-mcp
 # outside the normal >=2-week age policy: 2.1.12 fixes a fast-uri security
 # vulnerability, 4 GHSAs high severity, reachable via ajv's JSON-schema
 # validation on every tool call regardless of default_enabled.)
+#
+# npm-current 2.1.13 (2026-09-23) is declined under the defect-only
+# carve-out: it fixes no defect in a default_enabled tool. It is not an empty
+# release, though. It adds an opt-in stale-while-revalidate cache for the
+# PhotosDB sidecar (`APPLE_PHOTOS_MCP_STALE_WHILE_REVALIDATE=1`, off by
+# default, with two cache-race fixes inside that path). It also carries a
+# transitive `qs` security override (sweetrb/apple-photos-mcp#84) and
+# security floors for `hono` and `js-yaml` (#85). Those are dependency-
+# resolution changes in the repo's pnpm workspace and lockfile. In the
+# published package, `build/index.js` is byte-identical to 2.1.12 and the
+# runtime dependency ranges are unchanged. The shipped delta is
+# `src/utils/photos_reader.py` (the opt-in cache), README and package.json.
 transport:
   type: stdio
   command: "npx"

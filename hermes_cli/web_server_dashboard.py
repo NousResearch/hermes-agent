@@ -802,29 +802,33 @@ async def _plugin_route_secret_scope(profile: Optional[str] = None):
     (#115256 → PR #116816) and MCP connect (#113746). No-op when multiplexing is
     off, so single-profile hosts keep reading ``os.environ`` exactly as before.
 
+    Delegates to ``_config_profile_scope`` — the SAME seam the config
+    (``?profile=``) routes use — so the three approaches resolve credentials
+    identically. That distinction matters:
+      * The dashboard's own profile binds ``launch_secret_scope(process_home)``,
+        not a bare ``build_profile_secret_scope``: env-only launch credentials
+        (systemd ``Environment=``, ``op run``, Compose) have no ``.env`` to
+        rebuild from, and only the launch scope carries them past the fail-closed
+        flip. A bare ``build_profile_secret_scope`` would resolve such a key to
+        nothing under multiplexing.
+      * A ``?profile=`` request first hydrates that profile's external secret
+        sources (``hydrate_profile_secret_sources``) before building the mapping.
+
     ``async`` on purpose: a sync yield-dependency has its setup and teardown run
-    on separate threadpool threads, so the ``reset_secret_scope`` token would be
-    created in a different ``contextvars`` context than it is reset in. Here setup
-    and teardown share the one request-task context; a sync plugin handler run in
-    the threadpool still sees the scope because ``run_in_threadpool`` copies the
-    current context into the worker.
+    on separate threadpool threads, so the secret-scope token would be created in
+    a different ``contextvars`` context than it is reset in. Here setup and
+    teardown (the ``with`` block's ``__enter__``/``__exit__``) share the one
+    request-task context; a sync plugin handler run in the threadpool still sees
+    the scope because ``run_in_threadpool`` copies the current context into the
+    worker.
     """
-    from agent.secret_scope import (
-        build_profile_secret_scope,
-        is_multiplex_active,
-        reset_secret_scope,
-        set_secret_scope,
-    )
+    from agent.secret_scope import is_multiplex_active
     if not is_multiplex_active():
         yield
         return
-    from hermes_cli.web_server_profiles import _is_current_profile, _resolve_profile_dir
-    home = get_process_hermes_home() if _is_current_profile(profile) else _resolve_profile_dir(profile.strip())
-    token = set_secret_scope(build_profile_secret_scope(Path(home)))
-    try:
+    from hermes_cli.web_server_profiles import _config_profile_scope
+    with _config_profile_scope(profile):
         yield
-    finally:
-        reset_secret_scope(token)
 
 
 def _mount_plugin_api_routes():

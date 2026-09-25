@@ -106,3 +106,31 @@ def test_plugin_route_reads_environ_without_multiplexing(tmp_path, monkeypatch):
         resp = _client(app).get("/api/plugins/example/whoami")
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "key": "sk-env"}
+
+
+def test_plugin_route_resolves_env_only_launch_credential_under_multiplexing(tmp_path, monkeypatch):
+    """Regression for the scope-source gap: the launch profile's credential can be
+    env-only (systemd ``Environment=`` / ``op run`` / Compose injection) with no ``.env``
+    to rebuild from. Routing through ``_config_profile_scope`` binds
+    ``launch_secret_scope`` for the dashboard's own profile, which carries that key past
+    the fail-closed flip; a bare ``build_profile_secret_scope`` on an empty ``.env`` would
+    have resolved it to nothing and the handler would fail closed."""
+    import tui_gateway.launch_profile_policy as lpp
+
+    monkeypatch.setenv("HERMES_HOME", _write_home_env(tmp_path))  # empty .env: no file source
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-env-only")  # injected only into the process env
+    app = FastAPI()
+    app.include_router(
+        _whoami_router(),
+        prefix="/api/plugins/example",
+        dependencies=[Depends(_plugin_route_secret_scope)],
+    )
+    lpp._snapshot = None  # freeze the launch env fresh, capturing the env-only key
+    try:
+        lpp.activate_multi_profile_hosting()  # freezes os.environ + flips multiplex on
+        resp = _client(app).get("/api/plugins/example/whoami")
+    finally:
+        set_multiplex_active(False)
+        lpp._snapshot = None
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "key": "sk-env-only"}

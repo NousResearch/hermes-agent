@@ -422,7 +422,10 @@ def _unwrap_tool_search_call(
         # parameter schema from provider-native tool-call validation.
         scope_block = _ts.validate_deferred_call_args(underlying, underlying_args)
         if scope_block is None:
-            return underlying, underlying_args, None
+            # Dispatch the SAME shape validation accepted. A valid call whose
+            # {"item": ...} envelope was repaired must not be re-validated
+            # (or handed to the handler) in its original shape.
+            return underlying, _ts.repair_deferred_call_args(underlying, underlying_args), None
         if flatten_probe:
             probe = json.loads(scope_block)
             scope_block = (

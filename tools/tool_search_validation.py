@@ -153,6 +153,42 @@ def _validation_error(message: str, *, path: str, constraint: str, parameters: A
         hint="Retry tool_call with 'arguments' matching the parameters schema above.")
 
 
+def repair_deferred_call_args(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Coerce + unwrap ``{"item": <x>}`` envelopes so dispatch sees the registered shape.
+
+    Public because ``agent/tool_executor._unwrap_tool_search_call`` must dispatch the SAME
+    repaired args it validated; validating a repaired copy while dispatching the original
+    (upstream issue #99270, PR #115020) makes a valid call fail its own schema check.
+    """
+    try:
+        from model_tools import coerce_tool_args
+        candidate_args = coerce_tool_args(name, dict(args))
+    except Exception:
+        logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
+        candidate_args = dict(args)
+    schema = {}
+    try:
+        from tools.registry import registry as _registry
+        raw = _registry.get_schema(name)
+        fn = raw.get("function") if isinstance(raw, dict) and raw.get("type") == "function" else raw
+        params = fn.get("parameters") if isinstance(fn, dict) else None
+        if isinstance(params, dict):
+            schema = params
+    except Exception:
+        logger.debug("Deferred-argument schema lookup failed for %s", name, exc_info=True)
+    try:
+        repaired = _flatten_single_envelope_lists(
+            _repair_item_envelopes(candidate_args), _schema_array_keys(schema),
+        )
+        if repaired != candidate_args:
+            logger.debug("tool_call to %r: repaired item-envelope args %r -> %r",
+                         name, candidate_args, repaired)
+            return repaired
+    except Exception:  # pragma: no cover — never block on a repair bug
+        logger.debug("Item-envelope repair failed for %s", name, exc_info=True)
+    return candidate_args
+
+
 def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
     """Validate ``tool_call`` arguments against the deferred tool's schema. Models invoke
     deferred tools "blind" (schema unseen) and omit required args; without this, the opaque
@@ -185,29 +221,9 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         if _schema_has_external_ref(validation_schema):
             logger.debug("Skipping local deferred-argument validation for %s: external $ref", name)
             return None
-        # Validate the repaired shape dispatch will see; copy because coerce_tool_args may
-        # normalize in place (dispatch re-coerces canonically).
-        try:
-            from model_tools import coerce_tool_args
-            candidate_args = coerce_tool_args(name, dict(args))
-        except Exception:
-            logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
-            candidate_args = dict(args)
-        # Repair {"item": <x>} response-item envelopes before jsonschema validation so a
-        # valid call matches the registered schema (upstream issue #99270, PR #115020).
-        try:
-            repaired_args = _flatten_single_envelope_lists(
-                _repair_item_envelopes(candidate_args),
-                _schema_array_keys(validation_schema),
-            )
-            if repaired_args != candidate_args:
-                logger.debug(
-                    "tool_call to %r: repaired item-envelope args %r -> %r",
-                    name, candidate_args, repaired_args,
-                )
-                candidate_args = repaired_args
-        except Exception:  # pragma: no cover — never block on a repair bug
-            logger.debug("Item-envelope repair failed for %s", name, exc_info=True)
+        # Validate the repaired shape dispatch will see (dispatch re-coerces canonically).
+        candidate_args = repair_deferred_call_args(name, args)
+        repaired_args = candidate_args
         try:
             from jsonschema.exceptions import best_match
             from jsonschema.validators import validator_for

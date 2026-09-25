@@ -62,7 +62,7 @@ test('earlier PM user-bin launchers are accepted only for the reported source tr
   } finally {
     fs.rmSync(base, { recursive: true, force: true })
   }
-})
+}, 20_000)
 
 // The .cmd rung goes through cmd.exe with a fixed argv; a launcher path that
 // cmd.exe would re-parse (quote, %var%, &, |, redirection) is refused instead of

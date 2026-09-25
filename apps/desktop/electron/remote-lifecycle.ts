@@ -656,7 +656,7 @@ async function pidIsOurDashboard(
   }
 
   const script =
-    'import os,shlex,subprocess,sys\n' +
+    'import ctypes,os,shlex,struct,subprocess,sys\n' +
     `pid=${Number(pid)}\n` +
     `expected=os.path.expanduser(${shq(hermesPath)})\n` +
     // The installer-facing launcher is intentionally preserved for invocation
@@ -674,12 +674,27 @@ async function pidIsOurDashboard(
     ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
     ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
     'except OSError:\n' +
-    ' try:\n' +
-    '  line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
-    ' except subprocess.CalledProcessError:\n' +
-    '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
-    '  print("FOREIGN");sys.exit(0)\n' +
-    ' args=shlex.split(line)\n' +
+    ' if sys.platform=="darwin":\n' +
+    '  try:\n' +
+    '   libc=ctypes.CDLL(None,use_errno=True)\n' +
+    '   mib=(ctypes.c_int*3)(1,49,pid)\n' +
+    '   size=ctypes.c_size_t()\n' +
+    '   if libc.sysctl(mib,3,None,ctypes.byref(size),None,0)!=0:raise OSError(ctypes.get_errno(),os.strerror(ctypes.get_errno()))\n' +
+    '   buf=ctypes.create_string_buffer(size.value)\n' +
+    '   if libc.sysctl(mib,3,buf,ctypes.byref(size),None,0)!=0:raise OSError(ctypes.get_errno(),os.strerror(ctypes.get_errno()))\n' +
+    '   raw=buf.raw[:size.value]\n' +
+    '   argc=struct.unpack_from("i",raw)[0]\n' +
+    '   tail=raw[4:].split(b"\\0",1)[1].lstrip(b"\\0")\n' +
+    '   args=[x.decode("utf-8","surrogateescape") for x in tail.split(b"\\0")[:argc]]\n' +
+    '  except (OSError,ValueError,struct.error):\n' +
+    '   print("FOREIGN");sys.exit(0)\n' +
+    ' else:\n' +
+    '  try:\n' +
+    '   line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
+    '  except subprocess.CalledProcessError:\n' +
+    '   # pid already gone — a dead process is FOREIGN, not a transport error\n' +
+    '   print("FOREIGN");sys.exit(0)\n' +
+    '  args=shlex.split(line)\n' +
     'ok=False\n' +
     'try:\n' +
     ' serve=args.index("serve")\n' +

@@ -2457,7 +2457,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
     # recovery / turn abandon), not a deliberate stop: those must skip persist_on_release
     # sessions. An explicit stop (process_manage kill, CLI /stop) passes its own source
     # string and still reaches them.
-    _LIFECYCLE_KILL_SOURCES = frozenset({"kill_all", "gateway_turn_timeout", "agent_close"})
+    _LIFECYCLE_KILL_SOURCES = frozenset({
+        "kill_all", "gateway_turn_timeout", "agent_close",
+        # _interrupt_running_turn's lifecycle class (eviction / /new while the turn runs):
+        # the gateway-side twin of these sweeps, so a persisted job survives them (#41225).
+        "gateway_turn_lifecycle",
+    })
 
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:
         """Kill ``task_id`` processes created after ``baseline_ids``. Output is

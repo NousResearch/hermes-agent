@@ -1479,10 +1479,7 @@ export function useSessionActions({
               const clarifyPayload = pendingClarify ? pendingClarifyToolPayload(pendingClarify) : null
 
               const earlyClarifyProjection = clarifyPayload
-                ? restorePendingClarifyToolCall(
-                    suppressUnprovenWarmTranscript ? [] : activatedMessages,
-                    clarifyPayload
-                  )
+                ? restorePendingClarifyToolCall(suppressUnprovenWarmTranscript ? [] : activatedMessages, clarifyPayload)
                 : null
 
               const projectedTail = earlyClarifyProjection?.messages.at(-1)

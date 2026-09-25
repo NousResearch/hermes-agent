@@ -64,8 +64,9 @@ function runNpmCi(node, npm, args, { source, env }) {
     console.log('node-deps: npm ci hit ENOTEMPTY; removing node_modules and retrying once...')
     rmSync(join(source, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
     run()
+  } finally {
+    rmSync(logsDir, { recursive: true, force: true })
   }
-  rmSync(logsDir, { recursive: true, force: true })
 }
 
 /** Install the full requested workspace union in one strict, locked operation. */

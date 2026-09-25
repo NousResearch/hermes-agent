@@ -2589,3 +2589,41 @@ def test_run_backup_prunes_older_default_named_zips_but_not_others(tmp_path, mon
     kept = sorted(p.name for p in tmp_path.glob("hermes-backup-*.zip"))
     assert len(kept) == 2 and kept[0] == "hermes-backup-2026-01-04-000000.zip"
     assert (tmp_path / "my-archive.zip").exists()
+
+
+def test_safe_restore_db_hash_in_path_issue_122209(tmp_path):
+    """A '#' in the path must not become a URI fragment (#122209)."""
+    import sqlite3
+
+    from hermes_cli.backup_restore import _safe_restore_db
+
+    src = tmp_path / "snapshot#saved.db"
+    dst = tmp_path / "live#data.db"
+    for path, value in ((src, "snapshot"), (dst, "live")):
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE sample(value)")
+            conn.execute("INSERT INTO sample VALUES (?)", (value,))
+    live = sqlite3.connect(dst)
+    try:
+        assert _safe_restore_db(src, dst) is True
+        assert live.execute("SELECT value FROM sample").fetchall() == [("snapshot",)]
+    finally:
+        live.close()
+
+
+def test_safe_restore_db_percent_escapes_in_path_issue_122209(tmp_path):
+    """A literal '%23' in the filename must not decode to '#' (#122209)."""
+    import sqlite3
+
+    from hermes_cli.backup_restore import _safe_restore_db
+
+    src = tmp_path / "snap%23name.db"
+    dst = tmp_path / "live%25.db"
+    decoy = tmp_path / "snap#name.db"
+    for path, value in ((src, "snapshot"), (dst, "live"), (decoy, "decoy")):
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE sample(value)")
+            conn.execute("INSERT INTO sample VALUES (?)", (value,))
+    assert _safe_restore_db(src, dst) is True
+    with sqlite3.connect(dst) as conn:
+        assert conn.execute("SELECT value FROM sample").fetchall() == [("snapshot",)]

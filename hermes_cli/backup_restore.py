@@ -24,6 +24,20 @@ from utils import (
 
 logger = logging.getLogger(__name__)
 
+
+def _read_only_uri(path: Path) -> str:
+    """SQLite ``file:`` URI for read-only access to *path*.
+
+    The filename is percent-encoded: an unencoded ``#`` starts a URI
+    fragment and swallows the ``?mode=ro`` query, so SQLite opens the
+    pre-``#`` path read-WRITE (creating an empty database) and the page
+    copy erases the destination; an unencoded ``%`` is read as a
+    percent-escape and resolves to a different filename.
+    """
+    from urllib.parse import quote
+
+    return f"file:{quote(str(path), safe='/')}?mode=ro"
+
 def _foreign_db_holder_pids(db_path: Path) -> Optional[List[int]]:
     """PIDs of OTHER processes holding *db_path* or its WAL/SHM open.
 
@@ -106,7 +120,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
             dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except Exception:
             pass
-        src_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        src_conn = sqlite3.connect(_read_only_uri(src), uri=True)
         try:
             src_conn.backup(dst_conn)
         finally:
@@ -380,7 +394,7 @@ def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
     if not path.is_file():
         return None
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = sqlite3.connect(_read_only_uri(path), uri=True)
     except sqlite3.Error:
         return None
     try:

@@ -244,8 +244,9 @@ model_aliases:
             return MagicMock(), model
 
         monkeypatch.setattr(auxiliary, "resolve_provider_client", resolve_provider_client)
-        _client, model, provider = auxiliary._resolve_auto_route(task="vision")
+        provider, client, model = auxiliary.resolve_vision_provider_client(provider="auto")
 
+        assert client is not None
         assert provider == "custom"
         assert model == "z-ai/glm-5.3-flash"
         assert resolved["provider"] == "custom"

@@ -5624,15 +5624,20 @@ def _vision_auto_route(
     async_mode: bool,
 ) -> Tuple[Optional[str], Optional[Any], Optional[str]]:
     """Auto-detect order: 1. main provider + model, 2. OpenRouter, 3. Nous Portal, 4. DeepInfra, 5. stop."""
-    main_provider = str(runtime.get("provider") or _read_main_provider())
-    main_model = str(runtime.get("model") or _read_main_model())
-    if main_provider.strip().lower() == "moa":
-        # MoA main_model is a preset NAME, not a wire model — unwrap to the preset's aggregator
-        # slot. The moa:// facade endpoint belongs to the virtual provider, not the real one.
-        _agg_provider, _agg_model = _resolve_moa_aggregator(main_model)
-        if _agg_provider and _agg_model:
-            main_provider, main_model = _agg_provider, _agg_model
-            runtime = dict(runtime, base_url="", api_key="", api_mode="")
+    # Share the main-route resolver with other ``provider: auto`` auxiliary tasks. In particular,
+    # a configured alias is not a provider wire-model: vision previously bypassed this resolver
+    # and sent aliases such as ``zdr-flash`` directly to OpenRouter.
+    main_provider, main_model, main_base_url, main_api_key, main_api_mode = _main_route_target(
+        runtime, "vision"
+    )
+    runtime = dict(
+        runtime,
+        provider=main_provider,
+        model=main_model,
+        base_url=main_base_url,
+        api_key=main_api_key,
+        api_mode=main_api_mode,
+    )
     if main_provider and main_provider not in {"auto", "", "moa"}:
         client, default_model = _vision_main_provider_client(main_provider, main_model, runtime, resolved_model, resolved_api_mode)
         if client is not None:

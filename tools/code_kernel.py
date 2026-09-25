@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import atexit
 import glob
+import io
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ import queue
 import secrets
 import shutil
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -38,9 +40,12 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
+_BROKER_STAGING_ROOT = "/tmp"
 
 # Runner-side cap on captured python-level output; the host re-applies its own MAX_STDOUT cap.
 _RUNNER_CAPTURE_BYTES = 1_000_000
+_INLINE_SPILL_MAX_CHARS = 5_000_000
+_MAX_KERNEL_FRAME_BYTES = 64 * 1024 * 1024
 
 # Shared by both generated runners (which define _CAPTURE_LIMIT first): exec one request in the
 # persistent GLOBALS namespace, build the payload. `__name__` is `__main__` as on the per-call path.
@@ -76,6 +81,7 @@ def run_cell(request, execution_count):
 KERNEL_RUNNER_SOURCE = '''\
 """Auto-generated Hermes session-kernel runner. One exec cell per request."""
 import contextlib
+import importlib.util
 import io
 import json
 import os
@@ -86,9 +92,24 @@ import traceback
 _SENTINEL = os.environ["HERMES_KERNEL_SENTINEL"]
 _CAPTURE_LIMIT = {capture_limit}
 _SPILL_DIR = os.environ.get("HERMES_KERNEL_SPILL_DIR", "")
+_INLINE_SPILL = os.environ.get("HERMES_KERNEL_INLINE_SPILL") == "1"
 _SPILL_CAP = {spill_cap}
 _PARENT_PROCESS_HANDLE = os.environ.pop("HERMES_KERNEL_PARENT_PROCESS_HANDLE", "")
 _PARENT_DEATH_FD = os.environ.pop("HERMES_KERNEL_PARENT_DEATH_FD", "")
+
+
+def _preload_hermes_tools():
+    """Load the generated client by exact path without listing the staging directory."""
+    module_path = os.environ.pop(
+        "HERMES_KERNEL_TOOLS_PATH",
+        os.path.join(os.path.dirname(__file__), "hermes_tools.py"),
+    )
+    spec = importlib.util.spec_from_file_location("hermes_tools", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError("cannot load generated hermes_tools module")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["hermes_tools"] = module
+    spec.loader.exec_module(module)
 
 
 def _start_parent_death_pipe_watchdog():
@@ -175,6 +196,7 @@ def _start_parent_process_watchdog():
 
 _start_parent_process_watchdog()
 _start_parent_death_pipe_watchdog()
+_preload_hermes_tools()
 
 _real_stdout = sys.stdout
 
@@ -214,10 +236,16 @@ def main():
             continue
         execution_count += 1
         payload, full_stdout = run_cell(request, execution_count)
-        payload["stdout_spill_path"] = (
-            _spill(full_stdout, "cell_%06d_stdout.txt" % execution_count)
-            if payload["stdout_clipped"] else ""
-        )
+        if payload["stdout_clipped"] and _INLINE_SPILL:
+            payload["stdout_spill_content"] = full_stdout[:_SPILL_CAP]
+            if len(full_stdout) > _SPILL_CAP:
+                payload["stdout_spill_content"] += "\\n\\n[... spill capped ...]"
+            payload["stdout_spill_path"] = ""
+        else:
+            payload["stdout_spill_path"] = (
+                _spill(full_stdout, "cell_%06d_stdout.txt" % execution_count)
+                if payload["stdout_clipped"] else ""
+            )
         _reply(payload)
         if payload["status"] == "exit":
             break
@@ -225,7 +253,11 @@ def main():
 
 if __name__ == "__main__":
     main()
-'''.format(cell_source=RUNNER_CELL_SOURCE, capture_limit=_RUNNER_CAPTURE_BYTES, spill_cap=5_000_000)
+'''.format(
+    cell_source=RUNNER_CELL_SOURCE,
+    capture_limit=_RUNNER_CAPTURE_BYTES,
+    spill_cap=_INLINE_SPILL_MAX_CHARS,
+)
 
 
 class CellAuthority:
@@ -311,8 +343,10 @@ class SessionKernel:
         self.tmpdir = self.rpc_token = self.sentinel = ""
         self.sock_path: Optional[str] = None
         self.server_sock: Optional[socket.socket] = None
+        self.rpc_peer_uid: Optional[int] = None
         self.stop_event = threading.Event()
         self.death_pipe_w: Optional[int] = None
+        self.broker_lease: Optional[socket.socket] = None
         self.tool_call_log: List = []
         self.tool_call_counter: List[int] = [0]
         # Cells currently attached (bumped under the registry lock on selection, dropped when the
@@ -343,9 +377,43 @@ class SessionKernel:
             except OSError:
                 pass
             self.death_pipe_w = None
-        if self.alive():
+        if self.broker_lease is not None:
+            from tools.local_exec_broker import BrokerError
+
+            try:
+                process_alive = self.alive()
+            except BrokerError as exc:
+                process_alive = False
+                logger.warning(
+                    "broker-owned kernel returned an invalid exit reply during teardown: %s",
+                    exc,
+                )
+            if process_alive:
+                self.proc.kill()
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning(
+                        "broker-owned kernel %s did not exit within teardown grace",
+                        self.proc.pid,
+                    )
+                    self.proc._close_owned_handles()
+                except BrokerError as exc:
+                    logger.warning(
+                        "broker-owned kernel %s returned an invalid exit reply: %s",
+                        self.proc.pid,
+                        exc,
+                    )
+        elif self.alive():
             from tools.code_execution_tool import _kill_process_group
+
             _kill_process_group(self.proc, escalate=True)
+        if self.broker_lease is not None:
+            try:
+                self.broker_lease.close()
+            except OSError:
+                pass
+            self.broker_lease = None
         sock, self.server_sock = self.server_sock, None
         try:
             if sock is not None:
@@ -476,6 +544,31 @@ def shutdown_kernels_for_delegated_child(child_session_id: str) -> None:
 atexit.register(shutdown_all_kernels)
 
 
+class _UidFilteringSocket:
+    """Accept only Unix peers running as the configured broker uid."""
+
+    def __init__(self, server_sock: socket.socket, expected_uid: int):
+        self._server_sock = server_sock
+        self._expected_uid = expected_uid
+
+    def settimeout(self, timeout: float) -> None:
+        self._server_sock.settimeout(timeout)
+
+    def accept(self):
+        while True:
+            conn, address = self._server_sock.accept()
+            try:
+                _pid, uid, _gid = struct.unpack(
+                    "3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+                )
+            except OSError:
+                conn.close()
+                continue
+            if uid == self._expected_uid:
+                return conn, address
+            conn.close()
+
+
 def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
                  sandbox_tools: frozenset) -> None:
     """Serve tool RPC for the kernel's whole life: ``_rpc_server_loop`` returns on disconnect or
@@ -490,9 +583,48 @@ def _rpc_forever(kernel: SessionKernel, max_tool_calls: int,
             return tool_error("No active execute_code cell: this kernel has no cell authority installed.")
         return authority.dispatch(tool_name, tool_args)
     while not kernel.stop_event.is_set():
-        _rpc_server_loop(kernel.server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
+        server_sock = kernel.server_sock
+        if kernel.rpc_peer_uid is not None:
+            server_sock = _UidFilteringSocket(server_sock, kernel.rpc_peer_uid)
+        _rpc_server_loop(server_sock, "", kernel.tool_call_log, kernel.tool_call_counter,
                          max_tool_calls, sandbox_tools, kernel.stop_event, kernel.rpc_token,
                          dispatch=_dispatch)
+
+
+def _materialize_inline_spill(kernel: SessionKernel, payload: Dict[str, Any]) -> None:
+    """Persist a broker child's bounded spill payload into host-owned staging."""
+    content = payload.pop("stdout_spill_content", None)
+    if not payload.get("stdout_clipped") or not isinstance(content, str):
+        return
+    if len(content) > _INLINE_SPILL_MAX_CHARS:
+        content = (
+            content[:_INLINE_SPILL_MAX_CHARS]
+            + "\n\n[... spill capped ...]"
+        )
+    try:
+        count = int(payload.get("execution_count", 0))
+    except (TypeError, ValueError):
+        count = 0
+    spill_path = os.path.join(
+        kernel.tmpdir,
+        f"cell_{max(0, count):06d}_{secrets.token_hex(8)}_stdout.txt",
+    )
+    fd = None
+    try:
+        fd = os.open(
+            spill_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+            0o600,
+        )
+        with os.fdopen(fd, "w", encoding="utf-8", errors="replace") as spill_file:
+            fd = None
+            spill_file.write(content)
+        payload["stdout_spill_path"] = spill_path
+    except OSError:
+        payload["stdout_spill_path"] = ""
+    finally:
+        if fd is not None:
+            os.close(fd)
 
 
 def _stdout_reader(kernel: SessionKernel) -> None:
@@ -537,6 +669,9 @@ def _stdout_reader(kernel: SessionKernel) -> None:
                 raw(marker)
                 buf = rest
                 continue
+            if length < 0 or length > _MAX_KERNEL_FRAME_BYTES:
+                kernel.response_q.put({"status": "protocol-error"})
+                return
             body = rest[newline + 1:]
             while len(body) < length:
                 more = stream.read1(length - len(body))
@@ -545,7 +680,11 @@ def _stdout_reader(kernel: SessionKernel) -> None:
                     return
                 body += more
             try:
-                kernel.response_q.put(json.loads(body[:length].decode("utf-8", errors="replace")))
+                payload = json.loads(body[:length].decode("utf-8", errors="replace"))
+                if not isinstance(payload, dict):
+                    raise ValueError("kernel response is not an object")
+                _materialize_inline_spill(kernel, payload)
+                kernel.response_q.put(payload)
             except ValueError:
                 kernel.response_q.put({"status": "protocol-error"})
             buf = body[length:]
@@ -558,8 +697,8 @@ def _stderr_reader(kernel: SessionKernel) -> None:
         kernel.stderr.append(chunk, MAX_STDERR_BYTES)
 
 
-def _bind_rpc_socket(kernel: SessionKernel) -> str:
-    """Bind the tool-RPC listener: loopback TCP on Windows, 0600 UDS elsewhere."""
+def _bind_rpc_socket(kernel: SessionKernel, *, cross_uid: bool = False) -> str:
+    """Bind tool RPC, keeping cross-UID UDS reachability inside unlistable staging."""
     if _IS_WINDOWS:
         kernel.sock_path = None
         server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -567,12 +706,24 @@ def _bind_rpc_socket(kernel: SessionKernel) -> str:
         host, port = server_sock.getsockname()[:2]
         rpc_endpoint = f"tcp://{host}:{port}"
     else:
-        from hermes_constants import socket_safe_tmpdir
-        sock_tmpdir = socket_safe_tmpdir()
-        rpc_endpoint = kernel.sock_path = os.path.join(sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock")
+        if cross_uid:
+            # The random 0711 staging directory is not listable by the broker uid or
+            # unrelated local users. The broker child receives the exact path, while
+            # the 0666 socket lets that known cross-UID child connect. The RPC token
+            # remains the application-level authentication boundary.
+            sock_tmpdir = kernel.tmpdir
+            socket_mode = 0o666
+        else:
+            from hermes_constants import socket_safe_tmpdir
+
+            sock_tmpdir = socket_safe_tmpdir()
+            socket_mode = 0o600
+        rpc_endpoint = kernel.sock_path = os.path.join(
+            sock_tmpdir, f"hermes_rpc_{uuid.uuid4().hex}.sock"
+        )
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(kernel.sock_path)
-        os.chmod(kernel.sock_path, 0o600)
+        os.chmod(kernel.sock_path, socket_mode)
     server_sock.listen(1)
     kernel.server_sock = server_sock
     return rpc_endpoint
@@ -607,22 +758,323 @@ def _parent_process_handle(child_env: Dict[str, str]):
     return handle, close, startupinfo
 
 
+class _ReaderOwnedStream(io.BufferedReader):
+    """Kernel output whose close yields to the reader thread parked inside it.
+
+    ``BufferedReader.close()`` takes the buffer lock, and ``_stdout_reader`` holds that lock
+    for as long as it sits in ``read1`` — that is, until EOF, which needs every write end of
+    the pipe gone. The child's own copy dies with it, but a grandchild that inherited a cell's
+    stdout keeps one open indefinitely, so a status check that closed the stream inline (the
+    recycled-PID path through ``poll``) blocked teardown on a reader that was never going to
+    return. Closing is therefore a request: a stream nobody is reading closes immediately —
+    every teardown that is not racing a reader — and otherwise the reader inside it performs
+    the close on its way out, which is the first moment the descriptor is safe to release.
+
+    Reads after a close report EOF rather than raising, because the readers are abandoned
+    daemon threads whose only job left is to notice the kernel is gone and unwind.
+    """
+
+    def __init__(self, raw):
+        super().__init__(raw)
+        self._readers = 0
+        self._close_requested = False
+        self._state = threading.Lock()
+
+    def _guarded(self, read, *args):
+        with self._state:
+            if self._close_requested:
+                return b""
+            self._readers += 1
+        try:
+            return read(*args)
+        finally:
+            # Last reader out closes for the teardown that handed us the stream. The buffer
+            # lock is free again here, so this cannot block; holding _state keeps a new read
+            # from slipping in ahead of it.
+            with self._state:
+                self._readers -= 1
+                if self._close_requested and not self._readers:
+                    super().close()
+
+    def read(self, *args):
+        return self._guarded(super().read, *args)
+
+    def read1(self, *args):
+        return self._guarded(super().read1, *args)
+
+    def readline(self, *args):
+        return self._guarded(super().readline, *args)
+
+    def peek(self, *args):
+        return self._guarded(super().peek, *args)
+
+    def close(self):
+        with self._state:
+            self._close_requested = True
+            if self._readers:
+                return
+            super().close()
+
+
+class _BrokerKernelProcess:
+    """Binary Popen-like handle whose broker connection leases the kernel."""
+
+    def __init__(
+        self,
+        conn,
+        pid: int,
+        start_time: int,
+        stdin_fd: int,
+        stdout_fd: int,
+        stderr_fd: int,
+        remainder: bytes,
+    ):
+        self._conn = conn
+        self.pid = pid
+        self._start_time = start_time
+        self.stdin = os.fdopen(stdin_fd, "wb")
+        # Not os.fdopen: teardown runs concurrently with the reader threads that own these two,
+        # so their close has to be one a reader can finish (_ReaderOwnedStream).
+        self.stdout = _ReaderOwnedStream(io.FileIO(stdout_fd, "r", closefd=True))
+        self.stderr = _ReaderOwnedStream(io.FileIO(stderr_fd, "r", closefd=True))
+        self.returncode: Optional[int] = None
+        self._reply = remainder
+        self._poll_lock = threading.Lock()
+        self._lease_closed = False
+        conn.setblocking(False)
+
+    def _close_lease_and_input(self) -> None:
+        # The broker connection is the kill signal. Close it before waiting on any
+        # stream lock held by the reader thread, or teardown can deadlock while the
+        # still-live child keeps stdout open.
+        try:
+            self._conn.close()
+        except OSError:
+            pass
+        try:
+            self.stdin.close()
+        except (OSError, ValueError):
+            pass
+
+    def _close_owned_handles(self) -> None:
+        self._close_lease_and_input()
+        for stream in (self.stdout, self.stderr):
+            try:
+                stream.close()
+            except (OSError, ValueError):
+                pass
+
+    def _finish(self, returncode: int) -> int:
+        self.returncode = returncode
+        self._close_owned_handles()
+        return returncode
+
+    def poll(self):
+        with self._poll_lock:
+            if self.returncode is not None:
+                return self.returncode
+            from tools.local_exec_broker import (
+                BrokerError,
+                MAX_REPLY_BYTES,
+                _process_start_time,
+            )
+
+            if self._lease_closed:
+                try:
+                    current_start_time = _process_start_time(self.pid)
+                except (OSError, ValueError):
+                    return self._finish(-9)
+                if current_start_time != self._start_time:
+                    return self._finish(-9)
+                return None
+            if b"\n" not in self._reply:
+                try:
+                    chunk = self._conn.recv(4096)
+                except BlockingIOError:
+                    return None
+                except OSError:
+                    return self._finish(-1)
+                if not chunk:
+                    return self._finish(-1)
+                self._reply += chunk
+            if len(self._reply) > MAX_REPLY_BYTES:
+                self._finish(-1)
+                raise BrokerError("bad_reply", "broker returned an oversized exit reply")
+            if b"\n" not in self._reply:
+                return None
+            try:
+                reply = json.loads(self._reply.split(b"\n", 1)[0])
+                returncode = reply["exit"]
+                if not isinstance(returncode, int) or isinstance(returncode, bool):
+                    raise ValueError("exit status is not an integer")
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                self._finish(-1)
+                raise BrokerError(
+                    "bad_reply", f"broker returned an invalid exit reply: {exc}"
+                ) from exc
+            return self._finish(returncode)
+
+    def wait(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while self.poll() is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                raise subprocess.TimeoutExpired("local execution broker", timeout)
+            time.sleep(0.01)
+        return self.returncode
+
+    def kill(self):
+        with self._poll_lock:
+            if self.returncode is not None:
+                return
+            self._lease_closed = True
+            self._close_lease_and_input()
+
+
+def _local_exec_broker_config() -> Optional[Tuple[str, int]]:
+    """Resolve and validate the opt-in broker endpoint for this profile."""
+    if not sys.platform.startswith("linux"):
+        return None
+    from hermes_cli.config import load_config_readonly
+    config = (load_config_readonly() or {}).get("terminal") or {}
+    if "local_exec_broker" not in config:
+        return None
+    broker = config["local_exec_broker"]
+    socket_path = broker.get("socket") if isinstance(broker, dict) else None
+    uid = broker.get("uid") if isinstance(broker, dict) else None
+    if not isinstance(socket_path, str) or not socket_path:
+        raise RuntimeError(
+            "terminal.local_exec_broker requires a non-empty string socket"
+        )
+    if not isinstance(uid, int) or isinstance(uid, bool) or uid < 0:
+        raise RuntimeError(
+            "terminal.local_exec_broker requires a non-negative integer uid"
+        )
+    return socket_path, uid
+
+
+def _spawn_through_broker(
+    runner_path: str,
+    child_python: str,
+    child_cwd: str,
+    child_env: Dict[str, str],
+    broker_config: Tuple[str, int],
+) -> Tuple[_BrokerKernelProcess, socket.socket]:
+    """Launch a kernel with explicit stdio; the returned connection is its lease."""
+    from tools.local_exec_broker import BrokerError, request_launch
+
+    stdin_r = stdin_w = stdout_r = stdout_w = stderr_r = stderr_w = runner_fd = None
+    conn = None
+    try:
+        stdin_r, stdin_w = os.pipe()
+        stdout_r, stdout_w = os.pipe()
+        stderr_r, stderr_w = os.pipe()
+        runner_fd = os.open(runner_path, os.O_RDONLY)
+        conn, reply, remainder = request_launch(
+            broker_config[0],
+            expected_peer_uid=broker_config[1],
+            runner_fd=runner_fd,
+            runner_python=child_python,
+            cwd=child_cwd or None,
+            env=child_env,
+            fds=[],
+            stdin_fd=stdin_r,
+            stdout_fd=stdout_w,
+            stderr_fd=stderr_w,
+            scratch=True,
+        )
+        pid = reply.get("pid")
+        start_time = reply.get("start_time")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            raise BrokerError("bad_reply", "broker returned an invalid launch reply")
+        if (
+            not isinstance(start_time, int)
+            or isinstance(start_time, bool)
+            or start_time <= 0
+        ):
+            raise BrokerError("bad_reply", "broker returned an invalid process identity")
+        os.close(stdin_r)
+        stdin_r = None
+        os.close(stdout_w)
+        stdout_w = None
+        os.close(stderr_w)
+        stderr_w = None
+        # From here the Popen-like handle owns the three parent pipe ends. Disclaim
+        # them before construction so outer cleanup cannot re-close a recycled fd if
+        # construction fails after taking ownership.
+        handle_stdin_fd, stdin_w = stdin_w, None
+        handle_stdout_fd, stdout_r = stdout_r, None
+        handle_stderr_fd, stderr_r = stderr_r, None
+        proc = _BrokerKernelProcess(
+            conn,
+            pid,
+            start_time,
+            handle_stdin_fd,
+            handle_stdout_fd,
+            handle_stderr_fd,
+            remainder,
+        )
+        return proc, conn
+    except BaseException:
+        if conn is not None:
+            conn.close()
+        raise
+    finally:
+        for fd in (
+            stdin_r,
+            stdin_w,
+            stdout_r,
+            stdout_w,
+            stderr_r,
+            stderr_w,
+            runner_fd,
+        ):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+
 def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
            sandbox_tools: frozenset, max_tool_calls: int, task_id: str = "") -> None:
     from tools.code_execution_env import _build_child_env
     from tools.code_execution_tool import generate_hermes_tools_module
-    kernel.tmpdir = tempfile.mkdtemp(prefix="hermes_kernel_")
+    broker_config = _local_exec_broker_config()
+    kernel.rpc_peer_uid = broker_config[1] if broker_config is not None else None
+    kernel.tmpdir = tempfile.mkdtemp(
+        prefix="hermes_kernel_",
+        # no-tmp: ok — a broker child under another uid must traverse the parent directory.
+        dir=_BROKER_STAGING_ROOT if broker_config is not None else None,
+    )
+    if broker_config is not None:
+        # The broker child runs as a different, deliberately less-privileged uid. It needs to
+        # traverse the random staging directory to import hermes_tools.py. Keep directory
+        # listing owner-only; writes stay in sticky work and spill subdirectories.
+        os.chmod(kernel.tmpdir, 0o711)
     kernel.rpc_token = secrets.token_urlsafe(32)
     kernel.sentinel = "@@HERMES-KERNEL-" + secrets.token_urlsafe(16) + "@@"
-    rpc_endpoint = _bind_rpc_socket(kernel)
+    rpc_endpoint = _bind_rpc_socket(kernel, cross_uid=broker_config is not None)
     for name, src in (("hermes_tools.py", generate_hermes_tools_module(list(sandbox_tools))),
                       ("hermes_kernel_runner.py", KERNEL_RUNNER_SOURCE)):
-        Path(kernel.tmpdir, name).write_text(src, encoding="utf-8")
+        module_path = Path(kernel.tmpdir, name)
+        module_path.write_text(src, encoding="utf-8")
+        if broker_config is not None:
+            module_path.chmod(0o644)
     child_env = _build_child_env(rpc_endpoint=rpc_endpoint, rpc_token=kernel.rpc_token,
                                  tmpdir=kernel.tmpdir, child_python=child_python)
     child_env["HERMES_KERNEL_SENTINEL"] = kernel.sentinel
-    # Full clipped stdout spills to the kernel's tmpdir so the agent can read_file the middle.
-    child_env["HERMES_KERNEL_SPILL_DIR"] = kernel.tmpdir
+    child_env["HERMES_KERNEL_TOOLS_PATH"] = os.path.join(
+        kernel.tmpdir, "hermes_tools.py"
+    )
+    # Full clipped stdout must land in host-owned staging so the agent can page it with
+    # read_file. A cross-UID broker child returns the bounded spill in its framed response;
+    # the host reader materializes it without creating a world-writable rendezvous directory.
+    spill_dir = kernel.tmpdir
+    broker_cwd = child_cwd
+    if broker_config is not None:
+        child_env["HERMES_KERNEL_INLINE_SPILL"] = "1"
+    else:
+        child_env["HERMES_KERNEL_SPILL_DIR"] = spill_dir
     # Generated client reconnects after the RPC server's 300s idle timeout between cells.
     child_env["HERMES_RPC_PERSISTENT"] = "1"
     # Parent-death watchdog plumbing: Windows inherits a SYNCHRONIZE handle to this process; POSIX
@@ -630,19 +1082,29 @@ def _spawn(kernel: SessionKernel, *, child_python: str, child_cwd: str,
     parent_handle, close_handle, startupinfo = _parent_process_handle(child_env) if _IS_WINDOWS else (None, None, None)
     death_r: Optional[int] = None
     pass_fds: Tuple[int, ...] = ()
-    if not _IS_WINDOWS:
+    if not _IS_WINDOWS and broker_config is None:
         death_r, kernel.death_pipe_w = os.pipe()
         child_env["HERMES_KERNEL_PARENT_DEATH_FD"] = str(death_r)
         pass_fds = (death_r,)
     try:
-        kernel.proc = subprocess.Popen(
-            [child_python, os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")],
-            # Strict mode passes an empty cwd: the kernel's staging dir plays the per-call tmpdir's role.
-            cwd=child_cwd or kernel.tmpdir, env=child_env, start_new_session=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
-            close_fds=True, pass_fds=pass_fds, startupinfo=startupinfo,
-        )
+        runner_path = os.path.join(kernel.tmpdir, "hermes_kernel_runner.py")
+        if broker_config is not None:
+            kernel.proc, kernel.broker_lease = _spawn_through_broker(
+                runner_path,
+                child_python,
+                broker_cwd,
+                child_env,
+                broker_config,
+            )
+        else:
+            kernel.proc = subprocess.Popen(
+                [child_python, runner_path],
+                # Strict mode passes an empty cwd: the kernel's staging dir plays the per-call tmpdir's role.
+                cwd=child_cwd or kernel.tmpdir, env=child_env, start_new_session=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE,
+                creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+                close_fds=True, pass_fds=pass_fds, startupinfo=startupinfo,
+            )
     finally:
         if parent_handle and close_handle is not None:
             close_handle(parent_handle)
@@ -712,15 +1174,17 @@ def _sweep_stale_staging_dirs(now: Optional[float] = None) -> int:
     follows symlinks, so a planted link is rejected rather than chased."""
     now = time.time() if now is None else now
     removed = 0
-    for path in glob.glob(os.path.join(tempfile.gettempdir(), "hermes_kernel_*")):
-        try:
-            if now - os.path.getmtime(path) > _STALE_STAGING_DIR_AGE:
-                # No ignore_errors: a rejected symlink (or a half-removed dir) must not
-                # count as swept — it stays for the next pass instead.
-                shutil.rmtree(path)
-                removed += 1
-        except OSError:
-            continue
+    roots = {tempfile.gettempdir(), _BROKER_STAGING_ROOT}
+    for root in roots:
+        for path in glob.glob(os.path.join(root, "hermes_kernel_*")):
+            try:
+                if now - os.path.getmtime(path) > _STALE_STAGING_DIR_AGE:
+                    # No ignore_errors: a rejected symlink (or a half-removed dir) must not
+                    # count as swept — it stays for the next pass instead.
+                    shutil.rmtree(path)
+                    removed += 1
+            except OSError:
+                continue
     return removed
 
 

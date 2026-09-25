@@ -61,7 +61,7 @@ async def test_enrich_message_with_transcription_returns_tuple_for_empty_content
     ):
         result, transcripts = await runner._enrich_message_with_transcription(
             "(The user sent a message with no text content)",
-            ["/tmp/voice.ogg"],
+            ["voice.ogg"],
         )
 
     # The redundant placeholder is stripped, leaving only the transcript prefix.
@@ -87,7 +87,7 @@ async def test_enrich_message_with_transcription_guards_empty_transcript():
     ):
         result, transcripts = await runner._enrich_message_with_transcription(
             "caption",
-            ["/tmp/voice.ogg"],
+            ["voice.ogg"],
         )
 
     assert "empty or inaudible" in result
@@ -115,7 +115,7 @@ async def test_enrich_message_with_transcription_surfaces_stt_fallback_warning()
     ):
         result, transcripts = await runner._enrich_message_with_transcription(
             "caption",
-            ["/tmp/voice.ogg"],
+            ["voice.ogg"],
         )
 
     assert "fallback transcript" in result
@@ -127,6 +127,34 @@ async def test_enrich_message_with_transcription_surfaces_stt_fallback_warning()
         "⚠️ STT fallback: parakeet failed, so Hermes used "
         "local / faster-whisper."
     )
+
+
+@pytest.mark.asyncio
+async def test_failed_command_fallback_is_not_retried_by_gateway(monkeypatch):
+    from unittest.mock import MagicMock
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner._untranscribed_audio_note = lambda path: "[neutral transcription failure]"
+    command_fallback_failure = {
+        "success": False,
+        "error": "command and configured local fallback failed",
+        "fallback_from": "parakeet",
+        "fallback_reason": "raw command details",
+    }
+    configured_transcribe = MagicMock(return_value=command_fallback_failure)
+    gateway_local_fallback = MagicMock(return_value={
+        "success": True, "transcript": "duplicate attempt", "provider": "local",
+    })
+
+    transcript, note = await runner._transcribe_one_clip(
+        "voice.ogg", configured_transcribe, gateway_local_fallback,
+    )
+
+    assert transcript is None
+    assert note == "[neutral transcription failure]"
+    assert "raw command details" not in note
+    gateway_local_fallback.assert_not_called()
 
 
 def test_format_stt_echo_includes_fallback_notice_without_changing_raw_text():
@@ -154,7 +182,7 @@ async def test_clarify_reply_uses_raw_transcript_after_stt_fallback():
     from gateway.run_inbound import _STTTranscript
 
     runner = GatewayRunner.__new__(GatewayRunner)
-    runner._pending_event_audio_paths = lambda event: ["/tmp/voice.ogg"]
+    runner._pending_event_audio_paths = lambda event: ["voice.ogg"]
     fallback_transcript = _STTTranscript(
         "2",
         fallback_from="parakeet",
@@ -179,7 +207,7 @@ async def test_clarify_reply_uses_raw_transcript_after_stt_fallback():
         text="",
         message_type=MessageType.VOICE,
         source=source,
-        media_urls=["/tmp/voice.ogg"],
+        media_urls=["voice.ogg"],
         media_types=["audio/ogg"],
     )
 
@@ -222,7 +250,7 @@ async def test_pending_echo_preserves_fallback_notice():
         text="",
         message_type=MessageType.VOICE,
         source=source,
-        media_urls=["/tmp/queued-voice.ogg"],
+        media_urls=["queued-voice.ogg"],
         media_types=["audio/ogg"],
     )
 

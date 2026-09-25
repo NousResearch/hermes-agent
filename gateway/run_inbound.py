@@ -1963,7 +1963,9 @@ class GatewayInboundMixin(GatewayPluginInjectionMixin):
     async def _transcribe_one_clip(self, path: str, transcribe_audio, transcribe_audio_local_fallback) -> tuple[Optional[str], str]:
         """``(transcript_or_None, note)`` for one clip via configured STT with local fallback."""
         result = await asyncio.to_thread(transcribe_audio, path, None, "gateway")
-        if not result.get("success"):
+        if not result.get("success") and not result.get("fallback_from"):
+            # A command provider with fallback_provider=local already attempted the configured local
+            # backend. Don't repeat an expensive local transcription after that fallback fails.
             fallback = await asyncio.to_thread(transcribe_audio_local_fallback, path)
             if fallback.get("success"):
                 logger.info("Configured STT failed for %s; recovered with local STT", path)

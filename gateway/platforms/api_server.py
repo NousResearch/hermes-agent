@@ -3449,16 +3449,31 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._run_owners[run_id] = self._run_idempotency_scope(request)
         self._set_run_status(
             run_id, "queued", session_id=session_id, model=ctx["body"].get("model", self._model_name))
+        # Detached delivery is an authenticated, dashboard-only opt-in. Keep
+        # historical disconnect-to-cancel semantics for every other SSE client.
+        detached_delivery = request.headers.get("X-Hermes-Detached-Stream", "").strip().lower() == "true"
+        delivery_open = True
+
+        def _enqueue(name: str, payload: Dict[str, Any]) -> None:
+            # A detached client stops reading, but the run keeps going. Queueing
+            # into a queue nobody drains leaks memory for the rest of the turn,
+            # so stop delivery while the run itself continues.
+            if delivery_open:
+                events.enqueue(name, payload)
+
+        async def _deliver(name: str, payload: Dict[str, Any]) -> None:
+            if delivery_open:
+                await queue.put(_event_payload(name, payload))
 
         def _delta(delta: str) -> None:
             if delta:
-                events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
+                _enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
             if event_type == "reasoning.available":
-                events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
+                _enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
-                events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
+                _enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
         def _commentary(text: str, *, already_streamed: bool = False) -> None:
             # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls)
@@ -3471,11 +3486,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
         async def _run_and_signal() -> None:
             try:
-                await queue.put(_event_payload("run.started", {
+                await _deliver("run.started", {
                     "user_message": {"role": "user", "content": user_message},
-                    "runtime": runtime_meta}))
+                    "runtime": runtime_meta,
+                })
                 self._set_run_status(run_id, "running", last_event="run.started")
-                await queue.put(_event_payload("message.started", {"message": {"id": message_id, "role": "assistant"}}))
+                await _deliver("message.started", {"message": {"id": message_id, "role": "assistant"}})
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
@@ -3490,12 +3506,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 # Terminal status and flags come from the result (interrupted -> cancelled,
                 # unfinished -> failed); a late steer rides along as ``pending_steer`` for replay.
                 status, fields = _api_runs.terminal_run_status(result if is_dict else {})
-                await queue.put(_event_payload("assistant.completed", {
+                await _deliver("assistant.completed", {
                     "session_id": effective_session_id, "message_id": message_id,
-                    "content": final_response, **fields, "runtime": effective_runtime}))
-                await queue.put(_event_payload(f"run.{status}", {
+                    "content": final_response, **fields, "runtime": effective_runtime})
+                await _deliver(f"run.{status}", {
                     "session_id": effective_session_id, "message_id": message_id, **fields,
-                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime}))
+                    "messages": turn_messages, "usage": usage, "runtime": effective_runtime})
                 self._set_run_status(
                     run_id, status, session_id=effective_session_id,
                     # The reply text, so a caller whose stream died can still read it from
@@ -3509,13 +3525,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 logger.exception("[api_server] session chat stream failed")
                 self._set_run_status(
                     run_id, "failed", error=_redact_api_error_text(exc), last_event="run.failed")
-                await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
+                await _deliver("error", {"message": _redact_api_error_text(exc)})
             finally:
                 self._active_run_agents.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
                 self._release_run_owner_if_forgotten(run_id)
-                await queue.put(_event_payload("done", {}))
-                await queue.put(None)
+                await _deliver("done", {})
+                if delivery_open:
+                    await queue.put(None)
 
         # NOT in _active_run_tasks: _run_agent already counts this turn for the shutdown drain.
         task = asyncio.create_task(_run_and_signal())
@@ -3537,13 +3554,21 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 name, payload = item
                 await response.write(_sse_frame(payload, event=name, ensure_ascii=False))
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            await self._drain_session_stream_task_on_disconnect(
-                run_id, task, interrupt_message="SSE client disconnected", shield_wait=False)
-            logger.info("Session SSE client disconnected; interrupted live run %s", run_id)
+            delivery_open = False
+            if detached_delivery:
+                logger.info("Detached session SSE client disconnected; live run continues: %s", run_id)
+            else:
+                await self._drain_session_stream_task_on_disconnect(
+                    run_id, task, interrupt_message="SSE client disconnected", shield_wait=False)
+                logger.info("Session SSE client disconnected; interrupted live run %s", run_id)
         except asyncio.CancelledError:
-            await self._drain_session_stream_task_on_disconnect(
-                run_id, task, interrupt_message="SSE task cancelled", shield_wait=True)
-            logger.info("Session SSE task cancelled; drained live run %s", run_id)
+            delivery_open = False
+            if detached_delivery:
+                logger.info("Detached session SSE task cancelled; live run continues: %s", run_id)
+            else:
+                await self._drain_session_stream_task_on_disconnect(
+                    run_id, task, interrupt_message="SSE task cancelled", shield_wait=True)
+                logger.info("Session SSE task cancelled; drained live run %s", run_id)
             raise
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)

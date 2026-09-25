@@ -4,8 +4,28 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
+
+
+def test_malformed_sse_withholds_remote_text_for_private_context():
+    from agent.gemini_native_adapter import _iter_sse_events
+    from agent.redact import bind_volatile_sensitive_text
+
+    response = SimpleNamespace(iter_text=lambda: iter(["data: echoed=37.77\n"]))
+    snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+
+    with (
+        bind_volatile_sensitive_text(snapshot),
+        patch("agent.gemini_native_adapter.logger.debug") as debug,
+    ):
+        assert list(_iter_sse_events(response)) == []
+
+    log_args = debug.call_args.args
+    assert "withheld for private-context turn" in log_args[0]
+    assert log_args[1] == len("echoed=37.77")
+    assert "37.77" not in str(debug.call_args)
 
 
 class DummyResponse:

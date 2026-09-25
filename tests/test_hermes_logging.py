@@ -821,3 +821,49 @@ class TestLineBufferPipedStdout:
         # setup_logging runs per AIAgent build: a second call must not re-flush/reconfigure.
         hermes_logging.setup_logging(hermes_home=tmp_path, force=True)
         stream.reconfigure.assert_called_once_with(line_buffering=True)
+
+
+class TestVolatileContextLogging:
+    def test_volatile_redaction_survives_listener_thread(self, hermes_home):
+        from agent.redact import bind_volatile_sensitive_text
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+        logger = logging.getLogger("test_hermes_logging.volatile")
+        with bind_volatile_sensitive_text(snapshot):
+            # Real provider failures may quote only rejected JSON scalars rather than
+            # the complete Hermes-authored context block.
+            logger.error(
+                "provider rejected latitude=%s longitude=%s",
+                "37.7749",
+                "-122.4194",
+            )
+
+        # Formatting happens after the binding exits, on QueueListener's thread.
+        hermes_logging.flush_log_queue()
+        for filename in ("agent.log", "errors.log"):
+            content = (hermes_home / "logs" / filename).read_text()
+            assert "37.7749" not in content
+            assert "-122.4194" not in content
+            assert "redacted-volatile-context" in content
+
+    def test_telegram_sdk_update_logs_never_persist_coordinates(self, hermes_home):
+        hermes_logging.setup_logging(hermes_home=hermes_home, log_level="DEBUG")
+        sdk_logger = logging.getLogger("telegram.ext.Application")
+
+        assert sdk_logger.level == logging.WARNING
+        sdk_logger.debug(
+            "Processing Update(update_id=1, latitude=37.7749, longitude=-122.4194)"
+        )
+        sdk_logger.critical(
+            "Callback failed for Update(latitude=37.7749, longitude=-122.4194)"
+        )
+
+        hermes_logging.flush_log_queue()
+        for filename in ("agent.log", "errors.log"):
+            content = (hermes_home / "logs" / filename).read_text()
+            assert "Processing Update" not in content
+            assert "37.7749" not in content
+            assert "-122.4194" not in content
+            assert "Callback failed" in content
+            assert "redacted-volatile-context" in content

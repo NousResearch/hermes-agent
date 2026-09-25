@@ -34,7 +34,11 @@ from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
-from agent.turn_context import substitute_api_content
+from agent.turn_context import (
+    VOLATILE_USER_CONTEXT_REPLAY_ID_KEY,
+    replay_volatile_user_context,
+    substitute_api_content,
+)
 from agent.gemini_native_adapter import is_native_gemini_base_url
 # Remote endpoints must never be fingerprinted: the probe waterfall is only valid for local/LM-Studio/Ollama
 # boxes. Non-Ollama remotes (sglang, vLLM, OpenAI-compat) expose Ollama-compat endpoints that can
@@ -69,6 +73,22 @@ _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 # outer retry loop (up to ~3 attempts x backoff, well under 60s) so an outage doesn't
 # double traffic every attempt, while later turns re-arm automatically.
 _STREAM_5XX_PROBE_WINDOW_S = 60.0
+
+
+def _private_provider_context_active() -> bool:
+    from agent.redact import has_volatile_sensitive_text
+
+    return has_volatile_sensitive_text()
+
+
+def _safe_provider_error_summary(agent: Any, error: BaseException) -> str:
+    """Provider error text safe for logs and user-visible failure strings."""
+    try:
+        return agent._summarize_api_error(error)
+    except Exception:
+        if _private_provider_context_active():
+            return "Provider error details withheld for private-context turn"
+        return str(error)
 
 
 def _context_thread_target(callback):
@@ -2183,7 +2203,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
         except Exception as e:
             if fb_provider == "nous":
                 unavailable.add(fb_key)
-            logger.error("Failed to activate fallback %s: %s", fb_model, e)
+            logger.error(
+                "Failed to activate fallback %s: %s",
+                fb_model,
+                _safe_provider_error_summary(agent, e),
+            )
             continue  # try next in chain
 
 
@@ -2191,11 +2215,14 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
 # Go, Mistral, Moonshot/Kimi) reject with 422. The transport's convert_messages() drops them
 # in the main loop; the summary path calls chat.completions.create() directly, so mirror it.
 _SUMMARY_FOREIGN_MESSAGE_KEYS = PERSISTENCE_ONLY_MESSAGE_FIELDS | {"reasoning", "finish_reason", "tool_name",
-    "codex_reasoning_items", "codex_message_items", "platform_message_id"}
+    "codex_reasoning_items", "codex_message_items", "message_id", "platform_message_id",
+    VOLATILE_USER_CONTEXT_REPLAY_ID_KEY}
 _EMPTY_SUMMARY_RESPONSE = "I reached the iteration limit and couldn't generate a summary."
 
 
-def _iteration_summary_api_messages(agent, messages: list) -> list:
+def _iteration_summary_api_messages(
+    agent, messages: list, *, allow_volatile_replay: bool = True,
+) -> list:
     """Wire-ready messages for the summary call, mirroring the main loop's api_messages build
     (sidecar substitution, tool-call repair, thinking-only drop, underscore-key sweep).
 
@@ -2208,9 +2235,13 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # MoA: agent.model is the virtual preset; use the real aggregator so Gemini keeps thought_signature.
         agg_slot = getattr(getattr(agent, "client", None), "last_aggregator_slot", None)
         sanitize_model = (agg_slot or {}).get("model") or sanitize_model
+    from agent.conversation_loop import _clone_message_for_send
+
     api_messages = []
     for msg in messages:
-        api_msg = msg.copy()
+        # Volatile replay may append a text block. Use the same structural clone as
+        # the main send path so list content can never mutate the durable transcript.
+        api_msg = _clone_message_for_send(msg)
         agent._copy_reasoning_content_for_api(msg, api_msg)
         for key in _SUMMARY_FOREIGN_MESSAGE_KEYS:
             api_msg.pop(key, None)
@@ -2229,6 +2260,8 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         # gateway user replay entries for the stale-confirmation expiry check — #47868 rejection class), and
         # every Hermes-internal underscore-prefixed scaffolding key.
         substitute_api_content(api_msg)
+        if allow_volatile_replay:
+            replay_volatile_user_context(agent, msg, api_msg)
         if needs_sanitize:
             agent._sanitize_tool_calls_for_strict_api(api_msg, model=sanitize_model)
         api_messages.append(api_msg)
@@ -2336,7 +2369,9 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
 _SUMMARY_ATTEMPT_BUILDERS = {"codex_responses": _codex_summary_attempt, "anthropic_messages": _anthropic_summary_attempt}
 
 
-def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
+def handle_max_iterations(
+    agent, messages: list, api_call_count: int, *, allow_volatile_replay: bool = True,
+) -> str:
     """Request a summary when max iterations are reached. Returns the final response text."""
     warning = f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary..."
     if getattr(agent, "suppress_status_output", False):
@@ -2357,7 +2392,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     append_message(messages, {"role": "user", "content": MAX_ITERATIONS_SUMMARY_REQUEST})
 
     try:
-        api_messages = _iteration_summary_api_messages(agent, messages)
+        api_messages = _iteration_summary_api_messages(
+            agent, messages, allow_volatile_replay=allow_volatile_replay,
+        )
         build_attempt = _SUMMARY_ATTEMPT_BUILDERS.get(agent.api_mode, _chat_summary_attempt)
         attempt = build_attempt(agent, api_messages, summary_api_request_id)
 
@@ -2376,7 +2413,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             break
 
     except Exception as e:
-        logger.warning("Failed to get summary response: %s", e)
+        safe_error = _safe_provider_error_summary(agent, e)
+        logger.warning("Failed to get summary response: %s", safe_error)
         from agent.turn_failure_copy import site_copy
         final_response = site_copy("max_iterations_no_summary", limit=agent.max_iterations)
     finally:
@@ -2548,7 +2586,13 @@ def _with_stream_emitters(agent, run):
     except Exception as exc:
         end = getattr(agent, "_emit_stream_end", None)
         if end is not None:
-            end(final_text="", finished=False, error=str(exc))
+            # Hook payloads may be queued or persisted after this turn's ContextVar
+            # is gone. Never hand provider-controlled request echoes to them.
+            end(
+                final_text="",
+                finished=False,
+                error=_safe_provider_error_summary(agent, exc),
+            )
         raise
     end = getattr(agent, "_emit_stream_end", None)
     if end is not None:
@@ -3609,7 +3653,10 @@ class _StreamingCall(StreamingWaitMonitor):
             # retry TRANSIENT errors (a "reconnecting" marker + duplicated
             # preamble beats a failed action; no tool has executed yet).
             if not (_partial_tool_in_flight and _is_transient and attempt < max_retries):
-                logger.warning("Streaming failed after partial delivery, not retrying: %s", e)
+                logger.warning(
+                    "Streaming failed after partial delivery, not retrying: %s",
+                    _safe_provider_error_summary(self.agent, e),
+                )
                 self.result["error"] = e
                 return False
             # Marker explains the re-streamed preamble (``_emit_stream_drop`` logs the WARNING);
@@ -3641,7 +3688,17 @@ class _StreamingCall(StreamingWaitMonitor):
                 buffer_connect_exhausted_notice(self.agent, e, attempts=max_retries + 1, base_url=self.agent.base_url)
         else:
             self._maybe_disable_streaming(e)
-            logger.exception("Streaming failed before delivery: %s", e)
+            safe_error = _safe_provider_error_summary(self.agent, e)
+            if _private_provider_context_active():
+                # Tracebacks render the original exception again, bypassing the safe
+                # summary when a provider echoed a transformed request fragment.
+                logger.warning(
+                    "Streaming failed before delivery: %s (%s)",
+                    safe_error,
+                    type(e).__name__,
+                )
+            else:
+                logger.exception("Streaming failed before delivery: %s", safe_error)
             if self._unmask_server_error_with_nonstreaming(e):
                 return False
         # Propagate to the main retry loop (credential rotation, fallback, backoff).
@@ -3691,10 +3748,16 @@ class _StreamingCall(StreamingWaitMonitor):
             probe_status = _extract_status_code(probe_err)
             if probe_status is not None and probe_status < 500:
                 # The provider's REAL validation error beats the opaque 5xx.
-                logger.info("Non-streaming unmask probe surfaced the underlying error: %s", probe_err)
+                logger.info(
+                    "Non-streaming unmask probe surfaced the underlying error: %s",
+                    _safe_provider_error_summary(self.agent, probe_err),
+                )
                 self.result["error"] = probe_err
                 return True
-            logger.info("Non-streaming unmask probe failed: %s", probe_err)
+            logger.info(
+                "Non-streaming unmask probe failed: %s",
+                _safe_provider_error_summary(self.agent, probe_err),
+            )
             return False
         finally:
             self._stream_stale_timeout = stale_timeout
@@ -3710,7 +3773,18 @@ class _StreamingCall(StreamingWaitMonitor):
             replayed = _with_stream_emitters(self.agent, lambda: self._replay_final_response(probe))
         except Exception as replay_err:
             # A response we cannot replay must not escape into _call()'s except block.
-            logger.exception("Non-streaming unmask probe response could not be replayed: %s", replay_err)
+            safe_error = _safe_provider_error_summary(self.agent, replay_err)
+            if _private_provider_context_active():
+                logger.warning(
+                    "Non-streaming unmask probe response could not be replayed: %s (%s)",
+                    safe_error,
+                    type(replay_err).__name__,
+                )
+            else:
+                logger.exception(
+                    "Non-streaming unmask probe response could not be replayed: %s",
+                    safe_error,
+                )
             return False
         self.result["response"] = replayed
         return True
@@ -3880,6 +3954,7 @@ class _StreamingCall(StreamingWaitMonitor):
         response). A text-only death with 0 visible chars never gets here: the error
         handler reclassifies it as undelivered (#112419)."""
         error = self.result["error"]
+        safe_error = _safe_provider_error_summary(self.agent, error)
         _partial_text = (getattr(self.agent, "_current_streamed_assistant_text", "") or "").strip() or None
         _partial_names = list(self.result.get("partial_tool_names") or [])
         if _partial_names:
@@ -3894,7 +3969,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 self._quiet(self.agent._fire_stream_delta, _warn)  # visible immediately
             logger.warning(
                 "Partial stream dropped tool call(s) %s after %s chars of text; surfaced warning to user: %s",
-                _partial_names, len(_partial_text or ""), error)
+                _partial_names, len(_partial_text or ""), safe_error)
         # Classify the error before it is swallowed into the stub: the loop reads the
         # content-filter tag and falls back; a context overflow must not be continued at all.
         _cls = None
@@ -3911,7 +3986,7 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.warning(
                 "Partial stream ended on a context-overflow error after %s chars; "
                 "NOT seeding a continuation stub (transcript is already over budget): %s",
-                len(_partial_text or ""), error,
+                len(_partial_text or ""), safe_error,
             )
             return _build_partial_stream_stub(
                 "assistant", None, None, getattr(self.agent, "model", "unknown"), None,
@@ -3922,7 +3997,7 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.warning(
                 "Partial stream delivered before error; returning length-truncated stub with %s chars of "
                 "recovered content so the loop can continue from where the stream died: %s",
-                len(_partial_text or ""), error)
+                len(_partial_text or ""), safe_error)
         _stub = _build_partial_stream_stub("assistant", _partial_text, None,
             getattr(self.agent, "model", "unknown"), None, dropped_tool_names=_partial_names,
             api_mode=getattr(self.agent, "api_mode", None))

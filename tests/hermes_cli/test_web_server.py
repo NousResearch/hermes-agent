@@ -4122,6 +4122,76 @@ class TestDeleteSessionEndpoint:
         assert resp.status_code == 200
         assert resp.json().get("ok") is True
 
+    def test_delete_existing_session_scrubs_row_and_disk(self):
+        # The CLI delete path threads the sessions dir so transcript
+        # artifacts are removed with the row; the endpoint historically
+        # didn't, leaving secret-bearing session_<id>.json snapshots and
+        # request dumps orphaned on disk after a UI delete.
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session("disk-scrub", source="cli")
+        finally:
+            db.close()
+
+        sessions_dir = get_hermes_home() / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        for name, body in (
+            ("session_disk-scrub.json", '{"messages": [{"content": "secret-token"}]}'),
+            ("disk-scrub.jsonl", "{}\n"),
+            ("request_dump_disk-scrub_001.json", "{}"),
+        ):
+            (sessions_dir / name).write_text(body, encoding="utf-8")
+        # Another session's artifacts must survive.
+        (sessions_dir / "session_disk-scrub-neighbour.json").write_text("{}", encoding="utf-8")
+
+        resp = self.auth_client.delete("/api/sessions/disk-scrub")
+
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db.get_session("disk-scrub") is None
+        finally:
+            db.close()
+        assert not (sessions_dir / "session_disk-scrub.json").exists()
+        assert not (sessions_dir / "disk-scrub.jsonl").exists()
+        assert not (sessions_dir / "request_dump_disk-scrub_001.json").exists()
+        assert (sessions_dir / "session_disk-scrub-neighbour.json").exists()
+
+    def test_delete_named_profile_session_scrubs_profile_disk(self):
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        profile_home = profiles_mod.get_profile_dir("worker")
+        profile_home.mkdir(parents=True)
+        (profile_home / "config.yaml").touch()  # identity marker: bare dirs are not profiles
+        sessions_dir = profile_home / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True)
+        db_path = profile_home / "state.db"
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session("profile-scrub", source="cli")
+        finally:
+            db.close()
+        (sessions_dir / "session_profile-scrub.json").write_text(
+            '{"messages": [{"content": "secret-token"}]}', encoding="utf-8"
+        )
+
+        resp = self.auth_client.delete("/api/sessions/profile-scrub?profile=worker")
+
+        assert resp.status_code == 200
+        assert resp.json().get("ok") is True
+        db = SessionDB(db_path=db_path)
+        try:
+            assert db.get_session("profile-scrub") is None
+        finally:
+            db.close()
+        assert not (sessions_dir / "session_profile-scrub.json").exists()
+
 
 class TestBulkDeleteSessionsEndpoint:
     """Tests for ``POST /api/sessions/bulk-delete`` — backs the

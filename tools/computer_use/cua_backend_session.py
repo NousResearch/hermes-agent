@@ -443,6 +443,8 @@ class _CuaDriverSession:
                     logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
                 self._started = False
                 self._capabilities, self._tool_schemas, self._capability_version = {}, {}, ""
+                if (daemon := getattr(self, "_embedded_daemon", None)) is not None:
+                    daemon.ensure_alive()
                 self._start_lifecycle_locked()
                 self._started = True
             if clear_timeout_suspect:

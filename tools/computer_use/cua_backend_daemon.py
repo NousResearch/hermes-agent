@@ -190,6 +190,19 @@ class _EmbeddedCuaDaemon:
         probe = _cb()._run_quiet([self._command, "status", "--socket", self.socket_path], timeout=2.0, env=env, swallow=_QUIET_ERRORS)
         return probe is not None and probe.returncode == 0
 
+    def ensure_alive(self) -> bool:
+        """Restart the private daemon if its process exited since start(); True when restarted.
+
+        The reconnect path rebuilds only the proxy-side stdio client, which dials this daemon's
+        socket; a dead daemon would leave every reconnect failing with "no Cua Driver daemon
+        listening"."""
+        if not self._running or self._process is None or self._process.poll() is None:
+            return False
+        logger.warning("embedded cua-driver daemon exited (code %s); restarting it", self._process.returncode)
+        self.stop()
+        self.start()
+        return True
+
     def proxy_invocation(self) -> Tuple[str, List[str]]:
         if not self._running:
             raise RuntimeError("embedded cua-driver daemon is not running")

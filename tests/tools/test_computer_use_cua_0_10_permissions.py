@@ -358,3 +358,42 @@ def test_each_session_is_warned_separately(caplog):
         r for r in caplog.records if "escalated the cua-driver" in r.getMessage()
     ]
     assert len(escalation) == 2
+
+
+def test_embedded_daemon_ensure_alive_restarts_only_a_dead_process():
+    """A killed/crashed private daemon is restarted so a reconnect has a socket to reach;
+    a live one is left alone."""
+    from tools.computer_use import cua_backend
+
+    daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+    daemon._process, daemon._running = Mock(), True
+    calls = []
+    with patch.object(daemon, "stop", side_effect=lambda: calls.append("stop")), \
+         patch.object(daemon, "start", side_effect=lambda: calls.append("start")):
+        daemon._process.poll.return_value = None
+        assert daemon.ensure_alive() is False
+        assert calls == []
+        daemon._process.poll.return_value = daemon._process.returncode = -9
+        assert daemon.ensure_alive() is True
+    assert calls == ["stop", "start"]
+
+
+def test_session_reconnect_revives_a_dead_embedded_daemon_before_the_proxy():
+    """The reconnect-once path must revive the private daemon before rebuilding the MCP proxy
+    that dials its socket; otherwise every reconnect dies on "no daemon listening"."""
+    import threading
+    from typing import Any, cast
+    from tools.computer_use.cua_backend_session import _CuaDriverSession
+
+    order = []
+    daemon = Mock()
+    daemon.ensure_alive.side_effect = lambda: order.append("daemon")
+    session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+    session._embedded_daemon = daemon
+    session._lock = threading.Lock()
+    session._started = True
+    session._declared_session_id = None
+    session._stop_lifecycle_locked = lambda: order.append("stop")
+    session._start_lifecycle_locked = lambda: order.append("start")
+    session._recreate_session("list_windows", 5.0, "reconnect during %s")
+    assert order == ["stop", "daemon", "start"]

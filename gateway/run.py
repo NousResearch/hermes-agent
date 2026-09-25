@@ -419,6 +419,18 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _venv_held_python(venv_dir: Path) -> tuple[int, int] | None:
+    """The ``(major, minor)`` of the interpreter a venv actually holds, or ``None`` if unknown."""
+    try:
+        from pm.environments import venv_python_version
+    except Exception:
+        return None
+    try:
+        return venv_python_version(venv_dir)
+    except Exception:
+        return None
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -428,10 +440,24 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
     project_root = Path(__file__).resolve().parent.parent
     candidates: list[Path] = []
+    # PM owns the dependency environment of an install. When it committed one, that is the tree
+    # this interpreter booted from, so it outranks the checkout's legacy ``venv/`` — a leftover
+    # from the pre-PM layout, often built for another Python.
+    pm_venv: Path | None = None
+    try:
+        from pm.environments import committed_venv
+
+        pm_venv = committed_venv(project_root)
+    except Exception:
+        pm_venv = None
+    if pm_venv is not None:
+        candidates.append(pm_venv)
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))
     candidates.append(project_root / "venv")
 
+    running = (sys.version_info.major, sys.version_info.minor)
+    mismatched: list[str] = []
     seen: set[str] = set()
     for venv_dir in candidates:
         try:
@@ -442,6 +468,16 @@ def _ensure_windows_gateway_venv_imports() -> None:
         if venv_key in seen:
             continue
         seen.add(venv_key)
+
+        held = _venv_held_python(resolved_venv)
+        if held is not None and held != running:
+            # Another interpreter's site-packages: it would shadow the correct tree (sys.path
+            # order decides), and its compiled extensions cannot be imported at all — a cp311
+            # ``_pydantic_core`` under cp314 raised
+            # ``ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'`` and killed
+            # the gateway's hosted-room workers on every update that moved the store Python.
+            mismatched.append(f"{resolved_venv} (python {held[0]}.{held[1]})")
+            continue
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():
@@ -464,6 +500,15 @@ def _ensure_windows_gateway_venv_imports() -> None:
             pythonpath.append(os.environ["PYTHONPATH"])
         os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
         return
+
+    if mismatched:
+        logger.warning(
+            "Windows gateway venv injection skipped for interpreter-mismatched path(s): %s "
+            "(running Python %s.%s). Their site-packages would shadow the real dependency tree.",
+            ", ".join(mismatched),
+            running[0],
+            running[1],
+        )
 
 
 def _gateway_platform_value(platform: Any) -> str:

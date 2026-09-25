@@ -215,7 +215,7 @@ def project_python(project_root: Path) -> Path:
 
 
 def venv_python_version(venv: Path) -> tuple[int, int] | None:
-    """The interpreter version a POSIX venv actually holds, or ``None``.
+    """The interpreter version a venv actually holds, or ``None``.
 
     ``site_packages`` must not date the tree from the CALLER's ``sys.version_info``:
     an update can rebuild the dependency environment with a different Python than
@@ -223,11 +223,15 @@ def venv_python_version(venv: Path) -> tuple[int, int] | None:
     built the environment with CPython 3.14 while the PATH shim ran 3.11, so the
     shim composed ``lib/python3.11/site-packages`` inside a 3.14 venv, found no
     tree, and failed *after* a successful update.
+
+    Both marker spellings matter: ``virtualenv``/``venv`` write ``version``, while
+    ``uv venv`` (every Hermes-managed environment) writes ``version_info``. Reading
+    only ``version`` left every uv venv unidentifiable -- the exact case above.
     """
     try:
         for line in (venv / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines():
             key, _, value = line.partition("=")
-            if key.strip() != "version":
+            if key.strip() not in ("version", "version_info"):
                 continue
             major, _, rest = value.strip().partition(".")
             minor, _, _ = rest.partition(".")

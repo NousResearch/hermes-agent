@@ -4345,6 +4345,21 @@ class TestEnsureDmConversation:
         )
 
     @pytest.mark.asyncio
+    async def test_user_prefixed_target_resolves_like_bare_user_id(self, adapter):
+        """``user:U...`` is what ``tools.send_message_targets`` emits for every ``slack:U...``
+        reference. The standalone cron transport opens it; the live adapter must too, or a
+        gateway-served cron job with ``deliver: slack:U...`` fails at chat.postMessage."""
+        adapter._app.client.conversations_open = AsyncMock(
+            return_value={"ok": True, "channel": {"id": "D999NEW"}}
+        )
+
+        prefixed = await adapter._ensure_dm_conversation("user:U123ABCDEF")
+        bare = await adapter._ensure_dm_conversation("U123ABCDEF")
+
+        assert prefixed == bare == "D999NEW"
+        adapter._app.client.conversations_open.assert_awaited_once_with(users="U123ABCDEF")
+
+    @pytest.mark.asyncio
     async def test_conversation_ids_pass_through(self, adapter):
         adapter._app.client.conversations_open = AsyncMock()
         for cid in ("C123CHAN", "G123GROUP", "D123DM"):

@@ -1988,6 +1988,11 @@ class SlackAdapter(BasePlatformAdapter):
         #17261, #19236.
         """
         cid = str(chat_id or "")
+        # ``user:U...`` is the internal form ``tools.send_message_targets`` emits for a ``slack:U...``
+        # reference (cron ``deliver``, send_message). The standalone transport opens it
+        # (``send_message_senders``); the live adapter is the other half of the same path.
+        if cid.startswith("user:"):
+            cid = cid[len("user:"):]
         if not cid or cid[0] not in ("U", "W"):
             return chat_id
         cache_key = f"{team_id or ''}:{cid}"

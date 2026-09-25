@@ -31,6 +31,31 @@ def test_display_version_names_the_distance_without_the_commit():
     assert VersionInfo("0.21.5", "0.21.5", 0, None, None, "git").display_version == "0.21.5"
 
 
+def test_display_version_keeps_tagless_stamp_identity(tmp_path, monkeypatch):
+    stamp = {
+        "commit": "a" * 40,
+        "baseVersion": "unknown",
+        "displayVersion": "git.aaaaaaa",
+        "source": "git",
+        "payload": "bootstrap",
+        "updateMechanism": "self",
+    }
+    stamp_file = tmp_path / "install-stamp.json"
+    stamp_file.write_text(json.dumps(stamp), encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+
+    info = get_version_info()
+
+    assert info.base_version == "unknown"
+    assert info.display_version == stamp["displayVersion"]
+    assert info.commit == stamp["commit"]
+
+
+def test_display_version_keeps_unknown_when_no_identity():
+    info = VersionInfo("unknown", "unknown", None, None, None, "unknown")
+    assert info.display_version == "unknown"
+
+
 def test_stamp_version_info_reads_nix_stamp(tmp_path, monkeypatch):
     stamp = {
         "schemaVersion": 2,

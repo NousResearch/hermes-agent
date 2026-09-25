@@ -116,7 +116,11 @@ def aux_probe_mode():
         _aux_probe_state.active = prev
 
 
-from agent.credential_pool import load_pool
+from agent.credential_pool import (
+    FAILURE_REASON_BILLING,
+    FAILURE_REASON_BILLING_UNVERIFIED,
+    load_pool,
+)
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_cli.config_providers import _canonical_api_mode
@@ -3683,13 +3687,20 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return False
     status_code = getattr(exc, "status_code", None)
 
-    def _rotate(fallback_status: int) -> bool:
+    def _rotate(
+        fallback_status: Optional[int],
+        failure_reason: Optional[str] = None,
+        *,
+        require_alternative: bool = False,
+    ) -> bool:
         error_context: Dict[str, Any] = {"message": str(exc)}
         if status_code is not None:
             error_context["status_code"] = status_code
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context, api_key_hint=failed_api_key or None,
+            require_alternative=require_alternative,
+            failure_reason=failure_reason,
         )
         if next_entry is None:
             return False
@@ -3702,9 +3713,17 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
             return True
         return _rotate(401)
     if _is_payment_error(exc):
-        return _rotate(402)
+        # Auxiliary billing/quota failures may rotate shared credentials, but must not
+        # quarantine the only key the owning main route can try (#119533).
+        if status_code == 402:
+            # Genuine depletion: keep the full bench (a 60s retry on a spent account re-fails).
+            return _rotate(402, FAILURE_REASON_BILLING, require_alternative=True)
+        # Billing only inferred from the body (quota phrasing on 429/403/404, or no HTTP
+        # status at all): the credential may be healthy, so bench briefly instead of an
+        # hour — mirrors the main loop's billing_unverified handling.
+        return _rotate(status_code, FAILURE_REASON_BILLING_UNVERIFIED, require_alternative=True)
     if _is_rate_limit_error(exc) and not _is_overloaded_error(exc):
-        return _rotate(429)
+        return _rotate(429, require_alternative=True)
     return False
 
 

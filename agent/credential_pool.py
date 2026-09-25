@@ -2257,6 +2257,7 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
         credential_id: Optional[str] = None,
         failure_reason: Optional[str] = None,
         model: Optional[str] = None,
+        require_alternative: bool = False,
     ) -> Optional[PooledCredential]:
         with self._lock:
             identity_supplied = bool(credential_id or api_key_hint)
@@ -2270,6 +2271,21 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
+            if require_alternative:
+                failed_runtime_key = entry.runtime_api_key
+                alternatives = [
+                    candidate
+                    for candidate in self._available_entries(model=model)[0]
+                    if candidate.id != entry.id
+                    and (not failed_runtime_key or candidate.runtime_api_key != failed_runtime_key)
+                ]
+                if not alternatives:
+                    logger.info(
+                        "credential pool: %s has no distinct recovery target; preserving it for its owning route",
+                        _label,
+                    )
+                    self._current_id = None
+                    return None
             if self._is_model_scoped_failure(status_code, model, failure_reason):
                 # A generic Anthropic 429 (per-model rate limit) or a Codex account model
                 # entitlement rejection: bench this model only, the credential stays

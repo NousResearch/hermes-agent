@@ -172,6 +172,103 @@ def test_relaunch_keeps_invocation_and_checkout_imports(tmp_path, mode):
     assert json.loads(result.stdout) == ["from checkout", argv[1:]]
 
 
+_BOOTSTRAP_MARKER_ENV = "HERMES_TEST_BOOTSTRAP_MARKER"
+
+
+def _stub_bootstrap_root(base: Path) -> Path:
+    """A scratch project root whose `hermes_bootstrap` records that it was imported.
+
+    Resolved so containment against the resolved entry script is exact.
+    """
+    root = base / "root"
+    root.mkdir()
+    (root / "hermes_bootstrap.py").write_text(
+        "import os, pathlib\n"
+        f"pathlib.Path(os.environ[{_BOOTSTRAP_MARKER_ENV!r}]).write_text('imported\\n')\n"
+    )
+    return root
+
+
+def _reenter(root: Path, argv: list[str], original: list[str], module: str | None,
+             marker: Path) -> subprocess.CompletedProcess:
+    command = venv_sync.relaunch_command(Path(sys.executable), root, argv, original, module)
+    return subprocess.run(command, capture_output=True, text=True, timeout=30,
+                          env={**os.environ, _BOOTSTRAP_MARKER_ENV: str(marker)})
+
+
+def test_relaunch_foreign_entry_script_keeps_its_directory_and_environment(tmp_path):
+    """A launcher boots its own entry script through the managed interpreter: the -I flag
+    drops the script's directory (`python <script>` keeps it), and a foreign entry script
+    imports no hermes_bootstrap — so the re-entry owes it both the sibling import and the
+    managed dependency environment."""
+    base = tmp_path.resolve()
+    root = _stub_bootstrap_root(base)
+    launcher = base / "launcher"
+    launcher.mkdir()
+    (launcher / "launcher_helper.py").write_text("VALUE = 42\n")
+    entry = launcher / "entry.py"
+    entry.write_text(
+        "import json, launcher_helper, sys\n"
+        "print(json.dumps([launcher_helper.VALUE, sys.argv[1:]]))\n"
+    )
+    marker = base / "activated.marker"
+    argv = [str(entry), "arg with spaces"]
+
+    result = _reenter(root, argv, [sys.executable, *argv], None, marker)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [42, ["arg with spaces"]]
+    assert marker.is_file(), "a foreign entry script was given no managed environment"
+
+
+def test_relaunch_entry_script_inside_the_root_imports_siblings_unbootstrapped(tmp_path):
+    """Ours import hermes_bootstrap themselves: an in-tree entry script keeps importing
+    its siblings, and the re-entry must not bootstrap the environment for it."""
+    base = tmp_path.resolve()
+    root = _stub_bootstrap_root(base)
+    (root / "launcher_helper.py").write_text("VALUE = 42\n")
+    entry = root / "entry.py"
+    entry.write_text("import json, launcher_helper\nprint(json.dumps(launcher_helper.VALUE))\n")
+    marker = base / "activated.marker"
+
+    result = _reenter(root, [str(entry)], [sys.executable, str(entry)], None, marker)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == 42
+    assert not marker.exists(), "an in-tree entry script was bootstrapped"
+
+
+@pytest.mark.parametrize("mode", ["command", "module"])
+def test_relaunch_command_and_module_entries_are_unchanged(tmp_path, mode):
+    """Neither re-entry reads the entry path, so a foreign argv[0] leaves both untouched."""
+    base = tmp_path.resolve()
+    root = _stub_bootstrap_root(base)
+    (root / "entry_module.py").write_text(
+        "import json, sys\nprint(json.dumps(['module ran', sys.argv[1:]]))\n"
+    )
+    decoy = base / "decoy"
+    decoy.mkdir()
+    argv = [str(decoy / "entry.py"), "--profile", "p"]
+    original = [sys.executable, *argv]
+    module = None
+    expected = "module ran"
+    if mode == "command":
+        code = "import json, sys; print(json.dumps(['command ran', sys.argv[1:]]))"
+        argv[0] = "-c"
+        original = [sys.executable, "-c", code, "--profile", "p"]
+        expected = "command ran"
+    else:
+        module = "entry_module"
+        original = [sys.executable, "-m", module, "--profile", "p"]
+    marker = base / "activated.marker"
+
+    result = _reenter(root, argv, original, module, marker)
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == [expected, ["--profile", "p"]]
+    assert not marker.exists()
+
+
 @pytest.mark.parametrize("owner,argv", [(None, []), ("external", []), ("electron-updater", []), ("self", ["-p", "coder", "pm", "repair"])])
 def test_non_self_or_pm_launch_cannot_trigger_update(tmp_path, monkeypatch, owner, argv):
     import pm

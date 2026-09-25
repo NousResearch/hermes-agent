@@ -419,6 +419,28 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _venv_interpreter_matches(venv_dir: Path) -> bool:
+    """True when the venv's Python ABI matches the running interpreter (pyvenv.cfg version_info).
+
+    PM-era installs lease a store-Python generation for dependencies; injecting a legacy
+    ``venv/`` built for a different Python major.minor puts a wrong-ABI site-packages ahead
+    of the leased generation on sys.path, so compiled extensions (pydantic_core) fail to load.
+    """
+    try:
+        lines = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return True
+    for line in lines:
+        name, _sep, value = line.partition("=")
+        if name.strip().lower() == "version_info":
+            running = [str(sys.version_info.major), str(sys.version_info.minor)]
+            try:
+                return [part.strip() for part in value.strip().split(".")[:2]] == running
+            except ValueError:
+                return True
+    return True
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -442,6 +464,9 @@ def _ensure_windows_gateway_venv_imports() -> None:
         if venv_key in seen:
             continue
         seen.add(venv_key)
+
+        if not _venv_interpreter_matches(resolved_venv):
+            continue
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():

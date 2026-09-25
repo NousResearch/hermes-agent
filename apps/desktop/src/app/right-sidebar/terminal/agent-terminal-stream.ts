@@ -137,22 +137,27 @@ export function syncAgentTerminalSnapshot(procId: string, output: string): void 
     return
   }
 
+  // The fence is updated BEFORE the write so the write's eviction pass counts it:
+  // after, it would re-create a fence for a process that pass just forgot.
   if (output.startsWith(previous)) {
-    writeAgentTerminalChunk(procId, output.slice(previous.length))
     lastSnapshots.set(procId, output)
+    writeAgentTerminalChunk(procId, output.slice(previous.length))
 
     return
   }
 
   if (output.startsWith(body)) {
-    writeAgentTerminalChunk(procId, output.slice(body.length))
     lastSnapshots.set(procId, output)
+    writeAgentTerminalChunk(procId, output.slice(body.length))
 
     return
   }
 
+  // A reset is a write like any chunk: refresh recency and answer to the ceilings.
   const next = `${header}${output}`.slice(-MAX_BACKLOG)
   lastSnapshots.set(procId, output)
+  backlog.delete(procId)
   backlog.set(procId, next)
   writers.get(procId)?.(`\x1bc${next}`)
+  evictColdProcs()
 }

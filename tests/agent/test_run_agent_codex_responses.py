@@ -915,6 +915,56 @@ def test_run_codex_stream_returns_terminal_response_when_post_terminal_drain_fai
     assert response.id == "resp_post_terminal_1"
 
 
+def test_post_terminal_drain_thread_preserves_private_context_redaction(
+    monkeypatch, caplog
+):
+    """The bounded drain thread inherits the turn's private-context taint."""
+    import logging
+
+    import httpx
+
+    from agent.redact import bind_volatile_sensitive_text
+
+    agent = _build_agent(monkeypatch)
+    message_item = SimpleNamespace(
+        type="message",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="All done.")],
+    )
+
+    class _PrivatePostTerminalDrop(_FakeCreateStream):
+        def __iter__(self):
+            yield from super().__iter__()
+            raise httpx.RemoteProtocolError(
+                "provider echoed coordinate fragments 37.77 / -122.41"
+            )
+
+    events = [
+        SimpleNamespace(type="response.output_item.done", item=message_item),
+        SimpleNamespace(
+            type="response.completed",
+            response=SimpleNamespace(status="completed", id="resp_private_drain"),
+        ),
+    ]
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            create=lambda **_kwargs: _PrivatePostTerminalDrop(events)
+        )
+    )
+    snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+
+    with (
+        bind_volatile_sensitive_text(snapshot),
+        caplog.at_level(logging.WARNING, logger="agent.codex_runtime"),
+    ):
+        response = agent._run_codex_stream(_codex_request_kwargs())
+
+    assert response.id == "resp_private_drain"
+    assert "details withheld for private-context turn" in caplog.text
+    assert "37.77" not in caplog.text
+    assert "-122.41" not in caplog.text
+
+
 def test_run_codex_stream_bounds_post_terminal_drain(monkeypatch):
     """A relay that keeps SSE open after completion cannot discard the billed response."""
     import threading

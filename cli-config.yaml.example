@@ -1405,6 +1405,11 @@ platform_toolsets:
 #     # Default false; ordinary messages, replies, and regex wake words stay blocked.
 #     guest_mode: false
 #     # allowed_chats: ["-1001234567890"]
+#     # Keep active Telegram live-location updates silently in process memory and
+#     # make one immutable snapshot available to eligible foreground text turns.
+#     # Coordinates are never written to Hermes state; fixed pins/venues remain
+#     # ordinary conversational messages. Long polling only. Default false.
+#     background_locations: false
 #     extra:
 #       drop_pending_on_cold_boot: true # Drop Telegram's queued updates on a cold boot (default). Set false on hosts that power off, so messages sent while offline are delivered on the next start; watcher reconnects always preserve them
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages

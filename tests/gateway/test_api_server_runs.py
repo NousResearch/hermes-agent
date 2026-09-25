@@ -871,9 +871,9 @@ class TestRunEventsCORS:
     @staticmethod
     def _prime_closed_stream(adapter, run_id):
         _claim_run(adapter, run_id)
-        q: asyncio.Queue = asyncio.Queue()
-        q.put_nowait(None)  # run finished: handler writes ": stream closed" and returns
-        adapter._run_streams[run_id] = q
+        stream = _RunStream()
+        stream.put_nowait(None)  # run finished: handler writes ": stream closed" and returns
+        adapter._run_streams[run_id] = stream
 
     @pytest.mark.asyncio
     async def test_events_cors_headers_present_for_allowed_origin(self):
@@ -2595,7 +2595,7 @@ class TestRunEventsHeadFlush:
         run_id = "run_silent_head"
         # A registered run whose queue stays empty for the whole test — the
         # exact shape of "subscribed before the first event was emitted".
-        adapter._run_streams[run_id] = asyncio.Queue()
+        adapter._run_streams[run_id] = _RunStream()
         _claim_run(adapter, run_id)
 
         async with TestClient(TestServer(app)) as cli:

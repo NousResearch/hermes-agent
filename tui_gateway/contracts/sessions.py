@@ -119,6 +119,10 @@ class SessionCreateParams(ProfileParams):
     cols: int | None = None
     source: str | None = None
     cwd: str | None = None
+    # #52589 provenance: the client cwd is a deliberate per-session workspace pick
+    # (true) or an inherited app-global default (false/omitted) that a named
+    # profile's terminal.cwd must override.
+    cwd_explicit: bool | None = None
     messages: list[SeedMessage] | None = None
     parent_session_id: str | None = None
     title: str | None = None

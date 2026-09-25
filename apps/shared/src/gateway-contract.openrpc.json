@@ -28642,6 +28642,18 @@
             "default": null,
             "title": "Cwd"
           },
+          "cwd_explicit": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd Explicit"
+          },
           "messages": {
             "anyOf": [
               {

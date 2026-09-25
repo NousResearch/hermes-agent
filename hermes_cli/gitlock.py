@@ -390,20 +390,30 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
         return 0
 
 
-def _is_partial_clone(repo_root: Path, **run_kwargs) -> bool:
-    """True when the checkout fetches trees on demand (promisor remote configured).
+def _partial_clone_filter(repo_root: Path, **run_kwargs) -> "str | None":
+    """The checkout's existing fetch filter, or None for a non-partial clone.
 
     ``git fetch --filter=...`` *writes* ``remote.origin.promisor`` and
     ``remote.origin.partialclonefilter`` even when the repo was deliberately
-    de-partialised, so the flag may only be passed when the repo already is a
-    partial clone. Read-only config probe; failures read as "not partial".
+    de-partialised, so a filter may only be passed when the repo already is a
+    partial clone — and then it must repeat the clone's own filter rather
+    than override it, or the tag fetch would silently tighten (or loosen)
+    the transfer semantics the installer established. Read-only config probe;
+    failures read as "not partial".
     """
     result = subprocess.run(
         ["git", "config", "--get", "remote.origin.promisor"],
         cwd=str(repo_root), capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=30, **run_kwargs,
     )
-    return result.returncode == 0 and result.stdout.strip().lower() == "true"
+    if result.returncode != 0 or result.stdout.strip().lower() != "true":
+        return None
+    configured = subprocess.run(
+        ["git", "config", "--get", "remote.origin.partialclonefilter"],
+        cwd=str(repo_root), capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=30, **run_kwargs,
+    )
+    return configured.stdout.strip() or None
 
 
 def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
@@ -418,9 +428,10 @@ def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
     was unshallowed; fetch failures raise subprocess errors.
     """
     shallow = _shallow_file_path(repo_root) is not None
+    partial_filter = _partial_clone_filter(repo_root, **run_kwargs)
     subprocess.run(
-        ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
-         *(["--filter=tree:0"] if _is_partial_clone(repo_root, **run_kwargs) else []),
+        ["git", "fetch", "--quiet", *([ "--unshallow" ] if shallow else []),
+         *( [ f"--filter={partial_filter}" ] if partial_filter else [] ),
          "--no-tags", "origin", "refs/tags/v*:refs/tags/v*"],
         cwd=str(repo_root), check=True, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=900, **run_kwargs,

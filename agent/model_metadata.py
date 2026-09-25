@@ -361,11 +361,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     "mimo-v2-pro": 1048576, "mimo-v2.5-pro": 1048576, "mimo-v2.5": 1048576, "mimo-v2-omni": 262144, "mimo-v2-flash": 262144,
     "zai-org/GLM-5": 202752,
 }
-# xAI Grok models that ACCEPT `reasoning.effort` (verified live against
-# /v1/responses). Unlisted Grok models still reason natively but 400 on the
+# xAI Grok models that ACCEPT `reasoning.effort` (4.7 documented at
+# https://docs.x.ai/developers/model-capabilities/text/reasoning; earlier models
+# verified live against /v1/responses). Unlisted Grok models still reason natively but 400 on the
 # parameter, so callers must send no `reasoning` key rather than a default `medium`.
-# grok-4.5/4.6 accept low/medium/high (default high) but REJECT "none", unlike grok-4.3.
-_GROK_EFFORT_CAPABLE_PREFIXES = ("grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6")
+# grok-4.5/4.6/4.7 cannot disable reasoning, unlike grok-4.3.
+_GROK_EFFORT_CAPABLE_PREFIXES = ("grok-3-mini", "grok-4.20-multi-agent", "grok-4.3", "grok-4.5", "grok-4.6", "grok-4.7")
 
 
 def grok_supports_reasoning_effort(model: str) -> bool:
@@ -393,6 +394,11 @@ def is_grok_46_family(model: str) -> bool:
     """Whether *model* is a Grok 4.6 family identifier."""
     name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
     return name == "grok-4.6" or name.startswith("grok-4.6-")
+
+def is_grok_xhigh_family(model: str) -> bool:
+    """Grok families whose xAI Responses reasoning dial accepts xhigh."""
+    name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
+    return any(name == prefix or name.startswith(prefix + "-") for prefix in ("grok-4.6", "grok-4.7"))
 
 
 # Claude models that accept ``speed: "fast"`` (https://platform.claude.com/docs/en/build-with-claude/fast-mode).

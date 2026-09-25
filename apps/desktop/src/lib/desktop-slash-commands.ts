@@ -267,18 +267,16 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('btw'),
     argumentMode: 'text'
   },
-  // /background must be an action (prompt.background RPC — the TUI's path),
-  // not exec: the slash worker's HermesCLI prints the completion from a
-  // fire-and-forget thread after process_command already returned, past the
-  // worker's stdout capture window, so the result never reached the desktop
-  // conversation that started the task (#97635).
+  // /bg (alias /background) must be an action (prompt.background RPC — the
+  // TUI's path), not exec: the slash worker's HermesCLI prints the completion
+  // from a fire-and-forget thread after process_command already returned,
+  // past the worker's stdout capture window, so the result never reached the
+  // desktop conversation that started the task (#97635, #57444).
   {
-    name: '/background',
+    name: '/bg',
     description: 'Run a prompt in a background session',
-    aliases: ['/bg'],
+    aliases: ['/background'],
     surface: action('background'),
-    argumentMode: 'text'
-  },
     argumentMode: 'text'
   },
   {

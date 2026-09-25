@@ -32,7 +32,7 @@ from plugins.platforms.nextcloud_talk.adapter import (
 TOKEN = "roomtok1"
 
 
-def _make_adapter(monkeypatch, **extra_overrides) -> NextcloudTalkAdapter:
+def _make_adapter(monkeypatch, *, authorize=True, **extra_overrides) -> NextcloudTalkAdapter:
     monkeypatch.setenv("NEXTCLOUD_TALK_APP_PASSWORD", "app-pw")
     extra = {
         "nextcloud_url": "https://nc.example.com",
@@ -40,7 +40,19 @@ def _make_adapter(monkeypatch, **extra_overrides) -> NextcloudTalkAdapter:
         "conversations": [{"token": TOKEN}],
         **extra_overrides,
     }
-    return NextcloudTalkAdapter(PlatformConfig(enabled=True, extra=extra))
+    adapter = NextcloudTalkAdapter(PlatformConfig(enabled=True, extra=extra))
+    # By default wire an allow-all authorization check so behavioral tests
+    # model an *authorized* sender. Pre-effect authorization (PR #11458) fails
+    # closed when no check is wired, so positive-path tests must opt in.
+    # Pass ``authorize=None`` to leave the adapter with no wired check, or a
+    # callable ``(user_id, chat_type, chat_id, **kw) -> bool`` for custom rules.
+    if authorize is not None:
+        if authorize is True or authorize is False:
+            _verdict = authorize
+            adapter.set_authorization_check(lambda *a, **k: _verdict)
+        else:
+            adapter.set_authorization_check(authorize)
+    return adapter
 
 
 def _talk_msg(text, *, msg_id=101, user="niko", token=TOKEN) -> dict:
@@ -210,3 +222,143 @@ class TestValidateConfigPasswordEnv:
 class TestPortableTempDir:
     def test_media_dir_derives_from_tempfile(self):
         assert MEDIA_TEMP_DIR == os.path.join(tempfile.gettempdir(), "hermes-media")
+
+
+class TestPreEffectAuthorization:
+    """PR #11458 P1: caller authorization must run BEFORE any consequential
+    effect. Conversation membership only selects the lane; the wired
+    ``set_authorization_check`` callback is the caller authority. An
+    unallowlisted participant in a configured conversation must cause zero
+    local reply / status send / attachment download / STT egress / pending-ack
+    mutation, and the check must fail closed when unwired.
+    """
+
+    def _instrumented_adapter(self, monkeypatch, **kw):
+        """Adapter whose every side-effect path is a spy, so a test can assert
+        *nothing* fired."""
+        adapter = _make_adapter(monkeypatch, **kw)
+        client = MagicMock()
+        client.send_message = AsyncMock(return_value=(True, 555, None))
+        client.download_file = AsyncMock(return_value=(True, "/tmp/x", None))
+        adapter._client = client
+        adapter._stt = SimpleNamespace(transcribe=AsyncMock(return_value="TRANSCRIBED"))
+        adapter._download_attachment = AsyncMock(return_value="/tmp/x")
+        adapter.send = AsyncMock()
+        seen = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: seen.append(e))
+        return adapter, client, seen
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_actor_triggers_zero_effects(self, monkeypatch):
+        # actorId "mallory" is a member of the configured conversation but
+        # NOT authorized by the wired callback (only "niko" is allowed).
+        adapter, client, seen = self._instrumented_adapter(
+            monkeypatch,
+            authorize=lambda uid, *a, **k: uid == "niko",
+        )
+        await adapter._on_poll_message(_talk_msg("hello", user="mallory"), TOKEN)
+
+        # Zero local reply / status send
+        adapter.send.assert_not_awaited()
+        client.send_message.assert_not_awaited()
+        # Zero attachment download / STT
+        adapter._download_attachment.assert_not_awaited()
+        adapter._stt.transcribe.assert_not_awaited()
+        # Zero pending-ack / cache mutation
+        assert adapter._pending_acks == {}
+        assert TOKEN not in adapter._chat_name_cache
+        # Zero gateway hand-off
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_local_command_is_not_answered(self, monkeypatch):
+        """Even an adapter-local ``!help`` must not be answered for an
+        unauthorized actor (it is a consequential ``self.send`` reply)."""
+        adapter, client, seen = self._instrumented_adapter(
+            monkeypatch, authorize=False,
+        )
+        await adapter._on_poll_message(_talk_msg("!help", user="mallory"), TOKEN)
+        adapter.send.assert_not_awaited()
+        client.send_message.assert_not_awaited()
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_audio_triggers_no_download_or_stt(self, monkeypatch):
+        adapter, client, seen = self._instrumented_adapter(
+            monkeypatch, authorize=False,
+        )
+        msg = _talk_msg("", user="mallory")
+        msg["messageParameters"] = {
+            "file": {"type": "file", "name": "memo.mp3", "path": "memo.mp3",
+                     "mimetype": "audio/mpeg", "size": "1234"},
+        }
+        await adapter._on_poll_message(msg, TOKEN)
+        adapter._download_attachment.assert_not_awaited()
+        adapter._stt.transcribe.assert_not_awaited()
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_unwired_authorization_fails_closed(self, monkeypatch):
+        """No wired check (legacy/unknown) must NOT fall through to trust —
+        it fails closed for consequential effects."""
+        adapter, client, seen = self._instrumented_adapter(
+            monkeypatch, authorize=None,
+        )
+        assert adapter._authorization_check is None
+        await adapter._on_poll_message(_talk_msg("hello", user="niko"), TOKEN)
+        adapter.send.assert_not_awaited()
+        client.send_message.assert_not_awaited()
+        assert seen == []
+
+    @pytest.mark.asyncio
+    async def test_authorized_actor_still_gets_normal_behavior(self, monkeypatch):
+        """Positive side of the boundary: an authorized actor reaches the
+        gateway with the normal MessageEvent."""
+        adapter = _make_adapter(monkeypatch, authorize=lambda uid, *a, **k: uid == "niko")
+        adapter._client = MagicMock()
+        adapter._client.send_message = AsyncMock(return_value=(True, 555, None))
+        seen = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: seen.append(e))
+
+        await adapter._on_poll_message(_talk_msg("hello world", user="niko"), TOKEN)
+
+        assert len(seen) == 1
+        assert seen[0].text == "hello world"
+        assert seen[0].source.user_id == "niko"
+
+    @pytest.mark.asyncio
+    async def test_allow_all_only_through_canonical_callback(self, monkeypatch):
+        """"Allow-all" must be expressed via the same wired callback returning
+        True — there is no ad-hoc adapter-side allowlist parser."""
+        adapter = _make_adapter(monkeypatch, authorize=lambda *a, **k: True)
+        adapter._client = MagicMock()
+        adapter._client.send_message = AsyncMock(return_value=(True, 555, None))
+        seen = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: seen.append(e))
+
+        # An arbitrary actor is admitted only because the callback says True.
+        await adapter._on_poll_message(_talk_msg("hi", user="anyone"), TOKEN)
+        assert len(seen) == 1
+        # And the adapter carries no ad-hoc allowlist parser / env of its own.
+        assert not hasattr(adapter, "_allowed_users")
+        assert not hasattr(adapter, "_parse_allowed_users")
+
+    @pytest.mark.asyncio
+    async def test_authorization_uses_wired_callback_args_not_ambient(self, monkeypatch):
+        """Multiplex/profile case: the wired callback receives the projected
+        (actorId, chat_type, chat_id) — the transport profile's authority — so
+        a profile-specific allowlist is what decides, not ambient state."""
+        calls = []
+
+        def check(user_id, chat_type=None, chat_id=None, **kw):
+            calls.append((user_id, chat_type, chat_id))
+            return user_id == "niko"
+
+        adapter = _make_adapter(monkeypatch, authorize=check)
+        adapter._client = MagicMock()
+        adapter._client.send_message = AsyncMock(return_value=(True, 555, None))
+        adapter.handle_message = AsyncMock()
+
+        await adapter._on_poll_message(_talk_msg("hi", user="niko"), TOKEN)
+
+        assert calls == [("niko", adapter._classify_chat(TOKEN), TOKEN)]

@@ -781,6 +781,34 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
         if not self._is_chat_allowed(chat_id):
             return
 
+        # Caller authorization BEFORE any consequential effect.
+        #
+        # Conversation membership (``_is_chat_allowed``) only selects the lane;
+        # it is a routing coordinate, not caller authority. The canonical,
+        # profile-/multiplex-aware authorization owner is the gateway callback
+        # the runner wired via ``set_authorization_check``. We consume that
+        # proof here — right after projecting the native principal
+        # ``(actorId, chat_type, chat_id)`` — so that an unallowlisted
+        # participant in an otherwise-configured Talk conversation cannot
+        # trigger ANY credentialed/observable side effect (local ``!help``
+        # reply, "Thinking…" status send, ``_pending_acks`` mutation,
+        # WebDAV attachment download, or STT egress) before the eventual
+        # agent turn is refused downstream.
+        #
+        # Fail closed: only an explicit ``True`` permits effects. ``False``
+        # (denied) and ``None`` (no check wired / unknown) both short-circuit.
+        # The central gateway admission gate in ``handle_message`` stays as
+        # defense in depth.
+        actor_id = parsed["user_id"]
+        chat_type = self._classify_chat(chat_id)
+        if self._is_sender_authorized(actor_id, chat_type, chat_id) is not True:
+            logger.info(
+                "nextcloud_talk: dropping pre-effect message from unauthorized "
+                "actor %r in %s conversation %s",
+                actor_id, chat_type, chat_id,
+            )
+            return
+
         self._record_chat_name(chat_id, parsed.get("user_name", ""))
 
         # Normalize "!" prefix to "/" — Talk intercepts "/" commands client-side,
@@ -843,8 +871,8 @@ class NextcloudTalkAdapter(BasePlatformAdapter):
 
         source = self.build_source(
             chat_id=chat_id,
-            chat_type=self._classify_chat(chat_id),
-            user_id=parsed["user_id"],
+            chat_type=chat_type,
+            user_id=actor_id,
             user_name=parsed.get("user_name", ""),
         )
         event = MessageEvent(

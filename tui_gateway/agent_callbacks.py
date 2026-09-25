@@ -202,13 +202,13 @@ def _wire_callbacks(sid: str):
 
     def secret_cb(env_var, prompt, metadata=None):
         pl = {"prompt": prompt, "env_var": env_var, **({"metadata": metadata} if metadata else {})}
-        # One process-global callback: the last _wire_callbacks(sid) would otherwise
-        # own every prompt. Route to the turn bound by _set_session_context; the
-        # closure sid is only the fallback when that context is absent.
+        # One process-global callback, so the closure sid is just the last session wired,
+        # not the owner. Ask the UI session bound by _set_session_context: the same
+        # record whose profile scope the value is saved into. No bound owner: skip.
         from gateway.session_context import get_session_env
 
-        target_sid = get_session_env("HERMES_UI_SESSION_ID") or sid
-        val = _ask("secret", target_sid, pl)
+        owner_sid = get_session_env("HERMES_UI_SESSION_ID")
+        val = _ask("secret", owner_sid, pl) if owner_sid else ""
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
         from hermes_cli.config import save_env_value_secure

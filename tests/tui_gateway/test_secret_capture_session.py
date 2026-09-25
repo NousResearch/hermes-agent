@@ -1,12 +1,16 @@
-"""Skill credential prompts follow the turn that asked, not the last wired session.
+"""Skill credential prompts go to the session that owns the turn, never the last wired one.
 
-Regression for the process-global secret callback: wiring a newer session replaced
-the closure, so a prompt raised during an older turn was delivered — and its
-submitted value continued setup — under the newer session's id.
+``set_secret_capture_callback`` holds one process-global callback, so the closure sid is just
+whichever session called ``_wire_callbacks`` last. The prompt recipient has to be the UI owner
+bound by ``_set_session_context``: the same session whose profile scope the answer is saved into.
+Without a bound owner there is nobody to ask, so the prompt is skipped rather than guessed.
 """
 
+import json
 import sys
 import threading
+
+import pytest
 
 
 def _gateway(monkeypatch):
@@ -33,23 +37,36 @@ def _gateway(monkeypatch):
     return server, server_requests, skills_tool
 
 
+def _client(server, server_requests, monkeypatch, values):
+    """Stand in for the renderer: record every frame and answer each ``secret`` request with the
+    value its recipient would type. Returns ``(frames, completed)``; ``completed`` is set when a
+    ``background.complete`` event arrives."""
+    frames, completed = [], threading.Event()
+
+    def write(frame):
+        frames.append(frame)
+        if frame.get("method") == "secret":
+            sid = frame["params"]["session_id"]
+            assert server_requests.resolve_response(
+                {"jsonrpc": "2.0", "id": frame["id"], "result": {"value": values[sid]}}
+            )
+        elif (frame.get("params") or {}).get("type") == "background.complete":
+            completed.set()
+        return True
+
+    monkeypatch.setattr(server, "write_json", write)
+    return frames, completed
+
+
 def _capture(server, server_requests, skills_tool, monkeypatch, *, values):
     """Drive the real secret ask and record which session received it and what was stored."""
-    frames, stored = [], []
-
-    def answer(frame):
-        frames.append(frame)
-        sid = frame["params"]["session_id"]
-        assert server_requests.resolve_response(
-            {"jsonrpc": "2.0", "id": frame["id"], "result": {"value": values[sid]}}
-        )
-        return True
+    stored = []
 
     def save(key, value):
         stored.append((key, value))
         return {"success": True, "stored_as": key, "validated": False}
 
-    monkeypatch.setattr(server, "write_json", answer)
+    frames, _ = _client(server, server_requests, monkeypatch, values)
     monkeypatch.setattr("hermes_cli.config.save_env_value_secure", save)
     result = skills_tool._capture_required_environment_variables(
         "demo-skill", [{"name": "DEMO_TOKEN", "prompt": "Token"}]
@@ -84,24 +101,105 @@ def test_secret_prompt_goes_to_active_turn_not_last_wired_session(monkeypatch):
     assert server_requests.open_requests("session-B") == []
 
 
-def test_secret_prompt_falls_back_to_wired_sid_without_turn_context(monkeypatch):
-    """With no turn context bound, the prompt still reaches the session that wired it."""
-    from gateway.session_context import get_session_env, reset_session_vars
+def test_secret_prompt_without_bound_owner_is_skipped_not_guessed(monkeypatch):
+    """No UI owner in context: the wired sid is not ownership evidence, so nobody is asked."""
+    from gateway.session_context import get_session_env
 
     server, server_requests, skills_tool = _gateway(monkeypatch)
-    reset_session_vars()
-    assert get_session_env("HERMES_UI_SESSION_ID") == ""
-
     server._wire_callbacks("only-session")
+
+    tokens = server._set_session_context("ownerless-task", cwd="")
     try:
+        assert get_session_env("HERMES_UI_SESSION_ID") == ""
         frames, stored, result = _capture(
             server, server_requests, skills_tool, monkeypatch,
-            values={"only-session": "wired-secret"},
+            values={"only-session": "guessed-secret"},
         )
     finally:
+        server._clear_session_context(tokens)
         server_requests.reset_for_tests()
 
-    assert [frame["method"] for frame in frames] == ["secret"]
-    assert frames[0]["params"]["session_id"] == "only-session"
-    assert stored == [("DEMO_TOKEN", "wired-secret")]
-    assert result["setup_skipped"] is False
+    assert frames == []
+    assert stored == []
+    assert result == {"missing_names": ["DEMO_TOKEN"], "setup_skipped": True, "gateway_setup_hint": None}
+
+
+_SKILL = """---
+name: secret-skill
+description: needs a token
+required_environment_variables:
+  - name: DEMO_TOKEN
+    prompt: Demo token
+---
+
+# secret-skill
+"""
+
+
+@pytest.fixture
+def two_profiles(tmp_path, monkeypatch):
+    launch = tmp_path / ".hermes"
+    homes = [launch / "profiles" / name for name in ("a", "b")]
+    for home in homes:
+        skill_dir = home / "skills" / "demo" / "secret-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(_SKILL, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    monkeypatch.delenv("DEMO_TOKEN", raising=False)
+    return launch, *homes
+
+
+def _saved_tokens(home):
+    env = home / ".env"
+    lines = env.read_text(encoding="utf-8").splitlines() if env.exists() else []
+    return [line for line in lines if line.startswith("DEMO_TOKEN=")]
+
+
+def test_background_prompt_secret_reaches_its_own_session_and_profile(two_profiles, monkeypatch):
+    """prompt.background for A after B wired last: A is asked, and A's answer lands in A/.env.
+
+    The real RPC, worker thread, profile scope, skill_view readiness path, request settlement and
+    credential saver run; only the model boundary is replaced (it loads the skill as a tool call would).
+    """
+    launch, home_a, home_b = two_profiles
+    server, server_requests, skills_tool = _gateway(monkeypatch)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    class ModelBoundary:
+        def __init__(self, **_kw):
+            pass
+
+        def run_conversation(self, **_kw):
+            view = json.loads(skills_tool.skill_view("secret-skill", preprocess=False))
+            return {"final_response": view.get("readiness_status") or view.get("error")}
+
+    monkeypatch.setattr("run_agent.AIAgent", ModelBoundary)
+    monkeypatch.setattr(server, "_background_agent_kwargs", lambda _agent, _task_id: {})
+    sessions = {
+        sid: {"agent": object(), "session_key": f"key-{sid}", "profile_home": str(home), "cwd": str(home)}
+        for sid, home in (("session-A", home_a), ("session-B", home_b))
+    }
+    frames, completed = _client(
+        server, server_requests, monkeypatch, {"session-A": "a-secret", "session-B": "b-secret"})
+    with server._sessions_lock:
+        server._sessions.update(sessions)
+    try:
+        server._wire_callbacks("session-A")
+        server._wire_callbacks("session-B")  # B owns the process-global callback now
+        reply = server._methods["prompt.background"](
+            "rid", {"session_id": "session-A", "text": "load secret-skill"})
+        assert "error" not in reply, reply
+        assert completed.wait(30), "background worker never completed"
+    finally:
+        with server._sessions_lock:
+            for sid in sessions:
+                server._sessions.pop(sid, None)
+        server_requests.reset_for_tests()
+
+    asks = [frame["params"] for frame in frames if frame.get("method") == "secret"]
+    assert [(ask["session_id"], ask["env_var"]) for ask in asks] == [("session-A", "DEMO_TOKEN")]
+    assert _saved_tokens(home_a) == ["DEMO_TOKEN=a-secret"]
+    assert _saved_tokens(home_b) == []
+    assert _saved_tokens(launch) == []
+    done = [frame["params"] for frame in frames if (frame.get("params") or {}).get("type") == "background.complete"]
+    assert [(event["session_id"], event["payload"]["text"]) for event in done] == [("session-A", "available")]

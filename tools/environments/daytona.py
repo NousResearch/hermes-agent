@@ -10,6 +10,8 @@ import math
 import os
 import shlex
 import threading
+import tempfile
+import uuid
 from pathlib import Path, PurePosixPath
 
 from tools.environments.base import BaseEnvironment
@@ -28,7 +30,7 @@ class DaytonaEnvironment(BaseEnvironment):
     is wired to sandbox.stop() for interrupts. Shell timeout wrapper kept (SDK timeout unreliable).
     """
 
-    _stdin_mode = "heredoc"
+    _stdin_mode = "payload"
 
     def __init__(self, image: str, cwd: str = "/home/daytona", timeout: int = 60, cpu: int = 1,
                  memory: int = 5120, disk: int = 10240, persistent_filesystem: bool = True,
@@ -145,11 +147,32 @@ class DaytonaEnvironment(BaseEnvironment):
             with lock, contextlib.suppress(Exception):
                 sandbox.stop()
 
-        shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(cmd_string)}"
-
         def exec_fn() -> tuple[str, int]:
-            response = sandbox.process.exec(shell_cmd, timeout=timeout)
-            return (response.result or "", response.exit_code)
+            remote_stdin = None
+            local_stdin = None
+            try:
+                command = cmd_string
+                if stdin_data is not None:
+                    remote_stdin = f"/tmp/.hermes-stdin-{uuid.uuid4().hex}"
+                    with tempfile.NamedTemporaryFile(delete=False) as staged:
+                        local_stdin = staged.name
+                        staged.write(stdin_data.encode("utf-8"))
+                    sandbox.fs.upload_file(local_stdin, remote_stdin)
+                    quoted_stdin = shlex.quote(remote_stdin)
+                    command = (
+                        f"trap 'rm -f -- {quoted_stdin}' EXIT\n"
+                        f"{{\n{cmd_string}\n}} < {quoted_stdin}"
+                    )
+                shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
+                response = sandbox.process.exec(shell_cmd, timeout=timeout)
+                return (response.result or "", response.exit_code)
+            finally:
+                if local_stdin:
+                    with contextlib.suppress(OSError):
+                        os.unlink(local_stdin)
+                if remote_stdin:
+                    with contextlib.suppress(Exception):
+                        sandbox.process.exec(f"rm -f -- {shlex.quote(remote_stdin)}")
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 

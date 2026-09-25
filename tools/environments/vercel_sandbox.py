@@ -14,6 +14,7 @@ import os
 import shlex
 import threading
 import time
+import uuid
 from datetime import timedelta
 from functools import cache
 from pathlib import Path
@@ -162,7 +163,7 @@ def _is_terminal(status: Any) -> bool:
 class VercelSandboxEnvironment(BaseEnvironment):
     """Vercel cloud sandbox backend."""
 
-    _stdin_mode = "heredoc"
+    _stdin_mode = "payload"
 
     def __init__(self, runtime: str | None = None, cwd: str = DEFAULT_VERCEL_CWD, timeout: int = 60,
                  cpu: float = 1, memory: int = 5120, disk: int = _DEFAULT_CONTAINER_DISK_MB,
@@ -339,8 +340,8 @@ class VercelSandboxEnvironment(BaseEnvironment):
 
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120, stdin_data: str | None = None):
         """``timeout`` is enforced by the base ``_wait_for_process`` via ``cancel_fn`` (the SDK has no
-        per-exec timeout); ``stdin_data`` is already embedded as a heredoc by the base ``execute()``."""
-        del timeout, stdin_data
+        per-exec timeout). Payload stdin is staged through the SDK so it never becomes a shell argv."""
+        del timeout
         sandbox, workspace_root, lock = self._require_sandbox(), self._workspace_root, self._lock
 
         def cancel() -> None:
@@ -348,8 +349,31 @@ class VercelSandboxEnvironment(BaseEnvironment):
                 self._stop_sandbox(sandbox)
 
         def exec_fn() -> tuple[str, int]:
-            return _result_parts(
-                sandbox.run_command("bash", ["-lc" if login else "-c", cmd_string], cwd=workspace_root))
+            remote_stdin = None
+            try:
+                command = cmd_string
+                if stdin_data is not None:
+                    remote_stdin = f"/tmp/.hermes-stdin-{uuid.uuid4().hex}"
+                    _retry_vercel_call(
+                        "stdin upload",
+                        lambda: sandbox.write_files([{
+                            "path": remote_stdin,
+                            "content": stdin_data.encode("utf-8"),
+                        }]),
+                        attempts=_WRITE_RETRY_ATTEMPTS,
+                    )
+                    quoted_stdin = shlex.quote(remote_stdin)
+                    command = (
+                        f"trap 'rm -f -- {quoted_stdin}' EXIT\n"
+                        f"{{\n{cmd_string}\n}} < {quoted_stdin}"
+                    )
+                return _result_parts(
+                    sandbox.run_command("bash", ["-lc" if login else "-c", command], cwd=workspace_root))
+            finally:
+                if remote_stdin:
+                    with contextlib.suppress(Exception):
+                        sandbox.run_command(
+                            "bash", ["-c", f"rm -f -- {shlex.quote(remote_stdin)}"], cwd=workspace_root)
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 
     def cleanup(self):

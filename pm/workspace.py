@@ -183,7 +183,16 @@ def enabled_plugin_dirs(*, proposed_home=None, enabled=None, disabled=None,
             if relative.is_absolute() or ".." in relative.parts:
                 raise InstallError("venv", f"invalid plugin key: {name}")
             plugin_dir = plugins_dir / relative
-            proposed = installing is not None and plugin_dir.resolve() == installing.resolve()
+            # A selection entry whose directory was manually removed is a ghost,
+            # not an active plugin: only a real tree counts as the proposed
+            # install target (#122135). Otherwise installing=target forces
+            # proposed=True and a stale plugins.enabled entry vetoes (or
+            # consent-gates) the reinstall of a plugin that is no longer there.
+            proposed = (
+                installing is not None
+                and plugin_dir.resolve() == installing.resolve()
+                and _is_directory(plugin_dir)
+            )
             if not proposed and not _is_directory(plugin_dir):
                 plugin_dir = paths.repo_root() / "plugins" / relative
             if proposed or _is_directory(plugin_dir):

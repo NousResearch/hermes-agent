@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/i18n/context'
 import { en } from '@/i18n/en'
 import {
+  $backendUpdateApply,
   $updateApply,
   $updateOverlayOpen,
   $updateOverlayTarget,
@@ -19,6 +20,7 @@ afterEach((): void => {
   $updateOverlayOpen.set(false)
   $updateStatus.set(null)
   resetUpdateApplyState()
+  $backendUpdateApply.set({ ...$backendUpdateApply.get(), stage: 'idle', message: '', command: null, error: null })
   Reflect.deleteProperty(window, 'hermesDesktop')
   vi.restoreAllMocks()
 })
@@ -45,4 +47,30 @@ it('shows manual recovery guidance without claiming the help command installs an
   expect(screen.getByText(message)).toBeTruthy()
   expect(screen.getByText('hermes update --help')).toBeTruthy()
   expect(screen.queryByText(en.updates.manualPickedUp)).toBeNull()
+})
+
+it('titles a command-less backend refusal honestly and offers nothing to copy', async (): Promise<void> => {
+  const message: string = 'Hermes updates are managed outside this dashboard in containerized environments.'
+  $updateOverlayTarget.set('backend')
+  $updateOverlayOpen.set(true)
+  $backendUpdateApply.set({
+    applying: false,
+    stage: 'manual',
+    message,
+    percent: null,
+    error: 'dashboard_update_managed_externally',
+    command: null,
+    log: []
+  })
+  await act(async (): Promise<void> => {
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <UpdatesOverlay />
+      </I18nProvider>
+    )
+  })
+  expect(screen.getByText(en.updates.manualUnavailableTitle)).toBeTruthy()
+  expect(screen.queryByText(en.updates.manualTitle)).toBeNull()
+  expect(screen.getByText(message)).toBeTruthy()
+  expect(screen.queryByText(en.updates.copy)).toBeNull()
 })

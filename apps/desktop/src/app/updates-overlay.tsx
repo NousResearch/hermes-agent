@@ -128,7 +128,12 @@ export function UpdatesOverlay() {
         )}
 
         {phase === 'manual' && (
-          <ManualView command={apply.command ?? null} message={apply.message} onDone={() => handleClose(false)} />
+          <ManualView
+            command={apply.command ?? null}
+            message={apply.message}
+            onDone={() => handleClose(false)}
+            refused={apply.error !== null}
+          />
         )}
 
         {phase === 'guiSkew' && <GuiSkewView message={apply.message} onDone={() => handleClose(false)} />}
@@ -331,7 +336,17 @@ function IdleView({
   )
 }
 
-function ManualView({ command, message, onDone }: { command: string | null; message?: string; onDone: () => void }) {
+function ManualView({
+  command,
+  message,
+  onDone,
+  refused = false
+}: {
+  command: string | null
+  message?: string
+  onDone: () => void
+  refused?: boolean
+}) {
   const { t } = useI18n()
   const u = t.updates
   const [copied, setCopied] = useState(false)
@@ -356,7 +371,9 @@ function ManualView({ command, message, onDone }: { command: string | null; mess
         <div className="flex flex-col items-center gap-3 text-center">
           <Terminal className="size-8 text-primary" />
 
-          <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
+          <DialogTitle className="text-center text-xl">
+            {refused ? u.manualUnavailableTitle : u.manualTitle}
+          </DialogTitle>
           <DialogDescription className="text-center text-sm">{message || u.manualPickedUp}</DialogDescription>
         </div>
 

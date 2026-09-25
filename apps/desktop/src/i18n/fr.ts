@@ -4605,6 +4605,7 @@ export const frOverrides = {
     moreChanges: count =>
       `+ ${count} ${count === 1 ? 'changement supplémentaire inclus' : 'changements supplémentaires inclus'}.`,
     manualTitle: 'Mise à jour depuis votre terminal',
+    manualUnavailableTitle: 'Mise à jour impossible ici',
     manualBody:
       "Vous avez installé Hermes depuis la ligne de commande, les mises à jour s'y effectuent donc aussi. Collez ceci dans votre terminal :",
     manualPickedUp: 'Hermes prendra en compte la nouvelle version au prochain lancement.',

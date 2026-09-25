@@ -4593,6 +4593,7 @@ export const deOverrides = {
     maybeLater: 'Später',
     moreChanges: count => `+ ${count} weitere Änderung${count === 1 ? '' : 'en'} enthalten.`,
     manualTitle: 'Über Ihr Terminal aktualisieren',
+    manualUnavailableTitle: 'Aktualisierung hier nicht möglich',
     manualBody:
       'Sie haben Hermes über die Befehlszeile installiert, daher laufen Updates auch dort. Fügen Sie dies in Ihr Terminal ein:',
     manualPickedUp: 'Hermes übernimmt die neue Version beim nächsten Start.',

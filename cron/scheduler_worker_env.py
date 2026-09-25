@@ -27,6 +27,31 @@ def _installed_purelib() -> Path | None:
         return None
 
 
+def resolved_worker_python(repo_root: Path) -> Path | None:
+    """The committed PM venv's interpreter for *repo_root*, or None.
+
+    A managed gateway boots on the bare store Python: PM activates the committed
+    venv's site-packages *in-process* only (``pm.environments.activate_dependencies``),
+    so ``sys.executable`` never points at the interpreter that owns the
+    dependencies.  A worker spawned from it dies at first third-party import
+    (``No module named 'ruamel'``) before its ownership ack (#112729's sibling).
+    The venv python imports the same checkout through its editable mapping;
+    callers must still pin the checkout on PYTHONPATH in case that mapping
+    outlives a moved/deleted checkout.
+    """
+    try:
+        from pm.environments import committed_venv
+
+        environment = committed_venv(Path(repo_root))
+        if environment is None:
+            return None
+        rel = "python.exe" if os.name == "nt" else "bin/python3"
+        candidate = Path(environment) / rel
+        return candidate if candidate.is_file() else None
+    except Exception:
+        return None
+
+
 def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     """Prepend ``repo_root`` to the worker env's own PYTHONPATH (never ``os.environ``'s).
 

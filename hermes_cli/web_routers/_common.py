@@ -31,7 +31,20 @@ _CONFIG_MUTATION_LOCK = LateState("_CONFIG_MUTATION_LOCK")
 @contextlib.contextmanager
 def config_write_scope(profile: Optional[str]):
     """Profile scope, then the config mutation lock — the write-path nesting
-    every config-mutating handler uses."""
+    every config-mutating handler uses.
+
+    Fail-closed on a multiplexed host (G2): an omitted profile here defaulted to
+    the launch profile, so a write meant for another tenant landed in the launch
+    home's config (2026-09-25 cross-profile MCP write). Same rule as
+    ``destructive_profile``; 409 so API clients can tell it apart from the
+    routes' own 400 validation errors. A single-profile host is unchanged."""
+    if not (profile or "").strip():
+        from agent.secret_scope import is_multiplex_active
+        if is_multiplex_active():
+            raise HTTPException(
+                status_code=409,
+                detail="profile required for config writes on a multiplexed host: pass ?profile= "
+                       "(or the request body's profile) so the write lands in the named profile's config.")
     with _profile_scope(profile):
         with _CONFIG_MUTATION_LOCK:
             yield

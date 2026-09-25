@@ -1,9 +1,9 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introDe } from './intro-de'
 
-export const de = defineLocale({
+export const deOverrides = {
   intro: introDe,
   connectors: {
     title: 'Verbinden Sie Ihre Apps',
@@ -909,6 +909,8 @@ export const de = defineLocale({
         agentSuccess: name => `Agent-Plugin ${name} installiert`,
         desktopSuccess: name => `Desktop-Plugin ${name} installiert`,
         agentFailed: 'Installation des Agent-Plugins fehlgeschlagen',
+        installUncertain:
+          'Hermes wartet nicht mehr auf das Installationsergebnis, aber das Plugin wird möglicherweise noch installiert. Schließe dieses Fenster und aktualisiere die Pluginliste, bevor du die Installation erneut startest.',
         desktopFailed: 'Installation des Desktop-Plugins fehlgeschlagen',
         missingEnv: (name, vars) =>
           `${name} ist installiert, benötigt aber einen Schlüssel, um zu funktionieren: ${vars}. Fügen Sie ihn jetzt hinzu, sonst schlagen die Tools des Plugins fehl.`
@@ -1605,41 +1607,7 @@ export const de = defineLocale({
       driverHealth: 'Treiberstatus'
     },
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `Version ${value}`,
-      versionUnavailable: 'Version nicht verfügbar',
-      bundleOutOfSync: 'App-Build ist veraltet',
-      bundleOutOfSyncDesc:
-        'Die Hermes-Laufzeit wurde aktualisiert, die Desktop-App selbst ist aber noch ein älterer Build – neue Oberflächenfunktionen (wie der Bot-Modus) fehlen, bis sie aktualisiert wird. Führen Sie das Update unten aus, um die App neu zu bauen. Falls das die Warnung nicht behebt, installieren Sie den neuesten Desktop-Installer neu.',
-      bundleOutOfSyncAction: 'Installer herunterladen',
-      bundleSwapPending: 'Neustart zum Abschließen des Updates',
-      bundleSwapPendingDesc:
-        'Die aktualisierte App ist bereits installiert — Hermes muss nur noch neu gestartet werden, um sie zu laden. Chats und Einstellungen bleiben unberührt.',
-      bundleSwapPendingAction: 'Hermes neu starten',
-      updates: 'Updates',
-      checkNow: 'Jetzt prüfen',
-      checking: 'Wird geprüft…',
-      seeWhatsNew: 'Neuigkeiten ansehen',
-      updateNow: 'Jetzt aktualisieren',
-      releaseNotes: 'Versionshinweise',
-      onLatest: 'Sie verwenden die neueste Version.',
-      installing: 'Ein Update wird derzeit installiert.',
-      cantUpdate: 'Dieser Build kann sich nicht aus der App heraus aktualisieren.',
-      cantReach: 'Der Update-Server konnte nicht erreicht werden.',
-      tapCheck: 'Tippen Sie auf „Jetzt prüfen“, um nach Updates zu suchen.',
-      updateReady: count => `Ein neues Update ist bereit (${count} Änderung${count === 1 ? '' : 'en'} enthalten).`,
-      updateReadyUnknown: 'Ein neues Update ist bereit.',
-      lastChecked: age => `Zuletzt geprüft ${age}`,
-      justNowSuffix: ' · gerade eben',
-      automaticUpdates: 'Automatische Updates',
-      automaticUpdatesDesc:
-        'Hermes sucht im Hintergrund automatisch nach Updates und meldet sich, wenn eines bereit ist.',
-      branchCommit: (branch, commit) => `Branch ${branch} · Commit ${commit}`,
-      never: 'nie',
-      justNow: 'gerade eben',
-      minAgo: count => `${count} Min. zuvor`,
-      hoursAgo: count => `${count} Std. zuvor`,
-      daysAgo: count => `${count} Tage zuvor`
+      updates: 'Updates'
     },
     config: {
       minimizeToTrayTitle: 'In den Infobereich minimieren',
@@ -2147,6 +2115,7 @@ export const de = defineLocale({
       }
     },
     localModels: {
+      connectionChanged: 'Verbindung für lokale Modelle geändert',
       title: 'Lokale Modelle',
       runtimeTitle: 'Lokale Laufzeit',
       runtimeReady: backend => `Bereit · ${backend}`,
@@ -3560,7 +3529,24 @@ export const de = defineLocale({
       gatewayUnreachable: gateway => `${gateway} · nicht erreichbar`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
       switchTo: (name, gateway) => `Zu ${name} auf ${gateway} wechseln`,
-      deleteOn: gateway => ` auf ${gateway}`
+      deleteOn: gateway => ` auf ${gateway}`,
+      localDevice:
+        'Dieses Gerät (lokales Backend — installiert Hermes, falls es fehlt, sonst öffnet es eine neue Sitzung)',
+      switchDeviceTitle: 'Zu diesem Gerät wechseln?',
+      switchDeviceDesc:
+        'Das öffnet eine neue Sitzung auf diesem Computer. Das aktuelle Gespräch bleibt auf dem anderen Gateway.',
+      switchDeviceConfirm: 'Wechseln',
+      installDeviceTitle: 'Zu diesem Gerät wechseln?',
+      installDeviceDesc:
+        'Hermes wird lokal installiert und danach eine neue Sitzung auf diesem Computer geöffnet. Ohne Bestätigung startet keine Installation.',
+      installDeviceConfirm: 'Lokal installieren',
+      connectExistingInstead: 'Stattdessen vorhandenes verbinden'
+    },
+    status: {
+      unread: (count: number) => (count === 1 ? '1 ungelesene Sitzung' : `${count} ungelesene Sitzungen`),
+      needsInput: (count: number) =>
+        count === 1 ? '1 Sitzung wartet auf Ihre Antwort' : `${count} Sitzungen warten auf Ihre Antwort`,
+      working: (count: number) => (count === 1 ? '1 laufende Sitzung' : `${count} laufende Sitzungen`)
     },
     remoteOverride: {
       menuItem: 'Mit Remote-Host verbinden…',
@@ -4056,6 +4042,7 @@ export const de = defineLocale({
       branchFrom: 'Branch',
       rename: 'Umbenennen…',
       archive: 'Archivieren',
+      unarchive: 'Archivierung aufheben',
       newWindow: 'Neues Fenster',
       openInTerminal: 'Im Terminal öffnen',
       hideTabBar: 'Tab-Leiste ausblenden',
@@ -4513,6 +4500,63 @@ export const de = defineLocale({
     }
   },
   updates: {
+    discontinuedTitle: 'Dieser Hermes-Build wird nicht mehr unterstützt',
+    discontinuedBody: 'Dieser Hermes-Build wird nicht mehr unterstützt und funktioniert möglicherweise nicht mehr — deinstallieren Sie ihn. Ihre Daten bleiben auf dem Datenträger.',
+    channels: { stable: 'Stabil', canary: 'Canary' },
+    appName: 'Hermes',
+    availableBodyRelease: tag => `Version ${tag} ist bereit zur Installation.`,
+    releaseAvailable: tag => `Version ${tag} ist verfügbar.`,
+    checkingShort: 'Wird geprüft…',
+    availableBodyAppInstaller: 'Eine neue Hermes-Version ist bereit. Hermes wird geschlossen, Windows schließt das Update ab und Hermes startet automatisch neu.',
+    applyingBodyAppInstaller: 'Hermes wird geschlossen und Windows schließt das Update ab. Danach startet Hermes automatisch neu.',
+    applyingCloseAppInstaller: 'Dieses Fenster schließt sich, Windows schließt das Update ab und Hermes startet automatisch neu.',
+    checkUnknownTitleAppInstaller: 'Update-Check fehlgeschlagen',
+    checkUnknownBodyAppInstaller: 'Windows konnte gerade nicht nach Updates suchen. Updates werden auch beim Neustart von Hermes automatisch installiert.',
+    versionDetailsTitle: 'Versionsdetails',
+    versionDetailsBody: 'Diese Installation wird außerhalb der App verwaltet. Aktualisieren Sie sie auf dieselbe Weise, wie Sie sie installiert haben.',
+    versionDetailsVersion: 'Version',
+    versionDetailsCommit: 'Commit',
+    versionDetailsBuildOrigin: 'Build-Ursprung',
+    versionDetailsDistribution: 'Distribution',
+    versionDetailsDistributionDesktop: 'Desktop-App',
+    versionDetailsDistributionDesktopMsix: 'Desktop-App (MSIX)',
+    versionDetailsDistributionDesktopInstaller: 'Desktop-App (Installer)',
+    versionDetailsDistributionSourceInstaller: 'Quellcode (Installationsskript)',
+    versionDetailsDistributionSourceInstallerDesktop: 'Quellcode (Installationsskript) + hermes desktop',
+    versionDetailsDistributionSource: 'Quellcode',
+    versionDetailsDistributionSourceDesktop: 'Quellcode + hermes desktop',
+    versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsRuntime: 'Laufzeit',
+    versionDetailsRuntimeEmbedded: 'Eingebettete Laufzeit',
+    versionDetailsRuntimeExternal: 'Extern (nutzt die Laufzeit des Computers)',
+    versionDetailsInstallId: 'Installations-ID',
+    versionDetailsUncommittedChanges: 'nicht committete Änderungen',
+    version: value => `Version ${value}`,
+    versionUnavailable: 'Version nicht verfügbar',
+    bundleOutOfSync: 'App-Build ist veraltet',
+    bundleOutOfSyncDesc:
+        'Die Hermes-Laufzeit wurde aktualisiert, die Desktop-App selbst ist aber noch ein älterer Build – neue Oberflächenfunktionen (wie der Bot-Modus) fehlen, bis sie aktualisiert wird. Führen Sie das Update unten aus, um die App neu zu bauen. Falls das die Warnung nicht behebt, installieren Sie den neuesten Desktop-Installer neu.',
+    bundleOutOfSyncAction: 'Installer herunterladen',
+    bundleSwapPending: 'Neustart zum Abschließen des Updates',
+    bundleSwapPendingDesc:
+        'Die aktualisierte App ist bereits installiert — Hermes muss nur noch neu gestartet werden, um sie zu laden. Chats und Einstellungen bleiben unberührt.',
+    bundleSwapPendingAction: 'Hermes neu starten',
+    checkNow: 'Jetzt prüfen',
+    seeWhatsNew: 'Neuigkeiten ansehen',
+    releaseNotes: 'Versionshinweise',
+    onLatest: 'Sie verwenden die neueste Version.',
+    installing: 'Ein Update wird derzeit installiert.',
+    cantReach: 'Der Update-Server konnte nicht erreicht werden.',
+    tapCheck: 'Tippen Sie auf „Jetzt prüfen“, um nach Updates zu suchen.',
+    updateReady: count => `Ein neues Update ist bereit (${count} Änderung${count === 1 ? '' : 'en'} enthalten).`,
+    updateReadyUnknown: 'Ein neues Update ist bereit.',
+    lastChecked: age => `Zuletzt geprüft ${age}`,
+    justNowSuffix: ' · gerade eben',
+    never: 'nie',
+    justNow: 'gerade eben',
+    minAgo: count => `${count} Min. zuvor`,
+    hoursAgo: count => `${count} Std. zuvor`,
+    daysAgo: count => `${count} Tage zuvor`,
     stages: {
       idle: 'Wird vorbereitet…',
       prepare: 'Wird vorbereitet…',
@@ -5037,7 +5081,8 @@ export const de = defineLocale({
         title: 'Kontext-Verbrauch',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-      session: 'Session',
+      focusedSince: 'Fokussiert seit',
+      focusedSinceTitle: 'Zeit seit dem Fokussieren dieses Chats — nicht die Laufzeit eines Turns',
       yoloOn: 'YOLO an — gefährliche Befehle werden automatisch genehmigt. Shift+Klick schaltet global um.',
       yoloOff: 'YOLO aus. Shift+Klick schaltet global um.',
       modelNone: 'keines',
@@ -5852,6 +5897,9 @@ export const de = defineLocale({
     sessionUnavailable: 'Session nicht verfügbar',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',
     promptFailed: 'Prompt fehlgeschlagen',
+    staleSessionTitle: 'Chat veraltet',
+    staleSessionBody:
+      'Dieses Fenster war hinter einer anderen Ansicht desselben Chats. Die neuesten Nachrichten wurden geladen. Senden Sie erneut, wenn Sie noch möchten.',
     providerCredentialRequired:
       'Fügen Sie Anmeldedaten für einen Anbieter hinzu, bevor Sie Ihre erste Nachricht senden.',
     emptySlashCommand: 'leerer Slash-Befehl',
@@ -5897,6 +5945,8 @@ export const de = defineLocale({
     deleteFailed: 'Löschen fehlgeschlagen',
     archived: 'Archiviert',
     archiveFailed: 'Archivieren fehlgeschlagen',
+    restored: 'Wiederhergestellt',
+    unarchiveFailed: 'Archivierung aufheben fehlgeschlagen',
     cwdChangeFailed: 'Arbeitsverzeichnis-Änderung fehlgeschlagen',
     cwdStagedTitle: 'Arbeitsverzeichnis bereitgestellt',
     cwdStagedMessage: 'Starten Sie das Desktop-Backend neu, um cwd-Änderungen auf diese aktive Session anzuwenden.',
@@ -6016,4 +6066,6 @@ export const de = defineLocale({
       toggle: open => `${open ? 'Anzeigen' : 'Ausblenden'}: Sidebar`
     }
   }
-})
+} satisfies TranslationOverrides
+
+export const de = defineLocale(deOverrides)

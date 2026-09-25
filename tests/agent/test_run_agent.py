@@ -51,6 +51,17 @@ def test_is_destructive_command_treats_cp_as_mutating():
     assert _is_destructive_command("cp .env.local .env") is True
 
 
+
+
+
+
+@pytest.fixture(autouse=True)
+def _mock_plugin_discovery(monkeypatch):
+    # Tool definitions are supplied by these unit fixtures. Scanning every
+    # bundled plugin again for each isolated test home adds no coverage.
+    monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -6355,7 +6366,7 @@ class TestAnthropicInterruptHandler:
     """_interruptible_api_call must handle Anthropic mode when interrupted."""
 
 
-    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self):
+    def test_interruptible_anthropic_interrupt_never_closes_shared_client(self, agent):
         """#67142: a non-streaming Anthropic interrupt must abort the
         request-local client from the poll thread, never close/rebuild the
         shared _anthropic_client (which raced a live SSL BIO and corrupted an
@@ -6366,18 +6377,8 @@ class TestAnthropicInterruptHandler:
         """
         import time
         from unittest.mock import MagicMock
-        from run_agent import AIAgent
         from agent.chat_completion_helpers import interruptible_api_call
 
-        agent = AIAgent(
-            api_key="test-key",
-            base_url="https://api.anthropic.com",
-            provider="anthropic",
-            model="claude-test",
-            quiet_mode=True,
-            skip_context_files=True,
-            skip_memory=True,
-        )
         agent.api_mode = "anthropic_messages"
         agent._interrupt_requested = False
         agent._anthropic_client = MagicMock()

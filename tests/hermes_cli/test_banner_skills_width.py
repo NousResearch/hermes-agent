@@ -9,7 +9,6 @@ import hermes_cli.banner as banner
 import model_tools
 import tools.mcp_tool_discovery
 
-
 def _build_banner_with_skills(skills_by_category, term_width=160):
     """Helper: build banner with given skills and return captured output."""
     with (
@@ -34,7 +33,6 @@ def _build_banner_with_skills(skills_by_category, term_width=160):
         )
         return console.export_text()
 
-
 def test_wide_terminal_shows_more_than_8_skills():
     """A wide terminal should display more than 8 skills per category."""
     # 15 skills in one category
@@ -45,7 +43,6 @@ def test_wide_terminal_shows_more_than_8_skills():
     # The old code always truncated at 8; we should see at least 9 now.
     assert "skill-08" in text, f"Expected skill-08 in output for wide terminal: {text}"
 
-
 def test_small_category_shows_all_skills():
     """Categories with few skills should show all of them regardless of width."""
     skills = {"security": ["auth", "vault"]}
@@ -55,5 +52,3 @@ def test_small_category_shows_all_skills():
     assert "vault" in text
     # No "+N more" indicator for small categories
     assert "+2 more" not in text
-
-

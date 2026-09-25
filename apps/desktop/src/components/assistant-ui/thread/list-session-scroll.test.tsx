@@ -114,10 +114,10 @@ function ScrollHarness({
     <AssistantRuntimeProvider runtime={runtime}>
       <TranscriptWindowProvider value={window ?? { olderAvailable: false, expandWindow: () => {} }}>
         <Thread
+          clampToComposer={clampToComposer}
           scrollProfile={scrollProfile}
           sessionId={sessionId}
           sessionKey={sessionKey}
-          clampToComposer={clampToComposer}
         />
       </TranscriptWindowProvider>
     </AssistantRuntimeProvider>
@@ -250,7 +250,7 @@ describe('list session-scroll restore', () => {
     )
 
     const { container, unmount } = render(
-      <ScrollHarness isRunning messages={sessionMessages('clr')} sessionKey="clr" clampToComposer />
+      <ScrollHarness clampToComposer isRunning messages={sessionMessages('clr')} sessionKey="clr" />
     )
     const vp = viewportEl(container)
     const clearance = vp.querySelector('[data-slot="aui_composer-clearance"]')

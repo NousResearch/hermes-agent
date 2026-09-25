@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +32,10 @@ from hermes_cli.update_lock import (
     read_live_update,
     update_marker_path,
 )
+
+# Repo root: the -I -S -B subprocesses insert it on sys.path to import the
+# real hermes_cli without site-packages.
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # A pid no live process owns. os.kill(pid, 0) must report it dead so a crashed
 # updater can never wedge every future update. Deliberately larger than any
@@ -282,7 +287,101 @@ class TestAncestryHandoff:
 
         lock.release()
         assert marker.exists(), "the parent still needs its marker after our stage ends"
-        assert int(marker.read_text(encoding="utf-8").splitlines()[0]) == os.getppid()
+
+    @pytest.mark.platforms("any")
+    def test_grandchild_adopts_orchestrator_marker_without_psutil(self, marker, tmp_path):
+        """Regression: the desktop hand-off's grandchild refused its own orchestrator.
+
+        The posix shim (grandparent) holds the marker and spawns ``hermes update``
+        (direct child — adopts via getppid). An old-updater update into a PM tree
+        then hands off again: ``_old_updater._run_child`` spawns
+        ``_update_takeover.py`` as ``python -I -S -B``, where psutil cannot import
+        (-S skips site-packages). The psutil-only ancestry walk returned False for
+        the two-hops-up shim, and the takeover child refused with exit 2 —
+        "Another Hermes update is already running (PID <the shim itself>)" —
+        observed live on a macOS rehearsal install, then again on Windows, where
+        the stdlib walk had no /proc and no ps. Marked for every lane: the Windows
+        lane only imports files carrying a platforms marker, which is how the
+        Windows half went unseen. The stdlib fallback walk is what must adopt here.
+        """
+        import subprocess
+        import sys
+        from textwrap import dedent
+
+        # Simulate the orchestrator: this test process holds the marker and
+        # spawns the -I -B middle, which spawns the -I -S -B takeover-like leaf.
+        marker.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
+
+        leaf = dedent(
+            """
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, %(root)r)
+            from hermes_cli.update_lock import UpdateLock
+            lock = UpdateLock(path=Path(%(marker)r))
+            if not lock.acquire():
+                print("REFUSED", lock.holder.pid)
+                raise SystemExit(2)
+            assert lock.acquired is False, "the orchestrator's claim is not ours to own"
+            print("ADOPTED")
+            """
+        ) % {"root": str(REPO_ROOT), "marker": str(marker)}
+        middle = dedent(
+            """
+            import subprocess, sys
+            code = subprocess.run(
+                [sys.executable, "-I", "-S", "-B", "-c", %(leaf)r],
+            ).returncode
+            raise SystemExit(code)
+            """
+        ) % {"leaf": leaf}
+
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", "-c", middle],
+            capture_output=True, text=True, timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        assert "ADOPTED" in result.stdout
+        assert marker.exists(), "the orchestrator still needs its marker after the leaf ends"
+
+    @pytest.mark.platforms("any")
+    def test_unrelated_live_holder_is_still_refused_under_stdlib_walk(self, marker, tmp_path):
+        """The stdlib fallback must not widen the lock: a foreign pid stays foreign.
+
+        The marker owner is a live *sibling* of the leaf (a sleeper spawned by
+        this test), never an ancestor of it — the shape of an unrelated
+        concurrent updater. The leaf's ancestry walk dead-ends at pytest and
+        the sibling must keep the lock.
+        """
+        import subprocess
+        import sys
+        import time as time_mod
+        from textwrap import dedent
+
+        sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+        try:
+            marker.write_text(f"{sleeper.pid}\n{int(time_mod.time())}\n", encoding="utf-8")
+            assert read_live_update(path=marker) is not None
+
+            leaf = dedent(
+                """
+                import sys
+                from pathlib import Path
+                sys.path.insert(0, %(root)r)
+                from hermes_cli.update_lock import UpdateLock
+                lock = UpdateLock(path=Path(%(marker)r))
+                print("ADOPTED" if lock.acquire() else "REFUSED")
+                """
+            ) % {"root": str(REPO_ROOT), "marker": str(marker)}
+            result = subprocess.run(
+                [sys.executable, "-I", "-S", "-B", "-c", leaf],
+                capture_output=True, text=True, timeout=120,
+            )
+            assert result.returncode == 0, result.stderr
+            assert "REFUSED" in result.stdout
+        finally:
+            sleeper.kill()
+            sleeper.wait()
 
     def test_live_non_ancestor_holder_is_still_refused(self, marker):
         """Ancestry must not open the lock to unrelated concurrent updaters."""

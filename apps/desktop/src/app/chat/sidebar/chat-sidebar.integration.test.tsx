@@ -10,7 +10,8 @@ import { registry } from '@/contrib/registry'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $sidebarMessagingOpenIds, setSidebarAgentsGrouped, setSidebarGrouping } from '@/store/layout'
 import { $activeGatewayProfile, $profiles, setShowAllProfiles } from '@/store/profile'
-import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
+import { $projectTree } from '@/store/projects'
 import {
   $currentCwd,
   $messagingSessions,

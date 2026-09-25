@@ -605,7 +605,21 @@ def _seed_codex_grant(root):
     (root / "auth.json").write_text(json.dumps(store))
 
 
-def _shared_profile(fleet, name, *, link):
+def _link_same_file(target, alias):
+    """Make ``alias`` the SAME store as ``target``: a symlink where the host
+    permits one, a hardlink where it does not (Windows without SeCreateSymbolicLink
+    privilege raises WinError 1314). Both flavors are one file — the heal contract
+    (``_is_same_auth_store``) is ``samefile``/resolved-path equality, not the link
+    flavor, so the test exercises the same contract on either host."""
+    try:
+        alias.symlink_to(target)
+    except (OSError, NotImplementedError):
+        if alias.is_symlink() or alias.exists():
+            alias.unlink()
+        os.link(target, alias)
+
+
+def _shared_profile(fleet, name, *, link=_link_same_file):
     """Profile whose auth.json IS the root store (``link`` makes the alias)."""
     pdir = _profile(fleet, name)
     pdir.mkdir(parents=True, exist_ok=True)

@@ -1347,7 +1347,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                 elif _mp is not None and _mem_provider_name not in _warned_unavailable_providers:
                     # unavailable_reason() reads config/probes importlib — skip it once warned.
                     _unavailable_reason = ""
-                    with suppress(Exception):
+                    with suppress(Exception, SystemExit):
                         _unavailable_reason = _mp.unavailable_reason()
                     _warn_memory_provider_unavailable(_mem_provider_name, _unavailable_reason)
                 if agent._memory_manager.providers:
@@ -1356,7 +1356,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform, memory_manager=None):
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
                     agent._memory_manager = None
-        except Exception as _mpe:
+        except (Exception, SystemExit) as _mpe:
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 

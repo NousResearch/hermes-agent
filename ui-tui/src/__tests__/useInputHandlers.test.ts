@@ -7,6 +7,7 @@ import {
   composerHasDraft,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
+  promptStepFor,
   resolveCtrlCComposerAction,
   shouldDetachEditedHistoryInput,
   shouldFallThroughForScroll
@@ -188,5 +189,17 @@ describe('dismissSensitivePrompt', () => {
 
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalled()
+  })
+})
+
+describe('promptStepFor — Alt+↑/↓ owns the prompt-to-prompt step', () => {
+  it('maps Alt+↑/↓ to a step and leaves every bare arrow to the handlers below', () => {
+    expect(promptStepFor({ downArrow: false, meta: true, upArrow: true })).toBe(-1)
+    expect(promptStepFor({ downArrow: true, meta: true, upArrow: false })).toBe(1)
+    // Without Alt the bare arrows stay with completions / queue edit / history.
+    expect(promptStepFor({ downArrow: false, meta: false, upArrow: true })).toBe(0)
+    expect(promptStepFor({ downArrow: true, meta: false, upArrow: false })).toBe(0)
+    // Alt on its own is not a step.
+    expect(promptStepFor({ meta: true })).toBe(0)
   })
 })

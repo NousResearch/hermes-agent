@@ -47,8 +47,8 @@ from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_cache_version, file_signature, mkstemp_beside
 from hermes_cli.config_issues import ConfigIssue, _issue
 from hermes_cli.config_backend import (
-    config_cache_version, config_exists, config_version, probe_config_readable, read_config_doc,
-    write_config_document)
+    ConfigWriteError, config_cache_version, config_exists, config_version, get_config_backend,
+    probe_config_readable, read_config_doc, supports_file_tooling, write_config_document)
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
@@ -1183,6 +1183,9 @@ def _persist_migration(config: dict[str, Any]) -> None:
     is Hermes' own write, never a user turning a feature off."""
     from hermes_cli.observability.shared_metrics_disabled import hermes_applied_write
 
+    if not supports_file_tooling():
+        get_config_backend().apply_in_memory(get_config_path().parent, config)
+        return
     with hermes_applied_write():
         save_config(config)
 
@@ -3272,6 +3275,11 @@ def _exit_if_key_managed(key: str, action: str) -> None:
             f"Cannot {action} '{key}': it is managed by your administrator ({_managed_source('config.yaml')}) "
             f"and cannot be changed. Contact your administrator to modify it.", file=sys.stderr)
         sys.exit(1)
+    level = get_config_backend().locked(get_config_path().parent, key)  # remote locks, prefix-aware (D7)
+    if level:
+        print(f"Cannot {action} '{key}': it is locked by the {level} level of Remote Config and cannot be "
+              "changed from this agent.", file=sys.stderr)
+        sys.exit(1)
 
 
 def _touch_skin_file(key: str, value: Any) -> None:
@@ -3743,7 +3751,11 @@ def config_command(args):
     subcmd = getattr(args, 'config_command', None)
     handler = _CONFIG_SUBCOMMANDS.get(subcmd)
     if handler is not None:
-        handler(args)
+        try:
+            handler(args)
+        except ConfigWriteError as exc:  # a backend refusal (a remote lock, a secret literal): nothing changed
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
         return
     print(f"Unknown config command: {subcmd}")
     print()

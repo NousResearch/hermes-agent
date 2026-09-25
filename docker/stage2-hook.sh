@@ -640,7 +640,17 @@ fi
 # config-schema migrations that `hermes update` runs for non-Docker installs,
 # after first-boot seeding and before supervised gateway services start.
 # Set HERMES_SKIP_CONFIG_MIGRATION=1 for controlled/manual migrations.
-if [ -f "$HERMES_HOME/config.yaml" ]; then
+# Remote config mode (HERMES_CONFIG_BACKEND=remote, in the container env or $HERMES_HOME/.env) has
+# no local config to migrate: the agent migrates the fetched document in memory and never writes
+# it back, so a leftover config.yaml must not be migrated or treated as live.
+_remote_config_mode=0
+if [ "${HERMES_CONFIG_BACKEND:-}" = "remote" ] \
+    || grep -Eqs '^[[:space:]]*(export[[:space:]]+)?HERMES_CONFIG_BACKEND=["'"'"']?remote["'"'"']?[[:space:]]*$' "$HERMES_HOME/.env"; then
+    _remote_config_mode=1
+fi
+if [ "$_remote_config_mode" = "1" ]; then
+    echo "[stage2] HERMES_CONFIG_BACKEND=remote: skipping docker_config_migrate.py"
+elif [ -f "$HERMES_HOME/config.yaml" ]; then
     s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/docker_config_migrate.py" \
         || echo "[stage2] Warning: docker_config_migrate.py failed; continuing"
 fi

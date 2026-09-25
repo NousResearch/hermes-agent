@@ -1405,12 +1405,16 @@ export interface PenImportPickerState {
 export interface PenImportOptions {
   mode?: 'page' | 'selection'
   selector?: string
+  /** The canvas was opened for this import; its empty starter frame makes way. */
+  fresh?: boolean
 }
 
 export interface PenImportResult {
   success: boolean
   imported?: 'page' | 'selection'
   element?: string
+  /** Top-level canvas nodes the import added. */
+  nodes?: Array<{ id: string; name: string }>
   warnings?: string[]
   error?: string
 }

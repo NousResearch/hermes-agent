@@ -11,13 +11,15 @@
 
 import { atom } from 'nanostores'
 
+import { penCanvasTileOpen, penCanvasTileVisible, revealPenCanvasTile } from '@/app/chat/pen-tile'
 import { activePreviewImport, previewImportHandle } from '@/app/chat/right-rail/preview-import'
 import { openAgentPreview } from '@/app/session/hooks/open-agent-preview'
 import type { PenImportOptions, PenImportPick, PenImportResult } from '@/global'
 import { translateNow } from '@/i18n'
 import { hostOf } from '@/lib/pen-web-import-intent'
 import { notify, notifyError } from '@/store/notifications'
-import { openPenCanvas, refreshPenStatus } from '@/store/pen'
+import { openPenCanvas, restorePenCanvas } from '@/store/pen'
+import { $selectedStoredSessionId } from '@/store/session'
 
 export interface PenImportState {
   /** The preview tab whose guest the picker is on. */
@@ -109,13 +111,23 @@ export async function runPenImport(
     return { error: 'no browser page is open in the preview pane', success: false }
   }
 
-  const status = await refreshPenStatus()
+  // A canvas the chat can see. Main may still hold a document whose pane was
+  // put away, so the pane — not the document list — decides; the chat's own
+  // canvas comes back first, a new one named after the page otherwise.
+  let fresh = false
 
-  if (status && status.openDocuments.length === 0) {
-    const doc = await openPenCanvas({ name: canvasNameForPage(handle.page()) }, sessionId)
+  if (!penCanvasTileOpen()) {
+    const chat = sessionId ?? $selectedStoredSessionId.get()
+    const restored = chat ? await restorePenCanvas(chat) : false
 
-    if (!doc) {
-      return { error: 'could not open a canvas for this chat', success: false }
+    if (!restored) {
+      const doc = await openPenCanvas({ name: canvasNameForPage(handle.page()) }, chat)
+
+      if (!doc) {
+        return { error: 'could not open a canvas for this chat', success: false }
+      }
+
+      fresh = true
     }
   }
 
@@ -125,7 +137,7 @@ export async function runPenImport(
   $penImport.set({ guestId, pick: live?.pick ?? null, picking: live?.picking ?? false, progress: 0, tabId })
 
   try {
-    return await pen.import.run(guestId, options)
+    return await pen.import.run(guestId, { ...options, fresh })
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error), success: false }
   } finally {
@@ -138,7 +150,10 @@ export async function importFromPreviewStrip(tabId: string, mode: 'page' | 'sele
   const result = await runPenImport(tabId, { mode })
 
   if (result.success) {
+    // The picker keeps the browser in front on purpose (imports come in runs);
+    // a canvas that is behind another tab or minimized gets a way over.
     notify({
+      action: penCanvasTileVisible() ? undefined : { label: translateNow('pen.showCanvas'), onClick: () => void revealPenCanvasTile() },
       kind: 'success',
       message:
         result.imported === 'selection' && result.element

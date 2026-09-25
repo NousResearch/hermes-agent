@@ -3,9 +3,11 @@ import penMark from '@/assets/pen-mark.png'
 import {
   type CanvasTab,
   canvasTileOpen,
+  canvasTileVisible,
   closeCanvasTile,
   openCanvasTile,
-  registerCanvasProvider
+  registerCanvasProvider,
+  revealCanvasTile
 } from './canvas-tile'
 import { PenTilePane } from './pen-tile-pane'
 import { destroyPenWebview } from './pen-webview'
@@ -39,4 +41,12 @@ export function closePenCanvasTile(): void {
 
 export function penCanvasTileOpen(): boolean {
   return canvasTileOpen(PEN_PROVIDER)
+}
+
+export function penCanvasTileVisible(): boolean {
+  return canvasTileVisible(PEN_PROVIDER)
+}
+
+export function revealPenCanvasTile(): boolean {
+  return revealCanvasTile(PEN_PROVIDER)
 }

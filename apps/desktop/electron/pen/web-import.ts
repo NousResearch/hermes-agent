@@ -16,7 +16,13 @@ import { webContents as electronWebContents, ipcMain, type WebContents } from 'e
 
 import { log } from './state'
 import { importPenBrowserCapture } from './web-bridge'
-import { ancestorSelector, type PenImportMode, type PenImportOptions, resolveImportMode } from './web-import-select'
+import {
+  ancestorSelector,
+  type PenCanvasNode,
+  type PenImportMode,
+  type PenImportOptions,
+  resolveImportMode
+} from './web-import-select'
 
 interface GuestCapturer {
   capturer: PenCapturer
@@ -34,6 +40,8 @@ export interface PenImportResult {
   imported?: PenImportMode
   /** DevTools-style label of the element that was imported, when one was. */
   element?: string
+  /** Top-level canvas nodes the import added — ids the agent can design against next. */
+  nodes?: Array<Pick<PenCanvasNode, 'id' | 'name'>>
   /** Assets or screenshots the capture could not get; pen.dev shows them as import warnings. */
   warnings?: string[]
   error?: string
@@ -133,7 +141,7 @@ export async function importIntoPenCanvas(
       onProgress: fraction => sendToHost(entry, 'hermes:pen:import:progress', { fraction, guestId })
     })
 
-    const { success } = await importPenBrowserCapture(payload)
+    const { success, nodes } = await importPenBrowserCapture(payload, { fresh: options.fresh === true })
 
     if (mode === 'selection') {
       await capturer.endPicking()
@@ -146,6 +154,7 @@ export async function importIntoPenCanvas(
     return {
       element,
       imported: mode,
+      nodes: nodes.map(({ id, name }) => ({ id, name })),
       success: true,
       ...(entry.warnings.length ? { warnings: [...entry.warnings] } : {})
     }

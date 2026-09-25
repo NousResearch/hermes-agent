@@ -3992,6 +3992,7 @@ export interface Translations {
     openFailed: string
     /** Import from the web — the preview strip's control and its status. */
     import: string
+    importPickElement: string
     importPicking: string
     importPickHint: string
     importPage: string
@@ -4002,6 +4003,7 @@ export interface Translations {
     imported: string
     importedElement: (label: string) => string
     importFailed: string
+    showCanvas: string
   }
 
   preview: {

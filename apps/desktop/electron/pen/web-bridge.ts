@@ -22,10 +22,12 @@ import { isPenWebUrl, penEmbedDropped, restorePenEmbedUrl } from './embed-url'
 import { isPenSchemaAction } from './mcp'
 import type { PenDocument } from './state'
 import { documents, events, log } from './state'
+import { importedNodes, parseTopLevelNodes, type PenCanvasNode, topLevelNodesProbe } from './web-import-select'
 
 const CONNECT_RETRY_MS = 500
 const REQUEST_TIMEOUT_MS = 120_000
 const READY_WAIT_MS = 30_000
+const STARTER_WAIT_MS = 3_000
 const SCHEMA_RETRY_MS = 400
 const SCHEMA_TRIES = 5
 
@@ -395,13 +397,66 @@ export async function runPenTool(
   }
 }
 
-/** Drop a `PenCapturer.capture()` payload onto the canvas — pen.dev's paste-from-the-web. */
-export async function importPenBrowserCapture(payload: string): Promise<{ success: boolean }> {
+/** Top-level nodes as the editor sees them — an import is whatever appears that was not there before. */
+async function topLevelNodes(): Promise<PenCanvasNode[]> {
+  const tool = await runPenTool('execute', { input: topLevelNodesProbe })
+  const text = (tool.result as McpToolResult['content'] | undefined)?.map(block => block.text ?? '').join('\n') ?? ''
+
+  return parseTopLevelNodes(text)
+}
+
+/** Figma-style zoom to fit; the editor has no viewport request, so the shortcut is the door. */
+function zoomPenToFit(): void {
+  const guest = bridge?.guest
+
+  if (!guest || guest.isDestroyed?.()) {
+    return
+  }
+
+  guest.focus()
+
+  for (const type of ['keyDown', 'char', 'keyUp'] as const) {
+    guest.sendInputEvent({ type, keyCode: type === 'char' ? '!' : '1', modifiers: ['shift'] })
+  }
+}
+
+/**
+ * Drop a `PenCapturer.capture()` payload onto the canvas — pen.dev's
+ * paste-from-the-web — and land the viewport on it. With `fresh` (a canvas
+ * opened for this import) the editor's empty starter frame goes too, so
+ * zoom-to-fit frames the import alone.
+ */
+export async function importPenBrowserCapture(
+  payload: string,
+  { fresh = false } = {}
+): Promise<{ success: boolean; nodes: PenCanvasNode[] }> {
   await waitForPenReady()
+
+  // A just-opened document adds its starter frame a beat after the bridge is
+  // ready; snapshot too early and the frame reads as part of the import.
+  let before = await topLevelNodes()
+
+  for (let waited = 0; fresh && before.length === 0 && waited < STARTER_WAIT_MS; waited += 100) {
+    await sleep(100)
+    before = await topLevelNodes()
+  }
 
   const result = (await bridgeRequest('browser-import', payload)) as { success?: boolean } | undefined
 
-  return { success: result?.success === true }
+  if (result?.success !== true) {
+    return { success: false, nodes: [] }
+  }
+
+  const nodes = importedNodes(before, await topLevelNodes())
+  const starters = fresh ? before.filter(node => node.empty) : []
+
+  if (starters.length) {
+    await runPenTool('execute', { input: starters.map(node => `Delete(${JSON.stringify(node.id)})`).join('\n') })
+  }
+
+  zoomPenToFit()
+
+  return { success: true, nodes }
 }
 
 export function shutdownPenWebBridge(): void {

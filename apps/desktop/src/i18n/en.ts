@@ -4719,6 +4719,7 @@ export const en: Translations = {
   pen: {
     openFailed: 'Could not open the canvas',
     import: 'Import to canvas',
+    importPickElement: 'Pick an element',
     importPicking: 'Stop picking',
     importPickHint: 'Click an element · Enter imports · Esc stops',
     importPage: 'Whole page',
@@ -4728,7 +4729,8 @@ export const en: Translations = {
     importProgress: percent => `Capturing… ${percent}%`,
     imported: 'Page imported to the canvas',
     importedElement: label => `Imported ${label} to the canvas`,
-    importFailed: 'Could not import to the canvas'
+    importFailed: 'Could not import to the canvas',
+    showCanvas: 'Show canvas'
   },
 
   preview: {

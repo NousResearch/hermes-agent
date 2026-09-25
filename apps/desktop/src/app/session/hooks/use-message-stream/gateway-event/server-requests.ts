@@ -479,7 +479,7 @@ const penTool: Handler = ({ request, sessionId }) => {
               },
               sessionId || null
             ).then(
-              ({ error, imported, success, url }) => ({ success, result: { imported, url }, error }),
+              ({ error, imported, nodes, success, url }) => ({ success, result: { imported, nodes, url }, error }),
               (error: unknown) => ({ success: false, error: error instanceof Error ? error.message : String(error) })
             )
           : runPenTool(action, args)

@@ -5,7 +5,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import type { ReactNode } from 'react'
 
-import { revealTreePane } from '@/components/pane-shell/tree/store'
+import { isPaneVisible, revealTreePane } from '@/components/pane-shell/tree/store'
 
 import { paneMirror } from './pane-mirror'
 
@@ -51,6 +51,24 @@ export function canvasTileOpen(provider?: string): boolean {
   const tabs = $canvasTabs.get()
 
   return provider ? tabs.some(t => t.provider === provider) : tabs.length > 0
+}
+
+/** The provider's tile is the active, un-minimized tab of its pane. */
+export function canvasTileVisible(provider: string): boolean {
+  return isPaneVisible(`${CANVAS_TILE_PREFIX}:${provider}`)
+}
+
+/** Bring an open tile to the front; false when there is none to show. */
+export function revealCanvasTile(provider: string): boolean {
+  const tab = $canvasTabs.get().find(t => t.provider === provider)
+
+  if (!tab) {
+    return false
+  }
+
+  revealTreePane(`${CANVAS_TILE_PREFIX}:${tileKey(tab)}`)
+
+  return true
 }
 
 function providerForKey(key: string): CanvasProvider | null {

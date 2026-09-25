@@ -19,8 +19,10 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { PaneStripGlyph } from '@/components/ui/pane-tab'
+import { Tip } from '@/components/ui/tooltip'
 import type { PenImportPick } from '@/global'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
@@ -264,12 +266,10 @@ export function PreviewBrowserBar({
         </button>
       ) : null}
       {onToggleImport ? (
-        <PaneStripGlyph
-          active={Boolean(importState?.picking)}
-          disabled={importState?.progress !== null && importState?.progress !== undefined}
-          icon={<Codicon name="inspect" size="0.8125rem" />}
-          label={importState?.picking ? t.pen.importPicking : t.pen.import}
-          onSelect={onToggleImport}
+        <PenImportGlyph
+          onImport={onImport}
+          onTogglePick={onToggleImport}
+          state={importState}
         />
       ) : null}
       {onPopIn ? (
@@ -325,6 +325,72 @@ export function PreviewBrowserBar({
 }
 
 /**
+ * The strip's import control. One click offers the two ways in — pick an
+ * element, or take the whole page — so cloning a page is a single choice and
+ * the crosshair is something you ask for. While picking it is the stop toggle.
+ */
+function PenImportGlyph({
+  onImport,
+  onTogglePick,
+  state
+}: {
+  onImport?: (mode: 'page' | 'selection') => void
+  onTogglePick: () => void
+  state?: PenImportStripState
+}) {
+  const { t } = useI18n()
+  const [open, setOpen] = useState(false)
+  const busy = state?.progress !== null && state?.progress !== undefined
+
+  if (state?.picking) {
+    return (
+      <PaneStripGlyph
+        active
+        disabled={busy}
+        icon={<Codicon name="inspect" size="0.8125rem" />}
+        label={t.pen.importPicking}
+        onSelect={onTogglePick}
+      />
+    )
+  }
+
+  // Controlled so the glyph can show the open state itself: the Tip's tooltip
+  // trigger and the menu trigger both write `data-state`, and the tooltip's wins.
+  return (
+    <DropdownMenu onOpenChange={setOpen} open={open}>
+      <Tip label={t.pen.import} placement="toolbar">
+        <DropdownMenuTrigger asChild>
+          <Button
+            aria-label={t.pen.import}
+            className={cn(
+              'self-center select-none [-webkit-app-region:no-drag]',
+              open ? 'bg-(--chrome-action-hover) opacity-100' : 'bg-transparent opacity-60 hover:opacity-100'
+            )}
+            disabled={busy}
+            onPointerDown={event => event.stopPropagation()}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="inspect" size="0.8125rem" />
+          </Button>
+        </DropdownMenuTrigger>
+      </Tip>
+      <DropdownMenuContent align="end" className="min-w-44" sideOffset={4}>
+        <DropdownMenuItem className="gap-2" onSelect={onTogglePick}>
+          <Codicon className="text-muted-foreground" name="inspect" size="0.8125rem" />
+          {t.pen.importPickElement}
+        </DropdownMenuItem>
+        <DropdownMenuItem className="gap-2" onSelect={() => onImport?.('page')}>
+          <Codicon className="text-muted-foreground" name="window" size="0.8125rem" />
+          {t.pen.importPage}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+/**
  * The import's own row under the address: what is picked (an ancestor
  * breadcrumb the pointer can walk, like DevTools' crumbs), then Import /
  * Whole page. A second row rather than a pill in the first because the crumbs
@@ -347,12 +413,37 @@ function PenImportRow({
   const { pick, progress } = state
   const navRef = useRef<HTMLElement>(null)
   const pickedSelector = pick?.element.selector
+  const [overflow, setOverflow] = useState({ end: false, start: false })
+
+  // Which edges hide crumbs; those fade instead of cutting a name in half.
+  const measureOverflow = () => {
+    const nav = navRef.current
+
+    if (nav) {
+      setOverflow({ end: nav.scrollLeft + nav.clientWidth < nav.scrollWidth - 1, start: nav.scrollLeft > 1 })
+    }
+  }
 
   // Keep the picked crumb in view as the path changes (the pick is usually
   // the deepest, rightmost entry).
   useEffect(() => {
     navRef.current?.querySelector('[aria-current]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    measureOverflow()
   }, [pickedSelector])
+
+  // A resized pane hides or reveals crumbs without any scrolling.
+  useEffect(() => {
+    const nav = navRef.current
+
+    if (!nav) {
+      return
+    }
+
+    const observer = new ResizeObserver(measureOverflow)
+    observer.observe(nav)
+
+    return () => observer.disconnect()
+  }, [])
 
   return (
     <div
@@ -371,7 +462,9 @@ function PenImportRow({
           <nav
             aria-label={pick.element.label ?? pick.element.tag}
             className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            onScroll={measureOverflow}
             ref={navRef}
+            style={{ maskImage: crumbEdgeMask(overflow) }}
           >
             {pick.path.map((entry, index) => {
               const current = index === pick.pathIndex
@@ -421,6 +514,17 @@ function PenImportRow({
       )}
     </div>
   )
+}
+
+/** Fade the crumb strip's hidden edge(s); none when everything fits. */
+function crumbEdgeMask({ end, start }: { end: boolean; start: boolean }): string | undefined {
+  if (!start && !end) {
+    return undefined
+  }
+
+  const stops = [start ? 'transparent, black 2.5rem' : 'black', end ? 'black calc(100% - 2.5rem), transparent' : 'black']
+
+  return `linear-gradient(to right, ${stops.join(', ')})`
 }
 
 /** Ancestors read as `tag#id` (classes are noise at crumb width); the pick keeps its full label. */

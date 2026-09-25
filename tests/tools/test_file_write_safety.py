@@ -377,10 +377,14 @@ class TestProtectedInstructionFiles:
 
     AGENTS.md / CLAUDE.md / SOUL.md / .cursorrules / project-local .hermes
     config steer future agent behavior, so a prompt-injected agent writing
-    them is a persistence vector. The gate must ask the human every time —
-    even under yolo/auto-approve — and fail closed when no human channel
-    exists. Ported from: RooCodeInc/Roo-Code RooProtectedController
-    (Apache-2.0); symlink lesson from #41351.
+    them is a persistence vector. The gate must ask the human for every
+    operation — even under yolo/auto-approve — and fail closed when no human
+    channel exists. On the gateway card surface, a turn's IDENTICAL follow-up
+    requests (same target AND same content/patch payload) reuse the just-granted
+    decision — a serial batch is one answer, not N, see
+    test_gateway_serial_batch_uses_one_approval_in_a_turn — while a follow-up
+    whose payload differs is a new question. Ported from: RooCodeInc/Roo-Code
+    RooProtectedController (Apache-2.0); symlink lesson from #41351.
     """
 
     @pytest.fixture(autouse=True)
@@ -389,6 +393,16 @@ class TestProtectedInstructionFiles:
         monkeypatch.setattr(
             ft, "_protected_instruction_config", lambda: (True, [])
         )
+        yield
+
+    @pytest.fixture(autouse=True)
+    def _fresh_batch_grants(self):
+        """Isolate the turn-scoped grant cache between tests."""
+        import tools.file_tools_write_guards as ft
+        grants = getattr(ft, "_protected_grant_times", None)
+        if grants is not None:
+            with ft._protected_grant_lock:
+                grants.clear()
         yield
 
     @pytest.fixture
@@ -678,6 +692,235 @@ class TestProtectedInstructionFiles:
             approval_context.reset_current_session_key(token)
 
         assert rendered["choices"] == ["once", "deny"]
+
+    # ---- turn-scoped reuse (the batch is one human answer) ---------------
+
+    def test_gateway_serial_batch_uses_one_approval_in_a_turn(self, tmp_path):
+        """A turn's identical protected-write batch is ONE question.
+
+        The executor runs a turn's tool calls serially, so a retried batch
+        (the same write re-issued after the first card was answered / timed
+        out) posted one card per call: one tapped "Allow Once" covered only
+        the first, and the rest failed closed as timed out even though the
+        human had answered. An identical follow-up request in the same turn
+        must reuse the fresh grant instead of re-asking.
+        """
+        import tools.approval as A
+        from tools import approval_context
+
+        session_key = "protected-files-batch-session"
+        skey_token = approval_context.set_current_session_key(session_key)
+        obs_tokens = approval_context.set_current_observability_context(turn_id="turn-batch-1")
+        prompts = []
+        try:
+            def notify(approval_data):
+                prompts.append(dict(approval_data))
+                A.resolve_gateway_approval(session_key, "once")
+
+            A.register_gateway_notify(session_key, notify)
+            try:
+                results = [self._write(tmp_path / "AGENTS.md", "revision 1") for _ in range(3)]
+            finally:
+                A.unregister_gateway_notify(session_key)
+        finally:
+            approval_context.reset_current_observability_context(obs_tokens)
+            approval_context.reset_current_session_key(skey_token)
+
+        assert all(not r.get("error") for r in results), results
+        assert len(prompts) == 1, f"serial batch re-prompted the human {len(prompts)} times"
+        assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8") == "revision 1"
+
+    def test_batch_reuse_respects_turn_deny_and_target_boundaries(self, tmp_path):
+        """Grant-only, turn-scoped, request-identical: every boundary re-asks."""
+        import tools.approval as A
+        import tools.file_tools_write_guards as ft
+        from tools import approval_context
+
+        session_key = "protected-files-batch-boundaries"
+        skey_token = approval_context.set_current_session_key(session_key)
+        prompts = []
+        answers = ["once", "once", "deny", "deny", "once", "once"]
+
+        def notify(approval_data):
+            prompts.append(dict(approval_data))
+            A.resolve_gateway_approval(session_key, answers[len(prompts) - 1])
+
+        def clear_grants():
+            grants = getattr(ft, "_protected_grant_times", None)
+            if grants is not None:
+                with ft._protected_grant_lock:
+                    grants.clear()
+
+        try:
+            A.register_gateway_notify(session_key, notify)
+            try:
+                # 1) A later turn re-asks: same session and target, new turn.
+                obs_a = approval_context.set_current_observability_context(turn_id="turn-a")
+                self._write(tmp_path / "AGENTS.md", "one")
+                approval_context.reset_current_observability_context(obs_a)
+                obs_b = approval_context.set_current_observability_context(turn_id="turn-b")
+                self._write(tmp_path / "AGENTS.md", "two")
+                assert len(prompts) == 2, "grant leaked into a later turn"
+
+                # 2) A denied request is never reused within its own turn.
+                clear_grants()
+                r = self._write(tmp_path / "AGENTS.md", "three")
+                assert r.get("error") and "BLOCKED" in r["error"]
+                self._write(tmp_path / "AGENTS.md", "four")
+                assert len(prompts) == 4, "deny was reused"
+                approval_context.reset_current_observability_context(obs_b)
+
+                # 3) No turn identity → no reuse (fail closed to prompting).
+                clear_grants()
+                self._write(tmp_path / "SOUL.md", "five")
+                self._write(tmp_path / "SOUL.md", "six")
+                assert len(prompts) == 6, "reused without a turn identity"
+            finally:
+                A.unregister_gateway_notify(session_key)
+        finally:
+            approval_context.reset_current_session_key(skey_token)
+
+        assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8") == "two"
+        assert (tmp_path / "SOUL.md").read_text(encoding="utf-8") == "six"
+
+    def test_gateway_same_turn_different_content_re_prompts(self, tmp_path):
+        """A same-turn write of DIFFERENT content to the same path is a new question.
+
+        "Allow Once" is bound to the operation payload the human was shown, not
+        to the target path: after approving content A, a later write of B to
+        the same AGENTS.md in the same turn posted no card at all and landed
+        silently. It must post its own card and be gated by that answer.
+        """
+        import tools.approval as A
+        from tools import approval_context
+
+        session_key = "protected-files-payload-session"
+        skey_token = approval_context.set_current_session_key(session_key)
+        obs_tokens = approval_context.set_current_observability_context(turn_id="turn-payload-1")
+        prompts = []
+        answers = ["once", "deny", "once"]
+
+        def notify(approval_data):
+            prompts.append(dict(approval_data))
+            A.resolve_gateway_approval(session_key, answers[len(prompts) - 1])
+
+        try:
+            A.register_gateway_notify(session_key, notify)
+            try:
+                first = self._write(tmp_path / "AGENTS.md", "revision 1")
+                # Different content, same path, same turn → its own card; the
+                # card is answered "deny", so the write must not land.
+                denied = self._write(tmp_path / "AGENTS.md", "revision 2")
+                third = self._write(tmp_path / "AGENTS.md", "revision 3")
+                # Identical to the third write → covered by its fresh grant.
+                fourth = self._write(tmp_path / "AGENTS.md", "revision 3")
+            finally:
+                A.unregister_gateway_notify(session_key)
+        finally:
+            approval_context.reset_current_observability_context(obs_tokens)
+            approval_context.reset_current_session_key(skey_token)
+
+        assert not first.get("error"), first
+        assert denied.get("error") and "BLOCKED" in denied["error"], denied
+        assert not third.get("error") and not fourth.get("error"), (third, fourth)
+        assert len(prompts) == 3, f"four writes posted {len(prompts)} cards for three payloads"
+        assert (tmp_path / "AGENTS.md").read_text(encoding="utf-8") == "revision 3"
+
+    def test_gateway_second_tool_round_re_asks_on_a_new_payload(self, tmp_path):
+        """Reuse is per operation payload, across tool rounds and across tools.
+
+        Round 1 writes AGENTS.md; round 2 of the SAME turn re-sends that
+        write (still one answered card) and then patches what it wrote. The
+        patch is a different payload — and a different tool — so it posts its
+        own card, the identical repeat of it reuses that grant, and a third
+        payload re-asks and is gated by its answer.
+        """
+        import json
+        import tools.approval as A
+        from tools import approval_context
+        from tools.file_tools import patch_tool
+
+        session_key = "protected-files-round-session"
+        skey_token = approval_context.set_current_session_key(session_key)
+        obs_tokens = approval_context.set_current_observability_context(turn_id="turn-round-1")
+        prompts = []
+        answers = ["once", "once", "deny"]
+        target = tmp_path / "AGENTS.md"
+
+        def patch(old_string, new_string):
+            return json.loads(patch_tool(
+                mode="replace", path=str(target), old_string=old_string, new_string=new_string))
+
+        def notify(approval_data):
+            prompts.append(dict(approval_data))
+            A.resolve_gateway_approval(session_key, answers[len(prompts) - 1])
+
+        try:
+            A.register_gateway_notify(session_key, notify)
+            try:
+                # Round 1.
+                self._write(target, "round one")
+                assert len(prompts) == 1, "round 1 re-prompted on an identical write"
+                # Round 2: the same write again — the grant spans the turn.
+                again = self._write(target, "round one")
+                # …then a patch, whose payload no write grant can cover.
+                patched = patch("round one", "round two")
+                assert len(prompts) == 2, "the patch rode the write's grant"
+                # Identical patch payload → still the same answered card.
+                repeat = patch("round one", "round two")
+                # A third payload re-asks; this card is denied.
+                denied = patch("round two", "round three")
+            finally:
+                A.unregister_gateway_notify(session_key)
+        finally:
+            approval_context.reset_current_observability_context(obs_tokens)
+            approval_context.reset_current_session_key(skey_token)
+
+        assert not again.get("error"), again
+        assert not patched.get("error"), patched
+        assert denied.get("error") and "BLOCKED" in denied["error"], denied
+        assert "BLOCKED" not in str(repeat.get("error")), repeat
+        assert len(prompts) == 3, f"three payloads posted {len(prompts)} cards"
+        assert target.read_text(encoding="utf-8") == "round two"
+
+    def test_gateway_same_turn_same_basename_elsewhere_re_prompts(self, tmp_path):
+        """The grant covers the target the card named, not merely its basename.
+
+        Two checkouts can each hold an AGENTS.md, and the card shows only the
+        name: approving one must not drop identical bytes into the other.
+        """
+        import tools.approval as A
+        from tools import approval_context
+
+        session_key = "protected-files-elsewhere-session"
+        skey_token = approval_context.set_current_session_key(session_key)
+        obs_tokens = approval_context.set_current_observability_context(turn_id="turn-elsewhere-1")
+        (tmp_path / "mine").mkdir()
+        (tmp_path / "theirs").mkdir()
+        mine, theirs = tmp_path / "mine" / "AGENTS.md", tmp_path / "theirs" / "AGENTS.md"
+        prompts = []
+        answers = ["once", "deny"]
+
+        def notify(approval_data):
+            prompts.append(dict(approval_data))
+            A.resolve_gateway_approval(session_key, answers[len(prompts) - 1])
+
+        try:
+            A.register_gateway_notify(session_key, notify)
+            try:
+                first = self._write(mine, "shared bytes")
+                other = self._write(theirs, "shared bytes")
+            finally:
+                A.unregister_gateway_notify(session_key)
+        finally:
+            approval_context.reset_current_observability_context(obs_tokens)
+            approval_context.reset_current_session_key(skey_token)
+
+        assert not first.get("error"), first
+        assert other.get("error") and "BLOCKED" in other["error"], other
+        assert len(prompts) == 2, f"the second path reused {len(prompts)} cards"
+        assert mine.read_text(encoding="utf-8") == "shared bytes"
+        assert not theirs.exists()
 
 
 class TestProfileHomeExemptsHermesRoot:

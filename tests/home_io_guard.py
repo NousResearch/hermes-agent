@@ -11,6 +11,8 @@ import sqlite3
 import sys
 import threading
 
+from hermes_cli._early_recovery import interrupted_pull_marker
+
 _INTERPRETER_PREFIXES = tuple({
     Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
 } | {
@@ -24,6 +26,11 @@ _INTERPRETER_PREFIXES = tuple({
     # checkout's own .venv is not Hermes state; without this every run from a default install
     # trips on its first traceback.
     Path(__file__).resolve().parent.parent,
+} | {
+    # The checkout's git dir is the same bookkeeping class: a linked worktree's lives in the
+    # hosting clone's .git/worktrees/ (a default install puts that inside the home), and every
+    # entry point probes its interrupted-`hermes update` marker on import (`_early_recovery`).
+    interrupted_pull_marker(Path(__file__).resolve().parent.parent).parent.resolve(),
 })
 
 

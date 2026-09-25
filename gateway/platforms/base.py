@@ -3989,6 +3989,31 @@ class BasePlatformAdapter(ABC):
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
 
+    async def admit_native_turn(self, event: MessageEvent, expected_session_key: str) -> bool:
+        """Atomically reserve an idle session for a generic native source event.
+
+        Unlike ``handle_message`` this entrypoint never queues behind a human
+        turn.  Its no-await critical section runs on the adapter event loop, so
+        busy detection and guard installation cannot interleave.
+        """
+        event._gateway_accepted = False
+        if not self._message_handler or not getattr(event, "internal", False):
+            return False
+        session_key = self._event_session_key(event)
+        if session_key != expected_session_key:
+            return False
+        if session_key in self._active_sessions:
+            self._heal_stale_session_lock(session_key)
+        debounce = self._text_debounce_store().get(session_key)
+        if (
+            session_key in self._active_sessions
+            or session_key in self._pending_messages
+            or (debounce is not None and getattr(debounce, "messages", None))
+        ):
+            return False
+        event._gateway_accepted = self._start_session_processing(event, session_key)
+        return event._gateway_accepted
+
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
         commands / clarify replies dispatch inline, everything else is queued."""
@@ -4560,6 +4585,18 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            admission = getattr(event, "_native_turn_admission", None)
+            if admission is not None:
+                # Best-effort: closing a native lease must never skip the mandatory
+                # turn-marker release and session cleanup below.
+                try:
+                    current = asyncio.current_task()
+                    admission.abort_if_open(
+                        "canceled" if current in self._expected_cancelled_tasks else "not_sent",
+                        "gateway turn ended before native pre-model admission",
+                    )
+                except Exception:
+                    logger.warning("[%s] Native turn admission abort failed", self.name, exc_info=True)
             await self._release_turn_marker(event)
             event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it

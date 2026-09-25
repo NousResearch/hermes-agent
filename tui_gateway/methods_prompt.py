@@ -527,33 +527,39 @@ _TRUNCATION_PARAMS = (
 
 
 def _lock_in_submit_turn(
-    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind):
+    rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind,
+    *, lock_held: bool = False):
     """Under ``history_lock``: refuse watch-child races / malformed truncation, apply the
-    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``."""
+    cut, mark the turn running + in flight.  Returns ``(err, survivor_fields)``.  ``lock_held``
+    means the caller already holds ``session["history_lock"]`` (native admission serializes on
+    the same lock), so only the backend-retirement admission is re-taken."""
     fields = {}
-    with _session_turn_admission(session) as admitted:
+    from hermes_cli.backend_retirement import retirement
+    with retirement.work() as admitted:
         if not admitted:
             return _err(rid, 5035, "backend is retiring; reconnect to continue"), fields
-        # A watch session's run lives in the PARENT turn (own running flag False); typing
-        # mid-run would build a second agent racing the child on the same stored session.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
-            return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
-        if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
-            return _err(
-                rid, 4004,
-                "confirm_truncate requires truncate_before_user_ordinal, truncate_before_message_id, or truncate_before_row_id",
-            ), fields
-        if has_truncation:
-            err, fields = _truncate_history_for_submit(
-                rid, sid, session, params, requested_rebind_ids)
-            if err is not None:
-                return err, {}
-        session["running"] = True
-        session["_turn_cancel_requested"] = False
-        session["last_active"] = time.time()
-        if hosted_task is not None:
-            session["_hosted_room_task"] = dict(hosted_task)
-        _start_inflight_turn(session, text, display_kind=display_kind)
+        lock_scope = contextlib.nullcontext() if lock_held else session["history_lock"]
+        with lock_scope:
+            # A watch session's run lives in the PARENT turn (own running flag False); typing
+            # mid-run would build a second agent racing the child on the same stored session.
+            if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+                return _err(rid, 4009, "subagent still running — wait for it to finish"), fields
+            if is_truthy_value(params.get("confirm_truncate")) and not has_truncation:
+                return _err(
+                    rid, 4004,
+                    "confirm_truncate requires truncate_before_user_ordinal, truncate_before_message_id, or truncate_before_row_id",
+                ), fields
+            if has_truncation:
+                err, fields = _truncate_history_for_submit(
+                    rid, sid, session, params, requested_rebind_ids)
+                if err is not None:
+                    return err, {}
+            session["running"] = True
+            session["_turn_cancel_requested"] = False
+            session["last_active"] = time.time()
+            if hosted_task is not None:
+                session["_hosted_room_task"] = dict(hosted_task)
+            _start_inflight_turn(session, text, display_kind=display_kind)
     return None, fields
 
 
@@ -633,9 +639,28 @@ def _(rid, params: dict) -> dict:
     # history_lock is released (a non-interruptible tool may hold it); if the old turn
     # finished between the two acquisitions, retry the claim rather than strand this
     # prompt in a queue whose drain already ran.
+    raw_rebind_ids = params.get("rebind_survivor_row_ids")
+    requested_rebind_ids = (
+        {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
+        if isinstance(raw_rebind_ids, list) else None
+    )
     while True:
         with session["history_lock"]:
             if not session.get("running"):
+                # Keep the lock through the final check and reservation. Native
+                # admission uses this same lock, so only one path can win.
+                err, survivor_fields = _lock_in_submit_turn(
+                    rid,
+                    sid,
+                    session,
+                    text,
+                    params,
+                    has_truncation,
+                    requested_rebind_ids,
+                    hosted_task,
+                    display_kind,
+                    lock_held=True,
+                )
                 break
             if internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")
@@ -652,12 +677,6 @@ def _(rid, params: dict) -> dict:
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
         if busy_response is not None:
             return busy_response
-    raw_rebind_ids = params.get("rebind_survivor_row_ids")
-    requested_rebind_ids = (
-        {r for r in raw_rebind_ids if isinstance(r, int) and not isinstance(r, bool)}
-        if isinstance(raw_rebind_ids, list) else None)
-    err, survivor_fields = _lock_in_submit_turn(
-        rid, sid, session, text, params, has_truncation, requested_rebind_ids, hosted_task, display_kind)
     if err is not None:
         return err
     if turn_isolation:

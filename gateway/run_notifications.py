@@ -1872,6 +1872,167 @@ class GatewayNotificationsMixin:
             if count:
                 logger.info("%s %d undelivered async completion(s) for profile %r", verb, count, profile_name)
 
+    async def _native_gateway_view(self, entry):
+        """Return exact live route/session facts, or None for a stale row."""
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli.native_turn_sources import NativeSessionView
+        from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+
+        source = getattr(entry, "origin", None)
+        if source is None or not getattr(entry, "session_id", None):
+            return None
+        profile = str(getattr(source, "profile", None) or get_active_profile_name() or "default")
+        profile_home = get_profile_dir(profile)
+
+        def _read_identity():
+            with _profile_runtime_scope(profile_home, hydrate_secrets=False):
+                db = self.session_store._db
+                if db is None:
+                    return None
+                row = db.get_session(entry.session_id)
+                if not row or row.get("ended_at") is not None:
+                    return None
+                tip = db.get_compression_tip(entry.session_id)
+                if tip and str(tip) != str(entry.session_id):
+                    return None
+                return tuple(db.get_compression_lineage(entry.session_id))
+
+        lineage = await asyncio.to_thread(_read_identity)
+        if not lineage:
+            return None
+        return NativeSessionView(
+            profile=profile,
+            profile_home=profile_home,
+            session_id=str(entry.session_id),
+            surface="gateway",
+            compression_lineage=lineage,
+            session_key=str(entry.session_key),
+            owner_token=f"gateway:{profile}:{entry.session_key}",
+            metadata={"platform": source.platform.value},
+        )
+
+    async def _poll_native_turn_sources_once(self) -> bool:
+        """Admit at most one native lease into an exact, idle gateway route."""
+        from gateway.platforms.event import MessageEvent, MessageType
+        from gateway.wake import adapter_supports_push
+        from hermes_cli.native_turn_sources import poll_native_turn
+
+        entries = await self.async_session_store.list_sessions()
+        for entry in entries:
+            source = getattr(entry, "origin", None)
+            if source is None:
+                continue
+            adapter = self._adapter_for_source(source)
+            admit = getattr(adapter, "admit_native_turn", None) if adapter is not None else None
+            if not callable(admit) or not adapter_supports_push(adapter):
+                continue
+            session_key = str(entry.session_key)
+            if (
+                session_key in getattr(adapter, "_active_sessions", {})
+                or session_key in getattr(adapter, "_pending_messages", {})
+            ):
+                continue
+            view = await self._native_gateway_view(entry)
+            if view is None:
+                continue
+            admission = await asyncio.to_thread(poll_native_turn, view)
+            if admission is None:
+                continue
+            current = next(
+                (
+                    candidate
+                    for candidate in await self.async_session_store.list_sessions()
+                    if candidate.session_key == entry.session_key
+                ),
+                None,
+            )
+            if current is None or await self._native_gateway_view(current) != view:
+                admission.abort_if_open("not_sent", "gateway route changed before host admission")
+                continue
+            event = MessageEvent(
+                text=admission.lease.prompt,
+                message_type=MessageType.TEXT,
+                source=source,
+                internal=True,
+                message_id=f"native:{admission.lease.lease_id}",
+                allow_gateway_control=False,
+                metadata={
+                    "gateway_session_key": session_key,
+                    "gateway_session_id": view.session_id,
+                    "gateway_session_strict": True,
+                },
+            )
+            event._native_turn_admission = admission
+            try:
+                started = await admit(event, session_key)
+            except Exception:
+                admission.abort_if_open("unknown", "gateway admission raised before receipt")
+                raise
+            if not started:
+                admission.abort_if_open("not_sent", "gateway session was not idle at admission")
+                continue
+            return True
+        return False
+
+    async def _fence_native_gateway_session(self, source, reason: str) -> None:
+        """Fence the currently routed gateway session before identity/guard changes."""
+        await self._fence_native_gateway_key(self._session_key_for_source(source), reason)
+
+    async def _fence_native_gateway_key(self, session_key: str, reason: str) -> None:
+        """Fence one exact persisted route without synthesizing or rotating it.
+
+        Best-effort by contract: every caller (``/stop``, ``/new``, ``/resume``) runs
+        mandatory interrupt/reset/switch cleanup right after this fence, so a failing
+        session-store read or identity lookup is logged and swallowed, never propagated.
+        Cancellation (``BaseException``) still propagates."""
+        try:
+            from hermes_cli.native_turn_sources import fence_native_turn_sources
+
+            if not callable(getattr(getattr(self, "session_store", None), "list_sessions", None)):
+                return
+            entry = next(
+                (
+                    candidate
+                    for candidate in await self.async_session_store.list_sessions()
+                    if candidate.session_key == session_key
+                ),
+                None,
+            )
+            if entry is None:
+                return
+            view = await self._native_gateway_view(entry)
+            if view is not None:
+                await asyncio.to_thread(fence_native_turn_sources, view, reason)
+        except Exception:
+            logger.warning("Native turn fence failed for %s (%s); continuing", session_key, reason,
+                           exc_info=True)
+
+    async def _fence_all_native_gateway_sessions(self, reason: str) -> None:
+        """Fence every exact live route before gateway shutdown releases owners.
+
+        Best-effort by contract: ``stop()`` runs mandatory shutdown right after this
+        fence, so a failure is logged and swallowed — per route (one bad row must not
+        leave the remaining routes unfenced) and for the session listing itself.
+        Cancellation (``BaseException``) still propagates."""
+        from hermes_cli.native_turn_sources import fence_native_turn_sources
+
+        if not callable(getattr(getattr(self, "session_store", None), "list_sessions", None)):
+            return
+        try:
+            entries = await self.async_session_store.list_sessions()
+        except Exception:
+            logger.warning("Native turn fence (%s): session listing failed; continuing", reason,
+                           exc_info=True)
+            return
+        for entry in entries:
+            try:
+                view = await self._native_gateway_view(entry)
+                if view is not None:
+                    await asyncio.to_thread(fence_native_turn_sources, view, reason)
+            except Exception:
+                logger.warning("Native turn fence failed for %s (%s); continuing",
+                               getattr(entry, "session_key", "?"), reason, exc_info=True)
+
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async completions and pattern notifications even while sessions are idle.
 
@@ -1920,6 +2081,7 @@ class GatewayNotificationsMixin:
                         for evt in group:
                             _pr.completion_queue.put(evt)
                         logger.error("Async delegation injection error: %s", e)
+                await self._poll_native_turn_sources_once()
             await asyncio.sleep(interval)
 
     @staticmethod

@@ -428,6 +428,7 @@ class GatewaySlashCommandsMixin(
         this handler runs via normal dispatch or as a fallback, and force-cleans the session lock in
         all cases.  The session is preserved so the user can continue."""
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
+        await self._fence_native_gateway_session(event.source, "user_stop")
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
         session_key = session_entry.session_key
@@ -463,6 +464,7 @@ class GatewaySlashCommandsMixin(
         )
         if fallback_keys and self._is_user_authorized_for_source(source):
             for fallback_key in fallback_keys:
+                await self._fence_native_gateway_key(fallback_key, reason)
                 await _stop(fallback_key, reason)
             logger.info("STOP (%s) by %s — interrupted %d run(s): %s",
                         reason, session_key, len(fallback_keys), ", ".join(fallback_keys))

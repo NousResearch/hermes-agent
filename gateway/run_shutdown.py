@@ -2154,6 +2154,9 @@ class GatewayShutdownMixin:
     ) -> None:
         """Stop the gateway and disconnect all adapters."""
         from gateway.run import GatewayRunner
+        fence_native = getattr(self, "_fence_all_native_gateway_sessions", None)
+        if callable(fence_native):
+            await fence_native("user_exit")
         # getattr-guard: shutdown-path tests build bare runners via object.__new__ that lack the
         # liveness-guard machinery.
         _stop_guards = getattr(self, "_stop_loop_liveness_guards", None)

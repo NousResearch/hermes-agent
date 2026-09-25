@@ -155,6 +155,7 @@ class GatewaySessionCommandsMixin:
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
+        await self._fence_native_gateway_session(source, "new_session")
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
@@ -890,6 +891,7 @@ class GatewaySessionCommandsMixin:
         current_entry = await self.async_session_store.get_or_create_session(source)
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
+        await self._fence_native_gateway_session(source, "session_switch")
         self._release_running_agent_state(session_key)
         new_entry = await self.async_session_store.switch_session(session_key, target_id)
         if not new_entry:

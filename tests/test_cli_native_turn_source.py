@@ -130,3 +130,26 @@ def test_real_cli_fence_notifies_only_the_owned_session(tmp_path, owned):
         assert calls == ([(view, "new_session")] if owned else [])
     finally:
         unregister()
+
+def test_fence_helper_dispatches_override_and_falls_back_to_guarded_mixin(monkeypatch):
+    """Session-boundary call sites use ``fence_native_turn_sources_for``: an instance
+    override is honoured; a host without the mixin (bare stub) runs the mixin's guarded
+    implementation — it fences when the host owns a lease and is a no-op otherwise."""
+    from types import SimpleNamespace
+
+    import hermes_cli.native_turn_sources as nts
+    from hermes_cli.cli_native_turn_mixin import CLINativeTurnMixin, fence_native_turn_sources_for
+
+    seen = []
+    override = SimpleNamespace(_fence_native_turn_sources=lambda reason: seen.append(("override", reason)))
+    fence_native_turn_sources_for(override, "new_session")
+    assert seen == [("override", "new_session")]
+
+    calls = []
+    monkeypatch.setattr(nts, "fence_native_turn_sources", lambda view, reason: calls.append(reason))
+    monkeypatch.setattr(CLINativeTurnMixin, "_native_session_view", lambda self: "view")
+
+    fence_native_turn_sources_for(SimpleNamespace(agent=object()), "new_session")  # no lease
+    assert calls == []
+    fence_native_turn_sources_for(SimpleNamespace(agent=object(), _active_session_lease=object()), "session_switch")
+    assert calls == ["session_switch"]

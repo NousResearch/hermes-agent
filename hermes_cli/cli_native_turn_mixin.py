@@ -6,6 +6,31 @@ from contextlib import suppress
 from typing import Any
 
 
+def fence_native_turn_sources_for(host: Any, reason: str) -> None:
+    """Fence native turn sources on *host* before a CLI session boundary.
+
+    Dispatches through the host's own ``_fence_native_turn_sources`` (MRO or an
+    instance override) when it has one. A host without the mixin (a bare stub
+    driving ``HermesCLI.new_session`` / session-switch paths) gets the same
+    guard as ``CLINativeTurnMixin._fence_native_turn_sources``: it fences only
+    when the host owns an active session lease, resolving the session view
+    through the host (or the mixin's implementation) — never silently skipped
+    for an owned session, a true no-op for a host that owns none.
+    """
+    method = getattr(host, "_fence_native_turn_sources", None)
+    if callable(method):
+        method(reason)
+        return
+    # Mirrors CLINativeTurnMixin._fence_native_turn_sources' ownership guard.
+    if getattr(host, "_active_session_lease", None) is None or not getattr(host, "agent", None):
+        return
+    from hermes_cli.native_turn_sources import fence_native_turn_sources
+
+    view_fn = getattr(host, "_native_session_view", None)
+    view = view_fn() if callable(view_fn) else CLINativeTurnMixin._native_session_view(host)
+    fence_native_turn_sources(view, reason)
+
+
 class CLINativeTurnMixin:
     def _native_session_view(self: Any):
         """Return immutable exact identity and ownership facts for this CLI session."""

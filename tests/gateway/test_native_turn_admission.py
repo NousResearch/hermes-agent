@@ -206,3 +206,40 @@ async def test_gateway_watcher_polls_registered_profile_and_reserves_host_slot(t
         registration.dispose()
 
     assert committed == [view]
+
+@pytest.mark.asyncio
+async def test_raising_admission_abort_still_releases_turn_marker_and_session(tmp_path, monkeypatch):
+    """The native-admission cleanup in the turn's ``finally`` is best-effort: if closing the
+    lease raises, the durable turn-marker release, the handoff reset and the session-guard
+    cleanup that follow must still run, and the failure must not escape the task."""
+    adapter = Adapter()
+    cleared = []
+
+    class _Runner:
+        async def _clear_durable_active_turn(self, event):
+            cleared.append(event)
+
+        def _profile_name_for_source(self, source, adapter_profile=None):
+            return adapter_profile
+
+    adapter.gateway_runner = _Runner()
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm")
+    key = adapter._event_session_key(MessageEvent(text="", source=source))
+
+    async def handler(_event):
+        raise RuntimeError("preflight")
+
+    def _raising_abort(self, outcome, reason):
+        raise RuntimeError("abort boom")
+
+    monkeypatch.setattr(NativeTurnAdmission, "abort_if_open", _raising_abort)
+    adapter.set_message_handler(handler)
+    event = native_event(tmp_path, source)
+    event._gateway_active_turn_token = "turn-token"
+
+    assert await adapter.admit_native_turn(event, key) is True
+    await asyncio.wait_for(adapter._session_tasks[key], timeout=10)
+
+    assert cleared == [event]
+    assert event._turn_marker_handoff is False
+    assert key not in adapter._active_sessions

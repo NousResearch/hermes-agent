@@ -150,16 +150,19 @@ class TestGuardFailureIsNotFatal:
         assert result["deferred"] is True
         assert running_session["pending_model_switch"]["raw"] == GUARDED_MODEL
 
-LARGE_SESSION = 225_334
-SMALL_SESSION = 40_000
+@pytest.fixture
+def threshold():
+    from hermes_cli.model_selection_guards import _context_cache_threshold
+
+    return _context_cache_threshold()
 
 def _live_agent(session, tokens, model="deepseek/deepseek-v4.1-flash"):
     session["agent"] = types.SimpleNamespace(
         model=model, context_compressor=types.SimpleNamespace(last_prompt_tokens=tokens))
 
 class TestLargeContextPickAsksBeforeStashing:
-    def test_large_session_is_asked_at_pick_time(self, running_session):
-        _live_agent(running_session, LARGE_SESSION)
+    def test_session_at_the_threshold_is_asked_at_pick_time(self, running_session, threshold):
+        _live_agent(running_session, threshold)
 
         result = _config_set_model(UNGUARDED_MODEL)["result"]
 
@@ -171,28 +174,37 @@ class TestLargeContextPickAsksBeforeStashing:
         assert result["deferred"] is False
         assert "pending_model_switch" not in running_session
 
-    def test_confirming_queues_the_pick(self, running_session):
-        _live_agent(running_session, LARGE_SESSION)
+    def test_confirming_queues_the_pick(self, running_session, threshold):
+        _live_agent(running_session, threshold)
 
         result = _config_set_model(UNGUARDED_MODEL, confirm_expensive_model=True)["result"]
 
         assert result["deferred"] is True
         assert running_session["pending_model_switch"]["confirm_expensive_model"] is True
 
-    def test_small_session_still_defers_without_asking(self, running_session):
-        _live_agent(running_session, SMALL_SESSION)
+    def test_session_under_the_threshold_defers_without_asking(self, running_session, threshold):
+        _live_agent(running_session, threshold - 1)
 
         result = _config_set_model(UNGUARDED_MODEL)["result"]
 
         assert result["deferred"] is True
         assert result["confirm_required"] is False
 
-    def test_reselecting_the_live_model_is_not_a_switch(self, running_session):
-        _live_agent(running_session, LARGE_SESSION, model=UNGUARDED_MODEL)
+    def test_reselecting_the_live_model_is_not_a_switch(self, running_session, threshold):
+        _live_agent(running_session, threshold, model=UNGUARDED_MODEL)
 
         result = _config_set_model(UNGUARDED_MODEL)["result"]
 
         assert result["confirm_required"] is False
+
+    def test_no_live_agent_defers_without_asking(self, running_session):
+        running_session["agent"] = None
+
+        result = _config_set_model(UNGUARDED_MODEL)["result"]
+
+        assert result["deferred"] is True
+        assert result["confirm_required"] is False
+        assert running_session["pending_model_switch"]["raw"] == UNGUARDED_MODEL
 
 class TestDroppedQueuedPickIsLogged:
     def test_turn_start_drop_leaves_a_server_log_line(self, monkeypatch, caplog):

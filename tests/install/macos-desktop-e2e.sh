@@ -184,17 +184,17 @@ phase_install() {
   arm_redirect
   step "installing OLD ($OLD_REF) via the published Hermes-Setup.dmg"
 
-  # Pair both historical inputs. Today's downloaded install.sh can call helpers
-  # absent from OLD (e.g. ensure-rolldown-binding.mjs). Use the published
-  # bootstrap's script-source override, not a patched script or prebuilt app.
+  # Feed the current installer script through the public dev-source seam while
+  # serve.git materializes OLD. The bootstrap must switch to OLD's installer
+  # protocol after its repository stage rather than assuming today's layout.
   local bootstrap_root="$WORK_ROOT/bootstrap-source"
   mkdir -p "$bootstrap_root/scripts"
-  git -C "$SERVE_REPO" show "$OLD_SHA:scripts/install.sh" > "$bootstrap_root/scripts/install.sh"
+  cp "$REPO_ROOT/scripts/install.sh" "$bootstrap_root/scripts/install.sh"
   cp "$bootstrap_root/scripts/install.sh" "$LOG_DIR/bootstrap-install-script.sh"
-  printf 'source_commit=%s\nscript_blob=%s\n' "$OLD_SHA" \
-    "$(git -C "$SERVE_REPO" rev-parse "$OLD_SHA:scripts/install.sh")" \
+  printf 'source_commit=%s\nscript_blob=%s\n' "HEAD" \
+    "$(git -C "$REPO_ROOT" rev-parse "HEAD:scripts/install.sh")" \
     > "$LOG_DIR/bootstrap-install-script.txt"
-  ok "bootstrap script is unmodified scripts/install.sh from $OLD_REF ($OLD_SHA)"
+  ok "bootstrap script is current scripts/install.sh; checkout target is OLD ($OLD_REF)"
 
   local dmg="$WORK_ROOT/Hermes-Setup.dmg"
   [ -f "$dmg" ] || curl -fsSL -o "$dmg" "$DMG_URL"

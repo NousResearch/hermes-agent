@@ -118,6 +118,8 @@ def test_bounded_recent_reset_fork_does_not_steal_compression_tip(db):
         "reset", source="cli", parent_session_id="root", model_config={"_reset_from": "root"},
     )
     db.append_message("reset", role="user", content="fresh conversation")
+    # list_recent_sessions_bounded maps a root to its freshest live tip (ranked_tips: ORDER BY activity DESC
+    # per root, rank 1 wins), so the reset fork gets the newest activity: without the fence it would win.
     _set_activity(db, "root", now - 1000)
     _set_activity(db, "canonical", now - 100)
     _set_activity(db, "reset", now)

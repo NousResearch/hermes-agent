@@ -7,7 +7,6 @@ re-sent lower/split/background, 251 of them test suites).
 import json
 from unittest.mock import patch, MagicMock
 
-
 # ---------------------------------------------------------------------------
 # Shared test config dict — mirrors _get_env_config() return shape.
 # ---------------------------------------------------------------------------
@@ -26,7 +25,6 @@ def _make_env_config(**overrides):
     }
     config.update(overrides)
     return config
-
 
 class TestForegroundTimeoutCap:
     """FOREGROUND_MAX_TIMEOUT rejects foreground commands that exceed it."""
@@ -54,7 +52,6 @@ class TestForegroundTimeoutCap:
             time.sleep(0.05)
         assert marker.read_text().count("x") == 1  # ran exactly once, in the background
 
-
     def test_zero_timeout_rejected(self):
         """timeout=0 must be rejected, not silently coerced to the default."""
         from tools.terminal_tool import terminal_tool
@@ -77,7 +74,6 @@ class TestForegroundTimeoutCap:
         assert result.get("error")
         assert "positive" in result["error"]
 
-
     def test_foreground_allows_help_variant_for_server_command(self):
         """Informational variants like '--help' should not be blocked."""
         from tools.terminal_tool import terminal_tool
@@ -96,7 +92,6 @@ class TestForegroundTimeoutCap:
         assert result["error"] is None
         call_kwargs = mock_env.execute.call_args
         assert call_kwargs[0][0] == "pnpm dev --help"
-
 
     def test_config_default_above_cap_not_rejected(self):
         """When config default timeout > cap but model passes no timeout, execute normally.
@@ -124,7 +119,6 @@ class TestForegroundTimeoutCap:
         assert call_kwargs[1]["timeout"] == 900
         assert "error" not in result or result["error"] is None
 
-
     def test_exactly_at_max_not_rejected(self):
         """Timeout exactly at FOREGROUND_MAX_TIMEOUT should execute normally."""
         from tools.terminal_tool import terminal_tool, FOREGROUND_MAX_TIMEOUT
@@ -147,9 +141,6 @@ class TestForegroundTimeoutCap:
         assert call_kwargs[1]["timeout"] == FOREGROUND_MAX_TIMEOUT
         assert "error" not in result or result["error"] is None
 
-
-
-
 class TestPromotionKeepsTheDetachmentGuard:
     def test_over_cap_timeout_with_shell_backgrounding_is_still_refused(self):
         """Independent-review witness: a promoted `cmd &` started a tracked shell that exited at once
@@ -162,4 +153,3 @@ class TestPromotionKeepsTheDetachmentGuard:
             result2 = json.loads(terminal_tool(command="nohup make test", timeout=9999))
         assert "'&' backgrounding" in result["error"]
         assert "nohup" in result2["error"]
-

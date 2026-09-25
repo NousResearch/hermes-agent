@@ -196,22 +196,46 @@ def _cold_pricing_cache(monkeypatch):
 
 
 def _run_bg_seed(monkeypatch, agent, *, warm):
-    """Drive the seed down its BACKGROUND branch (no dev fixture) and join the thread. *warm* stands
-    in for the real pricing fetch, so a test controls what the catalog holds and when."""
+    """Drive the real background branch and wait causally for its exact worker.
+
+    Hold the worker at its first side effect until the launcher returns, proving
+    that the seed remains fire-and-forget.  Then release and join that captured
+    thread without making runner scheduling part of the behavior contract.
+    """
     import threading
 
+    import agent.memory_provider as memory_provider
     import hermes_cli.nous_account as nous_account
     from agent import credits_tracker
 
+    release_worker = threading.Event()
+    spawned: list[threading.Thread] = []
+    real_spawn = memory_provider.spawn_context_thread
+
+    def _gated_warm():
+        release_worker.wait()
+        warm()
+
+    def _capture_spawn(target, **kwargs):
+        thread = real_spawn(target, **kwargs)
+        spawned.append(thread)
+        return thread
+
     monkeypatch.delenv("HERMES_DEV_CREDITS", raising=False)  # fixtures would take the sync path
-    monkeypatch.setattr(credits_tracker, "_warm_nous_pricing_cache", warm)
+    monkeypatch.setattr(credits_tracker, "_warm_nous_pricing_cache", _gated_warm)
+    monkeypatch.setattr(memory_provider, "spawn_context_thread", _capture_spawn)
     monkeypatch.setattr(nous_account, "get_nous_portal_account_info", lambda *a, **kw: _DepletedAccount())
-    existing = set(threading.enumerate())
     result = credits_tracker.seed_credits_at_session_start(agent)
-    for thread in set(threading.enumerate()) - existing:
-        if thread.name == "credits-seed":
-            thread.join(timeout=10)
-            assert not thread.is_alive(), "seed thread hung"
+    try:
+        assert len(spawned) == 1
+        assert spawned[0].name == "credits-seed"
+        assert spawned[0].daemon is True
+        assert spawned[0].is_alive()
+        assert agent._credits_state is None
+    finally:
+        release_worker.set()
+        for thread in spawned:
+            thread.join()
     return result
 
 

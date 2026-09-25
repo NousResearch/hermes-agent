@@ -1375,8 +1375,11 @@ class GatewayInboundMixin:
             # exception, interrupt); the generation guard makes a displaced turn's finalizer a no-op.
             self._restore_pending_one_turn_model_override(_quick_key, _run_generation)
             # SIGKILL/OOM skips finally, leaving the durable marker for the next unclean startup's
-            # recovery pass.
-            await self._clear_durable_active_turn(event)
+            # recovery pass. A turn the adapter delivers hands its marker to that lifecycle, which
+            # clears it only once the reply is in the delivery ledger (else a kill in between
+            # left neither marker nor ledger row and the persisted reply was never sent).
+            if not getattr(event, "_turn_marker_handoff", False):
+                await self._clear_durable_active_turn(event)
             # Release only this turn's generation. Eviction may immediately admit a replacement
             # through the cold path; an unconditional release here would then clear the replacement
             # sentinel/agent and lease. Reset/stop release their stale slot before installing a

@@ -23,8 +23,8 @@ _NO_SOCKETS_SUFFIX = " — no sockets found; in-flight request may keep running 
 
 def _routermint_headers() -> dict:
     """User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
-    from hermes_cli import __version__ as _HERMES_VERSION
-    return {"User-Agent": f"HermesAgent/{_HERMES_VERSION}"}
+    from hermes_cli.version_info import get_version_info
+    return {"User-Agent": f"HermesAgent/{get_version_info().base_version}"}
 
 
 def _qwen_portal_headers() -> dict:
@@ -112,6 +112,11 @@ class ClientLifecycleMixin:
             owners = getattr(self, "_process_owner_task_ids", ())
             for process in process_registry.list_sessions():
                 if process["owner_task_id"] in owners and process["status"] == "running":
+                    # An explicitly persisted job (terminal persist_on_release=true) survives
+                    # agent close — session end, compression, error recovery (#41225). The
+                    # user can still stop it on purpose via process_manage kill.
+                    if process.get("persist_on_release"):
+                        continue
                     process_registry.kill_process(
                         process["session_id"], source="agent_close", consume_output=True,
                     )
@@ -872,11 +877,20 @@ class ClientLifecycleMixin:
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         # Only native Anthropic rotates OAuth tokens; other anthropic_messages providers (MiniMax, Alibaba, ...)
         # and Azure use static keys — a refresh would pick up the ~/.claude OAuth token and break auth.
+        anthropic_base_url = getattr(self, "_anthropic_base_url", "") or ""
         if (
             self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key")
-            or self.provider != "anthropic"
-            or base_url_host_matches(getattr(self, "_anthropic_base_url", "") or "", "azure.com")
+            or self.provider != "anthropic" or base_url_host_matches(anthropic_base_url, "azure.com")
         ):
+            return False
+        # Off the official hosts (a /anthropic proxy the resolver accepts, or a URL-bearing alias,
+        # #28660) rotate only a credential the endpoint already holds: swapping a custom key for
+        # ANTHROPIC_API_KEY / the OAuth token would leak it (#17829). Hostname match, not substring,
+        # so ``proxy.example/anthropic.com`` stays foreign.
+        official_host = not anthropic_base_url or any(
+            base_url_host_matches(anthropic_base_url, host) for host in ("anthropic.com", "claude.com"))
+        current_key = str(self._anthropic_api_key or "")
+        if not official_host and not (current_key.startswith("sk-ant-") or getattr(self, "_is_anthropic_oauth", False)):
             return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token

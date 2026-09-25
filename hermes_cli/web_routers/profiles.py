@@ -215,7 +215,7 @@ def _profile_targets(log_label: str) -> List[Tuple[str, Path]]:
     fan-out that only needs name/path (#114041)."""
     from hermes_cli import profiles as profiles_mod
     try:
-        targets = list(profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True))
+        targets = list(profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True))
     except Exception:
         _log.exception("%s: profile enumeration failed", log_label)
         targets = []
@@ -890,12 +890,11 @@ async def delete_profile_endpoint(name: str):
 @router.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
-
     def _run():
         # Probe and read in one hop (two round-trips would widen the check/read window).
         if not soul_path.exists():
             return _MISSING
-        return soul_path.read_text(encoding="utf-8")
+        return soul_path.read_text(encoding="utf-8-sig")
 
     content = await _read_off_loop(_run, "SOUL.md", OSError)
     if content is _MISSING:
@@ -982,7 +981,7 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 def _read_desktop_overlay(profile_dir: Path) -> Any:
     """The desktop appearance overlay bundled with an imported profile
     (``desktop.json`` at the profile root); raises when unreadable."""
-    return json.loads((profile_dir / "desktop.json").read_text(encoding="utf-8"))
+    return json.loads((profile_dir / "desktop.json").read_text(encoding="utf-8-sig"))
 
 
 @router.post("/api/profiles/{name}/export")
@@ -1024,7 +1023,8 @@ async def import_profile_endpoint(body: ProfileImport):
 
     # Bundled desktop appearance overlay, so the desktop needn't make another round-trip.
     desktop_overlay = None
-    if (profile_dir / "desktop.json").is_file():
+    overlay_path = profile_dir / "desktop.json"
+    if overlay_path.is_file():
         desktop_overlay = _best_effort(
             "Reading desktop.json from imported profile %s failed", imported,
             fn=lambda: _read_desktop_overlay(profile_dir))

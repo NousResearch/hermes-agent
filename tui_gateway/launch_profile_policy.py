@@ -62,7 +62,7 @@ def _servable_profile_homes() -> set:
     from hermes_constants import named_profile_has_servable_identity
     from hermes_cli.profiles import profiles_to_serve
 
-    homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True, include_standalone=True)
+    homes = {Path(home).resolve() for name, home in profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True)
              if name == "default" or named_profile_has_servable_identity(home)}
     homes.add(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").resolve())
     return homes

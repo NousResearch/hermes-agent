@@ -5,7 +5,11 @@
 // and an ambient `declare module` only works in a script-scoped (import-free) declaration file.
 declare module '@novnc/novnc' {
   export default class RFB {
-    constructor(target: HTMLElement, urlOrChannel: string | WebSocket | RTCDataChannel, options?: Record<string, unknown>)
+    constructor(
+      target: HTMLElement,
+      urlOrChannel: string | WebSocket | RTCDataChannel,
+      options?: Record<string, unknown>
+    )
     viewOnly: boolean
     scaleViewport: boolean
     resizeSession: boolean

@@ -60,6 +60,29 @@ class MessageDeduplicator:
     def clear(self):
         self._seen.clear()
 
+    def absorb(self, other: "MessageDeduplicator") -> None:
+        """Adopt *other*'s still-live IDs (at their original seen times) into this cache."""
+        cutoff = time.time() - self._ttl
+        self._seen.update({k: v for k, v in other._seen.items() if v > cutoff and k not in self._seen})
+
+
+def inbound_dedup_caches(adapter: Any) -> dict[str, MessageDeduplicator]:
+    """The adapter's ``MessageDeduplicator`` attributes, by name (held by reference, so IDs the old
+    adapter admits after this call still reach its replacement)."""
+    return {name: v for name, v in vars(adapter).items() if isinstance(v, MessageDeduplicator)}
+
+
+def carry_inbound_dedup(caches: Optional[dict], adapter: Any) -> None:
+    """Seed a rebuilt adapter's dedup caches from the instance it replaces.
+
+    The runner's reconnect path builds a NEW adapter; without this a platform replaying a recent
+    inbound ID after the reconnect (websocket resume, webhook retry, unacked poll batch) is
+    admitted and answered a second time."""
+    for name, previous in (caches or {}).items():
+        current = getattr(adapter, name, None)
+        if isinstance(current, MessageDeduplicator) and current is not previous:
+            current.absorb(previous)
+
 
 # Worker-thread handoff used by the off-loop persist paths.  A module attribute
 # so tests can replace THIS seam instead of patching ``asyncio.to_thread``
@@ -161,7 +184,7 @@ class ThreadParticipationTracker:
 
     def _load(self) -> list[str]:
         try:
-            data = json.loads(self._state_path().read_text(encoding="utf-8"))
+            data = json.loads(self._state_path().read_text(encoding="utf-8-sig"))
         except Exception:
             return []
         return [str(thread_id) for thread_id in data] if isinstance(data, list) else []

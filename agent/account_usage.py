@@ -10,7 +10,9 @@ import httpx
 
 from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth_codex import _codex_pool_route_base_url
 from hermes_cli.runtime_provider import resolve_runtime_provider
+from hermes_time import safe_strftime
 
 if TYPE_CHECKING:
     from typing import TypeGuard
@@ -78,7 +80,7 @@ def _parse_dt(value: Any) -> Optional[datetime]:
 def _format_reset(dt: Optional[datetime]) -> str:
     if not dt:
         return "unknown"
-    stamp = dt.astimezone().strftime("%Y-%m-%d %H:%M %Z")
+    stamp = safe_strftime(dt.astimezone(), "%Y-%m-%d %H:%M %Z")
     total_seconds = int((dt - _utc_now()).total_seconds())
     if total_seconds <= 0:
         return f"now ({stamp})"
@@ -332,7 +334,7 @@ def _resolve_codex_usage_credentials(
             entry = load_pool("openai-codex").try_refresh_matching(api_key_hint=explicit_key)
             if entry is None:
                 raise RuntimeError("Could not refresh the Codex credential this session runs on")
-            return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+            return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
     # Only AuthError is caught so tier 3 can run: a broad except would mask a transient refresh/network failure
     # and hand back a DIFFERENT pool account's usage; such errors must propagate to the fail-open outer guard.
     # account_id is best-effort: a partial singleton store must not sink a usable credential.
@@ -361,7 +363,8 @@ def _resolve_codex_usage_credentials(
     entry = load_pool("openai-codex").select()
     if entry is None:
         raise RuntimeError("No available openai-codex credential in credential pool")
-    return entry.runtime_api_key, str(entry.runtime_base_url or base_url or "").strip(), None
+    # Pool rows keep the canonical URL; a gateway key must go to its route host, not chatgpt.com (#121486).
+    return entry.runtime_api_key, _codex_pool_route_base_url(entry.runtime_base_url or base_url), None
 
 
 def _codex_banked_resets(payload: dict) -> int:

@@ -387,7 +387,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns", "heartbeat"}
+    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify", "notify_on_complete", "watch_patterns", "heartbeat", "persist_on_release"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the
@@ -425,10 +425,36 @@ class TestStubSchemaDrift(unittest.TestCase):
             )
 
 
-    def test_generated_module_compiles(self):
-        """The generated hermes_tools.py for every allowed tool is valid Python."""
-        src = generate_hermes_tools_module(list(SANDBOX_ALLOWED_TOOLS))
-        compile(src, "hermes_tools.py", "exec")
+    def test_generated_module_accepts_all_params(self):
+        """Executing the generated hermes_tools module: every stub accepts all of
+        its parameters as keyword arguments and forwards each one, by name and
+        value, to the RPC call (a dropped or renamed kwarg is a TypeError or a
+        silently ignored argument in the sandbox)."""
+        import inspect
+
+        for transport in ("uds", "file"):
+            src = generate_hermes_tools_module(list(SANDBOX_ALLOWED_TOOLS), transport=transport)
+            namespace = {"__name__": "hermes_tools"}
+            exec(compile(src, "hermes_tools.py", "exec"), namespace)
+            calls = []
+            namespace["_call"] = lambda name, args: calls.append((name, args)) or "ok"
+
+            generated = {name for name in SANDBOX_ALLOWED_TOOLS if callable(namespace.get(name))}
+            self.assertEqual(generated, set(SANDBOX_ALLOWED_TOOLS), transport)
+            for name in sorted(generated):
+                params = inspect.signature(namespace[name]).parameters
+                kwargs = {p: f"<{name}.{p}>" for p in params}
+                calls.clear()
+                self.assertEqual(namespace[name](**kwargs), "ok")
+                self.assertEqual(calls, [(name, kwargs)], f"{transport}:{name}")
+
+            # The pagination/output controls of search_files and patch's mode
+            # must be real keyword parameters, not just mentioned in the docs.
+            self.assertTrue(
+                {"context", "offset", "output_mode", "order"}
+                <= set(inspect.signature(namespace["search_files"]).parameters)
+            )
+            self.assertIn("mode", inspect.signature(namespace["patch"]).parameters)
 
 
 # ---------------------------------------------------------------------------

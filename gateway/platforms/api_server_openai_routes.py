@@ -206,6 +206,8 @@ class _ResponsesStream:
         self.model, self.created_at, self.conversation_history = model, created_at, conversation_history
         self.user_message, self.instructions = user_message, instructions
         self.conversation, self.store, self.session_id = conversation, store, session_id
+        # Resolved in the request's profile scope: a snapshot written after it (disconnect) must not follow another.
+        self.response_store = adapter._current_response_store()
         self.final_text_parts: List[str] = []
         self.pending_tool_calls: List[Dict[str, Any]] = []  # open function_call items, in order
         self.emitted_items: List[Dict[str, Any]] = []  # output items so far (terminal payload)
@@ -250,13 +252,13 @@ class _ResponsesStream:
     def persist_snapshot(self, response_env: Dict[str, Any], *, history=None, session_id=None):
         if not self.store:
             return
-        self.adapter._response_store.put(self.response_id, {
+        self.response_store.put(self.response_id, {
             "response": response_env,
             "conversation_history": self._history_with_user() if history is None else history,
             "instructions": self.instructions,
             "session_id": session_id or self.session_id})
         if self.conversation:
-            self.adapter._response_store.set_conversation(self.conversation, self.response_id)
+            self.response_store.set_conversation(self.conversation, self.response_id)
 
     def persist_incomplete_if_needed(self) -> None:
         """Persist an ``incomplete`` snapshot when no terminal one was written (disconnect /
@@ -536,10 +538,41 @@ class OpenAICompatRoutesMixin:
             requested_provider=overrides.get("requested_provider"), route=route)
         return route, overrides, (_error_response(err, 400) if err else None)
 
-    def _spawn_stream_agent(self, stream_q, **run_kwargs) -> tuple:
+    def _register_stream_approval(self, request, completion_id, stream_q, session_id) -> tuple:
+        """Expose a streaming completion as a run for ``POST /v1/runs/{completion_id}/approval``
+        (#51871) -> ``(notify, on_done)``. Owner + status are stamped like the session stream, so
+        ``_load_owned_run`` finds it; keyed by the completion id (never the shared session key) so
+        concurrent turns can't cross-resolve. ``on_done`` retires it when the agent task ends."""
+        from gateway.platforms.api_server import _approval_request_event
+        self._run_owners[completion_id] = self._run_idempotency_scope(request)
+        self._set_run_status(completion_id, "running", session_id=session_id or "")
+        self._run_approval_sessions[completion_id] = completion_id
+
+        def _approval_notify(approval_data):
+            event = _approval_request_event(completion_id, approval_data, session_id=session_id or "")
+            self._set_run_status(completion_id, "waiting_for_approval", last_event="approval.request",
+                                 approval=event)
+            stream_q.put_threadsafe(("__approval__", event))
+
+        def _on_done(fut):
+            from gateway.platforms.api_server_runs import terminal_run_status
+            self._run_approval_sessions.pop(completion_id, None)
+            if fut.cancelled():
+                status = "cancelled"
+            elif fut.exception() is not None:
+                status = "failed"
+            else:
+                result = (fut.result() or (None,))[0]
+                status = terminal_run_status(result)[0] if isinstance(result, dict) else "completed"
+            self._set_run_status(completion_id, status)
+            self._release_run_owner_if_forgotten(completion_id)
+        return _approval_notify, _on_done
+
+    def _spawn_stream_agent(self, stream_q, *, on_done=None, **run_kwargs) -> tuple:
         """Start ``_run_agent`` for an SSE writer -> ``(agent_task, agent_ref)``. ``agent_ref[0]``
         lets the writer interrupt on disconnect; the EOS sentinel is enqueued from the task's done
-        callback so drain loops never race a polled ``agent_task.done()``."""
+        callback so drain loops never race a polled ``agent_task.done()``. ``on_done(task)`` runs
+        in that same callback, before EOS."""
         def _on_delta(delta):
             # None from the agent is a CLI box-close signal, not EOS — forwarding it would end
             # the stream early. Called from the run_conversation worker thread: put_threadsafe.
@@ -562,7 +595,15 @@ class OpenAICompatRoutesMixin:
         agent_task = asyncio.ensure_future(self._run_agent(
             stream_delta_callback=_on_delta, reasoning_callback=_on_reasoning, status_callback=_on_status,
             agent_ref=agent_ref, **run_kwargs))
-        agent_task.add_done_callback(lambda _fut: stream_q.put_nowait(None))
+        def _done(fut):
+            try:
+                if on_done is not None:
+                    on_done(fut)
+            except Exception:
+                logger.debug("[api_server] stream on_done hook failed", exc_info=True)
+            finally:
+                stream_q.put_nowait(None)
+        agent_task.add_done_callback(_done)
         return agent_task, agent_ref
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
@@ -700,9 +741,14 @@ class OpenAICompatRoutesMixin:
 
             # tool_progress_callback deliberately NOT wired: it would duplicate the structured
             # start/complete callbacks (which carry the tool_call id).
+            # The completion id doubles as the run id; on_done drops the approval mapping once the
+            # turn ends (POST /v1/runs/{id}/approval then answers 409) and sets the terminal status.
+            approval_notify, end_stream_run = self._register_stream_approval(
+                request, completion_id, _stream_q, session_id)
             agent_task, agent_ref = self._spawn_stream_agent(
-                _stream_q, tool_start_callback=_on_tool_start,
-                tool_complete_callback=_on_tool_complete, **run_kwargs)
+                _stream_q, on_done=end_stream_run, tool_start_callback=_on_tool_start,
+                tool_complete_callback=_on_tool_complete, approval_notify_callback=approval_notify,
+                approval_session_key=completion_id, **run_kwargs)
             # #13437 identity contract: an explicit-header client keeps addressing the id it
             # sent; the response echoes that stable id while reads/writes adopt the live tip,
             # so a rotation mid-turn (after these headers are prepared) never changes what the
@@ -801,11 +847,7 @@ class OpenAICompatRoutesMixin:
     ) -> "web.StreamResponse":
         """Open a prepared SSE StreamResponse with CORS + session headers (the CORS middleware
         can't inject headers after ``prepare()`` flushes them, so they are resolved here)."""
-        sse_headers = {
-            "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-        origin = request.headers.get("Origin", "")
-        if origin:
-            sse_headers.update(self._cors_headers_for_origin(origin) or {})
+        sse_headers = self._sse_headers(request)
         if session_id:
             sse_headers["X-Hermes-Session-Id"] = session_id
         if gateway_session_key:
@@ -821,13 +863,14 @@ class OpenAICompatRoutesMixin:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
-            _abandon_agent_task, _chat_usage_payload, _sse_frame)
+            _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
 
         def _chunk(delta: Dict[str, Any], finish_reason=None, **extra) -> Dict[str, Any]:
             return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
                     "model": model,
                     "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}], **extra}
+        content_sent = False
         try:
             await response.write(_sse_frame(_chunk({"role": "assistant"})))
             async for delta in _iter_stream_items(stream_q, agent_task, response):
@@ -835,6 +878,8 @@ class OpenAICompatRoutesMixin:
                     break
                 if isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__tool_progress__":
                     # Custom event: tool lifecycle for frontends without markers in history.
+                    if not self._tool_progress_events:
+                        continue  # opted out for strict OpenAI clients (#12020)
                     await response.write(_sse_frame(delta[1], event="hermes.tool.progress"))
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__reasoning__":
                     # DeepSeek-style ``delta.reasoning_content`` (#99552), the field Open WebUI,
@@ -842,7 +887,11 @@ class OpenAICompatRoutesMixin:
                     await response.write(_sse_frame(_chunk({"reasoning_content": delta[1]})))
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__status__":
                     await response.write(_sse_frame(delta[1], event="hermes.status"))
+                elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
+                    await response.write(_sse_frame(delta[1], event="approval.request"))
                 else:
+                    if delta:
+                        content_sent = True
                     await response.write(_sse_frame(_chunk({"content": delta})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
             # partial): surface a non-"stop" finish_reason like the non-streaming path.
@@ -864,6 +913,14 @@ class OpenAICompatRoutesMixin:
                 (isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True)
                 or getattr(agent_error, "_notification_presentation_suppressed", False) is True
             )
+            # Recovery paths (guardrail halt, partial_stream_recovery, fallback prior-turn
+            # content) can return a final_response without firing any content delta; emit it
+            # once so the client does not see an empty stream (#31449). Mirrors
+            # _ResponsesStream.collect_result for /v1/responses.
+            if not content_sent and not presentation_muted and isinstance(result, dict):
+                fallback_text = _resolve_media_to_data_urls(result.get("final_response") or "")
+                if fallback_text:
+                    await response.write(_sse_frame(_chunk({"content": fallback_text})))
             if finish_reason != "stop":
                 if err_msg and not presentation_muted:
                     finish_chunk["error"] = {
@@ -973,7 +1030,7 @@ class OpenAICompatRoutesMixin:
             return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
         if conversation:
             # A conversation name resolves to its latest response_id (unknown = new conversation).
-            previous_response_id = self._response_store.get_conversation(conversation)
+            previous_response_id = self._current_response_store().get_conversation(conversation)
 
         input_messages: List[Dict[str, Any]] = []
         if isinstance(raw_input, str):
@@ -1013,7 +1070,7 @@ class OpenAICompatRoutesMixin:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
         stored_session_id = None
         if not conversation_history and previous_response_id:
-            stored = self._response_store.get(previous_response_id)
+            stored = self._current_response_store().get(previous_response_id)
             if stored is None:
                 return _error_response(f"Previous response not found: {previous_response_id}", 404)
             conversation_history = list(stored.get("conversation_history", []))
@@ -1113,11 +1170,12 @@ class OpenAICompatRoutesMixin:
             "output": self._extract_output_items(result, start_index=output_start_index),
             "usage": _responses_usage_payload(usage)}
         if store:
-            self._response_store.put(response_id, {
+            response_store = self._current_response_store()
+            response_store.put(response_id, {
                 "response": response_data, "conversation_history": full_history,
                 "instructions": instructions, "session_id": _effective_session_id})
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                response_store.set_conversation(conversation, response_id)
         response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
@@ -1130,7 +1188,7 @@ class OpenAICompatRoutesMixin:
         if auth_err:
             return auth_err
         response_id = request.match_info["response_id"]
-        stored = self._response_store.get(response_id)
+        stored = self._current_response_store().get(response_id)
         if stored is None:
             return _error_response(f"Response not found: {response_id}", 404)
         return web.json_response(stored["response"])
@@ -1142,7 +1200,7 @@ class OpenAICompatRoutesMixin:
         if auth_err:
             return auth_err
         response_id = request.match_info["response_id"]
-        if not self._response_store.delete(response_id):
+        if not self._current_response_store().delete(response_id):
             return _error_response(f"Response not found: {response_id}", 404)
         return web.json_response({"id": response_id, "object": "response", "deleted": True})
 

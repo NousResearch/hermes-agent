@@ -85,7 +85,7 @@ def test_availability_unsupported_os_when_no_block_for_host():
     assert availability(decl, os_family="darwin").state == "unsupported_os"
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_availability_missing_then_present_then_version_gate(tmp_path):
     location = tmp_path / "Applications" / "Thing.app"
     decl = parse_declaration(

@@ -111,7 +111,8 @@ def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
     if (agent := session.get("agent")) is not None:
         return _session_info(agent, session)
     return {"cwd": cwd, "branch": git_probe.branch(cwd) if branch is None else branch,
-            "project": _project_info_for_cwd(cwd), "lazy": True}
+            "project": _project_info_for_cwd(cwd), "lazy": True,
+            "desktop_contract": DESKTOP_BACKEND_CONTRACT}
 
 
 def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None) -> dict:
@@ -131,6 +132,16 @@ _LISTING_DENY_SOURCES = frozenset(INTERNAL_LISTING_SOURCES)
 
 def _denied_source(row: dict) -> bool:
     return (row.get("source") or "").strip().lower() in _LISTING_DENY_SOURCES
+
+
+def _auto_resume_denied_source(row: dict) -> bool:
+    """``_denied_source`` plus ``source='unknown'``: auto-resume must never land on a
+    token-accounting guard placeholder (#54320). The guard mints those rows when legacy
+    message rows lack a ``sessions`` row, and such a placeholder can outrank the session
+    the user actually opened. Human-facing listings keep showing them (they may be a
+    real session awaiting repair); only the pick-a-session-for-me paths skip them."""
+    source = (row.get("source") or "").strip().lower()
+    return source in _LISTING_DENY_SOURCES or source == "unknown"
 
 
 def _listing_rows(db, limit: int, **kwargs) -> list:
@@ -223,7 +234,7 @@ def _billing_pending_change(result: dict) -> dict:
 
 # ── session.create / list / most_recent / facts ──────────────────────
 def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list, *, source, cwd, profile_name,
-                    copy_fields=(), compensate: bool = False, title_source: str = "user",
+                    model: str, copy_fields=(), compensate: bool = False, title_source: str = "user",
                     user_id: str | None = None) -> None:
     """Branch child row + parent transcript (bounded-chunk transactions) + title. ``_branched_from`` keeps the
     row visible in list_sessions_rich() (the live parent never matches the legacy end_reason='branched'
@@ -231,8 +242,16 @@ def _persist_branch(db, new_key: str, parent_key: str, title: str, history: list
     deletes a committed row whose transcript/title failed (a durable-but-empty row would defeat the INSERT OR
     IGNORE first-prompt seed) — except on disk-full, where the delete cannot land. ``user_id`` is the creating
     login: the child is a Desktop session too, and the row only records identity at insert."""
-    db.create_session(new_key, source=source, model=_resolve_model(), model_config={"_branched_from": parent_key},
-                      parent_session_id=parent_key, cwd=cwd, profile_name=profile_name, user_id=user_id)
+    # The child sends the parent's exact system prompt: a row without one makes the branch's first
+    # turn rebuild (re-probing the workspace) and forfeits the warm cache the copied transcript buys.
+    parent_prompt = None
+    try:
+        parent_prompt = (db.get_session(parent_key) or {}).get("system_prompt")
+    except Exception:
+        logger.debug("branch: parent system prompt read failed for %s", parent_key, exc_info=True)
+    db.create_session(new_key, source=source, model=model, model_config={"_branched_from": parent_key},
+                      parent_session_id=parent_key, cwd=cwd, profile_name=profile_name, user_id=user_id,
+                      system_prompt=parent_prompt or None)
     try:
         # Compensation guard (#93959 review): if the transcript copy or title write fails AFTER the row
         # committed, the durable-but-empty row would defeat the lazy first-prompt fallback
@@ -269,7 +288,7 @@ def _seed_branch_row(record: dict, key: str, parent_session_id: str, history: li
             _persist_branch(db, key, parent_session_id, _branch_title(db, parent_session_id), history,
                             source=source, cwd=record["cwd"],
                             profile_name=profile_name_for_home(profile_home) or _current_profile_name(),
-                            compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
+                            model=_session_default_model(record), compensate=True, title_source="derived", user_id=_session_auth_user_id(record))
             record["pending_title"] = None
             # The first submit's _persist_branch_seed is the fallback for a failed seed, not a second copy.
             record["_branch_seed_persisted"] = True
@@ -323,8 +342,9 @@ def _create_overrides(params: dict) -> tuple:
     return model_override, reasoning_override, service_tier_override
 
 
-@method("session.create")
-def _(rid, params: dict) -> dict:
+def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> dict:
+    """``session.create``; ``copy_parent_history`` (``session.branch_stored``) reads the parent's
+    transcript server-side and omits it from the reply."""
     # ``profile`` (app-global remote mode): stored so the build and every turn re-bind HERMES_HOME.
     profile_home = _profile_home(profile := (params.get("profile") or "").strip() or None)
     # Reject an incoherent model×provider pair BEFORE any state exists: minting it only defers the
@@ -336,6 +356,22 @@ def _(rid, params: dict) -> dict:
     history = _coerce_seed_history(params.get("messages"))
     # Branch: links back so list_sessions_rich keeps it visible and the sidebar nests it.
     parent_session_id = _str_param(params, "parent_session_id") or None
+    if copy_parent_history:
+        if not parent_session_id:
+            return _err(rid, 4008, "parent_session_id is required when copying parent history")
+        # Whole-session desktop branches must not serialize the parent's transcript
+        # through the renderer. Read the durable display projection here, where the
+        # owning state.db already lives, and keep the full copy server-side.
+        with _profile_db(params) as db:
+            if db is None:
+                return _db_unavailable_error(rid, code=5008)
+            try:
+                _, display_history = db.get_resume_conversations(parent_session_id)
+            except Exception as exc:
+                return _err(rid, 4008, f"nothing to branch — {exc}")
+        history = _visible_branch_history(display_history)
+        if not history:
+            return _err(rid, 4008, "nothing to branch — send a message first")
     # Only an explicitly chosen existing workspace persists as cwd; the launch-dir fallback is "No workspace".
     explicit_cwd = False
     raw_cwd = _str_param(params, "cwd")  # unguarded, as on BASE: only the path check is best-effort
@@ -366,6 +402,12 @@ def _(rid, params: dict) -> dict:
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
         _register_session_cwd(_sessions[sid])
+    if session_model_override:
+        # A composer pick rides in as this override and beats model.default for the whole session;
+        # name both so agent.log alone explains which model a new chat runs, and why (#107410).
+        logger.info("session.create %s: model=%s provider=%s source=client override (profile default: %s)",
+                    key, session_model_override["model"], session_model_override.get("provider") or "-",
+                    _session_default_model(_sessions[sid]))
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"
@@ -391,15 +433,28 @@ def _(rid, params: dict) -> dict:
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
     cwd = _sessions[sid]["cwd"]
     override = session_model_override or {}
-    messages = _history_to_messages(history)  # hidden seed rows are not on the wire; count what is (as resume does)
+    messages = _history_to_messages(history, profile_home=profile_home)  # hidden seed rows are not on the wire; count what is (as resume does)
     return _ok(rid, {
-        "session_id": sid, "stored_session_id": key, "message_count": len(messages), "messages": messages,
+        "session_id": sid, "stored_session_id": key, "message_count": len(messages),
+        **({"messages_omitted": True} if copy_parent_history else {"messages": messages}),
         # Reflect the override now so the client doesn't clobber its sticky pick.
-        "info": {"model": override.get("model") if override else _resolve_model(),
+        "info": {"model": override.get("model") if override else _session_default_model(_sessions[sid]),
                  **({"provider": override["provider"]} if override.get("provider") else {}),
                  "tools": {}, "skills": {}, "cwd": cwd, "branch": git_probe.branch(cwd),
                  "project": _project_info_for_cwd(cwd), "lazy": True, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": _response_profile_name(profile)}})
+
+
+@method("session.create")
+def _(rid, params: dict) -> dict:
+    return _create_session(rid, params)
+
+
+@method("session.branch_stored")
+def _(rid, params: dict) -> dict:
+    """Whole-session branch of a stored parent without routing its transcript through the client
+    (a distinct method so an older gateway answers "unknown method" instead of an empty branch)."""
+    return _create_session(rid, params, copy_parent_history=True)
 
 
 def _unarchive_recoverable(db, session_id: str) -> bool:
@@ -464,11 +519,15 @@ def _(rid, params: dict, db) -> dict:
 
 @method("session.most_recent")
 def _(rid, params: dict) -> dict:
-    """Most recent human-facing session (session.list deny-list); errors fold into ``session_id: null``."""
+    """Most recent human-facing session, skipping auto-resume-denied rows (deny-list
+    plus ``source='unknown'`` guard placeholders, #54320); errors fold into ``session_id: null``."""
     with _profile_db(params) as db:
         try:
-            # Generous over-fetch: many ``tool`` rows must not yield a false "none".
-            for row in _listing_rows(db, 200)[:1] if db is not None else ():
+            # Generous over-fetch: many denied rows must not yield a false "none".
+            rows = ([row for row in _listing_rows(db, 200)
+                     if not _auto_resume_denied_source(row)]
+                    if db is not None else [])
+            for row in rows[:1]:
                 return _ok(rid, {"session_id": row.get("id"), "title": row.get("title") or "",
                                  "started_at": row.get("started_at") or 0, "source": row.get("source") or ""})
         except Exception:
@@ -564,7 +623,7 @@ class _Resume:
         return self.db.get_messages_as_conversation(self.target, repair_alternation=repair, include_row_ids=True)
 
     def messages(self, display: list) -> list:
-        return [] if self.omit_messages else _history_to_messages(display)
+        return [] if self.omit_messages else _history_to_messages(display, profile_home=self.profile_home)
 
     def read_history(self) -> tuple:
         """One lineage SELECT, two projections: model-fed copy alternation-repaired (healed once
@@ -611,6 +670,7 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
         "message_count": len(messages), "messages": messages,
         "info": {"model": model, "provider": provider, "lazy": True,
+                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
 
 
@@ -1786,7 +1846,7 @@ def _(rid, params: dict, session: dict) -> dict:
                     # use. See #87059.
                     history = db.get_messages_as_conversation(
                         session["session_key"], include_ancestors=True, include_row_ids=True)
-    return _ok(rid, {"count": len(history), "messages": _history_to_messages(history)})
+    return _ok(rid, {"count": len(history), "messages": _history_to_messages(history, profile_home=session.get("profile_home"))})
 
 
 @_session_method("session.undo", live=True)
@@ -1861,7 +1921,7 @@ def _compress_via_compute_host(rid, params: dict, session: dict) -> dict:
         "status": "compressed", "turn_isolation": True,
         # `messages` goes top-level for the transcript replacement; don't duplicate it in the ack.
         "host_ack": {key: value for key, value in ack.items() if key != "messages"}, "info": host_info,
-        "messages": _history_to_messages(ack.get("messages")) if isinstance(ack.get("messages"), list) else [],
+        "messages": _history_to_messages(ack.get("messages"), profile_home=session.get("profile_home")) if isinstance(ack.get("messages"), list) else [],
         "usage": host_info.get("usage") if isinstance(host_info.get("usage"), dict) else {}})
 
 
@@ -1906,7 +1966,7 @@ def _compress_live(rid, sid: str, session: dict, focus_topic: str) -> dict:
             "status": "aborted" if summary["aborted"] else "compressed", "removed": removed,
             "before_messages": before_count, "after_messages": len(messages),
             "before_tokens": before_tokens, "after_tokens": after_tokens, "summary": summary,
-            "usage": usage, "info": info, "messages": _history_to_messages(messages)})
+            "usage": usage, "info": info, "messages": _history_to_messages(messages, profile_home=session.get("profile_home"))})
     finally:
         # Always clear the pinned compressing status (success, no-op, or raise).
         _status_update(sid, "ready")
@@ -2036,8 +2096,7 @@ def _branch_source_history(db, session: dict, old_key: str) -> list:
     return history or _visible_branch_history(in_memory_history)
 
 
-@_session_method("session.branch", live=True)
-def _(rid, params: dict, session: dict) -> dict:
+def _branch_live(rid, params: dict, session: dict, *, omit_messages: bool = False) -> dict:
     # Write into the parent's profile-scoped state.db; the launch handle would orphan rows.
     with _session_db(session) as db:
         if db is None:
@@ -2054,7 +2113,7 @@ def _(rid, params: dict, session: dict) -> dict:
             home = session.get("profile_home")
             _persist_branch(db, new_key, old_key, title, history, source=source, cwd=_session_cwd(session),
                             profile_name=profile_name_for_home(home) or _current_profile_name(),
-                            copy_fields=_BRANCH_COPY_FIELDS,
+                            model=_session_default_model(session), copy_fields=_BRANCH_COPY_FIELDS,
                             title_source="user" if params.get("name") else "derived",
                             user_id=_session_auth_user_id(session))
         except Exception as e:
@@ -2063,9 +2122,24 @@ def _(rid, params: dict, session: dict) -> dict:
         agent = _build_branch_agent(session, new_sid, new_key, history, source)
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
-    return _ok(rid, {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
-                     "message_count": len(history), "messages": _history_to_messages(history),
-                     "info": _session_info(agent, _sessions.get(new_sid))})
+    response = {"session_id": new_sid, "stored_session_id": new_key, "title": title, "parent": old_key,
+                "message_count": len(history), "info": _session_info(agent, _sessions.get(new_sid))}
+    if omit_messages:
+        response["messages_omitted"] = True
+    else:
+        response["messages"] = _history_to_messages(history, profile_home=session.get("profile_home"))
+    return _ok(rid, response)
+
+
+@_session_method("session.branch", live=True)
+def _(rid, params: dict, session: dict) -> dict:
+    return _branch_live(rid, params, session)
+
+
+@_session_method("session.branch_whole", live=True)
+def _(rid, params: dict, session: dict) -> dict:
+    """Whole-history ``session.branch`` that doesn't echo the copied transcript back."""
+    return _branch_live(rid, params, session, omit_messages=True)
 
 
 # ── interrupt / steer / redirect ─────────────────────────────────────
@@ -2136,8 +2210,21 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
             _enqueue_prompt(session, text, current_transport() or _stdio_transport)
             session["last_active"] = time.time()
             return _ok(rid, {"status": "queued", "text": text})
+        # Compression in flight: queue instead of steering/redirecting. A correction that
+        # reaches the provider mid-compression aborts the compression (explicit_interrupt)
+        # — the follow-up kills the turn that would answer it (#61042). Queued here, it
+        # drains when compression finishes (the Discord-gateway contract; mirrors the
+        # interrupt→queue demotion in gateway/run_busy.py for the channel busy path).
+        if _session_compression_in_flight(session):
+            _enqueue_prompt(session, text, current_transport() or _stdio_transport)
+            session["last_active"] = time.time()
+            return _ok(rid, {"status": "queued", "text": text})
         if not supported(agent):
             return _err(rid, 4010, unsupported)
+        # An idle agent accepts steer() but only the next turn drains it, spliced after an old tool
+        # row (#64578). 'rejected' makes the client queue it as a normal next prompt.
+        if verb == "steer" and not session.get("running"):
+            return _ok(rid, {"status": "rejected", "text": text})
         return _apply_correction(rid, session, verb, text, accepted_status)
 
 

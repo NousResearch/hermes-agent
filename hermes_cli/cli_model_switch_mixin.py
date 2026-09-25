@@ -377,7 +377,9 @@ class CLIModelSwitchMixin:
 
             fallback_model = DEFAULT_CODEX_MODELS[0]
             try:
-                available = get_codex_model_ids(access_token=self.api_key if self.api_key else None)
+                # self.base_url is the route resolved with self.api_key (#121486).
+                available = get_codex_model_ids(
+                    access_token=self.api_key if self.api_key else None, base_url=self.base_url or None)
                 if available:
                     fallback_model = available[0]
             except Exception:
@@ -723,6 +725,9 @@ class CLIModelSwitchMixin:
                     model_list = cached_provider_model_ids(provider_data["slug"]) or model_list
                 except Exception:
                     pass
+            from hermes_cli.models_validate import offered_model_ids
+            model_list = offered_model_ids(
+                model_list, provider_data.get("slug"), provider_data.get("api_url"))
             state.update(
                 stage="model", provider_data=provider_data, model_list=model_list,
                 selected=0, filter="", _filtered_pairs=None)

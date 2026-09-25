@@ -44,7 +44,12 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
     runtime_token = _current_runtime_session_record.set(session)
     try:
         from agent.review_engine import format_dispatch_note, start_review
-        result = start_review(agent, snapshot, arg or "")
+        # slash.exec is off-turn (RPC pool). start_review → resolve_runtime_provider
+        # reads HERMES_CODEX_BASE_URL via get_secret; under multiplex that raises
+        # UnscopedSecretError unless the same runtime scope a turn binds is here
+        # (#117544; same wrap as _compress_live_with_feedback / #116611).
+        with _session_profile_runtime_scope(session):
+            result = start_review(agent, snapshot, arg or "")
     except ValueError as exc:
         return str(exc)
     except Exception as exc:
@@ -99,7 +104,7 @@ def _format_live_history_output(sid: str, session: dict, arg: str) -> str:
     with session["history_lock"]:
         history = list(session.get("history", []))
     db_history = _live_session_messages(session)
-    messages = _history_to_messages(history if db_history is None else db_history)
+    messages = _history_to_messages(history if db_history is None else db_history, profile_home=session.get("profile_home"))
     if not messages:
         return "No conversation history yet."
     lines = ["Conversation History", "────────────────────────────────────────"]
@@ -128,12 +133,12 @@ def _format_live_prompt_output(sid: str, session: dict, arg: str) -> str:
 def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     from collections import Counter
     try:
-        messages = _history_to_messages(_live_session_messages(session) or [])
+        messages = _history_to_messages(_live_session_messages(session) or [], profile_home=session.get("profile_home"))
     except Exception:
         messages = []  # malformed db rows fall back to the live history below
     if not messages:
         with session["history_lock"]:
-            messages = _history_to_messages(list(session.get("history", [])))
+            messages = _history_to_messages(list(session.get("history", [])), profile_home=session.get("profile_home"))
     usage = _session_usage_snapshot(session)
     mirror = _metadata_mirror(session)
     lines = [f"Conversation: {len(messages)} messages" if messages else "Conversation is empty (no messages yet)."]
@@ -335,7 +340,9 @@ def _mirror_reload_mcp(sid, session, agent, arg) -> None:
 
 def _mirror_stop(sid, session, agent, arg) -> None:
     from tools.process_registry import process_registry
-    process_registry.kill_all()
+    # Deliberate user stop: an explicit source keeps it reaching
+    # persist_on_release jobs (#41225).
+    process_registry.kill_all(source="slash.stop")
 
 
 # name → mirror(sid, session, agent, arg); a falsy return means "no warning".

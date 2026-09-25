@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
+from hermes_cli.home_data_layout import PM_RUNTIME_ROOT_DIRS
 from hermes_constants import (
     LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
     named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
@@ -61,8 +62,16 @@ _CLONE_ALL_STRIP: list[str] = [
 # allow-list instead (``_DEFAULT_EXPORT_INCLUDE_ROOT``): an archive is a portable snapshot,
 # a clone must run. The runtime trio is ``LOCAL_RUNTIME_ROOT_DIRS``, shared with
 # ``hermes_cli.backup._EXCLUDED_ROOT_DIRS`` so the two lists cannot drift.
-_CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] = frozenset({
-    "hermes-agent", ".worktrees", "profiles", "bin", "node_modules",
+_CLONE_ALL_DEFAULT_EXCLUDE_ROOT: frozenset[str] =  frozenset({
+    "hermes-agent",
+    ".worktrees",
+    "profiles",
+    "bin",
+    "node_modules",
+    # Managed runtime trees — install artifacts, never profile state
+    # (install/profile bucket split; see test_install_bucket_separation).
+    ".hermes-runtime",
+    "node",
 }) | LOCAL_RUNTIME_ROOT_DIRS
 
 # Per-profile history excluded from --clone-all for ANY source: SQLite session store
@@ -139,13 +148,50 @@ def _clone_all_copytree_ignore(source_dir: Path):
     return _ignore
 
 
-# Allow-list for ``export_profile("default")``: when HERMES_HOME equals the cwd
-# (Docker/custom deployments) the default home holds arbitrary user files that must NOT
-# be bundled. Only known Hermes profile artifacts at the root survive; sensitive runtime
-# infrastructure (``state.db``, ``logs/``, ``auth.*``, other profiles) is deliberately
-# absent so the export stays a portable, credential-free snapshot. Add new artifacts here
-# when introduced in ``hermes_constants``.
-# See #58394.
+# Directories/files to exclude when exporting the default (~/.hermes) profile.
+# The default profile contains infrastructure (repo checkout, worktrees, DBs,
+# caches, binaries) that named profiles don't have.  We exclude those so the
+# export is a portable, reasonable-size archive of actual profile data.
+# The ONE exclude-list authority for "infrastructure / runtime state that is
+# not profile data". The export path (``_default_export_ignore``) consumes it
+# directly; the distribution path (``profile_distribution.USER_OWNED_EXCLUDE``)
+# layers its distribution-specific additions on top of it. Keep new root
+# artifacts here — not in a downstream copy.
+_DEFAULT_EXPORT_EXCLUDE_ROOT = DEFAULT_EXPORT_EXCLUDE_ROOT = frozenset({
+    # Infrastructure
+    "hermes-agent",         # repo checkout (multi-GB)
+    ".worktrees",           # git worktrees
+    "profiles",             # other profiles — never recursive-export
+    "bin",                  # installed binaries (tirith, etc.)
+    "node_modules",         # npm packages
+    ".hermes-runtime",      # managed runtime tree (install artifact)
+    "node",                 # legacy pre-split managed Node tree
+    # Databases & runtime state
+    "state.db", "state.db-shm", "state.db-wal",
+    "hermes_state.db",
+    "response_store.db", "response_store.db-shm", "response_store.db-wal",
+    "gateway.pid", "gateway_state.json", "processes.json",
+    "auth.json",            # API keys, OAuth tokens, credential pools
+    ".env",                 # API keys (dotenv)
+    "auth.lock", "active_profile", ".update_check", "source-checks",
+    "errors.log",
+    ".hermes_history",
+    # Caches (regenerated on use)
+    "image_cache", "audio_cache", "document_cache",
+    "browser_screenshots", "checkpoints",
+    "sandboxes",
+    "logs",                 # gateway logs
+}) | PM_RUNTIME_ROOT_DIRS
+
+# Allow-list for ``export_profile("default")``: when HERMES_HOME equals the
+# cwd (Docker/custom deployments), the default profile home is the working
+# directory and contains arbitrary user files that should NOT be bundled
+# into the export. The set below identifies the *known Hermes profile
+# artifacts* at the root of HERMES_HOME; everything else is excluded.
+# Sensitive runtime infrastructure (``state.db``, ``logs/``, ``auth.*``,
+# other profiles) is intentionally *not* in this list so the export stays
+# a portable, credential-free snapshot of the user-facing surface
+# (#58394). Add new artifacts here when introduced in ``hermes_constants``.
 _DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
     # Configuration / persona
     "config.yaml", "SOUL.md", "MEMORY.md", "USER.md", "todo.json",
@@ -200,7 +246,7 @@ def _wrapper_path(alias: str) -> Path:
 def _is_our_wrapper(path: Path) -> bool:
     """True when *path* reads as a Hermes-generated wrapper (contains ``hermes -p``)."""
     try:
-        return "hermes -p" in path.read_text(encoding="utf-8")
+        return "hermes -p" in path.read_text(encoding="utf-8-sig")
     except Exception:
         return False
 
@@ -511,7 +557,7 @@ def build_alias_map() -> dict[str, str]:
         if not is_windows and entry.suffix:
             continue
         try:
-            with open(entry, "r", encoding="utf-8", errors="strict") as f:
+            with open(entry, "r", encoding="utf-8-sig", errors="strict") as f:
                 content = f.read(_WRAPPER_READ_LIMIT)
         except (OSError, UnicodeDecodeError):
             continue  # UnicodeDecodeError = a binary on PATH, not a wrapper
@@ -577,8 +623,8 @@ def _load_yaml_dict(path: Path) -> Optional[dict]:
     if not path.is_file():
         return None
     try:
-        import yaml
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        import hermes_yaml as yaml
+        data = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     except Exception:
         return None
     return data if isinstance(data, dict) else None
@@ -724,6 +770,9 @@ _SKILL_COUNT_TTL_SECONDS = 600.0
 _SKILL_COUNT_RECHECK_SECONDS = 60.0
 _SKILL_COUNT_NEXT_CHECK: dict[str, float] = {}
 _SKILL_COUNT_LOCK = threading.Lock()
+# One scan lock per skills dir so concurrent cold scans of the SAME profile share one walk
+# while different profiles' scans still run in parallel.
+_SKILL_COUNT_SCAN_LOCKS: dict[str, threading.Lock] = {}
 
 
 def _skills_dir_signature(skills_dir: Path) -> float:
@@ -764,13 +813,21 @@ def _count_skills(profile_dir: Path) -> int:
         return 0
     key = str(skills_dir)
     signature = _skills_dir_signature(skills_dir)
-    now = time.time()
     cached = _SKILL_COUNT_CACHE.get(key)
-    if cached is not None and cached[0] == signature and (now - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
+    if cached is not None and cached[0] == signature and (time.time() - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
         return cached[2]
-    count = _walk_skill_count(skills_dir)
-    _SKILL_COUNT_CACHE[key] = (signature, now, count)
-    return count
+    with _SKILL_COUNT_LOCK:
+        scan_lock = _SKILL_COUNT_SCAN_LOCKS.setdefault(key, threading.Lock())
+    with scan_lock:
+        # Re-check under the lock: a concurrent caller may have just finished this walk.
+        signature = _skills_dir_signature(skills_dir)
+        cached = _SKILL_COUNT_CACHE.get(key)
+        if cached is not None and cached[0] == signature and (time.time() - cached[1]) < _SKILL_COUNT_TTL_SECONDS:
+            return cached[2]
+        count = _walk_skill_count(skills_dir)
+        # Stamp AFTER the walk: a scan longer than the TTL must not publish an already-expired entry.
+        _SKILL_COUNT_CACHE[key] = (signature, time.time(), count)
+        return count
 
 
 def _cached_skill_count(profile_dir: Path) -> int:
@@ -970,7 +1027,7 @@ def profile_is_standalone(home: Path) -> bool:
     (``gateway.standalone: true``)? Memoised by file signature. The DEFAULT profile is
     never standalone — it IS the host — and warns once per process if the key is set there."""
     global _STANDALONE_WARNED
-    from yaml import YAMLError
+    from hermes_yaml import YAMLError
     from utils import file_signature
 
     home = Path(home)
@@ -1024,23 +1081,43 @@ def _standalone_truthy(value: object) -> bool:
     return bool(value)
 
 
-def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False) -> List[Tuple[str, Path]]:
+def parked_marker_path(home: Path) -> Path:
+    return Path(home) / "gateway.parked"
+
+
+def profile_is_parked(home: Path) -> bool:
+    """Marker contents are deliberately irrelevant, including for provisioning."""
+    return parked_marker_path(home).exists()
+
+
+_parked_default_warned: set[Path] = set()
+
+
+def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
+                      include_parked: bool = False) -> List[Tuple[str, Path]]:
     """``(profile_name, hermes_home)`` pairs a gateway should serve — the single chokepoint
     for "which profiles does the inbound gateway handle".
 
     ``multiplex=False``: exactly one entry for the *active* profile (byte-for-byte the
     historical single-profile behavior; name is ``"default"`` or the named profile's id).
     ``multiplex=True``: default plus every live named profile under ``profiles/`` (tombstoned
-    profiles skipped). Pure directory read: never creates a profile dir (#94590).
+    and parked profiles skipped). Pure directory read: never creates a profile dir (#94590).
 
     Named profiles that authored ``gateway.standalone: true`` are skipped because they opted
-    out of the host multiplexer; callers enumerating INSTALLED profiles pass ``include_standalone=True``."""
+    out of the host multiplexer; a ``gateway.parked`` marker (``hermes -p X gateway stop``) skips
+    a profile the host would otherwise serve. Callers enumerating INSTALLED profiles pass
+    ``include_standalone=True, include_parked=True``; serving/ticking callers pass neither."""
     active = get_active_profile_name() or "default"
+    default = _get_default_hermes_home()
+    if profile_is_parked(default) and default not in _parked_default_warned:
+        logger.warning("Ignoring gateway.parked for the default profile; stop the host gateway instead")
+        _parked_default_warned.add(default)
     if not multiplex:
         return [(active, get_profile_dir(active))]
-    serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
+    serve: List[Tuple[str, Path]] = [("default", default)]
     serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
-                 if include_standalone or not profile_is_standalone(entry))
+                 if (include_standalone or not profile_is_standalone(entry))
+                 and (include_parked or not profile_is_parked(entry)))
     return serve
 
 
@@ -1799,8 +1876,12 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
     """Disable and remove systemd/launchd service for a profile."""
     import platform as _platform
 
-    # HERMES_HOME is set temporarily so _profile_suffix resolves the service name.
+    # The service name follows get_hermes_home(): bind the override (the seam a multiplexed
+    # dashboard/tui-gateway process reads) and mirror the env for identity-file readers, so a
+    # DELETE from a multi-profile dashboard names THIS profile's unit, never the host's bare one.
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
     old_home = os.environ.get("HERMES_HOME")
+    home_token = set_hermes_home_override(str(profile_dir))
     try:
         os.environ["HERMES_HOME"] = str(profile_dir)
         from hermes_cli.gateway import get_service_name, get_launchd_plist_path, user_systemd_unit_dir
@@ -1827,6 +1908,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
     except Exception as e:
         print(f"⚠ Service cleanup: {e}")
     finally:
+        reset_hermes_home_override(home_token)
         os.environ.pop("HERMES_HOME", None)
         if old_home is not None:
             os.environ["HERMES_HOME"] = old_home
@@ -1838,7 +1920,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
     if not pid_file.exists():
         return
     try:
-        raw = pid_file.read_text(encoding="utf-8").strip()
+        raw = pid_file.read_text(encoding="utf-8-sig").strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
         # Cross-profile kill refusal: the record's hermes_home stamp names the gateway's TRUE
@@ -1874,8 +1956,11 @@ def get_active_profile(root: Path | None = None) -> str:
     """Read the sticky active profile name (of *root*, default: this process's Hermes root)."""
     path = root / "active_profile" if root is not None else _get_active_profile_path()
     try:
-        return path.read_text(encoding="utf-8").strip() or "default"
-    except (UnicodeDecodeError, OSError):
+        name = path.read_text(encoding="utf-8-sig").strip()
+        if not name:
+            return "default"
+        return name
+    except (FileNotFoundError, UnicodeDecodeError, OSError):
         return "default"
 
 
@@ -1917,6 +2002,27 @@ def get_active_profile_name() -> str:
     except ValueError:
         pass
     return "custom"
+
+
+def current_profile_name(default: str | None = None) -> str | None:
+    """Identity of the profile the current task runs FOR: the ``HERMES_HOME`` override when one is
+    bound (a multiplexed cron tick, a routed gateway turn), else a launcher-pinned
+    ``HERMES_PROFILE_NAME``/``HERMES_PROFILE`` (the kanban dispatcher pins it on its workers), else
+    the name derived from the process's ``HERMES_HOME``; *default* when nothing names a profile.
+
+    The env pin is read only outside an override: ``os.environ`` is the LAUNCH profile's, so under
+    an override it would re-label a served profile's board writes with the host's identity.
+    """
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override() is None:
+        for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+            value = (os.environ.get(env_name) or "").strip()
+            if value:
+                return value
+    try:
+        return get_active_profile_name() or default
+    except Exception:
+        return default
 
 
 # Export / Import
@@ -2043,7 +2149,7 @@ def _scrub_export_secrets(staged: Path) -> None:
         if not _should_redact_export_file(path):
             continue
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8-sig")
         except (UnicodeDecodeError, OSError):
             continue
         redacted = redact_sensitive_text(text, force=True)
@@ -2068,6 +2174,8 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
     def _ignore_credentials(directory: str, contents: list) -> set:
         ignored = _non_exportable_entries(directory, contents)
         ignored.update(_EXPORT_CREDENTIAL_FILES & set(contents))
+        if Path(directory) == profile_dir:
+            ignored |= PM_RUNTIME_ROOT_DIRS & set(contents)
         return ignored
 
     ignore = _default_export_ignore(profile_dir) if canon == "default" else _ignore_credentials
@@ -2121,6 +2229,14 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
         if archive_root != canon:
             final_source = staging_root / canon
             extracted.rename(final_source)
+        # Remove foreign runtime state before publishing, including file-shaped roots.
+        # A failed removal must abort import rather than install a stale PM selection.
+        for child in final_source.iterdir():
+            if child.name in PM_RUNTIME_ROOT_DIRS:
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
         drop_profile_role(final_source)
         shutil.move(str(final_source), str(profile_dir))
     return profile_dir
@@ -2156,7 +2272,7 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
             continue
         seen.add(resolved)
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, json.JSONDecodeError):
             continue
         hosts = raw.get("hosts")

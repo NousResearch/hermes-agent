@@ -553,7 +553,7 @@ class GatewayNotificationsMixin:
             if not path.exists():
                 continue
             with suppress(Exception):
-                pending = json.loads(path.read_text(encoding="utf-8"))
+                pending = json.loads(path.read_text(encoding="utf-8-sig"))
                 platform_str = pending.get("platform")
                 chat_id = pending.get("chat_id")
                 session_key = pending.get("session_key")
@@ -594,7 +594,7 @@ class GatewayNotificationsMixin:
 
     @staticmethod
     def _update_exit_code(paths: "_UpdatePaths") -> int:
-        return int(paths.exit_code.read_text(encoding="utf-8").strip() or "1")
+        return int(paths.exit_code.read_text(encoding="utf-8-sig").strip() or "1")
 
     @staticmethod
     def _read_update_output_since(path: Path, offset: int) -> tuple[str, int]:
@@ -701,7 +701,7 @@ class GatewayNotificationsMixin:
                 getattr(_pending_state, "persistent", None), "update_prompt_pending", False
             ):
                 try:
-                    prompt_data = json.loads(paths.prompt.read_text(encoding="utf-8"))
+                    prompt_data = json.loads(paths.prompt.read_text(encoding="utf-8-sig"))
                     prompt_text = prompt_data.get("prompt", "")
                     if prompt_text:
                         await _flush_buffer()  # user sees context before the prompt
@@ -746,7 +746,7 @@ class GatewayNotificationsMixin:
                         return True
             elif not paths.claimed.exists():
                 return True
-            pending = json.loads(paths.claimed.read_text(encoding="utf-8"))
+            pending = json.loads(paths.claimed.read_text(encoding="utf-8-sig"))
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
             if not paths.exit_code.exists():
@@ -801,7 +801,7 @@ class GatewayNotificationsMixin:
         if not notify_path.exists():
             return None
         try:
-            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            data = json.loads(notify_path.read_text(encoding="utf-8-sig"))
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             thread_id = data.get("thread_id")
@@ -953,7 +953,7 @@ class GatewayNotificationsMixin:
             if not path.exists():
                 return
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
                 # Owed targets come from config, not live transports: a removed home or an opt-out
                 # (gateway_restart_notification=false) must not keep the marker alive forever.
@@ -1331,9 +1331,23 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            # The queued event's ``message_id`` is the message that STARTED the process, and the
+            # persisted origin carries the same stale id. A synthetic completion is not a reply to
+            # it: by delivery time the user has often continued elsewhere, and an event anchored
+            # there makes the finished job's reply quote that old message on every reply-anchoring
+            # platform (#52694: a background completion visibly replying to a stale Discord DM
+            # message). Routing is unaffected — topic lanes carry thread_id and the anchor-less
+            # synthetic-send branches are covered (#87051); the original id rides metadata for
+            # debugging only.
+            trigger_message_id = str(evt.get("message_id") or "").strip() or None
+            if trigger_message_id:
+                metadata["original_trigger_message_id"] = trigger_message_id
+            if getattr(source, "message_id", None):
+                from gateway.session_identity import replace_source
+                source = replace_source(source, message_id=None)
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
+                metadata=metadata,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",
@@ -1838,21 +1852,39 @@ class GatewayNotificationsMixin:
         """Re-queue undelivered async completions from every SECONDARY profile's ledger. The process
         registry restores only the launch profile's ``state.db`` at import; a secondary's rows would
         otherwise never be replayed after a restart."""
-        from gateway.run import _profile_runtime_scope
         from tools.async_delegation import restore_undelivered_completions
         from tools.process_registry import process_registry as _pr
+        self._each_secondary_ledger(profile_homes, lambda: restore_undelivered_completions(_pr.completion_queue),
+                                    "Restored")
+
+    def _sweep_orphaned_completion_ledgers(self) -> None:
+        """Offer completions whose owner process died while this gateway runs (#97202): the launch
+        ledger in the launch scope, each served secondary under its own. Startup replay only covers
+        owners that were already gone when the gateway started."""
+        from tools.async_delegation import sweep_orphaned_completions
+        from tools.process_registry import process_registry as _pr
+        sweep = lambda: sweep_orphaned_completions(_pr.completion_queue)  # noqa: E731
+        with _log_suppressed(logging.DEBUG, "Orphaned async completion sweep failed: %s"):
+            if count := sweep():
+                logger.info("Re-offered %d orphaned async completion(s)", count)
+        self._each_secondary_ledger((getattr(self, "_served_profile_homes", None) or {}).items(), sweep,
+                                    "Re-offered orphaned")
+
+    def _each_secondary_ledger(self, profile_homes, fn, verb: str) -> None:
+        """Run ``fn`` (returns a completion count) once per SECONDARY profile, bound to that profile."""
+        from gateway.run import _profile_runtime_scope
         primary = getattr(self, "_primary_profile_name", None)
         for profile_name, profile_home in profile_homes:
             if profile_name == primary:
                 continue
             try:
                 with _profile_runtime_scope(Path(profile_home), {}):
-                    restored = restore_undelivered_completions(_pr.completion_queue)
+                    count = fn()
             except Exception:
-                logger.warning("Could not restore async completions for profile %r", profile_name, exc_info=True)
+                logger.warning("Could not replay async completions for profile %r", profile_name, exc_info=True)
                 continue
-            if restored:
-                logger.info("Restored %d undelivered async completion(s) for profile %r", restored, profile_name)
+            if count:
+                logger.info("%s %d undelivered async completion(s) for profile %r", verb, count, profile_name)
 
     async def _async_delegation_watcher(self, interval: float = 2.0) -> None:
         """Drain async completions and pattern notifications even while sessions are idle.
@@ -1861,9 +1893,15 @@ class GatewayNotificationsMixin:
         consumer; both must progress without a later foreground turn.
         """
         await asyncio.sleep(3)  # let platforms finish connecting
+        from tools.async_delegation import ORPHAN_SWEEP_INTERVAL_S
         from tools.process_registry import process_registry as _pr
+        last_orphan_sweep = None
         while self._running:
             with _log_suppressed(logging.DEBUG, "Async delegation watcher error: %s"):
+                # Completions whose owner process died while this gateway runs (#97202).
+                if last_orphan_sweep is None or time.monotonic() - last_orphan_sweep >= ORPHAN_SWEEP_INTERVAL_S:
+                    last_orphan_sweep = time.monotonic()
+                    await asyncio.to_thread(self._sweep_orphaned_completion_ledgers)
                 # Pattern events also need an idle consumer; foreground turns are optional.
                 await self._drain_watch_notifications(_pr.completion_queue)
                 # Process completions remain owned by their per-process watchers.

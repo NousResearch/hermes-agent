@@ -4,7 +4,7 @@ import pytest
 
 from tools.computer_use import cua_backend
 
-pytestmark = pytest.mark.linux_only
+pytestmark = pytest.mark.platforms("linux")
 
 _VAR = "CUA_DRIVER_RS_ENABLE_WAYLAND"
 

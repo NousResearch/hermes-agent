@@ -813,11 +813,7 @@ describe('useSessionStateCache — held transcript gate keeps live rows (#117867
     // Releasing restores the full transcript.
     act(() => release?.())
     act(() => {
-      cache.updateSessionState(
-        runtime,
-        state => ({ ...state, messages: state.messages }),
-        stored
-      )
+      cache.updateSessionState(runtime, state => ({ ...state, messages: state.messages }), stored)
     })
 
     expect($messages.get().map(message => message.id)).toEqual(['cached-1', 'cached-2', 'live-1'])

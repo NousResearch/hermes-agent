@@ -12,8 +12,6 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-
-
 # ---------------------------------------------------------------------------
 # Thread-safe cache entry update (hermes_cli/models.py)
 # ---------------------------------------------------------------------------
@@ -89,7 +87,6 @@ class TestUpdateProviderCacheEntry:
         for p in providers:
             assert p in cache, f"{p} was lost in concurrent write"
             assert cache[p]["models"] == [f"model_{p}"]
-
 
 # ---------------------------------------------------------------------------
 # Parallel prefetch (hermes_cli/model_switch.py)
@@ -187,8 +184,46 @@ class TestPrefetchProviderModelsParallel:
             _prefetch_provider_models_parallel([])
         fetch.assert_not_called()
 
+    def test_skips_ttl_expired_entries_the_serial_path_can_still_serve(self):
+        """A TTL-expired entry inside the stale-serve window is not prefetched.
 
-# ---------------------------------------------------------------------------
-# Integration: prefetch is called from list_authenticated_providers
-# ---------------------------------------------------------------------------
+        ``cached_provider_model_ids`` returns such an entry from disk right
+        away and revalidates on a background thread, so blocking the picker
+        on a parallel fetch buys nothing. ``_PROVIDER_MODELS_STALE_SERVE_MAX``
+        is far longer than ``_PROVIDER_MODELS_CACHE_TTL``, so this is the
+        state every picker open a TTL after the previous one lands in.
+        """
+        import hermes_cli.models as models_mod
+        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
 
+        expired = time.time() - models_mod._PROVIDER_MODELS_CACHE_TTL - 60
+        cache = {"openrouter": {"fp": "fp", "at": expired, "models": ["m1"]}}
+
+        with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
+             patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
+             patch("hermes_cli.models.cached_provider_model_ids") as fetch:
+            _prefetch_provider_models_parallel(["openrouter"])
+
+        fetch.assert_not_called()
+
+    def test_fetches_curated_fallback_rows_past_their_short_ttl(self):
+        """A curated-fallback row is served only for ``_PROVIDER_MODELS_FALLBACK_TTL``
+        and never through the stale window, so the serial call blocks on it and the
+        parallel prefetch must fetch it."""
+        from hermes_cli.model_switch_providers import _prefetch_provider_models_parallel
+
+        cache = {"openrouter": {"fp": "fp", "at": time.time() - 7200, "models": ["m1"],
+                                "fallback": True}}
+        fetched = []
+
+        def mock_fetch(slug, force_refresh=False):
+            fetched.append(slug)
+            return ["m1"]
+
+        with patch("hermes_cli.models._load_provider_models_cache", return_value=cache), \
+             patch("hermes_cli.models._credential_fingerprint", return_value="fp"), \
+             patch("hermes_cli.models.cached_provider_model_ids", side_effect=mock_fetch), \
+             patch("hermes_cli.models.update_provider_cache_entry"):
+            _prefetch_provider_models_parallel(["openrouter"])
+
+        assert fetched == ["openrouter"]

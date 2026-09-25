@@ -17,7 +17,11 @@ describe('resolveSiblingWsUrl', () => {
 
   beforeEach(() => {
     getConnection = vi.fn(async () => ({ authMode: 'token', baseUrl: 'http://127.0.0.1:5151', wsUrl: localWsUrl }))
-    getConnectionFor = vi.fn(async () => ({ authMode: 'token', baseUrl: 'https://gateway.example', wsUrl: remoteWsUrl }))
+    getConnectionFor = vi.fn(async () => ({
+      authMode: 'token',
+      baseUrl: 'https://gateway.example',
+      wsUrl: remoteWsUrl
+    }))
     getGatewayWsUrl = vi.fn(async () => ({ ok: true, wsUrl: localWsUrl }))
     getGatewayWsUrlFor = vi.fn(async () => ({ ok: true, wsUrl: remoteWsUrl }))
     Object.defineProperty(window, 'hermesDesktop', {
@@ -40,7 +44,9 @@ describe('resolveSiblingWsUrl', () => {
   })
 
   it('strips the spent gateway credential when the sibling route authenticates itself', async () => {
-    const url = new URL(await resolveSiblingWsUrl({ profile: null }, 'api/display/ws', { stripGatewayCredential: true }))
+    const url = new URL(
+      await resolveSiblingWsUrl({ profile: null }, 'api/display/ws', { stripGatewayCredential: true })
+    )
 
     expect(url.origin + url.pathname).toBe('ws://127.0.0.1:5151/api/display/ws')
     expect(url.searchParams.has('token')).toBe(false)

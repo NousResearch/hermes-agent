@@ -163,6 +163,66 @@ def test_codex_pool_honors_model_base_url(monkeypatch):
     assert resolved["api_mode"] == "codex_responses"
 
 
+def _xai_pool(url):
+    class _Entry:
+        access_token = "pool-token"
+        source = "env:XAI_API_KEY"
+        base_url = url
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self, **_kwargs):
+            return _Entry()
+
+    return _Pool()
+
+
+def test_xai_pool_honors_model_base_url_when_row_is_registry_host(monkeypatch):
+    """#121347: an env-seeded xAI row keeps https://api.x.ai/v1. model.base_url is the
+    relay override, same as the other API-key providers, and must not be shadowed."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "xai")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _xai_pool("https://api.x.ai/v1"))
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "xai", "default": "grok-4", "base_url": "http://127.0.0.1:8765/v1/"})
+
+    resolved = rp.resolve_runtime_provider(requested="xai")
+
+    assert resolved["provider"] == "xai"
+    assert resolved["api_key"] == "pool-token"
+    assert resolved["base_url"] == "http://127.0.0.1:8765/v1"
+    assert resolved["api_mode"] == "codex_responses"
+
+
+def test_xai_pool_keeps_explicit_credential_endpoint(monkeypatch):
+    """A pool row that is not the registry host is an explicit endpoint and wins over model.base_url."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "xai")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _xai_pool("https://relay.example/v1"))
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "xai", "default": "grok-4", "base_url": "http://127.0.0.1:8765/v1"})
+
+    resolved = rp.resolve_runtime_provider(requested="xai")
+
+    assert resolved["base_url"] == "https://relay.example/v1"
+    assert resolved["api_mode"] == "codex_responses"
+
+
+def test_xai_pool_ignores_another_providers_base_url(monkeypatch):
+    """A stale model.base_url saved for a different provider must not receive the xAI key."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "xai")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _xai_pool("https://api.x.ai/v1"))
+    monkeypatch.delenv("XAI_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {
+        "provider": "deepseek", "default": "deepseek-v4-pro", "base_url": "http://127.0.0.1:8765/v1"})
+
+    resolved = rp.resolve_runtime_provider(requested="xai")
+
+    assert resolved["base_url"] == "https://api.x.ai/v1"
+
+
 class TestCustomProviderPoolLoopbackNoKeyExemption:
     """Regression for issue #86864: legacy custom_providers configs often
     used short/placeholder api_keys ('123', 'm') for local no-auth
@@ -621,6 +681,26 @@ def test_openai_key_used_when_no_openrouter_key(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="openrouter")
 
     assert resolved["api_key"] == "sk-openai-fallback"
+
+
+@pytest.mark.parametrize("openai_base_url, expected_key", [
+    ("https://proxy.corp.example/v1", ""),
+    ("proxy.corp.example:8080/v1", ""),  # scheme-less still names a foreign host
+    ("https://openrouter.ai/api/v1", "sk-openai-fallback"),
+])
+def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, openai_base_url, expected_key):
+    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere."""
+    from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback")
+
+    resolved = _resolve_openrouter_runtime(requested_provider="openrouter")
+
+    assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+    assert resolved["api_key"] == expected_key
 
 
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):

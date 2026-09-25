@@ -2995,6 +2995,42 @@
       }
     },
     {
+      "name": "session.branch_stored",
+      "summary": "Whole-session branch of a stored parent: the owning backend reads and copies the transcript, which never crosses the wire (a separate method so an older gateway fails loudly, not with an empty branch).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionBranchStoredParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionBranchStoredResult"
+        }
+      }
+    },
+    {
+      "name": "session.branch_whole",
+      "summary": "session.branch of the whole history without echoing the copied transcript back.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionBranchWholeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionBranchWholeResult"
+        }
+      }
+    },
+    {
       "name": "session.close",
       "summary": "Tear down a live session (its stored row stays resumable).",
       "params": [
@@ -17560,6 +17596,18 @@
             "default": null,
             "title": "Response Previewed"
           },
+          "response_transformed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response Transformed"
+          },
           "billing": {
             "anyOf": [
               {
@@ -27696,6 +27744,183 @@
         "title": "SessionBranchResult",
         "type": "object"
       },
+      "SessionBranchStoredParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "parent_session_id": {
+            "minLength": 1,
+            "title": "Parent Session Id",
+            "type": "string"
+          },
+          "cols": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cols"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
+          "cwd": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cwd"
+          }
+        },
+        "required": [
+          "parent_session_id"
+        ],
+        "title": "SessionBranchStoredParams",
+        "type": "object"
+      },
+      "SessionBranchStoredResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "message_count": {
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "messages_omitted": {
+            "title": "Messages Omitted",
+            "type": "boolean"
+          },
+          "info": {
+            "$ref": "#/components/schemas/SessionLiveInfo"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "message_count",
+          "messages_omitted",
+          "info"
+        ],
+        "title": "SessionBranchStoredResult",
+        "type": "object"
+      },
+      "SessionBranchWholeParams": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Name"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "title": "SessionBranchWholeParams",
+        "type": "object"
+      },
+      "SessionBranchWholeResult": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "stored_session_id": {
+            "title": "Stored Session Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "parent": {
+            "title": "Parent",
+            "type": "string"
+          },
+          "message_count": {
+            "title": "Message Count",
+            "type": "integer"
+          },
+          "messages_omitted": {
+            "title": "Messages Omitted",
+            "type": "boolean"
+          },
+          "info": {
+            "$ref": "#/components/schemas/SessionLiveInfo"
+          }
+        },
+        "required": [
+          "session_id",
+          "stored_session_id",
+          "title",
+          "parent",
+          "message_count",
+          "messages_omitted",
+          "info"
+        ],
+        "title": "SessionBranchWholeResult",
+        "type": "object"
+      },
       "SessionCloseParams": {
         "additionalProperties": false,
         "properties": {
@@ -34672,7 +34897,7 @@
       },
       "TranscriptMessage": {
         "additionalProperties": true,
-        "description": "One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):\n``text`` (never ``content``), display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the\ndurable ``row_id`` rewind targets, and for tool rows ``name`` + ``context`` preview + full ``args``.\nAssistant detail sidecars (``reasoning``, \u2026) ride as extra keys.",
+        "description": "One transcript row as the gateway PROJECTS it for renderers (``session_history._project_history``):\n``text``, display-only ``timestamp`` / ``display_kind`` / ``display_metadata``, the durable ``row_id``\nrewind targets, and for tool rows raw ``content``, ``tool_call_id``, ``name``, ``context`` and ``args``.\nAssistant detail sidecars (``reasoning``, \u2026) ride as extra keys.",
         "properties": {
           "role": {
             "title": "Role",
@@ -34689,6 +34914,28 @@
             ],
             "default": null,
             "title": "Text"
+          },
+          "content": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Content"
+          },
+          "tool_call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tool Call Id"
           },
           "timestamp": {
             "anyOf": [
@@ -37897,6 +38144,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/PreviewRestartProgressPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "projects.changed",
+      "summary": "projects.db moved; refetch the Projects sidebar.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ChangeSignalPayload"
           }
         }
       ]

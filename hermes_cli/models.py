@@ -1289,7 +1289,7 @@ def _openai_discovery_base_url(provider: str) -> str:
 
 
 def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
-    from hermes_cli.codex_models import get_codex_model_ids
+    from hermes_cli.codex_models import _fetch_models_from_api, get_codex_model_ids
 
     # Live OAuth token so the picker matches what ChatGPT lists for this account; hardcoded
     # catalog without a token / when unreachable. Read-only (#68004): a picker never imports,
@@ -1303,7 +1303,15 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
             access_token = None
     except Exception:
         access_token = None
-    return get_codex_model_ids(access_token=access_token)
+    if not access_token:
+        return get_codex_model_ids(access_token=None)
+    live = _fetch_models_from_api(access_token)
+    if live:
+        return live
+    # A token exists but the live fetch failed/returned nothing: get_codex_model_ids(token=None)
+    # degrades to config.toml's default model / the local cache / DEFAULT_CODEX_MODELS — flag it
+    # as a placeholder so the disk cache never pins it over a same-credentials live row (#107391).
+    return CuratedFallbackModels(get_codex_model_ids(access_token=None))
 
 
 _COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
@@ -1398,7 +1406,9 @@ def _anthropic_catalog(normalized: str, force_refresh: bool) -> list[str]:
     live = _fetch_anthropic_models(base_url=cfg_base_url or None, api_key=cfg_api_key or None)
     curated = list(_PROVIDER_MODELS.get("anthropic", []))
     if not live:
-        return curated
+        # A placeholder for the outage, not this account/proxy's catalog: the disk cache must
+        # never pin it over a same-credentials live row (#107391).
+        return CuratedFallbackModels(curated)
     # The live /v1/models dump lags newly-routed curated aliases (reachable before enumerated):
     # curated first, then live-only extras, so a fresh curated model never disappears.
     return live if cfg_base_url else _merge_unique(curated, live)

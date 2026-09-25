@@ -240,3 +240,38 @@ def test_plugin_can_move_compatible_transitive_but_not_exact_requirement(tmp_pat
                                 capture_output=True, text=True, check=True, timeout=30)
         assert result.stdout.strip() == "1.0 1.3"
     assert (baseline / "uv.lock").read_bytes() == first_lock
+
+
+def test_member_uv_lock_travels_with_its_member(tmp_path):
+    """A member's own lock is a build input and must be snapshotted with the member.
+
+    Only the workspace ROOT lock is re-supplied separately by ``lock_and_sync``.
+    ``pm/runtime.py::_inputs()`` hashes ``<workspace>/pm/{pyproject.toml,uv.lock}``
+    to key the runtime generation, so a generation that drops the member lock makes
+    every ``hermes pm`` subcommand die at preflight with FileNotFoundError.
+    """
+    core = tmp_path / "core"
+    member = core / "pm"
+    member.mkdir(parents=True)
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.setuptools.packages.find]\ninclude=["core", "pm"]\n',
+        encoding="utf-8",
+    )
+    (core / "core").mkdir()
+    (core / "core/__init__.py").write_text("", encoding="utf-8")
+    # A workspace-root lock exists in the source and must NOT be copied.
+    (core / "uv.lock").write_text("version = 1\n# workspace root lock\n", encoding="utf-8")
+    (member / "pyproject.toml").write_text('[project]\nname="pm"\nversion="1"\n', encoding="utf-8")
+    (member / "uv.lock").write_text("version = 1\n# member lock\n", encoding="utf-8")
+    (member / "code.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+    destination = tmp_path / "stage"
+    workspace._copy_core_inputs(core, destination)
+
+    assert (destination / "pm/pyproject.toml").is_file()
+    assert (destination / "pm/code.py").is_file()
+    # Regression: the member's own lock has to survive the snapshot.
+    assert (destination / "pm/uv.lock").read_text(encoding="utf-8") == "version = 1\n# member lock\n"
+    # The workspace-root lock stays excluded; lock_and_sync re-supplies it from the seed.
+    assert not (destination / "uv.lock").exists()

@@ -28,6 +28,8 @@ Covered here:
   T5 the readiness preflight (``cron/scheduler_preflight._preflight_check_skills``) can still see
      the job's skill — it fails open on an unreadable skill, so the gate silently turned its
      missing-prerequisite check into a no-op.
+  T6 both cron call sites pass the flag *themselves* — a widened fake signature would otherwise
+     absorb a refactor that drops it and silently restore the bug.
 """
 
 import json
@@ -133,3 +135,34 @@ def test_preflight_still_checks_platform_disabled_job_skill(cron_skill_env, monk
     from cron.scheduler_preflight import _preflight_check_skills
     reason = _preflight_check_skills({"id": "job-2", "name": "needy job", "skills": ["cron-needy"]})
     assert reason is not None and NEEDY_ENV_VAR in reason
+
+
+def test_cron_call_sites_pass_the_bypass_flag_explicitly(cron_skill_env, monkeypatch):
+    """T6: both cron call sites pass ``allow_platform_disabled=True`` themselves.
+
+    ``_load_cron_skill_parts`` and ``_preflight_check_skills`` import ``skill_view`` locally, so
+    the flag is the only thing tying them to the fix. Recording the kwarg (instead of widening a
+    fake to ``**_kwargs`` and ignoring it) makes a future refactor that drops the argument fail
+    here rather than silently restoring the skipped-playbook behaviour.
+    """
+    _config(monkeypatch)
+    seen: list[tuple[str, object]] = []
+
+    def _record(name, **kwargs):
+        seen.append((name, kwargs.get("allow_platform_disabled")))
+        return json.dumps({"success": True, "content": f"# {name}\n{PLAYBOOK_BODY}"})
+
+    import tools.skill_usage as skill_usage_module
+    monkeypatch.setattr(skill_usage_module, "bump_use", lambda *a, **k: None)
+    monkeypatch.setattr(skills_tool_module, "skill_view", _record)
+
+    from cron.scheduler_prompt import _load_cron_skill_parts
+    from cron.scheduler_preflight import _preflight_check_skills
+
+    _load_cron_skill_parts({"id": "job-3", "name": "prompt path"}, ["cron-playbook"])
+    _preflight_check_skills({"id": "job-4", "name": "preflight path", "skills": ["cron-playbook"]})
+
+    assert seen, "neither cron call site reached skill_view"
+    assert all(flag is True for _, flag in seen), (
+        f"a cron call site dropped allow_platform_disabled: {seen}"
+    )

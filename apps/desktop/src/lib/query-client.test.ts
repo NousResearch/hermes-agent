@@ -27,7 +27,7 @@ describe('invalidateProfileScopedQueries', () => {
       ['billing', 'subscription'],
       ['marketplace-themes', 'all'],
       ['marketplace-themes-settings', 'x'],
-      ['onboarding-model-options', 'y'],
+      ['onboarding-model-options', 'provider', 'default', 'local'],
       ['contrib-logs-tail']
     ]
 

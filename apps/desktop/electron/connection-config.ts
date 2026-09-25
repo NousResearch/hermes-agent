@@ -1024,6 +1024,67 @@ function apiRequestRegistryConnectionId(request): null | string {
   return id
 }
 
+// ponytail: validate the resolved route; never dial a renderer-supplied URL.
+function sameStringRecord(left?: Record<string, string>, right?: Record<string, string>): boolean {
+  const entries = Object.entries(left ?? {})
+
+  return entries.length === Object.keys(right ?? {}).length && entries.every(([key, value]) => right?.[key] === value)
+}
+
+export function assertConnectionOwner(expected, connection): void {
+  if (
+    !expected ||
+    ['mode', 'baseUrl', 'token', 'authMode', 'remoteHost', 'remoteIdentity', 'remoteKind'].some(
+      key => expected[key] !== connection?.[key]
+    ) ||
+    !sameStringRecord(expected.headers, connection?.headers)
+  ) {
+    throw new Error('Backend changed. Reopen Settings for the current connection.')
+  }
+}
+
+export function assertLegacyConnectionOwner(expected, connection): void {
+  if (!expected || expected.mode !== 'remote' || !expected.baseUrl) {
+    throw new Error('Backend changed. Reopen Settings for the current connection.')
+  }
+
+  assertConnectionOwner(expected, connection)
+}
+
+/** Acquire another profile without adopting a same-id gateway replacement. */
+export async function resolveSettingsProfileConnection(profile, expectedOwner, resolveProfile) {
+  if (!expectedOwner || typeof expectedOwner.profile !== 'string' || !expectedOwner.profile.trim()) {
+    throw new Error('Backend changed. Reopen Settings for the current connection.')
+  }
+
+  assertConnectionOwner(expectedOwner.connectionOwner, await resolveProfile(expectedOwner.profile))
+  const connection = await resolveProfile(profile)
+  // Acquisition can await a cold pool spawn; recheck the source after that wait.
+  assertConnectionOwner(expectedOwner.connectionOwner, await resolveProfile(expectedOwner.profile))
+
+  return connection
+}
+
+export async function resolveRegistryApiConnection(request, connectionId, ensureBackend) {
+  const connection = await ensureBackend(connectionId, request?.profile, request?.passive)
+
+  if (Object.hasOwn(request, 'connectionOwner')) {
+    assertConnectionOwner(request.connectionOwner, connection)
+  }
+
+  return connection
+}
+
+export async function resolveLegacyApiConnection(request, routeProfile, ensureBackend, options = {}) {
+  const connection = await ensureBackend(routeProfile, { passive: request?.passive, ...options })
+
+  if (Object.hasOwn(request, 'legacyConnection')) {
+    assertLegacyConnectionOwner(request.legacyConnection, connection)
+  }
+
+  return connection
+}
+
 export interface ProfileApiRequestRoute {
   /** Profile passed to ensureBackend; null selects the primary backend. */
   backendProfile: null | string

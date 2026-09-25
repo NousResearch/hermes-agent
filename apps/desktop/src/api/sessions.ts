@@ -23,7 +23,7 @@ import {
 
 const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
-function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?: string } {
+function sessionScoped(scope?: ProfileScope): { connectionId?: null | string; profile?: string } {
   if (scope === undefined || scope === null) {
     return {}
   }
@@ -138,7 +138,8 @@ export async function listAllProfileSessions(
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
   profile: 'all' | (string & {}) = 'all',
-  filter: SessionSourceFilter = {}
+  filter: SessionSourceFilter = {},
+  scope?: ProfileScope
 ): Promise<PaginatedSessions> {
   const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
 
@@ -147,7 +148,7 @@ export async function listAllProfileSessions(
     : ''
 
   const result = await hermesApi<PaginatedSessions>({
-    ...profileScoped(),
+    ...capabilityScoped(scope),
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
       `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
@@ -361,16 +362,18 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
 
 // Mutations take the owning `profile` so Electron can route them to the correct
 // remote backend or local profile scope. Omit for the current/default profile.
-export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
+export function setSessionArchived(id: string, archived: boolean, profile?: ProfileScope): Promise<{ ok: boolean }> {
   // Carry the owning profile IN THE PATCH BODY, mirroring renameSession — the
   // backend reads its target DB from body.profile (_open_session_db_for_profile).
   // Passing it only as request.profile (Electron routing) is not enough on a
   // remote gateway with no remoteProfile alias: the archive lands on the wrong
   // (default) state.db, no-ops on a missing row, and the archived/unarchived
   // state silently fails to stick — the same class as the unscoped DELETE.
-  const owner = sessionWriteProfile(profile)
+  const scoped = sessionScoped(profile)
+  const owner = scoped.profile || getApiRequestProfile() || undefined
 
   return hermesApi<{ ok: boolean }>({
+    ...scoped,
     ...(owner ? { profile: owner } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',

@@ -1,6 +1,6 @@
 import type { ModelCapabilities, ModelOptionProvider, ModelOptionsResult } from '@hermes/shared'
 
-import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
+import { getGlobalModelOptions, type HermesGateway, type ProfileScope } from '@/hermes'
 
 type CatalogProviderIdentity = Pick<ModelOptionProvider, 'aliases' | 'name' | 'slug'>
 
@@ -50,6 +50,9 @@ interface ModelOptionsRequest {
    *  secondary tile does not fall back to the launch profile's models. */
   profile?: null | string
   refresh?: boolean
+  /** Captured REST owner for compatibility recovery. Required when `request`
+   * names a non-ambient gateway; profile alone is not a unique owner. */
+  scope?: ProfileScope
   sessionId?: null | string
 }
 
@@ -68,15 +71,10 @@ function hasSelectableModels(options: ModelOptionsResult | null | undefined): bo
   return options?.providers?.some(provider => (provider.models?.length ?? 0) > 0) ?? false
 }
 
-function restModelOptions(
-  explicitOnly: boolean,
-  refresh: boolean,
-  profile?: null | string
-): Promise<ModelOptionsResult> {
+function restModelOptions(explicitOnly: boolean, refresh: boolean, scope?: ProfileScope): Promise<ModelOptionsResult> {
   const opts = { explicitOnly, ...(refresh ? { refresh: true } : {}) }
-  const profileKey = (profile ?? '').trim()
 
-  return profileKey ? getGlobalModelOptions(opts, profileKey) : getGlobalModelOptions(opts)
+  return scope === undefined ? getGlobalModelOptions(opts) : getGlobalModelOptions(opts, scope)
 }
 
 export async function requestModelOptions({
@@ -85,6 +83,7 @@ export async function requestModelOptions({
   profile,
   refresh = false,
   request,
+  scope,
   sessionId
 }: ModelOptionsRequest): Promise<ModelOptionsResult> {
   const dispatch = request ?? (gateway ? gateway.request.bind(gateway) : null)
@@ -123,14 +122,13 @@ export async function requestModelOptions({
       return gatewayOptions
     }
 
-    // An owner-routed dispatcher can name a different registry connection than
-    // the ambient REST client. Never recover that request through ambient REST:
-    // profile names are not unique across sources, so doing so can cache B's
-    // catalog under A's tile. Ambient gateway requests retain the compatibility
-    // recovery used by older backends with incomplete model.options responses.
-    if (!request) {
+    // Owner-routed dispatchers may recover through REST only when the caller
+    // supplies the same captured owner. Without it, profile names are not
+    // unique across sources and ambient recovery would cross gateways.
+    if (!request || scope !== undefined) {
       try {
-        const restOptions = await restModelOptions(explicitOnly, refresh, profile)
+        const restScope = scope ?? ((profile ?? '').trim() || undefined)
+        const restOptions = await restModelOptions(explicitOnly, refresh, restScope)
 
         if (hasSelectableModels(restOptions)) {
           return {
@@ -152,5 +150,7 @@ export async function requestModelOptions({
     throw gatewayError
   }
 
-  return restModelOptions(explicitOnly, refresh, profile)
+  const restScope = scope ?? ((profile ?? '').trim() || undefined)
+
+  return restModelOptions(explicitOnly, refresh, restScope)
 }

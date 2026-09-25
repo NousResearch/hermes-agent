@@ -1,7 +1,7 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 import { map, type MapStore } from 'nanostores'
 
-import type { HermesApiRequest } from '@/global'
+import type { ConnectionOwner, HermesApiRequest, LegacyConnectionOwner } from '@/global'
 
 // Desktop startup fires a burst of read-only data calls (config, profiles,
 // model info/options, cron) the moment the backend passes readiness. On a
@@ -153,10 +153,9 @@ export function ambientOwnerConnectionId(): string | undefined {
  *
  *  Helpers under `api/` go through here rather than calling the preload bridge
  *  directly, so the connection tag cannot be forgotten on a new one.
- *  capabilityScoped() now emits an explicit `connectionId` for EVERY object
- *  pin — `'local'` included — so a pin always overrides the ambient tag spread
- *  underneath it. (It used to omit the key for 'local', which made the pin
- *  unable to beat the ambient tag; helpers then had to bypass this wrapper.) */
+ *  capabilityScoped() preserves concrete pins (including 'local') and emits
+ *  an explicit null connectionId for a legacy pin. Both must
+ *  override the ambient tag underneath them, including in delayed callbacks. */
 export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
   return window.hermesDesktop.api<T>({ ...connectionScoped(), ...request })
 }
@@ -182,12 +181,26 @@ export function hermesApi<T>(request: HermesApiRequest): Promise<T> {
 //     remote/cloud/ssh gateway: the v1 fallback route treats a remote registry
 //     primary as global-remote, so the explicit pin is the ONLY way back to
 //     this machine (see apiRequestRegistryConnectionId in Electron main).
-export type ProfileScope = undefined | null | string | { connectionId?: null | string; profile?: null | string }
+//   - `{ connectionId: null, profile }` → explicit v1/legacy route, never the
+//     foreground registry source. Settings also pins the resolved descriptor
+//     so replacing that route fails closed before a request reaches a new host.
+export type ProfileScope =
+  | undefined
+  | null
+  | string
+  | {
+      connectionId?: null | string
+      profile?: null | string
+      connectionOwner?: ConnectionOwner
+      legacyConnection?: LegacyConnectionOwner
+    }
 
 export function capabilityScoped(scope?: ProfileScope): {
-  connectionId?: string
+  connectionId?: null | string
   priority?: 'foreground'
   profile?: string
+  connectionOwner?: ConnectionOwner
+  legacyConnection?: LegacyConnectionOwner
 } {
   if (scope && typeof scope === 'object') {
     const profile = (scope.profile ?? '').trim()
@@ -195,7 +208,10 @@ export function capabilityScoped(scope?: ProfileScope): {
 
     return {
       ...(profile ? { profile } : {}),
-      ...(connectionId ? { connectionId } : {}),
+      // An explicit legacy pin must also override hermesApi's ambient registry tag.
+      ...(connectionId ? { connectionId } : scope.connectionId === null ? { connectionId: null } : {}),
+      ...(scope.connectionOwner ? { connectionOwner: scope.connectionOwner } : {}),
+      ...(scope.legacyConnection ? { legacyConnection: scope.legacyConnection } : {}),
       priority: 'foreground'
     }
   }
@@ -209,10 +225,30 @@ export function capabilityScoped(scope?: ProfileScope): {
  *  to hit the same backend (a remote registry PRIMARY makes the ambient path
  *  remote), so sharing the bare-profile cache row between them painted one
  *  machine's config under the other's scope (AGENTS.md scope-in-key rule). */
+// Descriptor lifetime isolates owner caches without storing credentials in query keys.
+const ownerScopeGenerations = new WeakMap<ConnectionOwner, number>()
+let ownerScopeGeneration = 0
+
+function ownerScopeKey(owner: ConnectionOwner): number {
+  if (!ownerScopeGenerations.has(owner)) {
+    ownerScopeGenerations.set(owner, ++ownerScopeGeneration)
+  }
+
+  return ownerScopeGenerations.get(owner)!
+}
+
 export function profileScopeKey(scope?: ProfileScope): string {
   if (scope && typeof scope === 'object') {
     const profile = (scope.profile ?? '').trim() || 'default'
     const connectionId = (scope.connectionId ?? '').trim()
+
+    if (!connectionId && scope.legacyConnection) {
+      return `legacy:${ownerScopeKey(scope.legacyConnection)}::${profile}`
+    }
+
+    if (connectionId && scope.connectionOwner) {
+      return `${connectionId}:${ownerScopeKey(scope.connectionOwner)}::${profile}`
+    }
 
     return connectionId ? `${connectionId}::${profile}` : profile
   }

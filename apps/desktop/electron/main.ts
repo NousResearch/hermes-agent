@@ -77,7 +77,7 @@ import {
 } from './backend-ownership'
 import { canImportHermesCli, PROBE_TIMEOUT_MS, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
-import { recycleOwnedBackend } from './backend-recycle'
+import { recycleOwnedBackend, recyclePinnedBackend } from './backend-recycle'
 import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate'
 import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
@@ -150,9 +150,12 @@ import {
   profileSshOverride,
   type RegistryBackendRequestScope,
   resolveAuthMode,
+  resolveLegacyApiConnection,
   resolveProfileApiRequest,
   resolveProfileBackendRoute,
+  resolveRegistryApiConnection,
   resolveRemoteSshDashboardProfile,
+  resolveSettingsProfileConnection,
   resolveTestWsUrl,
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
@@ -666,6 +669,7 @@ let windowsGpuStackCookieRelaunchAttempted = false
 
 if (IS_WINDOWS) {
   const windowsGpuUserData = app.getPath('userData')
+
   const gpuStackCookieDecision = decideWindowsGpuStackCookieLaunch({
     argv: process.argv,
     marker: readGpuStackCookieMarker(windowsGpuUserData),
@@ -2079,6 +2083,7 @@ async function openExternalFile(rawUrl: string) {
 
   if (lastReveal !== undefined && now - lastReveal < FILE_REVEAL_DEDUPE_MS) {
     rememberLog(`[file] duplicate reveal request within ${FILE_REVEAL_DEDUPE_MS}ms; ignored: ${localPath}`)
+
     return
   }
 
@@ -6094,6 +6099,7 @@ async function watchPreviewFile(owner, rawUrl) {
     owner,
     close: () => {
       offOwnerDestroyed()
+
       if (timer) {
         clearTimeout(timer)
       }
@@ -6175,6 +6181,7 @@ function watchDirectory(owner, rawDir) {
     owner,
     close: () => {
       offOwnerDestroyed()
+
       if (timer) {
         clearTimeout(timer)
       }
@@ -12116,6 +12123,7 @@ async function runPoolBackendStart(
     WebSocketImpl: globalThis.WebSocket,
     ...spawnedBackendProbeOptions(childAlive)
   })
+
   assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
 
   if (!wsProbe.ok) {
@@ -12702,6 +12710,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   migrateActiveProfileIfMissing()
 
   const connectionAttempt = backendConnectionState.startAttempt()
+
   // ONE launch-profile decision for this attempt (#108417): routing pin,
   // --profile argv, and the child env all derive from the same read, so a
   // hermes:profile:remember landing mid-startup becomes the NEXT boot's
@@ -12711,6 +12720,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   const { argvProfile: activeProfile, routingProfile: primaryProfile } = resolveLaunchProfile(
     readActiveDesktopProfile
   )
+
   // Pin the routing table to the profile this primary actually boots as; a
   // later hermes:profile:remember must not retarget requests mid-life.
   primaryProfilePin.pin(primaryProfile)
@@ -12771,6 +12781,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
     const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
+
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
@@ -15058,10 +15069,14 @@ ipcMain.handle('hermes:connection:for', async (_event, payload) => {
   const id = registryDialConnectionId(connectionId, registry.primary)
   const spawnPriority = spawnPriorityFrom(priority)
 
-  return connectDesktopProfileRoute(
-    { connectionId: id, profile: String(profile ?? '').trim() || 'default' },
-    spawnPriority
-  )
+  const resolve = (targetProfile: string) =>
+    connectDesktopProfileRoute({ connectionId: id, profile: targetProfile }, spawnPriority)
+
+  const targetProfile = String(profile ?? '').trim() || 'default'
+
+  return payload && Object.hasOwn(payload, 'expectedOwner')
+    ? resolveSettingsProfileConnection(targetProfile, payload.expectedOwner, resolve)
+    : resolve(targetProfile)
 })
 
 const windowConnectionRoutes = new WindowConnectionRouteRegistry()
@@ -15356,6 +15371,26 @@ const hudIpc = registerHudIpc({
 })
 
 ipcMain.handle('hermes:backend:recycle', async (_event, profile) => {
+  if (profile && typeof profile === 'object') {
+    const primaryProfile = primaryProfileKey()
+    const config = readDesktopConnectionConfig()
+    await recyclePinnedBackend(profile, {
+      registry: readDesktopConnectionsRegistry(),
+      routeOptions: profileRouteOptions(profile.profile),
+      primarySshKey: profileSshOverride(config, primaryProfile) ? sshScopeKey(primaryProfile) : sshScopeKey(null),
+      effectiveSshFingerprint: source => effectiveSshConfigFingerprint(managedSshConfig(source, profile.profile)),
+      primaryPromise: () => backendConnectionState.getPromise(),
+      pool: backendPool,
+      sshState: key => sshConnections.get(key),
+      teardownSsh: key => teardownSshConnection(key),
+      teardownPool: stopPoolBackend,
+      teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+      notifyApplied: sendConnectionApplied
+    })
+
+    return { ok: true }
+  }
+
   // Models-page recovery after a code-skew 503 (#97046): kill the owned
   // SSH serve (if any) before the local child so reconnect cannot reuse a
   // stale lockfile. Soft primary teardown keeps the renderer shell mounted.
@@ -16850,11 +16885,13 @@ async function dispatchRegistryApiRequest(
   // passive read would otherwise inherit its "no warm backend" rejection.
   const spawnPriority = spawnPriorityFrom(request?.priority)
 
-  const connection: any = request?.passive
-    ? await ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
-    : await backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
-        ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
-      )
+  const connection: any = await resolveRegistryApiConnection(request, registryConnectionId, () =>
+    request?.passive
+      ? ensureRegistryBackend(registryConnectionId, routeProfile, '', { passive: true })
+      : backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile), () =>
+          ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
+        )
+  )
 
   const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
 
@@ -16945,8 +16982,7 @@ async function handleHermesApiRequest(request) {
   let connection
 
   try {
-    connection = await ensureBackend(routeProfile, {
-      passive: request?.passive,
+    connection = await resolveLegacyApiConnection(request, routeProfile, ensureBackend, {
       request: { method: request?.method, path: request?.path },
       spawnPriority
     })

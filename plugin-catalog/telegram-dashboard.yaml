@@ -1,15 +1,15 @@
 name: telegram-dashboard
 repo: https://github.com/bablobanov/hermes-agent-telegram-dashboard
-sha: de60ef47d2bca9487d355b3673f251505beb41f0
+sha: 6b9ee4dbe13b9a90b43a1aeb2b38ec42178a89a5
 subdir: plugin/telegram_dashboard_probe
-description: "Read-only Hermes status dashboard kept in one pinned Telegram message and edited in place on a schedule through the gateway's own Telegram adapter: gateway health, message freshness, last state.db backup, config drift, and Claude, Codex, Grok and Kimi account limits. Plain text, no LLM calls, no tools or hooks; the screen text is Russian. Disclosure — Claude and Codex limits come from Hermes' own account-usage fetcher; the Grok weekly pool is read from https://cli-chat-proxy.grok.com/v1/billing with the xai-oauth token Hermes resolves, and Kimi Code windows from <kimi-coding base URL>/v1/usages with the kimi-coding key Hermes resolves (undocumented provider surfaces, at most once per limits_refresh_seconds, default 900 s); an operator-configured drift_command, if set, runs as a subprocess; the delivery record is written under HERMES_HOME/plugin-data/."
+description: "Read-only Hermes status dashboard kept in one pinned Telegram message and edited in place on a schedule through the gateway's own Telegram adapter: gateway health, message freshness, last state.db backup, config drift, and Claude, Codex, Grok and Kimi account limits. HTML when the adapter takes it, plain text otherwise; no LLM calls, no tools or hooks; the screen text is English. Disclosure — Claude and Codex limits come from Hermes' own account-usage fetcher; the Grok weekly pool is read from https://cli-chat-proxy.grok.com/v1/billing with the xai-oauth token Hermes resolves, and Kimi Code windows from <kimi-coding base URL>/v1/usages with the kimi-coding key Hermes resolves (undocumented provider surfaces, at most once per limits_refresh_seconds, default 900 s); an operator-configured drift_command, if set, runs as a subprocess; the delivery record is written under HERMES_HOME/plugin-data/."
 maintainer: bablobanov
 tier: community
 category: automation
 requires_hermes: ">=0.21.1"
 docs_url: https://github.com/bablobanov/hermes-agent-telegram-dashboard#readme
-version: "0.3.1"
-image: https://raw.githubusercontent.com/bablobanov/hermes-agent-telegram-dashboard/de60ef47d2bca9487d355b3673f251505beb41f0/docs/social-preview.jpg
+version: "0.5.0"
+image: https://raw.githubusercontent.com/bablobanov/hermes-agent-telegram-dashboard/6b9ee4dbe13b9a90b43a1aeb2b38ec42178a89a5/docs/social-preview.jpg
 platforms: []
 capabilities:
   provides_tools: []

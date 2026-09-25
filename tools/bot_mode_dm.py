@@ -584,19 +584,33 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
 def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
                       profile_home: Path | None = None, author: Optional[dict] = None) -> str:
     """Build an argv-safe command for the cleanup-owning background runner:
-    ``--run-delivery [--author <json>] <mode> <dm_file> [--profile-home <path>] <argv...>``."""
-    runner_argv = [sys.executable, str(Path(__file__).resolve()), "--run-delivery",
-                   "stdin" if stdin_file else "query-file", dm_file]
+    ``--run-delivery [--author <json>] <mode> <dm_file> [--profile-home <path>] <argv...>``.
+
+    Goes through ``hermes_cli._launchers.runtime_command`` (the same isolated-mode +
+    ``hermes_bootstrap`` bootstrap the ``hermes`` launcher itself uses) instead of a bare
+    ``sys.executable`` + script path: this process's own venv site-packages are NOT on the
+    background runner's path (``terminal_tool``'s spawn strips Hermes-owned ``PYTHONPATH``
+    from children, tools/environments/AGENTS.md), so a raw ``sys.executable`` runs the
+    standalone store interpreter with nothing but ``pip`` in its site-packages and dies with
+    ``ModuleNotFoundError`` on the first Hermes import (yaml, httpx, ...). ``runtime_command``
+    re-derives the dependency generation itself via ``hermes_bootstrap``, the same way every
+    other persisted background command in this codebase launches (``gateway/run_shutdown.py``'s
+    restart watcher, ``hermes_cli/gateway.py``)."""
+    from hermes_cli._launchers import runtime_command
+
+    module_args = ["--run-delivery", "stdin" if stdin_file else "query-file", dm_file]
     if profile_home is not None:
-        runner_argv.extend(["--profile-home", str(Path(profile_home).resolve())])
-    runner_argv.extend(argv)
+        module_args.extend(["--profile-home", str(Path(profile_home).resolve())])
+    module_args.extend(argv)
+    if author:
+        module_args[1:1] = ["--author", json.dumps(author, separators=(",", ":"))]
+    runner_argv = runtime_command(
+        Path(__file__).resolve().parent.parent, module_args, module="tools.bot_mode_dm",
+    )
     if sys.platform == "win32":
         # The tracked local backend uses Git Bash on native Windows: forward slashes keep drive
         # paths executable there; backslash paths are parsed as command names (exit 127).
         runner_argv = [part.replace("\\", "/") for part in runner_argv]
-    if author:
-        # Inserted after the slash rewrite: JSON escapes are backslashes too.
-        runner_argv[3:3] = ["--author", json.dumps(author, separators=(",", ":"))]
     return shlex.join(runner_argv)
 
 

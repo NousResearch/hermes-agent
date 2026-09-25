@@ -26,6 +26,17 @@ def _fresh_probe_cache():
     bot_mode_probe._reset_cache_for_tests()
 
 
+@pytest.fixture(autouse=True)
+def _isolated_pm_store(tmp_path, monkeypatch):
+    """``_delivery_command`` now resolves the runner argv through
+    ``hermes_cli._launchers.runtime_command``, which in turn calls
+    ``pm.environments.store_root`` — without an override that reads
+    ``<real-repo-root>/../manifest.json`` against the actual checkout, tripping
+    ``tests/home_io_guard.py``'s real-``~/.hermes`` guard. Route it at a scratch
+    dir the same way ``tests/pm/test_runtime.py`` does."""
+    monkeypatch.setenv("HERMES_RUNTIME_DIR", str(tmp_path / "pm-store"))
+
+
 def _managed_home(tmp_path, *, teammates=("researcher",), peers=()) -> Path:
     home = tmp_path / ".hermes"
     home.mkdir(exist_ok=True)
@@ -871,6 +882,48 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
 
     assert result.returncode == 0
     assert observed.read_text(encoding="utf-8") == "secret λ\nsecond line"
+    assert not dm_file.exists()
+
+
+@pytest.mark.allow_real_home_io
+def test_delivery_command_survives_a_stripped_pythonpath_environment(tmp_path, monkeypatch):
+    """The background runner used to spawn as a bare ``sys.executable`` + script path, so any
+    process that spawns it with Hermes-owned ``PYTHONPATH``/``VIRTUAL_ENV`` stripped (exactly
+    what ``tools/environments/local_pythonpath.py``'s child-env sanitizer does on every
+    ``terminal_tool(background=True, ...)`` spawn — the transport ``_spawn_delivery`` actually
+    uses) left the runner with none of Hermes' own dependencies on its path, dying with
+    ``ModuleNotFoundError: yaml``/``httpx`` the moment it imported a Hermes module. The fix
+    routes the runner argv through ``hermes_cli._launchers.runtime_command``, which re-derives
+    the dependency generation itself via ``hermes_bootstrap`` regardless of the parent's env —
+    prove it with a REAL subprocess whose env has those vars removed, not a mock."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("secret", encoding="utf-8")
+    observed = tmp_path / "observed.txt"
+    child = tmp_path / "child.py"
+    child.write_text(
+        "import pathlib, sys\n"
+        "import yaml  # a real Hermes dependency; ModuleNotFoundError here reproduces the bug\n"
+        "pathlib.Path(sys.argv[1]).write_text('imported yaml ok from ' + yaml.__file__, encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    # ``_delivery_command`` resolves the store Python (and bakes its path into the argv it
+    # returns) at BUILD time, using ``HERMES_RUNTIME_DIR``/the repo's own install-stamp; the
+    # autouse ``_isolated_pm_store`` fixture in this file points that at an empty scratch dir
+    # for every other test, so undo it here to reach the real installed store this checkout
+    # actually runs under — the point of this test is a real dependency import, not a fake one.
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    command = bot_mode_dm._delivery_command(
+        [sys.executable, str(child), str(observed)], str(dm_file), stdin_file=False,
+    )
+
+    stripped_env = {
+        key: value for key, value in os.environ.items()
+        if key not in ("PYTHONPATH", "VIRTUAL_ENV", "PYTHONHOME", "HERMES_HOME", "HERMES_RUNTIME_DIR")
+    }
+    result = subprocess.run(shlex.split(command), check=False, env=stripped_env)
+
+    assert result.returncode == 0
+    assert observed.read_text(encoding="utf-8").startswith("imported yaml ok from ")
     assert not dm_file.exists()
 
 

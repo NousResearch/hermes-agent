@@ -268,6 +268,28 @@ describe('useGatewayRequest', () => {
     expect(primary.request).toHaveBeenCalledTimes(2)
   })
 
+  it('reconnects when gateway state is stale-open but the registered socket is closed', async () => {
+    const desktop = installPrimaryDesktop('oauth')
+    const primary = makePrimaryGateway()
+    primary.connectionState = 'closed'
+    primary.request.mockRejectedValueOnce(new Error('connection closed')).mockResolvedValueOnce({ recovered: true })
+
+    setPrimaryGateway(primary as unknown as HermesGateway, 'default')
+    $gateway.set(primary as unknown as HermesGateway)
+    $gatewayState.set('open')
+
+    const { result } = renderHook(() => useGatewayRequest())
+    result.current.gatewayRef.current = null
+
+    await act(async () => {
+      await expect(result.current.requestGateway('session.resume')).resolves.toEqual({ recovered: true })
+    })
+
+    expect(desktop.getConnection).toHaveBeenCalledWith()
+    expect(primary.connect).toHaveBeenCalledTimes(1)
+    expect(primary.request).toHaveBeenCalledTimes(2)
+  })
+
   it.each([
     { error: new Error('connection closed'), label: 'closed message' },
     { error: new Error('ECONNRESET'), label: 'reset message' },

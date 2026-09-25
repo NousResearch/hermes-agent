@@ -166,6 +166,18 @@ class TestGatewayConnectionErrorReply:
         # Programmatic consumers still get the bottom exception, byte for byte.
         assert _sanitize_gateway_final_response("local", raw_reset) == raw_reset
 
+    def test_catch_all_includes_sanitized_provider_reason(self):
+        raw = (
+            "Error code: 400 - {'error': {'message': "
+            "'model \"gpt-6-astra\" is not accessible via the /chat/completions endpoint', "
+            "'code': 'unsupported_api_for_model', 'request_id': 'req_abc123'}}"
+        )
+        reply = _gateway_provider_error_reply(raw)
+        assert "kept failing" in reply
+        assert 'model "gpt-6-astra" is not accessible via the /chat/completions endpoint' in reply
+        assert "req_abc123" not in reply
+        assert "unsupported_api_for_model" not in reply or "Reason:" in reply
+
 
 class TestQuotaExhaustedIsNotAnAuthFailure:
     """A 429/quota envelope must never send the user to re-authenticate valid credentials, and a

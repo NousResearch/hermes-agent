@@ -684,6 +684,41 @@ def test_recompute_ready_honours_dispatcher_failure_limit(kanban_home):
 
 
 
+def test_archive_task_sets_completed_at_when_missing(kanban_home):
+    """A card archived directly from todo/running (never `complete_task`d) must
+    still get a `completed_at` timestamp -- callers that sort/age off that
+    column (parent-result display, `task_age`) silently misbehave forever on a
+    permanent NULL. See t_b4d0977b: 210/233 archived cards had NULL
+    completed_at before this fix, because archive_task never wrote it."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="never completed")
+        row = conn.execute("SELECT completed_at FROM tasks WHERE id = ?", (tid,)).fetchone()
+        assert row["completed_at"] is None
+        before = time.time()
+        assert kb.archive_task(conn, tid)
+        after = time.time()
+        row = conn.execute("SELECT status, completed_at FROM tasks WHERE id = ?", (tid,)).fetchone()
+        assert row["status"] == "archived"
+        assert row["completed_at"] is not None
+        assert before <= row["completed_at"] <= after
+
+
+def test_archive_task_preserves_real_completed_at(kanban_home):
+    """Archiving a card that already went through `complete_task` must not
+    overwrite its real completion time with the archive time."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="finished then archived", assignee="worker")
+        kb.claim_task(conn, tid)
+        kb.complete_task(conn, tid, result="done")
+        row = conn.execute("SELECT completed_at FROM tasks WHERE id = ?", (tid,)).fetchone()
+        real_completed_at = row["completed_at"]
+        assert real_completed_at is not None
+        time.sleep(1.1)
+        assert kb.archive_task(conn, tid)
+        row = conn.execute("SELECT completed_at FROM tasks WHERE id = ?", (tid,)).fetchone()
+        assert row["completed_at"] == real_completed_at
+
+
 def test_delete_archived_task_removes_related_rows(kanban_home):
     with kbc.connect() as conn:
         parent = kb.create_task(conn, title="parent")

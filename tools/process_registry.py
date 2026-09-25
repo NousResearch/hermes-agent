@@ -483,6 +483,22 @@ def _stop_systemd_unit(unit_name: str) -> bool:
         return False
 
 
+KANBAN_TASK_ENV = "HERMES_KANBAN_TASK"
+
+
+def resolve_kanban_task_binding(env_vars: Optional[dict] = None) -> str:
+    """The board card the child process will actually run under: per-spawn
+    ``env_vars`` first, then this process's own (inherited) environment — the
+    same pin ``tools/kanban_tools.py`` scopes a worker by. Never derived from the
+    command string: prompts and argv routinely name cards the process must NOT touch.
+    """
+    if isinstance(env_vars, dict):
+        declared = env_vars.get(KANBAN_TASK_ENV)
+        if declared not in (None, ""):
+            return str(declared).strip()
+    return str(os.environ.get(KANBAN_TASK_ENV) or "").strip()
+
+
 def format_uptime_short(seconds: int) -> str:
     s = max(0, int(seconds))
     if s < 60:
@@ -525,6 +541,10 @@ class ProcessSession:
                                                 # may be collapsed by _resolve_container_task_id)
     owner_task_id: str = ""                     # RAW spawning task id ("sa-..."); ownership
                                                 # checks must use this, not task_id
+    # Board card this process runs under, read at spawn from the child's OWN
+    # kanban pin (``HERMES_KANBAN_TASK``). Persisted so a checkpoint reader can
+    # tell which card a background process belongs to. "" = no declared card.
+    kanban_task_id: str = ""
     session_key: str = ""                       # Gateway session key (reset protection)
     pid: Optional[int] = None
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
@@ -609,7 +629,7 @@ _WATCHER_ROUTE_KEYS = ("platform", "chat_id", "user_id", "user_name", "thread_id
 # ``session_id``; ``command`` is redacted and ``owner_task_id`` defaulted on write).
 _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
-    "started_at", "task_id", "owner_task_id", "session_key",
+    "started_at", "task_id", "owner_task_id", "kanban_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
     "heartbeat_seconds")
@@ -1223,7 +1243,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         from tools.terminal_tool_sudo import _rewrite_compound_background as _rewrite_bg
 
         safe_command = _rewrite_bg(command)
-        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
+        session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
+                                    kanban_task_id=resolve_kanban_task_binding(env_vars))
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -1315,7 +1336,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context."""
-        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
+        session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
+                                    kanban_task_id=resolve_kanban_task_binding(None))
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote

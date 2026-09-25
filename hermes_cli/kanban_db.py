@@ -3902,10 +3902,19 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
             return False
         was_running = row["status"] == "running"
         prev_pid, prev_lock, prev_started = row["worker_pid"], row["claim_lock"], row["worker_started_at"]
+        # Archiving is a terminal transition just like `done`, and reclaim
+        # eligibility (`_card_refusal` in kanban_reclaim.py) treats a NULL
+        # `completed_at` as permanently ineligible regardless of age -- there
+        # is no floor that ever satisfies it. Before this fix `archive_task`
+        # never wrote the column, so every archived card leaked its worktree
+        # forever (measured on 2026-09-22: 210/233 archived cards had a NULL
+        # completed_at). Only fill it when unset, so a card archived after a
+        # real completion keeps its true completion time.
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
-            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL "
-            "WHERE id = ? AND status != 'archived'", (task_id,),
+            "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+            "    completed_at = COALESCE(completed_at, ?) "
+            "WHERE id = ? AND status != 'archived'", (time.time(), task_id),
         )
         if cur.rowcount != 1:
             return False

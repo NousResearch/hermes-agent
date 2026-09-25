@@ -210,7 +210,7 @@ class _KanbanDispatcher:
         """Run one dispatch_once per board. Returns (slug, result) pairs."""
         return [(slug, self.tick_once_for_board(slug)) for slug in self._board_slugs()]
 
-    def ready_nonempty(self) -> bool:
+    def ready_nonempty(self, results=None) -> bool:
         """Is there a ready+assigned+unclaimed task on ANY board the dispatcher would spawn for?
 
         Control-plane lanes (e.g. ``orion-cc``) are pulled by terminals via
@@ -221,11 +221,14 @@ class _KanbanDispatcher:
         """
         kbd = _kbd()
         _review_probe = kbd.review_dispatch_enabled()
+        # Cards the respawn guard deliberately deferred this tick are not "stuck".
+        exclude_ids = kbd.guard_deferred_ids(results)
         for slug in self._board_slugs():
             conn = None
             try:
                 conn = _kbc().connect(board=slug)
-                if kbd.has_spawnable_ready(conn) or (_review_probe and kbd.has_spawnable_review(conn)):
+                if kbd.has_spawnable_ready(conn, exclude_ids) or (
+                        _review_probe and kbd.has_spawnable_review(conn, exclude_ids)):
                     return True
             except Exception:
                 continue

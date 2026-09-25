@@ -1,4 +1,6 @@
 import asyncio
+import json
+
 import pytest
 
 from pathlib import Path
@@ -1178,3 +1180,107 @@ def test_gc_purges_blocked_task_that_never_done(kanban_home):
         assert kbn.list_notify_subs(conn, tid) == []
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# CLI `hermes kanban create` auto-subscribes the originating gateway session
+# ---------------------------------------------------------------------------
+
+def _create_ns(**overrides):
+    """Namespace for the real ``hermes_cli.kanban._cmd_create``."""
+    ns = SimpleNamespace(
+        title="cli auto-sub", body=None, assignee="worker",
+        created_by="user", workspace="scratch", branch=None, tenant=None,
+        priority=0, parent=None, triage=False, project=None,
+        idempotency_key=None, max_runtime=None, skills=None,
+        max_retries=None, model_override=None, provider_override=None,
+        goal_mode=False, goal_max_turns=None, initial_status="running",
+        json=False,
+    )
+    for key, value in overrides.items():
+        setattr(ns, key, value)
+    return ns
+
+
+def _telegram_session_env(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat1")
+    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "topic1")
+    monkeypatch.setenv("HERMES_SESSION_USER_ID", "user1")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_TYPE", "dm")
+
+
+def _clear_session_env(monkeypatch):
+    for suffix in ("PLATFORM", "CHAT_ID", "THREAD_ID", "USER_ID", "CHAT_TYPE",
+                   "MESSAGE_ID", "USER_ID_ALT", "PROFILE", "SCOPE_ID",
+                   "PARENT_CHAT_ID", "KEY", "ID"):
+        monkeypatch.delenv(f"HERMES_SESSION_{suffix}", raising=False)
+
+
+def _subs_for_newest_task():
+    conn = kbc.connect()
+    try:
+        tid = kb.list_tasks(conn)[0].id
+        return tid, kbn.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+
+def test_cli_create_auto_subscribes_gateway_session(kanban_home, monkeypatch, capsys):
+    """`hermes kanban create` from a gateway session writes exactly one
+    notify sub for the new task, with the session's delivery target."""
+    _clear_session_env(monkeypatch)
+    _telegram_session_env(monkeypatch)
+
+    assert kc._cmd_create(_create_ns()) == 0
+    out = capsys.readouterr().out
+
+    tid, subs = _subs_for_newest_task()
+    assert len(subs) == 1, subs
+    assert subs[0]["platform"] == "telegram"
+    assert subs[0]["chat_id"] == "chat1"
+    assert subs[0]["thread_id"] == "topic1"
+    assert subs[0]["delivery_mode"] == "notify+wake"
+    assert "subscribed=true" in out, out
+
+
+def test_cli_create_without_session_env_does_not_subscribe(kanban_home, monkeypatch, capsys):
+    """A plain CLI/cron run has no persistent delivery channel: no row, and the
+    human line says so rather than silently implying a subscription."""
+    _clear_session_env(monkeypatch)
+
+    assert kc._cmd_create(_create_ns(title="cli no sub")) == 0
+    out = capsys.readouterr().out
+
+    _tid, subs = _subs_for_newest_task()
+    assert subs == []
+    assert "subscribed=false" in out, out
+
+
+def test_cli_create_respects_auto_subscribe_on_create_gate(kanban_home, monkeypatch, capsys):
+    """``kanban.auto_subscribe_on_create: false`` suppresses the CLI auto-subscribe
+    even when the session does have a delivery channel."""
+    _clear_session_env(monkeypatch)
+    _telegram_session_env(monkeypatch)
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  auto_subscribe_on_create: false\n")
+
+    assert kc._cmd_create(_create_ns(title="cli gated")) == 0
+    out = capsys.readouterr().out
+
+    _tid, subs = _subs_for_newest_task()
+    assert subs == []
+    assert "subscribed=false" in out, out
+
+
+def test_cli_create_json_reports_subscribed(kanban_home, monkeypatch, capsys):
+    """``--json`` stays machine-parseable and carries the subscribe outcome."""
+    _clear_session_env(monkeypatch)
+    _telegram_session_env(monkeypatch)
+
+    assert kc._cmd_create(_create_ns(title="cli json sub", json=True)) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert payload["subscribed"] is True, payload
+    _tid, subs = _subs_for_newest_task()
+    assert len(subs) == 1, subs

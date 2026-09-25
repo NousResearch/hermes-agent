@@ -586,6 +586,129 @@ def set_workspace_path(conn: sqlite3.Connection, task_id: str, path: Path | str)
     _set_task_column(conn, task_id, "workspace_path", str(path))
 
 
+class WorkspaceUpdateRefused(ValueError):
+    """A :func:`set_task_workspace` request was rejected, with the reason.
+
+    A distinct type so callers (CLI / API handlers) can report the operator's
+    mistake without catching unrelated ``ValueError``s from the DB layer.
+    """
+
+
+def set_task_workspace(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    workspace_kind: str,
+    workspace_path: Optional[str] = None,
+    actor: str = "user",
+) -> dict:
+    """Correct an existing task's workspace METADATA. Moves no files.
+
+    The dispatcher writes ``workspace_path`` at claim time
+    (:func:`set_workspace_path`), but before this there was no supported
+    operator path to fix a card whose recorded workspace is wrong — a card
+    pointing at a shared repo ROOT rather than its own per-card worktree binds
+    any process running anywhere in that checkout, which is exactly the
+    mis-assignment ownership detection must avoid.
+
+    Deliberately narrow:
+
+    * Only ``workspace_kind`` + ``workspace_path`` are written. Status,
+      assignee, claim, links/dependencies, runs, comments and events are not
+      touched, and nothing on disk is created, moved or removed (no ``mkdir``,
+      no worktree add) — the row is made to describe a workspace that already
+      exists.
+    * Validation reuses the create-time contracts: ``workspace_kind`` must be
+      in :data:`_kb.VALID_WORKSPACE_KINDS`; ``dir``/``worktree`` require an
+      ABSOLUTE path that already exists as a directory; ``scratch`` refuses an
+      explicit path (pairing ``scratch`` with a real source tree is the #28818
+      completion-deletes-your-data foot-gun).
+    * ``branch_name`` is only meaningful for ``worktree`` (create-time rule),
+      so moving a card that carries one to another kind is refused rather than
+      silently leaving a dangling branch.
+    * An ACTIVE claim is refused: a running task (or one holding an unexpired
+      ``claim_lock``) has a live worker whose cwd is the current workspace.
+      Reclaim/finish it first.
+
+    Every accepted write appends a ``workspace_updated`` event carrying the old
+    and new values plus ``actor`` — the correction is auditable on the card.
+
+    Returns the applied ``{"task_id", "actor", "old", "new"}`` record.
+    Raises :class:`WorkspaceUpdateRefused` for every rejection.
+    """
+    kind = (workspace_kind or "").strip()
+    if kind not in _kb.VALID_WORKSPACE_KINDS:
+        raise WorkspaceUpdateRefused(
+            f"workspace_kind must be one of {sorted(_kb.VALID_WORKSPACE_KINDS)}, "
+            f"got {workspace_kind!r}"
+        )
+    raw_path = (workspace_path or "").strip()
+    resolved_path: Optional[str] = None
+    if kind == "scratch":
+        if raw_path:
+            raise WorkspaceUpdateRefused(
+                "workspace_kind='scratch' takes no explicit path (the board "
+                "manages its own workspaces root); use kind 'dir' or "
+                "'worktree' for a path you own"
+            )
+    else:
+        if not raw_path:
+            raise WorkspaceUpdateRefused(
+                f"workspace_kind={kind!r} requires --path"
+            )
+        p = Path(raw_path).expanduser()
+        if not p.is_absolute():
+            raise WorkspaceUpdateRefused(
+                f"non-absolute workspace_path {raw_path!r}; workspace paths "
+                "must be absolute (relative paths are ambiguous against the "
+                "dispatcher's CWD)"
+            )
+        if not p.is_dir():
+            raise WorkspaceUpdateRefused(
+                f"workspace_path {str(p)!r} does not exist as a directory; "
+                "this command records an EXISTING workspace, it creates none"
+            )
+        resolved_path = str(p)
+
+    with _kb.write_txn(conn):
+        row = conn.execute(
+            "SELECT status, workspace_kind, workspace_path, branch_name, "
+            "claim_lock, claim_expires FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            raise WorkspaceUpdateRefused(f"unknown task {task_id!r}")
+        if row["status"] == "running":
+            raise WorkspaceUpdateRefused(
+                f"task {task_id} is running; reclaim or finish it before "
+                "changing its workspace"
+            )
+        if row["claim_lock"] and int(row["claim_expires"] or 0) > int(time.time()):
+            raise WorkspaceUpdateRefused(
+                f"task {task_id} holds an active claim ({row['claim_lock']}); "
+                "reclaim it before changing its workspace"
+            )
+        if kind != "worktree" and row["branch_name"]:
+            raise WorkspaceUpdateRefused(
+                f"task {task_id} carries branch_name {row['branch_name']!r}, "
+                "which is only valid with workspace_kind='worktree'"
+            )
+        old = {
+            "workspace_kind": row["workspace_kind"],
+            "workspace_path": row["workspace_path"],
+        }
+        new = {"workspace_kind": kind, "workspace_path": resolved_path}
+        conn.execute(
+            "UPDATE tasks SET workspace_kind = ?, workspace_path = ? WHERE id = ?",
+            (kind, resolved_path, task_id),
+        )
+        _kb._append_event(
+            conn, task_id, "workspace_updated",
+            {"actor": actor, "old": old, "new": new},
+        )
+    return {"task_id": task_id, "actor": actor, "old": old, "new": new}
+
+
 def set_branch_name(conn: sqlite3.Connection, task_id: str, branch_name: str) -> None:
     _set_task_column(conn, task_id, "branch_name", str(branch_name))
 

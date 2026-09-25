@@ -865,9 +865,22 @@ def _handle_heartbeat(args: dict, **kw) -> str:
         # The dispatcher pins HERMES_KANBAN_CLAIM_LOCK at spawn; the default
         # claimer covers locally-driven workers that bypassed the dispatcher.
         kb.heartbeat_claim(conn, tid, claimer=os.environ.get("HERMES_KANBAN_CLAIM_LOCK"))
-        ok = kbd.heartbeat_worker(
+        hb = kbd.heartbeat_worker(
             conn, tid, note=args.get("note"), expected_run_id=_worker_run_id(tid))
-        _check(ok, f"could not heartbeat {tid} (unknown id or not running)")
+        if getattr(hb, "superseded", False):
+            # Generic wording here let a superseded worker keep working for 4h45m
+            # (card t_6a6ac2d3) — say exactly what happened and what to do.
+            return tool_error(
+                f"kanban_heartbeat: run superseded — STOP WORKING ON {tid} AND EXIT "
+                f"IMMEDIATELY. This worker holds run "
+                f"{hb.expected_run_id if hb.expected_run_id is not None else '(unknown)'}, "
+                f"but the task is now status={hb.task_status!r} with current_run_id="
+                f"{hb.current_run_id if hb.current_run_id is not None else 'NULL'}. "
+                "Your run was closed (blocked / completed / reclaimed) and any further "
+                "work, commits, comments or PRs from this process are unowned and will "
+                "conflict. Do not retry the heartbeat. A fresh dispatch will pick the "
+                "card up with up-to-date context.")
+        _check(hb, f"could not heartbeat {tid} (unknown id — no such task on this board)")
         return _ok(task_id=tid)
 
 
@@ -1075,76 +1088,18 @@ def _handle_create(args: dict, **kw) -> str:
 
 
 def _resolve_notify_target() -> Optional[dict[str, Any]]:
-    """``kanban_db.add_notify_sub`` kwargs for the calling session, or None (CLI/cron/tests).
-    Gateway sessions: ``HERMES_SESSION_PLATFORM``/``CHAT_ID`` ContextVars. TUI/desktop:
-    those are cleared but the subprocess inherits ``HERMES_SESSION_KEY`` -> ``platform="tui"``
-    for the TUI poller. ``HERMES_SESSION_ID`` is deliberately NOT a fallback: it is set for
-    every CLI/ACP invocation and would auto-subscribe every CLI run."""
-    from gateway.session_context import get_session_env as env
-    platform, chat_id = env("HERMES_SESSION_PLATFORM", ""), env("HERMES_SESSION_CHAT_ID", "")
-    if not platform or not chat_id:
-        session_key = env("HERMES_SESSION_KEY", "") or os.environ.get("HERMES_SESSION_KEY", "")
-        if not session_key:
-            return None
-        platform, chat_id = "tui", session_key
-    chat_type = env("HERMES_SESSION_CHAT_TYPE", "") or None
-    thread_id = env("HERMES_SESSION_THREAD_ID", "") or None
-    message_id = env("HERMES_SESSION_MESSAGE_ID", "") or ""
-    notifier_profile = env("HERMES_SESSION_PROFILE", "")
-    if not notifier_profile:
-        from hermes_cli.profiles import current_profile_name
-        notifier_profile = current_profile_name("default")
-    delivery_metadata: dict[str, Any] = {
-        k: v for k, v in (
-            ("thread_id", thread_id), ("chat_type", chat_type),
-            ("scope_id", env("HERMES_SESSION_SCOPE_ID", "")),
-            ("parent_chat_id", env("HERMES_SESSION_PARENT_CHAT_ID", "")),
-        ) if v}
-    if (platform.lower() == "telegram" and thread_id
-            and (chat_type or "").lower() in {"dm", "direct", "private"}):
-        delivery_metadata["telegram_dm_topic_reply_fallback"] = True
-        if str(thread_id) not in {"", "1"}:
-            delivery_metadata["direct_messages_topic_id"] = str(thread_id)
-        if message_id:
-            delivery_metadata["telegram_reply_to_message_id"] = str(message_id)
-    return dict(
-        platform=platform, chat_id=chat_id, chat_type=chat_type, thread_id=thread_id,
-        user_id=env("HERMES_SESSION_USER_ID", "") or None,
-        user_id_alt=env("HERMES_SESSION_USER_ID_ALT", "") or None,
-        notifier_profile=notifier_profile,
-        delivery_mode="notify+wake" if platform != "tui" else None,
-        delivery_metadata=delivery_metadata or None)
+    """Session -> notify-target resolution lives in ``hermes_cli.kanban_db_notify``
+    (next to ``add_notify_sub``) so the CLI create path can reuse it."""
+    from hermes_cli import kanban_db_notify as _kbn
+    return _kbn._resolve_notify_target()
 
 
 def _maybe_auto_subscribe(conn: Any, task_id: str) -> bool:
-    """Subscribe the calling session to completion/block events; True iff a row was
-    written (surfaced as ``subscribed`` so an orchestrator can fall back to explicit
-    ``kanban_notify-subscribe``). Gated by ``kanban.auto_subscribe_on_create`` (default
-    True). Failures are logged and swallowed: bookkeeping must never fail kanban_create."""
-    try:
-        if not cfg_get(load_config(), "kanban", "auto_subscribe_on_create", default=True):
-            return False
-    except Exception:
-        pass  # unreadable config keeps the user-friendly default (True)
-    target = None
-    try:
-        target = _resolve_notify_target()
-        if target is None:
-            return False  # CLI / cron / test — no persistent channel
-        from hermes_cli import kanban_db_notify as _kbn
-        # Inheritance and explicit subscriptions already encode the delivery policy.
-        # Auto-subscribe must not turn a passive destination into an agent wake.
-        if any(sub["platform"] == target["platform"] and sub["chat_id"] == target["chat_id"]
-               and (sub["thread_id"] or "") == (target["thread_id"] or "")
-               for sub in _kbn.list_notify_subs(conn, task_id)):
-            return True
-        _kbn.add_notify_sub(conn, task_id=task_id, **target)
-        return True
-    except Exception as _exc:
-        logger.warning(
-            "_maybe_auto_subscribe failed: %r (platform=%r key_set=%r)",
-            _exc, target["platform"] if target else "", bool(target and target["chat_id"]))
-        return False
+    """Subscribe the calling session to completion/block events; True iff a row
+    exists for that session afterwards (surfaced as ``subscribed`` so an
+    orchestrator can fall back to explicit ``kanban_notify-subscribe``)."""
+    from hermes_cli import kanban_db_notify as _kbn
+    return _kbn.auto_subscribe_session(conn, task_id)
 
 
 @_kanban_handler("kanban_unblock")

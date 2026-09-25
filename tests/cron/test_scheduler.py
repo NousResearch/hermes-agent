@@ -20,7 +20,11 @@ from cron.scheduler import (
     _summarize_cron_failure_for_delivery,
     run_job,
 )
-from cron.scheduler_delivery import _resolve_origin, _send_media_via_adapter
+from cron.scheduler_delivery import (
+    ORIGIN_NULL_DELIVERY_ERROR_PREFIX,
+    _resolve_origin,
+    _send_media_via_adapter,
+)
 from tools.env_passthrough import clear_env_passthrough
 
 
@@ -2795,4 +2799,65 @@ class TestFailureStreakNudge:
         job = {"id": "old", "schedule": {"kind": "interval"}}  # pre-field job
         with patch("cron.scheduler.load_config", return_value={}):
             assert _failure_streak_nudge(job) == ""
+
+
+class TestOriginNullIncidentGatePolarity:
+    """25/9 review r2 LOW (closed same evening): the two incident gates that mark a
+    recurring origin-null incident ALERTED (no channel exists to alert on — the
+    incident must not sit open recomposing notices that can never leave the process).
+    Polarity BOTH directions per gate: a prefix-carrying delivery_error marks the
+    incident alerted; any other error leaves it open. Drives the REAL gate functions
+    (_finish_completed_run / _deliver_crash_failure) with module seams stubbed, so a
+    future reword of the gate logic (not the shared constant) fails red here."""
+
+    PREFIX = (ORIGIN_NULL_DELIVERY_ERROR_PREFIX +
+              ", no home channel) — recurring job delivers nowhere; output only in "
+              "last_output. Fix: hermes cron edit <job-id> --deliver bot-chat|<platform:chat_id>|local")
+
+    def _mk_d(self, **over):
+        from cron.scheduler import _RunDelivery
+        base = dict(job={"id": "gate-probe", "deliver": "origin", "origin": None,
+                         "repeat": {"times": None, "completed": 3}},
+                    success=False, error="RuntimeError: boom", delivery_error=None,
+                    should_deliver=True, incident_acked=False,
+                    failure_incident_id="inc-123")
+        base.update(over)
+        return _RunDelivery(**base)
+
+    def _run_failure_gate(self, monkeypatch, d):
+        from cron import scheduler as sched
+        marked = []
+        monkeypatch.setattr(sched, "_mark_incident_alerted", lambda iid: marked.append(iid))
+        monkeypatch.setattr(sched, "mark_job_run", lambda *a, **k: True)
+        monkeypatch.setattr(sched, "self_removal_delivery_allowed", lambda jid: False)
+        monkeypatch.setattr(sched, "finish_execution", lambda *a, **k: None)
+        sched._finish_completed_run(d, None, "exec-gate-1")
+        return marked
+
+    # ---- normal failure gate: _finish_completed_run ----
+
+    def test_failure_gate_origin_null_marks_alerted(self, monkeypatch):
+        assert self._run_failure_gate(monkeypatch, self._mk_d(delivery_error=self.PREFIX)) == ["inc-123"]
+
+    def test_failure_gate_plain_error_leaves_open(self, monkeypatch):
+        assert self._run_failure_gate(monkeypatch, self._mk_d(delivery_error="smtp timeout")) == []
+
+    # ---- crash gate: _deliver_crash_failure ----
+
+    def _run_crash_gate(self, monkeypatch, deliver_result_return):
+        from cron import scheduler as sched
+        marked = []
+        monkeypatch.setattr(sched, "_mark_incident_alerted", lambda iid: marked.append(iid))
+        monkeypatch.setattr(sched, "_upsert_incident_for_failure", lambda job, err: (False, "inc-crash"))
+        monkeypatch.setattr(sched, "_deliver_result", lambda job, content, **k: deliver_result_return)
+        job = {"id": "crash-probe", "deliver": "origin", "origin": None,
+               "repeat": {"times": None, "completed": 1}}
+        sched._deliver_crash_failure(job, "RuntimeError: boom", adapters=None, loop=None)
+        return marked
+
+    def test_crash_gate_origin_null_marks_alerted(self, monkeypatch):
+        assert self._run_crash_gate(monkeypatch, self.PREFIX) == ["inc-crash"]
+
+    def test_crash_gate_plain_error_leaves_open(self, monkeypatch):
+        assert self._run_crash_gate(monkeypatch, "smtp timeout") == []
 

@@ -4937,6 +4937,7 @@ export const esOverrides = {
       search: 'Buscar modelos',
       noModels: 'No se encontraron modelos',
       editModels: 'Editar modelos…',
+      followDefault: 'Usar el predeterminado de Ajustes',
       refreshModels: 'Actualizar modelos',
       fast: 'Rápido'
     },

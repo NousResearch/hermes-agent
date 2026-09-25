@@ -3250,6 +3250,7 @@ export const ja = defineLocale({
       search: 'モデルを検索',
       noModels: 'モデルが見つかりません',
       editModels: 'モデルを編集…',
+      followDefault: '設定のデフォルトを使用',
       refreshModels: 'モデルを更新',
       fast: '高速'
     },

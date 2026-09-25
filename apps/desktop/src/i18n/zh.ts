@@ -4216,6 +4216,7 @@ export const zh = defineLocale({
       search: '搜索模型',
       noModels: '未找到模型',
       editModels: '编辑模型…',
+      followDefault: '使用设置中的默认模型',
       refreshModels: '刷新模型',
       fast: '快速'
     },

@@ -3477,6 +3477,7 @@ export const ru = defineLocale({
       search: 'Поиск моделей',
       noModels: 'Модели не найдены',
       editModels: 'Изменить модели…',
+      followDefault: 'Использовать модель по умолчанию из настроек',
       refreshModels: 'Обновить модели',
       fast: 'Быстрая'
     },

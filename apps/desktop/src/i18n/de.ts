@@ -4946,6 +4946,7 @@ export const deOverrides = {
       search: 'Modelle durchsuchen',
       noModels: 'Keine Modelle gefunden',
       editModels: 'Modelle bearbeiten…',
+      followDefault: 'Standard aus den Einstellungen verwenden',
       refreshModels: 'Modelle aktualisieren',
       fast: 'Schnell'
     },

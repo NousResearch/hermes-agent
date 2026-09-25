@@ -4957,6 +4957,7 @@ export const frOverrides = {
       search: 'Rechercher des modèles',
       noModels: 'Aucun modèle trouvé',
       editModels: 'Modifier les modèles…',
+      followDefault: 'Utiliser le modèle par défaut des Réglages',
       refreshModels: 'Actualiser les modèles',
       fast: 'Rapide'
     },

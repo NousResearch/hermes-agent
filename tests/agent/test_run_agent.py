@@ -83,6 +83,53 @@ def agent():
         return a
 
 
+def test_first_request_and_retry_use_catalog_output_ceiling(agent, monkeypatch):
+    """The real AIAgent builder must carry catalog metadata onto the wire."""
+    from agent import model_metadata
+
+    monkeypatch.setattr(model_metadata, "fetch_model_metadata", lambda: {
+        "vendor/catalog-model": {"context_length": 200000, "max_completion_tokens": 128000},
+        "vendor/other-model": {"context_length": 200000, "max_completion_tokens": 16000},
+    })
+    from providers import get_provider_profile
+
+    profile = get_provider_profile("openrouter")
+    monkeypatch.setattr(profile, "get_max_tokens", lambda model: 4096)
+    agent.provider = "openrouter"
+    agent.api_mode = "chat_completions"
+    agent.model = "vendor/catalog-model@preset/demo"
+    agent.max_tokens = None
+    agent.context_compressor.context_length = 200000
+    messages = [{"role": "user", "content": "hello"}]
+
+    first = agent._build_api_kwargs(messages)
+    assert agent._requested_output_cap_from_api_kwargs(first) == 128000
+    # Even a stale retry override from a previous model is clamped at request construction.
+    agent._ephemeral_max_output_tokens = 256000
+    assert agent._requested_output_cap_from_api_kwargs(agent._build_api_kwargs(messages)) == 128000
+    agent.model = "vendor/other-model@preset/demo"
+    assert agent._requested_output_cap_from_api_kwargs(agent._build_api_kwargs(messages)) == 16000
+    assert agent.max_tokens is None
+
+
+def test_catalog_output_cap_keeps_responses_recovery_budget(agent, monkeypatch):
+    from agent import model_metadata
+
+    monkeypatch.setattr(model_metadata, "fetch_model_metadata", lambda: {
+        "vendor/catalog-model": {"max_completion_tokens": 128000},
+    })
+    agent.provider = "openrouter"
+    agent.model = "vendor/catalog-model"
+    agent.api_mode = "codex_responses"
+    agent.max_tokens = None
+    agent.context_compressor.context_length = 200000
+    messages = [{"role": "user", "content": "hello"}]
+    agent._ephemeral_max_output_tokens = 2048
+    assert agent._build_api_kwargs(messages)["max_output_tokens"] == 2048
+    assert agent._ephemeral_max_output_tokens is None
+    assert agent._build_api_kwargs(messages)["max_output_tokens"] == 128000
+
+
 def test_persist_user_message_override_rewrites_text_turns(agent):
     messages = [{"role": "user", "content": "API-only synthetic prefix\nhello"}]
     agent._persist_user_message_idx = 0
@@ -4190,8 +4237,7 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
 
     def test_length_continuation_preserves_large_provider_default_output_cap(self, agent):
-        """Continuation retries must not shrink a higher provider default cap — and must
-        raise it, since re-sending the same cap just truncates again (#72770)."""
+        """Without a published model ceiling, preserve the known provider budget."""
         self._setup_agent(agent)
         agent.max_tokens = None
         requested_caps = []
@@ -4218,7 +4264,7 @@ class TestRunConversation:
 
         assert result["completed"] is True
         assert result["final_response"] == "Part 1 Part 2"
-        assert requested_caps == [65536, 131072]
+        assert requested_caps == [65536, 65536]
 
     def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
         """Local Ollama-hosted GLM (no :cloud suffix) misreports truncated output as stop."""

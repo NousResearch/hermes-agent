@@ -365,31 +365,10 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     )
 
 
-def _model_output_limit(agent: Any) -> Optional[int]:
-    """The model's real max output tokens when Hermes knows it, else None."""
-    if getattr(agent, "api_mode", None) != "anthropic_messages":
-        return None
-    # Local: only Anthropic-Messages turns need the adapter module.
-    from agent.anthropic_adapter import _get_anthropic_max_output
-    return _get_anthropic_max_output(getattr(agent, "model", None) or "")
-
-
-def boosted_output_cap(agent: Any, requested_cap: Optional[int], n: int, base: Optional[int] = None) -> int:
-    """Output budget for truncation retry ``n`` (1-based): ``base·2ⁿ``, never below the
-    failed request's cap, at most ``max(32768, 2×cap)``, and never above the model's
-    known output limit. ``base`` defaults to max_tokens, else the cap actually sent.
-
-    A ceiling equal to the requested cap would re-send the same budget (#72770); a
-    ceiling past the model limit only buys a provider 400 (#79715).
-    """
-    if base is None:
-        base = agent.max_tokens or requested_cap or 4096
-    anchor = requested_cap or base
-    limit = _model_output_limit(agent)
-    if limit and anchor >= limit:
-        return anchor  # already at the model ceiling: doubling cannot help
-    boost = min(max(base * (2 ** n), requested_cap or 0), max(32768, anchor * 2))
-    return min(boost, limit) if limit else boost
+def boosted_output_cap(agent: Any, requested_cap: Optional[int], n: int, base: Optional[int] = None) -> Optional[int]:
+    """Use the same route ceiling as the initial request, including metadata misses."""
+    from agent.output_budget import boosted_output_cap as resolve_retry_cap
+    return resolve_retry_cap(agent, requested_cap, n, base)
 
 
 def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict:
@@ -639,12 +618,10 @@ def continue_codex_incomplete(
                     append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
         if not interim_has_content and _codex_finish_reason(response) == "incomplete":
             agent._ephemeral_reasoning_off = True
-            # No configured cap means the provider's own ceiling was hit: the observed
-            # output_tokens IS that ceiling, so seed the escalation from it (else 4096).
-            usage = getattr(response, "usage", None)
-            observed = getattr(usage, "output_tokens", None) if not isinstance(usage, dict) else usage.get("output_tokens")
+            # Usage is not a published model ceiling. Keep the same catalog/caller
+            # budget policy as the initial request, including an unknown default.
             agent._ephemeral_max_output_tokens = boosted_output_cap(
-                agent, None, n, base=agent.max_tokens or int(observed or 0) or 4096
+                agent, None, n
             )
         if not agent.quiet_mode:
             agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({n}/3)", diagnostic=True)

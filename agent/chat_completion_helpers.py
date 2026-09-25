@@ -1430,6 +1430,8 @@ def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
 
 
 def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
+    from agent.output_budget import model_output_limit
+
     from agent.codex_responses_adapter import classify_responses_route
     from agent.native_compaction import native_compaction_context_management
     is_codex_backend, is_xai_responses, is_github_responses = classify_responses_route(agent)
@@ -1454,7 +1456,8 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         messages=agent._prepare_messages_for_non_vision_model(api_messages), tools=tools_for_api,
         reasoning_config=reasoning_config, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, base_url=agent.base_url,
-        max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
+        max_tokens=ephemeral_out if ephemeral_out is not None else (
+            agent.max_tokens if agent.max_tokens is not None else model_output_limit(agent)),
         timeout=agent._resolved_api_call_timeout(), request_overrides=request_overrides,
         provider=getattr(agent, "provider", None), is_github_responses=is_github_responses,
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
@@ -1465,6 +1468,8 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
 
 
 def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
+    from agent.output_budget import model_output_limit
+
     transport = agent._get_transport()
     tools_for_api = _alias_tool_search_bridge_for_xai(agent, transport, tools_for_api)
 
@@ -1496,7 +1501,8 @@ def _build_chat_completions_kwargs(agent, api_messages, tools_for_api, reasoning
     # providers with profiles used to bypass it).
     _common = dict(model=agent.model, messages=agent._prepare_messages_for_non_vision_model(api_messages),
         tools=tools_for_api, base_url=agent.base_url, timeout=agent._resolved_api_call_timeout(),
-        max_tokens=agent.max_tokens, ephemeral_max_output_tokens=_ephemeral_out,
+        max_tokens=agent.max_tokens if agent.max_tokens is not None else model_output_limit(agent),
+        ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param, reasoning_config=reasoning_config,
         request_overrides=request_overrides, session_id=getattr(agent, "session_id", None),
         cache_scope_id=cache_scope_id, ollama_num_ctx=agent._ollama_num_ctx,
@@ -1539,8 +1545,9 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     anthropic_messages). No-op for every other provider.
     """
     from agent.opencode_affinity import merge_session_affinity_headers
+    from agent.output_budget import apply_output_budget
 
-    kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
+    kwargs = apply_output_budget(agent, _build_api_kwargs_for_mode(agent, api_messages, tools_for_api))
     return merge_session_affinity_headers(
         kwargs,
         getattr(agent, "provider", None),

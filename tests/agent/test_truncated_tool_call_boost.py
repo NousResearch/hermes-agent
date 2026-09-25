@@ -51,10 +51,9 @@ SITES = [_tool_call_budgets, _length_continuation_budgets]
 
 @pytest.mark.parametrize("site", SITES)
 @pytest.mark.parametrize("requested_cap", [32768, 65536])
-def test_retry_raises_budget_above_large_requested_cap(site, requested_cap):
+def test_retry_preserves_requested_cap_when_model_ceiling_is_unknown(site, requested_cap):
     budgets = site(_agent(None, requested_cap))
-    assert budgets[0] > requested_cap
-    assert max(budgets) <= requested_cap * 2
+    assert budgets == [requested_cap] * 4
 
 
 @pytest.mark.parametrize("site", SITES)
@@ -67,5 +66,22 @@ def test_boost_clamped_to_known_model_output_limit(site):
     assert at_limit == [64000] * 4
 
 
-def test_small_explicit_max_tokens_ladder_still_capped_at_floor():
-    assert _tool_call_budgets(_agent(4096, None)) == [8192, 16384, 32768, 32768]
+def test_explicit_output_budget_is_not_silently_increased():
+    assert _tool_call_budgets(_agent(4096, None)) == [4096] * 4
+
+
+@pytest.mark.parametrize("site", SITES)
+def test_catalog_ceiling_reaches_both_retry_paths(site, monkeypatch):
+    from agent import model_metadata
+
+    monkeypatch.setattr(model_metadata, "fetch_model_metadata", lambda: {
+        "vendor/catalog-model": {"max_completion_tokens": 128000},
+    })
+    a = _agent(None, 128000, api_mode="chat_completions", provider="openrouter",
+               model="vendor/catalog-model@preset/demo", base_url="https://openrouter.ai/api/v1")
+    assert site(a) == [128000] * 4
+
+
+@pytest.mark.parametrize("site", SITES)
+def test_unknown_provider_default_is_not_replaced_with_eight_k(site):
+    assert site(_agent(None, None)) == [None] * 4

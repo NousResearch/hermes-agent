@@ -63,7 +63,7 @@ from hermes_state import SessionDB
 
 db = SessionDB(Path(sys.argv[1]))
 session_id = sys.argv[2]
-holder = "pid={}:turn=holder:platform=cli".format(os.getpid())
+holder = "pid={}:turn={}:platform=cli".format(os.getpid(), "holder-" + session_id * 5)
 if not db.acquire_session_turn_lease(session_id, holder, ttl_seconds=600.0, wait_seconds=0.1):
     print("HOLDER-FAILED", flush=True)
     raise SystemExit(3)
@@ -199,7 +199,7 @@ def _gateway_agent(db: SessionDB, status_callback) -> AIAgent:
 class _LeaseWaitTurn:
     """A live holder process plus a real gateway-shaped turn waiting behind it."""
 
-    def __init__(self, db_path, db, holder, agent, turn_thread, outcome, statuses, body_snapshot):
+    def __init__(self, db_path, db, holder, agent, turn_thread, outcome, statuses, thoughts, body_snapshot):
         self.db_path = db_path
         self.db = db
         self.holder = holder
@@ -207,6 +207,7 @@ class _LeaseWaitTurn:
         self.turn_thread = turn_thread
         self.outcome = outcome
         self.statuses = statuses
+        self.thoughts = thoughts
         self.body_snapshot = body_snapshot
 
     def lease_row_holder(self) -> Optional[str]:
@@ -258,6 +259,8 @@ def _start_lease_wait(monkeypatch, tmp_path, *, wait_budget=LEASE_WAIT_BUDGET_S)
             wait_entered.set()
 
     agent = _gateway_agent(db, status_callback)
+    thoughts: List[str] = []
+    agent.thinking_callback = thoughts.append
     monkeypatch.setattr("agent.turn_facade_lease.LEASE_WAIT_SECONDS", wait_budget)
     _compress_lease_wait_clock(monkeypatch)
 
@@ -289,7 +292,7 @@ def _start_lease_wait(monkeypatch, tmp_path, *, wait_budget=LEASE_WAIT_BUDGET_S)
         raise AssertionError(
             "harness error: the turn never entered the durable session turn lease wait"
         )
-    return _LeaseWaitTurn(db_path, db, holder, agent, turn_thread, outcome, statuses, body_snapshot)
+    return _LeaseWaitTurn(db_path, db, holder, agent, turn_thread, outcome, statuses, thoughts, body_snapshot)
 
 
 class _StallAdapter:
@@ -361,7 +364,13 @@ def test_live_lease_wait_publishes_itself_as_progress(tmp_path, monkeypatch):
         f"provenance={summary.get('last_activity_provenance')!r}"
     )
     assert summary["last_activity_provenance"] == ActivityProvenance.SESSION_TURN_LEASE_WAIT.value
-    assert turn.holder.holder in summary["last_activity_description"]
+    holder_pid = turn.holder.holder.partition(":turn=")[0]
+    assert holder_pid in summary["last_activity_description"]
+    assert "cli" in summary["last_activity_description"]
+    assert "turn=" not in summary["last_activity_description"]
+    assert len(summary["last_activity_description"]) <= 120
+    assert any(holder_pid in text for text in turn.thoughts)
+    assert all("turn=" not in text and len(text) <= 120 for text in turn.thoughts)
 
 
 def test_inactivity_watcher_does_not_abandon_a_live_lease_wait(tmp_path, monkeypatch):

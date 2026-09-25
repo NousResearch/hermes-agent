@@ -9,6 +9,7 @@ bodies run on per-handle workers), not per-turn threads.
 """
 import logging
 import os
+import re
 import threading
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -278,8 +279,13 @@ def admit_durable_turn_lease(
                 # A contended diagnostic read must not interrupt the bounded wait.
                 logger.debug("Could not read session turn lease holder", exc_info=True)
         activity = "waiting for session turn lease"
-        if blocking_holder:
-            activity += f" held by {blocking_holder}"
+        # Holder turn IDs include internal session IDs. Only expose the process identity.
+        holder_match = re.fullmatch(
+            r"pid=([0-9]{1,10}):turn=.+:platform=([a-z0-9_-]{1,32})",
+            blocking_holder if isinstance(blocking_holder, str) else "",
+        )
+        if holder_match:
+            activity += f" held by pid={holder_match[1]} on {holder_match[2]}"
         agent._emit_wait_notice(
             activity, provenance=ActivityProvenance.SESSION_TURN_LEASE_WAIT,
         )

@@ -1530,6 +1530,20 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     # Opt-in idle compaction: compact up front when a session resumes after this many
     # seconds idle (0 = disabled). Consumed by build_turn_context().
     idle_compact_after_seconds = max(0, int(cfg.get("idle_compact_after_seconds", 0)))
+    summary_source = str(cfg.get(
+        "summary_source", cfg_get(DEFAULT_CONFIG, "compression", "summary_source")
+    ) or "previous").strip().lower()
+    if summary_source not in {"previous", "original"}:
+        logger.warning(
+            "Invalid compression.summary_source=%r; expected 'previous' or 'original'. Using previous.",
+            cfg.get("summary_source"),
+        )
+        summary_source = "previous"
+    summary_source_windows = max(
+        1, min(8, _parse_config_int(
+            cfg.get("summary_source_windows", cfg_get(DEFAULT_CONFIG, "compression", "summary_source_windows")), 2
+        ))
+    )
     return CompressionSettings(
         threshold=threshold,
         autoraise_notice_enabled=autoraise_notice_enabled,
@@ -1577,6 +1591,8 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        summary_source=summary_source,
+        summary_source_windows=summary_source_windows,
     )
 
 
@@ -1988,6 +2004,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
             proactive_prune_min_result_chars=cs.proactive_prune_min_chars,
             proactive_prune_min_reclaim_tokens=cs.proactive_prune_min_reclaim,
             min_tail_user_messages=cs.min_tail_users, tail_mode=cs.tail_mode,
+            summary_source=cs.summary_source, summary_source_windows=cs.summary_source_windows,
             custom_providers=_custom_providers,
         )
     _bind_session_state = getattr(agent.context_compressor, "bind_session_state", None)

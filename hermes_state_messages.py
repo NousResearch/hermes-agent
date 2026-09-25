@@ -1262,9 +1262,12 @@ class SessionMessagesMixin:
     def get_messages_as_conversation(self, session_id: str, include_ancestors: bool = False,
                                      include_inactive: bool = False, repair_alternation: bool = False,
                                      include_row_ids: bool = False,
-                                     include_compacted: bool = False) -> List[Dict[str, Any]]:
+                                     include_compacted: bool = False,
+                                     include_summary_markers: bool = False) -> List[Dict[str, Any]]:
         """Load messages in OpenAI format. ``include_compacted`` (deduped display history) is for DISPLAY reads
-        only: the model-fed restore must not regrow what compaction summarized away. ``repair_alternation``
+        only: the model-fed restore must not regrow what compaction summarized away.
+        ``include_summary_markers`` preserves synthetic compaction rows for audit/re-derivation callers.
+        ``repair_alternation``
         repairs the loaded list for LIVE REPLAY callers (a durable ``user;user`` pair would re-trigger the
         per-request repair forever), preserving summary markers before repair so derivative context
         cannot merge with an original user turn; the stored transcript is never mutated."""
@@ -1275,7 +1278,7 @@ class SessionMessagesMixin:
             rows = self._dedupe_display_generations(rows)
         return self._rows_to_conversation(rows, session_id=session_id, include_ancestors=include_ancestors,
             repair_alternation=repair_alternation, include_row_ids=include_row_ids,
-            include_summary_markers=repair_alternation)
+            include_summary_markers=include_summary_markers or repair_alternation)
 
     def _dedupe_replayed_user(self, messages, msg, exact_user_clones) -> Tuple[bool, Any]:
         """Ancestor-lineage dedupe of one decoded user *msg* -> ``(skip, exact_clone_key)``. Rotation

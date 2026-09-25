@@ -122,6 +122,19 @@ def _container_identity(shared_key: str = "") -> str:
     return f"{_sanitize_label_value(shared_key)[:50]}-{digest}"
 
 
+def _norm_mount_source(path: str | None) -> str | None:
+    """Comparison form of a container's bind source, or ``None``.
+
+    ``None``/``""`` mean "no ``/workspace`` mount" and must stay distinguishable from a
+    real path, so an unbound container is never mistaken for an agreeing one. Symlinks are
+    NOT resolved: a host path that is a symlink and the same path spelled literally are the
+    same bind, and resolving could turn a deliberate distinct path into a false match.
+    """
+    if not path or not isinstance(path, str):
+        return None
+    return os.path.normpath(os.path.expanduser(path.strip())) or None
+
+
 def reap_orphan_containers(
     *, max_age_seconds: int = 600, profile_filter: str | None = None, docker_exe: str | None = None,
 ) -> int:
@@ -747,12 +760,34 @@ class DockerEnvironment(BaseEnvironment):
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
         return volume_args, writable_args
 
+    def _container_workspace_source(self, container_id: str) -> Optional[str]:
+        """Host path backing ``/workspace``, or ``None`` when there is no such mount or the
+        inspection fails.
+
+        A persistent container is keyed per profile, not per workspace: a container created
+        by a session pointed at workspace A carries the same labels as one this session
+        needs for workspace B, so ``_attach_existing_container`` would adopt A's bind. The
+        mount source has to be part of the reuse decision — run args are immutable at
+        creation, so reusing in place can never repair it.
+        """
+        result = _docker_query(
+            [self._docker_exe, "inspect", "--format",
+             '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}',
+             container_id],
+            timeout=10,
+            fail="docker inspect /workspace source failed: %s",
+            nonzero="docker inspect /workspace source returned %d: %s")
+        return (result.stdout.strip() or None) if result is not None else None
+
     def _attach_existing_container(self, task_label, profile_name, egress_label, network: bool) -> bool:
         """Attach to a prior process's labeled container ("ONE long-lived container shared
         across sessions"; opt out via ``docker_persist_across_processes: false``).
         Network guard is lockdown-only: a bridge container under ``docker_network: false``
         is removed and recreated, but a ``none`` container under default config is kept so
-        ``--network=none`` in extra args doesn't churn containers every startup."""
+        ``--network=none`` in extra args doesn't churn containers every startup.
+        Workspace guard: a container whose ``/workspace`` is backed by a DIFFERENT host
+        directory than this session's mount source is removed and recreated, so a sibling
+        session's workspace (or a legacy ``$HOME`` bind) can never be adopted."""
         existing = self._find_reusable_container(task_label, profile_name, egress_label)
         if existing is None:
             return False
@@ -765,6 +800,20 @@ class DockerEnvironment(BaseEnvironment):
                     "docker_network=false requests an air-gapped "
                     "container — removing it and starting fresh (task=%s, profile=%s).",
                     container_id[:12], actual_mode or "unknown", task_label, profile_name)
+                try:
+                    run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30)
+                except (subprocess.TimeoutExpired, OSError) as e:
+                    logger.warning("Failed to remove mismatched container %s: %s", container_id[:12], e)
+                return False
+
+        wanted_source = self.host_cwd
+        if wanted_source:
+            actual_source = self._container_workspace_source(container_id)
+            if _norm_mount_source(actual_source) != _norm_mount_source(wanted_source):
+                logger.warning(
+                    "Existing container %s mounts /workspace from %r but this session "
+                    "needs %r — removing it and starting fresh (task=%s, profile=%s).",
+                    container_id[:12], actual_source, wanted_source, task_label, profile_name)
                 try:
                     run_capture([self._docker_exe, "rm", "-f", container_id], timeout=30)
                 except (subprocess.TimeoutExpired, OSError) as e:

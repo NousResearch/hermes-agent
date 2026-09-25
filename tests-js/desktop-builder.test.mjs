@@ -32,6 +32,7 @@ function fixture() {
   put(join(app, 'vite.config.mjs'), 'export default { base: "./", build: { minify: false } }')
   put(join(app, 'index.html'), '<html><div id="app"></div><script type="module" src="/src/index.js"></script></html>')
   put(join(app, 'src/index.js'), 'document.getElementById("app").textContent = "built renderer"')
+  put(join(app, 'electron/entry.ts'), "await import('./main')")
   put(join(app, 'electron/main.ts'), 'console.log(JSON.stringify({ stamp: __HERMES_INSTALL_STAMP__, identity: __HERMES_PRODUCT_IDENTITY__ }))')
   put(join(app, 'electron/preload.ts'), 'globalThis.fixturePreload = "compiled preload"')
   put(join(app, 'electron/preview-guest-preload-entry.ts'), 'globalThis.fixtureGuestPreload = "compiled guest preload"')

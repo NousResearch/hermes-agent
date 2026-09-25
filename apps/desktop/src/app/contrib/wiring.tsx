@@ -135,6 +135,7 @@ import { useRouteResume } from '../session/hooks/use-route-resume'
 import { useSessionActions } from '../session/hooks/use-session-actions'
 import { useSessionListActions } from '../session/hooks/use-session-list-actions'
 import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
+import { useTranscriptPeerSync } from '../session/hooks/use-transcript-peer-sync'
 import { startWorkspaceSession } from '../session/workspace-session-target'
 import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
@@ -940,6 +941,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const activeIsMessaging =
     !!selectedStoredSessionId &&
     isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
+
+  useTranscriptPeerSync({
+    activeSessionIdRef,
+    busyRef,
+    selectedStoredSessionIdRef,
+    updateSessionState
+  })
 
   // sessions.changed refreshes every open transcript; only messaging retains
   // the periodic safety-net it already had before this fix.

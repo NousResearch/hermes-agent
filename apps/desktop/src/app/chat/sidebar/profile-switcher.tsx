@@ -46,7 +46,7 @@ import { ProfileGlyph } from '@/components/ui/profile-glyph'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import type { DesktopRegistryConnection } from '@/global'
 import { getProfileSoul, updateProfileSoul } from '@/hermes'
-import { useI18n } from '@/i18n'
+import { type Translations, useI18n } from '@/i18n'
 import { sortConnectionsForDisplay } from '@/lib/connection-display'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
@@ -58,6 +58,7 @@ import {
   reorderCommitHaptic,
   reorderStepHaptic
 } from '@/lib/reorder'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import {
   $activeConnectionId,
@@ -85,6 +86,12 @@ import {
   sortByProfileOrder
 } from '@/store/profile'
 import {
+  $profileDotStateByScope,
+  type ProfileDotState,
+  type ProfileDotSummary,
+  profileDotSummaryFor
+} from '@/store/profile-dot-state'
+import {
   $profileRemoteOverrides,
   openRemoteOverrideDialog,
   refreshProfileRemoteOverrides
@@ -111,6 +118,63 @@ const RAIL_GAP = 4 // px — matches gap-1 between squares.
 // drag targets, endless horizontal scroll), so the rail collapses to a compact
 // menu. Drag-reorder and long-press-recolor live only on the squares path.
 const PROFILE_DROPDOWN_THRESHOLD = 13
+
+// #91710: a profile that finished (or blocked, or is still working) while
+// another was selected carries an indicator on its rail square and dropdown
+// row. The colors mirror the session status dot's palette — amber for "needs
+// your answer", accent for running, success green for unread — so a profile's
+// loudest state reads the same as its sessions' dots in the sidebar below.
+const PROFILE_STATUS_DOT_CLASS: Record<ProfileDotState, string> = {
+  'needs-input': 'bg-amber-500',
+  working: 'bg-(--ui-accent)',
+  unread: 'bg-(--ui-success)'
+}
+
+/** The a11y/tooltip text for one square's summary — every non-zero count,
+ *  most urgent first ("1 session needs your answer, 2 unread sessions"). The
+ *  counts ride the accessible name so the state is never color-only. */
+function profileStatusLabel(p: Translations['profiles'], summary: ProfileDotSummary): string {
+  const parts: string[] = []
+
+  if (summary.needsInputCount > 0) {
+    parts.push(p.status.needsInput(summary.needsInputCount))
+  }
+
+  if (summary.workingCount > 0) {
+    parts.push(p.status.working(summary.workingCount))
+  }
+
+  if (summary.unreadCount > 0) {
+    parts.push(p.status.unread(summary.unreadCount))
+  }
+
+  return parts.join(', ')
+}
+
+/** One profile square's rollup of its sessions' shared dot state, keyed by the
+ *  (gateway, profile) the square names. `connectionId` is null for this
+ *  machine's primary. The interned summaries keep the selector's bail-out
+ *  intact: a square re-renders only when its own counts change. */
+function useProfileStatus(
+  profile: null | string,
+  connectionId: null | string | undefined
+): ProfileDotSummary | null {
+  return useStoreSelector($profileDotStateByScope, byScope =>
+    profile ? (profileDotSummaryFor(byScope, connectionId, profile) ?? null) : null
+  )
+}
+
+/** The dot a square/dropdown row paints for a summary. `status-dot` slot so
+ *  tests (and tours) can find it without duplicating the class string. */
+function ProfileStatusDot({ summary }: { summary: ProfileDotSummary }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn('size-1.5 rounded-full', PROFILE_STATUS_DOT_CLASS[summary.state])}
+      data-slot="profile-status-dot"
+    />
+  )
+}
 
 // Neighbors reflow on RAIL_TRANSITION; the dragged square glides between
 // snapped cells on the snappier DRAG_TRANSITION. Both come from the SHARED
@@ -810,6 +874,7 @@ function ProfileDropdown({
             <ProfileDropdownItem
               color={resolveProfileColor(profile.name, colors)}
               connectionId={connectionId}
+              hideStatus={profile.name === value}
               key={profile.name}
               label={profileLabel(profile)}
               name={profile.name}
@@ -825,28 +890,13 @@ function ProfileDropdown({
               {!group.reachable && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
             </DropdownMenuLabel>
             {[group.defaultAgent, ...group.named].map(agent => (
-              <ProfileLaunchContextMenu
-                connectionId={agent.connectionId}
+              <RestDropdownItem
+                agent={agent}
+                colors={colors}
+                gatewayLabel={group.label}
                 key={agent.profile}
-                label={p.fleet.onGateway(agent.profile, group.label)}
-                profile={agent.profile}
-              >
-                <DropdownMenuItem
-                  aria-label={p.fleet.onGateway(agent.profile, group.label)}
-                  className="min-w-0"
-                  onSelect={() => onSelectRest(agent)}
-                >
-                  <span className="flex min-w-0 items-center gap-1.5">
-                    <ProfileGlyph
-                      aria-hidden="true"
-                      color={resolveProfileColor(agent.profile, colors)}
-                      isDefault={agent.isDefault}
-                      name={agent.profile}
-                    />
-                    <span className="truncate">{agent.profile}</span>
-                  </span>
-                </DropdownMenuItem>
-              </ProfileLaunchContextMenu>
+                onSelect={onSelectRest}
+              />
             ))}
           </div>
         ))}
@@ -860,15 +910,23 @@ function ProfileDropdown({
 function ProfileDropdownItem({
   color,
   connectionId,
+  hideStatus,
   label,
   name
 }: {
   color: null | string
   connectionId: null | string
+  /** The dropdown's own selected row: its sessions are on screen in the
+   *  sidebar, so its rollup is suppressed like the active square (#91710). */
+  hideStatus?: boolean
   label: string
   name: string
 }) {
+  const { t } = useI18n()
+  const p = t.profiles
   const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
+  const summary = useProfileStatus(name, connectionId)
+  const statusText = summary && !hideStatus ? profileStatusLabel(p, summary) : null
 
   return (
     <ProfileLaunchContextMenu connectionId={connectionId} label={label} profile={name}>
@@ -882,8 +940,51 @@ function ProfileDropdownItem({
         <span className="flex min-w-0 items-center gap-1.5">
           <ProfileGlyph aria-hidden="true" color={color} isDefault={false} name={name} />
           <span className="truncate">{label}</span>
+          {summary && !hideStatus && <ProfileStatusDot summary={summary} />}
         </span>
+        {statusText && <span className="sr-only">{`, ${statusText}`}</span>}
       </DropdownMenuRadioItem>
+    </ProfileLaunchContextMenu>
+  )
+}
+
+// One at-rest gateway's profile row in the condensed dropdown — the dropdown
+// twin of RestSquare, carrying the same rollup (#91710).
+function RestDropdownItem({
+  agent,
+  colors,
+  gatewayLabel,
+  onSelect
+}: {
+  agent: FleetAgent
+  colors: Record<string, string>
+  gatewayLabel: string
+  onSelect: (agent: FleetAgent) => void
+}) {
+  const { t } = useI18n()
+  const p = t.profiles
+  const label = p.fleet.onGateway(agent.profile, gatewayLabel)
+  const summary = useProfileStatus(agent.profile, agent.connectionId)
+  const statusText = summary ? profileStatusLabel(p, summary) : null
+
+  return (
+    <ProfileLaunchContextMenu connectionId={agent.connectionId} label={label} profile={agent.profile}>
+      <DropdownMenuItem
+        aria-label={statusText ? `${label}, ${statusText}` : label}
+        className="min-w-0"
+        onSelect={() => onSelect(agent)}
+      >
+        <span className="flex min-w-0 items-center gap-1.5">
+          <ProfileGlyph
+            aria-hidden="true"
+            color={resolveProfileColor(agent.profile, colors)}
+            isDefault={agent.isDefault}
+            name={agent.profile}
+          />
+          <span className="truncate">{agent.profile}</span>
+          {summary && <ProfileStatusDot summary={summary} />}
+        </span>
+      </DropdownMenuItem>
     </ProfileLaunchContextMenu>
   )
 }
@@ -913,16 +1014,26 @@ function ProfilePill({
   profile,
   slot
 }: ProfilePillProps) {
+  const { t } = useI18n()
+  const p = t.profiles
+  // The default profile's home face carries the same rollup as a named square
+  // (its sessions can finish while another profile is selected too), again
+  // suppressed while it is the active home (#91710).
+  const summary = useProfileStatus(profile ?? null, connectionId)
+  const statusText = !active && summary ? profileStatusLabel(p, summary) : null
+  const accessibleLabel = statusText ? `${label}, ${statusText}` : label
+
   const button = (
-    <Tip label={label}>
+    <Tip label={accessibleLabel}>
       <Button
         aria-busy={pending || undefined}
-        aria-label={label}
+        aria-label={accessibleLabel}
         aria-pressed={active}
         className={cn(
           'bg-transparent text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
           active && 'bg-(--ui-control-active-background) text-foreground',
-          muted && 'opacity-40 hover:opacity-100'
+          muted && 'opacity-40 hover:opacity-100',
+          summary && !active && 'relative'
         )}
         data-connection-id={connectionId}
         data-slot={slot}
@@ -935,6 +1046,11 @@ function ProfilePill({
           <Loader2 aria-hidden="true" className="size-3 animate-spin" />
         ) : (
           <Codicon name={glyph} size="0.875rem" />
+        )}
+        {summary && !active && (
+          <span className="absolute -right-0.5 -top-0.5">
+            <ProfileStatusDot summary={summary} />
+          </span>
         )}
       </Button>
     </Tip>
@@ -1088,6 +1204,12 @@ function RestSquare({
   const [pickerOpen, setPickerOpen] = useState(false)
   const label = p.fleet.onGateway(agent.profile, agent.connectionLabel)
 
+  // An at-rest gateway's square always carries its profiles' rollup — it is
+  // never the active square, and its sessions are not on screen anywhere
+  // else (#91710).
+  const summary = useProfileStatus(agent.profile, agent.connectionId)
+  const statusText = summary ? profileStatusLabel(p, summary) : null
+
   const pickColor = (next: null | string) => {
     onRecolor(next)
     setPickerOpen(false)
@@ -1104,7 +1226,7 @@ function RestSquare({
                 <TooltipTrigger asChild>
                   <button
                     aria-busy={pending || undefined}
-                    aria-label={label}
+                    aria-label={statusText ? `${label}, ${statusText}` : label}
                     className="relative grid size-5 shrink-0 select-none place-items-center rounded-[3px] text-[0.5625rem] font-semibold uppercase leading-none opacity-35 transition-opacity hover:opacity-100 aria-busy:opacity-100"
                     data-connection-id={agent.connectionId}
                     data-profile={agent.profile}
@@ -1118,11 +1240,16 @@ function RestSquare({
                     ) : (
                       profileShortLabel(agent.profile)
                     )}
+                    {summary && (
+                      <span className="absolute -bottom-0.5 -right-0.5">
+                        <ProfileStatusDot summary={summary} />
+                      </span>
+                    )}
                   </button>
                 </TooltipTrigger>
               </ContextMenuTrigger>
             </PopoverAnchor>
-            <TooltipContent>{label}</TooltipContent>
+            <TooltipContent>{statusText ? `${label} · ${statusText}` : label}</TooltipContent>
           </Tooltip>
         </TooltipProvider>
 
@@ -1233,6 +1360,12 @@ function ProfileSquare({
   // spawn now so a cold click doesn't pay the full boot.
   const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(name)
 
+  // The square carries its profile's session rollup — but never when active:
+  // the workspace is homed there and the sidebar below already shows that
+  // profile's own row dots (#91710).
+  const summary = useProfileStatus(name, connectionId)
+  const statusText = !active && summary ? profileStatusLabel(p, summary) : null
+
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({
     id: name,
     transition: RAIL_TRANSITION
@@ -1291,7 +1424,11 @@ function ProfileSquare({
                     type="button"
                     {...attributes}
                     {...listeners}
-                    aria-label={remoteHost ? `${label} — ${p.remoteOverride.badge(remoteHost)}` : label}
+                    aria-label={
+                      [remoteHost ? `${label} — ${p.remoteOverride.badge(remoteHost)}` : label, statusText]
+                        .filter(Boolean)
+                        .join(', ') || label
+                    }
                     aria-pressed={active}
                     // Hold-to-recolor rides alongside the dnd pointer listener (call
                     // it first so drag tracking still arms), then a timer opens the
@@ -1342,11 +1479,22 @@ function ProfileSquare({
                         <Codicon name="globe" size="0.5rem" />
                       </span>
                     )}
+                    {/* The profile's session rollup (#91710): bottom-right so it
+                        never fights the remote globe. */}
+                    {!active && summary && (
+                      <span className="absolute -bottom-0.5 -right-0.5">
+                        <ProfileStatusDot summary={summary} />
+                      </span>
+                    )}
                   </button>
                 </TooltipTrigger>
               </ContextMenuTrigger>
             </PopoverAnchor>
-            <TooltipContent>{remoteHost ? `${label} · ${p.remoteOverride.badge(remoteHost)}` : label}</TooltipContent>
+            <TooltipContent>
+              {[remoteHost ? `${label} · ${p.remoteOverride.badge(remoteHost)}` : label, statusText]
+                .filter(Boolean)
+                .join(' · ')}
+            </TooltipContent>
           </Tooltip>
         </TooltipProvider>
 

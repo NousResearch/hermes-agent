@@ -3529,6 +3529,12 @@ export const deOverrides = {
       switchTo: (name, gateway) => `Zu ${name} auf ${gateway} wechseln`,
       deleteOn: gateway => ` auf ${gateway}`
     },
+    status: {
+      unread: (count: number) => (count === 1 ? '1 ungelesene Sitzung' : `${count} ungelesene Sitzungen`),
+      needsInput: (count: number) =>
+        count === 1 ? '1 Sitzung wartet auf Ihre Antwort' : `${count} Sitzungen warten auf Ihre Antwort`,
+      working: (count: number) => (count === 1 ? '1 laufende Sitzung' : `${count} laufende Sitzungen`)
+    },
     remoteOverride: {
       menuItem: 'Mit Remote-Host verbinden…',
       badge: (host: string) => `Läuft auf ${host}`,
@@ -5876,6 +5882,9 @@ export const deOverrides = {
     sessionUnavailable: 'Session nicht verfügbar',
     createSessionFailed: 'Neue Session konnte nicht erstellt werden',
     promptFailed: 'Prompt fehlgeschlagen',
+    staleSessionTitle: 'Chat veraltet',
+    staleSessionBody:
+      'Dieses Fenster war hinter einer anderen Ansicht desselben Chats. Die neuesten Nachrichten wurden geladen. Senden Sie erneut, wenn Sie noch möchten.',
     providerCredentialRequired:
       'Fügen Sie Anmeldedaten für einen Anbieter hinzu, bevor Sie Ihre erste Nachricht senden.',
     emptySlashCommand: 'leerer Slash-Befehl',

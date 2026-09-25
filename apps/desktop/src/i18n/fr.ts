@@ -3536,6 +3536,12 @@ export const frOverrides = {
       switchTo: (name, gateway) => `Basculer vers ${name} sur ${gateway}`,
       deleteOn: gateway => ` sur ${gateway}`
     },
+    status: {
+      unread: (count: number) => (count === 1 ? '1 session non lue' : `${count} sessions non lues`),
+      needsInput: (count: number) =>
+        count === 1 ? '1 session attend votre réponse' : `${count} sessions attendent votre réponse`,
+      working: (count: number) => (count === 1 ? '1 session en cours' : `${count} sessions en cours`)
+    },
     remoteOverride: {
       menuItem: 'Se connecter à un hôte distant…',
       badge: (host: string) => `S'exécute sur ${host}`,
@@ -5888,6 +5894,9 @@ export const frOverrides = {
     sessionUnavailable: 'Session indisponible',
     createSessionFailed: 'Impossible de créer une nouvelle session',
     promptFailed: "Échec de l'invite",
+    staleSessionTitle: 'Conversation obsolète',
+    staleSessionBody:
+      'Cette fenêtre était en retard sur une autre vue du même chat. Les derniers messages ont été chargés. Renvoyez si vous le souhaitez encore.',
     providerCredentialRequired: "Ajoutez un identifiant de fournisseur avant d'envoyer votre premier message.",
     emptySlashCommand: 'commande slash vide',
     desktopCommands: 'Commandes Desktop',

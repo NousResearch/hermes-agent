@@ -3438,6 +3438,9 @@ export const ar = defineLocale({
     sessionUnavailable: 'الجلسة غير متاحة',
     createSessionFailed: 'فشل إنشاء الجلسة',
     promptFailed: 'فشل إرسال الرسالة',
+    staleSessionTitle: 'المحادثة غير محدّثة',
+    staleSessionBody:
+      'كانت هذه النافذة متأخرة عن عرض آخر لنفس المحادثة. تم تحميل أحدث الرسائل. أعد الإرسال إذا كنت لا تزال تريد ذلك.',
     providerCredentialRequired: 'مطلوب اعتماد المزود',
     emptySlashCommand: 'أمر slash فارغ',
     desktopCommands: 'أوامر سطح المكتب',

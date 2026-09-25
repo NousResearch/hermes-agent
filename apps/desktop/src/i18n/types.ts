@@ -2584,6 +2584,11 @@ export interface Translations {
       switchTo: (name: string, gateway: string) => string
       deleteOn: (gateway: string) => string
     }
+    status: {
+      unread: (count: number) => string
+      needsInput: (count: number) => string
+      working: (count: number) => string
+    }
     remoteOverride: {
       menuItem: string
       badge: (host: string) => string
@@ -4420,6 +4425,8 @@ export interface Translations {
     sessionUnavailable: string
     createSessionFailed: string
     promptFailed: string
+    staleSessionTitle: string
+    staleSessionBody: string
     providerCredentialRequired: string
     emptySlashCommand: string
     desktopCommands: string

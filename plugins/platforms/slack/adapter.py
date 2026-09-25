@@ -1022,6 +1022,9 @@ class SlackAdapter(BasePlatformAdapter):
     _CHANNEL_TEAM_MAX = 10000
     _APPROVAL_RESOLVED_MAX = _CLARIFY_RESOLVED_MAX = _ACTIVE_STATUS_THREADS_MAX = 1000
     _CLARIFY_MESSAGE_MAX = 1000
+    # Per-channel cap on buffered clarify-answer reactions awaiting the turn's completion; a
+    # multi-question intake conversation stays well under this.
+    _PENDING_CLARIFY_REACTIONS_MAX = 200
     # Tighter cap than the approval/clarify dicts: each entry holds the
     # full provider list, and a picker is only live for minutes.
     _MODEL_PICKER_STATE_MAX = 100
@@ -1103,6 +1106,11 @@ class SlackAdapter(BasePlatformAdapter):
         # never reached the session. Keys follow the thread session-key scoping. See #63530.
         self._thread_rehydration_checked: set = set()
         self._reacting_message_ids: set = set()
+        # (team_id, channel_id, thread_id) -> [(ts, team_id), ...] clarify-answer messages acked
+        # mid-turn; finalized alongside the triggering message once the turn's own completion
+        # hook fires. Thread-scoped: the reply and the message that started the turn always
+        # share a session (thread_id), so this can't cross-react a concurrent thread.
+        self._pending_clarify_reactions: Dict[Tuple[str, str, str], List[Tuple[str, str]]] = {}
         # Active Assistant statuses by (team_id, channel_id, thread_ts) so cleanup
         # can't clear an overlapping Slack Connect workspace; evicted oldest-thread-first.
         self._active_status_threads: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
@@ -3159,20 +3167,54 @@ class SlackAdapter(BasePlatformAdapter):
         if channel_id:
             await self._react(channel_id, ts, "eyes", team_id, remove=False)
 
-    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
-        """Swap the in-progress reaction for a final success/failure reaction."""
+    async def ack_clarify_reply(self, event: MessageEvent) -> None:
+        """Apply the same in-progress reaction to a message the gateway intercepted as a clarify
+        answer. That reply resumes the existing turn in-band and never itself reaches
+        ``on_processing_start``, so without this it gets no lifecycle reaction at all while the
+        resumed turn keeps working (#121653). Buffered here and finalized in
+        ``on_processing_complete`` alongside the message that originally started the turn."""
         target = self._reacting_target(event)
         if target is None:
             return
         ts, team_id, marker = target
-        self._reacting_message_ids.discard(marker)
         channel_id = getattr(event.source, "chat_id", None)
         if not channel_id:
             return
+        self._reacting_message_ids.discard(marker)
+        if not await self._react(channel_id, ts, "eyes", team_id, remove=False):
+            return
+        thread_id = str(getattr(event.source, "thread_id", "") or "")
+        bucket = self._pending_clarify_reactions.setdefault((team_id, channel_id, thread_id), [])
+        bucket.append((ts, team_id))
+        if len(bucket) > self._PENDING_CLARIFY_REACTIONS_MAX:
+            del bucket[: len(bucket) - self._PENDING_CLARIFY_REACTIONS_MAX]
+
+    async def _finalize_reaction(
+        self, channel_id: str, ts: str, team_id: str, outcome: ProcessingOutcome) -> None:
+        """Swap a message's in-progress reaction for the final success/failure one."""
         await self._react(channel_id, ts, "eyes", team_id, remove=True)
         final = {ProcessingOutcome.SUCCESS: "white_check_mark", ProcessingOutcome.FAILURE: "x"}
-        if outcome in final:
-            await self._react(channel_id, ts, final[outcome], team_id, remove=False)
+        emoji = final.get(outcome)
+        if emoji:
+            await self._react(channel_id, ts, emoji, team_id, remove=False)
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Swap the in-progress reaction for a final success/failure reaction, on this event's own
+        message and on any clarify-answer replies acked mid-turn in the same channel (#121653)."""
+        channel_id = getattr(event.source, "chat_id", None)
+        target = self._reacting_target(event)
+        if target is not None and channel_id:
+            ts, team_id, marker = target
+            self._reacting_message_ids.discard(marker)
+            await self._finalize_reaction(channel_id, ts, team_id, outcome)
+        if not channel_id:
+            return
+        pending_team_id = str(getattr(event.source, "scope_id", "") or "")
+        pending_thread_id = str(getattr(event.source, "thread_id", "") or "")
+        pending = self._pending_clarify_reactions.pop(
+            (pending_team_id, channel_id, pending_thread_id), None)
+        for pending_ts, ts_team_id in pending or ():
+            await self._finalize_reaction(channel_id, pending_ts, ts_team_id, outcome)
 
     # ----- User identity resolution -----
 

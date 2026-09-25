@@ -8,8 +8,10 @@ persistence, timeout policy and the final authorization stay host-owned in
 
 import logging
 import os
+import queue
 import sys
 import threading
+import time
 from tools import approval_context as _ctx, approval_gateway_wait as _gw
 from tools.approval_human_wait import activity_heartbeat, human_wait_window
 from tools.interrupt import is_interrupted
@@ -79,20 +81,86 @@ _CLI_CHOICE_I18N = {
 }
 
 
-def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
-    """Read one answer on a daemon thread; None when the user never answered."""
-    result = {"choice": ""}
+# One daemon reader owns stdin for the process: a per-prompt reader outlives its
+# timeout while still blocked inside input(), and the next prompt's reader then
+# races the orphan for the same keystrokes — one missed prompt starves every
+# later one. The reader stays parked in input(), so a line typed while no prompt
+# is live still gets consumed and lands in _stdin_lines stamped with when it was
+# read; a prompt accepts only lines stamped after it displayed, dropping anything
+# older as stale no matter when the queue delivers it.
+_STDIN_READER_NAME = "hermes-approval-stdin-reader"
+_STDIN_EOF = object()  # queued marker: stdin is dead
+_stdin_lines: queue.Queue = queue.Queue(maxsize=1024)
+_stdin_reader_started = False
+_stdin_eof = False
+_stdin_state_lock = threading.Lock()
 
-    def get_input():
+
+def _stdin_reader() -> None:
+    """Pump stdin lines into the shared queue until EOF, then park."""
+    global _stdin_eof
+    while True:
         try:
-            result["choice"] = input(prompt).strip().lower()
-        except (EOFError, OSError):
-            result["choice"] = ""
+            line = input()
+        except BaseException:
+            # Any read failure means stdin is unusable; park the reader so later
+            # prompts fail closed fast instead of stacking timeouts.
+            logger.debug("approval stdin reader exiting", exc_info=True)
+            line = None
+        if line is None:
+            with _stdin_state_lock:
+                _stdin_eof = True
+            _stdin_lines.put(_STDIN_EOF)  # wake any parked prompt; stdin is dead
+            return
+        _stdin_lines.put((time.monotonic_ns(), line))
 
-    thread = threading.Thread(target=get_input, daemon=True)
-    thread.start()
-    thread.join(timeout=timeout_seconds)
-    return None if thread.is_alive() else result["choice"]
+
+def _flush_stdin_pending() -> None:
+    """Drop keystrokes already buffered in the tty so the next prompt answers
+    only what is typed after it displays."""
+    try:
+        if sys.stdin.isatty():
+            import termios
+            termios.tcflush(sys.stdin.fileno(), termios.TCIFLUSH)
+    except Exception:
+        pass  # non-tty, non-POSIX, or closed stdin: nothing flushable
+
+
+def _read_choice(prompt: str, timeout_seconds: int) -> str | None:
+    """Read one answer; None on timeout, '' when stdin is dead (deny-shaped)."""
+    global _stdin_reader_started
+    with _stdin_state_lock:
+        if _stdin_eof:
+            return ""
+        if not _stdin_reader_started:
+            # Process-global reader: deliberately a bare Thread, not
+            # spawn_context_thread — it serves every profile, so it must NOT
+            # inherit the first caller's contextvar scope.
+            threading.Thread(target=_stdin_reader, daemon=True,
+                             name=_STDIN_READER_NAME).start()
+            _stdin_reader_started = True
+    _flush_stdin_pending()
+    try:
+        sys.stdout.write(prompt)
+        sys.stdout.flush()
+    except Exception:
+        return ""  # nowhere to show the prompt; deny-shaped, same as a dead reader
+    start_ns = time.monotonic_ns()
+    deadline_ns = start_ns + int(max(timeout_seconds, 0) * 1e9)
+    while True:
+        remaining = (deadline_ns - time.monotonic_ns()) / 1e9
+        if remaining <= 0:
+            return None
+        try:
+            item = _stdin_lines.get(timeout=remaining)
+        except queue.Empty:
+            return None
+        if item is _STDIN_EOF:
+            return ""
+        stamp_ns, line = item
+        if stamp_ns <= start_ns:
+            continue  # stale: read before this prompt displayed
+        return line.strip().lower()
 
 
 def callback_accepts(callback, keyword: str) -> bool:

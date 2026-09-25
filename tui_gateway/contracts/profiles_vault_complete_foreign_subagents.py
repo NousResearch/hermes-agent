@@ -614,11 +614,23 @@ class SubagentSnapshot(Result):
     accepting_steer: bool | None = None
 
 
+class FailedDelegation(Result):
+    """``async_delegation.failed_delegations_for_session`` row: one failed task of an async delegation."""
+
+    delegation_id: str
+    task_index: int = 0
+    status: str
+    goal: str = ""
+    error: str | None = None
+    dispatched_at: float | None = None
+    completed_at: float | None = None
+
+
 class SubagentListResult(Result):
-    """``delegations`` is reserved for async delegation records and is currently always empty."""
+    """``delegations``: recently failed async delegation tasks for the session (durable store), newest first."""
 
     subagents: list[SubagentSnapshot] = Field(default_factory=list)
-    delegations: list[dict[str, JsonValue]] = Field(default_factory=list)
+    delegations: list[FailedDelegation] = Field(default_factory=list)
 
 
 method("subagent.list", params=SessionParams, result=SubagentListResult,

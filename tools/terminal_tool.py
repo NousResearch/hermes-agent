@@ -2115,8 +2115,44 @@ def _strip_quotes(command: str) -> str:
     in commit messages, Python -c code, echo arguments, or PR body text.
     Also strips backtick-quoted content and heredoc-style inline text.
     """
+    # Locate complete heredocs before erasing their quoted delimiters. Skip
+    # quoted/commented lookalikes and here-strings; preserve the entire command
+    # line so real background operators before/after the redirection survive.
+    tokens = re.compile(
+        r"'[^']*'|\"(?:[^\"\\]|\\.)*\"|`[^`]*`|\\.|#[^\n]*"
+        r"|\(\([\s\S]*?\)\)"  # Arithmetic shifts are not redirections.
+        r"|(?<!<)<<(?P<tabs>-?)[ \t]*(?P<quote>['\"]?)"
+        r"(?P<tag>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)(?=[ \t;&|<>\n]|$)"
+        r"|(?P<newline>\n)"
+    )
+    pending = []
+    spans = []
+    position = 0
+    while match := tokens.search(command, position):
+        position = match.end()
+        if match.group("tag"):
+            pending.append(match)
+        elif match.group("newline") and pending:
+            for opener in pending:
+                terminator = re.compile(
+                    r"^" + (r"\t*" if opener.group("tabs") else "")
+                    + re.escape(opener.group("tag")) + r"(?:\n|$)", re.MULTILINE
+                ).search(command, position)
+                if terminator is None:
+                    # Incomplete/unsupported input stays visible to the checks.
+                    break
+                body = command[position:terminator.start()]
+                # Unquoted heredocs expand shell substitutions. Keep those
+                # bodies visible rather than hiding potentially executed code.
+                if opener.group("quote") or not ("$" in body or "`" in body):
+                    spans.append((position, terminator.end()))
+                position = terminator.end()
+            pending.clear()
+    result = command
+    for start, end in reversed(spans):
+        result = result[:start] + "\n" + result[end:]
     # Remove single-quoted strings (no escaping inside single quotes in shell)
-    result = re.sub(r"'[^']*'", "''", command)
+    result = re.sub(r"'[^']*'", "''", result)
     # Remove double-quoted strings (handle escaped quotes)
     result = re.sub(r'"(?:[^"\\]|\\.)*"', '""', result)
     # Remove backtick-quoted strings

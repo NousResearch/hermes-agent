@@ -1664,6 +1664,9 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
 
 # Event tail poll interval: WAL + 300 ms polling is the simplest robust approach (negligible CPU).
 _EVENT_POLL_SECONDS = 0.3
+# Idle heartbeat interval: lets the dashboard detect a half-open socket (see the
+# watchdog in dist/index.js, which gives up after 3 missed intervals).
+_EVENT_HEARTBEAT_SECONDS = 15.0
 
 
 def _int_param(ws: WebSocket, name: str) -> int:
@@ -1737,6 +1740,9 @@ async def stream_events(ws: WebSocket):
     # rather than reconciling two cursors mid-stream.
     tail = _EventTail(_ws_board(ws.query_params.get("board")))
     cursor = _int_param(ws, "since")
+    # Send a heartbeat after _EVENT_HEARTBEAT_SECONDS of silence so a half-open
+    # connection is detectable on a quiet board.
+    last_sent = time.monotonic()
     try:
         while True:
             # Race receive() against the poll interval so a disconnect is detected even when no
@@ -1748,8 +1754,15 @@ async def stream_events(ws: WebSocket):
             except asyncio.TimeoutError:
                 pass  # no client message — poll the DB
             cursor, events = await tail.poll(cursor)
+            now = time.monotonic()
             if events:
                 await ws.send_json({"events": events, "cursor": cursor})
+                last_sent = now
+            elif now - last_sent >= _EVENT_HEARTBEAT_SECONDS:
+                # Liveness frame for the client watchdog; clients that only act on
+                # non-empty "events" ignore it.
+                await ws.send_json({"type": "heartbeat", "cursor": cursor, "server_time": time.time()})
+                last_sent = now
     except WebSocketDisconnect:
         return
     except asyncio.CancelledError:

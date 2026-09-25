@@ -745,6 +745,12 @@
     }, [loadBoard]);
 
     // --- WebSocket ---------------------------------------------------------
+    // The server sends a heartbeat frame after 15 s of silence (#118147). A
+    // half-open socket (NAT timeout, VPN switch, laptop sleep) fires neither
+    // onclose nor onerror, so without this the board silently freezes. If no
+    // frame of any kind arrives for WS_STALE_MS, drop the socket and reconnect
+    // through the normal backoff path.
+    const WS_STALE_MS = 45000;
     useEffect(function () {
       if (!boardData) return undefined;
       wsClosedRef.current = false;
@@ -769,8 +775,28 @@
           let ws;
           try { ws = new WebSocket(url); } catch (_e) { return; }
           wsRef.current = ws;
-          ws.onopen = function () { wsBackoffRef.current = 1000; };
+          let lastFrameAt = Date.now();
+          let handedOff = false;
+          // One reconnect per socket, whether it comes from onclose or from
+          // the watchdog; a late onclose after a watchdog close is a no-op.
+          function reconnect() {
+            if (handedOff) return;
+            handedOff = true;
+            clearInterval(watchdog);
+            if (wsClosedRef.current) return;
+            const delay = Math.min(wsBackoffRef.current, 30000);
+            wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
+            setTimeout(openWs, delay);
+          }
+          const watchdog = setInterval(function () {
+            if (Date.now() - lastFrameAt < WS_STALE_MS) return;
+            ws.onmessage = null;
+            try { ws.close(); } catch (_e) { /* noop */ }
+            reconnect();
+          }, 5000);
+          ws.onopen = function () { wsBackoffRef.current = 1000; lastFrameAt = Date.now(); };
           ws.onmessage = function (ev) {
+            lastFrameAt = Date.now();
             try {
               const msg = JSON.parse(ev.data);
               if (msg && Array.isArray(msg.events) && msg.events.length > 0) {
@@ -788,15 +814,15 @@
             } catch (_e) { /* ignore */ }
           };
           ws.onclose = function (ev) {
-            if (wsClosedRef.current) return;
+            if (wsClosedRef.current) { clearInterval(watchdog); return; }
             if (ev && ev.code === 1008) {
+              clearInterval(watchdog);
+              handedOff = true;
               setError(tx(t, "wsAuthFailed",
                 "WebSocket auth failed — reload the page to refresh the session token."));
               return;
             }
-            const delay = Math.min(wsBackoffRef.current, 30000);
-            wsBackoffRef.current = Math.min(wsBackoffRef.current * 2, 30000);
-            setTimeout(openWs, delay);
+            reconnect();
           };
         }).catch(function () {
           // Ticket mint / URL build failed (e.g. session expired). Back off

@@ -154,6 +154,34 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "spinner": {},
         "branding": {**_HERMES_BRANDING, "help_header": "[?] Available Commands"},
         "tool_prefix": "┊"},
+    "hades": {
+        "name": "hades",
+        "description": "Underworld theme — deep blue and violet",
+        "colors": {
+            "banner_border": "#4169E1", "banner_title": "#7EB8F6", "banner_accent": "#8EA8FF",
+            "banner_dim": "#64748B", "banner_text": "#DCEBFF", "ui_accent": "#60A5FA",
+            "ui_label": "#93C5FD", "ui_ok": "#4ADE80", "ui_error": "#F87171", "ui_warn": "#FBBF24",
+            "prompt": "#DCEBFF", "input_rule": "#4169E1", "response_border": "#7EB8F6",
+            "status_bar_bg": "#0F172A", "status_bar_text": "#DCEBFF", "status_bar_strong": "#7EB8F6",
+            "status_bar_dim": "#64748B", "status_bar_good": "#7DD3FC", "status_bar_warn": "#38BDF8",
+            "status_bar_bad": "#FBBF24", "status_bar_critical": "#F87171", "session_label": "#93C5FD",
+            "session_border": "#64748B", "completion_menu_bg": "#0F172A", "completion_menu_current_bg": "#1E3A8A",
+            "completion_menu_meta_bg": "#111827", "completion_menu_meta_current_bg": "#1D4ED8",
+            "selection_bg": "#1E3A8A", "shell_dollar": "#60A5FA", "voice_status_bg": "#0F172A",
+        },
+        "spinner": {
+            "waiting_faces": ["(☾)", "(◆)", "(✦)", "(◌)", "(♇)"],
+            "thinking_faces": ["(♇)", "(☾)", "(◆)", "(⌁)", "(✦)"],
+            "thinking_verbs": ["charting the underworld", "counting shades", "reading the dark", "guarding the gate"],
+            "wings": [["⟪♇", "♇⟫"], ["⟪☾", "☾⟫"], ["⟪◆", "◆⟫"], ["⟪✦", "✦⟫"]],
+        },
+        "branding": {
+            "agent_name": "Hades Agent", "welcome": "Welcome to Hades Agent! Type your message or /help for commands.",
+            "goodbye": "Return to the surface. ♇", "response_label": " ♇ Hades ",
+            "prompt_symbol": "♇", "help_header": "(♇) Available Commands",
+        },
+        "tool_prefix": "│",
+    },
     "slate": {
         "name": "slate", "description": "Cool blue — developer-focused",
         "colors": {

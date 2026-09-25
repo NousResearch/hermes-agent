@@ -365,6 +365,18 @@ export const monoTheme: DesktopTheme = {
 }
 
 /** Neon green on black. Matches the CLI cyberpunk skin and dashboard theme. */
+export const hadesTheme: DesktopTheme = {
+  name: 'hades',
+  label: 'Hades',
+  description: 'Deep underworld blue-violet with cool accents',
+  ...THEME_PRESET_PALETTES.hades,
+  typography: {
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap'
+  }
+}
+
 export const cyberpunkTheme: DesktopTheme = {
   name: 'cyberpunk',
   label: 'Cyberpunk',
@@ -398,6 +410,7 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   ember: emberTheme,
   mono: monoTheme,
   slate: slateTheme,
+  hades: hadesTheme,
   cyberpunk: cyberpunkTheme
 }
 

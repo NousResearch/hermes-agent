@@ -872,15 +872,19 @@ class DockerEnvironment(BaseEnvironment):
         passthrough_env, unset_names = self._resolve_passthrough_env()
         return _name_only_env_args(passthrough_env), tuple(sorted(unset_names)), dict(passthrough_env)
 
+    def open_code_rpc(self, command: str) -> subprocess.Popen:
+        """Open a binary duplex channel for the sandbox tool-RPC relay."""
+        return self._run_bash(command, duplex=True)
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None, duplex: bool = False) -> subprocess.Popen:
         """Spawn bash inside the container. Init seeds the snapshot; profile-scoped passthrough
         values are re-injected on every command because one container can be shared by
         multiple routed profiles in a gateway process."""
         assert self._container_id, "Container not started"
         cmd = [self._docker_exe, "exec"]
-        if stdin_data is not None:
+        if stdin_data is not None or duplex:
             cmd.append("-i")
 
         # Init seeds the snapshot. Profile-scoped passthrough values are also injected on every later
@@ -899,7 +903,9 @@ class DockerEnvironment(BaseEnvironment):
         cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
 
         client_env = self._docker_client_env(env_values)
-        return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+        if client_env is not None:
+            return _popen_bash(cmd, stdin_data, duplex=duplex, env=client_env)
+        return _popen_bash(cmd, stdin_data, duplex=duplex)
 
     # --- "No such container" recovery ---
     _NO_CONTAINER_PATTERNS = ("No such container", "is not running", "no such container")

@@ -271,8 +271,12 @@ class SSHEnvironment(BaseEnvironment):
         if self._sync_manager is not None:
             self._sync_manager.sync()  # rate-limited internally
 
+    def open_code_rpc(self, command: str) -> subprocess.Popen:
+        """Open a binary duplex channel for the sandbox tool-RPC relay."""
+        return self._run_bash(command, duplex=True)
+
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None, duplex: bool = False) -> subprocess.Popen:
         """Forward the passthrough allowlist (skill ``required_environment_variables`` +
         ``terminal.env_passthrough``) the way docker does: ``SendEnv`` carries the names, the ssh
         client's env carries the values, so secrets never enter the remote ``bash -c`` argv. The
@@ -281,7 +285,9 @@ class SSHEnvironment(BaseEnvironment):
         values, unset_names = resolve_passthrough_env(hermes_env_loader=_load_hermes_env_vars)
         cmd = self._build_ssh_command(send_env=values) + bash_argv(shlex.quote(prepend_unset(cmd_string, unset_names)), login)
         client_env = client_env_with(values)
-        return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
+        if client_env is not None:
+            return _popen_bash(cmd, stdin_data, duplex=duplex, env=client_env)
+        return _popen_bash(cmd, stdin_data, duplex=duplex)
 
     def cleanup(self):
         if self._sync_manager:

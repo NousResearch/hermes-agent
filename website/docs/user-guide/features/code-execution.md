@@ -29,6 +29,36 @@ print(summary)
 
 **Available tools inside scripts:** `web_search`, `web_extract`, `read_file`, `write_file`, `search_files`, `patch`, `terminal` (foreground only).
 
+### Remote tool calls
+
+Docker and SSH open one duplex process channel per execution and relay tool
+requests through a private Unix socket inside the existing sandbox. This avoids
+repeated shell commands to list, read, write, and delete files for every tool call.
+It works with both persistent session kernels and standalone scripts. The kernel's
+cell submission/result files are unchanged.
+
+Tool dispatch remains sequential and uses the calling cell's permissions, tool
+allowlist, and call budget. Python still runs in the remote environment, and tool
+credentials stay with the host. Script output is separate from the RPC channel.
+No new port, service, dependency, or configuration is required.
+
+If the backend cannot open the channel, Hermes chooses file polling **before**
+submitting the script. Once streaming starts, a connection failure is surfaced
+without retrying a possibly completed tool call. Existing tool payload behavior
+and output limits are preserved. The channel handles one request at a time; it
+does not add parallel tool dispatch.
+
+To compare transport overhead with a real disposable Docker backend, run:
+
+```bash
+.venv/bin/python scripts/bench_remote_code_rpc.py --calls 200 --repeats 3
+```
+
+The benchmark checks every returned row and the call count. Its tool handler is
+synthetic and immediate: results measure transport overhead, not provider latency
+or end-to-end LLM turn speed. Container startup is excluded; per-execution setup
+and cleanup are included in `wall_seconds`.
+
 ## When the Agent Uses This
 
 The agent uses `execute_code` when there are:
@@ -327,4 +357,4 @@ Hermes always writes the script and the auto-generated `hermes_tools.py` RPC stu
 
 ## Platform Support
 
-Code execution is available on **Linux, macOS, and Windows**. On Linux and macOS the RPC channel uses a Unix domain socket; on Windows, where `AF_UNIX` is unreliable, Hermes automatically falls back to a loopback TCP socket for the sandbox RPC transport. Remote terminal backends (Docker/SSH/Modal/etc.) use a file-based RPC transport instead and additionally require Python 3 inside the backend.
+Code execution is available on **Linux, macOS, and Windows**. On Linux and macOS the RPC channel uses a Unix domain socket; on Windows, where `AF_UNIX` is unreliable, Hermes automatically falls back to a loopback TCP socket for the sandbox RPC transport. Remote terminal backends require Python 3 inside the backend. Docker and SSH use a streaming tool-RPC channel when available; other backends use file polling.

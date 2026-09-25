@@ -29,6 +29,8 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
+from agent.turn_failure_copy import site_copy  # noqa: E402
+
 
 class _MockHandler(BaseHTTPRequestHandler):
     captured_requests: list = []
@@ -261,7 +263,7 @@ def test_truncation_scan_does_not_false_positive_on_same_name_valid_sibling(agen
     result = agent.run_conversation("track work", conversation_history=[], task_id="t")
 
     assert result.get("completed", False)
-    assert result.get("error") != "Response truncated due to output length limit"
+    assert result.get("error") != site_copy("truncated")
     msgs = result.get("messages")
     assert "Invalid JSON" in _tool_result_content(msgs, "call_0")
     assert dispatched == [("todo", "0")]
@@ -275,7 +277,7 @@ def test_genuinely_truncated_call_still_hard_stops_despite_valid_sibling(agent_e
 
     result = agent.run_conversation("track work", conversation_history=[], task_id="t")
 
-    assert result.get("error") == "Response truncated due to output length limit"
+    assert result.get("error") == site_copy("truncated")
     assert dispatched == []
     assert len(_chat_calls(handler)) == 1
 

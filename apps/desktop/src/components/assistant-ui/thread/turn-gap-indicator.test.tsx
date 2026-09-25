@@ -162,8 +162,9 @@ describe('the turn timer covers the gaps, not just the streaming', () => {
     act(() => $busy.set(true))
     act(() => vi.advanceTimersByTime(7_000))
     expect(container.querySelector('[data-slot="aui_turn-activity"][data-state="active"]')).toBe(row)
+  })
 
-    it('does not revive a tail timer from a pending row after the session retires its busy claim', () => {
+  it('does not revive a tail timer from a pending row after the session retires its busy claim', () => {
     $busy.set(false)
     $turnStartedAt.set(null)
 
@@ -193,5 +194,6 @@ describe('the turn timer covers the gaps, not just the streaming', () => {
 
     act(() => vi.advanceTimersByTime(7_000))
 
-    expect(container.querySelector('[data-slot="aui_turn-activity"]')).not.toBeNull()  })
+    expect(container.querySelector('[data-slot="aui_turn-activity"]')).not.toBeNull()
+  })
 })

@@ -25,9 +25,19 @@ BINARY_EXTENSIONS = frozenset({
 # (the write guard handles that via is_pdf_path).
 OPAQUE_DOCUMENT_EXTENSIONS = frozenset({
     ".doc", ".docx", ".docm", ".xls", ".xlsx", ".xlsm", ".xlsb",
-    ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
+    ".ppt", ".pps", ".pptx", ".pptm", ".ppsx", ".ppsm",
     ".odt", ".ods", ".odp", ".rtf", ".epub",
 })
+
+# Extensions shared by a container document and a plain-text format. ``.pot``
+# is a legacy PowerPoint template (OLE compound file) but far more often the
+# gettext PO template every i18n workflow writes as text (#92131). The suffix
+# alone cannot tell them apart, so the write guard sniffs the existing file's
+# leading bytes; a new or text ``.pot`` is a translation template.
+AMBIGUOUS_DOCUMENT_EXTENSIONS = frozenset({".pot"})
+
+# Signature every OLE compound document (legacy .doc/.xls/.ppt/.pot) starts with.
+OLE_COMPOUND_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 
 
 # SQLite journal sidecars (``x.db-wal``, ``x.sqlite3-shm``, ``x.db-journal``)
@@ -80,6 +90,10 @@ def has_binary_extension(path: str) -> bool:
 
 def has_opaque_document_extension(path: str) -> bool:
     return _has_extension_in(path, OPAQUE_DOCUMENT_EXTENSIONS)
+
+
+def has_ambiguous_document_extension(path: str) -> bool:
+    return _has_extension_in(path, AMBIGUOUS_DOCUMENT_EXTENSIONS)
 
 
 def is_pdf_path(path: str) -> bool:

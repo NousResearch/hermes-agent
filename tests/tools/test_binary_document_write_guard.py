@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from tools.binary_extensions import (
+    OLE_COMPOUND_MAGIC,
+    has_ambiguous_document_extension,
     has_opaque_document_extension,
     is_pdf_path,
 )
@@ -63,12 +65,20 @@ class TestExtensionHelpers:
     def test_opaque_document_extensions(self):
         for p in ("a.docx", "b.XLSX", "c.pptx", "d.doc", "e.odt", "f.ods", "g.odp",
                   "h.docm", "i.xlsm", "j.xlsb", "k.pptm", "l.ppsx", "m.ppsm",
-                  "n.pps", "o.pot", "p.rtf", "q.epub"):
+                  "n.pps", "p.rtf", "q.epub"):
             assert has_opaque_document_extension(p) is True, f"{p} should be opaque"
 
     def test_non_opaque_paths(self):
         for p in ("a.txt", "b.py", "c.pdf", "d.md", "noext", "e.csv"):
             assert has_opaque_document_extension(p) is False
+
+    def test_pot_is_ambiguous_not_opaque(self):
+        # #92131: .pot is a gettext PO template far more often than a PowerPoint
+        # template, so the extension alone must not refuse the write.
+        for p in ("messages.pot", "locale/django.POT"):
+            assert has_opaque_document_extension(p) is False
+            assert has_ambiguous_document_extension(p) is True
+        assert has_ambiguous_document_extension("deck.ppt") is False
 
     def test_is_pdf_path(self):
         assert is_pdf_path("report.pdf") is True
@@ -76,6 +86,16 @@ class TestExtensionHelpers:
         assert is_pdf_path("report.txt") is False
 
 
+
+
+GETTEXT_TEMPLATE = (
+    'msgid ""\n'
+    'msgstr ""\n'
+    '"Content-Type: text/plain; charset=UTF-8\\n"\n'
+    '\n'
+    'msgid "Hello"\n'
+    'msgstr ""\n'
+)
 
 
 class TestWriteFileToolGuard:
@@ -161,6 +181,35 @@ class TestWriteFileToolGuard:
         result = json.loads(write_file_tool(str(target), "hello world"))
         assert not result.get("error")
         assert target.read_text() == "hello world"
+
+    def test_write_file_allows_new_gettext_pot(self, tmp_path: Path):
+        # #92131: a translation template is authored as plain text; refusing it
+        # unconditionally broke every agent-assisted i18n workflow.
+        pot = tmp_path / "locales" / "messages.pot"
+        pot.parent.mkdir()
+        result = json.loads(write_file_tool(str(pot), GETTEXT_TEMPLATE))
+        assert not result.get("error"), result
+        assert pot.read_text(encoding="utf-8-sig") == GETTEXT_TEMPLATE
+
+    def test_patch_replace_allows_editing_text_pot(self, tmp_path: Path):
+        # Editing an existing translation template goes through the same guard.
+        pot = tmp_path / "messages.pot"
+        pot.write_text(GETTEXT_TEMPLATE, encoding="utf-8")
+        result = json.loads(
+            patch_tool(mode="replace", path=str(pot),
+                       old_string='msgid "Hello"', new_string='msgid "Hello, world"'))
+        assert not result.get("error"), result
+        assert 'msgid "Hello, world"' in pot.read_text(encoding="utf-8-sig")
+
+    def test_write_file_rejects_ole_powerpoint_template_pot(self, tmp_path: Path):
+        # The other .pot: a legacy PowerPoint template is an OLE compound file and
+        # a text write would destroy it, exactly like .ppt.
+        pot = tmp_path / "corporate.pot"
+        pot.write_bytes(OLE_COMPOUND_MAGIC + b"\x00" * 504)
+        original = pot.read_bytes()
+        result = json.loads(write_file_tool(str(pot), "edited text"))
+        assert result.get("error"), "text write into an OLE .pot must be refused"
+        assert pot.read_bytes() == original, "template bytes must be untouched"
 
 
 class TestPatchToolGuard:

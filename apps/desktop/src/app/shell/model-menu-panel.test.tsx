@@ -5,7 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $customModels } from '@/store/custom-models'
 import { $collapsedProviders, toggleCollapsedProvider } from '@/store/provider-collapse'
-import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
+import { $activeSessionId, $currentModel, $currentProvider, setCurrentModelSource } from '@/store/session'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -56,7 +56,7 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-function renderPanel(onSelectModel = vi.fn()) {
+function renderPanel(onSelectModel = vi.fn(), onFollowDefaultModel?: () => void) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
   const requestGateway = vi.fn(async (method: string) => {
@@ -71,7 +71,11 @@ function renderPanel(onSelectModel = vi.fn()) {
     <QueryClientProvider client={client}>
       <DropdownMenu open>
         <DropdownMenuContent>
-          <ModelMenuPanel onSelectModel={onSelectModel} requestGateway={requestGateway as never} />
+          <ModelMenuPanel
+            onFollowDefaultModel={onFollowDefaultModel}
+            onSelectModel={onSelectModel}
+            requestGateway={requestGateway as never}
+          />
         </DropdownMenuContent>
       </DropdownMenu>
     </QueryClientProvider>
@@ -537,5 +541,33 @@ describe('ModelMenuPanel provider collapse', () => {
     const input = screen.getByRole('textbox', { name: 'Search models' })
     fireEvent.keyDown(input, { key: 'Enter' })
     expect(onSelectModel).not.toHaveBeenCalled()
+  })
+})
+
+describe('ModelMenuPanel pinned draft', () => {
+  afterEach(() => setCurrentModelSource(''))
+
+  it('offers the way back to the Settings default only while a draft carries a manual pick (#107410)', async () => {
+    $activeSessionId.set(null)
+    setCurrentModelSource('manual')
+    const onFollowDefaultModel = vi.fn()
+    const { content } = renderPanel(vi.fn(), onFollowDefaultModel)
+
+    fireEvent.click(await content.findByText('Use Settings default'))
+    expect(onFollowDefaultModel).toHaveBeenCalledTimes(1)
+    cleanup()
+
+    setCurrentModelSource('default')
+    const unpinned = renderPanel(vi.fn(), vi.fn())
+    await unpinned.content.findByText('Refresh models')
+    expect(unpinned.content.queryByText('Use Settings default')).toBeNull()
+    cleanup()
+
+    // A live session runs its own model; the pin only decides the NEXT new chat.
+    $activeSessionId.set('runtime-1')
+    setCurrentModelSource('manual')
+    const live = renderPanel(vi.fn(), vi.fn())
+    await live.content.findByText('Refresh models')
+    expect(live.content.queryByText('Use Settings default')).toBeNull()
   })
 })

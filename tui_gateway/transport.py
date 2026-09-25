@@ -145,8 +145,10 @@ class FanoutTransport:
 
     One slow socket must not stop the emitting turn or any healthy subscriber.
     Each peer has at most one daemon writer and a bounded backlog. On overflow
-    it loses its subscription (history/replay is the recovery path), not other
-    sessions sharing its socket. A write already in the OS cannot be revoked.
+    it loses its subscription and that peer's transport is closed so the client
+    notices, reconnects and replays history. Closing the socket also drops any
+    other sessions multiplexed on it; the same reconnect + replay recovers them.
+    Other sockets are unaffected. A write already in the OS cannot be revoked.
     """
 
     _MAX_PENDING_FRAMES = 256
@@ -236,12 +238,23 @@ class FanoutTransport:
                     self._remove(peer)
                 return
 
+    def _signal_overflow_detach(self, transport: Transport) -> None:
+        # Outside the fanout lock: abort()/close() may re-enter contains/detach, and
+        # a WS close must not stall the emit turn or other subscribers. WSTransport
+        # aborts (1011 socket close, off-loop safe); other transports just close.
+        try:
+            abort = getattr(transport, "abort", None)
+            (abort or transport.close)()
+        except Exception:
+            logger.debug("fanout overflow close failed; membership already dropped", exc_info=True)
+
     def write(self, obj: dict) -> bool:
         # Freeze the queued frame so a caller cannot mutate it after admission. Same serialization
         # guard as the single-peer transports: an unserializable frame reaches every peer as -32603.
         encoded = serialize_frame(obj, "fanout", logger)
         size = len(encoded.encode("utf-8", errors="surrogatepass"))
         frame = json.loads(encoded)
+        overflowed: list[Transport] = []
         with self._lock:
             for peer in list(self._peers):
                 if not peer.attached:
@@ -249,6 +262,7 @@ class FanoutTransport:
                 if (len(peer.pending) >= self._MAX_PENDING_FRAMES
                         or peer.pending_bytes + size > self._MAX_PENDING_BYTES):
                     logger.warning("fanout subscriber backlog full; detaching peer")
+                    overflowed.append(peer.transport)
                     self._remove(peer)
                     continue
                 peer.pending.append((frame, size))
@@ -257,7 +271,10 @@ class FanoutTransport:
                     peer.writing = True
                     threading.Thread(target=self._drain, args=(peer,),
                                      name="tui-fanout", daemon=True).start()
-            return any(peer.attached for peer in self._peers)
+            remaining = any(peer.attached for peer in self._peers)
+        for transport in overflowed:
+            self._signal_overflow_detach(transport)
+        return remaining
 
     def close(self) -> None:
         """Detach without closing sockets owned by the connection handlers."""

@@ -12,7 +12,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Imports — guarded since plugins/memory lives outside the standard test path
 # ---------------------------------------------------------------------------
@@ -26,7 +25,6 @@ def _isolate_env(tmp_path, monkeypatch):
     monkeypatch.delenv("RETAINDB_API_KEY", raising=False)
     monkeypatch.delenv("RETAINDB_BASE_URL", raising=False)
     monkeypatch.delenv("RETAINDB_PROJECT", raising=False)
-
 
 @pytest.fixture(autouse=True)
 def _cap_retaindb_sleeps(monkeypatch):
@@ -52,7 +50,6 @@ def _cap_retaindb_sleeps(monkeypatch):
     fake_time = _types.SimpleNamespace(sleep=_capped_sleep, time=_retaindb.time.time)
     monkeypatch.setattr(_retaindb, "time", fake_time)
 
-
 # We need the repo root on sys.path so the plugin can import agent.memory_provider
 import sys
 _repo_root = str(Path(__file__).resolve().parents[2])
@@ -65,7 +62,6 @@ from plugins.memory.retaindb import (
     _build_overlay,
     RetainDBMemoryProvider,
 )
-
 
 # ===========================================================================
 # _Client tests
@@ -86,7 +82,6 @@ class TestClient:
         h = c._headers("/v1/files")
         assert h["Authorization"] == "Bearer rdb-test-key"
         assert "X-API-Key" not in h
-
 
     def test_add_memory_tries_fallback(self):
         c = self._make_client()
@@ -132,7 +127,6 @@ class TestWriteQueue:
         db_path = tmp_path / "test_queue.db"
         return _WriteQueue(client, db_path), client, db_path
 
-
     def test_flush_deletes_row_on_success(self, tmp_path):
         q, client, db_path = self._make_queue(tmp_path)
         q.enqueue("user1", "sess1", [{"role": "user", "content": "hi"}])
@@ -142,7 +136,6 @@ class TestWriteQueue:
         rows = conn.execute("SELECT COUNT(*) FROM pending").fetchone()[0]
         conn.close()
         assert rows == 0
-
 
     def test_crash_recovery_replays_pending(self, tmp_path):
         """Simulate crash: create rows, then new queue should replay them."""
@@ -180,7 +173,6 @@ class TestWriteQueue:
         call_args = client2.ingest_session.call_args
         assert call_args[0][0] == "user1"  # user_id
 
-
 # ===========================================================================
 # _build_overlay tests
 # ===========================================================================
@@ -190,7 +182,6 @@ class TestBuildOverlay:
 
     def test_empty_inputs_returns_empty(self):
         assert _build_overlay({}, {}) == ""
-
 
     def test_profile_items_included(self):
         profile = {"memories": [{"content": "User likes Python"}]}
@@ -236,7 +227,6 @@ class TestBuildOverlay:
             if line.startswith("- "):
                 assert len(line) <= 322  # "- " + 320
 
-
 # ===========================================================================
 # RetainDBMemoryProvider tests
 # ===========================================================================
@@ -251,17 +241,14 @@ class TestRetainDBMemoryProvider:
         provider = RetainDBMemoryProvider()
         return provider
 
-
     def test_is_available_without_key(self):
         p = RetainDBMemoryProvider()
         assert p.is_available() is False
-
 
     def test_handle_tool_call_not_initialized(self):
         p = RetainDBMemoryProvider()
         result = json.loads(p.handle_tool_call("retaindb_profile", {}))
         assert "error" in result
-
 
 # ===========================================================================
 # Prefetch and thread management tests
@@ -289,11 +276,9 @@ class TestPrefetch:
         assert result == ""
         p.shutdown()
 
-
 # ===========================================================================
 # sync_turn tests
 # ===========================================================================
-
 
 # ===========================================================================
 # on_memory_write hook tests
@@ -327,7 +312,6 @@ class TestOnMemoryWrite:
             mock_add.assert_not_called()
         p.shutdown()
 
-
     def test_memory_target_maps_to_type(self, tmp_path, monkeypatch):
         monkeypatch.setenv("RETAINDB_API_KEY", "rdb-test-key")
         hermes_home = tmp_path / ".hermes"
@@ -340,8 +324,6 @@ class TestOnMemoryWrite:
             assert mock_add.call_args[1]["memory_type"] == "factual"
         p.shutdown()
 
-
 # ===========================================================================
 # register() test
 # ===========================================================================
-

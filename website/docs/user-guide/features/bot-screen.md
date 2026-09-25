@@ -108,11 +108,13 @@ Build your own only if you want the packages in a custom image. The official
 docker build --build-arg HERMES_BOT_DESKTOP=1 -t hermes-agent:screen .
 ```
 
-It adds TigerVNC, the Xfce components and a headed `chromium` (for the dock's
-Browser icon), plus Playwright's headed Chromium build — about **1.4 GB** of
-image (measured: 4.1 GB without the argument, 5.5 GB with it on arm64), of which
-~930 MB is the apt layer. Nothing starts at boot; an image built this way costs
-no memory until a screen is started.
+It adds TigerVNC, the Xfce components and the distro `chromium` (the sandbox
+fallback described under [Browser
+sessions](#browser-sessions-that-survive-the-handoff)) — the apt layer measured
+~930 MB on Debian 13. It adds no second Playwright browser: every image, slim
+or `-desktop`, already carries PM's pinned full Chromium, which can open a
+window. Nothing starts at boot; an image built this way costs no memory until a
+screen is started.
 
 ## Using it
 
@@ -190,20 +192,24 @@ screen does not re-pin the Browser icon. Delete that file and the dock is
 rebuilt on the next `screen start` from whatever is installed then.
 
 Which Chromium the dock and the bot use: an explicit
-`AGENT_BROWSER_EXECUTABLE_PATH` wins; otherwise Hermes prefers a system
-`chromium` / `google-chrome` when one is installed, and falls back to the
-Chromium Playwright bundled. The reason for that order is the sandbox: on
-Ubuntu 23.10 and later, `kernel.apparmor_restrict_unprivileged_userns=1` stops
-Playwright's bundled Chromium from setting up its sandbox for a non-root user
-and it exits with `FATAL: No usable sandbox!`, while the distro's Chromium ships
-with an AppArmor profile that allows it. If the pick is wrong for your host, set
-`AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium` (or your Chrome path) in the
-gateway's environment. The official Docker image ships only Playwright's
-*headless shell*, which cannot draw a window, so inside it the dock has no
-Browser icon and the pane / `screen status` report **no headed browser** until
-you install a headed one (`apt-get install chromium`); once one is present the
-dock icon starts it with the same sandbox settings agent-browser uses in that
-container, so the human's Browser and the bot's browser are one and the same.
+`AGENT_BROWSER_EXECUTABLE_PATH` wins; otherwise Hermes uses the PM-managed
+Chromium and falls back to a system `chromium` / `google-chrome`. A non-root
+user on a host with `kernel.apparmor_restrict_unprivileged_userns=1` (Ubuntu
+23.10 and later) gets the reverse order, because there the managed build cannot
+set up its sandbox and exits with `FATAL: No usable sandbox!`, while the
+distro's Chromium ships with an AppArmor profile that allows it. If the pick is
+wrong for your host, set `AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium` (or
+your Chrome path) in the gateway's environment. The official Docker image
+points `AGENT_BROWSER_EXECUTABLE_PATH` at PM's pinned full Chromium, which can
+draw a window, so the dock's Browser icon uses it; the `-desktop` tags also
+carry the distro `chromium` — set
+`AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium` on hosts that refuse the
+pinned build's sandbox. A Playwright *headless shell* is never used for the
+icon: when it is the only browser, the pane / `screen status` report **no
+headed browser** until you install a headed one (`apt-get install chromium`).
+The dock icon starts the browser with the same sandbox settings agent-browser
+uses in that container, so the human's Browser and the bot's browser are one
+and the same.
 
 ## CLI
 

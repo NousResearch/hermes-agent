@@ -592,6 +592,11 @@ async def delete_managed_file(payload: ManagedFileDelete, request: Request):
         raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
     if not target.exists():
         raise HTTPException(status_code=404, detail="Path not found")
+    if target.is_dir() and payload.recursive and policy.locked_root is None:
+        raise HTTPException(
+            status_code=403,
+            detail="Recursive directory deletion requires a managed files root",
+        )
 
     try:
         if target.is_dir():

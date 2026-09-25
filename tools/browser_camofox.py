@@ -27,6 +27,7 @@ from agent.secret_scope import get_secret
 from hermes_cli.config import cfg_get, load_config, read_raw_config
 from hermes_constants import get_hermes_home_override, hermes_home_key
 from tools.browser_camofox_state import get_camofox_identity
+from tools.browser_tool_snapshot import _redact_browser_output
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -477,7 +478,8 @@ def camofox_snapshot(full: bool = False, task_id: Optional[str] = None, user_tas
     oversized snapshots always truncate-and-store (no LLM summarization)."""
     def body(session):
         snapshot, refs_count = _fetch_snapshot(session)
-        return json.dumps({"success": True, "snapshot": snapshot, "element_count": refs_count})
+        return json.dumps({"success": True, "snapshot": _redact_browser_output(snapshot),
+                           "element_count": refs_count})
     return _with_tab(task_id, "read a page snapshot", body)
 
 

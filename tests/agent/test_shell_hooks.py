@@ -553,6 +553,37 @@ class TestEvaluateResult:
         assert r["action"] == "block"
         assert "unparseable stdout" in r["message"]
 
+    def test_nonzero_exit_with_empty_stdout_fail_closed_blocks(self):
+        # #102405: an uncaught exception in the hook script prints its traceback to
+        # stderr and leaves stdout empty; ``parsed`` is None and the gate used to permit.
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(returncode=1, stderr="Traceback (most recent call last): ..."),
+        )
+        assert r["action"] == "block"
+        assert "failed closed" in r["message"]
+        assert "exited 1 without a directive" in r["message"]
+
+    def test_nonzero_exit_with_empty_stdout_fails_open_by_default(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(), _spawn_result(returncode=1, stderr="Traceback ..."),
+        )
+        assert r is None
+
+    def test_zero_exit_with_empty_stdout_fail_closed_permits(self):
+        # "Ran fine, nothing to say" keeps permitting under fail_closed.
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True), _spawn_result(returncode=0),
+        )
+        assert r is None
+
+    def test_nonzero_exit_with_directive_fail_closed_uses_directive(self):
+        r = shell_hooks._evaluate_result(
+            self._spec(fail_closed=True),
+            _spawn_result(returncode=1, stdout='{"decision": "block", "reason": "nope"}'),
+        )
+        assert r == {"action": "block", "message": "nope"}
+
     def test_unparseable_stdout_fails_open_by_default(self):
         r = shell_hooks._evaluate_result(
             self._spec(),

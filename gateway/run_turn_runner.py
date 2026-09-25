@@ -907,7 +907,7 @@ class TurnRunner:
 
     # ── stream consumer / interim commentary wiring ─────────────────────────────────────────
 
-    def _setup_stream_consumer(self, platform_key):
+    def _setup_stream_consumer(self, platform_key, provider: str | None = None):
         ctx = self._ctx
         if ctx.mute_notification_reply:
             return None, None, None, False
@@ -923,6 +923,18 @@ class TurnRunner:
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
         want_stream_deltas = not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
         want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
+        # `_should_stream` (agent/turn_api_call.py) forces stream=False for the same providers —
+        # ACP / external-process (CLI-over-stdio) backends never emit deltas. Deciding it here too
+        # (not just at #105341's post-hoc mark below) means a consumer created ONLY for interim
+        # commentary is never mistaken for one that could have raced the final send, so the
+        # duplicate-risk diagnostic in `_run_agent_mark_streamed_delivery` doesn't fire on every
+        # turn of a provider that structurally cannot stream.
+        _provider_can_stream = True
+        if provider:
+            with suppress(Exception):
+                from hermes_cli.runtime_provider_backends import _is_external_process_provider
+                _provider_can_stream = not _is_external_process_provider(provider)
+        want_stream_deltas = want_stream_deltas and _provider_can_stream
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
@@ -1938,7 +1950,8 @@ class TurnRunner:
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config
         runner._service_tier = runner._resolve_session_service_tier(source=ctx.source, session_key=ctx.session_key)
-        stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(platform_key)
+        stream_consumer, stream_delta_cb, interim_cb, want_interim = self._setup_stream_consumer(
+            platform_key, provider=runtime_kwargs.get("provider"))
         turn_route = runner._resolve_turn_agent_config(ctx.message, model, runtime_kwargs)
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,

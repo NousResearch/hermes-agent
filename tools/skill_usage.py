@@ -143,10 +143,12 @@ def activity_count(record: Dict[str, Any]) -> int:
 
 
 # --- Provenance — which skills are agent-created (and thus eligible for curation) ---
-def _read_bundled_manifest_names() -> Set[str]:
-    """Names from ``.bundled_manifest`` ("name:hash" per line); empty if missing/unreadable."""
+def _read_bundled_names() -> Set[str]:
+    """Built-in names: ``.bundled_manifest`` ("name:hash" per line) plus the curator suppression list, which
+    only ever records built-ins; a pruned built-in whose manifest entry an older sync cleaned after the
+    catalog dropped it is still not agent-authored (#95415). Empty if both are missing/unreadable."""
     lines = _read_lines(_skills_dir() / ".bundled_manifest", "Failed to read bundled manifest: %s")
-    return {n for n in (line.split(":", 1)[0].strip() for line in lines) if n}
+    return {n for n in (line.split(":", 1)[0].strip() for line in lines) if n} | read_suppressed_names()
 
 
 def _read_hub_installed_names() -> Set[str]:
@@ -221,7 +223,7 @@ def _scan_local_skills(keep: Callable[[str, Path, Set[str], Dict[str, Any]], boo
     """Sorted local skill names passing *keep(name, skill_md, bundled, usage)*; hub/protected names never reach it."""
     if not (base := _skills_dir()).exists():
         return []
-    hub, bundled, usage = _read_hub_installed_names(), _read_bundled_manifest_names(), load_usage()
+    hub, bundled, usage = _read_hub_installed_names(), _read_bundled_names(), load_usage()
     return sorted({name for name, skill_md in _iter_skill_mds(base, local_only=True)
                    if name not in hub and not is_protected_builtin(name) and keep(name, skill_md, bundled, usage)})
 
@@ -265,7 +267,7 @@ def is_hub_installed(skill_name: str) -> bool:
 
 
 def is_bundled(skill_name: str) -> bool:
-    return skill_name in _read_bundled_manifest_names()
+    return skill_name in _read_bundled_names()
 
 
 def _external_read_only_message(skill_name: str) -> str:

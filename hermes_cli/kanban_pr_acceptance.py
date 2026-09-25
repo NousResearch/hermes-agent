@@ -110,7 +110,8 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
         command += ["--paginate", "--slurp"]
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
-                                text=True, timeout=30, check=True, env=_gh_env(profile_home))
+                                text=True, encoding="utf-8", errors="replace",
+                                timeout=30, check=True, env=_gh_env(profile_home))
     except subprocess.CalledProcessError as caught:
         stdout, failure = caught.stdout, caught
     else:

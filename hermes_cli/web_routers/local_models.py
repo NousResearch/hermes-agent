@@ -528,7 +528,7 @@ def _nvidia_smi_facts() -> dict:
     if not smi_exe:
         return {}
     smi = subprocess.run([smi_exe, "--query-gpu=name,utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True, timeout=5)
+                         capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
     if smi.returncode != 0 or not smi.stdout.strip():
         return {}
     name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))

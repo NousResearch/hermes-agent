@@ -30,9 +30,11 @@ def test_nested_enable_disable_and_composite_use_canonical_key(plugin_world, mon
     world.command("disable", name=query)
     assert world.enabled() == []
     assert yaml.safe_load((world.home / "config.yaml").read_text())["plugins"]["disabled"] == [key]
-    # The fallback menu must persist canonical keys too, not labels.
-    monkeypatch.setattr("builtins.input", lambda prompt: "")
-    plugins_cmd._run_composite_fallback([key], ["trace-manifest"], {0}, {key}, [], Console())
+    # The fallback menu must persist canonical keys too, not labels: the row opens unticked (disabled)
+    # and the user ticks it.
+    answers = iter(("1", ""))
+    monkeypatch.setattr("builtins.input", lambda prompt: next(answers))
+    plugins_cmd._run_composite_fallback([key], ["trace-manifest"], set(), {key}, [], Console())
     assert world.enabled() == [key]
     world.imports(key)
 

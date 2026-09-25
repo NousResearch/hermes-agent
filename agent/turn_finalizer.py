@@ -505,6 +505,40 @@ def finalize_turn(
         logger=logger,
     )
 
+    # A non-interrupted turn that fell out of the loop after a tool result, with no
+    # follow-up assistant text, is the Desktop/TUI "silent stop" (#55316, #54756): the
+    # composer returns to ready (or keeps spinning) while the durable transcript ends
+    # at a raw ``tool`` row — the user never learns the turn stopped, and the next user
+    # message lands as ``tool → user``. Interrupted tails keep
+    # ``close_interrupted_tool_sequence``; this is the non-interrupt sibling. Mint the
+    # exit reason, fail the turn, and synthesize the visible close so the tail close in
+    # ``_persist_step`` persists an assistant row. A turn that already streamed text is
+    # left alone: ``_recover_final_from_stream`` owns that recovery (#95514).
+    if (
+        not final_response
+        and not interrupted
+        and messages
+        and isinstance(messages[-1], dict)
+        and messages[-1].get("role") == "tool"
+        and not (getattr(agent, "_current_streamed_assistant_text", "") or "").strip()
+    ):
+        _turn_exit_reason = "pending_tool_result"
+        failed = True
+        final_response = ""
+        try:
+            if agent._turn_completion_explainer_enabled():
+                final_response = (
+                    agent._format_turn_completion_explanation("pending_tool_result", None) or ""
+                )
+        except Exception:
+            final_response = ""
+        if not final_response:
+            # The turn-completion explainer opt-out must not reintroduce the silent stop.
+            final_response = (
+                "No reply: the turn stopped while a tool result was still pending. "
+                "Send `continue` to let the model summarize."
+            )
+
     # Loop exits that are failures in their own right (outer-loop error cap, shutdown, context
     # that could not be shrunk) carry the verdict the UI descriptor needs; a bare
     # ``turn_exit_reason`` collapsed to code="unknown", retryable=True on every surface.

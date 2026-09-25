@@ -59,6 +59,10 @@ def test_check_uses_real_pm_selection_and_keeps_invalid_evidence(admission_env, 
     config.write_bytes(old_config)
     check('current')
 
+    # A recorded extra only counts while the tree still declares it.
+    pyproject = core / 'pyproject.toml'
+    pyproject.write_text(pyproject.read_text(encoding='utf-8')
+                         + '[project.optional-dependencies]\nchanged-extra = []\n', encoding='utf-8')
     altered = json.loads(pristine)
     altered['packages']['venv']['extras'] = ['changed-extra']
     facts_path.write_text(json.dumps(altered), encoding='utf-8')

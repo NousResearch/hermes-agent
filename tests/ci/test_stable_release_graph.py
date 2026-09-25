@@ -14,6 +14,11 @@ def workflow(name):
     return YAML(typ="base").load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"))
 
 
+def direct_needs(jobs, name):
+    needs = jobs[name].get("needs", [])
+    return [needs] if isinstance(needs, str) else needs
+
+
 def ancestors(jobs, name):
     seen = set()
     pending = [name]
@@ -38,9 +43,16 @@ def test_release_reuses_whole_ci_and_docker_before_publication():
     assert "secrets" not in jobs["ci"]
     assert jobs["docker"]["uses"] == jobs["publish-docker"]["uses"]
     assert jobs["docker"]["with"]["release-phase"] == "test"
-    assert "ci" in ancestors(jobs, "docker")
+    # B7: every gate and every signed candidate starts straight after admit.
+    # The acceptance join requires CI, so a slow gate cannot delay a build.
+    for parallel in ("docker", "nix", "pm-bundle", "termux-checks", "windows-live", "install-e2e"):
+        assert direct_needs(jobs, parallel) == ["admit"], parallel
     candidate_calls = ["candidates-darwin-arm64", "candidates-darwin-x64", "candidates-win32-arm64",
                        "candidates-win32-x64", "candidates-win32-bundle", "candidates-termux"]
+    # The Windows bundle group is the only candidate that waits on a peer.
+    for call in candidate_calls:
+        assert set(direct_needs(jobs, call)) <= {
+            "admit", "candidates-win32-arm64", "candidates-win32-x64"}, call
     required = {"ci", "docker", "nix", "pm-bundle", "install-e2e", "windows-packaged",
                 "macos-packaged-arm64", "macos-packaged-x64", "termux-checks", "windows-live",
                 "candidate-manifest", "transitions-darwin-arm64", "transitions-darwin-x64",

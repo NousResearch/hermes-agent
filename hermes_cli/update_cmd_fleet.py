@@ -242,11 +242,13 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
     )
 
 
-_SUPERVISED_SERVE_BACKENDS = frozenset({"manual-serve", "desktop", "systemd", "launchd", "windows-service", "service"})
+_SUPERVISED_SERVE_BACKENDS = frozenset(
+    {"manual-serve", "desktop", "desktop-ssh", "systemd", "launchd", "windows-service", "service"}
+)
 # Backends whose supervisor restarts the process without any updater bookkeeping. ``manual-serve``
 # is excluded: it owes a durable handoff (``defer_manual_serve``) before it stops counting.
 # ``systemd``/``windows-service``/``service`` mirror ``_SUPERVISED_SERVE_BACKENDS`` for parity only —
-# the inventory writer classifies a serve/dashboard row as exactly launchd, desktop or manual-serve
+# the inventory writer classifies a serve/dashboard row as exactly launchd, desktop, desktop-ssh or manual-serve
 # (``update_inventory._collect_ledger_runtimes``); those three are set for gateway rows alone.
 _SUPERVISOR_OWNED_SERVE_BACKENDS = _SUPERVISED_SERVE_BACKENDS - {"manual-serve"}
 
@@ -1101,7 +1103,9 @@ def _gateway_recovery_partition(plan, *, skip_profiles: set[str] | None = None) 
                     continue
                 reason = _MANUAL_GATEWAY_SKIP_REASON
             elif kind in ("serve", "dashboard"):
-                if supervisor == "desktop":
+                from hermes_cli.update_inventory import CLIENT_OWNED_SERVE_SUPERVISORS
+
+                if supervisor in CLIENT_OWNED_SERVE_SUPERVISORS:
                     reason = _DESKTOP_SERVE_SKIP_REASON
                 elif supervisor == "launchd":
                     reason = _LAUNCHD_SERVE_SKIP_REASON

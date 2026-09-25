@@ -249,6 +249,11 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     entry_idx = next((i for i, token in enumerate(tokens) if _is_entry(i, token)), None)
     if entry_idx is None:
         return None
+    # ``python -c <src> … -m hermes_cli.main <subcommand>``: the entry token belongs to the argv the
+    # inline source carries for a LATER spawn, not to this holder (#107002).
+    from gateway.status import command_line_runs_inline_source
+    if command_line_runs_inline_source([t.strip('"').replace("\\", "/") for t in tokens]):
+        return None
     value_flags = _holder_value_flags()
     i = entry_idx + 1
     while i < len(tokens):
@@ -1202,6 +1207,35 @@ def _relaunch_paused_gateways(token: dict, profiles: dict, unmapped: list) -> tu
     return relaunched, unmapped_relaunched
 
 
+_RELAUNCH_VERIFY_TIMEOUT_S = 30.0
+
+
+def _pending_relaunch_pids(profiles: dict, unmapped: list, pid_exists) -> list[int]:
+    """Old PIDs a restart watcher is still waiting on, sorted; empty when every relaunch can have run.
+
+    ``_spawn_gateway_restart_watcher`` respawns the gateway only once the PID it was handed is gone,
+    so while any of them is alive the relaunch has provably not started yet. Pure function of data
+    (``pid_exists`` is injected) so the decision is testable off Windows.
+    """
+    candidates = [int(pid) for pid in profiles.values()]
+    candidates += [int(entry["pid"]) for entry in unmapped if entry.get("argv") and entry.get("pid")]
+    return sorted({pid for pid in candidates if pid > 0 and pid_exists(pid)})
+
+
+def _relaunch_verify_timeout_s(profiles: dict, unmapped: list, pid_exists) -> float:
+    """Liveness budget for the post-relaunch poll.
+
+    The base window assumes the watchers respawn immediately. When an old PID is still alive the
+    watcher is still in its wait loop, so the poll must reach at least the watcher's own deadline —
+    otherwise ``hermes update`` declares "no stable gateway process appeared" for a gateway that was
+    never scheduled to appear inside the window (#107002).
+    """
+    from hermes_cli.gateway import GATEWAY_RESTART_WATCHER_TIMEOUT_S
+    if not _pending_relaunch_pids(profiles, unmapped, pid_exists):
+        return _RELAUNCH_VERIFY_TIMEOUT_S
+    return float(GATEWAY_RESTART_WATCHER_TIMEOUT_S) + _RELAUNCH_VERIFY_TIMEOUT_S
+
+
 def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: list) -> None:
     """Gate success on the shared liveness poll: a truthy launch only proves the watcher was created.
 
@@ -1209,8 +1243,10 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
     ``all_profiles=True`` covers the fleet. Vouched PIDs are persisted so a death AFTER updater exit
     is reported by the next CLI invocation (best-effort)."""
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
+        from gateway.status import _pid_exists
         from hermes_cli import gateway_windows
-    ready_pids = gateway_windows._wait_for_gateway_ready(timeout_s=30.0, all_profiles=True)
+    timeout_s = _relaunch_verify_timeout_s(profiles, unmapped, _pid_exists)
+    ready_pids = gateway_windows._wait_for_gateway_ready(timeout_s=timeout_s, all_profiles=True)
     if not ready_pids:
         token["profiles"] = dict(profiles)
         token["unmapped"] = list(unmapped)

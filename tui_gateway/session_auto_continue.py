@@ -245,6 +245,34 @@ def _ac_try_correction(rid, session: dict, agent: Any, method: str, plain_text: 
     return _ok(rid, {"status": status})
 
 
+def _session_compression_in_flight(session: dict) -> bool:
+    """True when a compression lock is held for this session's durable id.
+
+    Context compression is interrupt-protected (#23975), but a correction that reaches the
+    provider mid-compression still aborts it with ``explicit_interrupt`` — the user's
+    follow-up kills the very turn that would answer it (#61042). The channel-side busy
+    path demotes interrupt→queue for the same reason (gateway/run_busy.py
+    ``_session_has_compression_in_flight``, #56391); this is the local-RPC twin. Both
+    blocking reads run off the event loop so a large state.db never freezes the dispatcher.
+    """
+    agent = session.get("agent")
+    sid = str(getattr(agent, "session_id", "") or "") or str(session.get("session_key") or "")
+    if not sid:
+        return False
+    try:
+        with _session_db(session) as db:
+            get_holder = getattr(db, "get_compression_lock_holder", None)
+            if not callable(get_holder):
+                return False
+            holder = get_holder(sid)
+    except Exception:
+        logger.debug("compression in-flight check failed for session %s", sid, exc_info=True)
+        return False
+    # Production returns Optional[str]. Reject non-strings so a MagicMock auto-attr cannot
+    # look like a held lock and needlessly demote every submit (see #96953).
+    return isinstance(holder, str) and bool(holder)
+
+
 def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any, queued: bool = False,
                         turn_author: dict | None = None) -> dict | None:
     """Apply ``display.busy_input_mode`` to a mid-turn prompt instead of rejecting it (rejection made clients busy-retry
@@ -253,6 +281,11 @@ def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any,
     after" message must NEVER become a live correction."""
     mode = "queue" if queued else _load_busy_input_mode()
     agent = session.get("agent")
+    # Compression in flight demotes steer/interrupt to queue: a correction delivered
+    # mid-compression aborts the compression instead of waiting for it (#61042). The
+    # follow-up drains when compression finishes — the Discord-gateway contract.
+    if mode in ("steer", "interrupt") and _session_compression_in_flight(session):
+        mode = "queue"
     with session["history_lock"]:
         if not session.get("running"):
             return None  # turn ended since prompt.submit's busy check; caller retries on the idle session

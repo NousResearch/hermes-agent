@@ -11,11 +11,13 @@ import json
 import os
 import time
 import asyncio
+from typing import Any
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
 from gateway.config import Platform
+from gateway.platforms.base import SendResult
 from gateway.platforms.event import MessageEvent
 from gateway.session import SessionSource
 
@@ -287,6 +289,112 @@ class TestWatchUpdateProgress:
             if "Restore local changes" in str(call)
         ]
         assert len(prompt_sends) == 1
+
+    @pytest.mark.asyncio
+    async def test_failed_native_prompt_falls_back_to_text(self, tmp_path):
+        """A native prompt that reports failure is not delivery: send the text prompt.
+
+        Discord/Feishu ``send_update_prompt`` return ``SendResult(success=False)``
+        ("Not connected", channel send error) rather than raising. Treating that as
+        delivered skipped the text prompt while ``update_prompt_pending`` blocked any
+        re-forward, so the user saw nothing and the updater waited out the full input
+        timeout on ``.update_response``.
+        """
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        session_key = "agent:main:telegram:dm:111"
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram", "chat_id": "111", "user_id": "222",
+            "session_key": session_key,
+        }))
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": "Restore local changes? [Y/n]", "default": "y",
+        }))
+
+        sent = []
+        prompt_forwarded = asyncio.Event()
+
+        class NativePromptFailureAdapter:
+            """Native buttons unavailable: the native send fails instead of raising."""
+
+            async def send_update_prompt(self, chat_id, prompt, default="", session_key="", metadata=None):
+                return SendResult(success=False, error="Not connected")
+
+            async def send(self, chat_id, content, metadata=None):
+                sent.append(content)
+                if "Update needs your input" in content:
+                    prompt_forwarded.set()
+                return SendResult(success=True)
+
+        adapter: Any = NativePromptFailureAdapter()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            watcher = asyncio.create_task(runner._watch_update_progress(
+                poll_interval=0.05,
+                stream_interval=0.1,
+                timeout=10.0,
+            ))
+            await asyncio.wait_for(prompt_forwarded.wait(), timeout=5.0)
+            (hermes_home / ".update_exit_code").write_text("0")
+            await watcher
+
+        prompts = [c for c in sent if "Update needs your input" in c]
+        assert len(prompts) == 1
+        # The prompt must be answerable: the update subprocess is blocked on .update_response.
+        assert "/approve" in prompts[0] and "/deny" in prompts[0]
+        assert "Restore local changes? [Y/n]" in prompts[0]
+
+    @pytest.mark.asyncio
+    async def test_native_prompt_absent_result_keeps_native_path(self, tmp_path):
+        """A native hook that returns no SendResult counts as delivered, so no duplicate text.
+
+        The fallback keys off an *explicit* failure; adapters whose native prompt
+        returns ``None`` must not also receive the text prompt.
+        """
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        session_key = "agent:main:telegram:dm:111"
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram", "chat_id": "111", "user_id": "222",
+            "session_key": session_key,
+        }))
+        (hermes_home / ".update_prompt.json").write_text(json.dumps({
+            "prompt": "Restore local changes? [Y/n]", "default": "y",
+        }))
+
+        native_calls = []
+        sent = []
+
+        class NativePromptNoResultAdapter:
+            async def send_update_prompt(self, chat_id, prompt, default="", session_key="", metadata=None):
+                native_calls.append(prompt)
+
+            async def send(self, chat_id, content, metadata=None):
+                sent.append(content)
+                return SendResult(success=True)
+
+        adapter: Any = NativePromptNoResultAdapter()
+        runner.adapters = {Platform.TELEGRAM: adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            watcher = asyncio.create_task(runner._watch_update_progress(
+                poll_interval=0.05,
+                stream_interval=0.1,
+                timeout=10.0,
+            ))
+            for _ in range(40):
+                if native_calls:
+                    break
+                await asyncio.sleep(0.05)
+            (hermes_home / ".update_exit_code").write_text("0")
+            await watcher
+
+        assert len(native_calls) == 1
+        assert not [c for c in sent if "Update needs your input" in c]
+
 
 # ---------------------------------------------------------------------------
 # Message interception for update prompts

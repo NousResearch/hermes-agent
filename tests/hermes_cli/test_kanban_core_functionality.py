@@ -11,6 +11,7 @@ parity across every registered verb.
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import threading
@@ -24,6 +25,7 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
+from hermes_cli.kanban import run_slash
 
 
 # ---------------------------------------------------------------------------
@@ -1441,7 +1443,7 @@ def test_respawn_guard_blocks_spawn_when_prev_worker_pid_alive_on_this_host(
             proc.wait(timeout=5)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_respawn_guard_survives_deleted_spawned_claimed_events_via_run_metadata(
     kanban_home, all_assignees_spawnable, monkeypatch,
 ):
@@ -1591,7 +1593,7 @@ def test_respawn_guard_prev_worker_alive_escalates_after_five_ticks(
             proc.wait(timeout=5)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_respawn_guard_recycled_pid_does_not_block_genuine_pid_does(
     kanban_home, all_assignees_spawnable,
 ):
@@ -1912,7 +1914,7 @@ def test_respawn_guard_consults_latest_ended_run_not_an_older_one(
 # F-2 the three missing test groups below; F-3 the narrowed cross-host hold)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_respawn_guard_windows_probe_does_not_signal_live_child():
     """(Review ask 1) On native Windows the liveness probe must route
     through ``gateway.status._pid_exists`` (psutil, else the
@@ -2094,7 +2096,7 @@ def test_respawn_guard_cross_host_claim_lock_fallback_clean_close_fails_open(
         assert tid in [s[0] for s in res.spawned]
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_respawn_guard_identity_mismatch_does_not_block_genuine_match_does(
     kanban_home, all_assignees_spawnable,
 ):
@@ -2381,7 +2383,7 @@ def test_takeover_ack_does_not_commit_when_the_flip_it_precedes_fails(
         )
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_takeover_refuses_a_same_host_alive_prev_worker(
     kanban_home, all_assignees_spawnable,
 ):

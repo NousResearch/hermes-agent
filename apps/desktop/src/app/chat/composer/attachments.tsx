@@ -133,7 +133,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
         throw new Error(c.couldNotPreview(attachment.label))
       }
 
-      openPreview(preview, 'manual')
+      openPreview(preview)
     } catch (error) {
       notifyError(error, c.previewUnavailable)
     }

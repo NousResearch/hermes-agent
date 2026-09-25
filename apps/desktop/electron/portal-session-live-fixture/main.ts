@@ -122,10 +122,12 @@ async function run() {
       await jar.cookies.remove(base, accessName())
       mode = 'renew'
       const before = refreshes
+
       const [first, second] = await Promise.all([
         portal.renewPortalAccessSilently(),
         portal.renewPortalAccessSilently()
       ])
+
       assert.equal(first, true)
       assert.equal(second, true)
       assert.equal(refreshes, before + 1)
@@ -145,6 +147,7 @@ async function run() {
 
     // A server-rejected cookie must not short-circuit renewal as successful.
     mode = 'reject'
+    console.log('PORTAL_PHASE_REJECT')
     await jar.cookies.set({ url: base, name: accessName(), value: 'rejected', httpOnly: true })
     assert.equal((await jar.fetch(`${base}/api/agents`)).status, 401)
     assert.equal(await portal.renewPortalAccessSilently({ force: true }), false)
@@ -154,6 +157,7 @@ async function run() {
     // portal issues a new one; a forced renewal requested while an unforced one
     // is short-circuiting must still drive the portal.
     mode = 'login'
+    console.log('PORTAL_PHASE_LOGIN_AGAIN')
     loginGate = new Promise(resolve => {
       releaseLogin = resolve
     })
@@ -171,10 +175,12 @@ async function run() {
     // A premature completion destroys the window before its page can reach
     // /complete, so race the two instead of waiting on the request alone.
     await Promise.race([requestedAgain, loginAgain])
+    console.log('PORTAL_PHASE_LOGIN_AGAIN_REQUESTED')
     assert.equal(await portal.hasPortalAccessToken(), true)
     assert.equal(completedAgain, false)
     releaseLogin()
     await loginAgain
+    console.log('PORTAL_PHASE_LOGIN_AGAIN_COMPLETE')
     assert.equal((await jar.fetch(`${base}/api/agents`)).status, 200)
 
     mode = 'renew'
@@ -195,16 +201,27 @@ async function run() {
     assert.equal(await portal.renewPortalAccessSilently(), false)
     console.log('PORTAL_SESSION_LIVE_OK')
   } finally {
+    console.log('PORTAL_PHASE_TEARDOWN_START')
     for (const window of BrowserWindow.getAllWindows()) {
       window.destroy()
     }
+    console.log('PORTAL_PHASE_WINDOWS_CLOSED')
+
+    // Stop accepting requests before terminating existing keep-alive sockets;
+    // the reverse order leaves a race for a fresh Electron network request.
+    const closed = new Promise<void>(resolve => server.close(() => resolve()))
     server.closeAllConnections()
-    await new Promise<void>(resolve => server.close(() => resolve()))
+    console.log('PORTAL_PHASE_CONNECTIONS_CLOSED')
+    await closed
+    console.log('PORTAL_PHASE_SERVER_CLOSED')
   }
 }
 
 void run().then(
-  () => app.exit(0),
+  () => {
+    console.log('PORTAL_PHASE_EXIT')
+    app.exit(0)
+  },
   error => {
     console.error(error)
     app.exit(1)

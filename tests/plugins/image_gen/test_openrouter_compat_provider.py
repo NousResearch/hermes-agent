@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import base64
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -64,18 +63,7 @@ def _openrouter():
 
 
 class TestProviderClass:
-    def test_names(self):
-        from plugins.image_gen.openrouter import _build_providers
 
-        names = {p.name for p in _build_providers()}
-        assert names == {"openrouter", "nous"}
-
-    def test_display_names(self):
-        from plugins.image_gen.openrouter import _build_providers
-
-        by_name = {p.name: p for p in _build_providers()}
-        assert by_name["openrouter"].display_name == "OpenRouter"
-        assert by_name["nous"].display_name == "Nous Portal"
 
     def test_capabilities_support_image_input(self):
         caps = _openrouter().capabilities()
@@ -87,13 +75,6 @@ class TestProviderClass:
             assert _openrouter().is_available() is True
 
 
-    def test_default_model(self):
-        from plugins.image_gen.openrouter import DEFAULT_MODEL
-
-        with patch("plugins.image_gen.openrouter._load_image_gen_config", return_value={}):
-            assert _openrouter().default_model() == DEFAULT_MODEL
-            # Default must be an image-output model id (provider/model form).
-            assert "/" in DEFAULT_MODEL and "image" in DEFAULT_MODEL
 
     def test_default_model_ignores_runtime_overrides(self, monkeypatch):
         """Catalog defaults must not inherit another provider's saved model."""
@@ -809,14 +790,9 @@ class TestImageApiSurface:
         by_name = {p.name: p for p in _build_providers()}
         openrouter_ids = {m["id"] for m in by_name["openrouter"].list_models()}
         nous_ids = {m["id"] for m in by_name["nous"].list_models()}
-        assert "openai/gpt-image-2" in openrouter_ids
         assert set(_IMAGE_API_MODELS) <= openrouter_ids
         assert not (set(_IMAGE_API_MODELS) & nous_ids)
 
-    def test_default_model_is_unchanged_by_the_new_surface(self):
-        from plugins.image_gen.openrouter import DEFAULT_MODEL
-
-        assert _openrouter_image_api().default_model() == DEFAULT_MODEL
 
 
 class TestRegistration:

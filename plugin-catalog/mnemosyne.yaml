@@ -1,10 +1,10 @@
 name: mnemosyne
 repo: https://github.com/mnemosyne-oss/mnemosyne
-sha: 95ef3be20d28bd9ee1d517bcb25ed00000eab577
+sha: d73848735a2a48471a62d2c8fb96cd7183c97491
 subdir: integrations/hermes-catalog
 requires_hermes: ">=0.21.4"
-version: "0.7.0"
-description: Local-first memory layer for Hermes Agent — SQLite with vector + FTS5 hybrid recall, episodic consolidation, temporal knowledge graph. Zero cloud.
+version: "0.7.3"
+description: "Local-first memory layer for Hermes Agent — SQLite with vector + FTS5 hybrid recall, episodic consolidation, temporal knowledge graph. Zero cloud. Disclosure — the mnemosyne_remember_media tool refuses local file paths unless MNEMOSYNE_MEDIA_ALLOWED_PATHS is set and sends media only to an operator-configured OpenAI-compatible endpoint when modality_enabled is on; video uses ffmpeg/ffprobe from PATH; the embedding model (BAAI/bge-small-en-v1.5) downloads from Hugging Face on first use."
 maintainer: mnemosyne-oss
 tier: community
 category: memory
@@ -33,6 +33,7 @@ capabilities:
   - mnemosyne_recall_diagnostics
   - mnemosyne_remember
   - mnemosyne_remember_canonical
+  - mnemosyne_remember_media
   - mnemosyne_scratchpad_clear
   - mnemosyne_scratchpad_read
   - mnemosyne_scratchpad_write

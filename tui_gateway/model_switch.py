@@ -79,13 +79,17 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
             scopes.secret = set_secret_scope(launch_secret_scope(home))
             if not is_multiplex_active():
                 return scopes
+            # Multiplexed plugin slots require an explicit launch-home binding too.
+            if scopes.home is None:
+                scopes.home = set_hermes_home_override(str(home))
             overlay = launch_terminal_env()
         else:
             # This secondary may never have been served in this process.
             if hydrate_secrets:
                 from hermes_cli.env_loader import hydrate_profile_secret_sources
                 hydrate_profile_secret_sources(home)
-            scopes.secret = set_secret_scope(build_profile_secret_scope(home))
+            scopes.secret = set_secret_scope(
+                build_profile_secret_scope(home), profile_home=str(home))
             overlay = None
         from tools.terminal_scope import install_profile_terminal_scope
         scopes.terminal = install_profile_terminal_scope(home, env_overlay=overlay)
@@ -127,6 +131,15 @@ def _session_profile_runtime_scope(session: dict, *, hydrate_secrets: bool = Tru
         yield
     finally:
         _release_profile_runtime_scope_tokens(scopes)
+
+
+def _session_default_model(session: dict) -> str:
+    """The configured default model of the session's OWN profile. Bare ``_resolve_model()`` reads the
+    LAUNCH profile's config, so a secondary session's reply or first state.db row carried the launch
+    profile's model id."""
+    with _session_profile_runtime_scope({"profile_home": session.get("profile_home") or None},
+                                        hydrate_secrets=False):
+        return _resolve_model()
 
 
 def _restart_completed_failed_agent_build(sid: str, session: dict, failed_ready: threading.Event | None) -> bool:

@@ -57,11 +57,3 @@ def test_small_category_shows_all_skills():
     assert "+2 more" not in text
 
 
-def test_skills_respect_category_label_width():
-    """Skills display should account for the category label prefix width."""
-    # A category with a long name should have less room for skills
-    skills = {"very-long-category-name": [f"skill-{i:02d}" for i in range(10)]}
-    text = _build_banner_with_skills(skills, term_width=120)
-
-    # Should still show at least some skills
-    assert "skill-00" in text

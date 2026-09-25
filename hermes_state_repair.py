@@ -565,6 +565,16 @@ def preflight_db_writability(db_path: Path, *, db_label: str = "state.db") -> No
         if in_scope and os.access(p, os.R_OK | os.W_OK):
             logger.info("%s preflight: repaired read-only %s (chmod u+rw%s)", db_label, p, x)
             continue
+        if p in sidecars:
+            # SQLite's last connection can checkpoint and remove a sidecar
+            # after discovery. Missing is not read-only; SQLite may recreate it
+            # in the already-checked directory when the next connection opens.
+            try:
+                p.stat()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                pass  # An inaccessible sidecar must still fail closed below.
         wal_note = (" Do NOT delete the -wal file — it contains committed data that "
                     "will be merged into the database once it is writable." if p.name.endswith("-wal") else "")
         raise sqlite3.OperationalError(

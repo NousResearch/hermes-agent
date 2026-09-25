@@ -158,7 +158,8 @@ jobs:
     # See scripts/check-windows-footguns.py for the full rule list.
     name: Windows footguns (blocking)
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Include checkout/setup time; the advisory step retains its own 3m cap.
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -192,6 +193,11 @@ jobs:
       # script is the burn-down list of pre-existing hits.
       - name: Forbid literal /tmp paths outside the baseline
         run: python scripts/check_no_tmp_literals.py
+
+      # config.yaml is hand-edited and commented; a PyYAML dump of it destroys every comment
+      # (#92554, regressed repeatedly). All writers go through hermes_cli.config.atomic_config_write.
+      - name: Forbid config.yaml writers that bypass the comment-preserving writer
+        run: python scripts/check_config_yaml_writers.py
 
       # The OS lanes import only files carrying the matching marker, so a test that fakes
       # macOS (is_macos -> True, sys.platform -> "darwin") without `macos_only` is green on

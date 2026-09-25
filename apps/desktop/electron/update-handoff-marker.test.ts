@@ -7,8 +7,8 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
-const POSIX_SCRIPT = path.join(REPO_ROOT, 'scripts', 'desktop-update', 'posix.sh')
 const WINDOWS_SCRIPT = path.join(REPO_ROOT, 'scripts', 'desktop-update', 'windows.ps1')
+const POSIX_SCRIPT = path.join(REPO_ROOT, 'scripts', 'desktop-update', 'posix.sh')
 
 function sandbox(tag: string) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), `hermes-handoff-marker-${tag}-`))
@@ -102,7 +102,11 @@ test.skipIf(process.platform === 'win32')('POSIX hand-off preserves the Desktop 
   assertScriptHandoff(runPosix)
 })
 
-test.skipIf(process.platform !== 'win32')('PowerShell hand-off preserves the Desktop marker acquisition time', () => {
-  // This exercises three real PowerShell starts, each with its own bounded timeout.
-  assertScriptHandoff(runWindows)
-}, 50_000)
+test.skipIf(process.platform !== 'win32')(
+  'PowerShell hand-off preserves the Desktop marker acquisition time',
+  () => {
+    // This exercises three real PowerShell starts, each with its own bounded timeout.
+    assertScriptHandoff(runWindows)
+  },
+  50_000
+)

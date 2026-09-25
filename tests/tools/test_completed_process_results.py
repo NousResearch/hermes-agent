@@ -40,20 +40,29 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     command = shlex.join(path.as_posix() for path in (Path(sys.executable), child, release))
     observed = []
     seen_tool = set()
-    follow_ups = []
+    follow_ups_by_request = []
+    retried_completion = False
 
     class Provider(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_error(404)
 
         def do_POST(self):
+            nonlocal retried_completion
             request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if "messages" not in request:
                 self.send_error(404)
                 return
             tool_results = [m for m in request["messages"] if m["role"] == "tool"]
-            follow_ups.extend(m["content"] for m in request["messages"]
-                              if m["role"] == "user" and "Background process" in str(m.get("content") or ""))
+            follow_ups = [m["content"] for m in request["messages"]
+                          if m["role"] == "user" and "Background process" in str(m.get("content") or "")]
+            follow_ups_by_request.append(follow_ups)
+            # A retry re-carries conversation history; it is not a second delivery.
+            # Exercise that boundary instead of relying on incidental extra calls.
+            if follow_ups and not retried_completion:
+                retried_completion = True
+                self.send_error(503, "Synthetic completion retry")
+                return
             has_terminal = any(t.get("function", {}).get("name") == "terminal"
                                for t in request.get("tools", []))
             message = {"role": "assistant", "content": "Coordinator finished."}
@@ -128,10 +137,17 @@ def test_headless_terminal_result_survives_cli_exit(tmp_path):
     assert observed[0].get("notify_on_complete") is True, observed
     # The owned notify_on_complete completion resumes in-process as a follow-up turn
     # (nested quiet-notify resume), carrying the child's real output to the model.
-    assert len(follow_ups) == 1, follow_ups
-    assert process_id in follow_ups[0]
-    assert "SYNTHETIC_REVIEW_COMPLETE" in follow_ups[0]
-    assert "exit code 7" in follow_ups[0]
+    assert retried_completion
+    assert sum(bool(rows) for rows in follow_ups_by_request) >= 2, follow_ups_by_request
+    # Check every transcript, so deduplicating HTTP retries cannot hide two
+    # notifications delivered in one conversation.
+    assert all(len(rows) <= 1 for rows in follow_ups_by_request), follow_ups_by_request
+    assert len(follow_ups_by_request[-1]) == 1, follow_ups_by_request
+    for rows in follow_ups_by_request:
+        if rows:
+            assert process_id in rows[0]
+            assert "SYNTHETIC_REVIEW_COMPLETE" in rows[0]
+            assert "exit code 7" in rows[0]
 
     consumer = textwrap.dedent('''
         import json, sys

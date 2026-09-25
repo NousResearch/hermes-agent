@@ -369,11 +369,51 @@ describe('useGatewayRequest', () => {
       await expect(result.current.requestGateway('session.resume')).resolves.toEqual({ recovered: true })
     })
 
-    expect(desktop.getConnection).toHaveBeenCalledWith('default')
+    expect(desktop.getConnection).toHaveBeenCalledWith()
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledWith('default')
     expect(desktop.getConnectionFor).not.toHaveBeenCalled()
     expect(desktop.getGatewayWsUrlFor).not.toHaveBeenCalled()
   })
+
+  it.each(['token', 'oauth'] as const)(
+    'keeps a registered peer primary on its owner during %s request recovery',
+    async authMode => {
+      const connection = { ...remoteConnection, authMode, registryScoped: true }
+
+      const desktop = {
+        ...installRemoteDesktop(),
+        getConnection: vi.fn(async (profile?: string | null) => {
+          if (profile !== undefined) {
+            throw new Error(`Profile '${profile}' does not exist locally`)
+          }
+
+          return connection
+        })
+      }
+
+      Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: desktop })
+
+      const primary = makePrimaryGateway()
+      primary.request.mockRejectedValueOnce(new Error('connection closed')).mockResolvedValueOnce({ recovered: true })
+      setPrimaryGateway(primary as unknown as HermesGateway, connection.profile)
+      $gateway.set(primary as unknown as HermesGateway)
+      $activeGatewayProfile.set(connection.profile)
+      $gatewayState.set('closed')
+
+      const { result } = renderHook(() => useGatewayRequest())
+      await act(async () => {
+        await expect(result.current.requestGateway('session.resume')).resolves.toEqual({ recovered: true })
+      })
+
+      expect(desktop.getConnection).toHaveBeenCalledWith()
+      expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({
+        connectionId: connection.connectionId,
+        profile: connection.profile
+      })
+      expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
+      expect(primary.connect).toHaveBeenCalledWith(expect.stringContaining('wss://ssh-source.example.test/'))
+    }
+  )
 
   it('rejects instead of hanging forever when the reconnect getConnection() wedges (#93454)', async () => {
     // Repro: a request lands on a dropped socket, the "not connected" catch

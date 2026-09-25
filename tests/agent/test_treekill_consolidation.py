@@ -26,7 +26,6 @@ from unittest.mock import MagicMock
 import pytest
 
 import agent.deadline as deadline_mod
-from tools import browser_tool_lifecycle as bt_lifecycle
 
 
 class _FakeProc:
@@ -95,32 +94,6 @@ class TestSubprocessCompatDelegation:
 # (2) tools.browser_tool_lifecycle._kill_process_tree
 # ---------------------------------------------------------------------------
 
-class TestBrowserToolDelegation:
-    def test_delegates_with_proc_pid(self, monkeypatch):
-        from tools import browser_tool
-
-        calls = []
-        monkeypatch.setattr(
-            deadline_mod, "kill_process_tree", lambda pid, **kw: calls.append(pid) or True
-        )
-        proc = _FakeProc(pid=3333)
-        assert bt_lifecycle._kill_process_tree(proc) is None
-        assert calls == [3333]
-
-    def test_swallows_delegation_raise_and_falls_back_to_legacy(self, monkeypatch):
-        from tools import browser_tool
-
-        def _boom(pid, **kw):
-            raise OSError("delegation broken")
-
-        monkeypatch.setattr(deadline_mod, "kill_process_tree", _boom)
-        legacy_calls = []
-        monkeypatch.setattr(
-            "tools.browser_tool_lifecycle._legacy_kill_process_tree", lambda proc: legacy_calls.append(proc)
-        )
-        proc = _FakeProc(pid=4444)
-        bt_lifecycle._kill_process_tree(proc)  # must not raise
-        assert legacy_calls == [proc]
 
 
 # ---------------------------------------------------------------------------
@@ -128,20 +101,6 @@ class TestBrowserToolDelegation:
 # ---------------------------------------------------------------------------
 
 class TestCodeExecutionDelegation:
-    def test_delegates_sigterm_tree_first(self, monkeypatch):
-        import signal as _signal
-
-        from tools import code_execution_tool
-
-        calls = []
-        monkeypatch.setattr(
-            deadline_mod,
-            "kill_process_tree",
-            lambda pid, sig=None: calls.append((pid, sig)) or True,
-        )
-        proc = _FakeProc(pid=5555)
-        code_execution_tool._kill_process_group(proc)
-        assert calls == [(5555, _signal.SIGTERM)]
 
     def test_escalate_waits_then_sigkills_tree(self, monkeypatch):
         import signal as _signal

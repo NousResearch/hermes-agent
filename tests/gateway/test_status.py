@@ -2,7 +2,6 @@
 
 import json
 import os
-import sys
 import threading
 import time
 from pathlib import Path
@@ -572,7 +571,6 @@ class TestGetProcessStartTime:
 
     def test_live_process_is_stable_int(self):
         import subprocess
-        import time
         p = subprocess.Popen(["sleep", "20"])
         try:
             a = status._get_process_start_time(p.pid)
@@ -611,8 +609,8 @@ class TestTerminatePid:
             (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
         ]
 
+    @pytest.mark.windows_only
     def test_windows_force_refuses_pid_without_start_time_guard(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
         calls = []
         monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
 
@@ -621,8 +619,8 @@ class TestTerminatePid:
 
         assert calls == []
 
+    @pytest.mark.windows_only
     def test_windows_force_refuses_reused_pid(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
         calls = []
         monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
@@ -1289,7 +1287,16 @@ class TestPlannedStopMarker:
 class TestReadProcessCmdlinePsFallback:
     """Tests for _read_process_cmdline falling back to ps on non-Linux."""
 
+    @pytest.mark.linux_only
     def test_ps_fallback_when_proc_unavailable(self, monkeypatch):
+        import psutil
+
+        def inaccessible_process(pid):
+            raise psutil.AccessDenied(pid)
+
+        # Exercise the POSIX fallback without consulting a real host PID:
+        # psutil precedes ps and may find an unrelated process on CI.
+        monkeypatch.setattr(psutil, "Process", inaccessible_process)
         monkeypatch.setattr(status.Path, "read_bytes", lambda self: (_ for _ in ()).throw(FileNotFoundError))
         monkeypatch.setattr(
             status.subprocess, "run",

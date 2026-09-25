@@ -1544,15 +1544,9 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
 
 def _print_multiplex_standalone_reason() -> None:
     """The boot guard kept an unset-default gateway standalone: say so in status, with the remedy."""
-    try:
-        from gateway.status import read_runtime_status
-        reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
-    except Exception:
-        return
-    if reason:
-        print(f"⚠ Serving the default profile only (gateway.multiplex_profiles unset): {reason}")
-        print("  Fold every profile onto this gateway: hermes gateway migrate --multiplex")
-        print("  Keep per-profile gateways: hermes config set gateway.multiplex_profiles false")
+    from hermes_cli.gateway_multiplex_mode import recorded_standalone_warning_lines
+    for line in recorded_standalone_warning_lines():
+        print(line)
 
 
 def _print_served_ingress_urls(profile: str | None = None) -> None:
@@ -1602,6 +1596,18 @@ def _print_other_profiles_gateway_status() -> None:
             print(f"  ✓ {proc.profile:<16s} — PID {proc.pid}")
     except Exception:
         pass
+
+
+def _print_duplicate_credential_warnings() -> None:
+    """The migrate preflight's duplicate-credential findings, so ``gateway status`` explains a parked
+    or racing bot (and why the fleet will not fold) with the same words as ``migrate --dry-run``."""
+    with contextlib.suppress(Exception):
+        from hermes_cli.gateway_migrate import duplicate_credential_findings
+        lines = duplicate_credential_findings()
+        if lines:
+            print()
+            for line in lines:
+                print(f"⚠ {line}")
 
 
 def _gateway_list() -> None:
@@ -3738,7 +3744,14 @@ def _served_profile_needs_no_service() -> bool:
     Shared by ``hermes setup gateway`` / ``hermes setup`` / ``hermes import`` (``ensure_gateway_service``)
     and the ``hermes gateway setup`` wizard. See #111958."""
     if not named_profile_served_by_running_multiplexer():
-        return False
+        # Not served (yet): a named profile still gets no service of its own — same rule and text
+        # as `gateway install`, so `hermes -p X setup` cannot grow a fleet member the verb refuses.
+        return _named_profile_refused_under_multiplexer()
+    from hermes_cli.profiles import profile_is_standalone
+    if profile_is_standalone(get_hermes_home()):
+        from gateway.host_attach import standalone_rescan_message
+        print_info(standalone_rescan_message(_current_profile_name()))
+        return True
     print_success(
         f"Profile '{_current_profile_name()}' is already served by the default multiplexer."
     )
@@ -3748,39 +3761,80 @@ def _served_profile_needs_no_service() -> bool:
 
 
 def _named_profile_refused_under_multiplexer(force: bool = False) -> bool:
-    """Print the served-profile refusal and return True when a named-profile gateway must not start:
-    a multiplexing default gateway already serves it (a second one would double-bind its platforms: two
-    pollers on one token, port fights). ``--force`` overrides. Shared by ``run`` and the service verbs
-    (``start``/``install``/``restart``): a refusal only inside ``gateway run`` leaves the service manager
-    to discover it — systemd parks the unit on exit 78 while the CLI prints "started"; launchd
-    (KeepAlive, no exit-status gating) respawns it every ThrottleInterval forever."""
+    """Print the refusal and return True when a NAMED profile must not get a gateway of its own.
+
+    One gateway per host serves every profile, so a ``<root>/profiles/<name>`` home never installs or
+    starts a standalone gateway: either the host gateway already serves it (a second one would
+    double-bind its platforms: two pollers on one token, port fights) or no host gateway runs yet and
+    the DEFAULT profile is where it is installed. Refusing only the served case let a host with no
+    multiplexer running (or one that had not rescanned yet) grow a brand-new per-profile fleet member.
+    ``--force`` is the one escape (a fleet split across UNIX users or a ``HERMES_HOME`` outside
+    ``profiles/``); a service it already installed stays startable without it. Shared by ``run`` and the service verbs (``start``/``install``/``restart``): a
+    refusal only inside ``gateway run`` leaves the service manager to discover it — systemd parks the
+    unit on exit 78 while the CLI prints "started"; launchd (KeepAlive, no exit-status gating)
+    respawns it every ThrottleInterval forever."""
     if force:
         return False
     try:
         suffix = _current_profile_name()
+        from hermes_constants import profile_name_for_home
+        from hermes_cli.profiles import profile_is_standalone
+        # A profile that authored gateway.standalone: true opted out of the host multiplexer: it is
+        # allowed a gateway of its own without --force. Only a RUNNING host record that still lists
+        # it (the host has not rescanned since the key was set) is refused with the rescan remedy.
+        standalone = (profile_name_for_home(get_hermes_home()) not in (None, "default")
+                      and profile_is_standalone(get_hermes_home()))
+        # A unit/plist/task already registered for this home was installed with --force: that fleet
+        # member (and the supervisor relaunching it, whose ExecStart carries no --force) is not NEW.
+        new_standalone = (profile_name_for_home(get_hermes_home()) not in (None, "default")
+                          and not _is_service_installed())
     except Exception:
         return False
     owner = _served_by_another_host_gateway()
-    if owner is None and not named_profile_served_by_running_multiplexer():
+    served = owner is not None or named_profile_served_by_running_multiplexer()
+    if standalone:
+        if not served:
+            return False
+        from gateway.host_attach import standalone_rescan_message
+        print_error(standalone_rescan_message(suffix))
+        return True
+    if not served and not new_standalone:
         return False
 
-    print_error(
-        f"The host gateway already serves profile '{suffix}'."
-    )
-    if owner is not None:
-        print(f"  {owner.describe()}")
+    if served:
+        print_error(f"The host gateway already serves profile '{suffix}'.")
+        if owner is not None:
+            print(f"  {owner.describe()}")
+    else:
+        print_error(f"Profile '{suffix}' does not get a gateway of its own.")
     print(
         "  Exactly one gateway per host is the inbound process for every\n"
         "  profile. Starting a separate gateway for this profile would\n"
         "  double-bind its platforms (two pollers on one bot token, port\n"
         "  conflicts).\n"
     )
-    print("  Manage the host gateway instead:")
+    if served:
+        print("  Manage the host gateway instead:")
+        print()
+        print(f"    hermes -p {owner.profile_label if owner is not None else 'default'} gateway restart")
+    else:
+        print("  Install or start the host gateway from the default profile; it serves this one too:")
+        print()
+        print("    hermes gateway install")
+        print()
+        print("  Or fold an existing per-profile fleet onto one host gateway:")
+        print()
+        print("    hermes gateway migrate --multiplex")
     print()
-    print(f"    hermes -p {owner.profile_label if owner is not None else 'default'} gateway restart")
+    print("  A separate per-profile gateway (for a fleet split across UNIX users or a")
+    print(f"  HERMES_HOME outside profiles/) needs --force:  hermes -p {suffix} gateway install --force")
     print()
-    print("  Pass --force to start a separate profile gateway anyway (not")
-    print("  recommended while the host gateway is running).")
+    from hermes_constants import display_hermes_home
+    from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
+    print("  Temporary compatibility path while multiplexing gaps are closed: set")
+    print(f"  gateway.standalone: true in {display_hermes_home(get_hermes_home())}/config.yaml,")
+    print("  then wait for the host gateway to rescan (<=30s) or send its rescan-profiles control verb.")
+    print(f"  ({STANDALONE_DEPRECATION_NOTICE})")
     return True
 
 
@@ -4741,7 +4795,7 @@ def _cmd_install(args):
             sys.exit(1)
         _install_systemd_from_cli(args, force=force, system=system, run_as_user=run_as_user)
     elif backend == "launchd":
-        launchd_install(force)
+        launchd_install(force, start_now=getattr(args, "start_now", None) is not False)
     elif backend == "windows":
         _gw_windows().install(
             force=force,
@@ -4805,6 +4859,9 @@ def _print_unfolded_gateway_note(owner) -> None:
 
 
 def _cmd_start(args):
+    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    if profile_lifecycle("start", args):
+        return
     system = getattr(args, "system", False)
     start_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
@@ -4837,13 +4894,14 @@ def _cmd_start(args):
 
 def _cmd_stop(args):
     _refuse_from_inside_gateway("stop", "restart loops")
+    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    if profile_lifecycle("stop", args):
+        return
     stop_all = getattr(args, "all", False)
     system = getattr(args, "system", False)
     if not stop_all and not find_gateway_pids() and (
             _served_by_another_host_gateway() or named_profile_served_by_running_multiplexer()):
-        # A served profile owns no gateway to stop; "No gateway running for this profile" (exit 0) would
-        # contradict `gateway status` ("running via the host multiplexer") on the same profile.
-        # A `--force`-started separate gateway HAS a pid of its own and is stopped normally.
+        # The launch/default-profile lifecycle still names the whole host.
         owner = _served_by_another_host_gateway()
         print_error(
             f"The host gateway serves profile '{_current_profile_name()}' — there is no separate "
@@ -4948,6 +5006,9 @@ def _restart_all(system: bool) -> None:
 
 def _cmd_restart(args):
     _refuse_from_inside_gateway("restart", "restart loops")
+    from hermes_cli.gateway_profile_lifecycle import profile_lifecycle
+    if profile_lifecycle("restart", args):
+        return
     system = getattr(args, "system", False)
     restart_all = getattr(args, "all", False)
     force = getattr(args, "force", False)
@@ -5055,14 +5116,23 @@ def _status_host_kind() -> str:
 
 
 def _cmd_status(args):
+    from hermes_cli.gateway_profile_lifecycle import print_parked_status
+    if print_parked_status():
+        return
     deep = getattr(args, "deep", False)
     full = getattr(args, "full", False)
     system = getattr(args, "system", False)
     snapshot = get_gateway_runtime_snapshot(system=system)
-    from hermes_cli.profiles import get_active_profile_name
+    from hermes_cli.profiles import get_active_profile_name, profile_is_standalone
 
+    active_standalone = ((get_active_profile_name() or "default") != "default"
+                         and profile_is_standalone(get_hermes_home()))
+    if active_standalone:
+        from hermes_cli.gateway_multiplex_mode import STANDALONE_DEPRECATION_NOTICE
+        print("standalone by config (gateway.standalone: true) — temporary compatibility shim")
+        print(f"  {STANDALONE_DEPRECATION_NOTICE}")
     _windows_service_installed = is_windows() and _gw_windows().is_installed()
-    if not snapshot.running and named_profile_served_by_running_multiplexer():
+    if not active_standalone and not snapshot.running and named_profile_served_by_running_multiplexer():
         # Satellite profile: the default multiplexer is the live inbound process for it.
         print("✓ Gateway is running via the default-profile multiplexer")
         print("  Manage it from the default profile: hermes gateway status")
@@ -5096,7 +5166,22 @@ def _cmd_status(args):
             print("  hermes gateway run      # Run in foreground")
             _print_lines(*_STATUS_STOPPED_HINTS[_status_host_kind()])
 
+    _print_duplicate_credential_warnings()
     _print_other_profiles_gateway_status()
+    _print_standalone_by_config()
+
+
+def _print_standalone_by_config() -> None:
+    """Default-profile status: name the profiles that opted out of the host multiplexer by config,
+    so the served set the host gateway reports is not mistaken for the installed roster."""
+    from hermes_cli.profiles import get_active_profile_name, profiles_to_serve
+    if (get_active_profile_name() or "default") != "default":
+        return
+    roster = {name for name, _home in profiles_to_serve(True, include_standalone=True)}
+    served = {name for name, _home in profiles_to_serve(True)}
+    names = sorted(roster - served - {"default"})
+    if names:
+        print(f"standalone by config (temporary compatibility shim): {', '.join(names)}")
 
 
 def _cmd_list(args):

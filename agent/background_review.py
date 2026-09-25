@@ -981,6 +981,10 @@ def build_cache_parity_fork(
         _warn_ignored_reasoning_effort(agent, task_cfg)
     review_agent = AIAgent(**_fork_init_kwargs(agent, _rt, _routed, max_iterations, task_cfg))
     review_agent._memory_write_origin = review_agent._memory_write_context = write_origin
+    # Fork-turn log tag: the fork shares the parent's session_id (and model on the
+    # same-model path), so its turn-start/turn-exit log lines are otherwise
+    # indistinguishable from live turns (#118693).
+    review_agent._turn_origin = write_origin
     review_agent._memory_store = agent._memory_store
     review_agent._memory_enabled = agent._memory_enabled
     review_agent._user_profile_enabled = agent._user_profile_enabled

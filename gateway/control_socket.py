@@ -88,8 +88,8 @@ def _detect_supervisor() -> str:
     env = os.environ
     if env.get("INVOCATION_ID"):
         return "systemd"
-    if sys.platform == "darwin" and (env.get("XPC_SERVICE_NAME", "").startswith("ai.hermes")
-                                     or env.get("LAUNCHD_SOCKET")):
+    from gateway.restart import launchd_job_label
+    if sys.platform == "darwin" and (launchd_job_label(env) or env.get("LAUNCHD_SOCKET")):
         return "launchd"
     if env.get("HERMES_DESKTOP_MANAGED"):
         return "desktop"
@@ -422,6 +422,14 @@ def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dic
     return query_gateway_control(home, "rescan-profiles", timeout=timeout)
 
 
+def request_unserve_profile(home: Path, name: str) -> Optional[dict[str, Any]]:
+    return query_gateway_control(home, "unserve-profile", params={"name": name}, timeout=8.0)
+
+
+def request_serve_profile_hot(home: Path, name: str) -> Optional[dict[str, Any]]:
+    return query_gateway_control(home, "serve-profile", params={"name": name}, timeout=8.0)
+
+
 def migrate_gateway_profile_identity(home: Path, old_name: str, new_name: str, *,
                                      timeout: float = 8.0) -> Optional[dict[str, Any]]:
     """Ask the multiplexer serving ``home`` to rekey a renamed profile's in-memory + on-disk routing
@@ -440,3 +448,14 @@ def purge_gateway_profile_identity(home: Path, name: str, *,
     ``{"ok": True, "dropped": N, ...}`` answer, or None when no gateway answers / the gateway predates
     the verb."""
     return query_gateway_control(home, "purge-profile-identity", params={"name": name}, timeout=timeout)
+
+
+def reload_gateway_plugins(home: Path, *, profile_home: Optional[Path] = None,
+                           timeout: float = 30.0) -> Optional[dict[str, Any]]:
+    """Ask the gateway serving ``home`` to force plugin re-discovery for ``profile_home`` (default: ``home``)
+    and re-wire its live adapters' plugin handlers now (#87770). Returns ``{"reloaded", "plugins",
+    "adapters_rewired", ...}`` or None when no gateway answers / it predates the verb — callers then
+    fall back to the restart hint. Tools and prompt sections of the reloaded plugin still apply next
+    session; only handlers go live."""
+    params = {"home": str(profile_home or home)}
+    return query_gateway_control(home, "reload-plugins", params=params, timeout=timeout)

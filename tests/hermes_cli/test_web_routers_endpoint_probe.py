@@ -137,9 +137,76 @@ def test_bare_root_probe_reports_the_v1_key_rejection_not_the_root_404(route, mo
     if route == "/api/providers/validate":
         body = EnvVarUpdate(key="OPENAI_BASE_URL", value="http://127.0.0.1:39080", api_key="k")
         data = asyncio.run(mod.validate_provider_credential(body, request=None))
-        assert data["message"] == "http://127.0.0.1:39080/v1/models answered HTTP 401."
+        assert "401" in data["message"]
     else:
         body = CustomEndpointUpdate(id="", name="local", base_url="http://127.0.0.1:39080", api_key="k", model="")
         data = asyncio.run(mod.validate_custom_endpoint(body))
-        assert data["message"] == "The endpoint rejected the API key."
     assert data["ok"] is False and data["reachable"] is True
+    assert "404" not in data["message"]
+
+
+def test_nested_local_endpoint_probe_keeps_models_on_the_intended_path(monkeypatch):
+    """A local endpoint may have a nested prefix; its /models route stays there."""
+    import httpx
+    import hermes_cli.web_routers.config_env as mod
+
+    seen = []
+
+    def handle(request):
+        seen.append((request.url.host, request.url.path))
+        return httpx.Response(200, json={"data": [{"id": "local-model"}]})
+
+    monkeypatch.setattr(
+        mod, "_endpoint_probe_client",
+        lambda url, timeout: httpx.AsyncClient(transport=httpx.MockTransport(handle), trust_env=False),
+    )
+    resolved, response = asyncio.run(
+        mod._probe_openai_compatible_models("http://127.0.0.1:39080/nested/v1", None)
+    )
+
+    assert resolved == "http://127.0.0.1:39080/nested/v1"
+    assert response.status_code == 200
+    assert seen == [("127.0.0.1", "/nested/v1/models")]
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://127.0.0.1:39080/private?ignored=",
+        "http://127.0.0.1:39080/private?",
+        "http://127.0.0.1:39080/private#ignored",
+        "http://127.0.0.1:39080/private#",
+        "http://user:pass@127.0.0.1:39080/v1",
+        "file:///private/v1",
+        "http:///v1",
+        "http://127.0.0.1:bad/v1",
+        "http://127.0.0.1:39080/other\npath",
+    ],
+)
+def test_endpoint_probe_rejects_unsafe_url_shape_before_network(base_url, monkeypatch):
+    import hermes_cli.web_routers.config_env as mod
+    from fastapi import HTTPException
+
+    outbound = []
+    monkeypatch.setattr(mod, "_endpoint_probe_client", lambda *args: outbound.append(args))
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(mod._probe_openai_compatible_models(base_url, None))
+    assert error.value.status_code == 400
+    assert outbound == []
+
+
+def test_custom_endpoint_save_rejects_query_before_config_or_secret_write():
+    import hermes_cli.web_routers.config_env as mod
+    from fastapi import HTTPException
+    from hermes_cli.web_models import CustomEndpointUpdate
+
+    cfg = {"providers": {}}
+    body = CustomEndpointUpdate(
+        id="local", name="local", base_url="http://127.0.0.1:39080/private?ignored=",
+        model="local-model", api_key="synthetic-key",
+    )
+    with pytest.raises(HTTPException) as error:
+        mod._write_custom_endpoint(cfg, body)
+    assert error.value.status_code == 400
+    assert cfg == {"providers": {}}

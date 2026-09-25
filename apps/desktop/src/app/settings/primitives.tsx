@@ -140,6 +140,16 @@ export function NavLink({
   )
 }
 
+// The label/control split every settings-style row keys on. Rows that cannot
+// be a ListRow (expandable credential cards, the billing plan card with its
+// tier art) still lay out on these exact columns so their controls line up.
+export const LIST_ROW_COLUMNS = '@2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)]'
+
+// The one settings row. `action` is the row's control: beside the label on a
+// wide pane, under the description on a narrow one — the row owns that
+// alignment, so callers never wrap a control in `justify-end`/`items-end`.
+// `wide` rows (galleries, editors) keep the control on the title line and give
+// the full width to `below`.
 export function ListRow({
   title,
   description,
@@ -167,14 +177,12 @@ export function ListRow({
     // the row's own pane width, so a narrow detail column (messaging, split
     // views) stacks instead of squishing the label against minmax(15rem,…).
     <div className={cn('@container', className)} data-tour={dataTour} id={id}>
-      <div
-        className={cn(
-          'grid gap-3 py-3',
-          !wide && '@2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center'
-        )}
-      >
+      <div className={cn('grid gap-3 py-3', !wide && [LIST_ROW_COLUMNS, '@2xl:items-center'])}>
         <div className="min-w-0">
-          <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{title}</div>
+          <div className="flex items-center justify-between gap-3 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+            <span className="min-w-0">{title}</span>
+            {wide && action && <div className="flex shrink-0 items-center gap-2">{action}</div>}
+          </div>
           {description && (
             <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
               {description}
@@ -183,27 +191,40 @@ export function ListRow({
           {hint && <div className="mt-1 block font-mono text-[0.68rem] text-muted-foreground/45">{hint}</div>}
           {below}
         </div>
-        {action && <div className={cn('min-w-0', !wide && '@2xl:justify-self-end')}>{action}</div>}
+        {!wide && action && (
+          <div className="flex min-w-0 flex-wrap items-center gap-2 @2xl:justify-self-end @2xl:justify-end">
+            {action}
+          </div>
+        )}
       </div>
     </div>
   )
 }
 
-// A labelled on/off row — the canonical device-pref switch (haptic baked in).
+// The one boolean row: every on/off setting is a Switch in a ListRow (haptic
+// baked in). Never a two-option SegmentedControl — that is for choices.
 export function ToggleRow({
   checked,
+  below,
+  'data-tour': dataTour,
   description,
   disabled,
   hint,
+  id,
   label,
-  onChange
+  onChange,
+  wide
 }: {
   checked: boolean
-  description?: string
+  below?: ReactNode
+  'data-tour'?: string
+  description?: ReactNode
   disabled?: boolean
-  hint?: string
+  hint?: ReactNode
+  id?: string
   label: string
   onChange: (on: boolean) => void
+  wide?: boolean
 }) {
   return (
     <ListRow
@@ -218,10 +239,34 @@ export function ToggleRow({
           }}
         />
       }
+      below={below}
+      data-tour={dataTour}
       description={description}
       hint={hint}
+      id={id}
       title={label}
+      wide={wide}
     />
+  )
+}
+
+// A quiet follow-up under a row's description ("Show 9 tips again", "Reset")
+// — the one place a row's secondary action lives, so it never floats beside
+// or under the control.
+export function RowFootnoteAction({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return (
+    <div className="mt-1.5">
+      <Button
+        onClick={() => {
+          triggerHaptic('selection')
+          onClick()
+        }}
+        size="inline"
+        variant="text"
+      >
+        {children}
+      </Button>
+    </div>
   )
 }
 
@@ -239,12 +284,7 @@ export function SectionHeadingSkeleton() {
 export function ListRowSkeleton({ wide = false }: { wide?: boolean }) {
   return (
     <div className="@container">
-      <div
-        className={cn(
-          'grid gap-3 py-3',
-          !wide && '@2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center'
-        )}
-      >
+      <div className={cn('grid gap-3 py-3', !wide && [LIST_ROW_COLUMNS, '@2xl:items-center'])}>
         <div className="min-w-0 space-y-1.5">
           <Skeleton className="h-3.5 w-40 max-w-full" />
           <Skeleton className="h-3 w-64 max-w-full" />

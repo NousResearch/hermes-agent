@@ -264,6 +264,13 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
                                f"@{peer_profile or peer_name} on peer '{peer_name}'", stdin_file=True,
                                author=peer_author, **delivery)
 
+    # A connection-qualified target ('hermes@mini') names a relay row outright; it is the form the relay itself
+    # hands out for a colliding row, and stamps on replies. Resolved locally first, a local bot whose friendly
+    # name slugs to 'hermes-mini' captured it. An '@' name no connection answers to still resolves locally.
+    if "@" in raw_target.strip().lstrip("@"):
+        relayed = _try_relay_delivery(root, raw_target, content, me, **delivery)
+        if relayed is not None:
+            return relayed
     # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
     resolved = _resolve_local_name(raw_target, roster, root)
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
@@ -418,7 +425,7 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
 
     def _turn(turn_env=env):
         return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, env=turn_env)
+                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=turn_env)
 
     proc = _turn()
     if proc.returncode != 0:

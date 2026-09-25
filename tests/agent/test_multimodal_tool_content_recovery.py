@@ -52,10 +52,6 @@ def _make_agent(provider: str = "xiaomi", model: str = "mimo-v2.5"):
 
 
 class TestStripImagePartsHelper:
-    def test_no_messages_returns_false(self):
-        agent = _make_agent()
-        assert agent._try_strip_image_parts_from_tool_messages([]) is False
-        assert agent._try_strip_image_parts_from_tool_messages(None) is False
 
 
     def test_tool_message_with_string_content_unchanged(self):

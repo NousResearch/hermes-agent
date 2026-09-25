@@ -1,4 +1,5 @@
 interface AppEnvSandbox {
+  root: string
   hermesHome: string
   userDataDir: string
 }
@@ -16,7 +17,7 @@ const INHERITED_DESKTOP_OVERRIDE_NAMES = [
   // Test-runner-only escape hatch. A fixture may deliberately map this to
   // HERMES_DESKTOP_PYTHON after isolation, but the child app must never
   // inherit it implicitly from the developer's shell.
-  'HERMES_E2E_PYTHON',
+  'HERMES_E2E_PYTHON'
 ] as const
 
 const CREDENTIAL_SUFFIXES: string[] = [
@@ -27,7 +28,7 @@ const CREDENTIAL_SUFFIXES: string[] = [
   '_CREDENTIALS',
   '_ACCESS_KEY',
   '_PRIVATE_KEY',
-  '_OAUTH_TOKEN',
+  '_OAUTH_TOKEN'
 ]
 
 const CREDENTIAL_NAMES = new Set([
@@ -42,7 +43,7 @@ const CREDENTIAL_NAMES = new Set([
   'OPENROUTER_BASE_URL',
   'OLLAMA_BASE_URL',
   'GROQ_BASE_URL',
-  'XAI_BASE_URL',
+  'XAI_BASE_URL'
 ])
 
 function isCredentialEnvVar(name: string): boolean {
@@ -50,7 +51,7 @@ function isCredentialEnvVar(name: string): boolean {
     return true
   }
 
-  return CREDENTIAL_SUFFIXES.some((suffix) => name.endsWith(suffix))
+  return CREDENTIAL_SUFFIXES.some(suffix => name.endsWith(suffix))
 }
 
 function stripCredentials(env: Record<string, string | undefined>): Record<string, string> {
@@ -61,7 +62,10 @@ function stripCredentials(env: Record<string, string | undefined>): Record<strin
       continue
     }
 
-    if (isCredentialEnvVar(key)) {
+    // Runtime state belongs to the test backend, never the agent launching it.
+    const inheritedRuntime =
+      key.startsWith('HERMES_') && !key.startsWith('HERMES_DESKTOP_') && !key.startsWith('HERMES_E2E_')
+    if (isCredentialEnvVar(key) || inheritedRuntime) {
       continue
     }
 
@@ -75,7 +79,7 @@ export function buildAppEnvFromParent(
   parentEnv: Record<string, string | undefined>,
   sandbox: AppEnvSandbox,
   repoRoot: string,
-  extra: Record<string, string> = {},
+  extra: Record<string, string> = {}
 ): Record<string, string> {
   const clean = stripCredentials(parentEnv)
 
@@ -99,6 +103,9 @@ export function buildAppEnvFromParent(
     HERMES_HOME: sandbox.hermesHome,
     HERMES_DESKTOP_USER_DATA_DIR: sandbox.userDataDir,
     HERMES_DESKTOP_IGNORE_EXISTING: '1',
+    HERMES_DESKTOP_ISOLATED_BACKEND: '1',
+    HOME: sandbox.root,
+    USERPROFILE: sandbox.root,
     // Electron 41 can classify `electron <desktop-dir>` as packaged on
     // Windows. E2E development fixtures need an explicit mode; the packaged
     // fixture removes this before it launches the real bundle.
@@ -109,6 +116,6 @@ export function buildAppEnvFromParent(
     // mid-flight — otherwise the quit confirmation waits on a click that no
     // one is there to make, and the worker dies on a teardown timeout.
     HERMES_DESKTOP_SKIP_QUIT_CONFIRM: '1',
-    ...extra,
+    ...extra
   }
 }

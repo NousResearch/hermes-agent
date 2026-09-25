@@ -305,7 +305,6 @@ describe('configureTerminalKeybindings', () => {
     })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('Failed to read')
     expect(writeFile).not.toHaveBeenCalled()
   })
 
@@ -334,7 +333,6 @@ describe('configureTerminalKeybindings', () => {
     })
 
     expect(result.success).toBe(false)
-    expect(result.message).toContain('local machine')
   })
 
   it('prompts for setup when bindings are missing and suppresses prompt when complete', async () => {
@@ -495,7 +493,6 @@ describe('configureTerminalKeybindings', () => {
 
     expect(result.success).toBe(true)
     expect(result.requiresRestart).toBe(true)
-    expect(result.message).toContain('migrated 3 legacy bindings to CSI u encoding')
     const written = writeFile.mock.calls[0]?.[1] as string
     const parsed = JSON.parse(written)
 

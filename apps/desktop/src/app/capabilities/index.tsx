@@ -17,7 +17,7 @@ import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
 import { CapabilityTabs, type CapabilityView } from './capability-tabs'
-import { McpTab } from './mcp/mcp-tab'
+import { ConnectorsTab } from './connectors/connectors-tab'
 import { PluginsTab } from './plugins/plugins-tab'
 import { CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
 import { SkillCatalog } from './skill-catalog'
@@ -30,7 +30,7 @@ import { ToolsetsTab } from './toolsets/toolsets-tab'
 import { UpdateSkillsButton } from './update-skills-button'
 
 // Native catalog browsing and the full Hub each retain their own surface.
-const CAPABILITY_MODES = ['skills', 'toolsets', 'mcp', 'plugins', 'hub'] as const
+const CAPABILITY_MODES = ['skills', 'toolsets', 'connectors', 'plugins', 'hub'] as const
 
 type CapabilityMode = (typeof CAPABILITY_MODES)[number]
 
@@ -70,9 +70,7 @@ export function CapabilitiesView({
   const routeTab = useRouteEnumParam('tab', CAPABILITY_MODES, 'skills')
   const localTab = useState<CapabilityMode>('skills')
   const [mode, setMode] = embedded ? localTab : routeTab
-  // $gateway only feeds the MCP tab — gate the subscription so Skills/Toolsets
-  // tabs don't re-render on connect/disconnect/reconnect.
-  const gateway = useStoreSelector($gateway, g => (mode === 'mcp' ? g : null))
+  const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
 
   const [query, setQuery] = useState('')
   const [capabilityView, setCapabilityView] = useState<CapabilityView>('installed')
@@ -139,17 +137,16 @@ export function CapabilitiesView({
     <PageLoader label={t.skills.loading} />
   )
 
-  // One entry per tab. Each is keyed on the scope so switching profile or
-  // connection is a fresh tab — never one profile's selection, open editor or
-  // pending install left standing over another profile's backend.
   const tabContent = {
     hub: () => null,
     // The gateway instance backs ONLY the live `reload.mcp` RPC, and it is the
-    // ACTIVE gateway's socket — for a scope pinned to a different backend that
-    // RPC would hot-reload the wrong machine's MCP servers, so it is withheld
-    // (config edits still apply on that backend's next session).
-    mcp: () => (
-      <McpTab gateway={scope.crossBackend ? null : gateway} key={`mcp-${scope.key}`} profile={scope.profile} />
+    // ACTIVE gateway's socket. A scope pinned elsewhere must not reload it.
+    connectors: () => (
+      <ConnectorsTab
+        gateway={scope.crossBackend ? null : gateway}
+        key={`connectors-${scope.key}`}
+        profile={scope.profile}
+      />
     ),
     // Agent plugins for the scoped profile (selector in the section header),
     // app-level desktop plugins, and the docs catalog picker underneath.
@@ -193,9 +190,8 @@ export function CapabilitiesView({
       activeTab={mode}
       onSearchChange={setQuery}
       onTabChange={id => setMode(id as CapabilityMode)}
-      // MCP manages a handful of entries with the editor right there —
-      // searching it is noise.
-      searchHidden={mode === 'mcp' || mode === 'hub'}
+      // Connectors and Hub own their search fields.
+      searchHidden={mode === 'connectors' || mode === 'hub'}
       searchHints={searchHints}
       searchPlaceholder={
         mode === 'plugins'
@@ -208,14 +204,11 @@ export function CapabilitiesView({
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
         { id: 'toolsets', label: t.skills.tabToolsets, meta: toolsets ? visibleToolsetCount(toolsets) : null },
-        { id: 'mcp', label: t.skills.tabMcp },
+        { id: 'connectors', label: t.connectorsPage.title },
         { id: 'plugins', label: t.skills.tabPlugins },
         { id: 'hub', label: t.skills.tabHub }
       ]}
     >
-      {/* One shared column: the scope selector sits above whichever tab is
-          active, so Skills / Tools / MCP all read and write the SAME selected
-          profile. */}
       <div className="flex h-full flex-col">
         {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
         {mode === 'skills' && (

@@ -1,13 +1,13 @@
 name: orbit-desktop
 repo: https://github.com/mojomast/orbitdesktop
-sha: bee7a973d7f6eeb81204b59435c10d5477634a67
+sha: 3e478b7d621dfc8b6c5ce36a1accb79b2ba9e8da
 subdir: hermes-plugin
-description: "Bundled Orbit browser desktop with explicit local setup, scoped control, previews and checkpoints. Disclosure — talks only to the local Orbit server you configure (loopback, Bearer capability from runtime_dir); mutations off by default. Ships Orbit's source tarball for the optional orbit.py setup CLI (runs npm ci / node); that bundled server hardcodes the author's Tailscale host for VNC/Xpra launchers and can optionally call api.typesafe.ai with a user-supplied key."
+description: "Your workspace, shaped by your agent: a bundled browser desktop powered by Hermes. Describe the workflow you need; the agent can rearrange windows and panes, customize appearance, build versioned sandboxed web apps, and refine your workspace with scoped control, previews and checkpoints. Illustrated examples show a project-specific COCS 3D asset viewer and OmniVoice experiment bench; these example apps and their backends are not bundled. Includes permission-controlled desktop agent-reply notifications (generic alerts while Orbit remains open; browser/OS restrictions apply) and 100,000-character chat messages, guidance and drafts. Includes Devplan Studio for guided interviews, specifications, phased devplans and circular-development handoff exports. Optional conversational interviews require explicit service setup and a working Hermes provider login, and send project context to that provider. Includes Windows XP, Classic 95, Paper Studio and Cyberpunk interface themes with validated per-element customization, XP scrollbars, red Close controls and a scrollable Start menu. Embedded apps retain their own styling. Includes a reviewed GitHub app catalog with immutable source pins and a portable Live Telemetry package. Catalog sync (operator-run scripts/orbit_catalog.py, never triggered by the Hermes tool or at register) reads the entry list from the upstream repo's main branch at sync time and downloads third-party static app bundles at their per-entry commit pins; installed UI runs in a sandboxed iframe and never executes backend code. Optional telemetry backend staging downloads pinned Python; execution requires explicit host-code trust and separate private authenticated HTTPS setup. Backend code runs with owner privileges, not a sandbox. Disclosure — adapter talks only to the configured local Orbit server (loopback, Bearer capability from runtime_dir); mutations off by default. Optional orbit.py setup runs npm ci / node. Bundled VNC/Xpra launchers use the Orbit page's hostname and scheme; optional Linux apps require separate provisioning. Optional api.typesafe.ai requests require explicit consent and a user-supplied key."
 maintainer: mojomast
 tier: community
 category: desktop
-version: "0.2.0"
-docs_url: https://github.com/mojomast/orbitdesktop/blob/bee7a973d7f6eeb81204b59435c10d5477634a67/hermes-plugin/README.md
+version: "0.2.6"
+docs_url: https://github.com/mojomast/orbitdesktop/blob/3e478b7d621dfc8b6c5ce36a1accb79b2ba9e8da/hermes-plugin/README.md
 platforms: [linux]
 capabilities:
   provides_tools: [orbit_workspace]

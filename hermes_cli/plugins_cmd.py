@@ -11,9 +11,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.parse
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, NoReturn, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
@@ -24,6 +26,9 @@ from hermes_cli.secret_prompt import masked_secret_prompt
 from utils import atomic_write_text, rmtree_readonly
 
 logger = logging.getLogger(__name__)
+_DEFAULT_CLONE_TIMEOUT_SECONDS = 300
+_MAX_CLONE_TIMEOUT_SECONDS = 3600
+_CLONE_TIMEOUT_HINT = "On a slow connection, raise plugins.clone_timeout_seconds in config.yaml."
 
 
 @functools.lru_cache(maxsize=1)
@@ -77,7 +82,7 @@ def _is_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _fail(console, message: str) -> None:
+def _fail(console, message: str) -> NoReturn:
     """Print *message* and exit 1."""
     console.print(message)
     sys.exit(1)
@@ -99,6 +104,19 @@ def _config_value(*keys: str, default: Any) -> Any:
         return cfg_get(load_config(), *keys, default=default)
     except Exception:
         return default
+
+
+def _clone_timeout_seconds() -> int:
+    """Deadline for plugin clone and pinned fetch, scoped to the active profile."""
+    value = _config_value("plugins", "clone_timeout_seconds", default=_DEFAULT_CLONE_TIMEOUT_SECONDS)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        logger.warning("plugins.clone_timeout_seconds must be a positive integer; using %ss",
+                       _DEFAULT_CLONE_TIMEOUT_SECONDS)
+        return _DEFAULT_CLONE_TIMEOUT_SECONDS
+    if value > _MAX_CLONE_TIMEOUT_SECONDS:
+        logger.warning("plugins.clone_timeout_seconds exceeds %ss; clamping", _MAX_CLONE_TIMEOUT_SECONDS)
+        return _MAX_CLONE_TIMEOUT_SECONDS
+    return value
 
 
 def _config_name_set(*keys: str) -> set:
@@ -278,9 +296,10 @@ def _has_portable_manifest(plugin_dir: Path) -> bool:
 
 def _load_yaml_manifest(manifest_file: Path):
     """``yaml.safe_load`` of *manifest_file* (``{}`` when empty); raises on any read/parse error."""
-    import yaml
+    from utils import fast_safe_load
+
     with open(manifest_file, encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+        return fast_safe_load(f) or {}
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
@@ -491,6 +510,38 @@ def _write_install_metadata(metadata: dict[str, dict[str, object]]) -> None:
         path, json.dumps(metadata, indent=2, sort_keys=True) + "\n", tmp_prefix=f"{path.name}.tmp-")
 
 
+_INSTALL_METADATA_LOCK_HOLDER = threading.local()
+
+
+@contextmanager
+def _install_metadata_lock():
+    """Serialize read-modify-write of the sidecar across threads and processes. Installs overlap (the
+    Desktop install card runs its rows a second apart); each held a snapshot read before its clone, so
+    the later write dropped the earlier plugin's record."""
+    from hermes_cli.auth import _file_lock
+
+    path = _install_metadata_path()
+    with _file_lock(path.with_name(f"{path.name}.lock"), _INSTALL_METADATA_LOCK_HOLDER, 10.0,
+                    "Timed out waiting for the plugin install metadata lock"):
+        yield
+
+
+def _update_install_record(name: str, update: Callable[[Optional[dict]], Optional[dict]]) -> None:
+    """Rewrite one plugin's record in the CURRENT sidecar, under the lock. *update* maps the current
+    record (None when absent) to the new one (None removes it); every other record is re-read here,
+    never carried over from a caller's earlier snapshot."""
+    with _install_metadata_lock():
+        metadata = _read_install_metadata()
+        record = update(metadata.get(name))
+        if record is None:
+            if name not in metadata:
+                return
+            del metadata[name]
+        else:
+            metadata[name] = record
+        _write_install_metadata(metadata)
+
+
 def pinned_revision(name: str, metadata: Optional[dict] = None) -> Optional[str]:
     """Full SHA a ``--ref`` install of *name* is pinned to, else ``None``."""
     entry = (metadata if metadata is not None else _read_install_metadata()).get(name)
@@ -561,16 +612,19 @@ def _git_resolve_commit(repo: Path, git_exe: str, revision: str) -> str:
 
 
 def _checkout_exact_revision(repo: Path, git_exe: str, revision: str, source_url: str = "") -> None:
-    """Fetch and detach at one immutable commit, then verify the resulting HEAD."""
+    """Fetch and detach at one immutable commit, then verify the resulting HEAD. The checkout is
+    a network verb too: in a partial (subdirectory) clone it downloads the file contents."""
+    timeout = _clone_timeout_seconds()
     for verb, args, failure_prefix in (
         ("fetch", ("fetch", "--depth", "1", "origin", revision), f"Git commit '{revision}' could not be fetched:\n"),
         ("checkout", ("checkout", "--detach", revision), f"Git checkout of commit '{revision}' failed:\n"),
     ):
         try:
             _git_or_raise(git_exe, repo, *args, failure_prefix=failure_prefix, source_url=source_url,
-                          auth_url=source_url if verb == "fetch" else "")
+                          auth_url=source_url, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
-            raise PluginOperationError(f"Git {verb} of commit '{revision}' timed out after 60 seconds.") from exc
+            raise PluginOperationError(
+                f"Git {verb} of commit '{revision}' timed out after {timeout} seconds. {_CLONE_TIMEOUT_HINT}") from exc
     actual = _git_head_revision(repo, git_exe)
     if actual != _git_resolve_commit(repo, git_exe, revision):
         raise PluginOperationError(
@@ -625,24 +679,53 @@ def _check_manifest_version(manifest: dict, plugin_name: str) -> None:
         ) from None
 
 
-def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str]) -> str:
+def _restrict_checkout_to_subdir(repo: Path, git_exe: str, subdir: str) -> None:
+    """Sparse-check-out only *subdir*. Written as the classic ``info/sparse-checkout`` file
+    rather than ``git sparse-checkout set`` so older Git clients work too."""
+    _git_or_raise(git_exe, repo, "config", "core.sparseCheckout", "true", timeout=15,
+                  failure_prefix="Could not enable sparse checkout:\n")
+    pattern_file = repo / ".git" / "info" / "sparse-checkout"
+    pattern_file.parent.mkdir(parents=True, exist_ok=True)
+    escaped = re.sub(r"([\\*?\[])", r"\\\1", subdir.strip("/"))
+    pattern_file.write_text(f"/{escaped}/\n", encoding="utf-8")
+
+
+def _clone_plugin_repo(tmp_clone: Path, git_url: str, revision: Optional[str],
+                       subdir: Optional[str] = None) -> str:
     """Shallow-clone *git_url* into *tmp_clone* (detached at *revision* when given), scrub any
-    credentials from the recorded origin, and return the installed HEAD SHA."""
+    credentials from the recorded origin, and return the installed HEAD SHA.
+
+    A *subdir* install is a blobless clone with a sparse checkout of that subdirectory: a plugin
+    living in a monorepo (Hindsight: 170 MB at depth 1, 2 MB for its plugin folder) otherwise
+    downloads every file in the repository, which times out on slow connections."""
     git_exe = _resolve_git_executable()
     if not git_exe:
         raise PluginOperationError("git is not installed or not in PATH.")
-    clone_args = ["clone", "--depth", "1", *(["--no-checkout"] if revision else []), git_url, str(tmp_clone)]
+    clone_timeout = _clone_timeout_seconds()
+    partial = ["--filter=blob:none"] if subdir else []
+    no_checkout = ["--no-checkout"] if revision or subdir else []
+    clone_args = ["clone", "--depth", "1", *partial, *no_checkout, git_url, str(tmp_clone)]
     try:
-        result = _run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url)
+        result = _run_plugin_git(git_exe, tmp_clone.parent, *clone_args, auth_url=git_url,
+                                 timeout=clone_timeout)
     except FileNotFoundError as e:
         raise PluginOperationError("git is not installed or not in PATH.") from e
     except subprocess.TimeoutExpired as e:
-        raise PluginOperationError("Git clone timed out after 60 seconds.") from e
+        raise PluginOperationError(f"Git clone timed out after {clone_timeout} seconds. {_CLONE_TIMEOUT_HINT}") from e
     if result.returncode != 0:
         raise PluginOperationError(_clone_failure_message(git_url, _safe_git_error(result, git_url)))
     _scrub_cloned_origin(tmp_clone, git_exe, git_url)
+    if subdir:
+        _restrict_checkout_to_subdir(tmp_clone, git_exe, subdir)
     if revision:
         _checkout_exact_revision(tmp_clone, git_exe, revision, source_url=git_url)
+    elif subdir:
+        try:
+            _git_or_raise(git_exe, tmp_clone, "checkout", "HEAD", timeout=clone_timeout, source_url=git_url,
+                          auth_url=git_url, failure_prefix="Git checkout of the plugin subdirectory failed:\n")
+        except subprocess.TimeoutExpired as e:
+            raise PluginOperationError(
+                f"Git checkout timed out after {clone_timeout} seconds. {_CLONE_TIMEOUT_HINT}") from e
     return _git_head_revision(tmp_clone, git_exe)
 
 
@@ -711,15 +794,37 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
             ) from exc
 
 
-def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: dict, new_metadata: dict) -> None:
-    """Move the validated clone into place and persist metadata; on any failure restore the
-    previous tree (if one was replaced) and the previous metadata sidecar, then re-raise."""
+def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
+    if not (tree / "plugin.json").is_file():
+        return
+    from hermes_cli.agent_plugins import load_agent_plugin
+    from hermes_platform.resolver.availability import availability
+
+    try:
+        package = load_agent_plugin(tree, tree.parent / ".hermes-install-data")
+    except ValueError as exc:
+        raise PluginOperationError(f"Plugin '{plugin_name}' is unavailable: {exc}.") from exc
+    for server_name, server_decl in package.server_declarations.items():
+        result = availability(server_decl.declaration)
+        if result.offerable:
+            continue
+        found = f", found version {result.version}" if result.version else ""
+        raise PluginOperationError(
+            f"Plugin '{plugin_name}' server '{server_name}' is unavailable: {result.state}{found}."
+        )
+
+
+def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, plugin_name: str, record: dict) -> None:
+    """Move the validated clone into place and record it; on any failure restore the previous tree
+    (if one was replaced) and re-raise. The record write is the last step and atomic, so a failure
+    leaves the sidecar untouched: nothing to roll back there, and restoring a snapshot would erase
+    a concurrent install's record."""
     replaced_existing = target.exists()
     if replaced_existing:
         os.replace(target, backup)
     try:
         os.replace(tmp_target, target)
-        _write_install_metadata(new_metadata)
+        _update_install_record(plugin_name, lambda _current: record)
     except Exception:
         if target.exists():
             # Move back under TemporaryDirectory: its cleanup handles Windows
@@ -727,10 +832,6 @@ def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: 
             os.replace(target, tmp_target)
         if replaced_existing and backup.exists():
             os.replace(backup, target)
-        if old_metadata:
-            _write_install_metadata(old_metadata)
-        else:
-            _install_metadata_path().unlink(missing_ok=True)
         raise
 
 
@@ -742,12 +843,22 @@ def _install_plugin_core(
     scan_decision_cb=None,
     reviewed_pin: Optional[str] = None,
     python_deps: bool = True,
+    catalog: Optional[dict] = None,
+    allow_removed: bool = False,
+    before_swap=None,
 ) -> tuple[Path, dict, str]:
     """Clone a Git plugin and atomically record its source and exact revision.
 
     *reviewed_pin* is the curated-catalog sha for this install; the scan trusts the tree
-    only when the checked-out revision is exactly that sha. *python_deps* False skips the
-    dependency conflict gate (``--no-deps``: the user installs them by hand)."""
+    only when the checked-out revision is exactly that sha (an annotated-tag pin is peeled to
+    its commit first — HEAD can only ever be the commit). *python_deps* False skips the
+    dependency conflict gate (``--no-deps``: the user installs them by hand). *catalog*
+    (``{"name", "repo", "tier", "pin"}``) is recorded on the install-metadata record with the
+    checked-out sha — provenance lives OUTSIDE the plugin tree, so a repo cannot forge it;
+    its ``pin`` is kept only when the checkout satisfies it (a ``--ref`` install is off-pin).
+    *allow_removed* records that the user knowingly bypassed the kill list.
+    *before_swap(manifest, tree)* runs on the validated clone before anything moves into place
+    and may raise :class:`PluginOperationError` to abort (re-pin consent)."""
     requested_revision = _normalize_exact_revision(ref) if ref is not None else None
     try:
         git_url, subdir = _resolve_git_url(identifier)
@@ -767,7 +878,10 @@ def _install_plugin_core(
 
     with tempfile.TemporaryDirectory(prefix=".install-", dir=plugins_dir) as tmp:
         tmp_clone = Path(tmp) / "plugin"
-        installed_revision = _clone_plugin_repo(tmp_clone, git_url, requested_revision)
+        installed_revision = _clone_plugin_repo(tmp_clone, git_url, requested_revision, subdir)
+        git_exe = _resolve_git_executable()
+        at_reviewed_pin = bool(reviewed_pin) and installed_revision == (
+            _git_resolve_commit(tmp_clone, git_exe, reviewed_pin) if git_exe and reviewed_pin else reviewed_pin)
         tmp_target = _resolve_subdir_within(tmp_clone, subdir) if subdir else tmp_clone
         _ensure_tree_readable(tmp_target, plugins_dir)
         manifest = _read_manifest_for_install(tmp_target)
@@ -780,9 +894,12 @@ def _install_plugin_core(
         _check_manifest_version(manifest, plugin_name)
         # Scan BEFORE anything is moved into place; raises PluginScanBlocked when blocked.
         _scan_plugin_tree(tmp_target, identifier, force=force, scan_decision_cb=scan_decision_cb,
-                          reviewed_pin=bool(reviewed_pin) and installed_revision == reviewed_pin)
+                          reviewed_pin=at_reviewed_pin)
         if python_deps:
             _refuse_conflicting_python_deps(tmp_target, plugin_name)
+        _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
+        if before_swap is not None:
+            before_swap(manifest, tmp_target)
 
         if target.exists() and not force:
             raise PluginOperationError(
@@ -794,11 +911,15 @@ def _install_plugin_core(
                 f"Plugin '{plugin_name}' is pinned. Reinstall it with an explicit "
                 "--ref <40-character commit SHA> to change its source or revision.")
 
-        new_metadata = {
-            **old_metadata,
-            plugin_name: {"pinned": requested_revision is not None, "revision": installed_revision, "source": source},
-        }
-        _swap_in_plugin(tmp_target, target, Path(tmp) / "previous-plugin", old_metadata, new_metadata)
+        record: dict[str, object] = {
+            "pinned": requested_revision is not None, "revision": installed_revision, "source": source}
+        if catalog:
+            # ``sha`` = the commit checked out; ``pin`` = the reviewed catalog sha it satisfies (the
+            # annotated-tag object for a tag pin), empty when installed off-pin via ``--ref``.
+            record["catalog"] = {**catalog, "sha": installed_revision, "pin": reviewed_pin if at_reviewed_pin else ""}
+        if allow_removed:
+            record["allow_removed"] = True
+        _swap_in_plugin(tmp_target, target, Path(tmp) / "previous-plugin", plugin_name, record)
 
     if not _looks_like_plugin_dir(target):
         logger.warning("%s has no plugin.yaml / __init__.py; may not be a valid plugin", plugin_name)
@@ -861,12 +982,12 @@ def cmd_install(
     try:
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
-                entry, force=force, ref=ref, allow_removed=True, scan_decision_cb=_interactive_scan_decision,
+                entry, force=force, ref=ref, allow_removed=allow_removed, scan_decision_cb=_interactive_scan_decision,
                 python_deps=not no_deps)
         else:
             target, installed_manifest, installed_name = _install_plugin_core(
                 identifier, force=force, ref=ref, scan_decision_cb=_interactive_scan_decision,
-                python_deps=not no_deps)
+                python_deps=not no_deps, allow_removed=allow_removed)
     except PluginOperationError as e:
         _fail(console, f"[red]{'Blocked' if isinstance(e, PluginScanBlocked) else 'Error'}:[/red] {e}")
     if not _looks_like_plugin_dir(target):
@@ -891,13 +1012,16 @@ def cmd_install(
     declared_caps = _declared_capabilities_from_manifest(installed_manifest, installed_name)
     if declared_caps:
         _run_capability_consent(console, installed_name, declared_caps, context="install")
-    console.print("[dim]Restart the gateway for the plugin to take effect:[/dim]")
-    console.print("[dim]  hermes gateway restart[/dim]")
+    if enable:
+        # Loads it into the running gateway now (handlers live) or says what needs a restart (#87770).
+        from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
+        console.print(f"[dim]{activation_hint(activate_plugin_now(installed_name, in_process=False))}[/dim]")
     console.print()
 
 
 def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None) -> str:
-    """Shared ``update`` core: refuse pinned / non-git checkouts, ``git pull``, record the new
+    """Shared ``update`` core: refuse pinned checkouts, ``git pull`` (or re-install from the
+    recorded source when the tree carries no ``.git`` — subdirectory installs), record the new
     revision. Returns the pull output; raises :class:`PluginOperationError` on any refusal.
     *pinned_msg(install_record)* / *not_git_msg()* build the caller-specific error text."""
     metadata = _read_install_metadata()
@@ -905,7 +1029,15 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
     if install_record.get("pinned") is True:
         raise PluginOperationError(pinned_msg(install_record))
     if not (target / ".git").exists():
-        raise PluginOperationError(not_git_msg())
+        source = install_record.get("source")
+        if not isinstance(source, str) or not source:
+            raise PluginOperationError(not_git_msg())
+        if before_pull is not None:
+            before_pull()
+        return _reclone_plugin_update(source, install_record.get("revision"))
+    # A URL install whose name/repo later landed on the kill list must not keep pulling new code.
+    from hermes_cli import plugins_cmd_catalog as catalog
+    catalog.refuse_if_installed_removed(target.name, target)
     if before_pull is not None:
         before_pull()
     ok, output = _git_pull_plugin_dir(target)
@@ -914,10 +1046,22 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
     # Store the new HEAD in the plugin's install-metadata record (if it has one).
     git_exe = _resolve_git_executable() if install_record else None
     if git_exe:
-        install_record["revision"] = _git_head_revision(target, git_exe)
-        metadata[target.name] = install_record
-        _write_install_metadata(metadata)
+        revision = _git_head_revision(target, git_exe)
+        _update_install_record(target.name, lambda current: {**current, "revision": revision} if current else None)
     return output
+
+
+def _reclone_plugin_update(source: str, previous_revision: object) -> str:
+    """Update a plugin whose tree is not a git checkout: a subdirectory install ships only
+    ``<clone>/<subdir>``, so the ``.git`` stays in the temp clone (#65314). Re-run the install
+    from the recorded source (same URL, same subdir) and swap the fresh tree in; the metadata
+    revision is rewritten by the installer. Returns pull-shaped output for the callers."""
+    new_target, _manifest, _name = _install_plugin_core(source, force=True)
+    revision = str(_read_install_metadata().get(new_target.name, {}).get("revision") or "")
+    previous = previous_revision if isinstance(previous_revision, str) else ""
+    if revision and revision == previous:
+        return "Already up to date."
+    return f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
 
 
 def cmd_update(name: str) -> None:
@@ -997,16 +1141,14 @@ def _post_pull_housekeeping(target: Path, console) -> None:
 
 def _remove_plugin_core(target: Path) -> None:
     """Remove one plugin and its metadata without splitting their state."""
-    metadata = _read_install_metadata()
-    if target.name not in metadata:
+    if target.name not in _read_install_metadata():
         rmtree_readonly(target)
         return
-    updated = {k: v for k, v in metadata.items() if k != target.name}
     staging = Path(tempfile.mkdtemp(prefix=f".{target.name}.remove-", dir=target.parent))
     backup = staging / "plugin"
     os.replace(target, backup)
     try:
-        _write_install_metadata(updated)
+        _update_install_record(target.name, lambda _current: None)
     except Exception:
         try:
             os.replace(backup, target)
@@ -1026,12 +1168,36 @@ def cmd_remove(name: str) -> None:
     plugins_dir = _plugins_dir()
     target = _require_installed_plugin(name, plugins_dir, console)
     try:
-        _remove_plugin_core(target)
+        result = _remove_user_plugin(plugins_dir, name, target)
     except (OSError, PluginOperationError) as exc:
         _fail(console, f"[red]Error:[/red] Could not remove plugin '{name}': {exc}")
     console.print()
     console.print(f"[red]✗[/red] Plugin [bold]{name}[/bold] removed from {plugins_dir}")
+    if result.get("cleared_memory_provider"):
+        console.print("[yellow]memory.provider pointed at this plugin and was reset; "
+                      "run `hermes memory setup` to pick another.[/yellow]")
     console.print()
+
+
+def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str, Any]:
+    """Shared ``remove`` tail for the CLI, the dashboard and the ``plugins.manage`` RPC.
+
+    *target* is the resolved directory; when ``plugins_dir/name`` itself is a symlink only the link
+    goes — the tree it points at may be another installed plugin (a dev alias to a sibling checkout),
+    and following it deleted that plugin plus its install metadata while the alias stayed dangling.
+    Config bookkeeping (aliases, toolset) is gathered before the tree disappears.
+    """
+    link = plugins_dir / name.strip("/")
+    if link.is_symlink():
+        link.unlink()
+        return {"ok": True, "name": name, **_forget_plugin_config({link.name})}
+    entry = next((e for e in _discover_all_plugins() if Path(str(e[4])) == target), None)
+    key = entry[5] if entry else target.name
+    aliases = _plugin_aliases(key) | {target.name}
+    if _read_manifest(target).get("provides_tools"):
+        _toggle_plugin_toolset(key, enable=False)
+    _remove_plugin_core(target)
+    return {"ok": True, "name": name, **_forget_plugin_config(aliases)}
 
 
 # ``plugins.disabled`` is an explicit deny-list that wins over the ``plugins.enabled`` allow-list.
@@ -1075,6 +1241,61 @@ def _discard_key_and_leaf(names: set, key: str) -> None:
     stale legacy bare-name entry can't keep vetoing the canonical key."""
     names.discard(key)
     names.discard(key.split("/")[-1])
+
+
+def _plugin_aliases(key: str) -> set:
+    """Every spelling a config list may hold for *key*: the key, its bare leaf and the manifest name.
+    The loader matches BOTH the canonical key (``web/firecrawl``) and the manifest name
+    (``web-firecrawl``), so a stale entry under any form vetoes an enable ("explicit disable wins")."""
+    names = {key, key.split("/")[-1]}
+    names.update(e[0] for e in _discover_all_plugins() if e[5] == key)
+    return names
+
+
+def _activate_key(key: str, *, enable: bool) -> bool:
+    """Persist canonical *key* as enabled/disabled, purging every alias from the opposing list.
+    False when the lists already say so (nothing written)."""
+    enabled, disabled = _get_enabled_set(), _get_disabled_set()
+    aliases = _plugin_aliases(key)
+    target, other = (enabled, disabled) if enable else (disabled, enabled)
+    if key in target and not (aliases & other):
+        return False
+    target.add(key)
+    other.difference_update(aliases)
+    _save_plugin_sets(enabled, disabled)
+    return True
+
+
+def _forget_plugin_config(aliases: set) -> dict[str, Any]:
+    """Drop every trace of a removed plugin (its :func:`_plugin_aliases`, taken BEFORE the tree went)
+    from config.yaml: allow/deny-list entries, ``plugins.entries.<id>`` grants and a ``memory.provider``
+    selection naming it. A later reinstall under the same name must start from the "Enable now?"
+    decision, not inherit a stale enable or grant (#54336); a dangling ``memory.provider`` would make
+    the next agent init re-clone the plugin from the catalog, silently undoing the uninstall.
+    Returns ``{"cleared_memory_provider": True}`` when the selection was reset."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    changed = False
+    result: dict[str, Any] = {}
+    plugins_cfg = config.get("plugins")
+    if isinstance(plugins_cfg, dict):
+        for list_key in ("enabled", "disabled"):
+            names = plugins_cfg.get(list_key)
+            if isinstance(names, list) and aliases & set(names):
+                plugins_cfg[list_key] = sorted(set(names) - aliases)
+                changed = True
+        entries = plugins_cfg.get("entries")
+        if isinstance(entries, dict) and aliases & set(entries):
+            for alias in aliases & set(entries):
+                del entries[alias]
+            changed = True
+    memory_cfg = config.get("memory")
+    if isinstance(memory_cfg, dict) and str(memory_cfg.get("provider") or "").strip() in aliases:
+        memory_cfg["provider"] = ""
+        changed, result = True, {"cleared_memory_provider": True}
+    if changed:
+        save_config(config)
+    return result
 
 
 def _set_plugin_enabled(name: str, *, enable: bool) -> None:
@@ -1142,22 +1363,20 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         _fail(console, _unknown_plugin_message(name))
     key, source = resolved
     _refuse_legacy_relay(key)
+    if source != "bundled":
+        # Activating recalled code is the same act as installing it (`plugins/AGENTS.md`: kill list).
+        from hermes_cli import plugins_cmd_catalog as catalog
+        try:
+            catalog.refuse_if_installed_removed(key, _user_installed_plugin_dir(key.rsplit("/", 1)[-1]))
+        except PluginOperationError as exc:
+            _fail(console, f"[red]Error:[/red] {exc}")
 
-    enabled = _get_enabled_set()
-    disabled = _get_disabled_set()
-    if key in enabled and key not in disabled:
-        console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
-    else:
-        enabled.add(key)
-        # The loader's disable check matches BOTH the canonical key (``web/firecrawl``) and the
-        # manifest name (``web-firecrawl``); a stale entry under either form would silently veto
-        # this enable ("explicit disable wins"), so drop the key, its bare leaf, and the name.
-        _discard_key_and_leaf(disabled, key)
-        manifest_name = next((e[0] for e in _discover_all_plugins() if e[5] == key), None)
-        if manifest_name is not None:
-            disabled.discard(manifest_name)
-        _save_plugin_sets(enabled, disabled)
+    if _activate_key(key, enable=True):
+        from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
+        console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
+    else:
+        console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
 
     # Built-in tool override is a privileged grant; bundled plugins are trusted.
     if source == "bundled":
@@ -1323,15 +1542,9 @@ def cmd_disable(name: str) -> None:
     key = _resolve_plugin_key(name)
     if key is None:
         _fail(console, _unknown_plugin_message(name))
-    enabled = _get_enabled_set()
-    disabled = _get_disabled_set()
-    if key not in enabled and key in disabled:
+    if not _activate_key(key, enable=False):
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
-    # Also drop a stale legacy bare-name entry so it can't keep a nested plugin loading.
-    _discard_key_and_leaf(enabled, key)
-    disabled.add(key)
-    _save_plugin_sets(enabled, disabled)
     console.print(
         f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. Takes effect on next session.")
 
@@ -1431,10 +1644,26 @@ def _discover_all_plugins() -> list:
     return list(seen.values())
 
 
-def _plugin_status(name: str, enabled: set, disabled: set, key: str = "") -> str:
-    """User-facing activation state for a plugin name or key."""
+def _category_active_names() -> set:
+    """Provider names switched on through ``<category>.provider`` config rather than
+    ``plugins.enabled`` (the live memory provider), so status never calls them "not enabled"."""
+    return {n for n in (_get_current_memory_provider(),) if n}
+
+
+def _plugin_status(name: str, enabled: set, disabled: set, key: str = "", *, source: str = "",
+                   dir_path=None, active: "frozenset | set" = frozenset()) -> str:
+    """User-facing activation state for a plugin name or key. Mirrors ``gate_manifest``: an explicit
+    disable wins, then the allow-list, then the activations that need no list entry — bundled
+    backends/platforms/model providers (*source* + *dir_path*) and category-selected providers
+    (*active*, see :func:`_category_active_names`)."""
     names = {name, key}
-    return "disabled" if names & disabled else "enabled" if names & enabled else "not enabled"
+    if names & disabled:
+        return "disabled"
+    if names & enabled or names & active:
+        return "enabled"
+    if source == "bundled" and dir_path is not None and _bundled_default_on(dir_path):
+        return "enabled"
+    return "not enabled"
 
 
 def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set) -> list:
@@ -1443,9 +1672,11 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
     if getattr(args, "no_bundled", False) or getattr(args, "user", False):
         filtered = [entry for entry in filtered if entry[3] != "bundled"]
     if getattr(args, "enabled", False):
+        active = _category_active_names()
         filtered = [
             entry for entry in filtered
-            if _plugin_status(entry[0], enabled, disabled, key=entry[5]) == "enabled"
+            if _plugin_status(entry[0], enabled, disabled, key=entry[5], source=entry[3], dir_path=entry[4],
+                              active=active) == "enabled"
         ]
     return filtered
 
@@ -1472,8 +1703,10 @@ def cmd_list(args: Any | None = None) -> None:
     # One kill-list resolution for the whole listing: resolving per row costs a live-catalog
     # fetch per installed plugin when the catalog host is slow or unreachable.
     removed_entries = catalog.resolved_removed_entries()
+    active = _category_active_names()
     rows = [
-        (name, _plugin_status(name, enabled, disabled, key=key), str(version), description,
+        (name, _plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active),
+         str(version), description,
          catalog.catalog_annotation(_dir) or _pin_annotation(name, pins) or source,
          catalog.removed_annotation(name, _dir, removed_entries))
         for name, version, description, source, _dir, key in entries
@@ -1872,7 +2105,7 @@ def dashboard_install_plugin(
     try:
         if entry is not None:
             target, installed_manifest, installed_name = catalog.install_catalog_entry(
-                entry, force=force, allow_removed=True)
+                entry, force=force, allow_removed=False)
         else:
             target, installed_manifest, installed_name = _install_plugin_core(
                 identifier, force=force, ref=(ref or "").strip() or None)
@@ -1893,11 +2126,16 @@ def dashboard_install_plugin(
         _set_plugin_enabled(installed_name, enable=True)
     deps = _install_python_dependencies_quietly(target, warnings)
     ap = target / "after-install.md"
+    # Deps first, then load: the plugin activates in this process (TUI/Desktop server subscribers see it)
+    # and in the running gateway; ``activation`` says what is live now vs next session (#87770).
+    from hermes_cli.plugins_activation import activate_plugin_now
+    activated = activate_plugin_now(installed_name) if enable else {
+        "gateway_reloaded": False, "activation": None, "restart_required": False}
     return {
         "ok": True, "plugin_name": installed_name, "warnings": warnings,
         "python_dependencies": deps,
         "missing_env": [s["name"] for s in _missing_env_specs(installed_manifest)],
-        "after_install_path": str(ap) if ap.exists() else None, "enabled": enable,
+        "after_install_path": str(ap) if ap.exists() else None, "enabled": enable, **activated,
     }
 
 
@@ -1965,16 +2203,24 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
 
 
 def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:
-    """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists)."""
-    if _resolve_plugin_key(name) is None:
+    """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists). *name* may be the
+    canonical key, the manifest name or a unique bare leaf; the canonical key is what gets written
+    (the loader never matches a bare leaf, and a stale key in ``disabled`` outranks a manifest-name
+    entry in ``enabled`` — so writing the raw identifier reported success while the plugin stayed off)."""
+    key = _resolve_plugin_key(name)
+    if key is None:
         return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
-    en = _get_enabled_set()
-    dis = _get_disabled_set()
-    if ((name in en and name not in dis) if enabled else (name not in en and name in dis)):
-        return {"ok": True, "name": name, "unchanged": True}
-    _set_plugin_enabled(name, enable=enabled)
-    _toggle_plugin_toolset(name, enable=enabled)
-    return {"ok": True, "name": name, "unchanged": False}
+    changed = _activate_key(key, enable=enabled)
+    if changed:
+        _toggle_plugin_toolset(key, enable=enabled)
+    if changed and enabled:
+        # Load it now, here and in the running gateway; ``activation`` tells the UI what is live vs
+        # deferred, and ``restart_required`` only survives when no gateway answered (#87770).
+        from hermes_cli.plugins_activation import activate_plugin_now
+        return {"ok": True, "name": key, "unchanged": False, **activate_plugin_now(key)}
+    # Disable is config-only: there is no un-wire primitive, so a running gateway keeps the plugin's
+    # handlers until restart and every UI says so — #71595/#54941.
+    return {"ok": True, "name": key, "unchanged": not changed, "restart_required": changed}
 
 
 def _user_installed_plugin_dir(name: str) -> Optional[Path]:
@@ -1986,8 +2232,10 @@ def _user_installed_plugin_dir(name: str) -> Optional[Path]:
     return target if target.is_dir() else None
 
 
-def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
-    """``git pull`` inside ``~/.hermes/plugins/<name>``."""
+def dashboard_update_user_plugin(name: str, *, accept_capabilities: bool = False) -> dict[str, Any]:
+    """``git pull`` inside ``~/.hermes/plugins/<name>``; catalog installs re-pin instead. A re-pin that
+    widens the plugin returns ``{"ok": False, "consent_required": True, "delta": {...}}`` with nothing
+    changed — the surface shows the delta and retries with *accept_capabilities*."""
     from hermes_cli import plugins_cmd_catalog as catalog
     target = _user_installed_plugin_dir(name)
     if target is None:
@@ -1995,11 +2243,15 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     sidecar = catalog.read_catalog_sidecar(target)
     try:
         if sidecar:
-            sha, changed = catalog.repin_catalog_plugin(target, sidecar)
-            warnings: list[str] = []
-            deps = _install_python_dependencies_quietly(target, warnings) if changed else []
-            return {"ok": True, "name": name, "sha": sha, "unchanged": not changed,
-                    "python_dependencies": deps, "warnings": warnings}
+            result = catalog.repin_catalog_plugin(
+                target, sidecar, consent_cb=(lambda _delta: True) if accept_capabilities else None)
+            warnings = list(result.warnings)
+            new_target = target.parent / result.installed_name
+            deps = _install_python_dependencies_quietly(new_target, warnings) if result.changed else []
+            from hermes_cli.plugins_activation import activate_plugin_now
+            activated = activate_plugin_now(result.installed_name) if result.changed else {}
+            return {"ok": True, "name": result.installed_name, "sha": result.sha, "unchanged": not result.changed,
+                    "python_dependencies": deps, "warnings": warnings, **activated}
         msg = _pull_plugin_update(
             target,
             lambda rec: (
@@ -2007,6 +2259,9 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
                 f"run `hermes plugins install {rec.get('source', '<source>')} --force "
                 "--ref <40-character commit SHA>` to move it."),
             lambda: f"Plugin '{name}' is not a git checkout; cannot pull updates.")
+    except catalog.RepinConsentRequired as exc:
+        return {"ok": False, "consent_required": True, "error": str(exc), "name": exc.name, "sha": exc.sha,
+                "delta": exc.delta, "delta_lines": catalog.surface_delta_lines(exc.delta)}
     except PluginOperationError as exc:
         return {"ok": False, "error": str(exc)}
     _post_pull_housekeeping(target, _console())
@@ -2049,23 +2304,31 @@ def _stash_ref(git_exe: str, target: Path) -> str:
     return probe.stdout.strip() if probe.returncode == 0 else ""
 
 
-def _reapply_stash(git_exe: str, target: Path) -> bool:
-    """``stash apply`` the autostash; drop it on a clean apply. False when it applied with
-    errors or left unmerged paths (the stash entry is kept in that case)."""
-    restore = _run_plugin_git(git_exe, target, "stash", "apply", "stash@{0}")
+def _reapply_stash(git_exe: str, target: Path, stash_sha: str) -> bool:
+    """``stash apply`` the autostash commit *stash_sha*; drop it on a clean apply. False when it
+    applied with errors or left unmerged paths (the stash entry is kept in that case).
+
+    Git is addressed by the stash's commit sha, never a ``stash@{N}`` selector: on native Windows
+    the MSYS runtime re-parses git.exe's argv and strips the braces, so ``stash@{0}`` reaches git
+    as ``stash@0`` and both the apply and the drop fail (#87542)."""
+    restore = _run_plugin_git(git_exe, target, "stash", "apply", stash_sha)
     unmerged = _run_plugin_git(git_exe, target, "diff", "--name-only", "--diff-filter=U")
     if restore.returncode != 0 or unmerged.stdout.strip():
         return False
-    _run_plugin_git(git_exe, target, "stash", "drop", "stash@{0}")
+    # `stash drop` only takes a selector; a bare `drop` targets the newest entry, so drop
+    # positionally only while the newest entry is still our autostash.
+    if _stash_ref(git_exe, target) == stash_sha:
+        _run_plugin_git(git_exe, target, "stash", "drop")
     return True
 
 
-def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
-    """Stash local edits before a pull. Returns ``(stash_created, error)``; a non-empty error means
-    the tree is dirty but nothing was saved, so the pull must not run."""
+def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[str, str]:
+    """Stash local edits before a pull. Returns ``(stash_sha, error)``; *stash_sha* is empty when
+    the tree was clean, and a non-empty error means the tree is dirty but nothing was saved, so
+    the pull must not run."""
     status = _run_plugin_git(git_exe, target, "status", "--porcelain", "-z")
     if status.returncode != 0 or not status.stdout.strip():
-        return False, ""
+        return "", ""
     # `git add -N` entries make `git stash push` fail outright (see update_cmd_stash), so promote them
     # to real staged adds first; the checkout's own local edits are otherwise unstashable.
     from hermes_cli.update_cmd_stash import _intent_to_add_paths
@@ -2079,7 +2342,7 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
     post_stash = _stash_ref(git_exe, target)
     if not post_stash or post_stash == pre_stash:
         err = _safe_git_error(push)
-        return False, (
+        return "", (
             "Local changes in the plugin checkout could not be "
             "stashed; update aborted before touching the checkout."
             + (f"\n{err}" if err else ""))
@@ -2087,7 +2350,7 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
         # Saved-but-couldn't-clean (undeletable untracked files): the stash entry is complete;
         # reset tracked mods so the pull isn't blocked by a still-dirty tree.
         _run_plugin_git(git_exe, target, "reset", "--hard", "HEAD")
-    return True, ""
+    return post_stash, ""
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
@@ -2104,26 +2367,26 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     if not git_exe:
         return False, "git is not installed or not in PATH."
     try:
-        stash_created, err = _autostash_dirty_tree(git_exe, target)
+        stash_sha, err = _autostash_dirty_tree(git_exe, target)
         if err:
             return False, err
         origin = _run_plugin_git(git_exe, target, "remote", "get-url", "origin", timeout=15)
         result = _run_plugin_git(git_exe, target, "pull", "--ff-only", auth_url=origin.stdout.strip())
         if result.returncode != 0:
             err = _safe_git_error(result) or "git pull failed."
-            if not stash_created:
+            if not stash_sha:
                 return False, err
             # Put the user's edits back before reporting the failure.
-            if _reapply_stash(git_exe, target):
+            if _reapply_stash(git_exe, target, stash_sha):
                 note = "Local changes were restored."
             else:
                 note = "Local changes are preserved in git stash (restore with: git stash pop)."
             return False, f"{err}\n{note}"
 
         pulled = result.stdout.strip()
-        if not stash_created:
+        if not stash_sha:
             return True, pulled
-        if _reapply_stash(git_exe, target):
+        if _reapply_stash(git_exe, target, stash_sha):
             return True, pulled + "\nLocal changes were re-applied on top of the update."
 
         # Conflicted re-apply: leave the plugin importable on the updated
@@ -2132,7 +2395,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         return True, pulled + (
             "\n⚠ Local changes in this plugin conflicted with the update and "
             "were NOT re-applied. They are preserved in git stash — inspect "
-            "with `git stash show -p stash@{0}` and re-apply with "
+            "with `git stash show -p` and re-apply with "
             f"`git stash pop` inside {target}.")
     except FileNotFoundError:
         return False, "git is not installed or not in PATH."
@@ -2149,10 +2412,9 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
     if target is None:
         return {"ok": False, "error": f"Plugin '{name}' was not found under {plugins_dir}."}
     try:
-        _remove_plugin_core(target)
+        return _remove_user_plugin(plugins_dir, name, target)
     except (OSError, PluginOperationError) as exc:
         return {"ok": False, "error": f"Could not remove plugin '{name}': {exc}"}
-    return {"ok": True, "name": name}
 
 
 def cmd_plugin_doctor(target: str = ".", *, ci: bool = False) -> None:

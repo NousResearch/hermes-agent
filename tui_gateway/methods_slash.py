@@ -396,7 +396,13 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:
-        return mirror(sid, session, agent, arg) or ""
+        # Mirrors run OFF-turn (slash.exec RPC pool / compute-host control reader) where no turn
+        # scope is bound: /model resolves the target provider's credential through get_secret
+        # (UnscopedSecretError once this process multiplexes — #122655) and /prompt, /personality
+        # read profile config through it. Bind the same runtime scope a turn binds so the mirror
+        # sees the SESSION's profile, never the launch process env (#117544 / #116611 family).
+        with _session_profile_runtime_scope(session):
+            return mirror(sid, session, agent, arg) or ""
     except Exception as e:
         if name == "compress" and agent:
             from agent.conversation_compression import finalize_context_engine_compression_notification

@@ -1286,6 +1286,7 @@ class _ToolOutcome:
     is_error: bool
     blocked: bool
     data_use: frozenset[str] = frozenset()
+    execution_status: Optional[str] = None
 
 
 def _start_order_gate_timeout(batch_timeout: float | None) -> float:
@@ -1368,6 +1369,8 @@ class _ConcurrentBatch:
         self.gate = _StartOrderGate(_start_order_gate_timeout(timeout_s))
         self.authorization_gate = _ConcurrentToolAuthorizationGate()
         self.timed_out_indices: set[int] = set()
+        self.cancelled_indices: set[int] = set()
+        self.dispatched_indices: set[int] = set()
 
     def _dispatch_worker(self, index: int, ref: _ToolCallRef, scope_block, start_gate: _WorkerStartOnce) -> Optional[_ToolOutcome]:
         """Run one call through the middleware and synthesize its slot outcome; ``None`` when
@@ -1379,6 +1382,18 @@ class _ConcurrentBatch:
         start = time.time()
         blocked = dispatched = False
         data_use: frozenset[str] = frozenset()
+
+        def _begin_execution(callback=None):
+            # A callback here means the real dispatch is starting: the call may act from
+            # now on, so an interrupt can no longer prove a "none" effect (#61783).
+            # The gate runs the callback and only then releases the order slot, so an
+            # abandoned batch (which raises without running it) must NOT mark the call
+            # dispatched: a tool that provably never started keeps effect "none".
+            start_gate.advance(callback)
+            if callback is not None:
+                self.dispatched_indices.add(index)
+
+
         try:
             managed = _run_agent_tool_execution_middleware(
                 agent,
@@ -1393,7 +1408,7 @@ class _ConcurrentBatch:
                 ),
                 scope_block=scope_block,
                 display_index=index + 1,
-                begin_execution=start_gate.advance,
+                begin_execution=_begin_execution,
                 authorization_gate=self.authorization_gate,
             )
             result, ref.args, ref.trace = managed.result, managed.args, managed.middleware_trace
@@ -1407,7 +1422,7 @@ class _ConcurrentBatch:
             result = ref.emit_cancelled(agent, start)
             duration = time.time() - start
             logger.info("tool %s cancelled (%.2fs)", ref.name, duration)
-            return _ToolOutcome(ref, result, duration, True, False)
+            return _ToolOutcome(ref, result, duration, True, False, "cancelled")
         except Exception as tool_error:
             result = f"Error executing tool '{ref.name}': {tool_error}"
             logger.error("_invoke_tool raised for %s: %s", ref.name, tool_error, exc_info=True)
@@ -1524,6 +1539,7 @@ class _ConcurrentBatch:
                     worker_tids = list(agent._tool_worker_threads)
                 _interrupt_worker_tids(agent, worker_tids)
             else:
+                self.cancelled_indices = {future_to_index[f] for f in not_done if f in future_to_index}
                 # Give running tools a moment to notice the per-thread interrupt and exit gracefully.
                 concurrent.futures.wait(not_done, timeout=3.0)
             return True
@@ -1550,13 +1566,15 @@ class _ConcurrentBatch:
             executor.shutdown(wait=not abandon_executor, cancel_futures=abandon_executor)
 
 
-def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeout_s: float | None) -> tuple[str, float, Optional[str], str]:
+def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeout_s: float | None, may_have_dispatched: bool = False) -> tuple[str, float, Optional[str], str]:
     """Synthesize the result for a slot no worker filled (deadline, interrupt, or a thread
     that never returned), emit its terminal post_tool_call, and return
     ``(function_result, tool_duration, effect_disposition, execution_status)``.
 
     The two are orthogonal: a timed-out side-effecting call has an UNKNOWN effect (it may
     have acted before the deadline) even though its execution status is known.
+    ``may_have_dispatched`` separates "provably never started" (``none``) from
+    "may already have acted" (``unknown``) for interrupted slots.
     """
     if timed_out:
         suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
@@ -1567,7 +1585,7 @@ def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeou
         why = interrupt_skip_wording(agent)
         function_result = f"[Tool execution cancelled — {ref.name} was skipped. {why}]"
         outcome = dict(status="cancelled", error_type="keyboard_interrupt", error_message=f"Tool execution cancelled. {why}")
-        tool_duration, effect_disposition, execution_status = 0.0, None, "cancelled"
+        tool_duration, effect_disposition, execution_status = 0.0, ("unknown" if may_have_dispatched else "none"), "cancelled"
     else:
         function_result = f"Error executing tool '{ref.name}': thread did not return a result"
         outcome = dict(status="error", error_type="thread_missing_result", error_message=function_result)
@@ -1587,6 +1605,7 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             ref, is_error, blocked = pc.ref(effective_task_id), True, False
             function_result, tool_duration, effect_disposition, execution_status = _unfinished_tool_result(
                 agent, ref, timed_out=i in batch.timed_out_indices, timeout_s=batch.timeout_s,
+                may_have_dispatched=i in batch.dispatched_indices,
             )
         else:
             ref, function_result, tool_duration, is_error, blocked = r.ref, r.result, r.duration, r.is_error, r.blocked
@@ -1599,6 +1618,19 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
                 # artifact surfaces here with is_error=True; the batch's truth is "timeout".
                 # The effect of a call interrupted mid-flight remains unobservable.
                 effect_disposition, execution_status = "unknown", "timeout"
+            elif not blocked and r.execution_status == "cancelled":
+                # The worker's own cancellation marker (KeyboardInterrupt, per-thread
+                # interrupt). It ran, so its effect is unobservable — but "cancelled" is the
+                # true status and must not be flattened into a generic error (#61783).
+                effect_disposition, execution_status = "unknown", "cancelled"
+            elif (not blocked and r.execution_status is None
+                  and i in batch.cancelled_indices and agent._interrupt_requested):
+                # Abandoned by /stop after dispatch and the worker classified nothing of its
+                # own: it may have acted before the interrupt, and "cancelled" is the true
+                # status. A worker that returned INSIDE the grace wait has a real outcome —
+                # recording its completed result as a cancellation that never happened is
+                # what the guard above prevents.
+                effect_disposition, execution_status = "unknown", "cancelled"
             else:
                 # A blocked call never ran -> provably no effect. A completed call is
                 # NOT "none": its effect may well have happened and been observed, which

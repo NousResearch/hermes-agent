@@ -31,25 +31,34 @@ def _dict_args(raw: Any) -> dict:
 
 
 def _codex_execution_status(item: dict) -> str:
-    """Map a Codex item's reported outcome onto the execution-status vocabulary.
+    """Map Codex's item-specific terminal fields onto Hermes' execution vocabulary.
 
-    Codex terminates every projected tool item, so this axis is knowable even though
-    its effect is not. An explicit failure/interrupt wins; an absent or unknown
-    provider status stays ``error`` (conservative: the conservative path is what
-    ``replay_cleanup`` already treats as a possible side effect).
+    ``status`` alone is not authoritative: command exit codes, dynamic-tool success
+    flags, MCP errors, and file-change states disagree about what ``completed`` means.
+    Keep the provider's explicit cancellation separate from a timeout — an interruption
+    has no provider deadline signal.
     """
+    item_type = str(item.get("type") or "")
     status = str(item.get("status") or "").lower()
-    if status in {"completed", "success", "succeeded"}:
-        return "success"
-    if status in {"cancelled", "canceled", "aborted"}:
+
+    if status in {"cancelled", "canceled", "aborted", "interrupted"}:
         return "cancelled"
-    if status in {"interrupted", "timeout", "timed_out"}:
+    if status in {"declined", "rejected", "blocked"}:
+        return "blocked"
+    if status in {"timeout", "timed_out"}:
         return "timeout"
-    if item.get("error") is not None or status in {"failed", "error"}:
+    if status in {"failed", "error"} or item.get("error") is not None:
         return "error"
-    # No status and no error: the item exists, so treat the projected result as an
-    # unknown-outcome error rather than claiming a success the provider never stated.
-    return "error"
+
+    successful = {
+        "commandExecution": status in {"completed", "success", "succeeded"}
+        and item.get("exitCode") in (None, 0),
+        "fileChange": status in {"completed", "success", "succeeded", "applied"},
+        "mcpToolCall": status in {"completed", "success", "succeeded"},
+        "dynamicToolCall": status in {"completed", "success", "succeeded"}
+        and item.get("success") is not False,
+    }.get(item_type, status in {"completed", "success", "succeeded", "applied"})
+    return "success" if successful else "error"
 
 
 @dataclass

@@ -15,13 +15,13 @@ Read-only EVM client: wallets, tokens, gas across 8 chains.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/blockchain/evm` |
-| Path | `optional-skills/blockchain\evm` |
+| Path | `optional-skills/blockchain/evm` |
 | Version | `1.0.0` |
 | Author | Mibayy (@Mibayy), youssefea (@youssefea), ethernet8023 (@ethernet8023), Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `EVM`, `Ethereum`, `BNB`, `BSC`, `Base`, `Arbitrum`, `Polygon`, `Optimism`, `Avalanche`, `zkSync`, `Blockchain`, `Crypto`, `Web3`, `DeFi`, `NFT`, `ENS`, `Whale`, `Security` |
-| Related skills | [`solana`](./blockchain-solana.md) |
+| Related skills | [`solana`](../../optional/blockchain/blockchain-solana.md) |
 
 ## Reference: full SKILL.md
 

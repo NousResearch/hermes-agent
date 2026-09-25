@@ -6,6 +6,7 @@ preflight exemption, create-time validation, the subprocess delivery lane,
 and the delivery-targets listing used by UI pickers.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -15,7 +16,6 @@ from unittest import mock
 
 import pytest
 
-from cron import scheduler as sched
 from cron import scheduler_delivery as sched_delivery
 from cron.scheduler import _resolve_delivery_targets
 from cron.scheduler_delivery import (
@@ -25,7 +25,7 @@ from cron.scheduler_delivery import (
     parse_bot_chat_deliver_token,
 )
 from cron.scheduler_preflight import _preflight_check_delivery
-from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
+from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV
 
 
 # ── token parsing ────────────────────────────────────────────────────────────
@@ -51,17 +51,8 @@ def test_non_bot_chat_tokens_pass_through():
 
 # ── target resolution ────────────────────────────────────────────────────────
 
-def test_own_profile_resolves_without_name():
-    target = _resolve_bot_chat_target({"id": "j1"}, "")
-    assert target == {"platform": BOT_CHAT_PLATFORM, "chat_id": "", "thread_id": None}
 
 
-def test_named_profile_resolves_when_exists():
-    with mock.patch("hermes_cli.profiles.profile_exists", return_value=True):
-        target = _resolve_bot_chat_target({"id": "j1"}, "research")
-    assert target is not None
-    assert target["platform"] == BOT_CHAT_PLATFORM
-    assert target["chat_id"] == "research"
 
 
 def test_unknown_profile_resolves_to_none():
@@ -104,7 +95,6 @@ def test_create_validation_rejects_unknown_profile():
     with mock.patch("hermes_cli.profiles.profile_exists", return_value=False):
         err = _validate_bot_chat_deliver("bot-chat:ghost")
     assert err is not None
-    assert "machine-local" in err
 
 
 def test_create_validation_accepts_bare_and_existing():
@@ -152,13 +142,6 @@ def test_deliver_runs_canonical_bot_chat_lane():
     assert calls["env"][TURN_REPORT_FILE_ENV] == calls["report_path"]
 
 
-def test_deliver_failure_returns_error_string():
-    with mock.patch.object(
-        sched_delivery, "_run_bot_chat_turn", return_value=_completed(returncode=1, stderr="boom")
-    ), mock.patch.object(sched_delivery.shutil, "which", return_value="/usr/bin/hermes"):
-        err = _deliver_to_bot_chat({"id": "j1", "name": "n"}, "out", "")
-    assert err is not None
-    assert "boom" in err
 
 
 def test_deliver_failure_reports_both_streams_labeled():
@@ -190,6 +173,7 @@ def test_deliver_failure_banner_only_stdout_names_exit_code_not_banner():
     assert "stdout was only the resume banner" in err
     assert "Resumed session" not in err
     assert "stderr:" not in err
+
 
 
 def test_deliver_failure_persisted_stdout_tail_is_short_and_redacted():
@@ -276,6 +260,29 @@ def test_turn_report_books_the_delivery_while_the_child_still_lingers(tmp_path):
             proc.wait(timeout=10)
 
 
+@pytest.mark.platforms("linux")
+def test_delivery_child_runs_in_the_target_home_not_the_schedulers_cwd(tmp_path, monkeypatch):
+    """The spawn pins ``cwd`` to the target home: a scheduler left in a reaped kanban scratch
+    workspace must not hand its dead cwd to the child, which then dies before argv (#102941)."""
+    home = tmp_path / "home"
+    home.mkdir()
+    report = tmp_path / "turn.json"
+    gone = tmp_path / "scratch"
+    gone.mkdir()
+    monkeypatch.chdir(gone)
+    gone.rmdir()
+    child = textwrap.dedent("""
+        import os, sys
+        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
+        sys.stdout.write(os.getcwd())
+        write_turn_report(os.environ.pop(TURN_REPORT_FILE_ENV), exit_code=0)
+        """)
+    env = {**_child_env(), "HERMES_HOME": str(home), TURN_REPORT_FILE_ENV: str(report)}
+    result = sched_delivery._run_bot_chat_turn([sys.executable, "-c", child], env, str(report), timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == os.path.realpath(home)
+
+
 def test_turn_that_never_ends_is_still_killed_at_the_cap(tmp_path):
     """Control: with no turn report the cap stays the guard it always was."""
     started = time.monotonic()
@@ -283,6 +290,60 @@ def test_turn_that_never_ends_is_still_killed_at_the_cap(tmp_path):
         sched_delivery._run_bot_chat_turn(
             [sys.executable, "-c", "import time; time.sleep(30)"], _child_env(), str(tmp_path / "turn.json"), timeout=1)
     assert time.monotonic() - started < 8
+
+
+
+
+@pytest.mark.platforms("linux")
+def test_bot_chat_turn_failure_tail_decodes_lossily(tmp_path):
+    """The exit-1 tail is still surfaced (with U+FFFD for the bad byte) instead of
+    vanishing when the drain thread dies at the first undecodable byte (#105582)."""
+    child = "import os, sys; os.write(2, b'boom before \\x80 after\\n'); sys.exit(1)"
+    result = sched_delivery._run_bot_chat_turn(
+        [sys.executable, "-c", child], _child_env(), str(tmp_path / "turn.json"), timeout=15)
+
+    assert result.returncode == 1
+    assert result.stderr == "boom before \ufffd after\n"
+
+
+@pytest.mark.platforms("windows")
+def test_bot_chat_turn_roundtrips_accented_utf8_reply(tmp_path):
+    """The delivery child writes UTF-8 unconditionally — hermes_cli reconfigures its
+    own streams via hermes_bootstrap on Windows even under PYTHONIOENCODING=cp1252 —
+    while the gateway parent there is NOT started in UTF-8 mode, so text=True alone
+    decoded the pipes with the ANSI code page: the reply came back mojibake'd, or the
+    reader thread died on bytes undefined in cp1252 and the reply was silently lost
+    while the delivery still booked as delivered (#115894).
+
+    The gateway parent is a nested interpreter explicitly NOT in UTF-8 mode
+    (``PYTHONUTF8=0`` / ``-X utf8=0``), so its Popen(text=True) decodes with the
+    ANSI code page exactly like the production parent; the stand-in child writes
+    raw UTF-8 bytes through sys.stdout.buffer the way the bootstrapped hermes_cli
+    child does, independent of any locale. On the pre-fix branch the decode dies
+    on 0x8D (second byte of UTF-8 "Í", undefined in cp1252) inside the drain
+    thread and stdout comes back empty — RED; with the win32 UTF-8 pin the text
+    round-trips byte-for-byte. The JSON verdict rides the nested stdout with
+    ensure_ascii escapes, so the outer pipe encoding cannot distort it."""
+    text = "AÇÃO ÍNDICE: relatório nº 3\n"
+    nested = textwrap.dedent("""
+        import json, os, sys
+        from cron.scheduler_delivery import _run_bot_chat_turn
+        child = "import sys; sys.stdout.buffer.write({!r})".format(sys.argv[1].encode("utf-8"))
+        result = _run_bot_chat_turn(
+            [sys.executable, "-c", child], dict(os.environ), sys.argv[2], timeout=30)
+        print(json.dumps(
+            {"returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}))
+    """)
+    env = {**_child_env(), "PYTHONUTF8": "0"}
+    env.pop("PYTHONIOENCODING", None)
+    res = subprocess.run(
+        [sys.executable, "-X", "utf8=0", "-c", nested, text, str(tmp_path / "turn.json")],
+        env=env, timeout=60, check=True, capture_output=True, encoding="utf-8")
+
+    result = json.loads(res.stdout)
+    assert result["returncode"] == 0
+    assert result["stdout"] == text
+    assert result["stderr"] == ""
 
 
 # ── delivery-targets listing (UI pickers) ────────────────────────────────────

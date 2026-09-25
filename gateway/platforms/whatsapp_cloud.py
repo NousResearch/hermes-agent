@@ -197,9 +197,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             extra.get("group_policy") or _get_wsecret("WHATSAPP_CLOUD_GROUP_POLICY")
             or _get_wsecret("WHATSAPP_GROUP_POLICY", default="open") or "open"
         ).strip().lower()
-        self._group_allow_from: set[str] = self._normalize_allow_ids(self._coerce_allow_list(
-            extra.get("group_allow_from") or extra.get("groupAllowFrom") or _get_wsecret("WHATSAPP_CLOUD_GROUP_ALLOW_FROM")
-        ))
+        _, raw_groups = self._select_allowlist(
+            extra, ("group_allow_from", "groupAllowFrom"), ("WHATSAPP_CLOUD_GROUP_ALLOW_FROM",), _get_wsecret)
+        self._group_allow_from: set[str] = self._normalize_allow_ids(self._coerce_allow_list(raw_groups))
         self._mention_patterns = self._compile_mention_patterns()
         # Webhook dedup state (in-memory, FIFO-evicted) and counters.
         self._seen_wamids: "OrderedDict[str, bool]" = OrderedDict()
@@ -372,7 +372,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Index (chat_id, wamid) → text: Meta's inbound ``context`` carries only the
         # quoted message's id, so this is how replies to our messages resolve text.
         if last_message_id:
-            rich_sent_store.record(chat_id, last_message_id, formatted)
+            await rich_sent_store.record_async(chat_id, last_message_id, formatted)
         return SendResult(success=True, message_id=last_message_id)
 
     # ------------------------------------------------------------------ typing indicator + read receipts
@@ -562,9 +562,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         result = await self._send_media(chat_id, media_kind, caption=caption, filename=filename, reply_to=reply_to, **ref)
         if result.success and result.message_id and "media_id" in ref:
             mime = mime_type or mimetypes.guess_type(source)[0] or _DEFAULT_MIME.get(media_kind, "application/octet-stream")
-            rich_sent_store.record_media(chat_id, result.message_id, [(source, mime)])
+            await rich_sent_store.record_media_async(chat_id, result.message_id, [(source, mime)])
             if caption:
-                rich_sent_store.record(chat_id, result.message_id, caption)
+                await rich_sent_store.record_async(chat_id, result.message_id, caption)
         return result
 
     # ``**kwargs`` absorbs base-class args (e.g. ``metadata``) the Cloud API has no use for.
@@ -945,7 +945,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if file_size > _MAX_TEXT_INJECT_BYTES:
                     logger.info("[whatsapp_cloud] skipping text injection for %s (%d bytes > %d)", doc, file_size, _MAX_TEXT_INJECT_BYTES)
                     continue
-                injection = f"[Content of {doc.name}]:\n{doc.read_text(encoding='utf-8', errors='replace')}"
+                injection = f"[Content of {doc.name}]:\n{doc.read_text(encoding='utf-8-sig', errors='replace')}"
                 body = f"{injection}\n\n{body}" if body else injection
                 inlined[i] = True
             except OSError:
@@ -1001,9 +1001,9 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Done AFTER gating so filtered messages don't leak typing/read receipts.
             bounded_put(self._last_inbound_wamid_by_chat, chat_id, wamid, INTERACTIVE_STATE_CACHE_SIZE)
             if body:
-                rich_sent_store.record(chat_id, wamid, body)
+                await rich_sent_store.record_async(chat_id, wamid, body)
             if msg_type_str in _INBOUND_MEDIA_KINDS and media_urls:
-                rich_sent_store.record_media(chat_id, wamid, list(zip(media_urls, media_types)))
+                await rich_sent_store.record_media_async(chat_id, wamid, list(zip(media_urls, media_types)))
         if reply_to_id:
             for path, mime in rich_sent_store.lookup_media(chat_id, reply_to_id):
                 if path not in media_urls:

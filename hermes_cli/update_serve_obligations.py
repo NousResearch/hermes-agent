@@ -24,8 +24,13 @@ def defer_manual_serve(runtime: dict, *, require_alive: bool = False) -> bool:
     if not isinstance(detail, dict):
         return False
     created = detail.get("create_time")
-    if type(pid) is not int or pid <= 0 or type(created) not in (int, float) or not math.isfinite(created) or created <= 0:
+    if type(pid) is not int or pid <= 0:
         return False
+    identified = type(created) in (int, float) and math.isfinite(created) and created > 0
+    if not identified:
+        # Without a recorded creation time no durable reminder can be filed (#116507);
+        # only a provably dead pid discharges the row, anything less stays pending.
+        return not require_alive and _pid_alive_matches(pid, None) is False
     try:
         alive = _pid_alive_matches(pid, created)
         if require_alive and alive is not True:
@@ -77,11 +82,16 @@ def warn_pending_manual_serves(*, startup: bool = False, pending_manual: list[di
         pending_manual = retain_receipt_manual_serves(read_latest_receipt() or {})
     for row in pending_manual:
         print(f"  ⚠ {row['kind']} [{row.get('profile', 'unknown')}] pid {row.get('pid', 'unknown')}: manual restart reminder could not be saved; restart remains pending in the update receipt.", file=stream)
-        print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard`; check reminder storage permissions and free space.", file=stream)
+        detail = row.get("detail") if isinstance(row.get("detail"), dict) else {}
+        if type(detail.get("create_time")) in (int, float):
+            print("    Ask its owner to relaunch `hermes serve` / `hermes dashboard`; check reminder storage permissions and free space.", file=stream)
+        else:
+            # No usable creation time means identity, not storage, blocked the durable reminder.
+            print("    This host could not read the process creation time, so no durable reminder could be filed; ask its owner to relaunch `hermes serve` / `hermes dashboard`, and the warning clears once the pid is confirmed gone.", file=stream)
     directory = get_hermes_home() / "serve_restart_pending"
     for path in sorted(directory.glob("*.json")):
         try:
-            row = json.loads(path.read_text(encoding="utf-8"))
+            row = json.loads(path.read_text(encoding="utf-8-sig"))
             if _pid_alive_matches(row["pid"], row["create_time"]) is False:
                 path.unlink(missing_ok=True)
                 continue

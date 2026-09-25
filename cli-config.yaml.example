@@ -4,6 +4,11 @@
 # This file configures CLI behavior; only documented secret environment
 # variables in .env take precedence over their corresponding settings.
 
+# Schema version of this file. The installers copy it to seed config.yaml, and
+# `hermes update` uses it to know which one-time migrations the file already
+# has. Hermes manages it: do not copy it into another config.
+_config_version: 46
+
 # =============================================================================
 # Database Configuration
 # =============================================================================
@@ -36,6 +41,15 @@ database:
 # null to disable the adjustment. Default: 4096.
 runtime:
   nofile_soft_limit: 4096
+
+# =============================================================================
+# Plugin Installation
+# =============================================================================
+plugins:
+  # Deadline for each Git clone, fetch or checkout during plugin install. Default: 300
+  # seconds. Subdirectory installs download only that folder.
+  # Raise this for large repositories or slow connections. Maximum: 3600.
+  clone_timeout_seconds: 300
 
 # =============================================================================
 # Model Configuration
@@ -154,6 +168,16 @@ model:
   #       CF-Access-Client-Id: "xxxx.access"
   #       CF-Access-Client-Secret: "${CF_ACCESS_SECRET}"
   #       X-Client-Name: "hermes-agent"
+  #
+  # session_affinity_header: NAME of a header that carries Hermes' conversation
+  # id on every request to that provider (all api_modes + auxiliary calls). Off
+  # unless set. For session-aware proxies that otherwise treat each agent-loop
+  # request as a new conversation and replay the whole history upstream.
+  #
+  # providers:
+  #   my-proxy:
+  #     base_url: "http://127.0.0.1:4000/v1"
+  #     session_affinity_header: x-litellm-session-id
 # providers:
 #   meta:
 #     base_url: https://api.meta.ai/v1
@@ -161,6 +185,15 @@ model:
 #     # api_mode auto-detected as codex_responses for api.meta.ai; no need to set
 #     # (the bundled meta-ai provider covers this — a named custom provider is
 #     # only needed for a non-default Meta-compatible endpoint)
+# Fast/priority tier behind an OpenAI-compatible gateway or proxy: agent.service_tier
+# (`/fast`) only reaches first-party endpoints; ask a gateway for its own tier via
+# extra_body, which is merged into every request routed to that provider.
+# providers:
+#   my-gateway:
+#     base_url: https://gateway.example.com/v1
+#     api_key: ${MY_GATEWAY_KEY}
+#     extra_body:
+#       service_tier: priority   # whatever tier value your gateway documents
 # providers:
 #   router:
 #     base_url: https://api.router.com/v1
@@ -643,14 +676,12 @@ compression:
   #   "claude-sonnet": 0.35
   #   "gpt-5": 0.30
 
-  # Optional absolute token cap for the compression trigger (default: null = disabled).
-  # When set, compression fires at the LOWER of the ratio-based threshold and this
-  # absolute token count — first-fires-wins. It never fires later than this count
-  # regardless of which model is active (useful when switching between models with
-  # very different context windows). Clamped to the model's context length at
-  # apply-time, so a cap above the window is a no-op (ratio-based threshold wins).
-  # Survives model switches and fallback activations.
-  # threshold_tokens: 200000
+  # Absolute token cap for the compression trigger (default: 256000).
+  # Compression fires at the LOWER of the ratio-based threshold and this count,
+  # bounding large-window sessions while lower proportional triggers still win
+  # whenever they fall below the cap. The cap survives model switches and fallbacks.
+  # Set null to restore ratio-only behavior.
+  threshold_tokens: 256000
 
   # Existing Codex gpt-5.5 behavior: raise Hermes' compaction trigger to 85%
   # for the ChatGPT Codex OAuth route. Set false to opt back down to threshold.
@@ -692,7 +723,8 @@ compression:
 
   # Native OpenAI Responses server-side compaction (default: false). When true,
   # gpt-5.6-family models on the DIRECT OpenAI API (api.openai.com) or a ChatGPT
-  # Codex subscription compact server-side: OpenAI prunes older context into an
+  # Codex subscription, plus exact gpt-6-astra on official Codex OAuth, compact
+  # server-side: OpenAI prunes older context into an
   # encrypted checkpoint that Hermes replays on later turns. No other provider,
   # route, or model is affected. Hermes' local compression stays armed as the
   # fallback and still handles every non-eligible session.
@@ -915,6 +947,12 @@ prompt_caching:
 #     provider: "auto"
 #     model: ""
 #     # max_concurrency: 2    # Optional: cap simultaneous compression calls
+#     # no_progress_timeout: 60   # Codex/Responses-only: seconds a stream may go without a
+#                                 # substantive event before it fails fast (default: 60).
+#                                 # Independent of "timeout" above (the overall request
+#                                 # budget) — raising "timeout" alone does not widen this
+#                                 # window. Each substantive event re-arms it; a slow but
+#                                 # progressing reasoning/summary stream is not affected.
 #
 #   # Post-turn memory/skill self-improvement review fork. Runs after a turn
 #   # when the nudge intervals fire; writes skills/memories in a daemon thread.
@@ -1189,6 +1227,15 @@ agent:
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
 
+  # Once api_max_retries AND the fallback chain are spent on a transient outage
+  # (5xx, overloaded/529, connect/read timeouts) and nothing has been delivered
+  # yet, Hermes waits and retries this many more cycles (jittered 15/30/60/60/60s;
+  # a provider Retry-After wins, up to 120s) showing "Provider temporarily
+  # unavailable — retrying automatically in Ns (cycle k/5); press Esc to stop"
+  # instead of ending the turn. Auth/format/billing/policy errors never enter.
+  # Set 0 to disable (default 5).
+  # auto_recovery_cycles: 5
+
   # After the agent edits code without fresh passing verification, nudge it to
   # verify before finishing. Off by default (false). Set true to force it on
   # everywhere, or "auto" for the surface-aware mode: on for interactive
@@ -1223,12 +1270,17 @@ agent:
   # Reasoning effort level (OpenRouter and Nous Portal)
   # Controls how much "thinking" the model does before responding.
   # Options: "xhigh" (max), "high", "medium", "low", "minimal", "none" (disable)
+  # Providers with bespoke thinking tiers (a relay serving fast/thinking): use the
+  # dict form and the level is sent verbatim. Bare strings stay strict (typo guard).
+  #   reasoning_effort:
+  #     enabled: true
+  #     effort: thinking
   reasoning_effort: "medium"
   
   # Per-model reasoning effort overrides (optional dict)
   # Key: any sensible model spelling works (exact, dots↔dashes interchangeable,
   #      provider prefix optional). First match wins.
-  # Value: reasoning effort level (same options as reasoning_effort)
+  # Value: reasoning effort level (same options as reasoning_effort, dict form included)
   # Override the global reasoning_effort for that specific model.
   # NOTE: no `hermes config set` support for this key -- edit YAML directly.
   # reasoning_overrides:
@@ -1354,6 +1406,7 @@ platform_toolsets:
 #     guest_mode: false
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
+#       drop_pending_on_cold_boot: true # Drop Telegram's queued updates on a cold boot (default). Set false on hosts that power off, so messages sent while offline are delivered on the next start; watcher reconnects always preserve them
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 #       rich_messages: false          # Bot API 10.1 rich messages (tables/task lists/details/math); default false for copyable legacy MarkdownV2, set true to opt in
 #       rich_drafts: false            # Experimental rich draft previews during Telegram DM streaming; default false because Telegram Desktop/macOS can visually overlay draft frames
@@ -1397,6 +1450,7 @@ platform_toolsets:
 #   require_mention: true            # Require @mention in server channels (default: true)
 #   bots_require_inline_mention: true  # Bot authors must type a literal @mention (default: true)
 #   auto_thread: true                # Auto-create thread on @mention (default: true)
+#   free_response_auto_thread: false # Free-response channels also auto-thread (default: reply inline)
 #   free_response_channels: ""       # Channel IDs where no mention is needed
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
@@ -1615,6 +1669,8 @@ stt:
   openai:
     model: "whisper-1"         # whisper-1 | gpt-4o-mini-transcribe | gpt-4o-transcribe | gpt-transcribe
     language: ""               # auto-detect; set to "en", "es", "fr", etc. to force
+    timeout: 60                # request timeout in seconds; increase for self-hosted model cold starts
+    max_retries: 1             # OpenAI SDK transport retries; set 0 to disable
   # mistral:
   #   model: "voxtral-mini-latest"  # voxtral-mini-latest | voxtral-mini-2602
   # deepinfra:
@@ -1761,9 +1817,15 @@ display:
   #   verbose: Full args, results, and debug logs (same as /verbose)
   #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
-  tool_progress: all
+  # tool_progress: all
 
-  # Per-platform defaults can be quieter than the global setting. Telegram
+  # tool_progress, interim_assistant_messages, long_running_notifications,
+  # busy_ack_detail and show_reasoning are left unset here on purpose: a value
+  # set under display: applies to EVERY messaging platform and replaces its
+  # built-in default. To change one platform, set it under
+  # display.platforms.<platform> instead.
+  #
+  # Per-platform defaults can be quieter than the CLI. Telegram
   # tunes for mobile: tool_progress and busy_ack_detail default off (no
   # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy
   # acks or heartbeats), but interim_assistant_messages and
@@ -1794,9 +1856,10 @@ display:
   # assistant narration streamed between tool calls is kept in the transcript
   # instead of the bubble collapsing to only the final message on completion.
   # Independent of tool_progress and gateway streaming.
-  #   true:  Keep/send mid-turn assistant updates (default)
+  #   true:  Keep/send mid-turn assistant updates (default; off on platforms
+  #          that cannot edit messages)
   #   false: Only keep/send the final response
-  interim_assistant_messages: true
+  # interim_assistant_messages: true
 
   # Opt-in: hide automatic warning/diagnostic notifications (compression, retry
   # and fallback notices, credit/subagent failure lines, inactivity and watchdog
@@ -1811,16 +1874,17 @@ display:
   # notifications even if agent.gateway_notify_interval is non-zero. The
   # heartbeat edits a single message in place (where the adapter supports
   # editing) instead of posting a new bubble each interval.
-  # Default: true everywhere, including Telegram (silent agents are worse
-  # than a single edit-in-place heartbeat).
-  long_running_notifications: true
+  # Default: true, including Telegram (silent agents are worse than a single
+  # edit-in-place heartbeat); false on Slack and on platforms that cannot edit.
+  # long_running_notifications: true
 
   # Include detailed iteration/tool/status context in busy acknowledgments
   # and long-running heartbeats. When true, busy acks show "iteration 21/60,
   # terminal, 10 min" and the heartbeat shows "⏳ Working — 12 min,
-  # iteration 21/60, terminal". When false (Telegram default), both stay
-  # terse: "Interrupting current task" and "⏳ Working — 12 min, terminal".
-  busy_ack_detail: true
+  # iteration 21/60, terminal". When false (Telegram, Slack and no-edit
+  # platform default), both stay terse: "Interrupting current task" and
+  # "⏳ Working — 12 min, terminal".
+  # busy_ack_detail: true
 
   # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
@@ -1862,9 +1926,9 @@ display:
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.
-  #   true:  Show the reasoning box (default)
-  #   false: Hide reasoning
-  show_reasoning: true
+  #   true:  Show the reasoning box (CLI default)
+  #   false: Hide reasoning (messaging platform default)
+  # show_reasoning: true
 
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears
@@ -2033,6 +2097,23 @@ telemetry:
     enabled: false
     send: false
     # endpoint: https://telemetry.nousresearch.com/v1/telemetry
+
+
+# =============================================================================
+# Login Policy (credentials themselves live in auth.json / .env)
+# =============================================================================
+auth:
+  # Borrow and refresh the Codex CLI (~/.codex/auth.json) and Claude Code logins when Hermes has
+  # no usable login of its own. Their refresh tokens are single-use, so two programs on one login
+  # can log each other out; set false to make Hermes use only its own logins.
+  adopt_external_logins: true
+  # How `hermes auth add openai-codex` / `hermes model` sign in to OpenAI Codex.
+  #   device_code (default) — open a URL and enter a code.
+  #   browser — authorization-code + PKCE on http://localhost:1455/auth/callback (the redirect
+  #             OpenAI registered for the Codex client) for organizations that disable the
+  #             device-code grant; falls back to device code when that port is busy.
+  # `hermes auth add openai-codex --browser` opts in for a single login without changing this.
+  codex_login_flow: device_code
 
 
 # =============================================================================

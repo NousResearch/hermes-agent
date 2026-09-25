@@ -1,24 +1,23 @@
 #!/usr/bin/env python3
-"""Tests for execute_code's session kernel mode.
+"""Tests for execute_code's session kernel.
 
-``code_execution.kernel_mode: session`` keeps one Python child alive per
-(task, mode, interpreter, cwd, tool-set) so state survives across calls.
-These tests pin the contract:
+Session kernels are always on (the ``code_execution.kernel_mode`` key is
+retired): each (task, mode, interpreter, cwd, tool-set) owner keeps one
+Python child alive so state survives across calls. These tests pin the
+contract:
 
-  - default stays per-call (no state carries over unless opted in)
   - state persists across cells and reset=true discards it
   - a raised exception keeps the kernel (and its state) alive
   - a timeout kills the kernel; the next call gets a fresh one
   - fd-level output from user-spawned subprocesses reaches the result
   - sys.exit() inside a cell ends the kernel deliberately
 
-Mode is sourced from ``code_execution.kernel_mode`` in config.yaml only;
+Mode is sourced from ``code_execution.mode`` in config.yaml only;
 tests patch ``_load_config`` directly, mirroring test_code_execution_modes.
 """
 
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -36,18 +35,20 @@ os.environ["TERMINAL_ENV"] = "local"
 
 @pytest.fixture(autouse=True)
 def _force_local_terminal(monkeypatch):
-    """Mirror test_code_execution.py — guarantee local backend under xdist."""
+    """Mirror test_code_execution.py — guarantee local backend."""
     monkeypatch.setenv("TERMINAL_ENV", "local")
 
 
-from tools.code_execution_tool import build_execute_code_schema, execute_code
+from tools.code_execution_tool import execute_code
 from tools.code_kernel import _KERNELS, shutdown_all_kernels
 
 
 @contextmanager
 def _kernel_config(**overrides):
-    """Pin code_execution config; strict mode keeps the test hermetic."""
-    config = {"mode": "strict", "kernel_mode": "session", "timeout": 30}
+    """Pin code_execution config; strict mode keeps the test hermetic.
+    ``mode`` (strict/project) is the only config knob — session kernels are
+    always on; the retired ``kernel_mode`` key is ignored by the tool."""
+    config = {"mode": "strict", "timeout": 30}
     config.update(overrides)
     with patch("tools.code_execution_tool._load_config", return_value=config):
         yield
@@ -180,24 +181,24 @@ class TestKernelLifecycle(unittest.TestCase):
         self.assertIn("raw-passthrough", result["output"])
 
 
-class TestSchemaSurface(unittest.TestCase):
-    def test_reset_parameter_is_declared(self):
-        with _kernel_config():
-            schema = build_execute_code_schema(mode="strict")
-        self.assertIn("reset", schema["parameters"]["properties"])
+class TestModelFacingReset(unittest.TestCase):
+    def test_reset_is_reachable_from_a_model_call_despite_stale_kernel_mode(self):
+        """Session kernels are always on (#96787), so ``reset`` is the model's only
+        way out of poisoned state. A stale ``kernel_mode: per-call`` key must not
+        drop it from the schema, and a model-shaped call routed through the
+        registered handler must actually discard the kernel's state."""
+        from tools.code_execution_tool import _execute_code_handler, build_execute_code_schema
 
-    def test_kernel_persistence_is_taught_unconditionally(self):
-        """Persistence is woven into the tool's main description (always-on
-        since #96787, integrated in the schema diet) — every session must be
-        told state survives across calls, in strict and project mode alike,
-        regardless of any stale kernel_mode key in config."""
-        with _kernel_config():
-            schema = build_execute_code_schema(mode="strict")
-        self.assertIn("persistent session kernel", schema["description"])
-        self.assertIn("reset", schema["parameters"]["properties"])
         with _kernel_config(kernel_mode="per-call"):
-            stale_schema = build_execute_code_schema(mode="strict")
-        self.assertIn("persistent session kernel", stale_schema["description"])
+            schema = build_execute_code_schema(mode="strict")
+            self.assertEqual(schema["parameters"]["properties"]["reset"]["type"], "boolean")
+            _execute_code_handler({"code": "x = 41"}, task_id="kernel-test")
+            kept = json.loads(_execute_code_handler({"code": "print(x + 1)"}, task_id="kernel-test"))
+            self.assertIn("42", kept["output"], kept)
+            reset = json.loads(_execute_code_handler(
+                {"code": "print(x + 1)", "reset": True}, task_id="kernel-test"))
+        self.assertEqual(reset["status"], "error", reset)
+        self.assertIn("NameError", reset.get("error", ""))
 
 
 if __name__ == "__main__":
@@ -389,26 +390,42 @@ class TestKernelOwnershipAndLifecycle(unittest.TestCase):
         """Parallel cells for one owner race the first spawn. Each racer
         used to see proc=None as 'dead', replace the registry entry, and
         orphan the winner's process — 110 live kernels under a 4-capped
-        process (Sep 2026). Every kernel process must stay registry-owned."""
-        import subprocess
+        process (Sep 2026). Every kernel process must stay registry-owned.
+
+        Capture actual children so an unregistered spawn cannot hide behind
+        the registry count. The owned process must exit on teardown."""
         import threading
 
+        spawned = []
+        real_popen = subprocess.Popen
+
+        def _capturing_popen(args, **kwargs):
+            proc = real_popen(args, **kwargs)
+            spawned.append((proc, list(args)))
+            return proc
+
         results = []
-        with _kernel_config():
-            def _cell():
-                results.append(self._run_as("conv-a", "import time; time.sleep(0.3)", task_id="t"))
-            threads = [threading.Thread(target=_cell) for _ in range(6)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join()
+        with patch("tools.code_kernel.subprocess.Popen", side_effect=_capturing_popen):
+            with _kernel_config():
+                def _cell():
+                    results.append(self._run_as("conv-a", "import time; time.sleep(0.3)", task_id="t"))
+                threads = [threading.Thread(target=_cell) for _ in range(6)]
+                for t in threads:
+                    t.start()
+                for t in threads:
+                    t.join()
         self.assertEqual([r["status"] for r in results], ["success"] * 6)
         self.assertEqual(len(_KERNELS), 1)
-        live = subprocess.run(
-            ["pgrep", "-fc", "-P", str(os.getpid()), "hermes_kernel_runner"],
-            capture_output=True, text=True,
-        ).stdout.strip()
-        self.assertEqual(live, "1")
+        runners = [proc for proc, args in spawned
+                   if len(args) == 2 and Path(args[1]).name == "hermes_kernel_runner.py"]
+        self.assertEqual(len(runners), 1, "parallel cells spawned an unowned kernel")
+        kernel = next(iter(_KERNELS.values()))
+        self.assertIs(kernel.proc, runners[0])
+        self.assertIsNone(kernel.proc.poll())
+        shutdown_all_kernels()
+        for proc in runners:
+            proc.wait(timeout=10)
+            self.assertIsNotNone(proc.returncode)
 
 
 class TestPerCellRpcAuthority(unittest.TestCase):
@@ -505,3 +522,71 @@ class TestPerCellRpcAuthority(unittest.TestCase):
             _run("y = 2")
             self.assertIsNot(kernel.cell_authority, first_authority)
             self.assertFalse(kernel.cell_authority.active)
+
+
+class TestBackgroundIdleReaper(unittest.TestCase):
+    """#117169: the idle sweep must not depend on the next kernel acquire — a host
+    that stays alive but wedged (e.g. pids exhaustion fail-closing every tool call)
+    never acquires again, so a background reaper reapplies the acquire-path criteria
+    on its own schedule, and staging dirs that outlived a dead host are swept by age."""
+
+    def _run_as(self, session_key, code, task_id, **kwargs):
+        from tools.approval_context import reset_current_session_key, set_current_session_key
+
+        token = set_current_session_key(session_key)
+        try:
+            return json.loads(execute_code(code, task_id=task_id, **kwargs))
+        finally:
+            reset_current_session_key(token)
+
+    def test_reap_once_sweeps_idle_kernels_without_a_new_acquire(self):
+        import time as time_module
+
+        from tools.code_kernel import _reap_once
+
+        with _kernel_config(kernel_idle_timeout=1):
+            self._run_as("conv-a", "x = 41", task_id="turn-1")
+            stale = next(iter(_KERNELS.values()))
+            time_module.sleep(1.2)
+            # No conv-b acquire here: the reaper pass alone must retire the kernel.
+            _reap_once()
+            self.assertNotIn(stale.key, _KERNELS)
+            stale.proc.wait(timeout=10)
+            self.assertFalse(stale.alive())
+
+    def test_reap_once_spares_attached_and_fresh_kernels(self):
+        from tools.code_kernel import _reap_once
+
+        with _kernel_config(kernel_idle_timeout=1):
+            fresh = self._run_as("conv-fresh", "x = 1", task_id="turn-1")
+            self.assertEqual(fresh["status"], "success", fresh)
+            kernel = next(iter(_KERNELS.values()))
+            kernel.attached += 1  # a cell is mid-flight: reaping must skip it
+            try:
+                _reap_once()
+                self.assertIn(kernel.key, _KERNELS)
+                self.assertTrue(kernel.alive())
+            finally:
+                kernel.attached -= 1
+
+class TestStaleStagingDirSweep(unittest.TestCase):
+    def test_week_old_kernel_dirs_go_and_fresh_ones_stay(self):
+        import time as time_module
+
+        from tools.code_kernel import _sweep_stale_staging_dirs
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch("tools.code_kernel.tempfile.gettempdir", return_value=tmp):
+                old = Path(tmp, "hermes_kernel_old")
+                young = Path(tmp, "hermes_kernel_young")
+                bystander = Path(tmp, "unrelated_dir")
+                for path in (old, young, bystander):
+                    path.mkdir()
+                week_and_a_bit = time_module.time() - 8 * 86400
+                os.utime(old, (week_and_a_bit, week_and_a_bit))
+                removed = _sweep_stale_staging_dirs()
+                # Asserted inside the TemporaryDirectory: cleanup would flatten everything.
+                self.assertEqual(removed, 1)
+                self.assertFalse(old.exists())
+                self.assertTrue(young.exists())
+                self.assertTrue(bystander.exists())

@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
@@ -33,11 +33,14 @@ from hermes_state_common import (
     escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
 )
 from hermes_state_holders import read_only_db_uri
+from hermes_state_health import (
+    STORAGE_CORRUPT, mark_storage_corrupt, note_storage_error, storage_corrupt_reason, storage_state,
+)
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
     StateDbReplacedError, _is_no_more_rows, classify_persistence_error, is_malformed_db_error,
-    is_malformed_schema_error,
+    is_malformed_schema_error, is_sqlite_lock_error,
 )
 from hermes_state_guard import (
     _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
@@ -48,9 +51,11 @@ from hermes_state_sessions import SessionSessionsMixin
 from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_telegram import SessionTelegramTopicsMixin
+from hermes_state_profile_repair import SessionProfileRepairMixin
 from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
 import hermes_state_lockguard as _lockguard
+from hermes_state_lockowners import log_write_lock_holders
 from hermes_state_dbfile import (
     _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
@@ -173,6 +178,11 @@ _READ_OPEN_RETRY_SECONDS = 60.0
 # Deliberately NOT for writable opens: a writer owns the transition, so an IOERR there is a real
 # storage/fd problem. A persistent IOERR still exhausts the budget and propagates.
 _READ_ONLY_IOERR_RETRY_ATTEMPTS, _READ_ONLY_IOERR_RETRY_BACKOFF_S = 3, 0.05
+# SQLite busy handler budget for reads. Under DELETE (rollback-journal) mode a reader needs a SHARED
+# lock, which every commit from another process blocks across its journal+db fsyncs; the writer
+# connection's 1 s timeout exists for writes (they retry at application level) and starved readers
+# into "database is locked" (dashboard 503s, `hermes sessions list` crashes) under a busy gateway.
+_READ_BUSY_TIMEOUT_S = 5.0
 
 
 def _default_db_path() -> Path:
@@ -442,7 +452,7 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin, SessionRewindMixin,
+    SessionMessagesMixin, SessionRewindMixin, SessionProfileRepairMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
@@ -503,16 +513,18 @@ class SessionDB(
     def _delete_unreferenced_system_prompts(conn) -> None:
         conn.execute(
             "DELETE FROM system_prompts WHERE NOT EXISTS ("
-            "SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash)"
+            "SELECT 1 FROM sessions WHERE sessions.system_prompt_hash = system_prompts.hash) AND NOT EXISTS ("
+            "SELECT 1 FROM sessions WHERE sessions.tool_names = system_prompts.hash)"
         )
 
     @staticmethod
     def _session_row_dict(row: sqlite3.Row) -> Dict[str, Any]:
         data = dict(row)
-        if "_system_prompt_resolved" in data:
-            resolved = data.pop("_system_prompt_resolved")
-            if "system_prompt" in data:
-                data["system_prompt"] = resolved
+        for column in ("system_prompt", "tool_names"):
+            if f"_{column}_resolved" in data:
+                resolved = data.pop(f"_{column}_resolved")
+                if column in data:
+                    data[column] = resolved
         return data
 
     @staticmethod
@@ -682,7 +694,7 @@ class SessionDB(
         leaked tracked connection cannot block the forensic backup the writable heal takes next."""
         for attempt in range(_READ_ONLY_IOERR_RETRY_ATTEMPTS + 1):
             try:
-                self._conn = conn = self._connect_read_only(timeout=1.0)
+                self._conn = conn = self._connect_read_only(timeout=_READ_BUSY_TIMEOUT_S)
                 try:
                     apply_database_pragmas(conn, db_label="state.db")
                     cursor = conn.cursor()
@@ -701,6 +713,8 @@ class SessionDB(
                 # SQLITE_IOERR to a mode=ro reader (it can't do the -shm recovery the read
                 # needs). Closes in milliseconds: retry a bounded number of times before
                 # classifying the store as failed (#100436; see _READ_ONLY_IOERR_RETRY_ATTEMPTS).
+                # A lock is NOT retried here: the connection already waited _READ_BUSY_TIMEOUT_S,
+                # and a retry would multiply that wait on blocking callers (TUI, `hermes status`).
                 transient = _DISK_IO_ERROR_MARKER in str(ioerr).lower()
                 if attempt >= _READ_ONLY_IOERR_RETRY_ATTEMPTS or not transient:
                     raise
@@ -791,12 +805,12 @@ class SessionDB(
                 self._connect_and_init()
                 return
             except sqlite3.OperationalError as exc:
-                err = str(exc).lower()
-                if "locked" not in err and "busy" not in err:
+                if not is_sqlite_lock_error(exc):
                     raise
                 self._close_connection_quietly(self._conn)
                 now = time.monotonic()
                 if now >= deadline:
+                    log_write_lock_holders(self.db_path, self._WRITE_PATIENCE_S)
                     raise
                 jitter = random.uniform(self._WRITE_RETRY_SLOW_MIN_S, self._WRITE_RETRY_SLOW_MAX_S)
                 time.sleep(min(jitter, max(deadline - now, 0.001)))
@@ -825,7 +839,7 @@ class SessionDB(
             return None
         conn = None  # bound before the try so the handlers can close a half-open one
         try:
-            conn = self._connect_read_only(timeout=5.0)
+            conn = self._connect_read_only(timeout=_READ_BUSY_TIMEOUT_S)
             apply_database_pragmas(conn, db_label="state.db")
             if self._fts_cjk_loaded:  # registers in the connection, not the file: ro is fine
                 load_fts5_cjk_extension(conn)
@@ -898,7 +912,18 @@ class SessionDB(
         with self._lock:
             if self._conn is None:  # close() raced a still-unwinding reader
                 self._reopen_after_close_locked(context="read")
-            yield cast(sqlite3.Connection, self._conn)
+            conn = cast(sqlite3.Connection, self._conn)
+            if self._wal_active or self.read_only:  # WAL: no SHARED-lock wait; ro: opened with the read budget
+                yield conn
+                return
+            # DELETE-mode writer connection: wait out a sibling's commit like a pooled reader would.
+            previous_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+            conn.execute(f"PRAGMA busy_timeout={int(_READ_BUSY_TIMEOUT_S * 1000)}")
+            try:
+                yield conn
+            finally:
+                with suppress(sqlite3.Error):
+                    conn.execute(f"PRAGMA busy_timeout={int(previous_ms)}")
 
     def _reopen_after_close_locked(self, context: str = "write") -> None:
         """Reopen the writer after ``close()`` raced a live caller (a teardown owner
@@ -954,7 +979,7 @@ class SessionDB(
         # mutations, not just idempotent UPSERTs.
         ioerr_begin_retried = False
         while True:
-            self._raise_if_db_corrupt()
+            self._raise_if_db_corrupt(storage=True)
             # NOTE: the replaced/generation live probe runs INSIDE the lock below,
             # not here. close() mutates _conn and _db_sidecar_identity under that
             # same lock, ending the WAL generation (SQLite unlinks the -wal/-shm
@@ -1012,10 +1037,13 @@ class SessionDB(
                     continue
                 err_msg = str(exc).lower()
                 if isinstance(exc, sqlite3.OperationalError):
-                    if "locked" in err_msg or "busy" in err_msg:
+                    if is_sqlite_lock_error(exc):
                         if self._sleep_before_write_retry(deadline, patience_s):
                             continue
-                        # Say what actually happened, not disk/permission damage.
+                        # Say what actually happened, not disk/permission damage. The holder goes to
+                        # the log, not the message: classify_persistence_error() buckets by phrase and
+                        # a holder's argv (a worktree named fix-corrupt-db) would flip the bucket.
+                        log_write_lock_holders(self.db_path, patience_s)
                         raise sqlite3.OperationalError(
                             f"database is locked (another Hermes process held the "
                             f"state.db write lock for over {patience_s:.0f}s — "
@@ -1039,10 +1067,11 @@ class SessionDB(
                         "not a database" in err_msg or is_malformed_db_error(exc)
                         or self._is_fts_write_corruption_error(exc)
                     ):
-                        self._raise_if_db_replaced()
+                        with self._lock:
+                            self._raise_if_db_replaced()
                     # Corrupt FTS shadow tables fail every write via the sync triggers while canonical
                     # rows are intact: detach the derived indexes atomically and retry (never rebuild here).
-                    if self._enter_fts_fail_open(exc):
+                    if self._enter_fts_fail_open(exc, deadline=deadline, patience_s=patience_s):
                         continue
                     # What survives both checks is structural damage: quarantine.
                     if self._is_structural_corruption_error(exc):
@@ -1091,8 +1120,14 @@ class SessionDB(
                     return fn(conn)
             except sqlite3.OperationalError as exc:
                 if attempt >= _READ_ONLY_IOERR_RETRY_ATTEMPTS or _DISK_IO_ERROR_MARKER not in str(exc).lower():
+                    note_storage_error(self.db_path, exc)
                     raise
                 time.sleep(_READ_ONLY_IOERR_RETRY_BACKOFF_S)
+            except sqlite3.DatabaseError as exc:
+                # A reader is often the only observer (the sidebar poll on a store nobody is
+                # writing to): publish structural damage so the list is not read as empty.
+                note_storage_error(self.db_path, exc)
+                raise
 
     def _ensure_db_file_generation(self) -> None:
         """Mint a once-per-file generation stamp (state_meta + application_id). First opener wins (INSERT
@@ -1265,6 +1300,9 @@ class SessionDB(
         """Quarantine this handle and raise; never run in-file repair here."""
         self._db_corrupt = True
         self._db_corrupt_reason = str(exc)
+        # Publish the profile-level state first: readiness, /api/status and the session list
+        # endpoints read it, and every other handle in this process refuses writes on it.
+        mark_storage_corrupt(self.db_path, exc)
         self._disable_close_time_checkpoint()
         logger.error(
             "state.db %s reported structural corruption outside the FTS "
@@ -1352,9 +1390,16 @@ class SessionDB(
             )
         return retire_without_close
 
-    def _raise_if_db_corrupt(self) -> None:
+    def _raise_if_db_corrupt(self, *, storage: bool = False) -> None:
         if self._db_corrupt:
             raise self._corrupt_error()
+        if storage and storage_state(self.db_path) == STORAGE_CORRUPT:
+            # Another handle in this process already saw structural damage on this file.
+            # Quarantine this one before it touches SQLite; the error type is the same
+            # StateDbCorruptError, so every transcript-diversion owner handles it unchanged.
+            self._halt_db_corrupt(sqlite3.DatabaseError(
+                "database disk image is malformed (reported earlier in this process: "
+                f"{storage_corrupt_reason(self.db_path)})"))
 
     def _sleep_before_write_retry(self, deadline: float, patience_s: float) -> bool:
         """Sleep one jitter interval if the budget allows; True = retry, False = deadline passed. Small
@@ -1576,10 +1621,12 @@ class SessionDB(
         if self.get_meta(gate) == "1":
             return 0
         def _do(conn):
+            esc = _escape_like(prefix)
             cursor = conn.execute(
                 "UPDATE sessions SET source = 'kanban' "
-                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\')",
-                (prefix, _escape_like(prefix) + "/%"),
+                "WHERE source = 'cli' AND (cwd = ? OR cwd LIKE ? ESCAPE '\\' "
+                "OR cwd LIKE ? ESCAPE '\\')",
+                (prefix, f"{esc}/%", f"{esc}\\\\%"),
             )
             # rowcount BEFORE set_meta reuses this cursor for its INSERT.
             retagged = cursor.rowcount or 0

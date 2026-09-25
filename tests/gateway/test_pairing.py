@@ -88,10 +88,7 @@ class TestProfileScopedDiscovery:
 
 class TestSaveJsonFile:
 
-    @pytest.mark.skipif(
-        sys.platform.startswith("win"),
-        reason="POSIX file modes are not enforced on Windows",
-    )
+    @pytest.mark.platforms("posix")  # POSIX file modes are not enforced on Windows
     def test_sets_file_permissions(self, tmp_path):
         target = tmp_path / "secret.json"
         _save_json_file(target, {"data": 1})
@@ -722,3 +719,52 @@ class TestProfileScopedStorage:
         )
 
 
+
+
+def test_approval_cache_reuses_parse_and_observes_replacement(tmp_path, monkeypatch):
+    store = _make_store(tmp_path)
+    other = _make_store(tmp_path)
+    path = store._approved_path("telegram")
+    store._save_json(path, {"user1": {"user_name": "Alice", "approved_at": 1.0}})
+    with patch("gateway.pairing.json.load", wraps=json.load) as parse:
+        for _ in range(5):
+            assert store.is_approved("telegram", "user1")
+        assert parse.call_count == 1
+        assert other.revoke("telegram", "user1")
+        assert not store.is_approved("telegram", "user1")
+        other._save_json(path, {"user1": {"user_name": "Alice", "approved_at": 1.0}})
+        assert store.is_approved("telegram", "user1")
+        before = path.stat()
+        replacement = tmp_path / "replacement"
+        replacement.write_bytes(path.read_bytes().replace(b"user1", b"user2"))
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        replacement.replace(path)
+        assert path.stat().st_size == before.st_size
+        assert not store.is_approved("telegram", "user1")
+        assert store.is_approved("telegram", "user2")
+        path.unlink()
+        assert not store.is_approved("telegram", "user2")
+        other._save_json(path, {"user3": {}})
+        assert store.is_approved("telegram", "user3")
+
+
+def test_approval_cache_isolated_and_unreadable_files_fail_closed(tmp_path, monkeypatch):
+    first = _make_store(tmp_path / "first")
+    second = _make_store(tmp_path / "second")
+    path = first._approved_path("telegram")
+    first._save_json(path, {"user1": {}})
+    assert first.is_approved("telegram", "user1")
+    assert not second.is_approved("telegram", "user1")
+    original = Path.open
+
+    def unreadable(self, *args, **kwargs):
+        if self == path:
+            raise PermissionError("permission revoked")
+        return original(self, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(Path, "open", unreadable)
+        assert not first.is_approved("telegram", "user1")
+    first._save_json(path, {"user2": {}})
+    assert not first.is_approved("telegram", "user1")
+    assert first.is_approved("telegram", "user2")

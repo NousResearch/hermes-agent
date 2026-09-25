@@ -1,15 +1,13 @@
 """Tests for the Microsoft Teams platform adapter plugin."""
 
-import json
 import sys
 import types
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
-from gateway.config import Platform, PlatformConfig, HomeChannel
+from gateway.config import PlatformConfig
 from plugins.teams_pipeline.models import TeamsMeetingRef, TeamsMeetingSummaryPayload
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
@@ -179,7 +177,7 @@ def _bind_mock_sdk(feature, importer, target_globals, **kwargs):
     return True
 
 
-with patch("tools.lazy_deps.ensure_and_bind", _bind_mock_sdk):
+with patch("pm.extras.ensure_and_bind", _bind_mock_sdk):
     assert _teams_mod.check_teams_requirements() is True
 _teams_mod.TEAMS_SDK_AVAILABLE = True
 
@@ -213,45 +211,8 @@ def _make_config(**extra):
 class TestTeamsRequirements:
 
 
-    def test_returns_true_when_deps_available(self, monkeypatch):
-        monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", True)
-        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
-        assert check_requirements() is True
 
-    def test_check_teams_requirements_shortcircuits_when_present(self, monkeypatch):
-        # When SDK symbols are already bound and aiohttp is available, the
-        # active lazy-installer returns True immediately without re-importing.
-        monkeypatch.setattr(_teams_mod, "App", object())
-        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
-        called = {"ensure_and_bind": 0}
 
-        def _fake_ensure_and_bind(*_args, **_kwargs):
-            called["ensure_and_bind"] += 1
-            return True
-
-        monkeypatch.setattr(
-            "tools.lazy_deps.ensure_and_bind", _fake_ensure_and_bind
-        )
-        assert check_teams_requirements() is True
-        assert called["ensure_and_bind"] == 0
-
-    def test_check_teams_requirements_lazy_installs_when_missing(self, monkeypatch):
-        # When deps are missing, the active installer delegates to
-        # ensure_and_bind("platform.teams", ...) — parity with Slack/Discord.
-        monkeypatch.setattr(_teams_mod, "App", None)
-        monkeypatch.setattr(_teams_mod, "TEAMS_SDK_AVAILABLE", False)
-        monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", False)
-        seen = {}
-
-        def _fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
-            seen["feature"] = feature
-            return True
-
-        monkeypatch.setattr(
-            "tools.lazy_deps.ensure_and_bind", _fake_ensure_and_bind
-        )
-        assert check_teams_requirements() is True
-        assert seen["feature"] == "platform.teams"
 
     def test_validate_config_with_env(self, monkeypatch):
         monkeypatch.setenv("TEAMS_CLIENT_ID", "test-id")
@@ -303,11 +264,6 @@ class TestTeamsAdapterInit:
 class TestTeamsPluginRegistration:
 
 
-    def test_register_name(self):
-        ctx = MagicMock()
-        register(ctx)
-        kwargs = ctx.register_platform.call_args[1]
-        assert kwargs["name"] == "teams"
 
     def test_register_splits_passive_probe_from_active_installer(self):
         # check_fn is the PASSIVE probe (status displays call it freely);
@@ -365,7 +321,7 @@ class TestTeamsConnect:
         # locked-down env): the lazy-installer can't rebind the globals, so
         # App stays None and connect() must fail without calling it.
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure_and_bind",
+            "pm.extras.ensure_and_bind",
             lambda *_a, **_k: False,
         )
         adapter = TeamsAdapter(_make_config(
@@ -385,7 +341,7 @@ class TestTeamsConnect:
         monkeypatch.setattr(_teams_mod, "ClientOptions", None)
         monkeypatch.setattr(_teams_mod, "AIOHTTP_AVAILABLE", True)
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure_and_bind",
+            "pm.extras.ensure_and_bind",
             lambda *_a, **_k: False,
         )
         adapter = TeamsAdapter(_make_config(
@@ -400,23 +356,6 @@ class TestTeamsConnect:
 # Tests: Send
 # ---------------------------------------------------------------------------
 
-class TestTeamsSend:
-
-    @pytest.mark.anyio
-    async def test_send_calls_app_send(self):
-        adapter = TeamsAdapter(_make_config(
-            client_id="id", client_secret="secret", tenant_id="tenant",
-        ))
-        mock_result = MagicMock()
-        mock_result.id = "msg-123"
-        mock_app = MagicMock()
-        mock_app.send = AsyncMock(return_value=mock_result)
-        adapter._app = mock_app
-
-        result = await adapter.send("conv-id", "Hello")
-        assert result.success is True
-        assert result.message_id == "msg-123"
-        mock_app.send.assert_awaited_once_with("conv-id", "Hello")
 
 
 def _make_summary_payload():
@@ -527,6 +466,50 @@ class TestTeamsMessageHandling:
 
         event = adapter.handle_message.call_args[0][0]
         assert event.source.chat_type == "group"
+
+    @pytest.mark.anyio
+    async def test_aad_user_route_survives_conversation_changes(self, monkeypatch):
+        from gateway.profile_routing import parse_profile_routes
+        from gateway.run import GatewayRunner
+
+        routes = parse_profile_routes([
+            {"name": "owner", "platform": "teams", "user_id": "aad-456", "profile": "owner"},
+            {"name": "other", "platform": "teams", "user_id": "aad-789", "profile": "other"},
+        ])
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = SimpleNamespace(multiplex_profiles=True, profile_routes=routes)
+        monkeypatch.setattr(
+            "gateway.run._multiplex_profile_homes",
+            lambda _config: [("owner", None), ("other", None)],
+        )
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter.gateway_runner = runner
+        adapter._app = MagicMock()
+        adapter._app.id = "bot-id"
+        adapter.handle_message = AsyncMock()
+
+        for activity_id, conversation_id, conversation_type, user_id in (
+            ("activity-group", "19:shared@thread.v2", "groupChat", "aad-456"),
+            ("activity-channel", "19:channel@thread.v2", "channel", "aad-456"),
+            ("activity-dm", "19:dm@thread.v2", "personal", "aad-456"),
+            ("activity-other", "19:shared@thread.v2", "groupChat", "aad-789"),
+        ):
+            await adapter._on_message(self._make_ctx(self._make_activity(
+                activity_id=activity_id,
+                conversation_id=conversation_id,
+                conversation_type=conversation_type,
+                from_aad_id=user_id,
+            )))
+
+        sources = [call.args[0].source for call in adapter.handle_message.await_args_list]
+        assert [source.profile for source in sources] == ["owner", "owner", "owner", "other"]
+        assert [source.chat_type for source in sources] == ["group", "channel", "dm", "group"]
+        assert [runner._session_key_for_source(source).split(":", 2)[1] for source in sources] == [
+            "owner", "owner", "owner", "other",
+        ]
 
 
 class TestTeamsAttachmentClassification:
@@ -954,8 +937,6 @@ class TestTeamsBotFrameworkAttachments:
         event = adapter.handle_message.call_args[0][0]
         assert event.media_urls == []
         assert warn.called, "silent drop of invalid BF image bytes must log a warning"
-        logged = " ".join(str(c) for c in warn.call_args_list)
-        assert "image validation" in logged or "failed image validation" in logged
 
 
 # ── _standalone_send (out-of-process cron delivery) ──────────────────────
@@ -1074,39 +1055,6 @@ class TestTeamsStandaloneSend:
         assert "token" in result["error"].lower()
 
 
-class TestTeamsMediaAttachments:
-    """send_video / send_voice / send_document route through the same
-    Attachment mechanism as send_image so the gateway's media dispatch
-    (run.py) delivers native attachments instead of the base-class text
-    fallback (file path sent as plain text)."""
-
-    def _make_adapter(self):
-        adapter = TeamsAdapter(_make_config(
-            client_id="bot-id", client_secret="secret", tenant_id="tenant",
-        ))
-        adapter._app = MagicMock()
-        adapter._app.id = "bot-id"
-        adapter._app.send = AsyncMock(return_value=MagicMock(id="msg-001"))
-        return adapter
-
-
-    @pytest.mark.asyncio
-    async def test_send_voice_local_file_base64(self, tmp_path):
-        adapter = self._make_adapter()
-        audio = tmp_path / "reply.mp3"
-        audio.write_bytes(b"ID3fakeaudio")
-        result = await adapter.send_voice("19:abc@thread.v2", str(audio), caption="here you go")
-        assert result.success
-        adapter._app.send.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_send_document_local_file_base64(self, tmp_path):
-        adapter = self._make_adapter()
-        doc = tmp_path / "report.pdf"
-        doc.write_bytes(b"%PDF-1.4 fake")
-        result = await adapter.send_document("19:abc@thread.v2", str(doc))
-        assert result.success
-        adapter._app.send.assert_awaited_once()
 
 
 

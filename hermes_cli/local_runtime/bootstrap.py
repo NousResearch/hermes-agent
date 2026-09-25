@@ -7,7 +7,7 @@ import-light: callers gate on config before importing so disabled sessions never
 
 from __future__ import annotations
 
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 import logging
 import os
 import signal
@@ -142,6 +142,28 @@ def refresh_local_runtime() -> bool:
         return False
 
 
+def _admitted_models_max(mdir: Path, configured: int) -> int:
+    """Residency cap to hand the router: derived from the hardware budget, ``models_max`` as a ceiling.
+
+    A cap of "four" on a card that holds one model is how a second child ends up paged (WDDM) and
+    silently slow — llama.cpp evicts its LRU before an incoming load only when the cap says the
+    card is full. A probe miss or an unpriceable model keeps the configured count: this must never
+    block a boot.
+    """
+    try:
+        from hermes_cli.local_runtime.hardware import probe_budget
+        from hermes_cli.local_runtime.presets import admitted_residency_count
+
+        cap = admitted_residency_count(mdir, probe_budget(planning=True), configured)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("residency cap probe failed (%s); using models_max=%s", exc, configured)
+        return configured
+    if cap != configured:
+        logger.info("residency cap: %s resident model(s) on this card (models_max=%s)",
+                    cap, configured)
+    return cap
+
+
 def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
     """Write the launch-policy INI for every staged model; returns the path to hand the router.
 
@@ -173,6 +195,75 @@ def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
         return None
 
 
+def _try_lock_boot_fd(fd: int) -> bool:
+    """Non-blocking exclusive attempt; portable across fcntl/msvcrt."""
+    if os.name == "nt":
+        import msvcrt
+
+        if os.fstat(fd).st_size == 0:
+            os.write(fd, b"\0")
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    else:
+        import fcntl
+
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+
+
+def _unlock_boot_fd(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextmanager
+def _cross_process_boot_lock(timeout_s: float = 130.0):
+    """Serialize the state-check-then-spawn sequence across every Hermes process on this
+    machine — the ``_SUPERVISOR`` singleton above only rules out a race within ONE process.
+    Two profiles booting in the same second each see no ``server.json`` yet and each spawn a
+    router on the stable port (#116682); an OS-held lock makes the second caller wait for the
+    first to publish its state file, so it re-checks and adopts instead of spawning a duplicate.
+    Bounded, not indefinite: never hang session start dead if the lock is somehow stuck, and
+    never raise into session start: an unwritable runtimes dir (or a foreign-owned lock file)
+    proceeds unlocked with a warning, like the contention timeout."""
+    path = runtimes_root() / "boot.lock"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError as exc:
+        logger.warning("boot lock unavailable (%s); proceeding without it", exc)
+        yield
+        return
+    try:
+        deadline = time.monotonic() + timeout_s
+        while not _try_lock_boot_fd(fd):
+            if time.monotonic() >= deadline:
+                logger.warning("boot lock contended past %.0fs; proceeding without it", timeout_s)
+                break
+            time.sleep(0.2)
+        try:
+            yield
+        finally:
+            with suppress(OSError):
+                _unlock_boot_fd(fd)
+    finally:
+        os.close(fd)
+
+
 def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     """Idempotent boot of the managed runtime. Returns the supervisor (or None when
     disabled/unavailable). Never raises into a session start — failures log and return None; chat
@@ -195,64 +286,54 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
     # download serves the new model with no policy at all (--models-autoload + stock fit). A stale
     # incumbent gets stopped and replaced by a fresh boot with regenerated presets; sessions ride
     # through like any other supervised restart (stable port + persisted key).
+    #
+    # The state check and the spawn below run under a cross-process lock: two backends racing
+    # to boot (#116682) must not both find no state file and both spawn a router on the stable
+    # port — the loser waits here, then re-checks state and adopts the winner's server instead.
     from hermes_cli.local_runtime.endpoint import _state_endpoint
 
-    state = _state_endpoint()
-    if state is not None:
-        if not _presets_stale():
-            logger.info("managed llama-server already running (another process)")
-            return None
-        logger.info("running server's presets predate the staged models; "
-                    "replacing it so every model launches with a policy")
-        _stop_state_server(state)
-
-    try:
-        from hermes_cli.local_runtime.binaries import (
-            default_tag, ensure_runtime_installed, installed_tags, select_backend)
-        from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
-
-        backend = section.get("backend", "auto")
-        if backend == "auto":
-            backend = select_backend(_detect_gpu_vendor())
-        # Boot ladder: serve what is INSTALLED, never download here. The configured tag is
-        # preferred; when it isn't installed yet, the newest installed tag serves and the status
-        # endpoint reports the pending update — the download is a deliberate click in the pane,
-        # not a boot-path surprise (a multi-minute inline download here is exactly how the
-        # onboarding bounce returns).
-        tag = section.get("tag") or default_tag()
-        have = installed_tags()
-        if tag not in have:
-            if not have:
-                logger.info("local runtime enabled but no build installed; "
-                            "install happens in the Local Models pane")
+    with _cross_process_boot_lock():
+        state = _state_endpoint()
+        if state is not None:
+            if not _presets_stale():
+                logger.info("managed llama-server already running (another process)")
                 return None
-            logger.info("configured tag %s not installed; serving %s "
-                        "(update is a click in Local Models)", tag, have[0])
-            tag = have[0]
-        install_dir = ensure_runtime_installed(tag, backend)
+            logger.info("running server's presets predate the staged models; "
+                        "replacing it so every model launches with a policy")
+            _stop_state_server(state)
 
-        mdir = models_dir()
-        mdir.mkdir(parents=True, exist_ok=True)
-        preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
-
-        sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
-                                    models_max=int(section.get("models_max", 4)),
-                                    port=int(section.get("port", 0)) or None)
         try:
-            sup.start()
-        except Exception:
-            # start() can fail after the router process exists (health timeout): leaving it
-            # running unsupervised strands its VRAM behind a port nothing will clean up.
-            with suppress(Exception):
-                sup.stop()
-            raise
-        _SUPERVISOR = sup
-        logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url, backend, tag)
-        _start_idle_sweeper(sup)
-        return sup
-    except Exception as exc:  # noqa: BLE001 — never break session start
-        logger.warning("managed local runtime unavailable: %s", exc)
-        return None
+            from hermes_cli.local_runtime.binaries import installed_engine
+            from hermes_cli.local_runtime.supervisor import LlamaServerSupervisor
+
+            engine = installed_engine(section.get("backend", "auto"))
+            if engine is None:
+                logger.info("local runtime enabled but no PM engine installed; use the Local Models pane")
+                return None
+
+            mdir = models_dir()
+            mdir.mkdir(parents=True, exist_ok=True)
+            preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
+
+            sup = LlamaServerSupervisor(engine.binary, mdir, preset_path=preset_path,
+                                        models_max=_admitted_models_max(
+                                            mdir, int(section.get("models_max", 4))),
+                                        port=int(section.get("port", 0)) or None)
+            try:
+                sup.start()
+            except Exception:
+                # start() can fail after the router process exists (health timeout): leaving it
+                # running unsupervised strands its VRAM behind a port nothing will clean up.
+                with suppress(Exception):
+                    sup.stop()
+                raise
+            _SUPERVISOR = sup
+            logger.info("managed llama-server up at %s (backend=%s tag=%s)", sup.base_url, engine.backend, engine.tag)
+            _start_idle_sweeper(sup)
+            return sup
+        except Exception as exc:  # noqa: BLE001 — never break session start
+            logger.warning("managed local runtime unavailable: %s", exc)
+            return None
 
 
 def shutdown_local_runtime() -> None:

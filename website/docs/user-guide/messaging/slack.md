@@ -363,7 +363,7 @@ If you maintain your Slack manifest by hand and just want the slash
 command list:
 
 ```bash
-hermes slack manifest --slashes-only > /tmp/slashes.json
+hermes slack manifest --slashes-only > ~/.hermes/cache/scratch/slashes.json
 ```
 
 Paste that array into the `features.slash_commands` key of your
@@ -816,7 +816,7 @@ slack:
 After gateway config changes, deploys, or restarts, run this synthetic smoke target:
 
 ```bash
-uv run --frozen pytest -q tests/gateway/test_slack_peer_agent_smoke.py -o addopts=''
+scripts/run_tests.sh tests/gateway/test_slack_peer_agent_smoke.py -q
 ```
 
 This target uses in-process synthetic Slack events only. It does not send live Slack messages and does not require real bot tokens by default.

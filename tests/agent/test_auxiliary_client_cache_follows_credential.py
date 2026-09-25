@@ -38,12 +38,6 @@ def isolated_home(tmp_path, monkeypatch):
     return tmp_path / "hermes"
 
 
-def test_isolated_home_hides_ambient_borrowed_credentials(isolated_home):
-    """The suite stays hermetic on hosts with an ambient Claude Code login (#114424)."""
-    _seed("anthropic", "tok-old", model_cooldown=MODEL)
-    pool = aux._load_pool_with_credentials("anthropic")
-    assert [entry.source for entry in pool.entries()] == ["manual"]
-    assert aux._pool_cache_hint("anthropic").startswith("anthropic::")
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai-codex"])

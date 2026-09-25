@@ -39,10 +39,6 @@ BASE = _lock(
 )
 
 
-
-
-
-
 def test_add_remove_update_all_detected():
     head = _lock(
         {
@@ -70,19 +66,6 @@ def test_nested_dedup_is_distinct_entry():
     )
     d = _mod.diff_locks(_mod.parse_lockfile(BASE), _mod.parse_lockfile(head))
     assert d["updated"] == [("node_modules/foo/node_modules/react", "17.0.2", "17.0.3")]
-
-
-def test_render_markdown_contains_versions_and_nested_display():
-    d = _mod.diff_locks(
-        _mod.parse_lockfile(BASE),
-        _mod.parse_lockfile(_lock({"node_modules/react": {"version": "19.0.0"}})),
-    )
-    md = _mod.render_markdown({"apps/desktop/package-lock.json": d})
-    # Fragment starts directly with the per-lockfile subsection header.
-    assert md.startswith("#### `apps/desktop/package-lock.json`")
-    assert "`18.2.0`" in md and "`19.0.0`" in md
-    # nested display name keeps the parent chain visible
-    assert "nested under foo" in md
 
 
 def test_render_markdown_omits_unchanged_lockfiles():

@@ -64,6 +64,29 @@ This matters on messaging platforms (Telegram, Discord, etc.), where a chat is d
 
 **Practice:** run `/new` at natural boundaries — a finished task, a change of topic, the start of a day. Each boundary is when memory pays off: the agent re-reads the updated `MEMORY.md`/`USER.md` snapshot, starts from a cheap short context, and reaches for `session_search` when it actually needs history. On the CLI this mostly takes care of itself (every invocation is a new session); on gateways the boundary is yours to create.
 
+## Troubleshooting: "I told it to remember, and the next session it forgot"
+
+The most common report looks like this: you tell the agent where something lives (an Obsidian vault, a project directory, a server), it answers "Done, I'll remember that", and a fresh session has no idea what you mean. Work through these in order — the first one explains the large majority of cases.
+
+1. **Check whether the write actually happened.** Memory only persists when the model *calls the `memory` tool*; a sentence like "I've added that to my memory" is just text. Open the file and look for the entry:
+
+   ```bash
+   cat ~/.hermes/memories/MEMORY.md
+   cat ~/.hermes/memories/USER.md
+   ```
+
+   If the fact is not there, the model claimed a save it never made. Small local models (roughly under 30B parameters) and models with weak tool-calling do this often — they produce the confirmation without the tool call. Ask explicitly ("use the `memory` tool to save the vault path `/srv/vault`") and confirm the entry landed in the file. If it keeps happening, the fix is a stronger model for setup, not more instructions; once the entries exist, a smaller model reads them fine because they arrive in the system prompt.
+
+2. **Check the write wasn't staged.** With `write_approval: true`, writes outside the interactive CLI are held for review and never reach the file until approved — run `/memory pending` and `/memory approve all`. See [Controlling memory writes](#controlling-memory-writes-write_approval).
+
+3. **Check you are reading the same memory you wrote.** Memory is per [profile](../profiles.md): `hermes -p work` (or `work chat` / `work gateway start`) reads `~/.hermes/profiles/work/memories/`, not `~/.hermes/memories/`. A CLI session in the default profile and a Telegram bot on another profile do not share notes. `hermes profile list` shows what exists.
+
+4. **Check memory is enabled.** `memory.memory_enabled: false` (or `memory` under `agent.disabled_toolsets`) removes the tool entirely — the model cannot save anything, whatever it says. See [Configuration](#configuration).
+
+5. **Remember the snapshot is frozen at session start.** A fact saved in the current session is visible to the *next* session, not to another session that was already running. Start a new session (`/new`, or a fresh CLI invocation) after the write.
+
+Two things that do **not** make the agent remember: variables in `.env` (those are credentials and settings, not memory) and facts mentioned in passing without asking for them to be saved. For a location the agent needs on every run of a recurring task, a [skill](./skills.md) is often the better home than a memory entry — it loads only when relevant and does not compete for the 2,200-character budget.
+
 ## Memory Tool Actions
 
 The agent uses the `memory` tool with these actions:
@@ -86,6 +109,8 @@ memory(action="replace", target="memory",
 ```
 
 If the substring matches multiple entries, an error is returned asking for a more specific match.
+
+`replace` overwrites the **whole matched entry** with `content` — `old_text` only locates the entry, it is not cut out and replaced. The new `content` must be the complete new entry, including every part of the old one you want to keep. (A whole-entry `old_text` equal to the entry itself is matched exactly and wins over substring matches.)
 
 ## Two Targets Explained
 
@@ -232,7 +257,7 @@ Beyond viewing, the journey is also where you **prune and correct** what Hermes 
 
 | Command | What it does |
 |---------|--------------|
-| `hermes journey list` | List node ids — skill names and `memory:<source>:<index>` ids for memory chunks. |
+| `hermes journey list` | List node ids — skill names and `memory:<source>:<index>:<fingerprint>` ids for memory chunks (pass one back exactly as printed). |
 | `hermes journey delete <node> [-y]` | Delete a node. Skills are **archived** (restorable), memory chunks are removed. `-y` skips the confirmation. |
 | `hermes journey edit <node>` | Open the node's content (a skill's `SKILL.md` or the memory chunk) in `$EDITOR`. |
 
@@ -291,6 +316,14 @@ Review staged writes from the CLI or any messaging platform:
 This is the answer to "the agent saved a wrong assumption about me": set
 `write_approval: true`, and every save — especially the unprompted background
 ones — waits for your yes/no before it ever enters your profile.
+
+A staged `replace` or `remove` (the background review stages these even with the
+gate off) records the full entry it targets, and `/memory pending` shows it.
+Approval applies to exactly that entry: if it changed after the write was staged,
+the write is refused and stays pending for you to reject. A `replace`/`remove`
+staged before this pinning existed has no verifiable target and is refused too:
+reject it and recreate the change. `/memory approve` lists the full text of
+every entry it overwrote or removed.
 
 ## Background review notifications (`display.memory_notifications`)
 
@@ -368,6 +401,26 @@ auxiliary:
 
 With `enabled: false`, automatic post-turn forks do not spawn; manual
 `/refine` still works.
+
+### Capping review cost (`max_input_tokens`)
+
+The review loop replays the conversation on every provider request it makes,
+so a single review can multiply input tokens across its tool iterations.
+`max_input_tokens` caps the SUM of replayed input tokens for one review; the
+loop stops before crossing it. `<= 0` means unlimited.
+
+```yaml
+auxiliary:
+  background_review:
+    max_input_tokens: 48000  # <= 0 = unlimited
+```
+
+When the key is unset, the budget is derived from the review model's resolved
+context window: 75% of the window, capped at 600,000 tokens — so it also binds
+on small local models (a 65,536-token model gets 49,152), where a fixed
+cloud-scale default would never bite. If the window cannot be resolved, a
+conservative 120,000-token fallback applies. Note the key lives under
+`auxiliary:`; a top-level `background_review:` block is not read.
 
 Fork usage is persisted in `session_model_usage` with `task='background_review'`
 and a completion line is written to `agent.log`
@@ -454,7 +507,7 @@ Full details in [Gating agent skill writes](./skills.md#gating-agent-skill-write
 
 ## External Memory Providers
 
-For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 8 external memory provider plugins — including Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, and Supermemory.
+For deeper, persistent memory that goes beyond MEMORY.md and USER.md, Hermes ships with 7 external memory provider plugins — Honcho, OpenViking, Mem0, Holographic, RetainDB, ByteRover, and Supermemory — and more, such as Hindsight, are available from the [plugin catalog](plugins.md) via `hermes plugins install <name>`.
 
 External providers run **alongside** built-in memory (never replacing it) and add capabilities like knowledge graphs, semantic search, automatic fact extraction, and cross-session user modeling.
 

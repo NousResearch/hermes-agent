@@ -166,9 +166,9 @@ Bot 间投递是按次调用的：接收方 Bot 会在它下一次运行时取�
 ```bash
 hermes peer add spark --url http://spark.lan:8377 --key <API_SERVER_KEY>
 hermes peer list
-hermes peer dm spark < /tmp/dm.txt        # 消息内容来自一个文件(不经过 shell 解释)
-hermes peer dm spark/researcher < /tmp/dm.txt   # 多路复用 peer 上的指定 profile
-hermes peer run spark --idempotency-key ticket-123 < /tmp/long-task.txt
+hermes peer dm spark < ~/.hermes/cache/scratch/dm.txt        # 消息内容来自一个文件(不经过 shell 解释)
+hermes peer dm spark/researcher < ~/.hermes/cache/scratch/dm.txt   # 多路复用 peer 上的指定 profile
+hermes peer run spark --idempotency-key ticket-123 < ~/.hermes/cache/scratch/long-task.txt
 hermes peer status spark run_abc123
 hermes peer stop spark run_abc123
 ```

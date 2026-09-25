@@ -100,15 +100,20 @@ def _kill_port_process(port: int) -> None:
                     os.kill(pid, signal.SIGTERM)
 
 
-def _bridge_pid_is_ours(pid: int, session_path: Path, expected_start) -> bool:
-    """``pid`` alive AND still our bridge: kernel start time (definitive), else legacy ``node`` + session path in cmdline."""
+def _bridge_pid_is_ours(pid: int, expected_start) -> bool:
+    """``pid`` alive AND still our bridge: kernel start time (definitive); fail closed without it.
+
+    Legacy pidfiles record only the PID. The old fallback accepted a ``node`` + session-path cmdline
+    substring as kill evidence — but a log tail, editor, or grep that merely *mentions* the session
+    path matches that same substring (#116883), so a legacy pidfile could signal a stranger. Without
+    a start-time fingerprint the caller must reap via the bridge-port scan instead.
+    """
     from gateway import status
     if not status._pid_exists(pid):
         return False
-    if expected_start is not None:
-        return status.get_process_start_time(pid) == expected_start
-    cmdline = status._read_process_cmdline(pid)
-    return bool(cmdline) and ("node" in cmdline) and (str(session_path) in cmdline)
+    if expected_start is None:
+        return False
+    return status.get_process_start_time(pid) == expected_start
 
 
 def _unlink_quietly(path: Path) -> None:
@@ -122,20 +127,27 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     pid_file = session_path / "bridge.pid"
     if not pid_file.exists():
         return
-    try:  # Line 1 = pid, optional line 2 = kernel start time (legacy files: pid only).
-        lines = [ln.strip() for ln in pid_file.read_text(encoding="utf-8").split("\n")]
-        pid = int(lines[0])
-        recorded_start = int(lines[1]) if len(lines) > 1 and lines[1] else None
+    pid = None
+    recorded_start = None
+    try:
+        # Format: line 1 = pid, optional line 2 = kernel start time. Legacy
+        # files written before the guard existed have only the pid.
+        lines = pid_file.read_text(encoding="utf-8-sig").split("\n")
+        pid = int(lines[0].strip())
+        if len(lines) > 1 and lines[1].strip():
+            recorded_start = int(lines[1].strip())
     except (ValueError, OSError, TypeError, IndexError):
         _unlink_quietly(pid_file)
         return
-    if _bridge_pid_is_ours(pid, session_path, recorded_start):
+    if _bridge_pid_is_ours(pid, recorded_start):
         with suppress(OSError):  # ProcessLookupError / PermissionError included
             os.kill(pid, signal.SIGTERM)
             logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
     elif _pid_exists(pid):
-        logger.warning("[whatsapp] Not killing pidfile PID %d: it is no longer the bridge (recycled onto an unrelated process); "
-                       "skipping to avoid killing a stranger.", pid)
+        reason = ("legacy pidfile lacks a start-time fingerprint and cmdline substring evidence can name a stranger"
+                  if recorded_start is None else "it is no longer the bridge (recycled onto an unrelated process)")
+        logger.warning("[whatsapp] Not killing pidfile PID %d: %s; "
+                       "skipping to avoid killing a stranger.", pid, reason)
     _unlink_quietly(pid_file)
 
 
@@ -212,10 +224,19 @@ def _file_content_hash(path: Path) -> str:
 
 
 def check_whatsapp_requirements() -> bool:
-    """Node.js (Hermes-managed first, so a bad system Node on PATH can't break Windows) is available."""
+    """
+    Check if WhatsApp dependencies are available.
+
+    WhatsApp requires a Node.js bridge for most implementations.
+    """
     _node = find_node_executable("node")
+    if not _node:
+        from pm import lazy_installs_allowed
+
+        # Let connect prepare a missing runtime, but never install during discovery.
+        return lazy_installs_allowed()
     try:
-        return bool(_node) and subprocess.run([_node, "--version"], timeout=5, **_RUN_TEXT).returncode == 0
+        return subprocess.run([_node, "--version"], timeout=5, env=with_hermes_node_path(), **_RUN_TEXT).returncode == 0
     except Exception:
         return False
 
@@ -225,7 +246,7 @@ _BRIDGE_PASSTHROUGH_ENV = (
     "WHATSAPP_ALLOWED_USERS", "WHATSAPP_ALLOW_FROM", "WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY",
     "WHATSAPP_GROUP_ALLOWED_USERS", "WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_REQUIRE_MENTION",
     "WHATSAPP_MENTION_PATTERNS", "WHATSAPP_FREE_RESPONSE_CHATS", "WHATSAPP_DEBUG",
-    "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_REPLY_PREFIX", "WHATSAPP_MAX_MESSAGE_LENGTH",
+    "WHATSAPP_FORWARD_OWNER_MESSAGES", "WHATSAPP_MAX_MESSAGE_LENGTH",
     "WHATSAPP_CHUNK_DELAY_MS", "WHATSAPP_SEND_TIMEOUT_MS",
 )
 _TEXT_INJECT_EXTS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log", ".py", ".js", ".ts", ".html", ".css"}
@@ -275,7 +296,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._dm_policy = str(_extra_or_secret(extra, "dm_policy", "WHATSAPP_DM_POLICY", "pairing")).strip().lower()
         self._allow_from = self._coerce_allow_list(self._select_dm_allowlist(extra, ("WHATSAPP_ALLOWED_USERS",), _wenv))
         self._group_policy = str(_extra_or_secret(extra, "group_policy", "WHATSAPP_GROUP_POLICY", "pairing")).strip().lower()
-        self._group_allow_from = self._coerce_allow_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
+        # Same precedence as the DM list. Until #72529 the env carrier only reached the Node bridge, so
+        # env-only installs gated groups on an empty allowlist.
+        _, raw_groups = self._select_allowlist(
+            extra, ("group_allow_from", "groupAllowFrom"), ("WHATSAPP_GROUP_ALLOW_FROM", "WHATSAPP_GROUP_ALLOWED_USERS"), _wenv)
+        self._group_allow_from = self._coerce_allow_list(raw_groups)
         rr = extra.get("send_read_receipts", False)
         self._send_read_receipts = rr if isinstance(rr, bool) else str(rr or "").strip().lower() in {"1", "true", "yes", "on"}
         self._mention_patterns = self._compile_mention_patterns()
@@ -284,17 +309,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Set by disconnect() before SIGTERMing so _check_managed_bridge_exit() can tell an intentional exit (-15/-2/0) from a crash.
         self._shutting_down = False
         # Text debounce batching: rapid bursts (forwards, paste-splits) would otherwise each trigger a separate agent turn.
-        self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 5.0)
-        self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 10.0)
-
-    def _coerce_float_extra(self, key: str, default: float) -> float:
-        """Read a float from ``config.extra``; NaN/Inf/negative/unparseable → ``default`` (fed to asyncio.sleep)."""
-        import math
-        try:  # float(None) → TypeError → default
-            parsed = float(self.config.extra.get(key) if getattr(self.config, "extra", None) else None)
-        except (TypeError, ValueError):
-            return float(default)
-        return parsed if math.isfinite(parsed) and parsed >= 0 else float(default)
+        # Telegram cadence and ceilings (#44883); ``0`` dispatches each message immediately.
+        self._configure_text_batch_delays()
 
     def _bridge_url(self, path: str) -> str:
         return f"http://127.0.0.1:{self._bridge_port}/{path}"
@@ -320,17 +336,25 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         _dep_stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"  # holds the package.json hash of the last install
         _pkg_hash = _file_content_hash(bridge_dir / "package.json")
         try:
-            if (bridge_dir / "node_modules").exists() and _dep_stamp.read_text(encoding="utf-8").strip() == _pkg_hash and bool(_pkg_hash):
+            if (bridge_dir / "node_modules").exists() and _dep_stamp.read_text(encoding="utf-8-sig").strip() == _pkg_hash and bool(_pkg_hash):
                 return True
         except OSError:
             pass
         print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
-        # Hermes-managed portable Node's npm.cmd first (Windows), then PATH.
-        _npm_bin = find_node_executable("npm") or "npm"
         detail = ""
         try:  # Default 300s accommodates slow systems like an Unraid NAS.
+            import pm
+
+            _npm_bin = find_node_executable("npm")
+            env = with_hermes_node_path()
+            if _npm_bin is None:
+                env = pm.ensure("npm").env
+                installed = pm.installed_package("npm")
+                if installed is None or installed.binary is None:
+                    raise pm.InstallError("npm", "ensured but no selected binary was recorded")
+                _npm_bin = str(installed.binary)
             install_result = subprocess.run([_npm_bin, "install", "--silent"], cwd=str(bridge_dir), timeout=env_int("WHATSAPP_NPM_INSTALL_TIMEOUT", 300),
-                                            env=with_hermes_node_path(), **_RUN_TEXT)
+                                            env=env, **_RUN_TEXT)
             if install_result.returncode == 0:
                 print(f"[{self.name}] Dependencies installed")
                 with suppress(OSError):  # Stamp is an optimization; install still succeeded
@@ -338,11 +362,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         _dep_stamp.write_text(_pkg_hash, encoding="utf-8")
                 return True
             print(f"[{self.name}] npm install failed: {install_result.stderr}")
+            detail = f" ({install_result.stderr.strip()[-500:]})" if install_result.stderr else ""
         except Exception as e:
             print(f"[{self.name}] Failed to install dependencies: {e}")
             detail = f" ({e})"
-        self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge npm install failed{detail}. Run `cd {bridge_dir} && {_npm_bin} install` "
-                              "manually, then restart `hermes gateway`.", retryable=False)
+        self._set_fatal_error("whatsapp_npm_install_failed", f"WhatsApp bridge npm install failed{detail}. "
+                              "Run `hermes whatsapp`, then restart `hermes gateway`.", retryable=False)
         return False
 
     def _attach_to_bridge(self, managed_process) -> None:
@@ -380,8 +405,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # that copy carries the DEFAULT profile's WHATSAPP_* values, so every bridge-consumed key is
         # re-resolved from this profile (dropped on a scoped miss), never inherited from the launch env.
         bridge_env = with_hermes_node_path()
-        if self._reply_prefix is not None:
+        reply_prefix = _wenv("WHATSAPP_REPLY_PREFIX")
+        if reply_prefix:
+            bridge_env["WHATSAPP_REPLY_PREFIX"] = reply_prefix
+        elif self._reply_prefix is not None:
             bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+        else:
+            bridge_env.pop("WHATSAPP_REPLY_PREFIX", None)
         bridge_env["WHATSAPP_SEND_READ_RECEIPTS"] = "true" if self._send_read_receipts else "false"
         for _key, _v in [("WHATSAPP_MODE", _wenv("WHATSAPP_MODE", "self-chat"))] + [(k, _wenv(k)) for k in _BRIDGE_PASSTHROUGH_ENV]:
             if _v:
@@ -392,11 +422,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # adapter resolved (scoped env → this profile's YAML → default), or a secondary's YAML
         # ``dm_policy: pairing`` runs under the default profile's allowlist and drops valid pairing DMs.
         bridge_env["WHATSAPP_DM_POLICY"] = self._dm_policy
-        allowed = ",".join(sorted(self._allow_from))
-        if allowed:
-            bridge_env["WHATSAPP_ALLOWED_USERS"] = allowed
-        else:
-            bridge_env.pop("WHATSAPP_ALLOWED_USERS", None)
+        bridge_env["WHATSAPP_GROUP_POLICY"] = self._group_policy
+        for env_key, ids in (("WHATSAPP_ALLOWED_USERS", self._allow_from), ("WHATSAPP_GROUP_ALLOWED_USERS", self._group_allow_from)):
+            if ids:
+                bridge_env[env_key] = ",".join(sorted(ids))
+            else:
+                bridge_env.pop(env_key, None)
         # Without these the bridge hardcodes ~/.hermes/{image,audio,document}_cache (wrong under HERMES_HOME/profiles/cache layout).
         img_dir, audio_dir, _video_dir, doc_dir = _cache_dirs()
         bridge_env.update(HERMES_IMAGE_CACHE_DIR=str(img_dir), HERMES_AUDIO_CACHE_DIR=str(audio_dir), HERMES_DOCUMENT_CACHE_DIR=str(doc_dir))
@@ -470,6 +501,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start (or adopt) the Node.js bridge and wait for it to be ready."""
+        if find_node_executable("node") is None:
+            import pm
+
+            try:
+                await asyncio.to_thread(pm.ensure, "node")
+            except pm.InstallError as exc:
+                self._set_fatal_error("whatsapp_node_missing", str(exc), retryable=False)
+                return False
         if not self._preflight():
             return False
         bridge_path = Path(self._bridge_script)
@@ -492,8 +531,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
             self._bridge_log_fh = bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
+            node = find_node_executable("node")
+            if node is None:
+                raise RuntimeError("Node.js is no longer available; run `hermes pm install`")
             self._bridge_process = subprocess.Popen(
-                [find_node_executable("node") or "node", str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
+                [node, str(bridge_path), "--port", str(self._bridge_port), "--session", str(self._session_path),
                  "--mode", _wenv("WHATSAPP_MODE", "self-chat")], stdout=bridge_log_fh, stderr=bridge_log_fh, env=self._bridge_env(), **windows_detach_popen_kwargs())
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             if not await self._wait_for_bridge():
@@ -625,7 +667,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # knows inbound media only, so index our own sends (the cron-delivered image case).
             from gateway import rich_sent_store
             mime = mimetypes.guess_type(file_path)[0] or _MEDIA_INFO.get(_MEDIA_TYPE_BY_BRIDGE_KIND.get(media_type), ("", ""))[1]
-            rich_sent_store.record_media(jid, result.message_id, [(file_path, mime or "application/octet-stream")])
+            await rich_sent_store.record_media_async(jid, result.message_id, [(file_path, mime or "application/octet-stream")])
         return result
 
     @_needs_bridge
@@ -790,7 +832,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if file_size > _MAX_TEXT_INJECT_BYTES:
                     print(f"[{self.name}] Skipping text injection for {doc_path} ({file_size} bytes > {_MAX_TEXT_INJECT_BYTES})", flush=True)
                     continue
-                content = p.read_text(encoding="utf-8", errors="replace")
+                content = p.read_text(encoding="utf-8-sig", errors="replace")
                 parts = p.name.split("_", 2)  # strip the doc_<hex>_ prefix for display
                 injection = f"[Content of {parts[2] if len(parts) >= 3 else p.name}]:\n{content}"
                 body = f"{injection}\n\n{body}" if body else injection

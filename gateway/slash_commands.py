@@ -92,6 +92,16 @@ def _nested_dict(root: dict, *keys: str) -> dict:
     return root
 
 
+def _write_raw_config_leaf(config_path: Path, keys: tuple, value) -> None:
+    """Set one leaf through a strict raw round-trip. The behavioral read is fail-open (``{}``) and
+    expanded, so writing it back wipes the file after a read error and persists ``${VAR}`` values."""
+    from hermes_cli.config import read_user_config_raw
+    raw = read_user_config_raw(config_path)
+    *parents, leaf = keys
+    _nested_dict(raw, *parents)[leaf] = value
+    atomic_config_write(config_path, raw)
+
+
 def _preview(text: str, limit: int = 60) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
 
@@ -215,7 +225,7 @@ class GatewaySlashCommandsMixin(
         OWN transport (profile-aware, fail-closed) — ``self.adapters`` is the default profile's map."""
         if not event.source:
             return None, None
-        return self._adapter_for_source(event.source), self._session_key_for_source(event.source)
+        return self._delivery_adapter_for(event.source), self._session_key_for_source(event.source)
 
     def _telegramized_command_reply(self, event: MessageEvent, text: str) -> str:
         from gateway.run import _telegramize_command_mentions
@@ -259,7 +269,7 @@ class GatewaySlashCommandsMixin(
         (WeCom msgtype:"stream"), which need it sent directly with control-lane metadata (reliable
         proactive send, not the finalized reply stream). ``is not True``: mocks auto-create attrs."""
         source = event.source
-        adapter = self._adapter_for_source(source)  # the receiving bot, not the default profile's
+        adapter = self._delivery_adapter_for(source)  # the receiving bot, not the default profile's
         if adapter:
             adapter.resume_typing_for_chat(source.chat_id)  # agent is about to continue
         if getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False) is not True:
@@ -458,7 +468,13 @@ class GatewaySlashCommandsMixin(
                         reason, session_key, len(fallback_keys), ", ".join(fallback_keys))
             return EphemeralReply(t("gateway.stop.stopped"))
 
-        # No running agent anywhere for this scope. A platform status indicator can still be stuck —
+        # No running agent anywhere for this scope. Background delegations the session dispatched in an
+        # earlier turn still count as "active": stop them; each returns as an interrupted completion.
+        from tools.async_delegation import interrupt_for_session
+        if interrupt_for_session(session_key=session_key, reason="stop_command",
+                                 parent_session_id=str(getattr(session_entry, "session_id", "") or "")):
+            return EphemeralReply(t("gateway.stop.stopped"))
+        # A platform status indicator can still be stuck —
         # e.g. Slack's persistent assistant.threads.setStatus survives a gateway restart or a turn
         # that died without a final send.
         # Best-effort clear so /stop always dismisses a phantom "is thinking...". See #32295.
@@ -579,14 +595,29 @@ class GatewaySlashCommandsMixin(
         """Handle /version — show the running Hermes Agent version."""
         return _execute("version").text
 
+    def _catalog_options(self, event: MessageEvent) -> dict:
+        """``allowed_commands`` for /help and /commands when the caller is a gated non-admin:
+        the slash-access floor + ``user_allowed_commands`` (mirrors /whoami), so the catalog
+        never advertises commands ``_check_slash_access`` would refuse. Admins / ungated -> {}."""
+        from gateway.slash_access import policy_for_source
+        source = event.source
+        # ``getattr``: partially-constructed runners (``GatewayRunner.__new__`` in tests) have
+        # no ``config``; policy_for_source treats None as ungated.
+        policy = policy_for_source(getattr(self, "config", None), source)
+        if policy.enabled and not policy.is_admin(source.user_id if source else None):
+            return {"allowed_commands": {"help", "whoami", *policy.user_allowed_commands}}
+        return {}
+
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
-        return self._telegramized_command_reply(event, _execute("help").text)
+        return self._telegramized_command_reply(
+            event, _execute("help", options=self._catalog_options(event)).text)
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         # Page size is a surface parameter (Telegram messages are shorter).
         page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
-        reply = _execute("commands", args=event.get_command_args(), options={"page_size": page_size})
+        options = {"page_size": page_size, **self._catalog_options(event)}
+        reply = _execute("commands", args=event.get_command_args(), options=options)
         return self._telegramized_command_reply(event, reply.text)
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
@@ -600,7 +631,7 @@ class GatewaySlashCommandsMixin(
             return t("gateway.set_home.save_failed", error="Missing logical platform")
         via_relay = getattr(source, "delivered_via_upstream_relay", False) is True
         if via_relay:
-            adapter_for_source = getattr(self, "_adapter_for_source", None)
+            adapter_for_source = getattr(self, "_intake_adapter_for", None)
             relay_adapter = adapter_for_source(source) if callable(adapter_for_source) else None
             fronts_platform = getattr(relay_adapter, "fronts_platform", None)
             if (source.platform in {None, Platform.LOCAL, Platform.RELAY}
@@ -641,7 +672,7 @@ class GatewaySlashCommandsMixin(
         # independent /voice state.
         # See #75198.
         voice_key = self._voice_key_for_source(event.source)
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
 
         def _set_mode(mode: str) -> None:
             self._voice_mode[voice_key] = mode
@@ -839,7 +870,7 @@ class GatewaySlashCommandsMixin(
         except Exception:
             parent_agent = None
         _thread_metadata = self._reply_metadata(event)
-        adapter = self._adapter_for_source(source)
+        adapter = self._delivery_adapter_for(source)
         preview = _preview(question)
 
         async def _run_side_question() -> None:
@@ -948,8 +979,7 @@ class GatewaySlashCommandsMixin(
         new_mode = cycle[(cycle.index(current if current in cycle else "all") + 1) % len(cycle)]
         description = t(f"gateway.verbose.mode_{new_mode}")
         try:
-            _nested_dict(user_config, "display", "platforms", platform_key)["tool_progress"] = new_mode
-            atomic_config_write(config_path, user_config)
+            _write_raw_config_leaf(config_path, ("display", "platforms", platform_key, "tool_progress"), new_mode)
             return f"{description}\n" + t("gateway.verbose.saved_suffix", platform=platform_key)
         except Exception as e:
             logger.warning("Failed to save tool_progress mode: %s", e)
@@ -982,7 +1012,7 @@ class GatewaySlashCommandsMixin(
             # adapter refresh below doesn't keep a stale value and keep interrupting.
             self._busy_text_mode = self._load_busy_text_mode()
 
-        adapter = self._adapter_for_source(event.source)
+        adapter = self._delivery_adapter_for(event.source)
         if adapter is not None:
             adapter._busy_text_mode = self._effective_busy_text_mode(event.source)
         return EphemeralReply(
@@ -1016,8 +1046,7 @@ class GatewaySlashCommandsMixin(
             return t("gateway.footer.usage")
         new_state = _FOOTER_STATE_BY_ARG[arg] if arg else not effective["enabled"]
         try:
-            _nested_dict(user_config, "display", "runtime_footer")["enabled"] = new_state
-            atomic_config_write(config_path, user_config)
+            _write_raw_config_leaf(config_path, ("display", "runtime_footer", "enabled"), new_state)
         except Exception as e:
             logger.warning("Failed to save runtime_footer.enabled: %s", e)
             return t("gateway.config_save_failed", error=e)
@@ -1250,7 +1279,30 @@ class GatewaySlashCommandsMixin(
                 return t("gateway.update.platform_not_messaging")
         if is_managed():
             return f"✗ {format_managed_message('update Hermes Agent')}"
-        if not (Path(__file__).parent.parent.resolve() / '.git').exists():
+
+        project_root = Path(__file__).parent.parent.resolve()
+
+        # Not a git-managed install (docker/nix/desktop-app/source): refuse
+        # with the steward's own update mechanism instead of git-pulling a
+        # tree `hermes update` does not own.
+        try:
+            from hermes_cli.config import (
+                detect_install_method,
+                recommended_update_command_for_method,
+            )
+
+            method = detect_install_method(project_root)
+            if method not in {"git", "unknown"}:
+                return (
+                    f"✗ `hermes update` does not apply to this install ({method}).\n"
+                    f"Update with: {recommended_update_command_for_method(method)}"
+                )
+        except Exception:
+            pass  # config unreadable — fall through to the .git check below
+
+        git_dir = project_root / '.git'
+
+        if not git_dir.exists():
             return t("gateway.update.not_git_repo")
         hermes_cmd = _resolve_hermes_bin()
         if not hermes_cmd:

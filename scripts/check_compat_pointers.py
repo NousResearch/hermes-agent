@@ -31,23 +31,23 @@ ROOT_SKIP_DIRS = DEPENDENCY_DIRS | {
 
 
 def _py_files():
-    for dirpath, dirnames, filenames in os.walk(ROOT):
-        excluded = ROOT_SKIP_DIRS if Path(dirpath) == ROOT else DEPENDENCY_DIRS
-        dirnames[:] = [name for name in dirnames if name not in excluded]
-        for filename in filenames:
-            if not filename.endswith(".py") or filename == "check_compat_pointers.py":
+    def fail(error):
+        raise error
+
+    for directory, dirs, files in os.walk(ROOT, onerror=fail):
+        excluded = ROOT_SKIP_DIRS if Path(directory) == ROOT else DEPENDENCY_DIRS
+        dirs[:] = [name for name in dirs if name not in excluded and not name.startswith(".")]
+        for name in files:
+            if not name.endswith(".py") or name in {"check_compat_pointers.py", "test_compat_manifest_targets.py"}:
                 continue
-            # The compat layer's own contract test uses the pointers on purpose; it is deleted with them.
-            if filename == "test_compat_manifest_targets.py":
-                continue
-            yield Path(dirpath) / filename
+            yield Path(directory) / name
 
 
 def main() -> int:
     if not MANIFEST.exists():
         print("compat_manifest.json missing — nothing to check (compat layer already reverted?)")
         return 0
-    entries = json.loads(MANIFEST.read_text(encoding="utf-8"))["entries"]
+    entries = json.loads(MANIFEST.read_text(encoding="utf-8-sig"))["entries"]
     compat: dict[str, set[str]] = {}
     for e in entries:
         compat.setdefault(e["facade"], set()).add(e["name"])
@@ -57,7 +57,7 @@ def main() -> int:
     for path in _py_files():
         rel = path.relative_to(ROOT)
         try:
-            src = path.read_text(encoding="utf-8", errors="ignore")
+            src = path.read_text(encoding="utf-8-sig", errors="ignore")
             tree = ast.parse(src)
         except SyntaxError:
             continue

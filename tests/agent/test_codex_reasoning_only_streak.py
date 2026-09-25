@@ -14,10 +14,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import run_agent
-from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+from agent.conversation_loop import _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE
 from agent.error_classifier import FailoverReason
+from agent.turn_truncation import continue_codex_incomplete
 from tests.agent.test_run_agent_codex_responses import (
     _build_agent,
+    _codex_commentary_message_response,
     _codex_incomplete_message_response,
     _codex_message_response,
     _codex_reasoning_only_response,
@@ -88,6 +90,68 @@ def test_visible_partial_resets_reasoning_only_streak(monkeypatch):
     assert result["completed"] is True
     assert result["final_response"] == "Recovered."
     assert calls == [FailoverReason.incomplete_response]
+
+
+def test_commentary_only_is_not_reasoning_stall_and_uses_action_nudge(monkeypatch):
+    """Public commentary is progress, so it must not enter the #67321 internal-reasoning
+    ladder or receive the nudge that tells the model to produce a final answer now."""
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    agent = _build_agent(monkeypatch)
+    messages = [{"role": "user", "content": "audit it"}]
+
+    for api_call_count, text in enumerate(
+        ("I found another parity defect; continuing.", "Still auditing the remaining paths."),
+        start=1,
+    ):
+        response = _codex_commentary_message_response(text)
+        assistant_message, finish_reason = _normalize_codex_response(response)
+        assert finish_reason == "incomplete"
+
+        result = continue_codex_incomplete(
+            agent,
+            assistant_message,
+            finish_reason,
+            messages=messages,
+            conversation_history=[],
+            api_call_count=api_call_count,
+            response=response,
+        )
+
+        assert result is None
+        assert agent._codex_reasoning_only_streak == 0
+
+    assert not any(m.get("content") == _CODEX_INCOMPLETE_NUDGE for m in messages)
+    assert messages[-1] == {"role": "user", "content": _CODEX_ACK_CONTINUATION_NUDGE}
+
+
+def test_commentary_max_output_does_not_disable_reasoning(monkeypatch):
+    """A max-output response with public commentary did produce visible progress; the
+    reasoning-off/output-cap recovery is for reasoning-only exhaustion, not commentary."""
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    agent = _build_agent(monkeypatch)
+    response = _codex_commentary_message_response("Checking one more path before the fix.")
+    response.status = "incomplete"
+    response.incomplete_details = SimpleNamespace(reason="max_output_tokens")
+    response.output[0].status = "incomplete"
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+    assert finish_reason == "incomplete"
+
+    result = continue_codex_incomplete(
+        agent,
+        assistant_message,
+        finish_reason,
+        messages=[{"role": "user", "content": "keep auditing"}],
+        conversation_history=[],
+        api_call_count=1,
+        response=response,
+    )
+
+    assert result is None
+    assert agent._codex_reasoning_only_streak == 0
+    assert agent._ephemeral_reasoning_off is False
 
 
 def test_cross_protocol_fallback_wire_drops_codex_nudge_and_replay_state(monkeypatch):

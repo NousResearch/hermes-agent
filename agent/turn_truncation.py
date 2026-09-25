@@ -543,20 +543,23 @@ def continue_codex_incomplete(
     the turn loop, ``CODEX_FALLBACK_ACTIVATED`` when a reasoning-only stall was handed to
     the next fallback provider, or the terminal ``partial`` result once retries are exhausted.
 
-    Reasoning-only stall ladder (#67321): a response with neither visible text nor a tool
-    call advances ``_codex_reasoning_only_streak`` (a visible partial resets it; the aggregate
-    ``_codex_incomplete_retries`` stays the cap for partials). Encrypted reasoning replays
-    byte-for-byte, so after replay (1) and nudge (2) the third consecutive reasoning-only
-    response goes to the configured fallback with the semantic ``incomplete_response`` reason
-    instead of ending on the sentinel; when that response consumed the last iteration the
-    fallback gets exactly one grace call (``_budget_grace_call`` is consumed by the next
-    iteration, and the streak restarts from 0, so a second grace call is unreachable).
+    Reasoning-only stall ladder (#67321): a response with neither visible final text,
+    public commentary nor a tool call advances ``_codex_reasoning_only_streak`` (visible
+    progress resets it; the aggregate ``_codex_incomplete_retries`` stays the cap for
+    partials). Encrypted reasoning replays byte-for-byte, so after replay (1) and nudge (2)
+    the third consecutive reasoning-only response goes to the configured fallback with the
+    semantic ``incomplete_response`` reason instead of ending on the sentinel. Public
+    ``phase="commentary"`` remains an incomplete turn, but if it repeats it gets the
+    acknowledgment/action continuation nudge rather than a false "internal reasoning only"
+    final-answer nudge. When fallback is triggered after consuming the last iteration it gets
+    exactly one grace call (``_budget_grace_call`` is consumed by the next iteration, and
+    the streak restarts from 0, so a second grace call is unreachable).
 
     When ``response`` hit ``max_output_tokens`` with no visible text (reasoning ate the
     whole budget), the next attempt goes out with reasoning off and a doubled output
     cap — the same one-shot overrides the chat-completions length path uses — because
     re-sending the identical budget and effort re-burns the budget identically (#90393)."""
-    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+    from agent.conversation_loop import _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE
     from agent.turn_response_check import _codex_finish_reason
 
     agent._codex_incomplete_retries += 1
@@ -567,8 +570,21 @@ def continue_codex_incomplete(
     _reasoning = interim_msg.get("reasoning")
     interim_has_reasoning = isinstance(_reasoning, str) and bool(_reasoning.strip())
     interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
-    interim_has_codex_message_items = bool(interim_msg.get("codex_message_items"))
-    reasoning_only = not interim_has_content and not getattr(assistant_message, "tool_calls", None)
+    codex_message_items = interim_msg.get("codex_message_items") or []
+    interim_has_codex_message_items = bool(codex_message_items)
+    interim_has_commentary = any(
+        isinstance(item, dict)
+        and isinstance(item.get("phase"), str)
+        and item["phase"].strip().lower() == "commentary"
+        for item in codex_message_items
+    )
+    # Public commentary is visible progress, not an internal-reasoning stall. Keep the
+    # aggregate incomplete cap, but do not feed commentary into #67321's fallback ladder.
+    reasoning_only = (
+        not interim_has_content
+        and not interim_has_commentary
+        and not getattr(assistant_message, "tool_calls", None)
+    )
     agent._codex_reasoning_only_streak = agent._codex_reasoning_only_streak + 1 if reasoning_only else 0
     streak = agent._codex_reasoning_only_streak
 
@@ -631,13 +647,22 @@ def continue_codex_incomplete(
         if not interim_replayable or n >= 2:
             _last_msg = messages[-1] if messages else None
             if isinstance(_last_msg, dict):
+                # Repeated public progress needs an action/continue instruction, not the
+                # reasoning-only nudge that tells the model to produce a final answer now.
+                _continuation_nudge = (
+                    _CODEX_ACK_CONTINUATION_NUDGE if interim_has_commentary else _CODEX_INCOMPLETE_NUDGE
+                )
                 _already_nudged = (
-                    _last_msg.get("role") == "user" and _last_msg.get("content") == _CODEX_INCOMPLETE_NUDGE
+                    _last_msg.get("role") == "user" and _last_msg.get("content") == _continuation_nudge
                 )
                 # Alternation guard: the nudge may only follow an assistant row.
                 if not _already_nudged and _last_msg.get("role") == "assistant":
-                    append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
-        if not interim_has_content and _codex_finish_reason(response) == "incomplete":
+                    append_message(messages, {"role": "user", "content": _continuation_nudge})
+        if (
+            not interim_has_content
+            and not interim_has_commentary
+            and _codex_finish_reason(response) == "incomplete"
+        ):
             agent._ephemeral_reasoning_off = True
             # No configured cap means the provider's own ceiling was hit: the observed
             # output_tokens IS that ceiling, so seed the escalation from it (else 4096).
@@ -658,9 +683,16 @@ def continue_codex_incomplete(
         # Surface the continuation on the live spinner/status line (CLI/TUI/Desktop) and gateway heartbeat:
         # each of these retries can spend minutes waiting on the provider, and without a distinct notice the
         # user only sees a generic thinking spinner ("infinite thinking", #64434).
-        agent._emit_diagnostic_wait(
-            f"↻ model returned reasoning with no final answer — asking it to continue ({n}/3)"
-        )
+        if interim_has_commentary:
+            _wait_copy = (
+                f"↻ model returned commentary without a final answer or tool call — "
+                f"asking it to continue ({n}/3)"
+            )
+        elif reasoning_only:
+            _wait_copy = f"↻ model returned reasoning with no final answer — asking it to continue ({n}/3)"
+        else:
+            _wait_copy = f"↻ model response incomplete — asking it to continue ({n}/3)"
+        agent._emit_diagnostic_wait(_wait_copy)
         agent._session_messages = messages
         return None
 

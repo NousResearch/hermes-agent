@@ -650,6 +650,41 @@ def test_inactive_noncurrent_row_still_loses_overlap():
     assert kilo["total_models"] == 1
 
 
+def test_configured_raw_openai_current_does_not_wedge_the_dedup():
+    """A configured ``providers.openai`` resolves to identity ``openai``, which is NOT a canonical
+    slug — so no *canonical* row is ever ``is_current`` and the current-model escape hatch in
+    ``_strip_aggregator_overlaps`` cannot fire.
+
+    That is still correct: the configured row is ``is_user_defined``, and the dedup only ever mutates
+    non-user-defined routing-aggregator rows, so the user's own row is untouched and the built-in
+    OpenRouter row is stripped as intended. Pinned here because the behaviour depends on three
+    separate guards agreeing; if any one changes, this fails loudly instead of silently
+    under-preserving.
+    """
+    target = "stealth/space-bunny-alpha"
+    user_row = _user_provider_row("openai", [target])
+    rows = [user_row, _aggregator_row("openrouter", [target, "anthropic/claude-sonnet-4.6"])]
+    # ``with_overrides`` only covers provider/model/base_url, so build the context directly:
+    # ``user_providers`` is the field that makes ``openai`` a CONFIGURED raw key.
+    ctx = ConfigContext(
+        current_provider="openai",
+        current_model=target,
+        current_base_url="",
+        user_providers={"openai": {"base_url": "https://api.openai.com/v1"}},
+        custom_providers=[],
+    )
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx)
+
+    # The user's own row keeps the model it advertises - the dedup never touches user-defined rows.
+    mine = next(r for r in payload["providers"] if r["slug"] == "openai")
+    assert target in mine["models"]
+    # The built-in aggregator loses the overlap, because it is not the selected route.
+    builtin = next(r for r in payload["providers"] if r["slug"] == "openrouter")
+    assert target not in builtin["models"]
+    assert builtin["total_models"] == 1
+
+
 def test_flat_namespace_reseller_keeps_first_party_models_overlapping_user_proxy():
     """opencode-go / opencode-zen are flagged ``is_aggregator=True`` (their
     flat ``/v1/models`` returns bare IDs the model-switch resolver searches),

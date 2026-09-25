@@ -1,9 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  DEFAULT_MAX_COLUMN_WIDTH,
+  DEFAULT_MAX_INTENT_LENGTH,
   directiveFrameHeight,
   frameSizeFromMessage,
   intentFromMessage,
+  intentScript,
+  resolveMaxColumnWidth,
+  resolveMaxIntentLength,
   themePrelude,
   withInlineChrome
 } from './inline-preview-directive'
@@ -123,5 +128,77 @@ describe('intentFromMessage', () => {
     expect(intentFromMessage(msg({ prompt: '   ' }), 'tok')).toBeNull()
     expect(intentFromMessage(msg({ prompt: 42 }), 'tok')).toBeNull()
     expect(intentFromMessage(null, 'tok')).toBeNull()
+  })
+})
+
+describe('resolveMaxColumnWidth', () => {
+  it('defaults to the transcript column cap', () => {
+    expect(DEFAULT_MAX_COLUMN_WIDTH).toBe(640)
+    expect(resolveMaxColumnWidth(undefined)).toBe(640)
+  })
+
+  it('directive attribute wins over the stored override', () => {
+    expect(resolveMaxColumnWidth('2560', 1200)).toBe(2560)
+    expect(resolveMaxColumnWidth('800')).toBe(800)
+  })
+
+  it('stored override applies when the attribute is absent or garbage', () => {
+    expect(resolveMaxColumnWidth(undefined, 1200)).toBe(1200)
+    expect(resolveMaxColumnWidth('wide', 1200)).toBe(1200)
+    expect(resolveMaxColumnWidth('', 1200)).toBe(1200)
+  })
+
+  it('garbage everywhere falls back to the default, values clamp to a sane band', () => {
+    expect(resolveMaxColumnWidth('wide')).toBe(640)
+    expect(resolveMaxColumnWidth('1')).toBe(320)
+    expect(resolveMaxColumnWidth('99999')).toBe(4096)
+  })
+})
+
+describe('resolveMaxIntentLength', () => {
+  it('defaults to the sentence-sized budget', () => {
+    expect(DEFAULT_MAX_INTENT_LENGTH).toBe(500)
+    expect(resolveMaxIntentLength(undefined)).toBe(500)
+  })
+
+  it('directive attribute wins over the stored override', () => {
+    expect(resolveMaxIntentLength('5000', 1000)).toBe(5000)
+  })
+
+  it('stored override applies when the attribute is absent or garbage', () => {
+    expect(resolveMaxIntentLength(undefined, 2000)).toBe(2000)
+    expect(resolveMaxIntentLength('lots', 2000)).toBe(2000)
+  })
+
+  it('garbage everywhere falls back to the default, values clamp to a sane band', () => {
+    expect(resolveMaxIntentLength('lots')).toBe(500)
+    expect(resolveMaxIntentLength('0')).toBe(500)
+    expect(resolveMaxIntentLength('9999999')).toBe(20000)
+  })
+})
+
+describe('configurable intent cap', () => {
+  const msg = (prompt: string) => ({
+    type: 'hermes-inline-preview-intent',
+    token: 'tok',
+    prompt
+  })
+
+  it('a raised cap lets a multi-thousand-char payload arrive intact', () => {
+    const payload = 'x'.repeat(3000)
+
+    expect(intentFromMessage(msg(payload), 'tok')).toHaveLength(500)
+    expect(intentFromMessage(msg(payload), 'tok', 5000)).toHaveLength(3000)
+  })
+
+  it('the injected script carries the configured cap', () => {
+    expect(intentScript('tok')).toContain('slice(0,500)')
+    expect(intentScript('tok', 5000)).toContain('slice(0,5000)')
+  })
+
+  it('withInlineChrome threads the cap into the frame', () => {
+    const framed = withInlineChrome('<h1>hi</h1>', 'tok', '', 5000)
+
+    expect(framed).toContain('slice(0,5000)')
   })
 })

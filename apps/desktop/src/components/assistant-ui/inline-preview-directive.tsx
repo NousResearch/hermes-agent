@@ -47,10 +47,114 @@ import { localPreviewTarget } from '@/lib/local-preview'
 const MIN_HEIGHT = 120
 const MAX_HEIGHT = 1200
 const DEFAULT_HEIGHT = 280
-/** The transcript column cap the frame renders inside (`max-w-160` = 40rem). */
-const MAX_COLUMN_WIDTH = 640
+/** The transcript column cap the frame renders inside (`max-w-160` = 40rem).
+ *  The shipped default — raisable per-directive (`max-width`) or globally
+ *  (stored override), never by editing the bundle. */
+export const DEFAULT_MAX_COLUMN_WIDTH = 640
+const MIN_COLUMN_WIDTH = 320
+const MAX_COLUMN_WIDTH_LIMIT = 4096
 /** Ignore sub-pixel/rounding churn so a vh-sized page can't oscillate. */
 const RESIZE_TOLERANCE = 4
+
+/**
+ * Config surface for the two preview caps (issue #120166). Precedence:
+ * directive attribute > stored override > shipped default. Both inputs live
+ * outside the built bundle, so a raise survives self-updates:
+ *
+ * - attribute: `::preview{file="w.html" max-width="2560" max-intent-length="5000"}`
+ * - stored override: localStorage `hermes.preview.maxColumnWidth` /
+ *   `hermes.preview.maxIntentLength` (any future config UI writes here)
+ */
+const STORED_MAX_WIDTH_KEY = 'hermes.preview.maxColumnWidth'
+const STORED_MAX_INTENT_KEY = 'hermes.preview.maxIntentLength'
+
+function parsePositiveInt(raw: string | number | undefined): number | null {
+  if (raw === undefined || raw === null) {
+    return null
+  }
+
+  const parsed = typeof raw === 'number' ? raw : Number(String(raw).trim())
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return null
+  }
+
+  return parsed
+}
+
+function clampInt(value: number, lo: number, hi: number): number {
+  return Math.min(hi, Math.max(lo, value))
+}
+
+/** Directive attribute first, stored override next, shipped default last. */
+export function resolveMaxColumnWidth(raw: string | number | undefined, override?: number): number {
+  const fromAttr = parsePositiveInt(raw)
+
+  if (fromAttr !== null) {
+    return clampInt(fromAttr, MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH_LIMIT)
+  }
+
+  const fromStored = parsePositiveInt(override)
+
+  if (fromStored !== null) {
+    return clampInt(fromStored, MIN_COLUMN_WIDTH, MAX_COLUMN_WIDTH_LIMIT)
+  }
+
+  return DEFAULT_MAX_COLUMN_WIDTH
+}
+
+/** Directive attribute first, stored override next, shipped default last. */
+export function resolveMaxIntentLength(raw: string | number | undefined, override?: number): number {
+  const fromAttr = parsePositiveInt(raw)
+
+  if (fromAttr !== null) {
+    return clampInt(fromAttr, 1, MAX_INTENT_LENGTH_LIMIT)
+  }
+
+  const fromStored = parsePositiveInt(override)
+
+  if (fromStored !== null) {
+    return clampInt(fromStored, 1, MAX_INTENT_LENGTH_LIMIT)
+  }
+
+  return DEFAULT_MAX_INTENT_LENGTH
+}
+
+function readStoredPositiveInt(key: string): number | undefined {
+  try {
+    if (typeof localStorage === 'undefined') {
+      return undefined
+    }
+
+    return parsePositiveInt(localStorage.getItem(key) ?? undefined) ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The global fallback leg of the precedence chain. Empty when unset. */
+export function readPreviewCapsOverride(): { maxColumnWidth?: number; maxIntentLength?: number } {
+  const maxColumnWidth = readStoredPositiveInt(STORED_MAX_WIDTH_KEY)
+  const maxIntentLength = readStoredPositiveInt(STORED_MAX_INTENT_KEY)
+
+  return {
+    ...(maxColumnWidth !== undefined ? { maxColumnWidth } : {}),
+    ...(maxIntentLength !== undefined ? { maxIntentLength } : {})
+  }
+}
+
+/** First present attribute wins — accepts kebab-case and camelCase spellings. */
+function pickAttr(attrs: Readonly<Record<string, string>>, ...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = attrs[name]
+
+    if (value !== undefined && value !== '') {
+      return value
+    }
+  }
+
+  return undefined
+}
 
 export function directiveFrameHeight(raw: string | undefined): number | null {
   if (!raw) {
@@ -69,8 +173,11 @@ export function directiveFrameHeight(raw: string | undefined): number | null {
 const SIZE_MESSAGE_TYPE = 'hermes-inline-preview-size'
 const INTENT_MESSAGE_TYPE = 'hermes-inline-preview-intent'
 
-/** Prompt length cap for a widget intent — a sentence, not a payload dump. */
-const MAX_INTENT_LENGTH = 500
+/** Prompt length cap for a widget intent — a sentence, not a payload dump.
+ *  The shipped default — raisable per-directive (`max-intent-length`) or
+ *  globally (stored override), never by editing the bundle. */
+export const DEFAULT_MAX_INTENT_LENGTH = 500
+const MAX_INTENT_LENGTH_LIMIT = 20000
 /** One intent per frame per second; clicks are human-speed. */
 const INTENT_THROTTLE_MS = 1000
 
@@ -80,7 +187,7 @@ const INTENT_THROTTLE_MS = 1000
  *  the widget speaks WITH the user's voice, visibly, never silently. Also
  *  wires `data-hermes-send` so declarative HTML works with zero script:
  *  `<button data-hermes-send="get-price eth">ETH</button>`. */
-export function intentScript(token: string): string {
+export function intentScript(token: string, maxIntentLength: number = DEFAULT_MAX_INTENT_LENGTH): string {
   return (
     '<script>(function(){var t=' +
     JSON.stringify(token) +
@@ -88,7 +195,7 @@ export function intentScript(token: string): string {
     'parent.postMessage({type:' +
     JSON.stringify(INTENT_MESSAGE_TYPE) +
     ',token:t,prompt:p.slice(0,' +
-    String(MAX_INTENT_LENGTH) +
+    String(maxIntentLength) +
     ')},"*");return true}' +
     'window.hermes={send:send};' +
     'addEventListener("click",function(e){var el=e.target&&e.target.closest?' +
@@ -100,7 +207,11 @@ export function intentScript(token: string): string {
 /** Parse a widget intent. Null unless it is OUR type with OUR token and a
  *  non-empty string prompt — same trust boundary as size reports, because
  *  this one turns into a user message. Trimmed and length-capped. */
-export function intentFromMessage(data: unknown, token: string): string | null {
+export function intentFromMessage(
+  data: unknown,
+  token: string,
+  maxIntentLength: number = DEFAULT_MAX_INTENT_LENGTH
+): string | null {
   if (typeof data !== 'object' || data === null) {
     return null
   }
@@ -111,7 +222,7 @@ export function intentFromMessage(data: unknown, token: string): string | null {
     return null
   }
 
-  const prompt = message.prompt.trim().slice(0, MAX_INTENT_LENGTH)
+  const prompt = message.prompt.trim().slice(0, maxIntentLength)
 
   return prompt || null
 }
@@ -197,8 +308,13 @@ export function measurementScript(token: string): string {
 /** Assemble the srcdoc: theme prelude first (so the page's own styles win),
  *  then the measuring + intent scripts before `</body>` when present so they
  *  run after the page's own markup, appended otherwise. */
-export function withInlineChrome(doc: string, token: string, prelude: string): string {
-  const script = measurementScript(token) + intentScript(token)
+export function withInlineChrome(
+  doc: string,
+  token: string,
+  prelude: string,
+  maxIntentLength: number = DEFAULT_MAX_INTENT_LENGTH
+): string {
+  const script = measurementScript(token) + intentScript(token, maxIntentLength)
   const bodyClose = /<\/body\s*>/i.exec(doc)
   const framed = bodyClose ? doc.slice(0, bodyClose.index) + script + doc.slice(bodyClose.index) : doc + script
 
@@ -262,17 +378,43 @@ export function InlinePreviewDirective({
     return file ? <PreviewAttachment target={file} /> : null
   }
 
-  return <InlineHtmlFrame file={file} initialHeight={directiveFrameHeight(attrs.height)} streaming={streaming} />
+  // Both caps live outside the bundle: per-directive attributes win, the
+  // stored override is the global fallback, shipped defaults hold otherwise.
+  const stored = readPreviewCapsOverride()
+  const maxWidth = resolveMaxColumnWidth(
+    pickAttr(attrs, 'max-width', 'maxWidth', 'maxwidth'),
+    stored.maxColumnWidth
+  )
+  const maxIntentLength = resolveMaxIntentLength(
+    pickAttr(attrs, 'max-intent-length', 'maxIntentLength', 'maxintentlength'),
+    stored.maxIntentLength
+  )
+
+  return (
+    <InlineHtmlFrame
+      file={file}
+      initialHeight={directiveFrameHeight(attrs.height)}
+      maxWidth={maxWidth}
+      maxIntentLength={maxIntentLength}
+      streaming={streaming}
+    />
+  )
 }
 
 function InlineHtmlFrame({
   file,
   initialHeight,
+  maxWidth,
+  maxIntentLength,
   streaming
 }: {
   file: string
   /** `height` attribute — the starting height only; measurement overrides. */
   initialHeight: number | null
+  /** Resolved frame-width cap (directive attr > stored override > default). */
+  maxWidth: number
+  /** Resolved intent cap, threaded into the frame script and the parser. */
+  maxIntentLength: number
   streaming: boolean
 }) {
   const cwd = useStore(useSessionView().$cwd)
@@ -325,7 +467,7 @@ function InlineHtmlFrame({
     let lastIntentAt = 0
 
     const onMessage = (event: MessageEvent) => {
-      const intent = intentFromMessage(event.data, token)
+      const intent = intentFromMessage(event.data, token, maxIntentLength)
 
       if (intent !== null) {
         const now = Date.now()
@@ -368,7 +510,7 @@ function InlineHtmlFrame({
     window.addEventListener('message', onMessage)
 
     return () => window.removeEventListener('message', onMessage)
-  }, [initialHeight, token])
+  }, [initialHeight, maxIntentLength, token])
 
   // Resolved once per mount; theme switches remount the transcript anyway.
   const framedDoc = useMemo(() => {
@@ -378,8 +520,8 @@ function InlineHtmlFrame({
 
     const { vars, font } = collectThemeBridge()
 
-    return withInlineChrome(doc, token, themePrelude(vars, font))
-  }, [doc, token])
+    return withInlineChrome(doc, token, themePrelude(vars, font), maxIntentLength)
+  }, [doc, maxIntentLength, token])
 
   if (!path || failed) {
     return <PreviewAttachment target={file} />
@@ -387,12 +529,18 @@ function InlineHtmlFrame({
 
   const height = measured ?? initialHeight ?? DEFAULT_HEIGHT
   // Left-aligned in the message flow, like an image: the frame is only as
-  // wide as its content (capped at the column). Fluid pages measure the
-  // full viewport and stay full-bleed.
-  const width = contentWidth !== null ? Math.min(contentWidth, MAX_COLUMN_WIDTH) : undefined
+  // wide as its content (capped at the resolved column cap). Fluid pages
+  // measure the full viewport and stay full-bleed.
+  const width = contentWidth !== null ? Math.min(contentWidth, maxWidth) : undefined
+  // Overflow is scrollable, never silently clipped: content wider than the
+  // cap stays reachable until the cap is raised (criterion 3, issue #120166).
+  const clipped = contentWidth !== null && contentWidth > maxWidth
 
   return (
-    <span className="my-2 block w-full max-w-160">
+    <span
+      className="my-2 block w-full max-w-160 overflow-x-auto"
+      title={clipped ? `Preview content is ${contentWidth}px wide, shown at ${maxWidth}px - scroll sideways or raise max-width.` : undefined}
+    >
       {framedDoc === null ? (
         <span
           className="block w-full animate-pulse rounded-md bg-[color-mix(in_srgb,currentColor_4%,transparent)]"

@@ -13,6 +13,8 @@ import {
   DATA_URL_READ_MIN_MAX_MB
 } from '../../shared/src/data-url-read-max'
 
+import { imagePreviewDataUrl } from './image-preview'
+
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000
 // Remote file.attach sends one base64 JSON-RPC frame. Cap the dedicated attach
 // reader so the payload still fits uvicorn's raised ws_max_size (384 MiB)
@@ -558,11 +560,16 @@ async function readFileDataUrlForIpc(
     blockSensitive?: boolean
     maxBytes?: number
     mimeType: string
+    imagePreview?: boolean
   }
 ): Promise<string> {
   const fsImpl = options.fs || fs
   const { resolvedPath } = await resolveReadableFileForIpc(filePath, options)
   const data = await fsImpl.promises.readFile(resolvedPath)
+
+  if (options.imagePreview) {
+    return imagePreviewDataUrl(data, options.mimeType)
+  }
 
   return `data:${options.mimeType};base64,${data.toString('base64')}`
 }

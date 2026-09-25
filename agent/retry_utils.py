@@ -67,9 +67,12 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
 # Free-text "reset" grammars providers put in error bodies, tried in order. One table so the
 # conversation loop's error context and the credential pool's cooldown agree on the same wait.
 _QUOTA_RESET_DELAY_RE = re.compile(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", re.IGNORECASE)
-# "Resets in 4hr 5min" (weekly usage limits), "resets in 2 hours 5 minutes", "resets in 30s".
+# "Resets in 4hr 5min" (weekly usage limits), "resets in 2 hours 5 minutes",
+# "resets in 30s", and the quota-wall wording "Your usage window refills in 46
+# minutes" (Ollama Cloud 429). One verb alternation so every provider phrasing
+# lands on the same table.
 _RESETS_IN_RE = re.compile(
-    r"resets?\s+in\s+"
+    r"(?:resets?|refills?|renews?)\s+in\s+"
     r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
     r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
     r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,
@@ -116,6 +119,25 @@ def reset_delay_from_message(message: str) -> Optional[float]:
         if m and (seconds := to_seconds(m)) is not None:
             return seconds
     return None
+
+
+def min_reset_delay_from_message(message: str) -> Optional[float]:
+    """Shortest seconds-until-reset across EVERY window named in *message*, or None.
+
+    A fallback-chain failure can carry more than one provider's window ("DeepSeek V4
+    Flash and GLM 5.3 Flash keep answering in the meantime"). The earliest instant at
+    which any configured model can serve again is the shortest one, so a caller
+    scheduling a re-run wants the minimum, not the first match.
+    """
+    if not message:
+        return None
+    found: list[float] = []
+    for pattern, to_seconds in RETRY_DELAY_PATTERNS:
+        for m in pattern.finditer(message):
+            seconds = to_seconds(m)
+            if seconds is not None:
+                found.append(seconds)
+    return min(found) if found else None
 
 
 def jittered_backoff(attempt: int, *, base_delay: float = 5.0, max_delay: float = 120.0, jitter_ratio: float = 0.5) -> float:

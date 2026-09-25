@@ -454,7 +454,12 @@ usage probe) and the provider reports its usage limit exhausted with a
 `retry after <N>s` hint (often many hours), and the whole fallback chain is
 unavailable, re-firing a sub-hourly job into that window is guaranteed to fail
 identically on every tick — and to alert every time. A 429 the model API
-returns mid-run is not held this way; it is retried on the normal cadence.
+returns mid-run qualifies too, provided it names the window: the wait is read
+through the shared provider-grammar table (`agent/retry_utils.py`), so the
+phrasings providers actually emit — "your usage window refills in 46 minutes",
+"resets in 2 hours", "the window renews in 3h" — resolve to a wait instead of
+failing every tick. A 429 that names no window is still retried on the normal
+cadence.
 
 Instead, the scheduler **parks the job**: the one failure alert says the
 window is closed and that the job is held. If the provider reopens well before

@@ -1056,7 +1056,8 @@ function Stage-Setup {
 
 function Stage-Gateway {
     if ($NonInteractive) { return }
-    Invoke-InstalledHermes @('gateway', 'install')
+    # Setup installs the service when it handles the gateway; ask only if it did not.
+    Invoke-InstalledHermes @('gateway', 'install', '--if-missing')
 }
 
 function Stage-Desktop {

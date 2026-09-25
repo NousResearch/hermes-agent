@@ -1437,6 +1437,24 @@ class TestRequireBoto3VersionCheck:
             with pytest.raises(RuntimeError, match="does not support converse_stream"):
                 _require_boto3()
 
+    def test_missing_boto3_error_reports_why_the_lazy_install_did_not_land(self, monkeypatch):
+        """A completed install that needs a restart must not tell the user to install it again."""
+        import pm
+        from agent.bedrock_adapter import _require_boto3
+        from pm.package import InstallError
+
+        restart = InstallError("venv", "bedrock installed; restart Hermes to activate the new dependency environment")
+
+        def ensure_import(extra):
+            raise restart
+
+        monkeypatch.setattr(pm, "ensure_import", ensure_import)
+        with patch.dict("sys.modules", {"boto3": None}):
+            with pytest.raises(ImportError) as excinfo:
+                _require_boto3()
+        assert str(restart) in str(excinfo.value)
+        assert pm.install_hint("bedrock") not in str(excinfo.value)
+
 
 
 class TestImageBase64Decoding:

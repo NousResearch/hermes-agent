@@ -282,7 +282,22 @@ def refuse_if_installed_removed(name: str, plugin_dir) -> None:
             "or reinstall with `hermes plugins install <source> --force --allow-removed` if you trust it.")
 
 
-_PRESERVE_SKIP = ("__pycache__", CATALOG_SIDECAR)
+_PRESERVE_SKIP = ("__pycache__", ".git", CATALOG_SIDECAR)
+_NO_GIT_REVISION_FILES = frozenset({
+    "plugin.yaml", "plugin.yml", "plugin.json", "mcp.json",
+    "pyproject.toml", "package.json", "package-lock.json", "uv.lock",
+})
+_NO_GIT_REVISION_DIRS = frozenset({"desktop", "skills", "sidecar", "node_modules"})
+
+
+def _revision_owned_without_git(rel: Path) -> bool:
+    """True for plugin code/control surfaces an update must never resurrect from the old tree."""
+    return (
+        rel.suffix == ".py"
+        or rel.as_posix() in _NO_GIT_REVISION_FILES
+        or bool(rel.parts and rel.parts[0] in _NO_GIT_REVISION_DIRS)
+    )
+
 
 
 def _local_changes(target: Path) -> Optional[tuple[list[str], list[str]]]:
@@ -290,12 +305,21 @@ def _local_changes(target: Path) -> Optional[tuple[list[str], list[str]]]:
     cannot classify the installed tree (notably subdirectory installs, which carry no ``.git``)."""
     from hermes_cli.plugins_cmd import _resolve_git_executable, _run_plugin_git
     git_exe = _resolve_git_executable()
-    if not git_exe or not (target / ".git").exists():
+    if not (target / ".git").exists():
         return None
+    if not git_exe:
+        from hermes_cli.plugins_cmd import PluginOperationError
+        raise PluginOperationError(
+            f"Could not inspect local changes for '{target.name}': git executable is unavailable."
+        )
     status = _run_plugin_git(git_exe, target, "status", "--porcelain", "--ignored", "-z", "--untracked-files=all",
                              "--ignored=matching", timeout=30)
     if status.returncode != 0:
-        return None
+        from hermes_cli.plugins_cmd import PluginOperationError
+        detail = (status.stderr or status.stdout or "git status failed").strip()
+        raise PluginOperationError(
+            f"Could not inspect local changes for '{target.name}': {detail}"
+        )
     local, modified = [], []
     for item in status.stdout.split("\0"):
         if len(item) < 4:
@@ -321,11 +345,18 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
 
     For a git checkout, *local* is the ``??``/``!!`` set and may contain a directory entry
     such as ``data/``; descendants of those entries are copied and win over same-path files in
-    the new tree.  ``None`` means git cannot classify the tree, so only non-Python files that
-    the new tree does not already ship are carried.  Path-type conflicts are owned by the new tree.
+    the new tree. ``None`` means there is no git checkout, so user-state files absent from the new
+    tree are carried while executable/declarative plugin surfaces remain revision-owned. If a
+    user-owned path cannot be represented safely in the new tree, fail before publication rather
+    than silently dropping it.
     """
     keep = {Path(rel) for rel in local or ()}
-    for dirpath, dirnames, filenames in os.walk(old):
+
+    def _walk_error(exc: OSError) -> None:
+        from hermes_cli.plugins_cmd import PluginOperationError
+        raise PluginOperationError(f"Could not preserve user files from '{old}': {exc}") from exc
+
+    for dirpath, dirnames, filenames in os.walk(old, onerror=_walk_error):
         here = Path(dirpath)
         links = [name for name in dirnames if (here / name).is_symlink()]
         dirnames[:] = [
@@ -337,23 +368,54 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
             rel = src.relative_to(old)
             if any(part in _PRESERVE_SKIP or part.endswith(".pyc") for part in rel.parts):
                 continue
+            dst = new / rel
             if local is None:
                 # A no-git subdir install cannot distinguish removed upstream code from user files.
-                # Never resurrect an old Python module/package into a new plugin revision.
-                if rel.suffix == ".py" or os.path.lexists(new / rel):
+                # Never resurrect old executable/control surfaces. This path may run from
+                # _install_plugin_core's post-scan before_swap hook, so do not inject an unscanned
+                # symlink either.
+                if src.is_symlink() or _revision_owned_without_git(rel):
+                    continue
+                if os.path.lexists(dst):
+                    # A same-shape path belongs to the new revision when git cannot prove otherwise.
+                    # A file -> directory clash is different: silently skipping it would delete a
+                    # user-state file, so keep the live install intact and make the user resolve it.
+                    if dst.is_dir() and not dst.is_symlink():
+                        from hermes_cli.plugins_cmd import PluginOperationError
+                        raise PluginOperationError(
+                            f"Cannot preserve user file '{rel}': the updated plugin now has a directory "
+                            "at that path. The installed plugin was left unchanged."
+                        )
                     continue
             elif keep.isdisjoint((rel, *rel.parents)):
                 continue
 
-            dst = new / rel
-            # The replacement tree owns file/dir shape changes. Carrying across a type clash can
-            # either copy into the wrong directory or make parent mkdir fail and abort the update.
             if dst.is_dir() and not dst.is_symlink():
-                continue
-            try:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-            except (FileExistsError, NotADirectoryError):
-                continue
+                from hermes_cli.plugins_cmd import PluginOperationError
+                raise PluginOperationError(
+                    f"Cannot preserve user file '{rel}': the updated plugin now has a directory "
+                    "at that path. The installed plugin was left unchanged."
+                )
+
+            parent = new
+            for part in rel.parent.parts:
+                parent /= part
+                if os.path.lexists(parent):
+                    if parent.is_symlink() or not parent.is_dir():
+                        from hermes_cli.plugins_cmd import PluginOperationError
+                        raise PluginOperationError(
+                            f"Cannot preserve user file '{rel}': its destination conflicts with the "
+                            "updated plugin. The installed plugin was left unchanged."
+                        )
+                    continue
+                try:
+                    parent.mkdir()
+                except OSError as exc:
+                    from hermes_cli.plugins_cmd import PluginOperationError
+                    raise PluginOperationError(
+                        f"Cannot preserve user file '{rel}': its destination could not be prepared. "
+                        "The installed plugin was left unchanged."
+                    ) from exc
             if dst.is_symlink() or dst.is_file():
                 dst.unlink()
             shutil.copy2(src, dst, follow_symlinks=False)

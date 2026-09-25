@@ -197,8 +197,11 @@ before publishing it. Your
 enabled/disabled state is preserved, and so are files the plugin's repo does
 not track (the `config.yaml` created from its `.example`, data files, `.env`).
 For monorepo/subdirectory installs, which do not carry a local Git checkout,
-update preserves non-Python files the new revision does not ship; removed Python
-code is not carried forward because it can shadow the new plugin layout.
+update preserves user-state files the new revision does not ship. Plugin code and
+control surfaces (Python, Desktop/skills, manifests/MCP and dependency metadata)
+remain revision-owned and are not resurrected from the old install. If a user-state
+path conflicts with the new tree's file/directory layout, the update stops before
+publication so the installed copy — and the user's data — remain intact.
 Edits you made to *tracked* files are not carried onto the new code; copies are
 saved under `~/.hermes/plugins-backup/<name>-<sha>/` and the update warns you.
 If the new pin renames the plugin's manifest, the old directory is removed and

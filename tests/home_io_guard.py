@@ -24,6 +24,13 @@ _INTERPRETER_PREFIXES = tuple({
     # checkout's own .venv is not Hermes state; without this every run from a default install
     # trips on its first traceback.
     Path(__file__).resolve().parent.parent,
+} | {
+    # PM's payload probes (``pm/runtime.py::_resident_runtime``, ``pm/environments.py::
+    # store_root``) test ``<checkout>/../manifest.json`` to detect a packaged payload. For a
+    # checkout that is a child of the home, the candidate IS ``<home>/manifest.json`` — an
+    # existence probe of a packaging file, not a read of Hermes state. Exempt the candidate
+    # only, so a real sibling (config.yaml, state.db) stays refused.
+    Path(__file__).resolve().parent.parent.parent / "manifest.json",
 })
 
 

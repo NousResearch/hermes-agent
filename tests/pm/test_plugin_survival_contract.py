@@ -520,14 +520,19 @@ def test_update_sync_retries_a_fetch_failure_once_before_disabling(admission_env
 
 def test_active_context_home_exported_to_wrapper_subprocess(monkeypatch, tmp_path):
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools.environments.local import build_subprocess_env
+    from tools.environments import local as local_env
 
+    # ``build_subprocess_env`` also prepends the resolved console-script dir to PATH; the
+    # resolver stats the interpreter's own bin dir, which for a default install (checkout
+    # inside the home) is Hermes-owned state the home guard refuses. This test is about
+    # HERMES_HOME propagation, so pin the PATH decoration out of the way.
+    monkeypatch.setattr(local_env, "_resolve_hermes_bin_dir", lambda: None)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "ambient"))
     active = tmp_path / "custom-root/profiles/worker"
     active.mkdir(parents=True)
     token = set_hermes_home_override(active)
     try:
-        child_env = build_subprocess_env()
+        child_env = local_env.build_subprocess_env()
         child = subprocess.run(
             [sys.executable, "-c", "import os; print(os.environ['HERMES_HOME'], end='')"],
             env=child_env, capture_output=True, text=True, check=True, timeout=60,

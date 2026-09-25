@@ -41,6 +41,14 @@ ACCEPT = [
     r'"C:\Program Files\Py\pythonw.exe" -m hermes_cli.main gateway run',
 ]
 
+WINDOWS_REDIRECTOR_SHIM_RUN = (
+    r"C:\Users\me\hermes\venv\Scripts\python.exe -I -c "
+    "import sys, runpy; "
+    r"sys.argv = ['C:\\Users\\me\\hermes\\venv\\Scripts\\hermes.exe', "
+    "'-p', 'worker', 'gateway', 'run']; "
+    "runpy.run_module('hermes_cli.main', run_name='__main__')"
+)
+
 REJECT = [
     "python -m tui_gateway",                              # unrelated module
     "python -m hermes_cli.main gateway status",           # other subcommand
@@ -56,5 +64,59 @@ REJECT = [
 @pytest.mark.parametrize("cmd", ACCEPT)
 def test_accepts_real_gateway_run(cmd):
     assert matches(cmd) is True
+
+
+def test_accepts_windows_redirector_python_c_sys_argv_gateway_run():
+    assert matches(WINDOWS_REDIRECTOR_SHIM_RUN) is True
+    assert matches_runtime(WINDOWS_REDIRECTOR_SHIM_RUN) is True
+
+
+@pytest.mark.parametrize("cmd", REJECT)
+def test_rejects_non_gateway_run_for_strict_matcher(cmd):
+    assert matches(cmd) is False
+
+
+@pytest.mark.parametrize("subcommand", ["status", "stop"])
+def test_rejects_non_runtime_gateway_subcommands_inside_python_c_sys_argv(subcommand):
+    command = WINDOWS_REDIRECTOR_SHIM_RUN.replace("'run'", f"'{subcommand}'")
+
+    assert matches(command) is False
+    assert matches_runtime(command) is False
+
+
+def test_rejects_embedded_restart_as_strict_gateway_run():
+    command = WINDOWS_REDIRECTOR_SHIM_RUN.replace("'run'", "'restart'")
+
+    assert matches(command) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python.exe -I -c import sys; sys.argv = ['hermes.exe', 'gateway', 'run']",
+        (
+            "not-python sys.argv = ['hermes.exe', 'gateway', 'run']; "
+            "runpy.run_module('hermes_cli.main', run_name='__main__')"
+        ),
+        (
+            "bash -c import sys, runpy; "
+            "sys.argv = ['hermes.exe', 'gateway', 'run']; "
+            "runpy.run_module('hermes_cli.main', run_name='__main__')"
+        ),
+        (
+            "python.exe -I -c import sys, runpy; "
+            "sys.argv = ['hermes.exe', 'gateway', 'run'; "
+            "runpy.run_module('hermes_cli.main', run_name='__main__')"
+        ),
+        (
+            "python.exe -I -c import sys, runpy; "
+            "sys.argv = ['hermes.exe', 'gateway', 'run']; "
+            "print('hermes_cli.main')"
+        ),
+    ],
+)
+def test_rejects_non_launcher_or_malformed_embedded_sys_argv(command):
+    assert matches(command) is False
+    assert matches_runtime(command) is False
 
 

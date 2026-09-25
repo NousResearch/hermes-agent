@@ -1,6 +1,7 @@
 """Gateway runtime status helpers: PID/lock/marker files under ``{HERMES_HOME}`` (one set per
 home/profile) that tell whether the gateway daemon is running."""
 
+import ast
 import asyncio
 import contextlib
 import copy
@@ -528,18 +529,72 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
-def _gateway_command_subcommand(command: str | None) -> str | None:
-    """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
-    (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
-    Hermes entrypoint plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint. Tokenizes
-    quote-aware (Windows paths with spaces); ``--profile``/``-p`` selectors are stripped anywhere in
-    argv since ``_apply_profile_override`` removes them before argparse."""
-    if not command:
+def _python_c_sys_argv(command: str) -> list[str] | None:
+    """Extract a ``sys.argv = [...]`` literal from a Python ``-c`` Hermes launcher.
+
+    Windows distlib redirectors rewrite ``python -m hermes_cli.main ...`` into
+    ``python -c "... sys.argv = [...]; runpy.run_module('hermes_cli.main')"``.
+    ``psutil`` returns that ``-c`` payload without the outer quotes, so a normal
+    shell tokenizer splits the embedded code on spaces and loses the real
+    ``gateway run`` argv. Parse only the literal argv assignment from launchers
+    that also name ``hermes_cli.main``; unrelated ``python -c`` processes still
+    fall through to the regular strict matcher.
+    """
+    if "sys.argv" not in command or "hermes_cli.main" not in command:
         return None
-    try:
-        raw_tokens = shlex.split(command, posix=False)
-    except ValueError:
-        raw_tokens = command.split()
+    launcher = re.search(r"(?<!\S)-c(?!\S)", command)
+    if launcher is None:
+        return None
+    launcher_prefix = command[: launcher.start()]
+    if re.search(
+        r"(^|[\\/\s])python(?:w|\d+(?:\.\d+)*)?(?:\.exe)?(?:\s|$)",
+        launcher_prefix,
+        re.IGNORECASE,
+    ) is None:
+        return None
+    if re.search(r"\brunpy\.run_module\(\s*(['\"])hermes_cli\.main\1", command) is None:
+        return None
+    match = re.search(r"\bsys\.argv\s*=", command)
+    if not match:
+        return None
+    start = command.find("[", match.end())
+    if start < 0:
+        return None
+
+    depth = 0
+    quote: str | None = None
+    escape = False
+    for idx, char in enumerate(command[start:], start=start):
+        if quote is not None:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in {"'", '"'}:
+            quote = char
+        elif char == "[":
+            depth += 1
+        elif char == "]":
+            depth -= 1
+            if depth == 0:
+                try:
+                    value = ast.literal_eval(command[start: idx + 1])
+                except (MemoryError, RecursionError, SyntaxError, TypeError, ValueError):
+                    return None
+                if isinstance(value, (list, tuple)) and all(
+                    isinstance(part, str) for part in value
+                ):
+                    return list(value)
+                return None
+    return None
+
+
+def _gateway_command_subcommand_from_tokens(
+    raw_tokens: list[str], *, hermes_entrypoint_inferred: bool = False
+) -> str | None:
     # Strip surrounding quotes, normalize slashes + case per token.
     tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
     if not tokens:
@@ -555,8 +610,10 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
         return "run"
     joined = " ".join(tokens)
-    if "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(
-        b in ("hermes", "hermes.exe") for b in basenames
+    if not hermes_entrypoint_inferred and (
+        "hermes_cli.main" not in joined and "hermes_cli/main.py" not in joined and not any(
+            b in ("hermes", "hermes.exe") for b in basenames
+        )
     ):
         return None
     # Drop --profile X / -p X / --profile=X / -p=X (consumes a VALUE of "gateway" too).
@@ -574,6 +631,28 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
             # Bare `hermes gateway` defaults to `run`.
             return filtered[i + 1] if i + 1 < len(filtered) else "run"
     return None
+
+
+def _gateway_command_subcommand(command: str | None) -> str | None:
+    """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
+    (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
+    Hermes entrypoint plus the ``gateway`` subcommand, or a gateway-dedicated entrypoint. Tokenizes
+    quote-aware (Windows paths with spaces); ``--profile``/``-p`` selectors are stripped anywhere in
+    argv since ``_apply_profile_override`` removes them before argparse."""
+    if not command:
+        return None
+    embedded_argv = _python_c_sys_argv(command)
+    if embedded_argv is not None:
+        subcommand = _gateway_command_subcommand_from_tokens(
+            embedded_argv, hermes_entrypoint_inferred=True
+        )
+        if subcommand is not None:
+            return subcommand
+    try:
+        raw_tokens = shlex.split(command, posix=False)
+    except ValueError:
+        raw_tokens = command.split()
+    return _gateway_command_subcommand_from_tokens(raw_tokens)
 
 
 def looks_like_gateway_command_line(command: str | None) -> bool:

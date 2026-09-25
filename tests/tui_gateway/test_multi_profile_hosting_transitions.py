@@ -38,7 +38,7 @@ def two_homes(tmp_path, monkeypatch):
     monkeypatch.setenv("INJECTED_TOKEN", ENV_VAL)  # systemd / op run credential injection, no file
     monkeypatch.setattr(server, "_hermes_home", root)
     monkeypatch.setattr(server, "_served_profile_homes", set())
-    monkeypatch.setattr(lpp, "_snapshot", None)
+    monkeypatch.setattr(lpp, "_authority", None)
     monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", False)
     return root, b
 
@@ -95,7 +95,7 @@ def test_launch_body_survives_first_secondary_activation_on_the_dashboard(two_ho
     from hermes_cli import web_server_profiles as wsp
 
     root, b = two_homes
-    monkeypatch.setattr(wsp, "_resolve_profile_dir", lambda name: b)
+    monkeypatch.setattr(wsp, "_resolve_profile_dir", lambda name, **_kwargs: b)
     entered, activated = threading.Event(), threading.Event()
     seen: dict = {}
 
@@ -139,3 +139,23 @@ def test_release_resets_every_scope_when_one_reset_fails(two_homes, monkeypatch)
     assert current_secret_scope() is None
     assert get_hermes_home_override() is None
     assert Path(server._hermes_home) == root
+
+
+def test_capture_launch_authority_freezes_relative_home_to_capture_cwd(
+    tmp_path, monkeypatch
+):
+    launch_cwd = tmp_path / "launch-cwd"
+    late_cwd = tmp_path / "late-cwd"
+    launch_cwd.mkdir()
+    late_cwd.mkdir()
+    monkeypatch.chdir(launch_cwd)
+    monkeypatch.setenv("HERMES_HOME", ".")
+    monkeypatch.delenv("PWD", raising=False)
+    monkeypatch.setattr(lpp, "_authority", None)
+
+    authority = lpp.capture_launch_authority()
+    assert authority.home == launch_cwd
+    assert authority.env["PWD"] == str(launch_cwd)
+
+    monkeypatch.chdir(late_cwd)
+    assert lpp.launch_home() == launch_cwd

@@ -7,6 +7,8 @@ reads/writes land in the REQUESTED profile, the dashboard's own profile
 stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -635,6 +637,445 @@ class TestProfileScopedChatPty:
         assert env is not None
         assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
         # Scoped chat must NOT attach to the dashboard's in-memory gateway.
+        assert "HERMES_TUI_GATEWAY_URL" not in env
+
+    @pytest.mark.parametrize(
+        ("target_env", "expected_overlap", "expected_target_only"),
+        [
+            (
+                "FIRECRAWL_API_KEY=worker-overlap\n"
+                "ANTHROPIC_API_KEY=worker-only\n"
+                "AWS_ACCESS_KEY_ID=worker-aws-access\n"
+                "AWS_SECRET_ACCESS_KEY=worker-aws-secret\n"
+                "HERMES_CUSTOM_DEMO_API_KEY=worker-custom\n"
+                "CUSTOM_BOX_API_KEY=worker-box\n"
+                "HERMES_PROFILE=forged-profile\n",
+                "worker-overlap",
+                "worker-only",
+            ),
+            ("", None, None),
+            (None, None, None),
+        ],
+        ids=("target-env", "empty-target-env", "missing-target-env"),
+    )
+    def test_chat_argv_child_gets_selected_profile_credentials_only(
+        self,
+        isolated_profiles,
+        monkeypatch,
+        target_env,
+        expected_overlap,
+        expected_target_only,
+    ):
+        launch_home = isolated_profiles["default"]
+        worker_home = isolated_profiles["worker_beta"]
+        (launch_home / ".env").write_text(
+            "OPENAI_API_KEY=launch-only\n"
+            "FIRECRAWL_API_KEY=launch-overlap\n",
+            encoding="utf-8",
+        )
+        worker_env = worker_home / ".env"
+        if target_env is None:
+            worker_env.unlink()
+        else:
+            worker_env.write_text(target_env, encoding="utf-8")
+        worker_config_path = worker_home / "config.yaml"
+        worker_config = yaml.safe_load(worker_config_path.read_text(encoding="utf-8")) or {}
+        worker_config["model"] = {
+            "provider": "custom",
+            "key_env": "CUSTOM_BOX_API_KEY",
+        }
+        worker_config_path.write_text(
+            yaml.safe_dump(worker_config, sort_keys=False), encoding="utf-8"
+        )
+        launch_config_path = launch_home / "config.yaml"
+        launch_config = yaml.safe_load(launch_config_path.read_text(encoding="utf-8")) or {}
+        launch_config["model"] = {
+            "provider": "custom",
+            "key_env": "SOURCE_CUSTOM_TOKEN",
+        }
+        launch_config_path.write_text(
+            yaml.safe_dump(launch_config, sort_keys=False), encoding="utf-8"
+        )
+
+        # Pin the explicit profile-HOME policy from #103651. The dashboard chat
+        # must apply it after selecting the target profile, not before.
+        (launch_home / "home").mkdir()
+        (worker_home / "home").mkdir()
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+        monkeypatch.setenv("OPENAI_API_KEY", "launch-only")
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "launch-overlap")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "launch-aws-access")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "launch-aws-secret")
+        monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/launch/.aws/credentials")
+        monkeypatch.setenv("AWS_CONFIG_FILE", "/launch/.aws/config")
+        monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "false")
+        monkeypatch.setenv("AWS_CREDENTIAL_FILE", "/launch/.aws/legacy-credentials")
+        monkeypatch.setenv("BOTO_CONFIG", "/launch/.boto")
+        monkeypatch.setenv("AWS_SECURITY_TOKEN", "launch-legacy-token")
+        monkeypatch.setenv("AWS_CREDENTIAL_EXPIRATION", "2099-01-01T00:00:00Z")
+        monkeypatch.setenv("AWS_ACCOUNT_ID", "123456789012")
+        monkeypatch.setenv("AWS_LOGIN_CACHE_DIRECTORY", "/launch/.aws/login/cache")
+        monkeypatch.setenv("HERMES_CUSTOM_DEMO_API_KEY", "launch-custom")
+        monkeypatch.setenv("CUSTOM_BOX_API_KEY", "launch-box")
+        monkeypatch.setenv("SOURCE_CUSTOM_TOKEN", "launch-source-only")
+        monkeypatch.setenv("HERMES_PROFILE", "default")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("UNRELATED_SETTING", "keep")
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+        probe = (
+            "import json,os; print(json.dumps({k: os.environ.get(k) for k in "
+            "('HERMES_HOME','HOME','OPENAI_API_KEY','FIRECRAWL_API_KEY',"
+            "'ANTHROPIC_API_KEY','AWS_ACCESS_KEY_ID','AWS_SECRET_ACCESS_KEY',"
+            "'AWS_SHARED_CREDENTIALS_FILE','AWS_CONFIG_FILE','AWS_EC2_METADATA_DISABLED',"
+            "'AWS_CREDENTIAL_FILE','BOTO_CONFIG','AWS_SECURITY_TOKEN',"
+            "'AWS_CREDENTIAL_EXPIRATION','AWS_ACCOUNT_ID',"
+            "'AWS_LOGIN_CACHE_DIRECTORY',"
+            "'HERMES_CUSTOM_DEMO_API_KEY','CUSTOM_BOX_API_KEY','HERMES_PROFILE',"
+            "'SOURCE_CUSTOM_TOKEN',"
+            "'UNRELATED_SETTING',"
+            "'HERMES_TUI_GATEWAY_URL')}))"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            env=env,
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=60,
+        )
+        seen = json.loads(result.stdout)
+
+        assert seen == {
+            "HERMES_HOME": str(worker_home),
+            "HOME": str(worker_home / "home"),
+            "OPENAI_API_KEY": None,
+            "FIRECRAWL_API_KEY": expected_overlap,
+            "ANTHROPIC_API_KEY": expected_target_only,
+            "AWS_ACCESS_KEY_ID": "worker-aws-access" if target_env else None,
+            "AWS_SECRET_ACCESS_KEY": "worker-aws-secret" if target_env else None,
+            "AWS_SHARED_CREDENTIALS_FILE": str(worker_home / ".aws" / "credentials"),
+            "AWS_CONFIG_FILE": str(worker_home / ".aws" / "config"),
+            "AWS_EC2_METADATA_DISABLED": "true",
+            "AWS_CREDENTIAL_FILE": None,
+            "BOTO_CONFIG": str(worker_home / ".boto"),
+            "AWS_SECURITY_TOKEN": None,
+            "AWS_CREDENTIAL_EXPIRATION": None,
+            "AWS_ACCOUNT_ID": None,
+            "AWS_LOGIN_CACHE_DIRECTORY": str(worker_home / ".aws" / "login" / "cache"),
+            "HERMES_CUSTOM_DEMO_API_KEY": "worker-custom" if target_env else None,
+            "CUSTOM_BOX_API_KEY": "worker-box" if target_env else None,
+            "SOURCE_CUSTOM_TOKEN": None,
+            "HERMES_PROFILE": "worker_beta",
+            "UNRELATED_SETTING": "keep",
+            "HERMES_TUI_GATEWAY_URL": None,
+        }
+
+    @pytest.mark.parametrize("target_dotenv_exists", [True, False])
+    @pytest.mark.parametrize("explicit_launch_home", [True, False])
+    def test_chat_argv_uses_frozen_launch_env_after_profile_activation(
+        self, isolated_profiles, monkeypatch, target_dotenv_exists, explicit_launch_home
+    ):
+        from agent.secret_scope import set_multiplex_active
+        from hermes_cli import profiles as profiles_mod
+        from hermes_constants import get_default_hermes_root
+        from tui_gateway import launch_profile_policy
+
+        launch_home = isolated_profiles["default"]
+        monkeypatch.setattr(
+            profiles_mod, "_get_default_hermes_home", get_default_hermes_root
+        )
+        monkeypatch.setattr(
+            profiles_mod,
+            "_get_profiles_root",
+            lambda: get_default_hermes_root() / "profiles",
+        )
+        worker_home = isolated_profiles["worker_beta"]
+        (launch_home / "config.yaml").write_text(
+            "terminal:\n  ssh_host: ${LAUNCH_HOST}\n", encoding="utf-8"
+        )
+        next_worker_home = launch_home / "profiles" / "worker_gamma"
+        next_worker_home.mkdir(parents=True)
+        (next_worker_home / "home").mkdir()
+        (next_worker_home / "config.yaml").write_text(
+            "terminal:\n  ssh_user: target-config-poison\n", encoding="utf-8"
+        )
+        late_root = launch_home / "late-root-poison"
+        late_worker_home = late_root / "profiles" / "worker_gamma"
+        late_worker_home.mkdir(parents=True)
+        (late_worker_home / "config.yaml").write_text(
+            "terminal:\n  ssh_user: late-root-poison\n", encoding="utf-8"
+        )
+        if target_dotenv_exists:
+            (next_worker_home / ".env").write_text("", encoding="utf-8")
+        real_home = launch_home / "real-home"
+        real_home.mkdir()
+        late_real_home = launch_home / "secondary-poison-home"
+        late_real_home.mkdir()
+        if not explicit_launch_home:
+            monkeypatch.setattr(
+                "hermes_constants._get_platform_default_hermes_home",
+                lambda env=None: launch_home,
+            )
+            monkeypatch.delenv("HERMES_HOME")
+        monkeypatch.setattr(launch_profile_policy, "_authority", None)
+        monkeypatch.setattr("hermes_constants.is_container", lambda: False)
+        set_multiplex_active(False)
+        monkeypatch.setenv("HOME", str(real_home))
+        monkeypatch.delenv("HERMES_REAL_HOME", raising=False)
+        monkeypatch.delenv("TERMINAL_HOME_MODE", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "launch-only")
+        monkeypatch.setenv("LAUNCH_HOST", "launch-config")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "launch-operator")
+        monkeypatch.setenv("UNRELATED_SETTING", "launch-global")
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, first_env = _web_server_chat._resolve_chat_argv(
+            profile="worker_beta"
+        )
+        # A secondary-profile task may mutate process-global HERMES_HOME. Profile-name
+        # resolution must remain rooted in the same frozen launch authority as the
+        # child environment, rather than accepting a different profiles tree.
+        monkeypatch.setenv("HERMES_HOME", str(late_worker_home))
+        monkeypatch.setenv("HERMES_REAL_HOME", str(late_real_home))
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "profile")
+        monkeypatch.setenv("LAUNCH_HOST", "late-config-poison")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "secondary-poison")
+        monkeypatch.setenv("UNRELATED_SETTING", "secondary-poison")
+        _argv, _cwd, next_env = _web_server_chat._resolve_chat_argv(
+            profile="worker_gamma"
+        )
+        _argv, _cwd, current_env = _web_server_chat._resolve_chat_argv(profile="current")
+
+        probe = (
+            "import json,os; print(json.dumps({k: os.environ.get(k) for k in "
+            "('HERMES_HOME','HOME','HERMES_REAL_HOME','OPENAI_API_KEY',"
+            "'TERMINAL_SSH_USER','TERMINAL_SSH_HOST','UNRELATED_SETTING')}))"
+        )
+
+        def observe(env):
+            result = subprocess.run(
+                [sys.executable, "-c", probe],
+                env=env,
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=60,
+            )
+            return json.loads(result.stdout)
+
+        assert observe(first_env) == {
+            "HERMES_HOME": str(worker_home),
+            "HOME": str(real_home),
+            "HERMES_REAL_HOME": str(real_home),
+            "OPENAI_API_KEY": None,
+            "TERMINAL_SSH_USER": "launch-operator",
+            "TERMINAL_SSH_HOST": None,
+            "UNRELATED_SETTING": "launch-global",
+        }
+        assert observe(next_env) == {
+            "HERMES_HOME": str(next_worker_home),
+            "HOME": str(real_home),
+            "HERMES_REAL_HOME": str(real_home),
+            "OPENAI_API_KEY": None,
+            "TERMINAL_SSH_USER": "target-config-poison",
+            "TERMINAL_SSH_HOST": None,
+            "UNRELATED_SETTING": "launch-global",
+        }
+        assert observe(current_env) == {
+            "HERMES_HOME": str(launch_home) if explicit_launch_home else None,
+            "HOME": str(real_home),
+            "HERMES_REAL_HOME": str(real_home),
+            "OPENAI_API_KEY": "launch-only",
+            "TERMINAL_SSH_USER": "launch-operator",
+            "TERMINAL_SSH_HOST": "launch-config",
+            "UNRELATED_SETTING": "launch-global",
+        }
+
+    def test_chat_argv_does_not_restore_launch_external_source_terminal_secret(
+        self, isolated_profiles, monkeypatch
+    ):
+        from hermes_cli import env_loader
+        from tui_gateway import launch_profile_policy
+
+        launch_home = isolated_profiles["default"]
+        marker = '{"LAUNCH_TOKEN":"external-source-secret"}'
+        monkeypatch.setattr(launch_profile_policy, "_authority", None)
+        monkeypatch.setenv("TERMINAL_DOCKER_ENV", marker)
+        monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+            str(launch_home.resolve()),
+            {
+                "TERMINAL_DOCKER_ENV": marker,
+                # External sources snapshot skipped-existing values too. This
+                # one remains a genuine operator export, not source-owned.
+                "TERMINAL_SSH_USER": "operator-user",
+            },
+        )
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_OWNED_NAMES_BY_HOME,
+            str(launch_home.resolve()),
+            frozenset({"terminal_docker_env"}),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+
+        assert env is not None
+        assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
+        assert env.get("TERMINAL_DOCKER_ENV") != marker
+        assert env["TERMINAL_SSH_USER"] == "operator-user"
+
+    def test_chat_argv_scrubs_skipped_external_credentials_but_keeps_global_export(
+        self, isolated_profiles, monkeypatch
+    ):
+        from hermes_cli import env_loader
+        from tui_gateway import launch_profile_policy
+
+        launch_home = isolated_profiles["default"]
+        target_home = isolated_profiles["worker_beta"]
+        target_env = target_home / ".env"
+        target_env.write_text(
+            target_env.read_text(encoding="utf-8")
+            + "VAULT_OVERLAP=target-value\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(launch_profile_policy, "_authority", None)
+        monkeypatch.setenv("VAULT_OVERLAP", "launch-value")
+        monkeypatch.setenv("VAULT_LAUNCH_ONLY", "launch-only")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
+        home_key = str(launch_home.resolve())
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_VALUES_BY_HOME,
+            home_key,
+            {
+                "VAULT_OVERLAP": "launch-value",
+                "VAULT_LAUNCH_ONLY": "launch-only",
+                "TERMINAL_SSH_USER": "operator-user",
+            },
+        )
+        monkeypatch.setitem(
+            env_loader._SECRET_SOURCE_OWNED_NAMES_BY_HOME,
+            home_key,
+            frozenset(),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+
+        assert env is not None
+        assert env["VAULT_OVERLAP"] == "target-value"
+        assert "VAULT_LAUNCH_ONLY" not in env
+        assert env["TERMINAL_SSH_USER"] == "operator-user"
+
+    def test_chat_argv_resume_uses_frozen_profile_store(
+        self, isolated_profiles, monkeypatch
+    ):
+        import os
+
+        from hermes_cli import profiles
+        from hermes_state import SessionDB
+        from tui_gateway import launch_profile_policy
+
+        launch_home = isolated_profiles["default"]
+        launch_profile = isolated_profiles["worker_beta"]
+        late_root = launch_home / "late-root"
+        late_profile = late_root / "profiles" / "worker_beta"
+        late_profile.mkdir(parents=True)
+        (late_profile / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        for home, child in (
+            (launch_profile, "child-from-launch-root"),
+            (late_profile, "child-from-poison-root"),
+        ):
+            db = SessionDB(db_path=home / "state.db")
+            db.create_session("resume-parent", source="webui")
+            db.create_session(child, source="webui", parent_session_id="resume-parent")
+            db.close()
+
+        monkeypatch.setattr(launch_profile_policy, "_authority", None)
+        monkeypatch.setattr(
+            profiles,
+            "_get_profiles_root",
+            lambda: Path(os.environ["HERMES_HOME"]) / "profiles",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _web_server_chat._resolve_chat_argv(profile="worker_beta")
+        monkeypatch.setenv("HERMES_HOME", str(late_root))
+
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(
+            profile="worker_beta", resume="resume-parent"
+        )
+
+        assert env is not None
+        assert env["HERMES_HOME"] == str(launch_profile)
+        assert env["HERMES_TUI_RESUME"] == "child-from-launch-root"
+
+    def test_chat_argv_keeps_profile_authority_over_dotenv_overrides(
+        self, isolated_profiles, monkeypatch
+    ):
+        launch_home = isolated_profiles["default"]
+        worker_home = isolated_profiles["worker_beta"]
+        (launch_home / ".env").write_text(
+            'TERMINAL_DOCKER_ENV={"LAUNCH_TOKEN":"secret"}\n',
+            encoding="utf-8",
+        )
+        (worker_home / ".env").write_text(
+            "HERMES_HOME=/wrong/profile\n"
+            "HOME=/wrong/home\n"
+            "HERMES_TUI_GATEWAY_URL=ws://wrong.example.test/api/ws\n",
+            encoding="utf-8",
+        )
+        (launch_home / "config.yaml").write_text(
+            "terminal:\n  home_mode: real\n",
+            encoding="utf-8",
+        )
+        (worker_home / "config.yaml").write_text(
+            "terminal:\n  home_mode: profile\n",
+            encoding="utf-8",
+        )
+        (launch_home / "home").mkdir()
+        (worker_home / "home").mkdir()
+        monkeypatch.setenv("TERMINAL_HOME_MODE", "real")
+        monkeypatch.setenv("TERMINAL_DOCKER_ENV", '{"LAUNCH_TOKEN":"secret"}')
+        monkeypatch.setenv("TERMINAL_SSH_USER", "operator-user")
+        monkeypatch.setattr(
+            "hermes_cli.main_tui_launch._make_tui_argv",
+            lambda root, tui_dev=False: (["cat"], None),
+            raising=False,
+        )
+
+        _argv, _cwd, env = _web_server_chat._resolve_chat_argv(profile="worker_beta")
+
+        assert env is not None
+        assert env["HERMES_HOME"] == str(worker_home)
+        assert env["HOME"] == str(worker_home / "home")
+        assert env["TERMINAL_HOME_MODE"] == "profile"
+        assert env.get("TERMINAL_DOCKER_ENV") != '{"LAUNCH_TOKEN":"secret"}'
+        assert env["TERMINAL_SSH_USER"] == "operator-user"
         assert "HERMES_TUI_GATEWAY_URL" not in env
 
     def test_chat_argv_bridges_selected_profile_terminal_config(

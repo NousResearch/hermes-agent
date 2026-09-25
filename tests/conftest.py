@@ -277,8 +277,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
 
     platform_default = hermes_constants._get_platform_default_hermes_home
 
-    def isolated_platform_default() -> Path:
-        root = platform_default()
+    def isolated_platform_default(env=None) -> Path:
+        root = platform_default(env)
+        if env is not None:
+            return root
         # Explicit Path.home()/LOCALAPPDATA overrides in individual tests
         # still select their own layout. Suffix changes retain their name.
         return tmp_path / root.name if root.parent == _NATIVE_HERMES_PARENT else root
@@ -337,8 +339,8 @@ def _hermetic_environment(tmp_path, monkeypatch):
     if secret_scope_mod is not None and hasattr(secret_scope_mod, "_AUTO_PINNED_HOME"):
         monkeypatch.setattr(secret_scope_mod, "_AUTO_PINNED_HOME", None)
     launch_policy_mod = sys.modules.get("tui_gateway.launch_profile_policy")
-    if launch_policy_mod is not None and hasattr(launch_policy_mod, "_snapshot"):
-        monkeypatch.setattr(launch_policy_mod, "_snapshot", None)
+    if launch_policy_mod is not None and hasattr(launch_policy_mod, "_authority"):
+        monkeypatch.setattr(launch_policy_mod, "_authority", None)
     tui_server_mod = sys.modules.get("tui_gateway.server")
     if tui_server_mod is not None and hasattr(tui_server_mod, "_served_profile_homes"):
         monkeypatch.setattr(tui_server_mod, "_served_profile_homes", set())

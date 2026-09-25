@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 
 
 def is_termux() -> bool:
@@ -50,11 +51,12 @@ def _proc_file_has_marker(path: str, markers: tuple[str, ...]) -> bool:
     return any(marker in content for marker in markers)
 
 
-def _detect_container() -> bool:
+def _detect_container(env: Mapping[str, str] | None = None) -> bool:
+    source = os.environ if env is None else env
     if (
         os.path.exists("/.dockerenv")
         or os.path.exists("/run/.containerenv")
-        or os.environ.get("KUBERNETES_SERVICE_HOST")
+        or source.get("KUBERNETES_SERVICE_HOST")
         or _proc_file_has_marker("/proc/1/cgroup", ("docker", "podman", "/lxc/", "kubepods", "containerd", "crio"))
     ):
         return True

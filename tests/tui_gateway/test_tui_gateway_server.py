@@ -9091,7 +9091,7 @@ def test_setup_runtime_check_scopes_launch_profile_in_multiplex_backend(monkeypa
     launch_home.mkdir()
     monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex.launch.test/v1")
     monkeypatch.setattr(server, "_hermes_home", launch_home)
-    monkeypatch.setattr(launch_profile_policy, "_snapshot", None)
+    monkeypatch.setattr(launch_profile_policy, "_authority", None)
     monkeypatch.setattr("hermes_cli.main._has_any_provider_configured", lambda **_kw: True)
     monkeypatch.setattr(server, "_resolve_startup_runtime", lambda: ("gpt-5.3-codex", None))
 

@@ -99,3 +99,36 @@ def test_suffix_does_not_change_explicit_or_context_home(tmp_path, monkeypatch):
         assert get_process_hermes_home() == get_default_hermes_root() == explicit
     finally:
         reset_hermes_home_override(token)
+
+
+@pytest.mark.platforms("linux", "macos", "windows")
+def test_explicit_environment_owns_default_home_and_suffix_atomically(
+    tmp_path, monkeypatch
+):
+    from hermes_constants import get_process_hermes_home
+
+    captured_root = tmp_path / "captured"
+    late_root = tmp_path / "late"
+    snapshot = {
+        "HOME": str(captured_root),
+        "USERPROFILE": str(captured_root),
+        "LOCALAPPDATA": str(captured_root / "AppData" / "Local"),
+        "HERMES_DATA_DIR_SUFFIX": " captured ",
+    }
+    without_suffix = {
+        key: value
+        for key, value in snapshot.items()
+        if key != "HERMES_DATA_DIR_SUFFIX"
+    }
+    monkeypatch.setenv("HOME", str(late_root))
+    monkeypatch.setenv("USERPROFILE", str(late_root))
+    monkeypatch.setenv("LOCALAPPDATA", str(late_root / "AppData" / "Local"))
+    monkeypatch.setenv("HERMES_DATA_DIR_SUFFIX", "-late")
+
+    base = (
+        captured_root / "AppData" / "Local" / "hermes"
+        if sys.platform == "win32"
+        else captured_root / ".hermes"
+    )
+    assert get_process_hermes_home(snapshot) == Path(str(base) + " captured ")
+    assert get_process_hermes_home(without_suffix) == base

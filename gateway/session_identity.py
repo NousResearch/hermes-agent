@@ -260,11 +260,40 @@ def resolve_identity(
         source.profile = routed or adapter_profile
 
     runtime_name = _name(source.profile) or primary_profile
-    # A routed runtime goes through the runner's resolver (missing-profile fallback + warning);
-    # a bot serving its own profile runs where it authorizes.
-    runtime_home = (
-        authorization_home if runtime_name == transport_name
-        else Path(runner._resolve_profile_home_for_source(source)))
+    # A routed runtime goes through the runner's resolver (missing-profile fallback + warning)
+    # unless the caller supplied the frozen primary home. Resolve from that authority without
+    # re-reading a later process-global HERMES_HOME; a named primary lives at
+    # <root>/profiles/<name>, so sibling profiles are children of <root>, not of the primary.
+    if runtime_name == transport_name:
+        runtime_home = authorization_home
+    elif primary_home is not None:
+        from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+        from hermes_constants import named_profile_is_live
+
+        try:
+            canonical_runtime = normalize_profile_name(runtime_name)
+            validate_profile_name(canonical_runtime)
+        except ValueError as exc:
+            source.profile_route_rejected = True
+            raise IdentityUnresolved(f"{where}: invalid profile {runtime_name!r}") from exc
+        primary_path = Path(primary_home)
+        root = (
+            primary_path.parent.parent
+            if primary_path.parent.name == "profiles"
+            else primary_path
+        )
+        runtime_home = (
+            root
+            if canonical_runtime == "default"
+            else root / "profiles" / canonical_runtime
+        )
+        if canonical_runtime != "default" and not named_profile_is_live(runtime_home):
+            source.profile_route_rejected = True
+            raise IdentityUnresolved(
+                f"{where}: routed profile {canonical_runtime!r} is not served"
+            )
+    else:
+        runtime_home = Path(runner._resolve_profile_home_for_source(source))
     identity = RoutingIdentity(
         transport_profile=transport_name, runtime_profile=runtime_name,
         authorization_home=authorization_home, runtime_home=runtime_home,

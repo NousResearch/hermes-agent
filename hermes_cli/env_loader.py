@@ -36,6 +36,9 @@ _SECRET_SOURCES: dict[str, str] = {}
 _SECRET_SOURCE_VALUES_BY_HOME: dict[str, dict[str, str]] = {}
 # Per home: the subset of the snapshot a dotenv reload may re-assert — see ``AppliedVar.authoritative`` (#74265).
 _SECRET_SOURCE_RESTORE_BY_HOME: dict[str, dict[str, str]] = {}
+# Names an external source actually wrote for each home. The value snapshot also contains
+# ``skipped_existing`` names whose shell/systemd/.env value won; those are not source-owned.
+_SECRET_SOURCE_OWNED_NAMES_BY_HOME: dict[str, frozenset[str]] = {}
 # HERMES_HOME paths already pulled external secrets for: load_hermes_dotenv() runs at import time from
 # several hot modules, so without this the Bitwarden status line prints 3-5x per startup and the config
 # re-parse + ASCII sweep re-run each time (Bitwarden's own cache only saves the network call).
@@ -111,6 +114,17 @@ def get_secret_source_values(hermes_home: str | os.PathLike) -> dict[str, str]:
     return dict(_SECRET_SOURCE_VALUES_BY_HOME.get(str(Path(hermes_home).resolve()), {}))
 
 
+def get_secret_source_owned_names(hermes_home: str | os.PathLike) -> frozenset[str]:
+    """Names an external source actually wrote for ``hermes_home``.
+
+    Unlike :func:`get_secret_source_values`, this excludes supplied names that were
+    skipped because an existing shell/systemd/.env value won.
+    """
+    return _SECRET_SOURCE_OWNED_NAMES_BY_HOME.get(
+        str(Path(hermes_home).resolve()), frozenset()
+    )
+
+
 def hydrate_profile_secret_sources(hermes_home: str | os.PathLike) -> dict[str, str]:
     """Resolve one profile's configured sources without mutating ``os.environ``: multiplex gateways route
     turns to profiles that never ran the process-global dotenv path, so resolve against a private mapping
@@ -172,6 +186,7 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
             continue
         _SECRET_SOURCES[name] = applied.source
         values[name] = value
+    _SECRET_SOURCE_OWNED_NAMES_BY_HOME[home_key] = frozenset(report.provenance)
     _SECRET_SOURCE_VALUES_BY_HOME[home_key] = values
     return dict(values)
 
@@ -182,7 +197,9 @@ def reset_secret_source_cache(hermes_home: str | os.PathLike | None = None) -> N
     ``hermes_home`` limits the reset to ONE home: a multiplex gateway keeps every profile's snapshot in
     this process, and a per-fire cron re-pull or a plugin-discovery refresh for one home must not wipe
     a sibling's hydrated snapshot — the sibling's next scope build would run empty until it re-hydrated
-    (#102041)."""
+    (#102041). Source-ownership history intentionally survives resets: a re-pull sees
+    the prior source write as ``skipped_existing``, but that value must not be
+    reclassified as a shell export and leaked to another profile."""
     if hermes_home is None:
         _APPLIED_HOMES.clear()
         _SECRET_SOURCES.clear()
@@ -567,6 +584,14 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         _sanitize_loaded_credentials()  # vault values carry the same copy-paste corruption risk as .env
         for name, applied in report.provenance.items():
             _SECRET_SOURCES[name] = applied.source
+
+    # Keep process-lifetime provenance across cron/plugin cache resets. On the next
+    # pull, a source's own previous write is reported as ``skipped_existing`` and is
+    # otherwise indistinguishable from a genuine operator export.
+    previously_owned = _SECRET_SOURCE_OWNED_NAMES_BY_HOME.get(home_key, frozenset())
+    _SECRET_SOURCE_OWNED_NAMES_BY_HOME[home_key] = frozenset(
+        set(previously_owned).union(report.provenance)
+    )
 
     # Snapshot EVERY name a source supplied, not just the newly applied ones. A name the source supplied
     # but the pre-existing process value won (``skipped_existing``) is still this home's effective value

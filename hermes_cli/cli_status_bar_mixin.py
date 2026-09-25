@@ -1072,7 +1072,9 @@ class CLIStatusBarMixin:
                     label = snapshot.get(key) or ""
                     if label:
                         add(name, _DIM, f"{glyph} {label}")
-            add_count("compressions", "compressions", "🗜️", self._compression_count_style)
+            # No VS16: terminals expand the emoji form to two cells, while
+            # prompt_toolkit counts one and diff-redraws later fields off by one.
+            add_count("compressions", "compressions", "🗜", self._compression_count_style)
             add_count("bg_tasks", "active_background_tasks", "▶")
             add_count("bg_processes", "active_background_processes", "⚙")
             add_count("bg_subagents", "active_background_subagents", "⛓")

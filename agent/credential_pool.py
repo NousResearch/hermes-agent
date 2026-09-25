@@ -147,6 +147,7 @@ FAILURE_REASON_BILLING = "billing"
 # content-filter rejection, which leaves the credential healthy. Unverified
 # billing gets the short transient cooldown; genuine depletion re-latches.
 FAILURE_REASON_BILLING_UNVERIFIED = "billing_unverified"
+FAILURE_REASONS_TRANSIENT_SERVER = frozenset({"server_error", "overloaded"})
 
 # Throttle window for the "no available entries" INFO line. Selection runs on
 # every model call; on Windows several processes share one rotating log behind
@@ -385,13 +386,15 @@ def _exhausted_ttl(
     exceeded`` and an xAI spending block both arrive as 403 but are billing,
     and a 60s retry on a spent account just re-fails. Billing keeps the full
     bench regardless of status; 402 is billing by definition.
-    Unverified billing (#82154) gets the short cooldown regardless of pool
-    size (the credential may be healthy), unless the status is a true 402.
+    Unverified billing (#82154) and classified 5xx server failures get the
+    short cooldown regardless of pool size (the credential may be healthy).
     """
     if error_code == 401:
         return EXHAUSTED_TTL_401_SECONDS
     base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
     if failure_reason == FAILURE_REASON_BILLING_UNVERIFIED and error_code != 402:
+        return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
+    if failure_reason in FAILURE_REASONS_TRANSIENT_SERVER and error_code is not None and 500 <= error_code < 600:
         return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
     is_billing = error_code == 402 or failure_reason == FAILURE_REASON_BILLING
     if sole_credential and not is_billing:

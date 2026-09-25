@@ -204,7 +204,13 @@ export function useOnboardingKickoff({
       // Set the title explicitly so the backend does not name the session after the hidden runbook message.
       await guideRequest('session.title', { session_id: runtimeId, title: SETUP_CHAT_TITLE }).catch(() => undefined)
 
-      await adoptGuideSession(setupProfile, { id: storedId ?? runtimeId }, record.free_tier, resumeSession, guideRequest)
+      await adoptGuideSession(
+        setupProfile,
+        { id: storedId ?? runtimeId },
+        record.free_tier,
+        resumeSession,
+        guideRequest
+      )
 
       return true
     } catch (error) {

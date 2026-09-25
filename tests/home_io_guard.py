@@ -76,6 +76,16 @@ class HomeIOGuard:
             if any(absolute.is_relative_to(prefix) or (metadata and prefix.is_relative_to(absolute))
                    for prefix in _INTERPRETER_PREFIXES):
                 return
+            # The payload-marker probe (``<checkout>/../manifest.json``, pm.environments.store_root)
+            # is installation layout, not Hermes state. On the default install shape the checkout
+            # lives INSIDE the home (install.sh: INSTALL_DIR=$HERMES_HOME/hermes-agent), so that
+            # probe lands on the real root's sibling file and tripped this guard on every
+            # store-touching test. Exempt it (metadata only, and only when the checkout sits
+            # directly inside the probed directory).
+            if metadata and absolute.name == "manifest.json" and any(
+                prefix.is_relative_to(absolute.parent) for prefix in _INTERPRETER_PREFIXES
+            ):
+                return
             # Check the lexical path first: resolving must not probe a protected
             # tree merely to decide that the original path was forbidden.
             if any(absolute.is_relative_to(root) for root in roots):

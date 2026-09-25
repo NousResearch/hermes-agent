@@ -455,8 +455,10 @@ def _emit_partial(exc: subprocess.TimeoutExpired) -> None:
     then hung has its reply sitting in this buffer (bytes even for text-mode runs)."""
     for buf, sink in ((exc.stdout, sys.stdout), (exc.stderr, sys.stderr)):
         if buf:
-            sink.write(buf.decode("utf-8", "replace") if isinstance(buf, bytes) else buf)
-            sink.flush()
+            # A closed reader must not replace the DeliveryTimeout the caller raises next.
+            with contextlib.suppress(OSError):
+                sink.write(buf.decode("utf-8", "replace") if isinstance(buf, bytes) else buf)
+                sink.flush()
 
 
 def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> int:
@@ -632,7 +634,8 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                     return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env,
                                           timeout=budget).returncode
                 except subprocess.TimeoutExpired:
-                    raise DeliveryTimeout(budget) from None  # stdout was not captured; nothing to re-emit
+                    # Not piped: the transport inherited this runner's stdout/stderr, so its output already went out.
+                    raise DeliveryTimeout(budget) from None
     finally:
         _unlink_dm_file(dm_file)
 

@@ -55,3 +55,17 @@ def test_runner_reports_delivery_timeout_to_the_sender(hung_target, capsys):
 def test_delivery_timeout_config(monkeypatch, configured, expected):
     monkeypatch.setattr(bot_relay, "_bot_mode_cfg", lambda key, loader: configured)
     assert bot_mode_dm._delivery_timeout_seconds() == expected
+
+
+def test_partial_emit_survives_a_closed_reader(monkeypatch):
+    class _Closed:
+        def write(self, _):
+            raise BrokenPipeError
+
+        def flush(self):
+            raise BrokenPipeError
+
+    monkeypatch.setattr(sys, "stdout", _Closed())
+    monkeypatch.setattr(sys, "stderr", _Closed())
+    exc = bot_mode_dm.subprocess.TimeoutExpired(["x"], 1, output=b"reply \xff", stderr=b"err")
+    bot_mode_dm._emit_partial(exc)  # must not raise, so the caller's DeliveryTimeout is what surfaces

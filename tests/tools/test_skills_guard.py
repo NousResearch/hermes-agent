@@ -1,5 +1,6 @@
 """Tests for tools/skills_guard.py - security scanner for skills."""
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from tools.skills_guard import (
     ScanResult,
     scan_file,
     scan_skill,
+    scan_skill_cached,
     should_allow_install,
     format_scan_report,
     content_hash,
@@ -160,6 +162,42 @@ class TestScanFile:
         f.write_text("print('hello world')\n", encoding="utf-8")
         findings = scan_file(f, "safe.py")
         assert findings == []
+
+    @pytest.mark.parametrize("flag", ["--disable-setuid-sandbox", "--disable-setgid-sandbox", "--disable-cap_setuid-sandbox"])
+    def test_hyphenated_browser_flags_are_not_privilege_mechanisms(self, tmp_path, flag):
+        f = tmp_path / "browser.md"
+        f.write_text(f'puppeteer args: ["{flag}"]\n', encoding="utf-8")
+        assert not any(fi.pattern_id == "setuid_setgid" for fi in scan_file(f, f.name))
+
+    @pytest.mark.parametrize("mechanism", ["os.setuid(1000)", "setgid 1000", "cap_setuid+ep", "SETUID"])
+    def test_real_privilege_mechanisms_remain_critical(self, tmp_path, mechanism):
+        f = tmp_path / "privilege.md"
+        f.write_text(mechanism + "\n", encoding="utf-8")
+        assert any(
+            fi.pattern_id == "setuid_setgid" and fi.severity == "critical"
+            for fi in scan_file(f, f.name)
+        )
+
+    def test_previous_scanner_verdict_for_browser_flag_is_replaced(self, tmp_path):
+        skill = tmp_path / "browser-skill"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(
+            '---\nname: browser-skill\ndescription: Browser automation.\n---\n'
+            'puppeteer args: ["--disable-setuid-sandbox"]\n', encoding="utf-8"
+        )
+        cache = tmp_path / "scan-cache"
+        result, _ = scan_skill_cached(skill, cache_dir=cache)
+        assert result.verdict == "safe"
+
+        cache_file, = cache.glob("*.json")
+        previous = json.loads(cache_file.read_text(encoding="utf-8"))
+        previous.update(scanner_version="skills-guard-v6", verdict="dangerous")
+        cache_file.write_text(json.dumps(previous), encoding="utf-8")
+
+        result, provenance = scan_skill_cached(skill, cache_dir=cache)
+        assert result.verdict == "safe"
+        assert provenance["fresh"] is True
+        assert provenance["scanner_version"] != previous["scanner_version"]
 
 
     def test_socat_prose_is_not_a_reverse_shell_but_a_socat_relay_is(self, tmp_path):

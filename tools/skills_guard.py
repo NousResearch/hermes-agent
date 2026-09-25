@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v6"
+SCANNER_VERSION = "skills-guard-v7"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -348,7 +348,8 @@ THREAT_PATTERNS = [
     # `\bsudo\b` made every such plugin `caution`. A dotted event name is never a shell `sudo`.
     (r'\bsudo\b(?!\.(?:request|respond)\b)',
      "sudo_usage", "high", "privilege_escalation", "uses sudo (privilege escalation)"),
-    (r'setuid|setgid|cap_setuid',
+    # Chrome's --disable-setuid-sandbox is a flag, not a privilege mechanism.
+    (r'(?<![\w-])(?:setuid|setgid|cap_setuid)\b',
      "setuid_setgid", "critical", "privilege_escalation", "setuid/setgid (privilege escalation mechanism)"),
     (r'NOPASSWD',
      "nopasswd_sudo", "critical", "privilege_escalation", "NOPASSWD sudoers entry (passwordless privilege escalation)"),

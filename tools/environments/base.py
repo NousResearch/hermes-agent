@@ -421,9 +421,30 @@ class BaseEnvironment(ABC):
 
     @staticmethod
     def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:
-        """Append stdin_data as a shell heredoc to the command string (SDK backends)."""
-        delimiter = f"HERMES_STDIN_{uuid.uuid4().hex[:12]}"
-        return f"{command} << '{delimiter}'\n{stdin_data}\n{delimiter}"
+        """Feed stdin_data to the WHOLE command, byte-exact (SDK heredoc backends).
+
+        Two defects fixed together (#122011; wrong-command diagnosis from #94849
+        by JoshSnider): (1) ``cmd << DELIM`` appended to a compound command
+        binds only to its LAST command (in ``_atomic_write`` that is
+        ``trap - EXIT``), so ``cat`` read empty stdin and ``mv`` swapped an
+        empty temp over the target. The heredoc is instead attached to an
+        inner ``cat`` whose captured output becomes the group's stdin, so the
+        whole brace group reads it. (2) A heredoc always appends one ``\\n``;
+        command substitution strips trailing newlines, so framing the body
+        with a sentinel line lets us remove exactly the added byte:
+        ``$(cat)`` yields ``body + \\n + SENTINEL``, and stripping the
+        ``\\nSENTINEL`` suffix restores ``body`` byte-for-byte (hash
+        verification passes; the tool_result_storage +1 allowance is gone).
+        Only ``cat``/``printf``/substitution — no temp files, bash 3.2-safe.
+        """
+        outer = f"HERMES_STDIN_{uuid.uuid4().hex[:12]}"
+        sentinel = f"HERMES_EOF_{uuid.uuid4().hex[:12]}"
+        # The group closes on its own line so a trailing `# comment` in the
+        # wrapped command cannot comment the closer out.
+        return (
+            f"{{ {command}\n}} < <(__hermes_sd=$(cat << '{outer}'\n{stdin_data}\n{sentinel}\n{outer}\n); "
+            f"printf '%s' \"${{__hermes_sd%$'\\n'{sentinel}}}\")"
+        )
 
     # --- Process lifecycle ---
     def _wait_for_process(

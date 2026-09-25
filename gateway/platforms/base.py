@@ -876,7 +876,7 @@ def _kanban_board_db_paths() -> List[Path]:
 
 def _media_delivery_denied_paths() -> List[Path]:
     """Return absolute denylist paths under which delivery is never allowed."""
-    home = Path(os.path.expanduser("~"))
+    home = Path(os.environ.get("HOME") or os.path.expanduser("~"))
     return [*map(Path, _MEDIA_DELIVERY_DENIED_PREFIXES),
             *(home / sub for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS),
             *(r / rel for r in _credential_home_roots() for rel in _ROOT_CREDENTIAL_PATHS),
@@ -893,18 +893,24 @@ def _resolve_path(path: Path, *, strict: bool = False, expand: bool = False) -> 
 
 
 def _path_under_denied_prefix(resolved: Path) -> bool:
-    """True if ``resolved`` lives under a deny-listed system path — except a denied prefix that
-    IS the running user's own home: ``/root`` is listed so a non-root gateway can't deliver
-    another user's home, but a root-run gateway's own deliverables live under ``$HOME=/root``.
-    Credential sub-dirs (``~/.ssh``, ``~/.hermes/.env``) stay blocked (more-specific entries)."""
-    home = _resolve_path(Path(os.path.expanduser("~")))
+    """True if ``resolved`` lives under a deny-listed system path, except within this user's home.
+
+    A service home may equal a denied prefix (``/root``) or sit below one
+    (``/var/lib/hermes``). More-specific credential paths under home stay blocked.
+    """
+    home = _resolve_path(Path(os.environ.get("HOME") or os.path.expanduser("~")))
     for denied in _media_delivery_denied_paths():
         resolved_denied = _resolve_path(denied, expand=True)
         if resolved_denied is None:
             continue
         hit = resolved == resolved_denied or _path_is_within(resolved, resolved_denied)
-        if hit and resolved_denied != home:
-            return True
+        if not hit:
+            continue
+        if (home is not None
+                and _path_is_within(home, resolved_denied)
+                and _path_is_within(resolved, home)):
+            continue
+        return True
     return False
 
 

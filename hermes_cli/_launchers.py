@@ -110,6 +110,14 @@ def resolve_store_python(repo_root: Path) -> Path | None:
             candidate = runtime / entry / rel
             if candidate.is_file():
                 return candidate
+            # Deb-staged entries keep the payload's full $PREFIX tree
+            # (Termux). pm.package owns that prefix; imported lazily to
+            # keep the boot surface free of the package catalogue.
+            from pm.package import DebPackage
+
+            deb = runtime / entry / DebPackage.prefix_rel / rel
+            if deb.is_file():
+                return deb
 
     return None
 

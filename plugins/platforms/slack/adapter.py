@@ -4195,8 +4195,7 @@ class SlackAdapter(BasePlatformAdapter):
         thread_gated = self._slack_thread_require_mention() and is_thread_reply and not is_mentioned
         if force_process:
             return True
-        free_channel = channel_id not in self._slack_require_mention_channels() and (
-            channel_id in self._slack_free_response_channels() or not self._slack_require_mention())
+        free_channel = self._slack_free_response_channel(channel_id)
         if not free_channel and self._slack_strict_mention() and not is_mentioned:
             return False  # Strict mode: ignore until @-mentioned again
         if thread_gated:
@@ -4663,9 +4662,13 @@ class SlackAdapter(BasePlatformAdapter):
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
             media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context)
-        # React only when directly addressed; MPIMs are shared, so they need a
-        # mention like any channel.
-        if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
+        # React when directly addressed, or when this channel answers without a mention: the bot
+        # is assigned there, so a silent turn leaves the user with no sign it was heard. MPIMs are
+        # shared, so they earn the reaction only through the same channel gate.
+        if (
+            is_one_to_one_dm or is_mentioned
+            or (not is_dm and self._slack_free_response_channel(channel_id))
+        ) and self._reactions_enabled():
             self._track_reacting_message(team_id, ts)
         # App-context is per-turn UI state: in the user message, not SessionSource (would rebuild
         # the agent per view switch and leak stale context). Inert label, never a channel body.
@@ -6380,6 +6383,14 @@ class SlackAdapter(BasePlatformAdapter):
         "require_mention_channels", "SLACK_REQUIRE_MENTION_CHANNELS")
     _slack_ignored_channels = _extra_or_env_channel_set_getter(
         "ignored_channels", "SLACK_IGNORED_CHANNELS", coerce_scalar=True)
+
+    def _slack_free_response_channel(self, channel_id: str) -> bool:
+        """Whether ``channel_id`` is answered WITHOUT an @mention — an explicit
+        ``free_response_channels`` entry, or ``require_mention: false`` globally, unless
+        ``require_mention_channels`` pins this channel back to mention-only. The bot is assigned
+        to such a channel, so it owes the same visible acknowledgement a mention earns."""
+        return channel_id not in self._slack_require_mention_channels() and (
+            channel_id in self._slack_free_response_channels() or not self._slack_require_mention())
 
     def _slack_mention_patterns(self) -> List["re.Pattern"]:
         """Compile (cached) wake-word regexes from ``slack.mention_patterns`` (list/str) or

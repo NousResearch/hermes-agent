@@ -38,7 +38,7 @@ from hermes_cli.update_cmd import (
 )
 
 
-pytestmark = pytest.mark.macos_only  # launchd fleet restart is macOS-only; helpers use POSIX os.getuid
+pytestmark = pytest.mark.platforms("macos")  # launchd fleet restart is macOS-only; helpers use POSIX os.getuid
 
 UID = 501
 

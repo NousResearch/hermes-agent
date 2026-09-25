@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect } from 'react'
+import { useEffect, useLayoutEffect } from 'react'
 
 import { takeGuideShape } from '@/components/onboarding-chat/assembly'
 import {
@@ -13,7 +13,12 @@ import {
   startIntroReveal
 } from '@/store/intro-reveal'
 import { $desktopOnboarding } from '@/store/onboarding'
-import { beginOnboardingFlow, beginOnboardingFlowWithoutIntro, queueGuideAfterIntro } from '@/store/onboarding-gate'
+import {
+  $onboardingGate,
+  beginOnboardingFlow,
+  beginOnboardingFlowWithoutIntro,
+  queueGuideAfterIntro
+} from '@/store/onboarding-gate'
 
 import { INTRO_DEADMAN_MS, INTRO_EXIT_MS } from './timeline'
 
@@ -48,24 +53,19 @@ export function IntroRevealGate({ enabled }: IntroRevealGateProps) {
     })
   }, [enabled])
 
-  useEffect(() => {
-    if (!enabled) {
-      return
-    }
+  // The skipped-film path needs no backend. Cover the composer before first paint.
+  useLayoutEffect(() => {
+    if (isIntroRevealSkipped() && intro.phase === 'hidden') {
+      beginOnboardingFlowWithoutIntro(onboarding.firstRunSkipped)
 
-    // skipIntro turns the film off; the guided chat behind it must still run.
-    // Take the guide's shape on this tick, exactly like the film's completion
-    // edge, so no full-size shell paints while the guide session comes up.
-    if (isIntroRevealSkipped()) {
-      if (intro.phase === 'hidden') {
-        beginOnboardingFlowWithoutIntro(onboarding.firstRunSkipped)
+      if ($onboardingGate.get().guideQueued) {
         takeGuideShape()
       }
-
-      return
     }
+  }, [intro.phase, onboarding.firstRunSkipped])
 
-    if (intro.phase === 'hidden' && shouldPlayFirstRunIntro(onboarding.firstRunSkipped)) {
+  useEffect(() => {
+    if (enabled && intro.phase === 'hidden' && shouldPlayFirstRunIntro(onboarding.firstRunSkipped)) {
       beginOnboardingFlow()
       startIntroReveal()
     }

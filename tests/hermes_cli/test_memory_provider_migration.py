@@ -61,7 +61,7 @@ def test_provider_unknown_to_catalog_is_reported_not_installed(home, monkeypatch
 def test_startup_recovery_attempts_each_profile_home(tmp_path, monkeypatch):
     """One multiplexed process can start agents for two homes missing the same provider."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override
-    from tools import lazy_deps
+    from pm import install as pm_install
 
     homes = [tmp_path / "a", tmp_path / "b"]
     for profile_home in homes:
@@ -69,7 +69,7 @@ def test_startup_recovery_attempts_each_profile_home(tmp_path, monkeypatch):
         (profile_home / "config.yaml").write_text("memory:\n  provider: twin\n", encoding="utf-8")
     monkeypatch.setattr(mig, "_attempted", set())
     monkeypatch.setattr(mig, "catalog_source", lambda name: name)
-    monkeypatch.setattr(lazy_deps, "_allow_lazy_installs", lambda: True)
+    monkeypatch.setattr(pm_install, "lazy_installs_allowed", lambda: True)
     installed = []
 
     def fake_installer(profile_home):

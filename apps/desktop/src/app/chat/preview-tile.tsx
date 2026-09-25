@@ -33,6 +33,7 @@ import {
   popOutBrowserTab,
   type PreviewTarget
 } from '@/store/preview'
+import { explicitOpenBlocksZone, PREVIEW_TILE_PREFIX } from '@/store/preview-explicit'
 import { canOpenBrowserWindow } from '@/store/windows'
 
 import { paneMirror } from './pane-mirror'
@@ -169,8 +170,6 @@ function PreviewTabLead({ tabId }: { tabId: string }) {
   return <FileTypeIcon className="opacity-70" path={target.path || target.url} size="0.6875rem" />
 }
 
-const PREVIEW_TILE_PREFIX = 'preview-tile'
-
 const previewPaneId = (tabId: string) => `${PREVIEW_TILE_PREFIX}:${tabId}`
 
 /** The pane a NEW preview tile should stack into: another preview tile already
@@ -226,6 +225,18 @@ export function watchPreviewTiles(): void {
   const follow = () => {
     const tree = $layoutTree.get()
     const groupId = $activeTreeGroup.get()
+
+    // Do not copy this zone over an explicit open that lives in a different
+    // group. A focus change after that open lifts the guard.
+    if (
+      explicitOpenBlocksZone(
+        groupId,
+        $previewTabs.get().map(tab => tab.id)
+      )
+    ) {
+      return
+    }
+
     const active = groupId && tree ? findGroup(tree, groupId)?.active : undefined
 
     if (!active?.startsWith(`${PREVIEW_TILE_PREFIX}:`)) {

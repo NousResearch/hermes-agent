@@ -13,6 +13,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 import hermes_cli.gitlock as gitlock
 
 
@@ -144,3 +146,40 @@ def test_repair_does_not_mask_unrelated_object_loss(tmp_path):
     assert gitlock.repair_broken_shallow_boundaries(clone) == 0
     fsck = git(clone, "fsck", "--connectivity-only", check=False)
     assert "missing" in (fsck.stdout + fsck.stderr) or "broken link" in (fsck.stdout + fsck.stderr)
+
+
+@pytest.mark.parametrize("operation", ["repair", "prune"])
+def test_failed_shallow_maintenance_restores_original_bytes(tmp_path, caplog, operation):
+    clone = fixture(tmp_path)
+    if operation == "repair":
+        corrupt_fixture(clone)
+    git(clone, "config", "user.email", "t@example.com")
+    git(clone, "config", "user.name", "t")
+    git(clone, "commit", "--allow-empty", "-qm", "local1")
+    git(clone, "commit", "--allow-empty", "-qm", "local2")
+    victim = git(clone, "rev-parse", "HEAD~1").stdout.strip()
+    (clone / ".git/objects" / victim[:2] / victim[2:]).unlink()
+    shallow = clone / ".git/shallow"
+    # A failed self-check must restore even noncanonical line endings verbatim.
+    original = shallow.read_bytes().replace(b"\n", b"\r\n")
+    shallow.write_bytes(original)
+    assert not _walks(clone)
+    with caplog.at_level("DEBUG", logger="hermes_cli.gitlock"):
+        maintain = (gitlock.repair_broken_shallow_boundaries if operation == "repair"
+                    else gitlock.prune_stale_shallow_grafts)
+        assert maintain(clone) == 0
+    assert "self-check failed" in caplog.text
+    assert shallow.read_bytes() == original
+    assert not shallow.with_suffix(".lock").exists()
+
+
+@pytest.mark.parametrize("bom", [b"", b"\xef\xbb\xbf"])
+def test_bom_shallow_prune_rolls_back_without_losing_bytes(tmp_path, caplog, bom):
+    clone = fixture(tmp_path)
+    shallow = clone / ".git/shallow"
+    original = bom + shallow.read_bytes().replace(b"\n", b"\r\n")
+    shallow.write_bytes(original)
+    with caplog.at_level("DEBUG", logger="hermes_cli.gitlock"):
+        assert gitlock.prune_stale_shallow_grafts(clone) == 0
+    assert "self-check failed" in caplog.text
+    assert shallow.read_bytes() == original

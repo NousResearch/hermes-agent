@@ -86,18 +86,16 @@ import {
   sidebarProfileForScope
 } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
+import { $projectScope, ALL_PROJECTS, exitProjectScope } from '@/store/project-scope'
 import {
   $activeProjectId,
   $newProjectDropPlacement,
   $projectOwnerBySessionId,
   $projects,
-  $projectScope,
   $projectTree,
   $projectTreeLoading,
   $reposScanning,
-  ALL_PROJECTS,
   enterProject,
-  exitProjectScope,
   followEnteredProjectCwd,
   openProjectCreate,
   refreshProjects,
@@ -159,7 +157,7 @@ import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } 
 import { filterSessionsByProfileScope } from './profile-scope'
 import { ProfileRail } from './profile-switcher'
 import { ProjectDialog } from './project-dialog'
-import { resolveLiveProjectFilter } from './project-filter'
+import { filterToSessionBearingProjects, resolveLiveProjectFilter } from './project-filter'
 import {
   excludeProjectSessions,
   orderProjectsByIds,
@@ -1015,7 +1013,7 @@ export function ChatSidebar({
   // overview sort. Membership is the backend tree's — never re-derived here.
   const projectModel = useMemo<SidebarProjectTree[]>(() => {
     const sorted = sortProjectsForOverview(
-      filterVisibleProjects(projectTree, dismissedAutoProjects)
+      filterToSessionBearingProjects(filterVisibleProjects(projectTree, dismissedAutoProjects))
         // A filtered-out project drops its whole lane, header included — hiding
         // only its rows would leave a row of empty folders behind.
         .filter(project => !projectFilter.length || projectFilter.includes(project.id))

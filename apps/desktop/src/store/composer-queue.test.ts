@@ -253,3 +253,69 @@ describe('hidden entries', () => {
     ])
   })
 })
+
+describe('cross-window sync (#46732)', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
+  })
+
+  const storedEntry = (id: string, text: string) => ({ id, text, attachments: [], queuedAt: 1 })
+
+  const dispatchStorage = (key: null | string, newValue: null | string) => {
+    window.dispatchEvent(new StorageEvent('storage', { key, newValue }))
+  }
+
+  it('adopts another window\'s write from the storage event', () => {
+    window.localStorage.setItem(
+      QUEUE_STORAGE_KEY,
+      JSON.stringify({ 'session-other': [storedEntry('q1', 'from other window')] })
+    )
+
+    dispatchStorage(QUEUE_STORAGE_KEY, window.localStorage.getItem(QUEUE_STORAGE_KEY))
+
+    expect(getQueuedPrompts('session-other').map(entry => entry.text)).toEqual(['from other window'])
+  })
+
+  it('does not clobber another window\'s entries when saving its own (same-frame race)', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'mine first' })
+
+    // Another window queues into its own session directly in storage, faster
+    // than any storage event could reach us.
+    window.localStorage.setItem(
+      QUEUE_STORAGE_KEY,
+      JSON.stringify({ ...JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!), 'session-other': [storedEntry('q2', 'theirs')] })
+    )
+
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'mine second' })
+
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['mine first', 'mine second'])
+    expect(getQueuedPrompts('session-other').map(entry => entry.text)).toEqual(['theirs'])
+  })
+
+  it('drops entries locally once another window drains them', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'drained elsewhere' })
+
+    window.localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify({}))
+    dispatchStorage(QUEUE_STORAGE_KEY, '{}')
+
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+  })
+
+  it('resyncs on a full storage clear (event.key === null)', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'wiped' })
+
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    dispatchStorage(null, null)
+
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+  })
+
+  it('ignores storage events for unrelated keys', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'kept' })
+
+    dispatchStorage('unrelated.key', '{}')
+
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['kept'])
+  })
+})

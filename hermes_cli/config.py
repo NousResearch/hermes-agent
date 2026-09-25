@@ -77,6 +77,11 @@ class InvalidUserConfigError(RuntimeError):
     """Raised when a run that cannot repair config finds invalid user YAML."""
 
 
+class ConfigWriteGuardError(RuntimeError):
+    """A config write lost user-data keys despite the re-preservation guard;
+    config.yaml was restored to its pre-write contents."""
+
+
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -2078,6 +2083,24 @@ def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_conten
     atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
 
 
+def _atomic_restore_pre_bytes(config_path: Path, pre_bytes: bytes) -> None:
+    """Atomically put pre-write bytes back (tmp file + rename), then secure."""
+    fd, tmp_path = tempfile.mkstemp(dir=str(config_path.parent), suffix=".tmp", prefix=".cfg_guard_")
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(pre_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, config_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+    _secure_file(config_path)
+
+
 def load_config() -> Dict[str, Any]:
     """Load the merged configuration (DEFAULT_CONFIG + config.yaml + managed scope, env-expanded).
     Cached on the file signature; returns a deepcopy since most call sites mutate the result.
@@ -2457,8 +2480,17 @@ def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
 
 
 def _save_config_caller() -> str:
-    """file:line name of whoever called save_config (frame 0 = helper, 1 = save_config)."""
+    """file:line name of the first caller of ``save_config`` outside this module.
+
+    ``save_config`` is reached both directly and through internal wrappers (e.g.
+    ``_persist_migration``); a fixed frame depth would attribute the guard to the wrapper
+    (itself in this file) instead of the real caller, so walk past every frame in this file."""
+    this_file = os.path.abspath(__file__)
     frame = sys._getframe(2)
+    while frame is not None and os.path.abspath(frame.f_code.co_filename) == this_file:
+        frame = frame.f_back
+    if frame is None:
+        return "<unknown>"
     return f"{frame.f_code.co_filename}:{frame.f_lineno} {frame.f_code.co_name}"
 
 
@@ -2507,19 +2539,45 @@ def save_config(
         # (present on disk, unknown to DEFAULT_CONFIG, not explicitly surrendered
         # via removed_keys) silently deleted it — mcp_servers lost everything on
         # 2026-09-24 that way. Re-preserve loudly instead of dropping silently.
+        # Capture the caller once: the helper walks out of this module, so the
+        # re-preserve warning and the post-write invariant name the same real caller.
+        _guard_caller = _save_config_caller()
         protected = set(_raw_for_paths) - set(normalized) - set(DEFAULT_CONFIG) - removed
         if protected:
             for key in sorted(protected):
                 log.warning(
                     "save_config: incoming config omitted user-data key %r present on disk; "
                     "re-preserving it. If removal is intentional, pass removed_keys={%r}. "
-                    "(caller: %s)", key, key, _save_config_caller(), stacklevel=2)
+                    "(caller: %s)", key, key, _guard_caller, stacklevel=2)
             normalized = {**normalized,
                           **{key: copy.deepcopy(_raw_for_paths[key]) for key in protected}}
 
+        pre_bytes = config_path.read_bytes() if config_path.exists() else None
         atomic_config_write(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
+        # G1 post-write invariant: the file on disk must still carry every
+        # user-data root key it carried before the write. Any missing key is a
+        # defect somewhere below this function — restore and fail loudly. A
+        # verification read that itself fails leaves the result unprovable, so it
+        # is rolled back too: a refused save never leaves a changed file behind.
+        try:
+            post_raw = require_readable_config_before_write(config_path)
+        except BaseException:
+            if pre_bytes is not None:
+                _atomic_restore_pre_bytes(config_path, pre_bytes)
+            _RAW_CONFIG_CACHE.pop(str(config_path), None)
+            raise
+        expected = set(_raw_for_paths) - removed - set(DEFAULT_CONFIG)
+        missing = expected - set(post_raw)
+        if missing:
+            if pre_bytes is not None:
+                _atomic_restore_pre_bytes(config_path, pre_bytes)
+            _RAW_CONFIG_CACHE.pop(str(config_path), None)
+            raise ConfigWriteGuardError(
+                f"config write lost user-data key(s) {sorted(missing)!r}; "
+                "config.yaml was restored to its pre-write contents "
+                f"(caller: {_guard_caller})")
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 

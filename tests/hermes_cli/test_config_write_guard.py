@@ -12,6 +12,7 @@ import yaml
 
 from hermes_cli.config import (
     DEFAULT_CONFIG,
+    ConfigWriteGuardError,
     _explicit_config_paths,
     load_config,
     read_raw_config,
@@ -142,3 +143,32 @@ class TestMigrationGuardIsHard:
         raw = read_raw_config()
         assert "mcp_servers" not in raw
         assert not [r for r in caplog.records if "mcp_servers" in r.message]
+
+
+class TestPostWriteInvariant:
+    def test_tampered_write_raises_and_restores_pre_write_bytes(self, seeded_home, monkeypatch):
+        import hermes_cli.config as config_module
+
+        real_write = config_module.atomic_config_write
+
+        def tampering_write(path, normalized, **kwargs):
+            # Simulate ANY layer below save_config dropping the key (the exact
+            # class of loss the guard exists to catch).
+            real_write(path, {k: v for k, v in normalized.items() if k != "mcp_servers"}, **kwargs)
+
+        monkeypatch.setattr(config_module, "atomic_config_write", tampering_write)
+        before = (seeded_home / "config.yaml").read_bytes()
+
+        with pytest.raises(ConfigWriteGuardError) as excinfo:
+            save_config({"custom_providers": {"ark": {"base_url": "https://ark.example"}}})
+
+        assert "mcp_servers" in str(excinfo.value)
+        assert (seeded_home / "config.yaml").read_bytes() == before
+
+    def test_untampered_write_does_not_raise(self, seeded_home):
+        save_config({**SEED_CONFIG, "custom_providers": {"ark": {"base_url": "https://ark.example"}}})
+
+    def test_removed_key_does_not_trip_the_invariant(self, seeded_home):
+        save_config({"custom_providers": {"ark": {"base_url": "https://ark.example"}}},
+                    removed_keys={"mcp_servers"})
+        assert "mcp_servers" not in read_raw_config()

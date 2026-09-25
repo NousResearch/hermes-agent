@@ -1,6 +1,6 @@
 """Declarative, cache-safe overrides for named system-prompt fragments.
 
-Named Hermes-authored fragments in the system prompt
+Named fragments assembled into the system prompt
 carry a stable string *key* (see :data:`FRAGMENT_KEYS`). Users reshape any
 of them from ``config.yaml`` under ``agent.prompt_overrides`` without editing
 source:
@@ -18,8 +18,8 @@ source:
 Design contract — **overrides are pure data, resolved once at prompt-build
 time**.  There is no callable hook and no conditional logic, by design: the
 assembled prompt must stay a deterministic function of (agent, config) so it
-is byte-stable across turns and the upstream prefix cache stays warm. Coding
-posture and project context blocks are outside this named-fragment surface. With no
+is byte-stable across turns and the upstream prefix cache stays warm. Project
+context and runtime environment facts are outside this named-fragment surface. With no
 overrides configured the output is byte-identical to the un-overridden prompt.
 
 A fragment override only takes effect when that fragment is actually emitted
@@ -55,6 +55,9 @@ FRAGMENT_KEYS: Dict[str, str] = {
     "environment_probe": "Local Python/pip/uv/PEP-668 toolchain probe line.",
     "active_profile": "Active Hermes profile note and cross-profile write guidance.",
     "platform_hints": "Platform-specific operational hints (from PLATFORM_HINTS or a plugin).",
+    "coding_brief": "Coding posture guidance before project context.",
+    "coding_workspace": "Pinned workspace snapshot after project context.",
+    "coding_instructions": "Configured coding instructions after the workspace snapshot.",
 }
 
 

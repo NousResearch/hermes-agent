@@ -1265,18 +1265,19 @@ agent:
   # max_verify_nudges: 3
 
   # Per-fragment system-prompt overrides.
-  # Reshape named Hermes prompt fragments without editing Hermes
+  # Reshape named prompt fragments without editing Hermes
   # source. Each entry is `mode: replace|append|prepend|remove` + `text`
   # (a bare string is shorthand for `replace`). Pure data, resolved once at
   # prompt-build time — never busts the prefix cache. With no entries the
   # assembled prompt is byte-identical to the default.
   #
-  # Coding posture blocks and project context are outside this named-fragment surface.
+  # Project context and runtime environment facts are outside this named-fragment surface.
   # Fragment keys: identity, hermes_help, task_completion,
   #   parallel_tool_call_guidance, tool_guidance,
   #   steer_channel, tool_use_enforcement,
   #   google_operational, execution_discipline, skills, model_identity,
-  #   environment_probe, active_profile, platform_hints
+  #   environment_probe, active_profile, platform_hints, coding_brief,
+  #   coding_workspace, coding_instructions
   #
   # An override only applies when that fragment is actually emitted this
   # session; append/prepend to an absent fragment is a no-op.

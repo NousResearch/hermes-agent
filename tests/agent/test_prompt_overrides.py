@@ -8,19 +8,16 @@ from agent.prompt_overrides import (
     normalize_overrides,
 )
 from unittest.mock import patch
+from types import SimpleNamespace
 
+import pytest
+
+from agent.coding_context import CODING_AGENT_GUIDANCE, WORKSPACE_BLOCK_HEADER
 from agent.prompt_builder import PARALLEL_TOOL_CALL_GUIDANCE, STEER_CHANNEL_NOTE, TASK_COMPLETION_GUIDANCE
 from run_agent import AIAgent
 
 
-def _prompt_from_config(tmp_path, monkeypatch, override_yaml, *, return_agent=False, platform="cli"):
-    home = tmp_path / "hermes-home"
-    home.mkdir()
-    (home / "config.yaml").write_text(
-        "agent:\n  prompt_overrides:\n" + override_yaml,
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(home))
+def _new_test_agent(platform="cli"):
     tool_defs = [{"type": "function", "function": {
         "name": "terminal", "description": "Run a command",
         "parameters": {"type": "object", "properties": {}},
@@ -34,8 +31,25 @@ def _prompt_from_config(tmp_path, monkeypatch, override_yaml, *, return_agent=Fa
             model="anthropic/claude-opus-4.8", api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1", quiet_mode=True,
             skip_context_files=True, skip_memory=True, platform=platform,
+            session_id="20260101_120000_prompt_override",
         )
-        return agent if return_agent else agent._build_system_prompt()
+        return agent
+
+
+def _prompt_from_config(tmp_path, monkeypatch, override_yaml, *, return_agent=False, platform="cli", coding=False):
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    if coding:
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'coding-test'\n", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+    coding_config = "  coding_context: on\n  coding_instructions: base-coding-instructions\n" if coding else ""
+    (home / "config.yaml").write_text(
+        "agent:\n" + coding_config + "  prompt_overrides:\n" + override_yaml,
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    agent = _new_test_agent(platform)
+    return agent if return_agent else agent._build_system_prompt()
 
 
 def test_configured_append_reaches_full_prompt(tmp_path, monkeypatch):
@@ -76,8 +90,11 @@ def test_runtime_cwd_anchor_cannot_be_overridden(tmp_path, monkeypatch):
 def test_empty_override_map_keeps_assembled_prompt_bytes(tmp_path, monkeypatch):
     from agent.system_prompt import build_system_prompt_parts
 
-    agent = _prompt_from_config(tmp_path, monkeypatch, "    {}\n", return_agent=True)
+    agent = _prompt_from_config(tmp_path, monkeypatch, "    {}\n", return_agent=True, coding=True)
     with_empty = build_system_prompt_parts(agent)
+    assert CODING_AGENT_GUIDANCE.splitlines()[0] in with_empty["stable"]
+    assert WORKSPACE_BLOCK_HEADER in with_empty["context"]
+    assert "base-coding-instructions" in with_empty["context"]
     del agent._prompt_overrides
     without_attribute = build_system_prompt_parts(agent)
     assert with_empty == without_attribute
@@ -87,6 +104,55 @@ def test_absent_platform_hint_is_not_created_by_replace(tmp_path, monkeypatch):
     prompt = _prompt_from_config(tmp_path, monkeypatch,
         "    platform_hints: inserted-platform-hint\n", platform="unrecognized-platform")
     assert "inserted-platform-hint" not in prompt
+
+
+@pytest.mark.parametrize("mode", ("replace", "append", "prepend", "remove"))
+def test_coding_brief_override_modes_reach_full_prompt(tmp_path, monkeypatch, mode):
+    spec = f"    coding_brief:\n      mode: {mode}\n"
+    if mode != "remove":
+        spec += "      text: coding-override-marker\n"
+    prompt = _prompt_from_config(tmp_path, monkeypatch, spec, coding=True)
+    brief_start = CODING_AGENT_GUIDANCE.splitlines()[0]
+    assert (brief_start in prompt) is (mode in {"append", "prepend"})
+    assert ("coding-override-marker" in prompt) is (mode != "remove")
+    if mode == "prepend":
+        assert prompt.index("coding-override-marker") < prompt.index(brief_start)
+    elif mode == "append":
+        assert prompt.index(brief_start) < prompt.index("coding-override-marker")
+
+
+def test_coding_workspace_and_instructions_are_overridable(tmp_path, monkeypatch):
+    prompt = _prompt_from_config(tmp_path, monkeypatch,
+        "    coding_workspace: coding-workspace-marker\n"
+        "    coding_instructions: {mode: remove}\n", coding=True)
+    assert "coding-workspace-marker" in prompt
+    assert WORKSPACE_BLOCK_HEADER not in prompt
+    assert "base-coding-instructions" not in prompt
+
+
+def test_removing_coding_workspace_keeps_trailing_block_after_context(tmp_path, monkeypatch):
+    from agent.system_prompt import build_system_prompt_parts
+
+    agent = _prompt_from_config(tmp_path, monkeypatch,
+        "    coding_workspace: {mode: remove}\n", return_agent=True, coding=True)
+    parts = build_system_prompt_parts(agent)
+    assert WORKSPACE_BLOCK_HEADER not in parts["context"]
+    assert "base-coding-instructions" in parts["context"]
+    assert "base-coding-instructions" not in parts["stable"]
+
+
+@pytest.mark.parametrize("mode", ("replace", "append", "prepend", "remove"))
+def test_overridden_workspace_survives_fresh_agent_resume(tmp_path, monkeypatch, mode):
+    spec = f"    coding_workspace:\n      mode: {mode}\n"
+    if mode != "remove":
+        spec += "      text: coding-workspace-marker\n"
+    first = _prompt_from_config(tmp_path, monkeypatch, spec, return_agent=True, coding=True)
+    stored = first._build_system_prompt()
+    (tmp_path / "pyproject.toml").unlink()
+
+    resumed = _new_test_agent()
+    resumed._session_db = SimpleNamespace(get_session=lambda _sid: {"system_prompt": stored})
+    assert resumed._build_system_prompt() == stored
 
 
 class TestNormalizeOverrides:

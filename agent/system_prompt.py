@@ -31,6 +31,8 @@ from hermes_constants import get_default_hermes_root, get_hermes_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+_OVERRIDDEN_WORKSPACE_PIN = "<!-- Hermes coding workspace present -->"
+_WORKSPACE_PIN_SENTINEL = "pinned coding workspace"
 _PLUGIN_SECTION_FRAME_RE = re.compile(
     r"^## Plugin Context: (?P<id>[a-z0-9][a-z0-9._-]{0,127})\n<!-- hermes-plugin-section-chars:(?P<chars>[0-9]{1,4}) -->\n\n",
     re.MULTILINE,
@@ -661,9 +663,16 @@ def _seed_workspace_pin(agent: Any, key: str) -> None:
     # coding posture, or with tools off) leaves the pin open so this build captures one.
     if block:
         agent._frozen_workspace_snapshot = (key, block)
+    elif stored_cwd == key and (getattr(agent, "_prompt_overrides", None) or {}).get("coding_workspace", {}).get("mode") in {"replace", "remove"}:
+        # A replace/remove override hides the snapshot bytes. Its renderer-owned
+        # marker preserves only the fact that a workspace block was emitted.
+        from agent.surface_switch import split_runtime_boundary
+        _identity, boundary, runtime = split_runtime_boundary(prompt)
+        if boundary and runtime.endswith(f"\n\n{_OVERRIDDEN_WORKSPACE_PIN}\n\n{_pb.RUNTIME_ENVIRONMENT_END}"):
+            agent._frozen_workspace_snapshot = (key, _WORKSPACE_PIN_SENTINEL)
 
 
-def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
+def _coding_parts(agent: Any) -> Tuple[List[Optional[str]], List[Optional[str]], List[Optional[str]]]:
     """``(prefix, workspace, trailing)`` coding-posture blocks; all empty
     without tools or when probing fails (it must never block prompt build).
 
@@ -689,7 +698,10 @@ def _coding_parts(agent: Any) -> Tuple[List[str], List[str], List[str]]:
                                            valid_tool_names=agent.valid_tool_names, workspace_block=replay)
         if replay is None:
             agent._frozen_workspace_snapshot = (cwd_key, parts[1][0] if parts[1] else "")
-        return parts
+        return tuple(
+            [_fragment(agent, key, text) for text in group]
+            for key, group in zip(("coding_brief", "coding_workspace", "coding_instructions"), parts)
+        )
     except Exception:
         pass
     return [], [], []
@@ -798,6 +810,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if environment_hints:
         # Embedder hints are prose too; reserve the delimiter for the renderer.
         environment_hints = environment_hints.replace(_pb.RUNTIME_ENVIRONMENT_HEADING, "> " + _pb.RUNTIME_ENVIRONMENT_HEADING)
+        environment_hints = environment_hints.replace(_OVERRIDDEN_WORKSPACE_PIN, "> " + _OVERRIDDEN_WORKSPACE_PIN)
+        workspace_override = (getattr(agent, "_prompt_overrides", None) or {}).get("coding_workspace", {})
+        if coding_workspace_parts and workspace_override.get("mode") in {"replace", "remove"}:
+            environment_hints += f"\n\n{_OVERRIDDEN_WORKSPACE_PIN}"
     if environment_hints:
         volatile_parts.append(f"{_pb.RUNTIME_ENVIRONMENT_HEADING}\n\n{environment_hints}\n\n{_pb.RUNTIME_ENVIRONMENT_END}")
     return {"stable": _join_tier(stable_parts), "context": _join_tier(context_parts), "volatile": _join_tier(volatile_parts)}

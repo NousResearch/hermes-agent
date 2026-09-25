@@ -62,6 +62,16 @@ def resolve_max_concurrent_sessions(config: Any) -> Optional[int]:
     return coerce_max_concurrent_sessions(raw, key=key)
 
 
+def resolve_session_takeover(config: Any) -> str:
+    """Resolve ``session.takeover``; invalid values fail safe to ``off``."""
+    session = config.get("session") if isinstance(config, dict) else None
+    value = str(session.get("takeover", "off") if isinstance(session, dict) else "off").lower()
+    if value not in {"off", "idle", "always"}:
+        logger.warning("Ignoring invalid session.takeover=%r (expected off, idle, or always)", value)
+        return "off"
+    return value
+
+
 def format_age(seconds: float) -> str:
     minutes = max(0, int(seconds // 60))
     if minutes < 60:
@@ -110,6 +120,7 @@ MAX_CONCURRENT_SESSIONS = "MAX_CONCURRENT_SESSIONS"
 # call for different operator action, and collapsing the second into a silent go-ahead is exactly the
 # fail-open hole that let two writers share one session (#94595 review, blocker 2).
 SESSION_COORDINATION_UNAVAILABLE = "SESSION_COORDINATION_UNAVAILABLE"
+SESSION_TAKEN_OVER = "SESSION_TAKEN_OVER"
 
 # Advertised through the gateway. A module constant, not a config flag: it holds
 # because try_acquire_active_session checks atomically, so it cannot drift from the
@@ -536,7 +547,14 @@ def try_acquire_active_session(
 
         def refuse(message: str, reason: str, log: str, *args) -> tuple[None, ActiveSessionRefusal]:
             _write_entries(state_path, entries)  # persist the prune even when refusing
-            logger.info(log, *args)
+            # A configured takeover consumes SESSION_NOT_OWNED as an internal handoff
+            # signal. Keep the ordinary refusal out of operator logs in that case;
+            # the successful takeover emits its own definitive audit line.
+            log_method = (
+                logger.debug if reason == SESSION_NOT_OWNED and resolve_session_takeover(config) != "off"
+                else logger.info
+            )
+            log_method(log, *args)
             return None, ActiveSessionRefusal(message, reason)
 
         # Correctness first, under the same lock that just pruned dead owners.
@@ -572,6 +590,80 @@ def try_acquire_active_session(
         _write_entries(state_path, entries)
 
     return lease, None
+
+
+def take_over_active_session(
+    *, session_id: str, surface: str, config: Any, holder_has_live_turn: bool,
+    metadata: Optional[dict[str, Any]] = None, registry_home: str | Path | None = None,
+    track_liveness: bool = False,
+) -> tuple[Optional[ActiveSessionLease], Optional[str]]:
+    """Atomically replace another writer's lease when configured to permit it."""
+    mode = resolve_session_takeover(config)
+    if mode == "off" or (mode == "idle" and holder_has_live_turn):
+        return try_acquire_active_session(
+            session_id=session_id, surface=surface, config=config, metadata=metadata,
+            registry_home=registry_home, track_liveness=track_liveness)
+    key = str(session_id or "")
+    lease_id = uuid.uuid4().hex
+    state_path, lock_path = _lease_paths(registry_home=registry_home)
+    lease = ActiveSessionLease(
+        lease_id=lease_id, session_id=key, surface=str(surface), state_path=state_path,
+        lock_path=lock_path, track_liveness=track_liveness)
+    with _FileLock(lock_path):
+        loaded = _read_live_entries(
+            state_path, track_liveness=track_liveness,
+            warn="Active-session registry is unavailable; refusing takeover",
+            target_session_id=key)
+        if loaded is None:
+            return None, ActiveSessionRefusal(
+                "Hermes could not verify session ownership, so takeover was refused.",
+                SESSION_COORDINATION_UNAVAILABLE)
+        entries = loaded[1]
+        for index, existing in enumerate(entries):
+            if str(existing.get("session_id") or "") != key:
+                continue
+            if _is_same_writer(existing, metadata):
+                entries[index] = _lease_entry(
+                    lease_id=lease_id, session_id=key, surface=surface,
+                    metadata=metadata, track_liveness=track_liveness)
+                _write_entries(state_path, entries)
+                return lease, None
+            takeover_metadata = dict(metadata or {})
+            takeover_metadata["taken_over_from"] = {
+                "pid": existing.get("pid"), "surface": existing.get("surface"),
+                "lease_id": existing.get("lease_id")}
+            takeover_metadata["taken_over_at"] = time.time()
+            entries[index] = _lease_entry(
+                lease_id=lease_id, session_id=key, surface=surface,
+                metadata=takeover_metadata, track_liveness=track_liveness)
+            _write_entries(state_path, entries)
+            logger.warning(
+                "Session %s took over active lease from pid=%s surface=%s mode=%s",
+                key, existing.get("pid"), existing.get("surface"), mode)
+            return lease, None
+        entries.append(_lease_entry(
+            lease_id=lease_id, session_id=key, surface=surface,
+            metadata=metadata, track_liveness=track_liveness))
+        _write_entries(state_path, entries)
+        return lease, None
+
+
+def active_session_lease_is_current(lease: ActiveSessionLease) -> Optional[bool]:
+    """True iff the registry still names ``lease``; None when ownership is unprovable."""
+    if not lease.enabled or lease.released:
+        return True
+    state_path, lock_path = _lease_paths(lease)
+    with _FileLock(lock_path):
+        loaded = _read_live_entries(
+            state_path, track_liveness=lease.track_liveness,
+            warn="Active-session registry is unavailable while validating ownership",
+            target_session_id=lease.session_id)
+        if loaded is None:
+            return None
+        return any(
+            str(entry.get("session_id") or "") == lease.session_id
+            and str(entry.get("lease_id") or "") == lease.lease_id
+            for entry in loaded[1])
 
 
 def release_active_session(lease: ActiveSessionLease) -> None:

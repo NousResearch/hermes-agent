@@ -522,6 +522,18 @@ class SessionCompressionMixin:
         with self._read_ctx() as conn:
             return self._session_turn_lease_key_on_conn(conn, session_id)
 
+    def has_live_session_turn_lease(self, session_id: str) -> bool:
+        """Return whether the conversation lineage has an unexpired turn lease."""
+        if not session_id:
+            return False
+        now = time.time()
+        with self._read_ctx() as conn:
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT expires_at FROM session_turn_leases WHERE conversation_id = ?",
+                (conversation_id,)).fetchone()
+        return bool(row and float(row["expires_at"]) > now)
+
     def try_acquire_session_turn_lease(
         self, session_id: str, holder: str, *, ttl_seconds: float = 300.0, patience_s: Optional[float] = None,
     ) -> bool:

@@ -1494,6 +1494,7 @@ def check_respawn_guard(
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready/review row before any claim attempt. Priority order:
+    ``"acceptance_rejected"`` (independent durable publication hold),
     ``"infrastructure_cooldown"`` (latest run is a ``spawn_failed`` the host
     refused — no restart-safe scope — within the cooldown; never counted),
     ``"rate_limit_cooldown"`` (latest run ``rate_limited`` within the cooldown;
@@ -1510,11 +1511,14 @@ def check_respawn_guard(
     passes own those.
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, acceptance_hold FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
         return None
+
+    if row["acceptance_hold"]:
+        return "acceptance_rejected"
 
     now = int(time.time())
 

@@ -46,6 +46,9 @@ def test_rejected_completion_preserves_auth_hold_across_dispatch(board, failure)
     ).fetchone()[0])
     assert receipt["ok"] is False
     assert receipt["classification"] == "missing"
+    assert dispatch.check_respawn_guard(board, tid) == "acceptance_rejected"
+    from hermes_cli.kanban_pr_acceptance_store import clear_acceptance_hold
+    assert clear_acceptance_hold(board, tid)
     assert dispatch.check_respawn_guard(board, tid) == "blocker_auth"
     # Recovery remains the existing explicit operator path, not a side effect
     # of a rejected publication.
@@ -61,7 +64,7 @@ def test_rejection_keeps_diagnostics_without_replacing_worker_error(board, previ
         board.execute("UPDATE tasks SET last_failure_error=? WHERE id=?", (previous, tid))
     assert not kb.complete_task(board, tid, result="done")
     error = kb.get_task(board, tid).last_failure_error
-    assert error == previous if previous else error.startswith("PR acceptance missing:")
+    assert error == previous
     assert kb.get_task(board, tid).status == "ready"
 
 
@@ -71,9 +74,9 @@ def test_success_and_stale_receipt_keep_existing_ownership_rules(board):
     tid = kb.create_task(board, title="Owned", completion_contract="example/widgets")
     with kb.write_txn(board):
         board.execute("UPDATE tasks SET last_failure_error=? WHERE id=?", ("401 auth failed", tid))
-        snapshot = (None, "ready", "example/widgets")
+        snapshot = (None, "ready", "example/widgets", 0)
         assert record_acceptance(board, tid, (snapshot, {"ok": True}))
-        assert not record_acceptance(board, tid, ((999, "ready", "example/widgets"), {"ok": False}))
+        assert not record_acceptance(board, tid, ((999, "ready", "example/widgets", 0), {"ok": False}))
     assert kb.get_task(board, tid).last_failure_error == "401 auth failed"
     assert board.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 1
 
@@ -84,7 +87,7 @@ def test_failed_receipt_write_rolls_back(board):
     tid = kb.create_task(board, title="Atomic", completion_contract="example/widgets")
     with pytest.raises(RuntimeError, match="abort"):
         with kb.write_txn(board):
-            record_acceptance(board, tid, ((None, "ready", "example/widgets"), {
+            record_acceptance(board, tid, ((None, "ready", "example/widgets", 0), {
                 "ok": False, "classification": "missing", "recovery": "retry",
             }))
             raise RuntimeError("abort")

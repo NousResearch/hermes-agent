@@ -1026,6 +1026,12 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
+        if getattr(args, "acceptance_only", False):
+            from hermes_cli.kanban_pr_acceptance_store import clear_acceptance_hold
+            op = _commented(conn, reason, author, "CLEAR ACCEPTANCE HOLD",
+                            lambda tid: clear_acceptance_hold(conn, tid))
+            return _bulk_apply(ids, op, lambda tid: f"Cleared acceptance hold for {tid}{suffix}; other guards remain",
+                               lambda tid: f"cannot clear acceptance hold for {tid} (not held?)")
         op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
         return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")

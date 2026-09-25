@@ -738,6 +738,7 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    acceptance_hold: bool = False
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -754,6 +755,7 @@ class Task:
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
+            acceptance_hold=bool(g("acceptance_hold")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
 
@@ -2235,6 +2237,7 @@ def _claim_and_open_run(
          WHERE id = ?
            AND status = '{source_status}'
            AND claim_lock IS NULL
+           AND acceptance_hold = 0
         """,
         (lock, expires, now, task_id),
     )

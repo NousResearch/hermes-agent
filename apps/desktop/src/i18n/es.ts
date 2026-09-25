@@ -3519,7 +3519,17 @@ export const esOverrides = {
       gatewayUnreachable: (gateway: string) => `${gateway} · inaccesible`,
       onGateway: (name: string, gateway: string) => `${name} · ${gateway}`,
       switchTo: (name: string, gateway: string) => `Cambiar a ${name} en ${gateway}`,
-      deleteOn: (gateway: string) => ` en ${gateway}`
+      deleteOn: (gateway: string) => ` en ${gateway}`,
+      localDevice: 'Este dispositivo (backend local: instala Hermes si falta; si no, abre una sesión nueva)',
+      switchDeviceTitle: '¿Cambiar a este dispositivo?',
+      switchDeviceDesc:
+        'Esto abre una sesión nueva en este equipo. La conversación actual permanece en el otro gateway.',
+      switchDeviceConfirm: 'Cambiar',
+      installDeviceTitle: '¿Cambiar a este dispositivo?',
+      installDeviceDesc:
+        'Esto instalará Hermes localmente y luego abrirá una sesión nueva en este equipo. No se instala nada hasta que confirmes.',
+      installDeviceConfirm: 'Instalar localmente',
+      connectExistingInstead: 'Conectar uno existente en su lugar'
     },
     status: {
       unread: (count: number) => (count === 1 ? '1 sesión sin leer' : `${count} sesiones sin leer`),
@@ -4022,6 +4032,7 @@ export const esOverrides = {
       branchFrom: 'Rama',
       rename: 'Renombrar',
       archive: 'Archivar',
+      unarchive: 'Desarchivar',
       newWindow: 'Nueva ventana',
       openInTerminal: 'Abrir en el terminal',
       hideTabBar: 'Ocultar barra de pestañas',
@@ -5061,7 +5072,8 @@ export const esOverrides = {
         title: 'Uso del contexto',
         tokenSummary: (used, max) => `${used} / ${max} tokens`
       },
-      session: 'Sesión',
+      focusedSince: 'Enfocado desde',
+      focusedSinceTitle: 'Tiempo desde que este chat está enfocado — no cuánto lleva un turno',
       yoloOn: 'YOLO activado — autoaprobando comandos peligrosos. Shift+clic lo alterna globalmente.',
       yoloOff: 'YOLO desactivado. Shift+clic lo alterna globalmente.',
       modelNone: 'ninguno',
@@ -5923,6 +5935,8 @@ export const esOverrides = {
     deleteFailed: 'No se pudo eliminar',
     archived: 'Archivado',
     archiveFailed: 'No se pudo archivar',
+    restored: 'Restaurado',
+    unarchiveFailed: 'No se pudo desarchivar',
     cwdChangeFailed: 'No se pudo cambiar el directorio de trabajo',
     cwdStagedTitle: 'Directorio de trabajo preparado',
     cwdStagedMessage: 'Reinicia el backend de escritorio para aplicar cambios de cwd a esta sesión activa.',

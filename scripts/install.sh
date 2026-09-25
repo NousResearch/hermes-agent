@@ -714,7 +714,8 @@ stage_gateway() {
         log "gateway setup skipped (no terminal); run 'hermes gateway install' after install"
         return 0
     fi
-    "$INSTALL_DIR/.hermes/bin/hermes" gateway install </dev/tty || fail "gateway installation failed"
+    # Setup installs the service when it handles the gateway; ask only if it did not.
+    "$INSTALL_DIR/.hermes/bin/hermes" gateway install --if-missing </dev/tty || fail "gateway installation failed"
 }
 
 stage_complete() {

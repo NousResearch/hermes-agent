@@ -35,7 +35,9 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
         # Repair preserves the old stamp. Changed source inputs instead need
         # an ordinary sync, which builds and validates a fresh generation too.
         repair = repair_marker.is_file() and venv_is_current(project_root=root)
-        sync_venv(None if repair else extras, explicit=True, project_root=root, repair=repair)
+        # An update never fails because of a plugin: misfits are disabled and reported.
+        sync_venv(None if repair else extras, explicit=True, project_root=root, repair=repair,
+                  evict_incompatible_plugins=not repair)
         request["pm_receipt"] = receipt.last_for_update(correlation)
     publish_launchers(root)
     repair_marker.unlink(missing_ok=True)

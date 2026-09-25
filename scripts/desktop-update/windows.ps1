@@ -899,6 +899,12 @@ public static class HermesUpdateJob {
     private static extern bool SetHandleInformation(IntPtr handle, int mask, int flags);
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr CreateFile(
+        string fileName, uint desiredAccess, uint shareMode, ref SecurityAttributes attributes,
+        uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile
+    );
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern bool CreateProcess(
         string applicationName, StringBuilder commandLine,
         IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles,
@@ -911,9 +917,6 @@ public static class HermesUpdateJob {
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateProcess(IntPtr process, uint exitCode);
-
-    [DllImport("kernel32.dll")]
-    private static extern IntPtr GetStdHandle(int standardHandle);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
@@ -934,6 +937,7 @@ public static class HermesUpdateJob {
         IntPtr job = IntPtr.Zero;
         IntPtr outRead = IntPtr.Zero, outWrite = IntPtr.Zero;
         IntPtr errRead = IntPtr.Zero, errWrite = IntPtr.Zero;
+        IntPtr nullInput = new IntPtr(-1);
         ProcessInformation pi = new ProcessInformation();
         try {
             job = CreateJobObject(IntPtr.Zero, null);
@@ -946,11 +950,17 @@ public static class HermesUpdateJob {
                 throw new InvalidOperationException("CreatePipe failed");
             if (!SetHandleInformation(outRead, 1, 0) || !SetHandleInformation(errRead, 1, 0))
                 throw new InvalidOperationException("SetHandleInformation failed");
+            // Steps read NUL, never the hand-off console. A step that sees a
+            // console asks its question into the captured stdout, where the
+            // user cannot see it, and waits for an answer that never comes.
+            nullInput = CreateFile("NUL", 0x80000000, 0x00000003, ref sa, 3, 0, IntPtr.Zero);
+            if (nullInput == new IntPtr(-1))
+                throw new InvalidOperationException("CreateFile(NUL) failed");
 
             StartupInfo si = new StartupInfo();
             si.Size = Marshal.SizeOf(typeof(StartupInfo));
             si.Flags = 0x00000100; // STARTF_USESTDHANDLES
-            si.StdInput = GetStdHandle(-10);
+            si.StdInput = nullInput;
             si.StdOutput = outWrite;
             si.StdError = errWrite;
             StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
@@ -989,6 +999,7 @@ public static class HermesUpdateJob {
             if (outWrite != IntPtr.Zero) CloseHandle(outWrite);
             if (errRead != IntPtr.Zero) CloseHandle(errRead);
             if (errWrite != IntPtr.Zero) CloseHandle(errWrite);
+            if (nullInput != new IntPtr(-1)) CloseHandle(nullInput);
         }
     }
 
@@ -1500,10 +1511,16 @@ try {
     if ($SelfTestWorkingDirectory) {
         $expectedRoot = [System.IO.Path]::GetFullPath($InstallRoot)
         $probeExe = Join-Path $PSHOME "powershell.exe"
-        $probe = Invoke-HermesStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory") "cwd"
-        $observed = $probe.Output.Trim()
+        $probe = Invoke-HermesStep $probeExe @("-NoProfile", "-Command", "[Environment]::CurrentDirectory; [Console]::IsInputRedirected") "cwd"
+        $observed, $stdinRedirected = @($probe.Output.Trim() -split "`r?`n" | ForEach-Object { $_.Trim() })
         if ($probe.Code -ne 0 -or -not [string]::Equals($observed, $expectedRoot, [StringComparison]::OrdinalIgnoreCase)) {
             $finalMsg = "WORKING-DIRECTORY SELF-TEST: FAIL expected=$expectedRoot observed=$observed code=$($probe.Code)"
+            Write-Host $finalMsg
+            exit 1
+        }
+        # A step that can read the hand-off console can block on a prompt nobody sees.
+        if ($stdinRedirected -ne "True") {
+            $finalMsg = "WORKING-DIRECTORY SELF-TEST: FAIL step stdin is an interactive console"
             Write-Host $finalMsg
             exit 1
         }

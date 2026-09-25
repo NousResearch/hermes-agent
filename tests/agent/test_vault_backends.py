@@ -51,7 +51,7 @@ sys.exit(2)
 '''
 
 
-pytestmark = pytest.mark.skipif(os.name == "nt", reason="fake bw is a shebang script; the backend under test is host-agnostic")
+pytestmark = pytest.mark.platforms("posix")  # fake bw is a shebang script; the backend under test is host-agnostic
 
 
 @pytest.fixture

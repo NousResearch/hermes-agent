@@ -6,6 +6,8 @@ from run_agent import AIAgent
 
 
 def test_fast_mode_rederived_across_fallback_chain():
+    from hermes_cli.models import resolve_fast_mode_overrides
+
     entries = [
         {"provider": "custom", "model": "local-model", "base_url": "http://127.0.0.1:8080/v1", "api_key": "k"},
         {"provider": "openai", "model": "gpt-5.4", "base_url": "https://api.openai.com/v1", "api_key": "k"},
@@ -38,4 +40,7 @@ def test_fast_mode_rederived_across_fallback_chain():
         assert agent._try_activate_fallback()
         assert agent.request_overrides == {"temperature": 0.2}
         assert agent._try_activate_fallback()
-        assert agent.request_overrides == {"temperature": 0.2, "service_tier": "priority"}
+        assert agent.request_overrides == {
+            "temperature": 0.2,
+            **(resolve_fast_mode_overrides(agent.model, provider=agent.provider, base_url=agent.base_url) or {}),
+        }

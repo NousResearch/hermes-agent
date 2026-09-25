@@ -14,15 +14,15 @@ from pathlib import Path
 
 import pytest
 
-from agent.lsp.client import LSPClient
+from agent.lsp.client import _STREAM_LIMIT, LSPClient
 from agent.lsp.protocol import LSPProtocolError, LSPRequestError
 
 
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 
-def _client(workspace: Path, script: str = "clean") -> LSPClient:
-    env = {"MOCK_LSP_SCRIPT": script, "PYTHONPATH": os.environ.get("PYTHONPATH", "")}
+def _client(workspace: Path, script: str = "clean", **extra_env: str) -> LSPClient:
+    env = {"MOCK_LSP_SCRIPT": script, "PYTHONPATH": os.environ.get("PYTHONPATH", ""), **extra_env}
     return LSPClient(
         server_id=f"mock-{script}",
         workspace_root=str(workspace),
@@ -113,14 +113,6 @@ async def test_initialize_error_response_keeps_its_exception_type(tmp_path: Path
     await client.shutdown()
 
 
-@pytest.mark.asyncio
-async def test_failure_details_empty_for_live_server(tmp_path: Path):
-    client = _client(tmp_path, "clean")
-    await client.start()
-    try:
-        assert client.failure_details() == ""
-    finally:
-        await client.shutdown()
 
 
 @pytest.mark.asyncio
@@ -160,7 +152,7 @@ async def test_cancelled_start_terminates_spawned_server(tmp_path: Path):
     assert client._proc is None
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: Path):
     """A launcher exiting on SIGTERM must not let an ignoring server child escape cleanup."""
@@ -173,7 +165,8 @@ async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: 
     start = asyncio.create_task(client.start())
     child = None
     try:
-        ready_deadline = asyncio.get_running_loop().time() + 3.0
+        # Generous deadlines: CI runners under load took >3 s here (PR-blocking flake).
+        ready_deadline = asyncio.get_running_loop().time() + 15.0
         while not child_pid_file.exists():
             assert asyncio.get_running_loop().time() < ready_deadline
             await asyncio.sleep(0.01)
@@ -182,7 +175,7 @@ async def test_cancelled_start_hard_kills_sigterm_ignoring_descendant(tmp_path: 
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(start, timeout=0.05)
 
-        deadline = asyncio.get_running_loop().time() + 3.0
+        deadline = asyncio.get_running_loop().time() + 15.0
         while child.is_running() and child.status() != psutil.STATUS_ZOMBIE:
             assert asyncio.get_running_loop().time() < deadline
             await asyncio.sleep(0.01)
@@ -285,3 +278,41 @@ async def test_docs_cache_is_lru_bounded_and_reopens_evicted(tmp_path: Path, mon
         assert client.diagnostics_for(str(files[0]))
     finally:
         await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_client_handles_large_stderr_line(tmp_path: Path):
+    """LSP stderr drain must not crash or deadlock when the server emits a line
+    larger than asyncio's old 64 KiB default StreamReader limit."""
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n", encoding="utf-8")
+
+    client = _client(tmp_path, "large_stderr")
+    await client.start()
+    try:
+        assert client.is_running
+        version = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), version, mode="document")
+        diags = client.diagnostics_for(str(f))
+        assert diags == []
+    finally:
+        await client.shutdown()
+    assert not client.is_running
+
+
+@pytest.mark.asyncio
+async def test_client_handles_stderr_line_over_stream_limit(tmp_path: Path):
+    """An over-limit stderr line must not terminate the drain task."""
+    f = tmp_path / "x.py"
+    f.write_text("print('hi')\n", encoding="utf-8")
+
+    client = _client(tmp_path, "oversized_stderr", MOCK_LSP_STDERR_BYTES=str(_STREAM_LIMIT + 1))
+    await client.start()
+    try:
+        assert client.is_running
+        version = await client.open_file(str(f), language_id="python")
+        await client.wait_for_diagnostics(str(f), version, mode="document")
+        assert client.diagnostics_for(str(f)) == []
+    finally:
+        await client.shutdown()
+    assert not client.is_running

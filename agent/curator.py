@@ -47,7 +47,7 @@ def load_state() -> Dict[str, Any]:
     }
     path = _state_file()
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read curator state: %s", e)
         return base
@@ -287,7 +287,10 @@ CURATOR_REVIEW_PROMPT = (
     "(imperative + one clause of why), the same lesson stated twice becomes "
     "one rule, and incident narration, PR/issue numbers, dates and quoted "
     "chatter are dropped — the rule must stand without the story. Moving a "
-    "file unchanged under references/ is filing, not consolidating.\n\n"
+    "file unchanged under references/ is filing, not consolidating. A SKILL.md "
+    "body over ~24k chars is a consolidation target on its own: skill_view loads "
+    "all of it into context for the rest of the session, so distill it to the "
+    "always-on rules and push topic depth into references/.\n\n"
     "Hard rules — do not violate:\n"
     "1. DO NOT touch bundled, hub-installed, or external-dir skills "
     "(`skills.external_dirs`). The candidate list below is already filtered "
@@ -526,7 +529,7 @@ def _parse_structured_summary(llm_final: str) -> Dict[str, List[Dict[str, str]]]
     data = None
     if match:
         try:
-            import yaml  # type: ignore
+            import hermes_yaml as yaml
             data = yaml.safe_load(match.group(1))
         except Exception:
             pass

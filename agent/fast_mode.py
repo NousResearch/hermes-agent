@@ -5,7 +5,9 @@
 window of ``agent.fast_auto_seconds``) or ``"cold"`` (only a session's first turn,
 no prior history, opens it). The provider's fast override is layered onto request
 kwargs only while the window is open; only per-request params (``service_tier`` /
-``speed``) vary, so the prompt cache survives the boundary.
+``speed``) vary, so the request body stays byte-identical. Anthropic keeps a separate
+prompt cache per speed, so each Anthropic window boundary re-writes the prefix at the
+new speed.
 """
 
 from __future__ import annotations
@@ -16,21 +18,38 @@ from typing import Any
 BOUNDED_MODES = frozenset({"auto", "cold"})
 DEFAULT_WINDOW_SECONDS = 60
 
+
+def _fast_route_base_url(agent: Any) -> Any:
+    base_url = getattr(agent, "base_url", None)
+    if getattr(agent, "api_mode", None) == "anthropic_messages":
+        return getattr(agent, "_anthropic_base_url", None) or base_url
+    return base_url
+
+
+def _route_fast_overrides(agent: Any) -> dict[str, Any]:
+    from hermes_cli.models import resolve_fast_mode_overrides
+
+    return resolve_fast_mode_overrides(
+        getattr(agent, "model", None), provider=getattr(agent, "provider", None),
+        base_url=_fast_route_base_url(agent),
+    ) or {}
+
+
+# Documented fast-mode rate-limit headers; a limit of 0 means the organization has no fast
+# capacity for the model (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
+_FAST_LIMIT_HEADERS = ("anthropic-fast-input-tokens-limit", "anthropic-fast-output-tokens-limit")
+
 def rederive_static_fast_overrides(agent: Any) -> None:
     """Keep pinned fast params scoped to the current route after a model/provider swap."""
     if getattr(agent, "service_tier", None) != "priority":
         return
-    from hermes_cli.models import resolve_fast_mode_overrides
 
     overrides = dict(getattr(agent, "request_overrides", None) or {})
-    overrides.pop("speed", None)
-    overrides.pop("service_tier", None)
-    base_url = getattr(agent, "base_url", None)
-    if getattr(agent, "api_mode", None) == "anthropic_messages":
-        base_url = getattr(agent, "_anthropic_base_url", None) or base_url
-    overrides.update(resolve_fast_mode_overrides(
-        getattr(agent, "model", None), provider=getattr(agent, "provider", None), base_url=base_url,
-    ) or {})
+    if overrides.get("speed") == "fast":
+        overrides.pop("speed")
+    if overrides.get("service_tier") == "priority":
+        overrides.pop("service_tier")
+    overrides.update(_route_fast_overrides(agent))
     agent.request_overrides = overrides
 
 
@@ -53,15 +72,37 @@ def begin_turn(agent: Any, conversation_history: Any) -> None:
 
 
 def effective_request_overrides(agent: Any) -> dict[str, Any]:
-    """``agent.request_overrides`` plus the fast override while the window is open."""
+    """``agent.request_overrides`` plus the fast override while the window is open, minus
+    ``speed`` for a model this session learned has no fast capacity."""
     overrides = dict(getattr(agent, "request_overrides", None) or {})
-    if getattr(agent, "service_tier", None) not in BOUNDED_MODES or time.monotonic() >= getattr(agent, "_fast_until", 0.0):
-        return overrides
-    from hermes_cli.models import resolve_fast_mode_overrides
-    base_url = getattr(agent, "base_url", None)
-    if getattr(agent, "api_mode", None) == "anthropic_messages":
-        base_url = getattr(agent, "_anthropic_base_url", None) or base_url
-    overrides.update(
-        resolve_fast_mode_overrides(getattr(agent, "model", None), provider=getattr(agent, "provider", None), base_url=base_url) or {}
-    )
+    if getattr(agent, "service_tier", None) in BOUNDED_MODES and time.monotonic() < getattr(agent, "_fast_until", 0.0):
+        overrides.update(_route_fast_overrides(agent))
+    if "speed" in overrides and getattr(agent, "model", None) in (getattr(agent, "_fast_mode_unavailable_models", None) or ()):
+        overrides.pop("speed", None)
     return overrides
+
+
+def fast_mode_unprovisioned(api_error: Any, api_kwargs: Any) -> bool:
+    """True for a 429 on a ``speed: "fast"`` request whose fast-mode limit header is 0. The
+    organization has no fast capacity for the model, so waiting or rotating keys cannot help."""
+    if getattr(api_error, "status_code", None) != 429 or not isinstance(api_kwargs, dict):
+        return False
+    if (api_kwargs.get("extra_body") or {}).get("speed") != "fast":
+        return False
+    headers = getattr(getattr(api_error, "response", None), "headers", None)
+    if headers is None:
+        return False
+    return any(str(headers.get(name, "")).strip() == "0" for name in _FAST_LIMIT_HEADERS)
+
+
+def mark_fast_mode_unavailable(agent: Any) -> bool:
+    """Stop sending ``speed`` for the current model for the rest of the session. False when the
+    model was already marked, so the caller retries at most once per model."""
+    model = getattr(agent, "model", None)
+    unavailable = getattr(agent, "_fast_mode_unavailable_models", None)
+    if not isinstance(unavailable, set):
+        unavailable = agent._fast_mode_unavailable_models = set()
+    if not model or model in unavailable:
+        return False
+    unavailable.add(model)
+    return True

@@ -78,6 +78,9 @@ vi.mock('@/store/profile', () => ({
   $profileOrder: atom([]),
   $profiles: atom([{ is_default: true, name: 'default' }]),
   $profileScope: atom('default'),
+  // The rail's status summary (profile-dot-state) rides the real session
+  // stores, whose import graph reaches $showAllProfiles through layout state.
+  $showAllProfiles: atom(false),
   ALL_PROFILES: '*',
   normalizeProfileKey: (name: string) => name,
   profileLabel: (profile: { display_name?: string; name: string }) =>
@@ -247,6 +250,7 @@ describe('ProfileRail fleet mode', () => {
         if (condensed) {
           fireEvent.pointerDown(screen.getByRole('button', { name: 'Profiles' }), { button: 0, ctrlKey: false })
         }
+
         fireEvent.contextMenu(
           screen.getByRole(condensed ? (target.connectionId ? 'menuitem' : 'menuitemradio') : 'button', {
             name: target.label

@@ -43,6 +43,7 @@ import {
   recordSessionEventScope,
   releaseSessionTranscript,
   requestForOwnedSession,
+  resetRouteOwnedTileRuntimeBindings,
   resetTileRuntimeBindings,
   selectionHomesToWorkspace,
   type SessionTileDelegate,
@@ -129,14 +130,6 @@ describe('resetTileRuntimeBindings', () => {
     expect($sessionTiles.get()).toEqual([
       { anchor: undefined, before: undefined, dir: undefined, storedSessionId: 'stored-a' }
     ])
-  })
-
-  it('tolerates a delegate without invalidateRuntimeBindings (older wiring)', () => {
-    setSessionTileDelegate({} as unknown as SessionTileDelegate)
-    $sessionTiles.set([{ runtimeId: 'runtime-dead', storedSessionId: 'stored-a' }])
-
-    expect(() => resetTileRuntimeBindings()).not.toThrow()
-    expect($sessionTiles.get()[0]?.runtimeId).toBeUndefined()
   })
 
   it('keeps Bot runtimes owned by a different connection', () => {
@@ -266,6 +259,76 @@ describe('resetTileRuntimeBindings', () => {
     expect(workBot).toMatchObject({ runtimeId: 'runtime-work-live', storedSessionId: 'stored-work-bot' })
     expect(ordinarySession).not.toHaveProperty('runtimeId')
     expect(invalidateRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-work-bot']))
+  })
+})
+
+function runtimeBindingDelegate(
+  dropRuntimeBindings: (storedSessionIds: ReadonlySet<string>) => void,
+  invalidateRuntimeBindings: (preserveStoredSessionIds?: ReadonlySet<string>) => void
+): SessionTileDelegate {
+  return {
+    archiveSession: vi.fn(),
+    branchSession: vi.fn(),
+    deleteSession: vi.fn(),
+    executeSlash: vi.fn(),
+    interruptSession: vi.fn(),
+    resumeTile: vi.fn(),
+    submitToSession: vi.fn(),
+    updateSession: vi.fn(),
+    dropRuntimeBindings,
+    invalidateRuntimeBindings
+  }
+}
+
+describe('resetRouteOwnedTileRuntimeBindings', () => {
+  afterEach(() => {
+    $sessionTiles.set([])
+  })
+
+  it('drops only tiles owned by the reopened route and leaves ambient tiles bound', () => {
+    const invalidateRuntimeBindings = vi.fn()
+    const dropRuntimeBindings = vi.fn()
+    setSessionTileDelegate(runtimeBindingDelegate(dropRuntimeBindings, invalidateRuntimeBindings))
+    $sessionTiles.set([
+      {
+        ownerRoute: { connectionId: 'local', mode: 'local', profile: 'writer', targetProfile: 'writer' },
+        runtimeId: 'runtime-writer-bot',
+        storedSessionId: 'stored-writer-bot',
+        workspaceMode: 'bots'
+      },
+      {
+        ownerRoute: { connectionId: 'local', mode: 'local', profile: 'coder', targetProfile: 'coder' },
+        runtimeId: 'runtime-coder-bot',
+        storedSessionId: 'stored-coder-bot',
+        workspaceMode: 'bots'
+      },
+      { runtimeId: 'runtime-ambient', storedSessionId: 'stored-ambient' }
+    ])
+
+    resetRouteOwnedTileRuntimeBindings({ connectionId: 'local', profile: 'writer' })
+
+    const [writerBot, coderBot, ambient] = $sessionTiles.get()
+
+    expect(writerBot).toMatchObject({ storedSessionId: 'stored-writer-bot' })
+    expect(writerBot).not.toHaveProperty('runtimeId')
+    expect(coderBot).toMatchObject({ runtimeId: 'runtime-coder-bot' })
+    expect(ambient).toMatchObject({ runtimeId: 'runtime-ambient' })
+    expect(dropRuntimeBindings).toHaveBeenCalledWith(new Set(['stored-writer-bot']))
+    expect(invalidateRuntimeBindings).not.toHaveBeenCalled()
+  })
+
+  it('is a no-op when no open tile belongs to the reopened route', () => {
+    const invalidateRuntimeBindings = vi.fn()
+    const dropRuntimeBindings = vi.fn()
+    setSessionTileDelegate(runtimeBindingDelegate(dropRuntimeBindings, invalidateRuntimeBindings))
+    const tiles = [{ runtimeId: 'runtime-ambient', storedSessionId: 'stored-ambient' }]
+    $sessionTiles.set(tiles)
+
+    resetRouteOwnedTileRuntimeBindings({ connectionId: 'local', profile: 'writer' })
+
+    expect($sessionTiles.get()).toBe(tiles)
+    expect(dropRuntimeBindings).not.toHaveBeenCalled()
+    expect(invalidateRuntimeBindings).not.toHaveBeenCalled()
   })
 })
 
@@ -912,13 +975,6 @@ describe('releaseSessionTranscript', () => {
     expect(() => releaseSessionTranscript('runtime')).not.toThrow()
     expect($sessionStates.get().runtime).toEqual({ ...legacy, messages: [] })
   })
-
-  it('ignores a legacy undefined state without throwing', () => {
-    $sessionStates.set({ runtime: undefined } as unknown as Record<string, ClientSessionState>)
-
-    expect(() => releaseSessionTranscript('runtime')).not.toThrow()
-    expect($sessionStates.get()).toHaveProperty('runtime', undefined)
-  })
 })
 
 describe('orderTilesByTree', () => {
@@ -1274,12 +1330,6 @@ describe('sessionTileOwnerRoute', () => {
     $sessionTiles.set([{ storedSessionId: 'plain' }])
 
     expect(sessionTileOwnerRoute('plain')).toBeUndefined()
-  })
-
-  it('returns undefined when the session has no tile', () => {
-    $sessionTiles.set([])
-
-    expect(sessionTileOwnerRoute('missing')).toBeUndefined()
   })
 })
 

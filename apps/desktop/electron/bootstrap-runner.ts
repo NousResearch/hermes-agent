@@ -110,8 +110,10 @@ function readExistingPinnedCommit(activeRoot: string | null | undefined): string
 
 /**
  * Pick the commit to store on the bootstrap-complete marker.
- * Packaged fallback stamps must NOT win (all-zero is not a real pin); after a
- * successful install the checkout's HEAD (or install.ps1's marker) does.
+ * The installed checkout owns source runtime identity: its live HEAD wins, so
+ * a repair/update bootstrap reports the commit the checkout is actually at,
+ * never the older commit baked into the packaged app. Packaged fallback stamps
+ * (all-zero) are not real pins and never win.
  */
 function resolveMarkerPinnedCommit(
   installStamp: { commit?: string; branch?: string | null } | null | undefined,
@@ -120,14 +122,14 @@ function resolveMarkerPinnedCommit(
 ): string | null {
   const resolveHead = opts.resolveHead || resolveCheckoutHead
 
-  if (installStamp && isPinnedCommit(installStamp.commit)) {
-    return installStamp.commit
-  }
-
   const head = resolveHead(activeRoot)
 
   if (head) {
     return head
+  }
+
+  if (installStamp && isPinnedCommit(installStamp.commit)) {
+    return installStamp.commit
   }
 
   return readExistingPinnedCommit(activeRoot)
@@ -746,7 +748,9 @@ async function fetchManifest({
     // the installer's colour/OSC bytes here too (#112675).
     const tail = stripAnsi(result.stderr || result.stdout).trim()
 
-    throw new Error(`${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${tail}`)
+    throw new Error(
+      `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${tail}`
+    )
   }
 
   // The manifest is the LAST JSON line on stdout (install.ps1 may print

@@ -4,7 +4,7 @@ import json as _json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, NoReturn, Optional, Set
 
 from hermes_cli.cli_output import print_info as _print_info
 from hermes_cli.colors import Colors, color
@@ -18,14 +18,10 @@ from hermes_cli.toolset_validation import parse_platform_toolsets_value
 # Re-exports: keep ``hermes_cli.tools_config.X`` callers and test patch targets resolving.
 from hermes_cli.tools_config_cua import (  # noqa: F401
     _post_setup_no_window_flags, _cua_driver_cmd, _cua_version_summary, _resolved_cua_driver_cmd, _cua_driver_env,
-    _cua_driver_contract_status, _cua_driver_install_ready, _pip_install, _cua_install_target_writable,
-    install_cua_driver, _CUA_INSTALLER_TIMEOUT, _CUA_INSTALLER_DRAIN_GRACE, _CUA_LOCK_STALE_AFTER,
-    _clear_stale_windows_cua_install_lock, _clear_stale_cua_install_lock, _cua_install_lock_held,
-    _cua_release_endpoint_reachable, _repair_cua_driver_autostart_windows, _run_cua_driver_installer)
+    _cua_driver_contract_status, _cua_driver_install_ready)
 from hermes_cli.tools_config_post_setup import (  # noqa: F401
     _ensure_browser_use_cli, _run_post_setup, valid_post_setup_keys, run_post_setup_command, _POST_SETUP_INSTALLED,
-    _post_setup_already_installed, _module_installed, active_restorable_python_tool_dependencies,
-    restorable_python_tool_dependency, _POST_SETUP_READY)
+    _post_setup_already_installed, _module_installed, _POST_SETUP_READY)
 from hermes_cli.tools_config_providers import (  # noqa: F401
     _plugin_image_gen_providers, _plugin_video_gen_providers, _plugin_web_search_providers, _plugin_browser_providers,
     _plugin_tts_providers, web_provider_capabilities, _visible_providers, provider_readiness_status,
@@ -38,7 +34,25 @@ from hermes_cli.tools_config_providers import (  # noqa: F401
 from hermes_cli.tools_config_mcp import (  # noqa: F401
     _configure_mcp_tools_interactive, _apply_toolset_change, _apply_mcp_change, tools_disable_enable_command)
 
+
+def _pip_install(
+    args: List[str], *, timeout: int = 300, capture_output: bool = True
+) -> NoReturn:
+    # Shim to suppress old updater work until relaunch, not install or report success.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
+
+
 logger = logging.getLogger(__name__)
+
+
+def install_cua_driver(*args, **kwargs) -> NoReturn:
+    # A running pre-PM updater can still import the vendor installer here.
+    # Stop it before any old retry or completion branch can run.
+    from hermes_cli._old_updater import stop_for_relaunch
+
+    stop_for_relaunch()
 
 # Platforms already warned about an all-invalid platform_toolsets list (warn once, not per resolution).
 _warned_invalid_platform_toolsets: Set[str] = set()
@@ -269,9 +283,9 @@ TOOL_CATEGORIES = {
         # Provider rows come from plugins.web.<vendor> via _plugin_web_search_providers(). Only the two
         # non-provider firecrawl setup-flow rows live here: managed via Nous subscription, and self-hosted.
         "providers": [
-            {"name": "Nous Subscription", "badge": "subscription", "tag": "Managed Firecrawl billed to your subscription",
+            {"name": "Nous Subscription", "badge": "subscription", "tag": "Managed web search and extract billed to your subscription",
              "web_backend": "firecrawl", "env_vars": [], **_NOUS, "managed_nous_feature": "web",
-             "override_env_vars": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL"]},
+             "override_env_vars": ["FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PERPLEXITY_API_KEY"]},
             {"name": "Firecrawl Self-Hosted", "badge": "free · self-hosted", "tag": "Run your own Firecrawl instance (Docker)",
              "web_backend": "firecrawl",
              "env_vars": [_key("FIRECRAWL_API_URL", "Your Firecrawl instance URL (e.g., http://localhost:3002)")]},
@@ -415,10 +429,12 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
     """MCP servers globally enabled in config.yaml or by a plugin (shared by platform + cron resolvers). Enabled
     unless ``enabled`` is explicitly falsey; portable-plugin servers (in-memory) count — enabling the plugin is
     the opt-in."""
+    from tools.mcp_tool_common import mcp_server_enabled
+
     mcp_servers = (config or {}).get("mcp_servers") or {}
     names = {
         str(name) for name, server_cfg in mcp_servers.items()
-        if isinstance(server_cfg, dict) and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
+        if isinstance(server_cfg, dict) and mcp_server_enabled(server_cfg)
     }
     try:
         from hermes_cli.plugins import get_portable_mcp_server_names_nowait

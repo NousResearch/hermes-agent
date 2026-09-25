@@ -1228,6 +1228,22 @@ def _promote_staged_desktop_app(
     return packaged_executable
 
 
+def _diagnose_esbuild_ignore_scripts(output: Optional[str]) -> None:
+    """Print an actionable hint when a desktop build failed because esbuild's platform
+    binary was never staged (`ignore-scripts=true` skips esbuild's postinstall, so the
+    ``@esbuild/<platform>`` optional dependency is absent) — #53082. Best-effort: only
+    adds context, never masks the original error."""
+    text = output or ""
+    if not ("@esbuild/" in text and "could not be found" in text) and "ignore-scripts" not in text:
+        return
+    print("  ⚠ This looks like esbuild's native binary is missing — commonly caused by")
+    print("    `ignore-scripts=true` in your npm config, which skips esbuild's postinstall")
+    print("    that stages the @esbuild/<platform> package.")
+    print("    Fix: run `npm config get ignore-scripts` — if true, either set it to false")
+    print("    (`npm config set ignore-scripts false`), then reinstall: `npm ci` in the repo root,")
+    print("    or stage the binary directly: `node node_modules/esbuild/install.js` in apps/desktop.")
+
+
 def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, env: dict,
                            icons: Path | None = None) -> Optional[Path]:
     """Build prepared desktop sources, then publish the verified staged app."""
@@ -1264,6 +1280,9 @@ def build_prepared_desktop(desktop_dir: Path, *, source_mode: bool, npm: str, en
             _promote_staged_desktop_app(desktop_dir, staging_dir) if staging_dir is not None else None
         )
         return packaged_executable
+    except subprocess.CalledProcessError as exc:
+        _diagnose_esbuild_ignore_scripts(exc.output)
+        raise
     finally:
         if staging_dir is not None:
             _discard_desktop_staging(staging_dir)

@@ -376,8 +376,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     return await self._create_chat_for_handle(chat_id, chunk)
                 return SendResult(success=False, error=f"BlueBubbles chat not found for target: {chat_id}")
             payload: Dict[str, Any] = {"chatGuid": guid, "tempGuid": _temp_guid(), "message": chunk}
-            if reply_to and self._private_api_enabled and self._helper_connected:
-                payload.update(method="private-api", selectedMessageGuid=reply_to, partIndex=0)
+            # Route every text send through the Private API when it is live, not only
+            # replies: without ``method`` the server falls back to its legacy websocket
+            # path, which stalls (30 s ReadTimeout, nothing delivered) on helper-only
+            # setups — cron delivery, send_message and any other non-reply send (#122949).
+            if self._private_api_enabled and self._helper_connected:
+                payload["method"] = "private-api"
+                if reply_to:
+                    payload.update(selectedMessageGuid=reply_to, partIndex=0)
             if not (last := await self._post_message("/api/v1/message/text", payload)).success:
                 return last
         return last

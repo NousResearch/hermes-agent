@@ -31,7 +31,8 @@ from tools.approval_detection import (
     _approval_key_aliases, _check_sudo_stdin_guard, detect_dangerous_command, detect_hardline_command,
 )
 from tools.approval_floors import (
-    _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule, _sudo_stdin_block_result,
+    _command_matches_permanent_allowlist, _hardline_block_result, _match_user_deny_rule,
+    _match_user_deny_rule_in_script, _sudo_stdin_block_result,
     _user_deny_block_result,
 )
 from tools.approval_gateway_wait import _await_gateway_decision
@@ -1247,6 +1248,15 @@ def check_execute_code_guard(code: str, env_type: str, has_host_access: bool = F
     """
     pattern_key = "execute_code"
     description = _EXECUTE_CODE_DESCRIPTION
+
+    # The operator's approvals.deny rules are matched against the script text too, first, exactly as
+    # on the terminal path (_user_deny_block runs before the container fast path and before yolo /
+    # mode=off there). The block message promises "not even with --yolo or approvals.mode=off"; without
+    # this the script reaches subprocess/os.system directly and none of that promise holds.
+    deny_pattern = _match_user_deny_rule_in_script(code)
+    if deny_pattern is not None:
+        logger.warning("User deny rule %r blocked execute_code script", deny_pattern)
+        return _user_deny_block_result(deny_pattern)
 
     # Isolated backends already sandbox the child. vercel_sandbox has no host-bind concept so it stays always-skipped.
     if env_type == "vercel_sandbox":

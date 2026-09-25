@@ -253,3 +253,58 @@ class TestDenyOrdering:
         deny_config(["git push --force*"])
         result = mod.check_dangerous_command("ls -la", "local")
         assert result["approved"] is True
+
+
+class TestDenyCoversExecuteCode:
+    """execute_code scripts reach subprocess/os.system directly, so the deny rules
+    must be matched against the script text — with the same "never, even under
+    yolo / mode=off / a container" contract the terminal path already keeps."""
+
+    SCRIPT = 'import subprocess\nsubprocess.run("git push --force origin main", shell=True)\n'
+
+    def test_denied_script_blocks_under_yolo(self, deny_config, clean_env, monkeypatch):
+        deny_config(["*git push --force*"])
+        monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", True)
+
+        result = mod.check_execute_code_guard(self.SCRIPT, "local")
+
+        assert result["approved"] is False
+        assert result.get("user_deny") is True
+        assert "approvals.deny" in result["message"]
+
+    def test_denied_script_blocks_with_mode_off(self, deny_config, clean_env):
+        deny_config(["*git push --force*"], mode="off")
+
+        result = mod.check_execute_code_guard(self.SCRIPT, "local")
+
+        assert result["approved"] is False
+        assert result.get("user_deny") is True
+
+    @pytest.mark.parametrize("env_type", ["docker", "modal", "vercel_sandbox"])
+    def test_container_backend_cannot_skip_deny(self, env_type, deny_config, clean_env):
+        deny_config(["*git push --force*"])
+
+        result = mod.check_execute_code_guard(self.SCRIPT, env_type)
+
+        assert result["approved"] is False
+        assert result.get("user_deny") is True
+
+    def test_non_matching_script_keeps_existing_behaviour(self, deny_config, clean_env, monkeypatch):
+        deny_config(["*git push --force*"])
+        monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", True)
+
+        result = mod.check_execute_code_guard("print('hello')", "local")
+
+        assert result["approved"] is True
+
+    def test_anchored_glob_matches_a_script_line(self, deny_config, clean_env, monkeypatch):
+        """A rule written for the terminal (anchored, no leading ``*``) still fires on a
+        script line that is exactly that command — e.g. inside a heredoc'd shell block."""
+        deny_config(["git push --force*"])
+        monkeypatch.setattr(mod, "_YOLO_MODE_FROZEN", True)
+
+        script = 'import os\ncmd = """\ngit push --force origin main\n"""\nos.system(cmd)\n'
+        result = mod.check_execute_code_guard(script, "local")
+
+        assert result["approved"] is False
+        assert result.get("user_deny") is True

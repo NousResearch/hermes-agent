@@ -489,7 +489,14 @@ def _ship_env_file_and_launch(env, remote_dir: str, env_name: str, launch: str, 
 
 
 def _env_temp_dir(env: Any) -> str:
-    """Return a writable temp dir for env-backed execute_code sandboxes."""
+    """Return a writable temp dir for env-backed execute_code sandboxes.
+
+    POSIX remote form (#122168): the env answer is normalized (a forward-slash
+    ``C:/...`` from LocalEnvironment on Windows is valid in git bash), while
+    the host fallback keeps the legacy strict rule — a backslash host temp
+    must never become a remote mkdir/cd path.
+    """
+    from tools.tool_result_storage import _posix_remote_temp_dir
     temp_dir = None
     get_temp_dir = getattr(env, "get_temp_dir", None)
     if callable(get_temp_dir):
@@ -497,10 +504,13 @@ def _env_temp_dir(env: Any) -> str:
             temp_dir = get_temp_dir()
         except Exception as exc:
             logger.debug("Could not resolve execute_code env temp dir: %s", exc)
-    for candidate in (temp_dir, tempfile.gettempdir()):
-        if isinstance(candidate, str) and candidate.startswith("/"):
-            return candidate.rstrip("/") or "/"
-    return tempfile.gettempdir()
+    posix = _posix_remote_temp_dir(temp_dir) if temp_dir else None
+    if posix is not None:
+        return posix
+    host = tempfile.gettempdir()
+    if isinstance(host, str) and host.startswith("/"):
+        return host.rstrip("/") or "/"
+    return "/tmp"
 
 
 def _format_interrupted_output(stdout_text: str) -> str:

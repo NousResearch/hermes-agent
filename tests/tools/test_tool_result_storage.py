@@ -18,6 +18,7 @@ from tools.tool_result_storage import (
     STORAGE_DIR,
     _build_persisted_message,
     _pageable_text,
+    _posix_remote_temp_dir,
     _resolve_storage_dir,
     _safe_result_filename,
     _write_to_sandbox,
@@ -181,6 +182,33 @@ class TestResolveStorageDir:
         env = MagicMock()
         env.get_temp_dir.return_value = "/var/host/tmp"
         assert _resolve_storage_dir(env) == "/var/host/tmp/hermes-results"
+
+    def test_accepts_forward_slash_windows_env_temp_dir(self):
+        # Regression for #122168: LocalEnvironment on a Windows host returns a
+        # forward-slash C:/ path (valid in git bash) — it must be used, not dropped.
+        env = MagicMock()
+        env.get_temp_dir.return_value = "C:/Users/test/cache/terminal"
+        assert _resolve_storage_dir(env) == "C:/Users/test/cache/terminal/hermes-results"
+
+    def test_normalizes_backslash_env_temp_dir(self):
+        # A backslash env answer is normalized to forward slashes (valid in
+        # git bash) instead of being interpolated verbatim into remote commands.
+        env = MagicMock()
+        env.get_temp_dir.return_value = "C:\\Users\\test\\Temp"
+        assert _resolve_storage_dir(env) == "C:/Users/test/Temp/hermes-results"
+
+
+class TestPosixRemoteTempDir:
+    def test_posix_absolute_kept(self):
+        assert _posix_remote_temp_dir("/tmp/x/") == "/tmp/x"
+
+    def test_drive_letter_forward_slash_kept(self):
+        assert _posix_remote_temp_dir("C:/a/b") == "C:/a/b"
+
+    def test_non_absolute_rejected(self):
+        assert _posix_remote_temp_dir("relative/dir") is None
+        assert _posix_remote_temp_dir("") is None
+        assert _posix_remote_temp_dir(None) is None
 
 class TestSafeResultFilename:
     def test_preserves_normal_tool_call_id(self):

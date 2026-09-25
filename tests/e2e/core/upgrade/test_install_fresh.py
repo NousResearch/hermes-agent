@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -26,7 +27,7 @@ from tests.e2e.core.upgrade import _install_helpers as I
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = [
-    pytest.mark.linux_only,
+    pytest.mark.platforms("linux"),
     pytest.mark.skipif(H.sandbox_required_reason() is not None, reason=str(H.sandbox_required_reason())),
     pytest.mark.skipif(shutil.which("git") is None, reason="git required"),
     pytest.mark.skipif(I.real_uv() is None, reason="uv required"),
@@ -55,7 +56,10 @@ def _login_shell_hermes(sb: I.Sandbox) -> str:
     """Resolve `hermes` the way a new login shell would: PATH comes only from the rc files."""
     env = dict(sb.env)
     env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
-    cp = H.run(["bash", "-lc", "command -v hermes"], env=env, cwd=sb.root, writable=[sb.root], timeout=60)
+    bash = shutil.which("bash")
+    assert bash is not None, "bash required for install.sh and the login-shell probe"
+    cp = H.run([bash, "-lic", "command -v hermes"], env=env, cwd=sb.root, writable=[sb.root], timeout=60)
+    assert cp.returncode == 0, H.describe(cp)
     return cp.stdout.strip()
 
 
@@ -97,7 +101,7 @@ def _turn(sb: I.Sandbox, provider: FakeLLMServer, marker: str) -> None:
 
 
 def _configure(sb: I.Sandbox, provider: FakeLLMServer) -> None:
-    py = str(sb.checkout / "venv" / "bin" / "python")
+    py = sb.python
     ver = sb.run([py, "-c", "from hermes_cli.config_defaults import DEFAULT_CONFIG as D; print(D['_config_version'])"])
     assert ver.returncode == 0, I.describe(ver)
     version = int(ver.stdout.strip().splitlines()[-1])
@@ -114,29 +118,32 @@ def test_fresh_install_serves_head_and_runs_a_turn(installed, provider):
     assert first.returncode == 0, "install.sh failed on an empty HOME:\n" + I.describe(first)
     assert I.git("rev-parse", "HEAD", cwd=sb.checkout) == I.head_sha(), "installed checkout is not the published commit"
     assert I.git("status", "--porcelain", "--untracked-files=no", cwd=sb.checkout) == "", "installer dirtied the checkout"
-    # A new login shell finds the command through the rc files the installer edited.
-    assert _login_shell_hermes(sb) == sb.hermes, "a new shell does not resolve `hermes` to the installed launcher"
-    assert all(n >= 1 for n in _path_lines(sb).values()), f"PATH not wired into the shell rc: {_path_lines(sb)}"
     ver = sb.cli("--version")
     assert ver.returncode == 0 and I.TRACEBACK not in ver.stdout + ver.stderr, I.describe(ver)
-    probe = sb.run([str(sb.checkout / "venv" / "bin" / "python"), "-c", "import hermes_cli, run_agent; print(hermes_cli.__file__); print(run_agent.__file__)"])
+    probe = sb.run([sb.python, "-c", "import hermes_cli, run_agent; print(hermes_cli.__file__); print(run_agent.__file__)"])
     assert probe.returncode == 0, I.describe(probe)
+    workspace = Path(sb.python).parent.parent.parent / "workspace"
     for line in probe.stdout.split():
-        assert line.startswith(str(sb.checkout)), f"installed venv imports code from outside the checkout: {line}"
+        imported = Path(line)
+        assert imported.is_relative_to(workspace), f"installed PM environment imports code from outside the selected workspace: {line}"
+        assert imported.read_bytes() == (sb.checkout / imported.relative_to(workspace)).read_bytes(), (
+            f"installed PM workspace does not match the checkout: {line}")
     for rel in ("config.yaml", ".env", "SOUL.md"):
         assert (sb.hermes_home / rel).is_file(), f"installer did not seed ~/.hermes/{rel}"
     _configure(sb, provider)
     _turn(sb, provider, "first turn on a fresh install")
     db = I.db_state(sb.hermes_home / "state.db")
     assert db["integrity"] == [("ok",)] and len(db["sessions"]) == 1 and db["n_messages"] >= 2, db
+    # A new login shell finds the command through the rc files the installer edited.
+    assert all(n >= 1 for n in _path_lines(sb).values()), f"PATH not wired into the shell rc: {_path_lines(sb)}"
+    assert _login_shell_hermes(sb) == sb.hermes, "a new shell does not resolve `hermes` to the installed launcher"
 
 
 def test_rerunning_the_installer_is_idempotent(installed, provider):
     sb, first = installed
     assert first.returncode == 0, I.describe(first)
-    if not (sb.hermes_home / "state.db").exists():
-        _configure(sb, provider)
-        _turn(sb, provider, "first turn on a fresh install")
+    _configure(sb, provider)
+    _turn(sb, provider, "session that must survive the installer re-run")
     before = _state(sb)
     rc_before = _path_lines(sb)
     commit = I.git("rev-parse", "HEAD", cwd=sb.checkout)
@@ -147,8 +154,8 @@ def test_rerunning_the_installer_is_idempotent(installed, provider):
     after = _state(sb)
     for key in before:
         assert after[key] == before[key], f"re-running the installer changed the user's {key}"
-    assert _path_lines(sb) == rc_before, f"PATH line appended again: {rc_before} -> {_path_lines(sb)}"
-    assert _login_shell_hermes(sb) == sb.hermes
     _turn(sb, provider, "turn after re-running the installer")
     db = I.db_state(sb.hermes_home / "state.db")
     assert set(before["db"]["sessions"]) < set(db["sessions"]), "earlier session lost or new turn not persisted"
+    assert _path_lines(sb) == rc_before, f"PATH line appended again: {rc_before} -> {_path_lines(sb)}"
+    assert _login_shell_hermes(sb) == sb.hermes

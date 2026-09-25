@@ -33,6 +33,7 @@ def _require_identity(db: SessionDB) -> None:
         pytest.skip("filesystem does not expose st_dev/st_ino for identity checks")
 
 
+@pytest.mark.platforms("posix")
 def test_replace_with_new_inode_fails_loudly_without_fts_repair(tmp_path):
     live = tmp_path / "state.db"
     other = tmp_path / "other.db"
@@ -56,6 +57,7 @@ def test_replace_with_new_inode_fails_loudly_without_fts_repair(tmp_path):
     db.close()
 
 
+@pytest.mark.platforms("posix")
 def test_second_write_after_halt_does_not_attempt_repair(tmp_path):
     live = tmp_path / "state.db"
     other = tmp_path / "other.db"
@@ -125,6 +127,7 @@ def test_new_sessiondb_on_replaced_path_records_new_identity(tmp_path):
         reopened.close()
 
 
+@pytest.mark.platforms("posix")
 def test_fts_scoped_error_on_replaced_file_skips_fts_fail_open(tmp_path):
     """Even FTS-provenance corruption must not authorize surgery on a
     replaced file. (A generic malformed error never reaches fail-open at
@@ -228,6 +231,7 @@ def _posix_locks_on(paths):
     return held
 
 
+@pytest.mark.platforms("linux")
 def test_identity_probe_does_not_cancel_live_posix_locks(tmp_path):
     """The on-write header probe must not drop the writer's DMS lock."""
     from hermes_state import _read_sqlite_application_id
@@ -235,7 +239,6 @@ def test_identity_probe_does_not_cancel_live_posix_locks(tmp_path):
     live = tmp_path / "state.db"
     db = _make_db(live, "probe-sess", "seed")
     try:
-        sidecars = [live, Path(str(live) + "-shm")]
         # Hold an open write transaction: that is when the connection holds
         # POSIX range locks on the main db file, and exactly the state a
         # concurrent _raise_if_db_replaced probe (another thread, same
@@ -244,28 +247,19 @@ def test_identity_probe_does_not_cancel_live_posix_locks(tmp_path):
         db._conn.execute(
             "UPDATE sessions SET source = source WHERE id = 'probe-sess'"
         )
-        before = _posix_locks_on(sidecars)
-        assert before, "expected in-transaction WAL connection to hold POSIX locks"
+        before = _posix_locks_on([live])
+        assert before, "expected in-transaction WAL connection to lock state.db"
 
         for _ in range(3):
             _read_sqlite_application_id(live)
 
-        after = _posix_locks_on(sidecars)
+        after = _posix_locks_on([live])
         db._conn.rollback()
-        lost = before - after
-        assert not lost, (
-            "identity probe cancelled POSIX locks held by the live "
-            f"connection (howtocorrupt §2.2): {lost}"
-        )
-        # The decisive check: the WAL DMS shared lock on the MAIN db file
-        # must survive.  With the pre-fix open/read/close probe the close()
-        # cancels it (it is already gone by the time the connection has run
-        # its first identity check in __init__), leaving other processes
-        # free to treat this writer as dead and rerun WAL-index recovery
-        # underneath it.
-        db_ino = os.stat(live).st_ino
-        main_db_locks = {lk for lk in after if lk[0] == db_ino}
-        assert main_db_locks, (
+        # Only locks on the main file prove the header probe safe. WAL-index
+        # read-lock slots on -shm may legitimately move while SQLite runs, and
+        # sampling those unrelated locks made this test timing-sensitive. With
+        # the pre-fix open/read/close probe every main-file POSIX lock vanishes.
+        assert after, (
             "live writer connection holds no POSIX lock on state.db itself — "
             "the WAL DMS lock was cancelled by a raw open/close probe "
             "(howtocorrupt §2.2)"

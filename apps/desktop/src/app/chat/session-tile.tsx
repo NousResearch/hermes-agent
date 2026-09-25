@@ -72,6 +72,7 @@ import { paneMirror } from './pane-mirror'
 import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
+import { SessionTabProfileTag } from './session-tab-profile-tag'
 import { useSessionTileActions } from './session-tile-actions'
 import { tileOwnerRoute } from './session-tile-owner'
 import { reasoningEffortPending, type SessionView, SessionViewProvider } from './session-view'
@@ -874,12 +875,16 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   before: t => t.before,
   minWidth: '20rem',
   title: tileCaption,
-  // The tab's status dot — the SAME primitive the sidebar row renders, keyed by
-  // the stored id, so a session's status/color can never disagree between the
-  // two surfaces. Self-subscribing (live state + resolved color), so the strip
-  // needn't re-sync when it changes.
+  // The tab's lead — identity FIRST (the owning profile's glyph + name),
+  // then the status dot, the SAME primitive the sidebar row renders, keyed by
+  // the stored id, so a session's owner and status can never disagree between
+  // the two surfaces. Both self-subscribe (live state + resolved profile/color),
+  // so the strip needn't re-sync when they change.
   tabLead: storedSessionId => (
-    <SessionStatusDot session={tileStoredRow(storedSessionId)} storedSessionId={storedSessionId} />
+    <>
+      <SessionTabProfileTag storedSessionId={storedSessionId} />
+      <SessionStatusDot session={tileStoredRow(storedSessionId)} storedSessionId={storedSessionId} />
+    </>
   ),
   // Until the first turn lists a row there is no title to register, so the tab
   // takes its name from the composer instead — live, without re-registering.

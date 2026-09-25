@@ -4,6 +4,7 @@ import type { CSSProperties, ReactElement, PointerEvent as ReactPointerEvent } f
 
 import { SessionDraftTitle } from '@/app/chat/session-draft-title'
 import { SessionStatusDot } from '@/app/chat/session-status-dot'
+import { SessionTabProfileTag } from '@/app/chat/session-tab-profile-tag'
 import { PALETTE_AREA, type PaletteContribution, paletteToggle } from '@/app/command-palette/contrib'
 import { type StatusbarItem } from '@/app/shell/statusbar-controls'
 import { AskDirective } from '@/components/assistant-ui/ask-directive'
@@ -501,11 +502,19 @@ const syncWorkspaceTitle = () => {
       selected ? $botChatScopes.get()[selected] : undefined
     ),
     data: {
-      // The tab's status dot — the SAME primitive the sidebar row and session
-      // tiles render, so the main tab never disagrees with its sidebar row. A
-      // fresh draft has no session to key by, which IS its status: the dot
+      // The tab's lead, identity first: the owning profile's glyph + name,
+      // then the status dot — the SAME primitive the sidebar row and session
+      // tiles render, so the main tab never disagrees with its sidebar row.
+      // Both resolve their own state live (no captured value), so a draft
+      // becoming a stored session updates the lead without re-registering.
+      // A fresh draft has no session to key by, which IS its status: the dot
       // resolves to `draft` and marks the tab rather than leaving a hole.
-      tabLead: () => <SessionStatusDot session={stored} storedSessionId={selected} />,
+      tabLead: () => (
+        <>
+          <SessionTabProfileTag storedSessionId={selected} />
+          <SessionStatusDot session={stored} storedSessionId={selected} />
+        </>
+      ),
       // A draft's name lives in its composer, not in any session row, so the
       // label subscribes to it directly — typing renames the tab without
       // re-registering the pane.

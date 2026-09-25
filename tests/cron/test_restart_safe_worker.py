@@ -24,6 +24,65 @@ def execution_ledger(tmp_path, monkeypatch):
     return executions
 
 
+def test_external_worker_module_activates_selected_dependencies(tmp_path, monkeypatch):
+    """The external-worker package import must activate selected PM dependencies."""
+    from pm.environments import install_state_dir, site_packages
+
+    repo_root = Path(__file__).resolve().parents[2]
+    home = tmp_path / "hermes-home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_RUNTIME_DIR", raising=False)
+    selected_venv = install_state_dir(repo_root) / "environments" / "selected" / "venv"
+    selected_site = site_packages(selected_venv)
+    selected_site.mkdir(parents=True)
+    (selected_venv / "pyvenv.cfg").write_text(
+        f"version = {sys.version_info.major}.{sys.version_info.minor}.0\n",
+        encoding="utf-8",
+    )
+    (selected_site / "cron_worker_dependency_probe.py").write_text(
+        "VALUE = 'selected-environment'\n", encoding="utf-8"
+    )
+    facts = install_state_dir(repo_root) / "facts.json"
+    facts.parent.mkdir(parents=True, exist_ok=True)
+    facts.write_text(
+        json.dumps({"packages": {"venv": {"environment": str(selected_venv)}}}),
+        encoding="utf-8",
+    )
+
+    child_env = dict(os.environ)
+    child_env["HERMES_HOME"] = str(home)
+    child_env.pop("HERMES_RUNTIME_DIR", None)
+    child_env.pop("PYTHONPATH", None)
+    child = subprocess.run(
+        [
+            str(Path(getattr(sys, "_base_executable", sys.executable)).resolve()),
+            "-I",
+            "-c",
+            (
+                "import sys, types; "
+                f"sys.path.insert(0, {str(repo_root)!r}); "
+                "sys.argv.append('--external-worker-file'); "
+                "jobs = types.ModuleType('cron.jobs'); "
+                "[setattr(jobs, name, object()) for name in "
+                "('create_job', 'get_job', 'list_jobs', 'remove_job', 'update_job', "
+                "'pause_job', 'resume_job', 'trigger_job', 'rearm_oneshot', 'JOBS_FILE')]; "
+                "scheduler = types.ModuleType('cron.scheduler'); scheduler.tick = lambda: None; "
+                "sys.modules['cron.jobs'] = jobs; sys.modules['cron.scheduler'] = scheduler; "
+                "import cron; import cron_worker_dependency_probe; "
+                "print(cron_worker_dependency_probe.VALUE)"
+            ),
+        ],
+        env=child_env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert child.returncode == 0, child.stderr
+    assert child.stdout.strip() == "selected-environment"
+
+
 def test_execution_owner_moves_to_external_worker_before_running(
     execution_ledger, monkeypatch
 ):

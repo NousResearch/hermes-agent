@@ -3,6 +3,14 @@ self-scheduled reminders, isolated sessions. The gateway daemon (``hermes gatewa
 the scheduler every 60 seconds; a file lock prevents duplicate execution across processes.
 """
 
+import sys
+
+# ``python -m cron.scheduler --external-worker-file ...`` imports this package
+# before loading the scheduler module, so activate PM dependencies here before
+# cron.jobs and its dependency-bearing import graph.
+if "--external-worker-file" in sys.argv:
+    import hermes_bootstrap  # noqa: F401
+
 from cron.jobs import (
     create_job,
     get_job,

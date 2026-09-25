@@ -176,6 +176,42 @@ def test_source_launch_reads_bom_electron_path_without_provisioning(tmp_path, mo
     assert len(calls) == 1
 
 
+def _stamped_macos_bundle(app: Path, asar: bytes) -> Path:
+    (app / "Contents" / "MacOS").mkdir(parents=True)
+    (app / "Contents" / "MacOS" / "Hermes").write_bytes(b"\xcf\xfa\xed\xfe")
+    (app / "Contents" / "Resources").mkdir()
+    (app / "Contents" / "Resources" / "app.asar").write_bytes(asar)
+    (app / "Contents" / "Resources" / "install-stamp.json").write_text('{"updateMechanism": "self"}')
+    return app
+
+
+@pytest.mark.platforms("macos")
+def test_packaged_launch_opens_the_refreshed_installed_app(tmp_path, monkeypatch):
+    """#52339: Finder and the Dock open the installed Hermes.app, so ``hermes desktop`` must launch
+    that copy (brought up to the checkout build) instead of a second bundle under release/."""
+    import shutil
+
+    root = _make_desktop_tree(tmp_path)
+    _stamped_macos_bundle(root / "apps" / "desktop" / "release" / "mac-arm64" / "Hermes.app", b"checkout build")
+    installed = _stamped_macos_bundle(tmp_path / "Applications" / "Hermes.app", b"stale build")
+    monkeypatch.setattr("hermes_cli.gui_uninstall.packaged_gui_app_paths", lambda: [installed])
+    monkeypatch.setattr("hermes_constants.get_default_hermes_root", lambda **kw: tmp_path)  # root is its hermes-agent
+    monkeypatch.setattr(main_desktop, "_stage_macos_bundle_copy", lambda src, dst: shutil.copytree(src, dst, symlinks=True))
+    monkeypatch.setattr(main_desktop, "_running_macos_app_bundles", lambda: set())
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(main_desktop, "_desktop_launch_env", lambda args: ({}, []))
+    calls = []
+    monkeypatch.setattr(main_desktop.subprocess, "run",
+                        lambda cmd, **kw: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0))
+
+    with pytest.raises(SystemExit) as exit_info:
+        main_desktop.cmd_gui(_ns(skip_build=True))
+
+    assert exit_info.value.code == 0
+    assert calls == [[str(installed / "Contents" / "MacOS" / "Hermes")]]
+    assert (installed / "Contents" / "Resources" / "app.asar").read_bytes() == b"checkout build"
+
+
 def test_packaged_renderer_bom_does_not_bypass_entry_validation(tmp_path):
     import json
     import struct

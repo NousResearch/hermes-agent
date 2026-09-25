@@ -523,6 +523,7 @@ class AgentImporter:
 
 def import_agent_command(args) -> None:
     """Handle ``hermes import-agent`` (invoked from hermes_cli.main)."""
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.config import get_config_path, load_config, save_config
     from hermes_constants import get_hermes_home
     from hermes_cli.setup import (Colors, color, print_header, print_info, print_success,
@@ -568,7 +569,7 @@ def import_agent_command(args) -> None:
     print_info(f"Overwrite:   {'yes' if overwrite else 'no (skip conflicts)'}")
     print_info("Secrets:     never imported — run 'hermes setup' for credentials")
     # Ensure config.yaml exists before the import tries to merge into it
-    if not get_config_path().exists():
+    if not config_exists(get_config_path()):
         save_config(load_config())
 
     def run_import(execute: bool, phase: str) -> Optional[Dict[str, Any]]:

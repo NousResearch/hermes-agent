@@ -66,7 +66,8 @@ def _require_mapping(value: Any, label: str) -> Dict[str, Any]:
 
 
 def _load_policy_config(config_path: Path) -> Dict[str, Any]:
-    if not config_path.exists():
+    from hermes_cli.config_backend import config_exists, read_config_doc
+    if not config_exists(config_path):
         return dict(_DEFAULT_WEBSITE_BLOCKLIST)
     try:
         import hermes_yaml as yaml
@@ -74,7 +75,7 @@ def _load_policy_config(config_path: Path) -> Dict[str, Any]:
         logger.debug("ruamel.yaml not installed — website blocklist disabled")
         return dict(_DEFAULT_WEBSITE_BLOCKLIST)
     try:
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8-sig")) or {}
+        config = read_config_doc(config_path) or {}
     except yaml.YAMLError as exc:
         raise WebsitePolicyError(f"Invalid config YAML at {config_path}: {exc}") from exc
     except OSError as exc:

@@ -284,7 +284,7 @@ def _write_channel_record_locked(sha16: str, path: str, channel: str,
     the dotted writer would otherwise turn a scalar into a mapping and
     destroy whatever the user had there.
     """
-    from utils import atomic_roundtrip_yaml_update
+    from hermes_cli.config_backend import write_config_key
 
     from hermes_cli.config import require_readable_config_before_write
     existing = require_readable_config_before_write(config_path)
@@ -300,7 +300,7 @@ def _write_channel_record_locked(sha16: str, path: str, channel: str,
     new_record = dict(record) if isinstance(record, dict) else {}
     new_record["path"] = path  # DATA, for humans + doctor GC
     new_record["channel"] = channel
-    atomic_roundtrip_yaml_update(config_path, f"update.installs.{sha16}", new_record)
+    write_config_key(config_path, f"update.installs.{sha16}", new_record)
     return True
 
 

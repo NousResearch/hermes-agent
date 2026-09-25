@@ -254,6 +254,7 @@ def _migration_step(label: str, log_label: str, fn):
 def _offer_openclaw_migration(hermes_home: Path) -> bool:
     """Detect ~/.openclaw and offer to migrate during first-time setup: dry-run preview first,
     execute only after explicit confirmation. Returns True iff migration ran successfully."""
+    from hermes_cli.config_backend import config_exists
     from hermes_cli.setup import (
         get_config_path, _info, load_config, print_header, print_info, print_success, print_warning, prompt_yes_no,
         save_config
@@ -269,7 +270,7 @@ def _offer_openclaw_migration(hermes_home: Path) -> bool:
         return False
 
     # Ensure config.yaml exists before migration tries to read it
-    if not get_config_path().exists():
+    if not config_exists(get_config_path()):
         save_config(load_config())
     mod = _migration_step("Could not load migration script", "OpenClaw migration module load error",
                           _load_openclaw_migration_module)

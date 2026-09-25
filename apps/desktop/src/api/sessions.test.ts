@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { SidebarSessionsResponse } from './sessions'
+
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
 vi.mock('@/store/transcript-tail', () => ({ recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
@@ -216,5 +218,32 @@ describe('listSidebarSessions remote ownership', () => {
     })
 
     expect(result.recents.sessions[0]).toMatchObject({ connection_id: 'prometheus', id: 'remote-session' })
+  })
+})
+
+describe('listSidebarSessions storage health', () => {
+  it('passes the backend corrupt-store map through so the sidebar can say why it is empty', async () => {
+    const response = {
+      cron: { sessions: [] },
+      errors: [{ error: 'database disk image is malformed', profile: 'default' }],
+      messaging: { sessions: [] },
+      recents: { sessions: [] },
+      storage: { default: 'corrupt' }
+    } satisfies SidebarSessionsResponse
+
+    // SAFETY: vi cannot infer a concrete return from the generic hermesApi signature;
+    // `satisfies` above checks the exact endpoint contract before it crosses the mock boundary.
+    hermesApi.mockResolvedValue(response as never)
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'all',
+      recentsLimit: 40,
+      recentsExclude: [],
+      cronLimit: 20,
+      messagingLimit: 40,
+      messagingExclude: []
+    })
+
+    expect(result.storage).toEqual({ default: 'corrupt' })
   })
 })

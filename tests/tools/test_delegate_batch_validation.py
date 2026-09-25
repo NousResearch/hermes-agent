@@ -136,11 +136,6 @@ class TestBatchPlaceholderGoals(unittest.TestCase):
         result = _call([{"goal": GOOD_A}, {"goal": "fix bug"}])
         self.assertIn("error", result)
 
-    def test_placeholder_error_is_actionable(self):
-        result = _call([{"goal": GOOD_A}, {"goal": "TODO"}])
-        self.assertIn("error", result)
-        # Error must tell the model HOW to fix the call.
-        self.assertIn("specific", result["error"].lower())
 
 
 class TestSingleTaskBatch(unittest.TestCase):

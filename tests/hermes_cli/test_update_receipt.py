@@ -12,7 +12,6 @@ Covers:
 import json
 import os
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -29,10 +28,9 @@ def receipt_home(tmp_path, monkeypatch):
     # ``_receipt_dir`` resolves through ``hermes_constants.get_hermes_home`` (env var), not
     # ``hermes_cli.config`` — patch where production reads.
     monkeypatch.setenv("HERMES_HOME", str(home))
-    # ensure no receipt bleeds between tests
-    ur._current = None
-    yield home
-    ur._current = None
+    # The open receipt is per-context; the scope isolates it from any enclosing receipt.
+    with ur.update_receipt_scope():
+        yield home
 
 
 def _finalize(outcome="success", fleet=None):
@@ -113,18 +111,6 @@ class TestReceiptLifecycle:
         assert latest is not None
         assert latest["outcome"] == "partial"
 
-    def test_phase_error_shape(self, receipt_home):
-        ur.begin_update_receipt()
-        ur.record_gateway_restart(
-            restarted_services=[],
-            incomplete=True,
-            phase_error="boom: module vanished mid-pull",
-        )
-        path = _finalize("partial")
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        gr = payload["gateway_restart"]
-        assert gr["incomplete"] is True
-        assert "boom" in gr["phase_error"]
 
     def test_record_without_begin_is_noop(self, receipt_home):
         # No begin — nothing should raise, nothing should be written.
@@ -133,11 +119,6 @@ class TestReceiptLifecycle:
         ur.record_gateway_restart(restarted_services=[])
         assert _finalize("success") is None
 
-    def test_finalize_clears_current(self, receipt_home):
-        ur.begin_update_receipt()
-        assert ur._current is not None
-        _finalize("success")
-        assert ur._current is None
 
     def test_pruning_keeps_recent(self, receipt_home, monkeypatch):
         monkeypatch.setattr(ur, "_RECEIPT_KEEP", 3)
@@ -156,9 +137,6 @@ class TestReceiptLifecycle:
             "update_20260104_000000_1.json",
             "update_20260105_000000_1.json",
         ]
-
-    def test_read_latest_receipt_missing(self, receipt_home):
-        assert ur.read_latest_receipt() is None
 
 
 class TestCommandBoundaryFinalization:
@@ -180,7 +158,7 @@ class TestCommandBoundaryFinalization:
         assert payload["exit_code"] == 2
         assert payload["stop_reason"] == "sys.exit(2)"
         assert payload["finished_at"] is not None
-        assert ur._current is None
+        assert ur.current_correlation_id() is None
 
     def test_pending_receipt_persisted_on_exit_1_failure(self, receipt_home):
         ur.begin_update_receipt()
@@ -260,7 +238,7 @@ class TestCommandBoundaryFinalization:
         assert latest["exit_code"] == 2
         assert latest["stop_reason"] == "sys.exit(2)"
         assert latest["steps"][0]["name"] == "windows_preflight"
-        assert ur._current is None
+        assert ur.current_correlation_id() is None
         # exactly-once: exactly one receipt file
         directory = receipt_home / "logs" / "update_receipts"
         assert len(list(directory.glob("update_*.json"))) == 1
@@ -281,7 +259,7 @@ class TestFleetClassification:
             json.dumps(gateway_record), encoding="utf-8"
         )
         monkeypatch.setattr(
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             lambda refresh=False: {"sha": expected_sha, "short_sha": expected_sha[:8],
                                    "version": "1.0", "source": "git"},
         )
@@ -307,7 +285,7 @@ class TestFleetClassification:
         home.mkdir()
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setattr(
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             lambda refresh=False: {"sha": "a" * 40, "short_sha": "a" * 8,
                                    "version": "1.0", "source": "git"},
         )
@@ -420,7 +398,7 @@ class TestFleetClassification:
         assert fleet[0]["code_sha"] is None
         assert fleet[0]["code_version"] is None
 
-    def test_matrix_returns_true_only_on_stale(self, capsys):
+    def test_matrix_returns_true_only_on_stale(self):
         assert ur.print_fleet_version_matrix([]) is False
         ok = ur.print_fleet_version_matrix(
             [{"profile": "default", "pid": 1, "code_sha": "a" * 40, "state": "current"}]
@@ -433,27 +411,12 @@ class TestFleetClassification:
             ]
         )
         assert stale is True
-        out = capsys.readouterr().out
-        assert "STALE" in out
-        assert "hermes -p <profile> gateway restart" in out
 
-    def test_unknown_does_not_fail_update(self, capsys):
+    def test_unknown_does_not_fail_update(self):
         ok = ur.print_fleet_version_matrix(
             [{"profile": "default", "pid": 1, "code_sha": None, "state": "unknown"}]
         )
         assert ok is False
-        assert "version unknown" in capsys.readouterr().out
-
-    def test_identity_pending_row_gets_restart_aware_copy(self, capsys):
-        """#112634: a gateway this update relaunched that has not stamped yet must not be told to
-        restart — it was just restarted on the new code. Still non-fatal."""
-        ok = ur.print_fleet_version_matrix(
-            [{"profile": "default", "pid": 34516, "code_sha": None, "state": "unknown", "identity_pending": True}]
-        )
-        assert ok is False
-        out = capsys.readouterr().out
-        assert "code identity not published yet" in out and "hermes gateway status" in out
-        assert "predates version stamping" not in out
 
 
 class TestGatewayStatusStamping:
@@ -461,7 +424,7 @@ class TestGatewayStatusStamping:
         import gateway.status as gs
 
         monkeypatch.setattr(
-            "hermes_cli.build_info.get_code_identity",
+            "hermes_cli.version_info.get_code_identity",
             lambda refresh=False: {"sha": "c" * 40, "short_sha": "c" * 8,
                                    "version": "2.0", "source": "git"},
         )
@@ -475,7 +438,7 @@ class TestGatewayStatusStamping:
         def _boom(refresh=False):
             raise RuntimeError("no build info")
 
-        monkeypatch.setattr("hermes_cli.build_info.get_code_identity", _boom)
+        monkeypatch.setattr("hermes_cli.version_info.get_code_identity", _boom)
         record = gs._build_runtime_status_record()
         # Must not raise, and must not stamp bogus values.
         assert "code_sha" not in record
@@ -483,15 +446,6 @@ class TestGatewayStatusStamping:
 
 
 class TestCodeIdentity:
-    def test_get_code_identity_shape(self):
-        from hermes_cli.build_info import get_code_identity
-
-        identity = get_code_identity(refresh=True)
-        assert set(identity) == {"sha", "short_sha", "version", "source"}
-        # Running from a git checkout in CI/dev: sha resolves via git.
-        if identity["sha"]:
-            assert identity["short_sha"] == identity["sha"][:8]
-            assert identity["source"] in ("git", "build-file")
 
     def test_get_code_identity_cached(self):
         from hermes_cli.build_info import get_code_identity

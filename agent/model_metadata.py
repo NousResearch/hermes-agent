@@ -9,17 +9,15 @@ import hashlib
 import ipaddress
 import json
 import logging
-import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-import yaml
+import hermes_yaml as yaml
 
-if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
-    import requests
+from agent import model_metadata_http
 
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, base_url_hostname
 
@@ -27,45 +25,6 @@ from hermes_constants import OPENROUTER_MODELS_URL, openrouter_variant_base
 from agent.message_metadata import PERSISTENCE_ONLY_MESSAGE_FIELDS
 
 logger = logging.getLogger(__name__)
-
-# ``requests`` costs ~27 ms of the `import cli` waterfall, so it is resolved lazily:
-# ``_ensure_requests()`` at runtime, PEP 562 ``__getattr__`` for ``patch("agent.model_metadata.requests.get")``.
-
-
-def _ensure_requests():
-    if "requests" not in globals():
-        import requests as _requests
-        globals()["requests"] = _requests
-    return globals()["requests"]
-
-
-def __getattr__(name: str):
-    if name == "requests":
-        return _ensure_requests()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-def _resolve_requests_verify(base_url: str = "") -> bool | str:
-    """SSL ``verify`` for ``requests`` probes; mirrors ``agent.ssl_verify.resolve_httpx_verify``.
-    Priority: per-provider ``ssl_verify: false`` -> per-provider ``ssl_ca_cert`` (else probes log
-    spurious CERTIFICATE_VERIFY_FAILED while the httpx chat path succeeds) -> CA env vars -> certifi."""
-    if base_url:
-        try:
-            from hermes_cli.config import get_custom_provider_tls_settings
-            tls = get_custom_provider_tls_settings(base_url)
-            if tls.get("ssl_verify") is False:
-                return False
-            ca = tls.get("ssl_ca_cert")
-            if isinstance(ca, str) and ca and os.path.isfile(ca):
-                return ca
-        except Exception:
-            pass  # fall through to env vars — never break a probe on config lookup
-    for env_var in ("HERMES_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE"):
-        val = os.getenv(env_var)
-        if val and os.path.isfile(val):
-            return val
-    return True
-
 
 # Snapshot for callers inspecting this constant; prefix routing queries the registry live.
 try:
@@ -174,14 +133,10 @@ def _note_if_connect_timeout(exc: BaseException, base_url: str) -> None:
 
 
 def _is_connect_timeout(exc: BaseException) -> bool:
-    """True for connect-phase timeouts raised by httpx or requests. Read timeouts are
-    excluded: the server accepted the connection, the opposite of a blackhole."""
-    try:
-        import httpx
-        from requests.exceptions import ConnectTimeout
-        return isinstance(exc, (httpx.ConnectTimeout, ConnectTimeout))
-    except Exception:
-        return False
+    """Read timeouts prove the server accepted a connection, not a blackhole."""
+    import httpx
+
+    return isinstance(exc, httpx.ConnectTimeout)
 
 
 # Disk L2 for local-endpoint probes so back-to-back CLI cold starts skip the waterfall.
@@ -197,7 +152,7 @@ def _cache_file(name: str) -> Path:
 def _load_json_dict(path: Path) -> Dict[str, Any]:
     """JSON object at ``path``, or {} when missing/invalid."""
     try:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -259,7 +214,7 @@ def _model_metadata_disk_cache_age_seconds() -> Optional[float]:
 def _load_model_metadata_disk_cache() -> Dict[str, Dict[str, Any]]:
     """Processed OpenRouter metadata cache from disk ({} on any failure)."""
     try:
-        with _get_model_metadata_cache_path().open("r", encoding="utf-8") as f:
+        with _get_model_metadata_cache_path().open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         return {str(key): value for key, value in data.items() if isinstance(value, dict)} if isinstance(data, dict) else {}
     except Exception as e:
@@ -343,6 +298,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # its own branch). 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark is
     # Codex-OAuth-only and listed so "gpt-5" (400k) doesn't win.
     "gpt-6-astra": 1050000,  # also matches -pro (verified live on OpenRouter)
+    "gpt-6-sol": 1050000, "gpt-6-luna": 1050000,  # -pro too (OpenRouter live 2026-09-22)
     "gpt-5.6-luna": 1050000, "gpt-5.6-terra": 1050000, "gpt-5.6-sol": 1050000, "gpt-5.5": 1050000,
     "gpt-5.4-nano": 400000, "gpt-5.4-mini": 400000, "gpt-5.4": 1050000,
     "gpt-5.3-codex-spark": 128000, "gpt-5.1-chat": 128000, "gpt-5": 400000,
@@ -437,6 +393,21 @@ def is_grok_46_family(model: str) -> bool:
     """Whether *model* is a Grok 4.6 family identifier."""
     name = (model or "").strip().lower().replace("_", "-").rsplit("/", 1)[-1]
     return name == "grok-4.6" or name.startswith("grok-4.6-")
+
+
+# Claude models that accept ``speed: "fast"`` (https://platform.claude.com/docs/en/build-with-claude/fast-mode).
+# Exact ids, not a family prefix: Opus 4.7 answers the parameter with an error, Opus 4.6 silently
+# runs and bills at standard speed, and a future Opus is unsupported until the docs list it.
+_ANTHROPIC_FAST_MODE_MODELS = frozenset({"claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"})
+
+
+def is_anthropic_fast_mode_model(model: Optional[str]) -> bool:
+    """Whether *model* accepts Anthropic fast mode. Accepts vendor-prefixed, dotted, variant and
+    dated spellings (``anthropic/claude-opus-5.5``, ``claude-opus-4-8-20260601``). Dedicated
+    ``...-fast`` ids select fast inference through the model field and are not in the list."""
+    name = str(model or "").strip().lower().split(":", 1)[0].rsplit("/", 1)[-1]
+    name = re.sub(r"(\d)\.(\d)", r"\1-\2", name)
+    return re.sub(r"-\d{8}$", "", name) in _ANTHROPIC_FAST_MODE_MODELS
 
 
 _CONTEXT_LENGTH_KEYS = (
@@ -776,7 +747,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     )
     result: Optional[str] = None
     try:
-        with httpx.Client(timeout=2.0, headers=_auth_headers(api_key)) as client:
+        with httpx.Client(timeout=2.0, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(base_url)) as client:
             for name, urls, check in waterfall:
                 try:
                     for url in urls:
@@ -932,10 +903,9 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 _model_metadata_cache_time = time.time() - disk_age
                 return _model_metadata_cache
     try:
-        _ensure_requests()
         # (connect, read) tuple: a flat timeout lets urllib3 block per retry stage through proxies that 403 CONNECT.
         # See #46620.
-        response = requests.get(OPENROUTER_MODELS_URL, timeout=(5, 10), verify=_resolve_requests_verify())
+        response = model_metadata_http.get(OPENROUTER_MODELS_URL, timeout=(5, 10), verify=model_metadata_http.resolve_verify())
         response.raise_for_status()
         cache = {}
         for model in response.json().get("data", []):
@@ -985,7 +955,7 @@ def _lmstudio_loaded_context(model: Dict[str, Any]) -> Optional[int]:
 
 def _lmstudio_native_models(normalized: str, headers: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
     """LM Studio ``/api/v1/models`` → cache; context comes from the first loaded instance."""
-    response = requests.get(_lmstudio_server_root(normalized).rstrip("/") + "/api/v1/models", headers=headers, timeout=(5, 10), verify=_resolve_requests_verify(normalized))
+    response = model_metadata_http.get(_lmstudio_server_root(normalized).rstrip("/") + "/api/v1/models", headers=headers, timeout=(5, 10), verify=model_metadata_http.resolve_verify(normalized))
     response.raise_for_status()
     cache: Dict[str, Dict[str, Any]] = {}
     for model in response.json().get("models", []):
@@ -1006,28 +976,28 @@ def _apply_llamacpp_props(cache: Dict[str, Dict[str, Any]], request_candidate: s
     via ``/props?model=``; unloaded children are skipped — probing could autoload them."""
     base = request_candidate.rstrip("/").replace("/v1", "")
     def _props(params=None):
-        resp = requests.get(base + "/v1/props", params=params, headers=headers, timeout=5, verify=verify)
-        if not resp.ok:
-            resp = requests.get(base + "/props", params=params, headers=headers, timeout=5, verify=verify)
+        resp = model_metadata_http.get(base + "/v1/props", params=params, headers=headers, timeout=5, verify=verify)
+        if resp.is_error:
+            resp = model_metadata_http.get(base + "/props", params=params, headers=headers, timeout=5, verify=verify)
         return resp
     def _n_ctx(props: Dict[str, Any]) -> Any:
         return (props.get("default_generation_settings") or {}).get("n_ctx")
     props_resp = _props()
-    if props_resp.ok:
+    if not props_resp.is_error:
         props = props_resp.json()
         n_ctx, model_alias = _n_ctx(props), props.get("model_alias", "")
         if n_ctx and model_alias and model_alias in cache:
             cache[model_alias]["context_length"] = n_ctx
         return
-    native = requests.get(base + "/models", headers=headers, timeout=5, verify=verify)
-    if not native.ok:
+    native = model_metadata_http.get(base + "/models", headers=headers, timeout=5, verify=verify)
+    if native.is_error:
         return
     for child in (native.json() or {}).get("data", [])[:16]:
         child_id = child.get("id") if isinstance(child, dict) else None
         if not child_id or child_id not in cache or (child.get("status") or {}).get("value") not in ("loaded", "ready"):
             continue
         pr = _props({"model": child_id})
-        child_ctx = _n_ctx(pr.json()) if pr.ok else None
+        child_ctx = _n_ctx(pr.json()) if not pr.is_error else None
         if child_ctx:
             cache[child_id]["context_length"] = child_ctx
 
@@ -1058,7 +1028,6 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     normalized = _normalize_base_url(base_url)
     if not normalized or base_url_host_matches(normalized, "openrouter.ai"):
         return {}
-    _ensure_requests()
     local = is_local_endpoint(normalized)
     memo_key = _endpoint_memo_key(normalized, api_key)
     if not force_refresh:
@@ -1074,7 +1043,7 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
     alternate = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized + "/v1"
     candidates = [normalized] + ([alternate] if alternate != normalized else [])
     headers = _auth_headers(api_key)
-    verify = _resolve_requests_verify(normalized)
+    verify = model_metadata_http.resolve_verify(normalized)
     last_error: Optional[Exception] = None
     if local:
         try:
@@ -1090,14 +1059,14 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         # Cache keys stay unrewritten; only the outbound target is IPv4-resolved.
         request_candidate = _localhost_to_ipv4(candidate)
         url = request_candidate.rstrip("/") + "/models"
-        response = None
         try:
-            response = requests.get(url, headers=headers, timeout=(5, 10), verify=verify, stream=True)
-            if response.status_code in (401, 403):
-                logger.debug("Model metadata probe received HTTP %s from %s; stopping candidate probing", response.status_code, url)
-                break
-            response.raise_for_status()
-            payload = response.json()
+            with model_metadata_http.stream(url, headers=headers, timeout=(5, 10), verify=verify) as response:
+                if response.status_code in (401, 403):
+                    logger.debug("Model metadata probe received HTTP %s from %s; stopping candidate probing", response.status_code, url)
+                    break
+                response.raise_for_status()
+                response.read()
+                payload = response.json()
             cache = _parse_models_payload(payload)
             if any(m.get("owned_by") == "llamacpp" for m in payload.get("data", []) if isinstance(m, dict)):
                 with contextlib.suppress(Exception):
@@ -1108,9 +1077,6 @@ def fetch_endpoint_model_metadata(base_url: str, api_key: str = "", force_refres
         except Exception as exc:
             last_error = exc
             _note_if_connect_timeout(exc, normalized)
-        finally:
-            if response is not None:
-                response.close()
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
     return _remember_endpoint_models(memo_key, {})
@@ -1140,7 +1106,7 @@ def _load_context_cache_document() -> dict:
     if not path.exists():
         return {}
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             data = yaml.safe_load(f)
             if not isinstance(data, dict):
                 return {}
@@ -1148,6 +1114,7 @@ def _load_context_cache_document() -> dict:
                 if not isinstance(data.get(section), dict):
                     data[section] = {}
             return data
+        return data.get("context_lengths") or {}
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
         return {}
@@ -1462,7 +1429,7 @@ def _ollama_show(server_url: str, api_key: str, bare_model: str, timeout: float 
     """Ollama ``/api/show`` JSON for ``bare_model``, or None on any failure (``note_blackhole``: connect timeouts condemn the host)."""
     import httpx
     try:
-        with httpx.Client(timeout=timeout, headers=_auth_headers(api_key)) as client:
+        with httpx.Client(timeout=timeout, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(server_url)) as client:
             resp = client.post(f"{server_url}/api/show", json={"name": bare_model})
             return resp.json() if resp.status_code == 200 else None
     except Exception as exc:
@@ -1682,7 +1649,7 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
     }.get(server_type)
     probes = ([typed] if typed else []) + [_model_detail_ctx, lambda client: _openai_models_list_context(client, server_url, model)]
     try:
-        with httpx.Client(timeout=3.0, headers=_auth_headers(api_key)) as client:
+        with httpx.Client(timeout=3.0, headers=_auth_headers(api_key), verify=model_metadata_http.resolve_verify(base_url)) as client:
             return next((ctx for ctx in (probe(client) for probe in probes) if ctx is not None), None)
     except Exception as exc:
         _note_if_connect_timeout(exc, server_url)
@@ -1705,8 +1672,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
     try:
         base = base_url.rstrip("/").removesuffix("/v1")
         headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01"}
-        _ensure_requests()
-        resp = requests.get(f"{base}/v1/models?limit=1000", headers=headers, timeout=(5, 10), verify=_resolve_requests_verify(base_url))
+        resp = model_metadata_http.get(f"{base}/v1/models?limit=1000", headers=headers, timeout=(5, 10), verify=model_metadata_http.resolve_verify(base_url))
         if resp.status_code != 200:
             return None
         for m in resp.json().get("data", []):
@@ -1721,7 +1687,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
-    "gpt-6-astra": 272_000,
+    "gpt-6-astra": 272_000, "gpt-6-sol": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
@@ -1730,9 +1696,14 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 # Codex OAuth advertises 272K for these families but ACCEPTS ~900K+ (verified live; gpt-5.5 and
 # gpt-5.4-mini genuinely reject >272K). 900K keeps ≥11K margin. OPT-IN ONLY via explicit ``-900k``
 # picker variants (a 900K default burned subscription usage); the suffix is stripped before the wire.
-# The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` is a FAMILY
-# PREFIX (``-pro`` slugs aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K.
-_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {"gpt-5.6": 900_000}  # sol / terra / luna
+# The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` and the gpt-6
+# tiers are FAMILY PREFIXES so dated snapshots (``gpt-6-sol-2026-09-22``) inherit the bump (``-pro`` slugs
+# aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K. The gpt-6 tiers
+# carry the 5.6 verdict forward: they replace Sol/Terra/Luna on the same Codex route, and the live
+# catalog's ``max_context_window`` still caps the bump (#105443) if it publishes a lower ceiling.
+_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
+    "gpt-5.6": 900_000, "gpt-6-sol": 900_000, "gpt-6-luna": 900_000,
+}
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
     "gpt-5.4": 900_000, "gpt-daybreak-blue-latest": 900_000,
     "gpt-6-astra": 900_000,  # advertised 272K; 920,043 input OK, 1,000,043 rejected (live 2026-09-04)
@@ -1740,8 +1711,8 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
 _CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # the only advertised value the bump may override
 CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"  # picker-only opt-in suffix; never sent on the wire
 # The ONLY bases eligible for ``-900k``: routable, live-verified. No family prefixing (it would synthesize
-# dead ``-pro`` variants); dated snapshots of the 5.6 bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
-_CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+# dead ``-pro`` variants); dated snapshots of the 5.6 / gpt-6 tier bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
+_CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-luna")
 _CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest", "gpt-6-astra"})
 _CODEX_900K_SNAPSHOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -1760,7 +1731,7 @@ def is_codex_900k_base(model: Optional[str]) -> bool:
     slug = _bare_codex_slug(model)
     if not slug or slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
         return False
-    # Dated snapshots of the routable 5.6 bases (gpt-5.6-sol-2026-07-09) also qualify.
+    # Dated snapshots of the routable tier bases (gpt-5.6-sol-2026-07-09, gpt-6-sol-2026-09-22) also qualify.
     return slug in _CODEX_900K_ELIGIBLE_BASES or any(
         slug.startswith(base + "-") and _CODEX_900K_SNAPSHOT_RE.match(slug[len(base) + 1:]) for base in _CODEX_900K_SNAPSHOT_BASES
     )
@@ -1807,12 +1778,37 @@ _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
 _codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 # The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
-# hides models whose ``minimal_client_version`` is newer, so a made-up version (the old
-# "1.0.0") silently drops future models. "0.0.0" is the backend's ungated sentinel returning
-# the full account catalog; other out-of-sequence values return an empty catalog and omitting
-# the parameter is HTTP 400.
+# hides models whose ``minimal_client_version`` is newer. "0.0.0" used to be the ungated sentinel
+# returning the whole account catalog, but since the GPT-6 Sol/Luna rollout it returns a FROZEN
+# legacy list (astra + the 5.6 trio) while any version at or above the newest
+# ``minimal_client_version`` (0.155.0, 1.0.0, 99.0.0 alike, live 2026-09-22) returns everything the
+# account is entitled to (#119412). So ask as the newest possible client first and keep "0.0.0" as
+# the fallback for the day the backend rejects out-of-sequence versions again (it used to return an
+# empty catalog for them; omitting the parameter is HTTP 400).
+CODEX_MODELS_CATALOG_ENDPOINT = "https://chatgpt.com/backend-api/codex/models"
+CODEX_NEWEST_CLIENT_VERSION = "99.0.0"
 CODEX_UNGATED_CLIENT_VERSION = "0.0.0"
-CODEX_MODELS_CATALOG_URL = f"https://chatgpt.com/backend-api/codex/models?client_version={CODEX_UNGATED_CLIENT_VERSION}"
+CODEX_MODELS_CATALOG_URLS = tuple(
+    f"{CODEX_MODELS_CATALOG_ENDPOINT}?client_version={v}"
+    for v in (CODEX_NEWEST_CLIENT_VERSION, CODEX_UNGATED_CLIENT_VERSION)
+)
+
+
+def fetch_codex_catalog_entries(get: Callable[[str], Any]) -> Tuple[List[Any], Optional[int]]:
+    """``(models, last_status)`` from the first catalog URL that answers HTTP 200 with a non-empty
+    ``models`` list; ``get(url)`` is any client returning an object with ``status_code``/``json()``.
+    An empty or non-200 answer on the newest-client URL falls through to the ``0.0.0`` sentinel."""
+    status: Optional[int] = None
+    for url in CODEX_MODELS_CATALOG_URLS:
+        resp = get(url)
+        status = resp.status_code
+        if status != 200:
+            continue
+        data = resp.json()
+        entries = data.get("models") if isinstance(data, dict) else None
+        if isinstance(entries, list) and entries:
+            return entries, status
+    return [], status
 
 
 def _codex_oauth_token_fingerprint(access_token: str) -> str:
@@ -1835,18 +1831,18 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
     from agent.codex_headers import codex_account_headers
     headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
     try:
-        _ensure_requests()
-        resp = requests.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
-        if resp.status_code != 200:
-            logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", resp.status_code)
+        entries, status = fetch_codex_catalog_entries(
+            lambda url: model_metadata_http.get(url, headers=headers, timeout=(5, 10), verify=model_metadata_http.resolve_verify())
+        )
+        if status != 200:
+            logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", status)
             return {}, False
-        data = resp.json()
     except Exception as exc:
         logger.debug("Codex /models probe failed: %s", exc)
         return {}, False
     result: Dict[str, int] = {}
     max_result: Dict[str, int] = {}
-    for item in data.get("models", []) if isinstance(data, dict) else []:
+    for item in entries:
         slug, ctx, max_ctx = (item.get("slug"), item.get("context_window"), item.get("max_context_window")) if isinstance(item, dict) else (None, None, None)
         if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
             result[slug.strip()] = ctx

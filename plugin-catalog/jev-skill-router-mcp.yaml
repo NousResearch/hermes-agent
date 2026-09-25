@@ -1,0 +1,14 @@
+name: jev-skill-router-mcp
+repo: https://github.com/ydmw74/jev-skill-router
+sha: 76ee09e049dbc10c76f98cfefc6ca16b42cfad38
+description: "Agent Plugins v1 package: one skill plus one stdio MCP server (skill_select) started with uv run from the checkout. Needs uv on PATH. Suggests at most one skill per request via the TypeSafe (Jev) cookbook pattern; roster is read live from the profile skills dir. Note: the portable loader does not interpolate env in mcp.json — JEV_TYPESAFE_API_KEY must be present in the server's inherited environment (native mcp_servers declaration works too)."
+maintainer: ydmw74
+tier: community
+category: tools
+docs_url: https://github.com/ydmw74/jev-skill-router#readme
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: [JEV_TYPESAFE_API_KEY]

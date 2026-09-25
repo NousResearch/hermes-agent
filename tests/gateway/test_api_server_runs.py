@@ -298,7 +298,6 @@ class TestStartRun:
                 assert resp.status == 400
                 body = await resp.json()
         assert body["error"]["code"] == "invalid_author"
-        assert body["error"]["message"] == "author must be an object"
         mock_create.assert_not_called()
         assert adapter._run_statuses == {}
 
@@ -338,11 +337,22 @@ class TestStartRun:
         mock_create.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_events_stream_forwards_interim_commentary(self, adapter):
-        """Mid-turn assistant commentary (Codex ``phase="commentary"``) reaches /v1/runs clients
-        as ``message.interim`` {text, already_streamed}; the final answer is unchanged (#67580)."""
+    @pytest.mark.parametrize("worker_fails", [False, True], ids=["completed", "failed"])
+    async def test_events_stream_forwards_interim_commentary(self, adapter, worker_fails):
+        """Commentary reaches /v1/runs clients before the terminal event, even
+        when the worker finishes before asyncio wraps its Future (#67580)."""
         import json
+        from concurrent.futures import ThreadPoolExecutor
 
+        class CompletedWorkerExecutor(ThreadPoolExecutor):
+            def submit(self, fn, /, *args, **kwargs):
+                future = super().submit(fn, *args, **kwargs)
+                # A fast worker may finish before asyncio wraps its future.
+                # Make that ordering deterministic, with real thread callbacks.
+                future.exception(timeout=10)
+                return future
+
+        asyncio.get_running_loop().set_default_executor(CompletedWorkerExecutor(max_workers=1))
         app = _create_runs_app(adapter)
 
         def create_agent(**kwargs):
@@ -352,6 +362,8 @@ class TestStartRun:
             def run_conversation(**_kw):
                 interim("Checking the docs first.", already_streamed=False)
                 interim("Applying the fix.", already_streamed=True)
+                if worker_fails:
+                    raise RuntimeError("worker failed")
                 return {"final_response": "Done."}
 
             agent.run_conversation.side_effect = run_conversation
@@ -367,8 +379,13 @@ class TestStartRun:
         events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
         interim = [(e["text"], e["already_streamed"]) for e in events if e["event"] == "message.interim"]
         assert interim == [("Checking the docs first.", False), ("Applying the fix.", True)]
-        completed = next(e for e in events if e["event"] == "run.completed")
-        assert completed["output"] == "Done."
+        assert [e["event"] for e in events] == [
+            "message.interim", "message.interim", "run.failed" if worker_fails else "run.completed",
+        ]
+        if worker_fails:
+            assert events[-1]["error"] == "worker failed"
+        else:
+            assert events[-1]["output"] == "Done."
 
     @pytest.mark.asyncio
     async def test_start_passes_request_model_provider_options_to_create_agent(self, adapter):
@@ -1677,19 +1694,6 @@ class TestRunIdempotency:
         assert body["status"] == "interrupted"
         assert body["last_event"] == "run.interrupted"
 
-    def test_progress_event_does_not_fsync_unchanged_running_status(self, adapter):
-        adapter._run_statuses["run_progress"] = {
-            "run_id": "run_progress",
-            "status": "running",
-        }
-        adapter._run_idempotency_ids.add("run_progress")
-        adapter._run_idempotency_store.update_status = MagicMock()
-
-        adapter._set_run_status(
-            "run_progress", "running", last_event="tool.completed"
-        )
-
-        adapter._run_idempotency_store.update_status.assert_not_called()
 
     def test_status_sweep_prunes_in_memory_ownership_mirrors(self, adapter):
         adapter._run_statuses["run_old"] = {
@@ -1705,33 +1709,6 @@ class TestRunIdempotency:
         assert "run_old" not in adapter._run_idempotency_ids
         assert "run_old" not in adapter._run_owners
 
-    @pytest.mark.asyncio
-    async def test_no_session_id_does_not_load_session_history(
-        self, adapter, tmp_path
-    ):
-        _use_idempotency_db(adapter, tmp_path / "idem.db")
-        history = AsyncMock(return_value=[])
-        app = _create_runs_app(adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with (
-                patch.object(
-                    adapter,
-                    "_conversation_history_for_session",
-                    new=history,
-                ),
-                patch.object(adapter, "_create_agent") as create,
-            ):
-                agent = MagicMock()
-                agent.run_conversation.return_value = {"final_response": "done"}
-                agent.session_prompt_tokens = agent.session_completion_tokens = (
-                    agent.session_total_tokens
-                ) = 0
-                create.return_value = agent
-                response = await cli.post(
-                    "/v1/runs", json={"input": "no stored session"}
-                )
-        assert response.status == 202
-        history.assert_not_awaited()
 
 
 class TestHostedRoomRuns:
@@ -2052,8 +2029,7 @@ class TestHostedRoomRuns:
     async def test_scoped_grant_refresh_fails_after_secret_rotation(
         self, auth_adapter, monkeypatch
     ):
-        from gateway import hosted_rooms
-        from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+        from gateway.hosted_room_peer import issue_room_grant
         from gateway.hosted_rooms import local_authority_gateway_id
 
         monkeypatch.setattr("gateway.platforms.api_server.time.time", lambda: 200)

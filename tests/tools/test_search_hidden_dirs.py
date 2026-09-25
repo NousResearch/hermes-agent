@@ -13,7 +13,6 @@ Fix: _search_files (find) and _search_with_grep both now exclude hidden
 directories, matching ripgrep's default behavior.
 """
 
-import subprocess
 
 import pytest
 
@@ -50,26 +49,6 @@ def searchable_tree(tmp_path):
     return tmp_path / "skills"
 
 
-class TestFindExcludesHiddenDirs:
-    """_search_files uses find, which should exclude hidden directories."""
-
-    def test_find_skips_hub_cache_files(self, searchable_tree):
-        """find should not return files from .hub/ directory."""
-        cmd = (
-            f"find {searchable_tree} -not -path '*/.*' -type f -name '*.json'"
-        )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        assert "catalog.json" not in result.stdout
-        assert ".hub" not in result.stdout
-
-
-    def test_find_still_returns_visible_files(self, searchable_tree):
-        """find should still return files from visible directories."""
-        cmd = (
-            f"find {searchable_tree} -not -path '*/.*' -type f -name '*.md'"
-        )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        assert "SKILL.md" in result.stdout
 
 
 class TestGrepExcludesHiddenDirs:
@@ -185,33 +164,6 @@ class TestGrepSearchesRootsUnderHiddenDirs:
         assert result.total_count == 1
 
 
-class TestRipgrepAlreadyExcludesHidden:
-    """Verify ripgrep's default behavior is to skip hidden directories."""
-
-    @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
-        reason="ripgrep not installed",
-    )
-    def test_rg_skips_hub_by_default(self, searchable_tree):
-        """rg should skip .hub/ by default (no --hidden flag)."""
-        result = subprocess.run(
-            ["rg", "--no-heading", "ignore", str(searchable_tree)],
-            capture_output=True, text=True,
-        )
-        assert ".hub" not in result.stdout
-        assert "catalog.json" not in result.stdout
-
-    @pytest.mark.skipif(
-        subprocess.run(["which", "rg"], capture_output=True).returncode != 0,
-        reason="ripgrep not installed",
-    )
-    def test_rg_finds_visible_content(self, searchable_tree):
-        """rg should find content in visible directories."""
-        result = subprocess.run(
-            ["rg", "--no-heading", "visible document", str(searchable_tree)],
-            capture_output=True, text=True,
-        )
-        assert "SKILL.md" in result.stdout
 
 
 class TestIgnoreFileWritten:

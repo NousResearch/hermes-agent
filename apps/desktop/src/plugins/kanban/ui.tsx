@@ -294,6 +294,21 @@ export function StatusMenu({
   )
 }
 
+/** Priority as the board card shows it: an amber up-arrow + number when
+ *  raised, a muted bare number at 0. Shared by the card and the task modal. */
+export function PriorityGlyph({ priority }: { priority: number }) {
+  if (priority <= 0) {
+    return <span className="text-(--ui-text-quaternary)">{priority}</span>
+  }
+
+  return (
+    <span className="inline-flex items-center gap-0.5 text-amber-500">
+      <Codicon name="arrow-up" size="0.7rem" />
+      {priority}
+    </span>
+  )
+}
+
 // The board's one field/section-label style — hoisted so Section (here), the
 // create dialog's Field, and the orchestration panel all read identically.
 export const FIELD_LABEL = 'text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-(--ui-text-quaternary)'

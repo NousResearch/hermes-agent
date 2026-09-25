@@ -1,11 +1,17 @@
 """Telegram admission before every PTB handler group, including native plugins.
 
 Claims belong to the receiving adapter across Application rebuilds. Completed
-history is bounded and has no TTL; dispatch and its PTB tasks pin active claims.
-No disk receipt, cross-process coordination or exactly-once effects are promised.
+history is bounded and has no TTL in memory; dispatch and its PTB tasks pin active
+claims. Completed IDs are also written to a per-bot receipt file under the adapter's
+Hermes home, so a replacement adapter or a restarted gateway still drops updates that
+Telegram redelivers because their getUpdates/webhook acknowledgement never landed.
+No cross-process coordination or exactly-once effects are promised.
 """
 
 import asyncio
+import json
+import logging
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import wraps
@@ -14,9 +20,74 @@ from telegram import Update
 from telegram.ext import Application, ApplicationHandlerStop, ConversationHandler
 
 from gateway.platforms.helpers import bounded_put
+from utils import atomic_json_write
 
+logger = logging.getLogger(__name__)
 
 _DEFAULT_BLOCK = object()
+_SEEN_CAP = 4096
+# The Bot API keeps an unconfirmed update for at most 24 hours (getUpdates), so an older
+# receipt can never match a redelivery. That is also well inside the week of silence after
+# which Telegram may restart update IDs at a random value, so a set lookup stays safe
+# where a persisted numeric high-watermark would not.
+RECEIPT_TTL_SECONDS = 24 * 60 * 60
+
+
+def _receipt_path(adapter, bot_id):
+    return adapter._update_receipt_dir / f"telegram_update_receipts_{bot_id}.json"
+
+
+def _load_receipts(adapter, bot_id) -> None:
+    """Seed completed history from disk once per bot, before its first admission check."""
+    if bot_id in adapter._update_receipts_loaded:
+        return
+    adapter._update_receipts_loaded.add(bot_id)
+    path = _receipt_path(adapter, bot_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError):
+        logger.warning("[Telegram] Ignoring unreadable update receipts at %s", path, exc_info=True)
+        return
+    ids = payload.get("update_ids") if isinstance(payload, dict) else None
+    if not isinstance(ids, dict):
+        return
+    cutoff = time.time() - RECEIPT_TTL_SECONDS
+    fresh = sorted((float(ts), uid) for uid, ts in ids.items()
+                   if isinstance(ts, (int, float)) and ts > cutoff and str(uid).lstrip("-").isdigit())
+    seen = adapter._seen_update_ids
+    for ts, uid in fresh:
+        key = f"{bot_id}:{uid}"
+        if key not in seen:
+            bounded_put(seen, key, ts, _SEEN_CAP)
+
+
+def _record_receipt(adapter, key: str) -> None:
+    bounded_put(adapter._seen_update_ids, key, time.time(), _SEEN_CAP)
+    adapter._update_receipts_dirty.add(key.split(":", 1)[0])
+    task = adapter._update_receipt_flush
+    if task is None or task.done():
+        # One writer per adapter coalesces bursts; the fsync stays off the event loop.
+        adapter._update_receipt_flush = asyncio.get_running_loop().create_task(
+            _flush_receipts(adapter), name="telegram-update-receipts")
+
+
+async def _flush_receipts(adapter) -> None:
+    from hermes_constants import mkdir_under_hermes_home
+
+    while adapter._update_receipts_dirty:
+        bot_id = adapter._update_receipts_dirty.pop()
+        prefix, cutoff = f"{bot_id}:", time.time() - RECEIPT_TTL_SECONDS
+        # Snapshot on the loop: admission mutates this dict only from loop callbacks.
+        ids = {key[len(prefix):]: ts for key, ts in adapter._seen_update_ids.items()
+               if key.startswith(prefix) and isinstance(ts, float) and ts > cutoff}
+        path = _receipt_path(adapter, bot_id)
+        try:
+            mkdir_under_hermes_home(path.parent)
+            await asyncio.to_thread(atomic_json_write, path, {"update_ids": ids}, indent=None)
+        except Exception:
+            logger.warning("[Telegram] Failed to persist update receipts to %s", path, exc_info=True)
 
 
 @dataclass
@@ -140,7 +211,7 @@ class TelegramApplication(Application):
             return
         del self.adapter._inflight_update_ids[claim.key]
         if claim.accepted or (claim.completed and not claim.failed):
-            bounded_put(self.adapter._seen_update_ids, claim.key, None, 4096)
+            _record_receipt(self.adapter, claim.key)
 
     async def process_error(self, update, error, job=None, coroutine=None):
         claim = self._current_claim.get()
@@ -153,7 +224,9 @@ class TelegramApplication(Application):
     async def process_update(self, update):
         if not isinstance(update, Update):
             return await super().process_update(update)
-        key = f"{self.bot.id}:{update.update_id}"
+        bot_id = self.bot.id
+        key = f"{bot_id}:{update.update_id}"
+        _load_receipts(self.adapter, bot_id)
         # Dispatch happened even when preparation fails before the group-99 observer.
         self.adapter._updates_dispatched_total += 1
         seen = self.adapter._seen_update_ids

@@ -61,7 +61,13 @@ PROBE_TIMEOUT_S = 2.0
 
 ROLE_GATEWAY = "gateway"
 ROLE_SERVE = "serve"
-_ROLES = (ROLE_GATEWAY, ROLE_SERVE)
+#: A Desktop-owned pool child (loopback, random port, per-profile lifecycle). It is NOT a host
+#: owner — the attach/refuse ladder reads ``ROLE_SERVE`` only, so a supervised public dashboard
+#: never stands down behind it (#119824) — but ``hermes plugins install`` from a terminal still
+#: has to reach the backend hosting the open chats (#119644), and this record + 0600 token is
+#: how it dials one on a Desktop-only box.
+ROLE_DESKTOP_SERVE = "desktop-serve"
+_ROLES = (ROLE_GATEWAY, ROLE_SERVE, ROLE_DESKTOP_SERVE)
 
 # Open lock handles, keyed by (role, resolved lock path): the OS releases the flock when this
 # process dies, which is what makes a crashed owner's host lock re-acquirable without a reaper.
@@ -294,7 +300,7 @@ def read_record(role: str, *, include_stale: bool = False) -> Optional[HostRecor
     if not _record_is_own(path):
         return None
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
         return None
     try:
@@ -316,7 +322,7 @@ def read_token(role: str) -> str:
     of, same-OS-user authority — the authority boundary the host lock is scoped to.
     """
     try:
-        return token_path(role).read_text(encoding="utf-8").strip()
+        return token_path(role).read_text(encoding="utf-8-sig").strip()
     except (OSError, UnicodeDecodeError):
         return ""
 

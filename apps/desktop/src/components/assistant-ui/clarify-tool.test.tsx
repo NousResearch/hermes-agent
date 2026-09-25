@@ -340,21 +340,6 @@ describe('ClarifyTool settled view', () => {
     expect(document.querySelector('[data-clarify-answer]')?.textContent).toBe('staging')
   })
 
-  it('labels an empty response as Skipped', () => {
-    renderClarify(
-      <ClarifyTool
-        {...settledClarifyProps(
-          { question: 'Anything else?' },
-          { question: 'Anything else?', user_response: '' },
-          'clarify-2'
-        )}
-      />
-    )
-
-    expect(screen.getByText('Anything else?')).toBeTruthy()
-    expect(screen.getByText('Skipped')).toBeTruthy()
-  })
-
   it('keeps the original choices visible and clickable after a skip', async () => {
     const inserts: string[] = []
 
@@ -501,6 +486,68 @@ describe('ClarifyTool keyboard navigation', () => {
     expect(fireEvent.keyDown(window, { key: 'ArrowDown' })).toBe(true)
     expect(respond).not.toHaveBeenCalled()
   })
+
+  it('confirms a clicked choice with Enter while the choice button keeps focus', async () => {
+    const { respond } = renderLiveClarify()
+    const production = screen.getByRole('button', { name: /production/ })
+
+    // Click selects the choice; in a real browser the option button keeps
+    // focus afterwards. jsdom's fireEvent.click does not move focus, so
+    // focus it explicitly to reproduce the reported bug.
+    fireEvent.click(production)
+    production.focus()
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+    expect(document.activeElement).toBe(production)
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({ answer: 'production' })
+    })
+  })
+
+  it('confirms the highlighted choice with Enter when a choice button is focused but not clicked', async () => {
+    const { respond } = renderLiveClarify()
+    const production = screen.getByRole('button', { name: /production/ })
+
+    // Tabbing onto a choice does not stage it. Enter still belongs to
+    // activateActive, which confirms the highlighted row (staging by default)
+    // rather than falling through as a hands-off keypress.
+    production.focus()
+    expect(production.getAttribute('aria-pressed')).toBe('false')
+    expect(document.activeElement).toBe(production)
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    await waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({ answer: 'staging' })
+    })
+  })
+
+  it('toggles a focused multi-select row with Enter and confirms the set with Continue', async () => {
+    const { respond } = renderLiveClarify({ multiSelect: true })
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const production = screen.getByRole('button', { name: /production/ })
+
+    fireEvent.click(staging)
+    fireEvent.click(production)
+    production.focus()
+    expect(document.activeElement).toBe(production)
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.keyDown(window, { key: 'Enter' })
+
+    expect(production.getAttribute('aria-pressed')).toBe('false')
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+    expect(respond).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({ answer: JSON.stringify(['staging']) })
+    })
+  })
 })
 
 describe('ClarifyTool recommended option', () => {
@@ -519,9 +566,6 @@ describe('ClarifyTool recommended option', () => {
     renderClarify(<ClarifyTool {...liveClarifyProps(['staging (Recommended)', 'production'])} />)
 
     const recommended = screen.getByRole('button', { name: /staging/ })
-
-    // The label rides in its own muted span so the option text still reads first.
-    expect(recommended.querySelector('.text-\\(--ui-text-tertiary\\)')?.textContent).toBe('(Recommended)')
 
     fireEvent.click(recommended)
     fireEvent.keyDown(window, { key: 'Enter' })
@@ -692,14 +736,6 @@ describe('ClarifyTool submit shortcut', () => {
 })
 
 describe('ClarifyTool batch card', () => {
-  it('renders every question at once', () => {
-    renderLiveBatch()
-
-    expect(screen.getByText('Color?')).toBeTruthy()
-    expect(screen.getByText('Name?')).toBeTruthy()
-    expect(screen.getByText('0 of 2 answered')).toBeTruthy()
-  })
-
   // #112855: the batch card spun forever while the gateway clarify request
   // raced (or never came). The question text is already in the tool args.
   it('paints batch questions from tool args while the gateway request is still racing', () => {

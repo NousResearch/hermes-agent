@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
+import hermes_yaml as yaml
 
 from hermes_constants import get_hermes_home, get_optional_mcps_dir
 from hermes_cli._subprocess_compat import noninteractive_git_env
@@ -285,7 +285,7 @@ def _parse_install(path: Path, install_raw: Any) -> Optional[InstallSpec]:
 def _parse_manifest(path: Path) -> CatalogEntry:
     """Read and validate a manifest.yaml. Raise CatalogError on any problem."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             data = yaml.safe_load(f) or {}
     except Exception as exc:
         raise CatalogError(f"failed to read {path}: {exc}") from exc
@@ -373,11 +373,10 @@ def is_installed(name: str) -> bool:
 
 
 def server_enabled(cfg: dict) -> bool:
-    """Interpret a server block's ``enabled`` flag (bools, and yes/true/1 strings)."""
-    enabled = cfg.get("enabled", True)
-    if isinstance(enabled, str):
-        return enabled.lower() in {"true", "1", "yes"}
-    return bool(enabled)
+    """Whether the server block is on: the same reader the MCP client uses."""
+    from tools.mcp_tool_common import mcp_server_enabled
+
+    return mcp_server_enabled(cfg)
 
 
 def is_enabled(name: str) -> bool:

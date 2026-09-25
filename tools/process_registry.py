@@ -134,17 +134,32 @@ def _worker_memory_max_bytes() -> int:
                 "expected an integer representing at least %d MiB",
                 override, _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024))
     candidates: List[int] = []
-    with suppress(OSError, ValueError):
-        lines = Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines()
-        v2 = next((ln for ln in lines if ln.startswith("0::")), None)
-        if v2 is not None:
-            relative = v2.partition("::")[2].lstrip("/")
-            raw_limit = (Path("/sys/fs/cgroup") / relative / "memory.max").read_text(encoding="utf-8").strip()
-            if raw_limit.isdigit() and int(raw_limit) >= _MIN_WORKER_MEMORY_MAX_BYTES:
-                candidates.append(int(raw_limit))
-    with suppress(OSError, ValueError, TypeError):
-        physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
-        candidates.append(min(_WORKER_MEMORY_MAX_CAP_BYTES, max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2)))
+    try:
+        for line in Path("/proc/self/cgroup").read_text(encoding="utf-8").splitlines():
+            if line.startswith("0::"):
+                relative = line.partition("::")[2].lstrip("/")
+                raw_limit = (
+                    Path("/sys/fs/cgroup") / relative / "memory.max"
+                ).read_text(encoding="utf-8-sig").strip()
+                if raw_limit.isdigit():
+                    cgroup_limit = int(raw_limit)
+                    if cgroup_limit >= _MIN_WORKER_MEMORY_MAX_BYTES:
+                        candidates.append(cgroup_limit)
+                break
+    except (OSError, ValueError):
+        pass
+
+    try:
+        physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(
+            os.sysconf("SC_PAGE_SIZE")
+        )
+        physical_bound = min(
+            _WORKER_MEMORY_MAX_CAP_BYTES,
+            max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2),
+        )
+        candidates.append(physical_bound)
+    except (OSError, ValueError, TypeError):
+        pass
     safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
     return min(override_bound, safe_bound) if override_bound else safe_bound
 
@@ -559,7 +574,15 @@ class ProcessSession:
     _completion_event: threading.Event = field(default_factory=threading.Event, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_thread: Optional[threading.Thread] = field(default=None, repr=False)
+    _reader_finish_requested: threading.Event = field(default_factory=threading.Event, repr=False)
+    _reader_selectable: bool = field(default=False, repr=False)
     _pty: Any = field(default=None, repr=False)  # ptyprocess handle (use_pty=True)
+
+    def __post_init__(self):
+        # A session built without an explicit owner is owned by its own task, so ownership checks compare
+        # ``owner_task_id`` alone instead of repeating an ``or task_id`` fallback at every call site.
+        if not self.owner_task_id:
+            self.owner_task_id = self.task_id
 
     def append_output(self, text: str) -> None:
         """Append to the rolling output buffer under the session lock, keeping the tail."""
@@ -805,7 +828,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             "session_id": session.id,
             "session_key": session.session_key,
             "task_id": session.task_id,
-            "owner_task_id": session.owner_task_id or session.task_id,
+            "owner_task_id": session.owner_task_id,
             "command": session.command,
             **{key: getattr(session, f"watcher_{key}") for key in _WATCHER_ROUTE_KEYS},
         }
@@ -1022,6 +1045,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if grace <= 0:
             return
         _wait_for_exit(targets)
+        # A parent that ignored SIGTERM (the interactive ``bash -lic`` wrapper does) keeps
+        # running its script through both grace windows and can spawn children the first
+        # snapshot never saw. Re-snapshot while it is still alive: once it is SIGKILLed
+        # they reparent to init and nothing can find them again.
+        with suppress(gone):
+            if cls._proc_alive(parent):
+                known = {proc.pid for proc in targets}
+                targets.extend(p for p in parent.children(recursive=True) if p.pid not in known)
         for proc in targets:
             with suppress(gone):
                 if cls._proc_alive(proc):
@@ -1096,7 +1127,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
         return ProcessSession(
             id=f"proc_{uuid.uuid4().hex[:12]}", command=command, task_id=task_id,
-            owner_task_id=owner_task_id or task_id, session_key=session_key, cwd=cwd,
+            owner_task_id=owner_task_id, session_key=session_key, cwd=cwd,
             parent_session_id=get_session_env("HERMES_SESSION_ID", ""),
             started_at=time.time(), **extra)
 
@@ -1328,7 +1359,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
         poll()/wait() remains the safety net. See #68915, #8340.
         """
-        first_chunk = True
+        # ``bash -lic`` without a tty writes its startup warnings one write() per line, so the
+        # reader can wake between them; strip leading noise from every chunk until the
+        # process has produced real output, not just from the first read.
+        head_noise = True
         # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
         # incremental decoder holds the partial sequence until the rest arrives.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -1339,10 +1373,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # same treatment the foreground path already has in
         # ``tools/environments/base.py::_wait_for_process``. (Ported from openclaw/openclaw#112325.)
         def _append_chunk(chunk: str):
-            nonlocal first_chunk
-            if first_chunk:
+            nonlocal head_noise
+            if head_noise:
                 chunk = self._clean_shell_noise(chunk)
-                first_chunk = False
+                head_noise = not chunk.strip()
             self._ingest_output(session, chunk)
         try:
             proc = session.process
@@ -1367,6 +1401,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 fd = None
             if fd is not None:
                 import select as _select
+                session._reader_selectable = True
             idle_after_exit = 0
             while True:
                 if fd is not None:
@@ -1375,6 +1410,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     except (ValueError, OSError):
                         break  # fd already closed
                     if not ready:
+                        if session._reader_finish_requested.is_set():
+                            break
                         # Direct child gone and pipe idle ~200ms: a few more cycles for a
                         # buffered tail, then stop rather than wait forever on an orphaned
                         # grandchild's pipe.
@@ -1389,6 +1426,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     break  # true EOF — all writers closed
                 if chunk:
                     _append_chunk(chunk)
+                if session._reader_finish_requested.is_set():
+                    break
                 idle_after_exit = 0
         except Exception as e:
             logger.debug("Process stdout reader ended: %s", e)
@@ -1598,7 +1637,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "session_id": session.id,
                 "session_key": session.session_key,
                 "task_id": session.task_id,
-                "owner_task_id": session.owner_task_id or session.task_id,
+                "owner_task_id": session.owner_task_id,
                 "command": session.command,
                 **({"handoff_note": session.handoff_note} if session.handoff_note else {}),
                 **self._exit_fields(session),
@@ -1691,7 +1730,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # window would otherwise see nothing pending, drain nothing and exit without the follow-up turn.
             pending = [
                 s for store in (self._running, self._finished) for s in store.values()
-                if s.notify_on_complete and not s._completion_event.is_set() and (task_id is None or s.task_id == task_id)
+                if s.notify_on_complete and not s._completion_event.is_set()
+                and (task_id is None or s.owner_task_id == task_id)
             ]
         if not pending or timeout <= 0:
             return result
@@ -1896,6 +1936,26 @@ class ProcessRegistry(ProcessCheckpointMixin):
             return
         if rc is None:
             return  # Direct child still running — reader block is legitimate.
+        reader = session._reader_thread
+        if (
+            not _IS_WINDOWS
+            and session._reader_selectable
+            and reader is not None
+            and reader.is_alive()
+        ):
+            # The reader owns the pipe and completion payload. Asking it to
+            # finish avoids a competing TextIOWrapper read here racing the
+            # reader, publishing an empty owner-stamped result, then closing
+            # the pipe before the buffered tail is ingested. It wakes within
+            # the reader's bounded select interval (or after one final chunk).
+            session._reader_finish_requested.set()
+            with session._lock:
+                session.mark_exited(rc)
+            logger.info(
+                "Reconciled session %s: direct child exited with code %s; "
+                "reader will publish the owned completion after its final drain.",
+                session.id, rc)
+            return
         # Best-effort non-blocking drain of whatever the reader hasn't consumed.
         stdout = getattr(proc, "stdout", None)
         if stdout is not None and not _IS_WINDOWS:
@@ -2264,10 +2324,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         cross-task entries sharing the gateway session (a forgotten preview server
         blocking session reset) are flagged ``"session_scoped": true``.
 
-        When ``task_id`` is given, processes for that task are included. When ``session_key`` is also given,
-        session-scoped background processes (``background: true``) registered under that gateway session are
-        surfaced too, even if they belong to a different task — so the agent can discover a forgotten
-        preview server that is blocking session reset (#29177).
+        When ``task_id`` is given, processes that task spawned (its ``owner_task_id``) are included. When
+        ``session_key`` is also given, session-scoped background processes (``background: true``) registered
+        under that gateway session are surfaced too, even if they belong to a different task — so the agent
+        can discover a forgotten preview server that is blocking session reset (#29177).
         """
         # Only an explicit tool query reads historical receipts. Status bars and
         # gateway liveness scans call this frequently and need the live registry.
@@ -2279,7 +2339,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
         if task_id or session_key:
             all_sessions = [
                 s for s in all_sessions
-                if (task_id and s.task_id == task_id) or (session_key and s.session_key == session_key)
+                if (task_id and s.owner_task_id == task_id)
+                or (session_key and s.session_key == session_key)
             ]
         result = []
         for s in all_sessions:
@@ -2291,7 +2352,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 "command": s.command[:200],
                 "cwd": s.cwd,
                 "pid": s.pid,
-                "owner_task_id": s.owner_task_id or s.task_id,
+                "owner_task_id": s.owner_task_id,
                 "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
@@ -2299,7 +2360,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             }
             # Flag processes surfaced only because they share the gateway session (not the current task) —
             # these are the long-lived background processes a user may have forgotten about (#29177).
-            if task_id and session_key and s.task_id != task_id and s.session_key == session_key:
+            if task_id and session_key and s.owner_task_id != task_id and s.session_key == session_key:
                 entry["session_scoped"] = True
             # Trigger metadata for goal-loop judges (a watcher may never exit).
             if s.watch_patterns and not s._watch_disabled:
@@ -2378,9 +2439,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def snapshot_running_ids(self, task_id: str) -> frozenset[str]:
         """Running IDs owned by ``task_id`` — a turn-boundary marker: on timeout
         only processes absent from the starting snapshot belong to the abandoned
-        turn; older ones intentionally span turns and must survive."""
-        with self._lock:
-            return frozenset(s.id for s in self._running.values() if s.task_id == task_id and not s.exited)
+        turn; older ones intentionally span turns and must survive. Ownership is
+        ``owner_task_id``: ``task_id`` is the container key (``session:<key>``,
+        ``default``), shared across turns and sessions, not the turn's id."""
+        return frozenset(s.id for s in self.running_owned_by(task_id))
 
     def kill_started_since(self, task_id: str, baseline_ids, *, source: str) -> int:
         """Kill ``task_id`` processes created after ``baseline_ids``. Output is
@@ -2391,11 +2453,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def kill_all(
         self, task_id: Optional[str] = None, *, exclude_ids: frozenset = frozenset(),
         source: str = "kill_all", consume_output: bool = False) -> int:
-        """Kill all running processes, optionally filtered by task_id. Returns count killed."""
+        """Kill all running processes, optionally only those ``task_id`` spawned (its ``owner_task_id``).
+        Returns count killed."""
         with self._lock:
             targets = [
                 s for s in self._running.values()
-                if (task_id is None or s.task_id == task_id) and s.id not in exclude_ids and not s.exited
+                if (task_id is None or s.owner_task_id == task_id)
+                and s.id not in exclude_ids and not s.exited
             ]
         return sum(
             self.kill_process(s.id, source=source, consume_output=consume_output).get("status")
@@ -2426,6 +2490,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         tracked = self._running.keys() | self._finished.keys()
         self._completion_consumed &= tracked
         self._poll_observed &= tracked
+
 
 
 

@@ -15,6 +15,21 @@ import { notifyError } from '@/store/notifications'
  * (local spawn, SSH, URL+token) because it rides the session's own transport.
  */
 
+export type AgentPluginServerState =
+  | 'connected'
+  | 'app_not_running'
+  | 'endpoint_unavailable'
+  | 'no_interactive_session'
+  | 'version_too_old'
+  | 'missing_app'
+  | 'unknown'
+
+export interface AgentPluginServer {
+  name: string
+  state: AgentPluginServerState
+  sentence: string
+}
+
 export interface AgentPluginRow {
   name: string
   /** Canonical registry key (e.g. `image_gen/fal`) — absent on legacy backends. */
@@ -44,6 +59,8 @@ export interface AgentPluginRow {
   install_dir?: string
   /** Manifest `config_schema` rendered as a settings form (with current values). */
   settings_schema?: PluginSettingField[]
+  /** Full snapshot of declared application-backed MCP servers. */
+  servers?: AgentPluginServer[]
 }
 
 export type PluginSettingFieldType = 'boolean' | 'enum' | 'json' | 'number' | 'secret' | 'string'
@@ -63,13 +80,18 @@ export interface PluginSettingField {
   has_value?: boolean
 }
 
+export const normalizeAgentPluginRow = (row: AgentPluginRow): AgentPluginRow => ({
+  ...row,
+  servers: row.servers ?? []
+})
+
 /** A `--ref` pin is a full 40-hex commit SHA; branches and tags are refused server-side. */
 export const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i
 
 export type AgentPluginsStatus = 'idle' | 'loading' | 'ready' | 'error'
 
 /** The recovering `requestGateway` from `useGatewayRequest`. */
-export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+export type GatewayRequest = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 export const $agentPlugins = atom<AgentPluginRow[]>([])
 export const $agentPluginsStatus = atom<AgentPluginsStatus>('idle')
@@ -139,7 +161,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
         return
       }
 
-      $agentPlugins.set(result?.plugins ?? [])
+      $agentPlugins.set((result?.plugins ?? []).map(normalizeAgentPluginRow))
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
     } catch (e) {
@@ -196,7 +218,9 @@ export async function toggleAgentPlugin(
     const refreshed = result.plugin
 
     if (refreshed) {
-      $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...refreshed } : row)))
+      const snapshot = normalizeAgentPluginRow(refreshed)
+
+      $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...snapshot } : row)))
     } else {
       await loadAgentPlugins(request, profile)
     }
@@ -213,11 +237,37 @@ export async function toggleAgentPlugin(
 
 export interface AgentPluginInstallResult {
   ok: boolean
+  /** The client stopped waiting; the backend may still finish the install. */
+  timedOut?: boolean
   pluginName?: string
   warnings?: string[]
   missingEnv?: string[]
   error?: string
+  /** What became usable in open chats of the profile (`activation.live_now`). */
+  live: AgentPluginLiveNow
+  /** Python tools or prompt sections that wait for the next chat (`activation.deferred`). */
+  nextChat: boolean
 }
+
+export interface AgentPluginLiveServer {
+  name: string
+  connected: boolean
+  tools: string[]
+  error?: string | null
+}
+
+export interface AgentPluginLiveNow {
+  mcpServers: AgentPluginLiveServer[]
+  skills: string[]
+}
+
+const NO_LIVE: AgentPluginLiveNow = { mcpServers: [], skills: [] }
+
+// Installing a catalog package can clone a repository and resolve Python dependencies.
+// The ordinary Desktop RPC deadline is 30s, which can expire after the backend
+// has already begun an install that will succeed. Keep this wait bounded while
+// giving normal installs time to return their authoritative result.
+const PLUGIN_INSTALL_REQUEST_TIMEOUT_MS = 120_000
 
 export async function installAgentPlugin(
   request: GatewayRequest,
@@ -240,6 +290,13 @@ export async function installAgentPlugin(
       plugin_name?: string
       warnings?: string[]
       missing_env?: string[]
+      activation?: {
+        live_now?: {
+          mcp_servers?: AgentPluginLiveServer[]
+          skills?: { name: string }[]
+        } | null
+        deferred?: Record<string, string[]>
+      } | null
       error?: string
     }>(
       'plugins.manage',
@@ -253,21 +310,36 @@ export async function installAgentPlugin(
           ...(opts.ref ? { ref: opts.ref } : {})
         },
         opts.profile
-      )
+      ),
+      PLUGIN_INSTALL_REQUEST_TIMEOUT_MS
     )
 
     if (!result?.ok) {
-      return { ok: false, error: result?.error || 'Install failed' }
+      return { ok: false, error: result?.error || 'Install failed', live: NO_LIVE, nextChat: false }
     }
 
     return {
       ok: true,
       pluginName: result.plugin_name,
       warnings: result.warnings,
-      missingEnv: result.missing_env
+      missingEnv: result.missing_env,
+      live: {
+        mcpServers: result.activation?.live_now?.mcp_servers ?? [],
+        // `<namespace>:<skill>` is what the model loads; the toast shows the skill's own name.
+        skills: (result.activation?.live_now?.skills ?? []).map(skill => skill.name.split(':').pop() ?? skill.name)
+      },
+      nextChat: Object.keys(result.activation?.deferred ?? {}).length > 0
     }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    const message = e instanceof Error ? e.message : String(e)
+
+    return {
+      ok: false,
+      timedOut: /^request timed out after \d+s: plugins\.manage$/.test(message),
+      error: message,
+      live: NO_LIVE,
+      nextChat: false
+    }
   }
 }
 

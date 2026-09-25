@@ -18,7 +18,7 @@ import pytest
 
 from tools.connectors import contract as c
 from tools.connectors import live
-from tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
+from tools.connectors.tool import manage_connections
 
 
 @pytest.fixture(autouse=True)
@@ -121,17 +121,8 @@ def _run(args, gw, *, callback=None, tick=0.0, platform="desktop"):
 # ---------------------------------------------------------------------------
 
 
-def test_reason_is_gone_from_the_schema():
-    assert "reason" not in MANAGE_CONNECTIONS_SCHEMA["parameters"]["properties"]
 
 
-def test_wait_is_gone_and_force_exists():
-    props = MANAGE_CONNECTIONS_SCHEMA["parameters"]["properties"]
-    assert "wait" not in props["action"]["enum"]
-    assert "timeout_seconds" not in props
-    assert props["force"]["type"] == "boolean"
-    out = json.loads(manage_connections({"action": "wait", "connectors": ["gmail"]}))
-    assert "action must be one of" in out["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -359,13 +350,6 @@ def test_continue_during_a_connected_read_keeps_the_settled_result():
     assert out["targets"][0]["state"] == "not_connected"
 
 
-def test_settle_reason_is_not_written_into_the_row_detail():
-    gw = GatewayFake()
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
-        out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.01)
-    assert out["settled_by"] == "deadline"
-    assert out["targets"][0]["state"] == "not_connected"
-    assert "detail" not in out["targets"][0]
 
 
 def test_interrupt_wakes_the_loop_and_settles_before_the_next_tick():

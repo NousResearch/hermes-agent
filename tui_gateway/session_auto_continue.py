@@ -320,13 +320,14 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     kwargs: dict = {"queued_prompt_generation": queue_generation}
     if queued.get("image_paths"):
         kwargs["image_paths"] = queued["image_paths"]
-    # The compute-host frame has no author field, so only the inline runner receives it.
+    # The author rides the compute-host frame too, so an isolated drained turn stays attributed.
     author_kwargs = {"turn_author": queued["turn_author"]} if queued.get("turn_author") else {}
     dispatch_failed = False
     try:
         if not use_compute_host:
             _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
-        elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
+        elif (resp := _submit_prompt_to_compute_host(
+                rid, sid, session, queued["text"], **kwargs, **author_kwargs)).get("error"):
             with session["history_lock"]:
                 session["running"] = False
                 _clear_inflight_turn(session)

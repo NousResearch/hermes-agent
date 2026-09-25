@@ -2526,6 +2526,8 @@ export const ru = defineLocale({
     nameLabel: 'Имя',
     namePlaceholder: 'Утренний брифинг',
     promptLabel: 'Промпт',
+    scriptLabel: 'Скрипт',
+    scriptBadge: 'скрипт',
     promptPlaceholder: 'Суммируй мои непрочитанные треды Slack и пришли топ-5 на почту...',
     frequencyLabel: 'Частота',
     deliverLabel: 'Доставить в',

@@ -3390,6 +3390,8 @@ export const en: Translations = {
     nameLabel: 'Name',
     namePlaceholder: 'Morning briefing',
     promptLabel: 'Prompt',
+    scriptLabel: 'Script',
+    scriptBadge: 'script',
     promptPlaceholder: 'Summarize my unread Slack threads and email me the top 5...',
     frequencyLabel: 'Frequency',
     deliverLabel: 'Deliver to',

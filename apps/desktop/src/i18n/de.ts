@@ -3774,6 +3774,8 @@ export const deOverrides = {
     nameLabel: 'Name',
     namePlaceholder: 'Morgenübersicht',
     promptLabel: 'Prompt',
+    scriptLabel: 'Skript',
+    scriptBadge: 'Skript',
     promptPlaceholder: 'Fass meine ungelesenen Slack-Kanäle zusammen und schick mir die Top 5 per E-Mail...',
     frequencyLabel: 'Häufigkeit',
     deliverLabel: 'Zustellen an',

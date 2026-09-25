@@ -2332,6 +2332,8 @@ export const ja = defineLocale({
     nameLabel: '名前',
     namePlaceholder: '例: 日次サマリー',
     promptLabel: 'プロンプト',
+    scriptLabel: 'スクリプト',
+    scriptBadge: 'スクリプト',
     promptPlaceholder: '実行ごとにエージェントが行う内容は？',
     frequencyLabel: '頻度',
     deliverLabel: '配信先',

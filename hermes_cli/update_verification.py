@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import socket
 import subprocess
 import sys
@@ -224,9 +225,84 @@ def rollback_update(pre_state: Dict[str, Any], *, checkout: Path, pre_sha: str,
             subprocess.run([sys.executable, "-m", "hermes_cli.main", "gateway", "start", "--all"],
                            capture_output=True, timeout=60, check=False)
             gateway_restart = "attempted"
-        except (OSError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired, RuntimeError):
+            # RuntimeError covers the tests/conftest.py live-system guard that
+            # refuses to spawn a real gateway from inside a pytest worker.
             gateway_restart = "failed"
     return {"reset_ok": reset.returncode == 0,
             "reset_detail": (reset.stderr or reset.stdout).strip(),
             "restored_profiles": restored, "restore_errors": restore_errors,
             "gateway_restart": gateway_restart, "failed_check": failed_check}
+
+
+def capture_and_record_pre_state() -> Optional[Dict[str, Any]]:
+    """G3 §5.1 Pre hook for _cmd_update_impl. Best-effort: the guard rail must
+    never break the update, so any failure returns None (verification is then
+    skipped for this run and the receipt records the skip)."""
+    try:
+        from hermes_cli.update_receipt import _profile_homes
+        state = capture_pre_state(_profile_homes())
+        state["pre_sha"] = _head_sha()
+        save_pre_state(state)
+        return state
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "pre-state capture failed; verification disabled this run")
+        return None
+
+
+def verify_or_rollback(pre_state: Dict[str, Any], *, checkout: Path,
+                       timeout: float = LIVENESS_TIMEOUT_SECONDS) -> int:
+    """G3 §5.1 Post-verify hook. Returns 0 when every check passes; otherwise
+    rolls back, records the receipt section, prints the failed check, returns 1."""
+    from hermes_cli.update_receipt import record_verification
+
+    checks = run_verification(pre_state, timeout=timeout)
+    failed = next((check for check in checks if not check["passed"]), None)
+    rolled_back = False
+    if failed is not None:
+        outcome = rollback_update(pre_state, checkout=checkout,
+                                  pre_sha=pre_state.get("pre_sha", ""),
+                                  failed_check=failed["name"])
+        rolled_back = outcome["reset_ok"] or bool(outcome["restored_profiles"])
+        print(f"☤ Update verification FAILED ({failed['name']}): {failed['detail']}")
+        print(f"  Rolled back to {pre_state.get('pre_sha', '')[:12] or 'pre-update state'} "
+              f"(configs restored: {outcome['restored_profiles'] or 'none'})")
+    record_verification(checks, rolled_back=rolled_back,
+                        failed_check=failed["name"] if failed else "")
+    for check in checks:
+        print(f"  {'PASS' if check['passed'] else 'FAIL'} {check['name']}: {check['detail']}")
+    return 1 if failed is not None else 0
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Verify the post-update state; roll back and exit 1 on failure.")
+    parser.add_argument("--pre-state", type=Path, default=None,
+                        help=f"pre-state JSON (default: logs/update_receipts/{PRE_STATE_FILENAME})")
+    parser.add_argument("--timeout", type=float, default=LIVENESS_TIMEOUT_SECONDS)
+    parser.add_argument("--checkout", type=Path,
+                        default=Path(__file__).resolve().parent.parent,
+                        help="git checkout to reset on rollback")
+    args = parser.parse_args(argv)
+
+    # Standalone CLI may run after the parent update already finalized its receipt (windows.ps1,
+    # Task 11), but tests + manual retries must persist verification data even when no receipt is
+    # active — record_verification mirrors record_step and no-ops otherwise. Open a fresh receipt
+    # only when none is active, and finalize exactly the one we opened so a live parent receipt is
+    # untouched.
+    from hermes_cli.update_receipt import (
+        _current, begin_update_receipt, finalize_update_receipt,
+    )
+    opened_here = _current is None
+    if opened_here:
+        begin_update_receipt()
+    pre_state = load_pre_state(args.pre_state)
+    rc = verify_or_rollback(pre_state, checkout=args.checkout, timeout=args.timeout)
+    if opened_here:
+        finalize_update_receipt("failed" if rc else "success")
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())

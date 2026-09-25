@@ -303,6 +303,13 @@ def _record_update_step(step: str, ok: bool, detail: str = "") -> None:
         record_step(step, ok, detail)
 
 
+def _repo_root_for_verification() -> "Path":
+    """Checkout the verifier should reset on rollback: the running PROJECT_ROOT."""
+    from pathlib import Path as _Path
+    import hermes_cli.main as _main
+    return _Path(getattr(_main, "PROJECT_ROOT", "."))
+
+
 # A fetch whose transport dead-stalls (HTTP/2 to GitHub on some networks, a black-holed proxy)
 # otherwise leaves `hermes update` on "Fetching updates..." forever (#93759, #95777). Five
 # minutes is generous for a scoped single-branch fetch and still ends in a real error.
@@ -1670,7 +1677,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
     pre_update_snapshot_id = _m()._run_pre_update_backup(args)
     _record_pre_update_backup_outcome(args, pre_update_snapshot_id)
 
-    _windows_gateway_resume = _m()._pause_windows_gateways_for_update()
+    # G3 guard rail (spec §5.1 Pre): per-profile config snapshots + root-key/MCP
+    # fingerprint pre-state, before any git/file mutation. Best-effort — a
+    # capture failure disables verification for this run instead of failing it.
+    from hermes_cli.update_verification import capture_and_record_pre_state
+    _verify_pre_state = capture_and_record_pre_state()
+    _record_update_step("pre_state_capture", _verify_pre_state is not None,
+                        "" if _verify_pre_state is not None else "pre-state capture failed")
+
+    # A legacy re-exec child resumes exactly the fleet its parent stopped; re-running discovery
+    # here found the parent's just-relaunched gateway and force-killed it (#101600).
+    _windows_gateway_resume = adopt_handed_off_gateway_resume() or _m()._pause_windows_gateways_for_update()
     if _windows_gateway_resume:
         import atexit as _atexit
         _atexit.register(_m()._resume_windows_gateways_after_update, _windows_gateway_resume)
@@ -1838,9 +1855,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
         pre_pull_sha = _pull_updates(
             git_cmd, branch, _plan.auto_stash_ref, prompt_for_restore=_plan.prompt_for_restore,
             gw_input_fn=gw_input_fn, discard_local_changes=opts.discard_local_changes,
-            keep_stash=opts.keep_stash, target_ref=target_ref, pre_sync_sha=_plan.pre_sync_sha,
-            sync_upstream=is_fork and branch == "main" and not release_sha, assume_yes=assume_yes,
-            in_place_update=_plan.in_place_update, _windows_gateway_resume=_windows_gateway_resume)
+            keep_stash=opts.keep_stash)
+        # G3 guard rail (spec §5.1 Post-verify): report success only once config
+        # parity, gateway liveness, and MCP fingerprints match the pre-update state.
+        if _verify_pre_state is not None:
+            from hermes_cli.update_verification import verify_or_rollback
+            if verify_or_rollback(_verify_pre_state, checkout=_repo_root_for_verification()):
+                _finalize_receipt("failed", "post-update verification failed")
+                sys.exit(1)
         _apply_pulled_update(
             git_cmd, branch, pre_pull_sha, _plan,
             _windows_gateway_resume=_windows_gateway_resume, completion_request=completion_request)

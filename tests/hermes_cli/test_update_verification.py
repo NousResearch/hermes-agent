@@ -107,3 +107,65 @@ def test_save_and_load_pre_state_roundtrip(two_homes):
     path = uv.save_pre_state(state)
     assert path.name == uv.PRE_STATE_FILENAME
     assert uv.load_pre_state(path) == state
+
+
+class TestVerifyOrRollback:
+    def _seed_repo(self, tmp_path):
+        import subprocess as sp
+        repo = tmp_path / "checkout"
+        repo.mkdir()
+        for argv in (["git", "init", "-q"], ["git", "config", "user.email", "t@example"],
+                     ["git", "config", "user.name", "t"]):
+            sp.run(argv, cwd=repo, check=True, capture_output=True)
+        (repo / "a.txt").write_text("before\n", encoding="utf-8")
+        sp.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+        sp.run(["git", "commit", "-qm", "before"], cwd=repo, check=True, capture_output=True)
+        sha = sp.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True,
+                     text=True, check=True).stdout.strip()
+        (repo / "a.txt").write_text("after\n", encoding="utf-8")
+        return repo, sha
+
+    def test_failed_check_rolls_back_tree_and_configs(self, two_homes, tmp_path):
+        repo, sha = self._seed_repo(tmp_path)
+        state = uv.capture_pre_state([("default", two_homes["root"])], backup=True)
+        state["pre_sha"] = sha
+        (two_homes["root"] / "config.yaml").write_text(yaml.safe_dump({}), encoding="utf-8")
+
+        rc = uv.verify_or_rollback(state, checkout=repo)
+
+        assert rc == 1
+        assert (repo / "a.txt").read_text(encoding="utf-8") == "before\n"
+        restored = yaml.safe_load((two_homes["root"] / "config.yaml").read_text(encoding="utf-8"))
+        assert restored["mcp_servers"]["github"]["command"] == "npx"
+
+    def test_clean_state_returns_zero_without_rollback(self, two_homes, tmp_path):
+        repo, sha = self._seed_repo(tmp_path)
+        state = uv.capture_pre_state([("default", two_homes["root"])], backup=True)
+        state["pre_sha"] = sha
+
+        assert uv.verify_or_rollback(state, checkout=repo) == 0
+        assert (tmp_path / "checkout" / "a.txt").read_text(encoding="utf-8") == "after\n"
+
+    def test_cli_entry_exits_nonzero_and_writes_receipt(self, two_homes, tmp_path):
+        repo, sha = self._seed_repo(tmp_path)
+        state = uv.capture_pre_state([("default", two_homes["root"])], backup=True)
+        state["pre_sha"] = sha
+        pre_state_file = tmp_path / "pre.json"
+        pre_state_file.write_text(json.dumps(state), encoding="utf-8")
+        (two_homes["root"] / "config.yaml").write_text(yaml.safe_dump({}), encoding="utf-8")
+
+        from hermes_cli.update_receipt import read_latest_receipt
+        rc = uv.main(["--pre-state", str(pre_state_file), "--timeout", "1",
+                      "--checkout", str(repo)])
+
+        assert rc == 1
+        receipt = read_latest_receipt()
+        assert receipt is not None
+        assert receipt["verification"]["rolled_back"] is True
+        assert receipt["verification"]["failed_check"] == "config_parity"
+
+    def test_capture_and_record_pre_state_survives_errors(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(uv, "capture_pre_state",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert uv.capture_and_record_pre_state() is None

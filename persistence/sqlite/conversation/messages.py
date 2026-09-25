@@ -67,11 +67,12 @@ _REWIND_REFUSALS = {
 # ``NewMessage`` fields that travel under their own name when set.
 _MESSAGE_OPTIONALS = (
     "tool_name", "tool_call_id", "display_kind", "api_content", "platform_message_id", "effect_disposition",
-    "finish_reason", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
+    "execution_status", "finish_reason", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
     "codex_message_items", "token_count", "message_uid",
 )
 _WIRE_FIELDS = (
-    "role", "content", "timestamp", "tool_call_id", "tool_calls", "tool_name", "effect_disposition", "token_count",
+    "role", "content", "timestamp", "tool_call_id", "tool_calls", "tool_name", "effect_disposition",
+    "execution_status", "token_count",
     "finish_reason", "reasoning", "reasoning_content", "reasoning_details", "codex_reasoning_items",
     "codex_message_items", "platform_message_id", "api_content", "display_kind", "display_metadata", "message_uid",
     "absorbed_message_uids", "tool_call_uids", "tool_call_uid",
@@ -213,6 +214,7 @@ def _message_record(row: Mapping[str, Any]) -> MessageRecord:
         visibility=_visibility(row.get("active"), row.get("compacted")), api_content=row.get("api_content"),
         display_metadata=metadata, platform_message_id=row.get("platform_message_id"),
         observed=bool(row.get("observed")), effect_disposition=row.get("effect_disposition"),
+        execution_status=row.get("execution_status"),
         finish_reason=row.get("finish_reason"), reasoning=row.get("reasoning"),
         reasoning_content=row.get("reasoning_content"),
         **{name: _sidecar(row.get(name)) for name in _SIDECARS}, message_uid=row.get("message_uid"))
@@ -293,7 +295,8 @@ class SQLiteMessageRepository:
                 reasoning_content=message.reasoning_content, reasoning_details=message.reasoning_details,
                 codex_reasoning_items=message.codex_reasoning_items, codex_message_items=message.codex_message_items,
                 platform_message_id=message.platform_message_id, observed=message.observed,
-                effect_disposition=message.effect_disposition, _compressed_summary=message.compressed_summary,
+                effect_disposition=message.effect_disposition, execution_status=message.execution_status,
+                _compressed_summary=message.compressed_summary,
                 timestamp=message.timestamp, api_content=message.api_content, display_kind=message.display_kind,
                 display_metadata=msg.get("display_metadata"),
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds,

@@ -18,6 +18,7 @@ _SYNC_FIELDS = (
     "tool_calls",
     "tool_name",
     "effect_disposition",
+    "execution_status",
     "token_count",
     "finish_reason",
     "reasoning",

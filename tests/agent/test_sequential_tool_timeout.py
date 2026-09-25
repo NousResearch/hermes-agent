@@ -158,7 +158,8 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
     assert dispatched == ["hung", "next"]
     assert [message["tool_call_id"] for message in messages] == ["hung", "next"]
     assert "timed out after 1.0s" in messages[0]["content"]
-    assert messages[0]["effect_disposition"] == "timeout"
+    assert messages[0]["effect_disposition"] == "unknown"  # effect unobservable after a mid-flight kill
+    assert messages[0]["execution_status"] == "timeout"
     assert messages[1]["content"] == "second result"
     timeout_events = [event for event in terminal_events if event.get("error_type") == "tool_timeout"]
     assert len(timeout_events) == 1

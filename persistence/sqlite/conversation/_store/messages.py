@@ -207,7 +207,8 @@ def _message_row_params(holder: StoreHolder, session_id: str, role: str, msg: di
     }
     return (session_id, role, encoded_content, msg.get("tool_call_id"),
         encoded_tool_calls, encoded_tool_name,
-        msg.get("effect_disposition"), message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
+        msg.get("effect_disposition"), msg.get("execution_status"),
+            message_timestamp, msg.get("token_count"), msg.get("finish_reason"),
         _scrub_surrogates(_reasoning("reasoning")), _scrub_surrogates(_reasoning("reasoning_content")),
         *(_reasoning_json_text(_reasoning(k))
           for k in ("reasoning_details", "codex_reasoning_items", "codex_message_items")),
@@ -265,7 +266,7 @@ def _decoded_repair_row(holder: StoreHolder, row) -> dict[str, Any]:
         "role": row["role"],
         "content": _decode_content(row["content"]),
     }
-    for column in ("tool_call_id", "tool_name", "effect_disposition", "token_count", "finish_reason"):
+    for column in ("tool_call_id", "tool_name", "effect_disposition", "execution_status", "token_count", "finish_reason"):
         if row[column] is not None:
             msg[column] = row[column]
     if row["tool_calls"]:
@@ -318,7 +319,8 @@ def append_message(
     tool_call_id: str | None = None, token_count: int | None = None, finish_reason: str | None = None, reasoning: str | None = None,
     reasoning_content: str | None = None, reasoning_details: Any = None, codex_reasoning_items: Any = None,
     codex_message_items: Any = None, platform_message_id: str | None = None, observed: bool = False,
-    effect_disposition: Optional[str] = None, _compressed_summary: bool = False, timestamp: Any = None,
+    effect_disposition: Optional[str] = None, execution_status: Optional[str] = None,
+        _compressed_summary: bool = False, timestamp: Any = None,
     api_content: Optional[str] = None, display_kind: Optional[str] = None,
     display_metadata: Optional[dict[str, Any]] = None, compression_lock_holder: Optional[str] = None,
     turn_lease_holder: Optional[str] = None, turn_lease_ttl_seconds: float = 300.0,
@@ -1607,7 +1609,8 @@ def _rows_to_conversation(holder: StoreHolder, rows, *, session_id: str, include
         if include_summary_markers and row["_compressed_summary"]:
             msg["_compressed_summary"] = True
         msg.update(
-            (col, row[col]) for col in ("timestamp", "tool_call_id", "tool_name", "effect_disposition") if row[col])
+            (col, row[col]) for col in ("timestamp", "tool_call_id", "tool_name",
+                                        "effect_disposition", "execution_status") if row[col])
         if row["tool_calls"]:
             msg["tool_calls"] = _json_or(
                 row["tool_calls"], [], "Failed to deserialize tool_calls in conversation replay, falling back to []")

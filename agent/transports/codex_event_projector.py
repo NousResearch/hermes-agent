@@ -30,6 +30,28 @@ def _dict_args(raw: Any) -> dict:
     return args if isinstance(args, dict) else {"arguments": args}
 
 
+def _codex_execution_status(item: dict) -> str:
+    """Map a Codex item's reported outcome onto the execution-status vocabulary.
+
+    Codex terminates every projected tool item, so this axis is knowable even though
+    its effect is not. An explicit failure/interrupt wins; an absent or unknown
+    provider status stays ``error`` (conservative: the conservative path is what
+    ``replay_cleanup`` already treats as a possible side effect).
+    """
+    status = str(item.get("status") or "").lower()
+    if status in {"completed", "success", "succeeded"}:
+        return "success"
+    if status in {"cancelled", "canceled", "aborted"}:
+        return "cancelled"
+    if status in {"interrupted", "timeout", "timed_out"}:
+        return "timeout"
+    if item.get("error") is not None or status in {"failed", "error"}:
+        return "error"
+    # No status and no error: the item exists, so treat the projected result as an
+    # unknown-outcome error rather than claiming a success the provider never stated.
+    return "error"
+
+
 @dataclass
 class ProjectionResult:
     """Output of projecting one Codex item; empty ``messages`` = ignored (e.g. a streaming delta)."""
@@ -98,7 +120,12 @@ class CodexEventProjector:
             None,
             tool_calls=[{"id": call_id, "type": "function", "function": {"name": name, "arguments": _format_tool_args(args)}}],
         )
-        tool_msg = {"role": "tool", "tool_call_id": call_id, "content": content}
+        tool_msg = {
+            "role": "tool", "tool_call_id": call_id, "content": content,
+            # Codex reports a terminal outcome per item, so the status axis is known
+            # here; the effect of a provider-side command is never claimed either way.
+            "execution_status": _codex_execution_status(item),
+        }
         return ProjectionResult(messages=[assistant_msg, tool_msg], is_tool_iteration=True)
 
     @staticmethod

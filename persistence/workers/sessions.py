@@ -39,7 +39,7 @@ WorkerMessage = TypedDict("WorkerMessage", {
     "tool_call_id": str | None, "token_count": int | None, "finish_reason": str | None, "reasoning": str | None,
     "reasoning_content": str | None, "reasoning_details": JsonValue, "codex_reasoning_items": JsonValue,
     "codex_message_items": JsonValue, "platform_message_id": str | None, "message_id": str | None, "observed": bool,
-    "effect_disposition": str | None, "_compressed_summary": bool, "timestamp": float | None, "api_content": str | None,
+    "effect_disposition": str | None, "execution_status": str | None, "_compressed_summary": bool, "timestamp": float | None, "api_content": str | None,
     "display_kind": str | None, "display_metadata": dict[str, JsonValue] | None, "_row_id": int,
     "_canonical_content": JsonValue, "_db_row_snapshot": str, "_canonical_row": dict[str, JsonValue] | None,
     "data_use": list[str], "_submit_row_session_id": str, "_merged_turn_prefix": str, "message_uid": str,

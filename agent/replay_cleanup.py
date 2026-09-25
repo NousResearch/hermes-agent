@@ -102,7 +102,8 @@ def strip_interrupted_tool_tails(agent_history: list[dict[str, Any]]) -> list[di
                         if is_interrupted_tool_result(tool_result.get("content", "")):
                             name = call_names.get(str(tool_result.get("tool_call_id") or ""), "")
                             disposition, content = _orphan_recovery(name, _INTERRUPTED_NOTICES)
-                            tool_result = {**tool_result, "effect_disposition": disposition, "content": content}
+                            tool_result = {**tool_result, "effect_disposition": disposition,
+                                           "execution_status": "cancelled", "content": content}
                         cleaned.append(tool_result)
                 else:
                     logger.debug("Stripping interrupted read-only assistant→tool replay block (indices %d–%d, tool_results=%d)",
@@ -137,7 +138,9 @@ def strip_dangling_tool_call_tail(agent_history: list[dict[str, Any]]) -> list[d
         for call in tool_calls:
             name = _call_name(call) or "unknown"
             disposition, content = _orphan_recovery(name, _DANGLING_NOTICES)
-            recovered.append(make_tool_result_message(name, content, _call_id(call), effect_disposition=disposition))
+            recovered.append(make_tool_result_message(
+                name, content, _call_id(call), effect_disposition=disposition,
+                execution_status="cancelled"))
         logger.warning("Recovered dangling side-effecting tool call(s) as UNKNOWN instead of erasing them")
         return recovered
     logger.debug("Stripping dangling unanswered read-only assistant(tool_calls) tail (%d call(s))", len(tool_calls))

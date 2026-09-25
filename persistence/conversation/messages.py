@@ -158,6 +158,7 @@ class NewMessage:
     platform_message_id: Optional[str] = None
     observed: bool = False
     effect_disposition: Optional[str] = None
+    execution_status: Optional[str] = None
     finish_reason: Optional[str] = None
     reasoning: Optional[str] = None
     reasoning_content: Optional[str] = None
@@ -201,7 +202,8 @@ class NewMessage:
             tool_name=get("tool_name"), tool_call_id=get("tool_call_id"), display_kind=get("display_kind"),
             compressed_summary=bool(get("_compressed_summary")), api_content=get("api_content"),
             display_metadata=get("display_metadata"), platform_message_id=get("platform_message_id") or get("message_id") or None,
-            observed=bool(get("observed")), effect_disposition=get("effect_disposition"), finish_reason=get("finish_reason"),
+            observed=bool(get("observed")), effect_disposition=get("effect_disposition"),
+            execution_status=get("execution_status"), finish_reason=get("finish_reason"),
             reasoning=get("reasoning"), reasoning_content=get("reasoning_content"), reasoning_details=get("reasoning_details"),
             codex_reasoning_items=get("codex_reasoning_items"), codex_message_items=get("codex_message_items"),
             repair_target=MessageId(row_id) if isinstance(row_id, int) and not isinstance(row_id, bool) else None,
@@ -460,6 +462,7 @@ class MessageRecord:
     platform_message_id: Optional[str] = None
     observed: bool = False
     effect_disposition: Optional[str] = None
+    execution_status: Optional[str] = None
     finish_reason: Optional[str] = None
     reasoning: Optional[str] = None
     reasoning_content: Optional[str] = None
@@ -545,6 +548,7 @@ _CONVERSATION_KEYS: tuple[tuple[str, str], ...] = (
     ("tool_call_id", "tool_call_id"),
     ("tool_name", "tool_name"),
     ("effect_disposition", "effect_disposition"),
+    ("execution_status", "execution_status"),
     ("tool_calls", "tool_calls"),
     ("message_id", "message_id"),
     ("observed", "observed"),
@@ -615,6 +619,7 @@ class ConversationMessage:
     tool_call_id: Optional[str] = None
     tool_name: Optional[str] = None
     effect_disposition: Optional[str] = None
+    execution_status: Optional[str] = None
     tool_calls: Optional[tuple[JsonValue, ...]] = None
     message_id: Optional[str] = None
     observed: bool = False
@@ -826,6 +831,7 @@ class TranscriptRead:
 # The stored row dict's key order (the ``messages`` columns minus the two display-index columns); ``_compressed_summary`` follows last and only when true.
 _WIRE_ROW_KEYS = (
     "id", "session_id", "role", "content", "tool_call_id", "tool_calls", "tool_name", "effect_disposition",
+    "execution_status",
     "timestamp", "token_count", "finish_reason", "reasoning", "reasoning_content", "reasoning_details",
     "codex_reasoning_items", "codex_message_items", "platform_message_id", "observed", "active", "compacted",
     "api_content", "display_kind", "display_metadata", "message_uid", "absorbed_message_uids", "tool_call_uids",
@@ -850,6 +856,7 @@ class TranscriptRow:
     tool_calls: Optional[JsonValue] = None
     tool_name: Optional[str] = None
     effect_disposition: Optional[str] = None
+    execution_status: Optional[str] = None
     token_count: Optional[int] = None
     finish_reason: Optional[str] = None
     reasoning: Optional[str] = None

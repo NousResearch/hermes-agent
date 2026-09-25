@@ -353,7 +353,8 @@ def _append_skipped_tool_results(
     for tc in tool_calls:
         name = _tc_name(tc)
         result = content.replace("{name}", name)
-        messages.append(make_tool_result_message(name, result, _pairing_tool_call_id(tc), effect_disposition="none"))
+        messages.append(make_tool_result_message(
+            name, result, _pairing_tool_call_id(tc), effect_disposition="none", execution_status="cancelled"))
         if hook_error_type is not None:
             _ToolCallRef(name, {}, effective_task_id, (hook_id or _pairing_tool_call_id)(tc), []).emit_post(
                 agent, result,
@@ -1100,6 +1101,7 @@ def _commit_tool_result(
     is_error: bool,
     blocked: bool,
     effect_disposition,
+    execution_status,
     observed: bool = False,
     data_use: frozenset[str] = frozenset(),
     error_preview: Callable[[Any], Any] = lambda result: result,
@@ -1173,7 +1175,9 @@ def _commit_tool_result(
     # Multimodal dicts become an OpenAI-style content list; text-only servers get a
     # string-safe fallback so a rejected image result never poisons history.
     _tool_content = agent._tool_result_content_for_active_model(function_name, persisted_result)
-    tool_message = make_tool_result_message(function_name, _tool_content, tool_call_id, effect_disposition=effect_disposition)
+    tool_message = make_tool_result_message(
+        function_name, _tool_content, tool_call_id,
+        effect_disposition=effect_disposition, execution_status=execution_status)
     # A plugin that went live during this turn, and late LSP verdicts on this session's earlier edits,
     # are told on this new row (outside any untrusted-data wrapper).
     lsp_deferred.forward_to_agent(agent)
@@ -1546,26 +1550,30 @@ class _ConcurrentBatch:
             executor.shutdown(wait=not abandon_executor, cancel_futures=abandon_executor)
 
 
-def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeout_s: float | None) -> tuple[str, float, Optional[str]]:
+def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeout_s: float | None) -> tuple[str, float, Optional[str], str]:
     """Synthesize the result for a slot no worker filled (deadline, interrupt, or a thread
     that never returned), emit its terminal post_tool_call, and return
-    ``(function_result, tool_duration, effect_disposition)``."""
+    ``(function_result, tool_duration, effect_disposition, execution_status)``.
+
+    The two are orthogonal: a timed-out side-effecting call has an UNKNOWN effect (it may
+    have acted before the deadline) even though its execution status is known.
+    """
     if timed_out:
         suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
         function_result = f"Error executing tool '{ref.name}': timed out after {suffix}"
         outcome = dict(duration_ms=int((timeout_s or 0.0) * 1000), status="timeout", error_type="tool_timeout", error_message=function_result)
-        tool_duration, effect_disposition = float(timeout_s or 0.0), "timeout"
+        tool_duration, effect_disposition, execution_status = float(timeout_s or 0.0), "unknown", "timeout"
     elif agent._interrupt_requested:
         why = interrupt_skip_wording(agent)
         function_result = f"[Tool execution cancelled — {ref.name} was skipped. {why}]"
         outcome = dict(status="cancelled", error_type="keyboard_interrupt", error_message=f"Tool execution cancelled. {why}")
-        tool_duration, effect_disposition = 0.0, None
+        tool_duration, effect_disposition, execution_status = 0.0, None, "cancelled"
     else:
         function_result = f"Error executing tool '{ref.name}': thread did not return a result"
         outcome = dict(status="error", error_type="thread_missing_result", error_message=function_result)
-        tool_duration, effect_disposition = 0.0, "error"
+        tool_duration, effect_disposition, execution_status = 0.0, "unknown", "error"
     ref.emit_post(agent, function_result, **outcome)
-    return function_result, tool_duration, effect_disposition
+    return function_result, tool_duration, effect_disposition, execution_status
 
 
 def _append_batch_results(agent, messages: list, effective_task_id: str, batch: _ConcurrentBatch, budget: BudgetConfig) -> bool:
@@ -1577,23 +1585,31 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
         # prefer its real result over a fabricated timeout.
         if r is None:
             ref, is_error, blocked = pc.ref(effective_task_id), True, False
-            function_result, tool_duration, effect_disposition = _unfinished_tool_result(
+            function_result, tool_duration, effect_disposition, execution_status = _unfinished_tool_result(
                 agent, ref, timed_out=i in batch.timed_out_indices, timeout_s=batch.timeout_s,
             )
         else:
             ref, function_result, tool_duration, is_error, blocked = r.ref, r.result, r.duration, r.is_error, r.blocked
-            if not blocked and i in batch.timed_out_indices:
+            if pc.parse_error is not None:
+                # Malformed arguments never reached the tool: no effect, execution error.
+                effect_disposition, execution_status = "none", "error"
+                ref.emit_invalid_arguments(agent, r.result)
+            elif not blocked and i in batch.timed_out_indices:
                 # The deadline fan-out interrupts slow workers, whose synthesized cancel
                 # artifact surfaces here with is_error=True; the batch's truth is "timeout".
-                effect_disposition = "timeout"
+                # The effect of a call interrupted mid-flight remains unobservable.
+                effect_disposition, execution_status = "unknown", "timeout"
             else:
-                effect_disposition = "blocked" if blocked else ("error" if is_error else "success")
-            if pc.parse_error is not None:
-                ref.emit_invalid_arguments(agent, r.result)
+                # A blocked call never ran -> provably no effect. A completed call is
+                # NOT "none": its effect may well have happened and been observed, which
+                # is the NULL case of the #61783 contract.
+                effect_disposition = "none" if blocked else None
+                execution_status = "blocked" if blocked else ("error" if is_error else "success")
         committed = _commit_tool_result(
             agent, messages, ref, function_result,
             budget=budget, tool_duration=tool_duration, is_error=is_error, blocked=blocked,
-            effect_disposition=effect_disposition, observed=r is not None, data_use=r.data_use if r else frozenset(),
+            effect_disposition=effect_disposition, execution_status=execution_status,
+            observed=r is not None, data_use=r.data_use if r else frozenset(),
             error_preview=lambda res: _multimodal_text_summary(res)[:200],
         )
         if committed is None:
@@ -1793,7 +1809,8 @@ def _skip_remaining_sequential(agent, messages: list, remaining, effective_task_
 def _append_invalid_arguments_result(agent, messages: list, ref: _ToolCallRef, parse_error: str) -> bool:
     """Emit + append the parse-error result for a call whose arguments were not a JSON object."""
     ref.emit_invalid_arguments(agent, parse_error)
-    messages.append(make_tool_result_message(ref.name, parse_error, ref.call_id, effect_disposition="error"))
+    messages.append(make_tool_result_message(
+        ref.name, parse_error, ref.call_id, effect_disposition="none", execution_status="error"))
     return _flush_session_db_after_tool_progress(agent, messages, stage=f"invalid tool arguments {ref.name}")
 
 
@@ -1877,7 +1894,14 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     committed = _commit_tool_result(
         agent, messages, ref, function_result,
         budget=budget, tool_duration=tool_duration, is_error=_is_error_result, blocked=managed.blocked,
-        effect_disposition="unknown" if _execution_timed_out else None, observed=True, data_use=managed.data_use,
+        effect_disposition="unknown" if _execution_timed_out else None,
+        execution_status=(
+            "cancelled" if _execution_cancelled
+            else "timeout" if _execution_timed_out
+            else "blocked" if managed.blocked
+            else "error" if _is_error_result
+            else "success"
+        ), observed=True, data_use=managed.data_use,
         error_preview=lambda res: res[:200] if isinstance(res, str) and not agent.verbose_logging else res,
         success_log_chars=_result_len,
         verbose_text=_multimodal_text_summary,

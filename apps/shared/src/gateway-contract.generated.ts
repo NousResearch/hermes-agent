@@ -5522,6 +5522,8 @@ export interface BackendGatewayEventMap {
   'preview.restart.complete': SideAgentCompletePayload
   /** Progress line from the preview-restart agent. */
   'preview.restart.progress': PreviewRestartProgressPayload
+  /** projects.db moved; refetch the Projects sidebar. */
+  'projects.changed': ChangeSignalPayload
   /** Affection reaction detected in the user's message (hearts etc.). */
   reaction: ReactionPayload
   /** A completed reasoning block (non-streaming providers). */
@@ -5631,6 +5633,7 @@ export const GATEWAY_EVENT_TYPES = [
   'preview.open',
   'preview.restart.complete',
   'preview.restart.progress',
+  'projects.changed',
   'reaction',
   'reasoning.available',
   'reasoning.delta',

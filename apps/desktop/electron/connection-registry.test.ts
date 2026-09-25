@@ -45,6 +45,16 @@ import {
   upsertConnection
 } from './connection-registry'
 
+// Non-literal specifier on purpose: tsconfig.electron.json's project boundary
+// excludes apps/shared sources, but vitest resolves the workspace package fine
+// at runtime. Loaded once here, not in the test body, where a cold import under
+// CI load can outlast the 5s test timeout.
+const shared = (await import(String('@hermes/shared'))) as {
+  backendScopeKey: typeof backendScopeKey
+  backendScopePrefix: typeof backendScopePrefix
+  LOCAL_CONNECTION_ID: string
+}
+
 function emptyRegistry(): ConnectionRegistry {
   return normalizeRegistry(null)
 }
@@ -655,16 +665,7 @@ test('uniqueLabel counts up (never "X 2 2") and clamps long candidates', () => {
 // the renderer keys its socket registry with the shared copy while the main
 // process keys the backend pool with this one. This contract test is the
 // enforcement (see the NOTE on backendScopeKey).
-test('backendScopeKey: electron and shared implementations agree everywhere', async () => {
-  // Non-literal specifier on purpose: tsconfig.electron.json's project
-  // boundary excludes apps/shared sources, but vitest resolves the workspace
-  // package fine at runtime — which is exactly what this test needs.
-  const shared = (await import(String('@hermes/shared'))) as {
-    backendScopeKey: typeof backendScopeKey
-    backendScopePrefix: typeof backendScopePrefix
-    LOCAL_CONNECTION_ID: string
-  }
-
+test('backendScopeKey: electron and shared implementations agree everywhere', () => {
   const cases: [null | string | undefined, null | string | undefined][] = [
     [null, null],
     [undefined, undefined],

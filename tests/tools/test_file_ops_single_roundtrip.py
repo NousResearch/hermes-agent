@@ -271,6 +271,39 @@ class TestWriteFileRoundTrips:
         assert r.error is None
         assert p.read_bytes() == b"x\r\ny\r\n"
 
+
+class TestHeredocStdinBackends:
+    """Modal/Daytona/Vercel embed stdin as a heredoc in the command string (the SDK exec has
+    no stdin; the local env gets DEVNULL, same as there). The atomic write's temp file must
+    receive exactly the content, or ``mv`` swaps a wrong file over the target."""
+
+    @pytest.fixture
+    def heredoc_ops(self, shell, monkeypatch):
+        ops, _calls = shell
+        monkeypatch.setattr(ops.env, "_stdin_mode", "heredoc")
+        return ops
+
+    @pytest.mark.parametrize("content", [
+        "no trailing newline",
+        "one trailing newline\n",
+        "blank tail\n\n\n",
+        "q ' \" ) ( $(x) `y` ${z} \\\ncontinued\\",
+    ])
+    def test_write_file_is_byte_exact(self, heredoc_ops, tmp_path, content):
+        p = tmp_path / "existing.txt"
+        p.write_bytes(b"keep me\n")
+        r = heredoc_ops.write_file(str(p), content)
+        assert p.read_bytes() == content.encode()
+        assert r.error is None and r.verified is True
+
+    def test_patch_replace_is_byte_exact(self, heredoc_ops, tmp_path):
+        p = tmp_path / "notes.txt"
+        p.write_bytes(b"line one\nline two\nimportant data")
+        r = heredoc_ops.patch_replace(str(p), "line two", "line 2")
+        assert p.read_bytes() == b"line one\nline 2\nimportant data"
+        assert r.success is True
+
+
 class TestNativeRead:
     def test_native_read_makes_no_shell_call(self, native, tmp_path):
         ops, calls = native

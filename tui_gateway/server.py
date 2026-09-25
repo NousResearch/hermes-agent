@@ -132,6 +132,11 @@ def _resolve_ws_orphan_reap_grace() -> float:
 
 
 _WS_ORPHAN_REAP_GRACE_S = _resolve_ws_orphan_reap_grace()
+# A reap Timer whose wall-clock wait outlasted its awake-time (monotonic) wait by more than
+# this fired early because the host slept through it (#44183); re-arm for the remaining
+# awake grace instead of reaping. Large enough to ignore timer jitter and NTP slew, small
+# relative to any real sleep.
+_WS_ORPHAN_REAP_SLEEP_SLACK_S = 0.5
 # A detached RUNNING turn is interrupted only once its activity clock (API waits, stream tokens, tool
 # heartbeats) idled this long; 600s = the turn-liveness watchdog so "wedged" means the same. 0 disables.
 _WS_ORPHAN_ACTIVITY_STALE_S = _ws_orphan_setting("HERMES_TUI_WS_ORPHAN_ACTIVITY_STALE_S", "ws_orphan_activity_stale_s", 600.0)
@@ -1955,6 +1960,28 @@ def _load_enabled_toolsets(platform: str | None = None) -> list[str] | None:
         return None
 
 
+def _load_disabled_toolsets() -> list[str] | None:
+    """``agent.disabled_toolsets`` from config.yaml, or ``None``.
+
+    The classic CLI (``cli_init_mixin``) and the messaging gateway both forward this list to
+    AIAgent, where ``get_tool_definitions`` strips the named toolsets even out of composite
+    defaults like ``hermes-cli`` (#17309). The desktop/TUI gateway historically dropped it, so
+    e.g. ``disabled_toolsets: [browser]`` silently had no effect on Desktop — the only consumer
+    was ``_get_platform_tools``'s name-level subtraction, which can't reach inside a composite
+    default toolset (#44499).
+    """
+    try:
+        from agent.skill_utils import parse_config_string_list
+
+        from hermes_cli.config import load_config
+
+        agent_cfg = load_config().get("agent") or {}
+        disabled = parse_config_string_list(agent_cfg.get("disabled_toolsets"))
+        return [str(ts) for ts in disabled] or None
+    except Exception:
+        return None
+
+
 def _session_tool_progress_mode(sid: str) -> str:
     return str(_sessions.get(sid, {}).get("tool_progress_mode", "all") or "all")
 
@@ -2470,6 +2497,7 @@ def _make_agent(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
         service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(platform),
+        disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),
         provider_sort=_pr.get("sort"), provider_require_parameters=_pr.get("require_parameters", False),
@@ -3302,8 +3330,8 @@ def _skill_usage_lookup():
     "hub" / "bundled" / "local" (``/api/skills`` ``provenance``, "local" spelled "agent"). Failure → 0 / "local"."""
     try:
         from tools.skill_usage import (
-            _read_bundled_manifest_names, _read_hub_installed_names, activity_count, load_usage)
-        records, bundled, hub = load_usage(), _read_bundled_manifest_names(), _read_hub_installed_names()
+            _read_bundled_names, _read_hub_installed_names, activity_count, load_usage)
+        records, bundled, hub = load_usage(), _read_bundled_names(), _read_hub_installed_names()
     except Exception as e:
         logger.debug("skill usage lookup unavailable: %s", e)
         return (lambda _name: 0), (lambda _name: "local")

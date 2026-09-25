@@ -38192,6 +38192,18 @@
       ]
     },
     {
+      "name": "projects.changed",
+      "summary": "projects.db moved; refetch the Projects sidebar.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ChangeSignalPayload"
+          }
+        }
+      ]
+    },
+    {
       "name": "reaction",
       "summary": "Affection reaction detected in the user's message (hearts etc.).",
       "params": [

@@ -2460,6 +2460,33 @@ def test_load_enabled_toolsets_all_env_means_all(monkeypatch):
     assert server._load_enabled_toolsets() is None
 
 
+def test_load_disabled_toolsets_reads_agent_config(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"agent": {"disabled_toolsets": ["browser"]}},
+    )
+
+    assert server._load_disabled_toolsets() == ["browser"]
+
+
+def test_load_disabled_toolsets_none_when_unset_or_config_fails(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"agent": {"disabled_toolsets": []}})
+    assert server._load_disabled_toolsets() is None
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    assert server._load_disabled_toolsets() is None
+
+    monkeypatch.setattr(
+        config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    assert server._load_disabled_toolsets() is None
+
+
 
 
 def test_load_enabled_toolsets_reports_disabled_mcp_separately(monkeypatch, capsys):
@@ -4364,6 +4391,29 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     assert captured["platform"] == "tui"
 
 
+def test_make_agent_forwards_agent_disabled_toolsets(monkeypatch):
+    """``agent.disabled_toolsets`` must reach AIAgent in gateway sessions too: only the AIAgent
+    filter strips a toolset out of composite defaults (``hermes-cli``), which the gateway's
+    enabled-list resolver can't reach into (#44499)."""
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["browser"])
+
+    server._make_agent("sid", "session-key")
+
+    assert captured["disabled_toolsets"] == ["browser"]
+
+
+def test_make_agent_disabled_toolsets_none_by_default(monkeypatch):
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: None)
+
+    server._make_agent("sid", "session-key")
+
+    assert captured["disabled_toolsets"] is None
+
+
 def _capture_make_agent_kwargs(monkeypatch) -> dict:
     """Stub AIAgent so ``server._make_agent`` records the kwargs it was built with."""
     captured = {}
@@ -4544,6 +4594,38 @@ def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
     kwargs = server._background_agent_kwargs(agent, "task-id")
 
     assert kwargs["fallback_model"] == []
+
+
+def test_background_agent_kwargs_forwards_agent_disabled_toolsets(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="anthropic",
+        _fallback_chain=[],
+        disabled_toolsets=["browser"],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["disabled_toolsets"] == ["browser"]
+
+
+def test_background_agent_kwargs_falls_back_to_config_disabled_toolsets(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="anthropic",
+        _fallback_chain=[],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["browser"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["disabled_toolsets"] == ["browser"]
 
 
 def test_startup_runtime_resolves_short_alias_without_network(monkeypatch):
@@ -17111,6 +17193,41 @@ def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
         def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
             return [{"id": "tool-1", "source": "tool", "started_at": 1}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] is None
+
+
+def test_session_most_recent_skips_unknown_source_rows(monkeypatch):
+    """#54320: a token-accounting guard placeholder (source='unknown') must never be
+    picked for auto-resume — the row can outrank the session the user actually opened."""
+
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
+            return [
+                {"id": "guard-1", "source": "unknown", "title": "", "started_at": 101},
+                {"id": "tui-1", "source": "tui", "title": "real", "started_at": 100},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] == "tui-1"
+    assert resp["result"]["source"] == "tui"
+
+
+def test_session_most_recent_returns_null_when_only_unknown_rows(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
+            return [{"id": "guard-1", "source": "unknown", "started_at": 1}]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
 

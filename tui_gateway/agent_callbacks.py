@@ -361,6 +361,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
                              "provider_data_collection", "openrouter_min_coding_score")},
         "model": g("model") or _resolve_model(), "max_iterations": _cfg_max_turns(cfg, 25),
         "enabled_toolsets": g("enabled_toolsets") or _load_enabled_toolsets("tui"),
+        "disabled_toolsets": g("disabled_toolsets") or _load_disabled_toolsets(),
         "quiet_mode": True, "verbose_logging": False,
         "provider_require_parameters": g("provider_require_parameters", False), "session_id": task_id,
         "reasoning_config": g("reasoning_config") or _load_reasoning_config(str(g("model", "") or "")),

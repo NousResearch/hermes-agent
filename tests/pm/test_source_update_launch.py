@@ -330,6 +330,38 @@ def test_failed_real_sync_preserves_previous_selection_and_retries(source_launch
 
 
 @pytest.mark.platforms("posix")
+def test_source_update_that_removes_a_recorded_extra_still_syncs(source_launch):
+    """A dropped extra (hindsight, 73c598e319) must not brick every later sync."""
+    root, store_python, _ = source_launch
+    pm.sync_venv(["all", "launch-extra"], explicit=True, project_root=root)
+    assert _fact(root)["extras"] == ["all", "launch-extra"]
+
+    pyproject = root / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text(encoding="utf-8").replace("launch-extra = []\n", ""),
+                         encoding="utf-8")
+    pm.lock_project(root, offline=True, explicit=True)
+    assert not pm.venv_is_current(project_root=root)
+
+    assert venv_sync.prepare_launch(root, []) == store_python
+    assert _fact(root)["extras"] == ["all"]
+    assert pm.venv_is_current(project_root=root)
+
+
+@pytest.mark.platforms("posix")
+def test_recorded_extra_spelled_differently_from_its_declaration_survives(source_launch):
+    """uv matches extras by PEP 685 name; `launch_extra` is the declared `launch-extra`."""
+    root, store_python, _ = source_launch
+    pm.sync_venv(["all", "launch_extra"], explicit=True, project_root=root)
+    assert _fact(root)["extras"] == ["all", "launch_extra"]
+
+    lock = root / "uv.lock"
+    lock.write_bytes(lock.read_bytes() + b"\n# source update changes the committed lock\n")
+    assert venv_sync.prepare_launch(root, []) == store_python
+    assert _fact(root)["extras"] == ["all", "launch_extra"]
+    assert pm.venv_is_current(project_root=root)
+
+
+@pytest.mark.platforms("posix")
 @pytest.mark.parametrize("mode", ["script", "module", "command"])
 def test_real_bootstrap_reexecs_before_app_imports(source_launch, tmp_path, isolated_python, mode):
     root, store_python, worker_command = source_launch

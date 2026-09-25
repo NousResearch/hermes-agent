@@ -542,6 +542,28 @@ def _member_inputs(plugins: PluginInput | None) -> dict:
     raise TypeError(f"{type(plugins).__name__} changes plugin state; only a sync may carry it")
 
 
+def _still_declared(package, recorded: list[str]) -> list[str]:
+    """The recorded extras this tree still declares.
+
+    An extra the source removed (``hindsight``) would otherwise ride the ledger
+    into every later ``uv sync`` and fail it with "Extra is not defined". Only
+    recorded extras are pruned; an explicitly requested unknown extra still fails.
+    Membership uses PEP 685 names (uv matches ``foo_bar`` to ``foo-bar``); the
+    recorded spelling is what reaches uv.
+    """
+    import re
+    from pm.features import declared_extras
+
+    def normalized(name: str) -> str:
+        return re.sub(r"[-_.]+", "-", name).lower()
+
+    root = package.project_root()
+    if not (root / "pyproject.toml").is_file():
+        return list(recorded)
+    declared = {normalized(extra) for extra in declared_extras(root)}
+    return [extra for extra in recorded if normalized(extra) in declared]
+
+
 def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candidates | None = None,
                     project_root: Path | None = None) -> bool:
     """Probe the requested union without changing recorded dependency state."""
@@ -559,7 +581,7 @@ def venv_is_current(*, extras: list[str] | None = None, plugins: Members | Candi
             or not isinstance(fact.get("extras"), list)
             or any(not isinstance(extra, str) for extra in fact["extras"])):
         raise ValueError("invalid recorded dependency state")
-    enabled = sorted(set(fact["extras"]) | set(extras or []))
+    enabled = sorted(set(_still_declared(package, fact["extras"])) | set(extras or []))
     stamp = package.expected_stamp(enabled, **_member_inputs(plugins))
     return _runtime_state_matches(fact, stamp, project_root=root)
 
@@ -651,7 +673,7 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
     # the payload. Retain its extras until a recorded selection owns them.
-    enabled = sorted(set(fact.get("extras", shipped or [])) | set(extras or []))
+    enabled = sorted(set(_still_declared(package, fact.get("extras", shipped or []))) | set(extras or []))
     return enabled, package.expected_stamp(enabled, **inputs), inputs
 
 

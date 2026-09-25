@@ -3,6 +3,11 @@
 import shutil
 import sys
 
+import pytest
+
+from agent import image_gen_registry, video_gen_registry
+from agent.image_gen_provider import ImageGenProvider
+from agent.video_gen_provider import VideoGenProvider
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli import nous_subscription as ns
 from tools import tool_backend_helpers
@@ -486,3 +491,172 @@ def test_has_agent_browser_import_failure_does_not_run_another_resolver(monkeypa
     )
 
     assert ns._has_agent_browser() is False
+
+
+# ---- Plugin-backed image/video backends on the status + portal surfaces (#122921) ----
+#
+# The dashboard System tab and `hermes status` read their state from
+# get_nous_subscription_features(), which resolved image_gen/video_gen from FAL_KEY and the managed
+# selection only: a selected, ready plugin backend (deepinfra, …) rendered as "not configured" and
+# was labelled "FAL". Readiness now comes from the provider's own registry row — the same data the
+# Tools page uses.
+
+
+class _FakePluginImageProvider(ImageGenProvider):
+    """Registry provider carrying one picker row plus one required env var."""
+
+    def __init__(self, name: str, schema_name: str, key: str):
+        self._name, self._schema_name, self._key = name, schema_name, key
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def is_available(self) -> bool:
+        return True
+
+    def list_models(self):
+        return []
+
+    def default_model(self):
+        return None
+
+    def get_setup_schema(self):
+        return {
+            "name": self._schema_name,
+            "badge": "test",
+            "env_vars": [{"key": self._key, "prompt": f"{self._key} value"}],
+        }
+
+    def generate(self, prompt, aspect_ratio="landscape", **kw):
+        return {"success": True}
+
+
+class _FakePluginVideoProvider(VideoGenProvider):
+    """Same shape for the video_gen registry."""
+
+    def __init__(self, name: str, schema_name: str, key: str):
+        self._name, self._schema_name, self._key = name, schema_name, key
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def is_available(self) -> bool:
+        return True
+
+    def list_models(self):
+        return []
+
+    def default_model(self):
+        return None
+
+    def get_setup_schema(self):
+        return {
+            "name": self._schema_name,
+            "badge": "test",
+            "env_vars": [{"key": self._key, "prompt": f"{self._key} value"}],
+        }
+
+    def generate(self, prompt, **kw):
+        return {"success": True}
+
+
+_PLUGIN_BACKEND = "deepinfra_test"
+_PLUGIN_KEY = "DEEPINFRA_TEST_API_KEY"
+_PLUGIN_LABEL = "DeepInfra Test"
+
+
+@pytest.fixture(autouse=True)
+def _clean_gen_registries():
+    image_gen_registry._reset_for_tests()
+    video_gen_registry._reset_for_tests()
+    yield
+    image_gen_registry._reset_for_tests()
+    video_gen_registry._reset_for_tests()
+
+
+def _register_plugin_backend():
+    image_gen_registry.register_provider(
+        _FakePluginImageProvider(_PLUGIN_BACKEND, _PLUGIN_LABEL, _PLUGIN_KEY)
+    )
+    video_gen_registry.register_provider(
+        _FakePluginVideoProvider(_PLUGIN_BACKEND, _PLUGIN_LABEL, _PLUGIN_KEY)
+    )
+
+
+def _logged_out_env(monkeypatch, tmp_path):
+    """Logged out, no FAL key, both gen toolsets enabled — the reporter's install shape."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("FAL_KEY", raising=False)
+    monkeypatch.delenv(_PLUGIN_KEY, raising=False)
+    monkeypatch.setattr(ns, "get_nous_portal_account_info", lambda **kw: _account(logged_in=False))
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda gateway: False)
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key in ("image_gen", "video_gen"))
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+
+
+def test_plugin_backed_gen_backends_report_configured_with_their_own_name(monkeypatch, tmp_path):
+    """A selected and ready plugin backend reports as configured and names itself, instead of
+    reading as FAL / "not configured" because FAL_KEY is unset."""
+    _register_plugin_backend()
+    _logged_out_env(monkeypatch, tmp_path)
+    monkeypatch.setenv(_PLUGIN_KEY, "test-key")
+
+    features = ns.get_nous_subscription_features(
+        {"image_gen": {"provider": _PLUGIN_BACKEND, "model": "flux-test"},
+         "video_gen": {"provider": _PLUGIN_BACKEND}}
+    )
+
+    for key in ("image_gen", "video_gen"):
+        feat = getattr(features, key)
+        assert feat.available is True
+        assert feat.active is True
+        assert feat.current_provider == _PLUGIN_LABEL  # never "FAL"
+        assert feat.managed_by_nous is False
+        assert feat.toolset_enabled is True
+        assert feat.explicit_configured is True
+
+
+def test_plugin_backed_gen_backend_without_its_key_is_not_configured(monkeypatch, tmp_path):
+    """Readiness comes from the plugin's own env vars, not FAL's key."""
+    _register_plugin_backend()
+    _logged_out_env(monkeypatch, tmp_path)
+
+    features = ns.get_nous_subscription_features({"image_gen": {"provider": _PLUGIN_BACKEND}})
+
+    assert features.image_gen.available is False
+    assert features.image_gen.active is False
+    # …and the selected backend is still named, instead of being mislabelled "FAL".
+    assert features.image_gen.current_provider == _PLUGIN_LABEL
+
+
+def test_fal_and_managed_selections_keep_their_fal_path(monkeypatch, tmp_path):
+    """The plugin branch must not capture the in-tree FAL row or the managed (nous) selection."""
+    _register_plugin_backend()
+    _logged_out_env(monkeypatch, tmp_path)
+    monkeypatch.setenv("FAL_KEY", "fal-test")
+
+    features = ns.get_nous_subscription_features(
+        {"image_gen": {"provider": "fal"}, "video_gen": {"provider": "nous"}}
+    )
+
+    assert features.image_gen.active is True
+    assert features.image_gen.current_provider == "FAL"
+    # A logged-out "nous" selection is unmanaged and inactive, exactly as before.
+    assert features.video_gen.managed_by_nous is False
+    assert features.video_gen.active is False
+
+
+def test_never_configured_gen_backends_stay_unconfigured(monkeypatch, tmp_path):
+    """A set key without a stored selection must not flip the never-configured autodetect row."""
+    _register_plugin_backend()
+    _logged_out_env(monkeypatch, tmp_path)
+    monkeypatch.setenv(_PLUGIN_KEY, "test-key")
+
+    features = ns.get_nous_subscription_features({})
+
+    assert features.image_gen.active is False
+    assert features.video_gen.active is False

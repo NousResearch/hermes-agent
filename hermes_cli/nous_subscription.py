@@ -299,6 +299,32 @@ def _fal_feature(key: str, tool_enabled: bool, direct: bool, managed: bool, sele
     )
 
 
+def _plugin_gen_backend(key: str, config: Dict[str, object], selected: Optional[str]) -> Optional[tuple[bool, str]]:
+    """``(ready, display name)`` when ``selected`` names a plugin-registered image/video backend.
+
+    ``None`` for the in-tree ``fal`` selection, the managed (``nous``) selection and never-configured
+    installs: those keep their FAL_KEY / Portal handling. A plugin-backed vendor (``deepinfra`` …)
+    declares its own registry row and env vars, so its readiness is the same value the Tools page
+    reports for that row rather than FAL's key.
+    """
+    if not selected or selected in ("nous", "fal"):
+        return None
+    from hermes_cli.tools_config_providers import _plugin_rows_for, provider_readiness_status
+
+    marker = f"{key}_plugin_name"
+    try:
+        row = next((r for r in _plugin_rows_for(key) if r.get(marker) == selected), None)
+    except Exception:  # registry missing / discovery failure -> keep the FAL/Portal reading
+        return None
+    if row is None:
+        return None
+    try:
+        ready = provider_readiness_status(row, config) == "ready"
+    except Exception:
+        ready = False
+    return ready, str(row.get("name") or selected)
+
+
 def _audio_provider(cfg: Dict[str, object], default: str, gw: bool) -> str:
     provider = _norm(cfg.get("provider"), default)
     return "openai" if (provider == "nous" or gw) else (provider or default)
@@ -453,6 +479,18 @@ def get_nous_subscription_features(config: Optional[Dict[str, object]] = None, *
         ),
         "modal": _modal_feature(_section(config, "terminal"), enabled["terminal"], managed["modal"], managed_tools_flag),
     }
+    # Plugin-backed image/video backends (deepinfra, …) are not FAL: their readiness comes from their
+    # own registry row, so a selected-and-ready plugin backend must report as configured and name
+    # itself instead of reading "not configured" on the dashboard System tab / `hermes status`.
+    for key in ("image_gen", "video_gen"):
+        backend = _plugin_gen_backend(key, config, selected[key])
+        if backend is None:
+            continue
+        ready, name = backend
+        features[key] = _state(
+            key, available=ready, active=bool(enabled[key] and ready), managed_by_nous=False,
+            toolset_enabled=enabled[key], current_provider=name, explicit_configured=True,
+        )
     return NousSubscriptionFeatures(
         subscribed=provider_is_nous or nous_auth_present, nous_auth_present=nous_auth_present,
         provider_is_nous=provider_is_nous, features=features, account_info=account_info,

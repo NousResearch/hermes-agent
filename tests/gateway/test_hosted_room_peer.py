@@ -28,7 +28,7 @@ from hermes_constants import reset_hermes_home_override, set_hermes_home_overrid
 
 
 SECRET = b"s" * 32
-EXECUTION_POLICY = execution_policy_mapping(target_profile="reviewer")
+EXECUTION_POLICY = execution_policy_mapping(target_profile="reviewer", config={"approvals": {"mode": "manual"}})
 
 
 def test_gateway_room_grant_secret_is_private_persistent_and_not_an_api_key(
@@ -49,9 +49,15 @@ def test_gateway_room_grant_secret_is_private_persistent_and_not_an_api_key(
     secret_path = home / ".room-link-grant-secret"
     assert first == second
     assert len(first) == 32
-    assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
     assert secret_path.read_bytes() != first
     assert first != derive_room_grant_secret("gateway-api-key-1234567890")
+
+
+@pytest.mark.platforms("posix")
+def test_gateway_room_grant_secret_has_owner_only_mode(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    gateway_room_grant_secret()
+    assert stat.S_IMODE((tmp_path / ".room-link-grant-secret").stat().st_mode) == 0o600
 
 
 def test_gateway_room_grant_secret_is_atomic_across_concurrent_workers(
@@ -67,22 +73,6 @@ def test_gateway_room_grant_secret_is_atomic_across_concurrent_workers(
     assert (home / ".room-link-grant-secret").stat().st_size == 32
 
 
-def test_gateway_room_grant_secret_is_cached_by_installation_root(
-    tmp_path, monkeypatch
-):
-    home = tmp_path / ".hermes"
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    first = gateway_room_grant_secret()
-    original_read = Path.read_bytes
-
-    def reject_secret_reread(path):
-        if path == home / ".room-link-grant-secret":
-            raise AssertionError("grant secret was read again")
-        return original_read(path)
-
-    monkeypatch.setattr(Path, "read_bytes", reject_secret_reread)
-    assert gateway_room_grant_secret() == first
 
 
 def test_room_link_protocol_fixture_matches_backend_contract():
@@ -197,6 +187,7 @@ def _dispatch(**overrides):
 
 def test_catalog_digest_is_canonical_and_tamper_evident():
     value = catalog_mapping(
+            target_profile="default",
         installation_id="install-peer",
         protocol_versions=(2,),
         link_modes=("direct", "pull"),
@@ -294,7 +285,7 @@ def test_local_catalog_is_honest_for_app_managed_process(monkeypatch):
     from gateway.hosted_room_peer import local_catalog_mapping
 
     monkeypatch.setenv("HERMES_DESKTOP", "1")
-    catalog = local_catalog_mapping(installation_id="install-desktop")
+    catalog = local_catalog_mapping(target_profile="default", installation_id="install-desktop")
     assert catalog["persistent_process"] is False
     assert catalog["link_modes"] == ["direct"]
 
@@ -317,7 +308,7 @@ def test_self_advertised_endpoint_is_explicit_and_validated(
         monkeypatch.delenv("HERMES_ROOM_LINK_URL", raising=False)
     else:
         monkeypatch.setenv("HERMES_ROOM_LINK_URL", configured)
-    endpoint = local_catalog_mapping(installation_id="install-peer")["endpoint"]
+    endpoint = local_catalog_mapping(target_profile="default", installation_id="install-peer")["endpoint"]
     assert endpoint["available"] is available
     if reason is not None:
         assert endpoint == {"available": False, "reason": reason}

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $pluginRecords } from '@/contrib/plugins-store'
 import { $agentPlugins, $agentPluginsStatus } from '@/store/agent-plugins'
+import { $confirmRequest, settleConfirm } from '@/store/confirm'
 import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { $pluginInstallRequest, closePluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
@@ -25,6 +26,13 @@ vi.mock('@/app/gateway/hooks/use-gateway-request', () => ({
   useGatewayRequest: () => ({ requestGateway })
 }))
 
+const uninstallDiskPlugin = vi.fn(async (_id: string) => ({ ok: true }))
+
+vi.mock('@/contrib/runtime-loader', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  uninstallDiskPlugin: (id: string) => uninstallDiskPlugin(id)
+}))
+
 describe('PluginsTab', () => {
   beforeEach(() => {
     $pluginRecords.set({})
@@ -39,12 +47,20 @@ describe('PluginsTab', () => {
     $connection.set(null)
   })
 
-  it('lists the scoped profile agent plugins with toggles', () => {
+  it('renders declared server pills and the unavailable sentence under the description', () => {
     $agentPlugins.set([
       {
         description: 'A test plugin',
         key: 'demo-plugin',
         name: 'demo-plugin',
+        servers: [
+          { name: 'ready-server', sentence: '', state: 'connected' },
+          {
+            name: 'setup-server',
+            sentence: 'Example App is not installed. Install Example App, then try again.',
+            state: 'missing_app'
+          }
+        ],
         source: 'git',
         status: 'enabled',
         version: '1.0.0'
@@ -53,7 +69,9 @@ describe('PluginsTab', () => {
 
     render(<PluginsTab profile="workbot" />)
 
-    expect(screen.getByText('demo-plugin')).toBeTruthy()
+    expect(screen.getByTestId('server-pill-ready-server')).toBeTruthy()
+    expect(screen.getByTestId('server-pill-setup-server')).toBeTruthy()
+    expect(screen.getByText('Example App is not installed. Install Example App, then try again.')).toBeTruthy()
     expect(screen.getByRole('switch', { name: 'Agent: demo-plugin' }).getAttribute('aria-checked')).toBe('true')
   })
 
@@ -388,6 +406,82 @@ describe('PluginsTab catalog UX', () => {
         expect.objectContaining({ action: 'update', name: 'demo-weather', profile: 'workbot' })
       )
     )
+  })
+
+  it('uninstalls through plugins.manage remove only after the confirm dialog is accepted', async () => {
+    $agentPlugins.set([
+      {
+        description: '',
+        key: 'demo-weather',
+        name: 'demo-weather',
+        source: 'git',
+        status: 'enabled',
+        version: '1.0.0'
+      }
+    ])
+    requestGateway.mockResolvedValue({ ok: true, name: 'demo-weather', plugins: [] } as never)
+
+    render(<PluginsTab profile="workbot" />)
+
+    screen.getByRole('button', { name: 'Uninstall: demo-weather' }).click()
+
+    // The click only asks; nothing is deleted until the destructive confirm is answered.
+    await waitFor(() => expect($confirmRequest.get()?.title).toContain('demo-weather'))
+    expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'remove' }))
+
+    settleConfirm(true)
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith(
+        'plugins.manage',
+        expect.objectContaining({ action: 'remove', name: 'demo-weather', profile: 'workbot' })
+      )
+    )
+    await waitFor(() => expect(screen.queryByText('demo-weather')).toBeNull())
+  })
+
+  it('uninstalls a standalone desktop plugin through Electron only after the confirm dialog is accepted', async () => {
+    $pluginRecords.set({
+      clock: { id: 'clock', name: 'Clock', kind: 'disk', status: 'loaded', file: '/h/desktop-plugins/clock/plugin.js' }
+    })
+    uninstallDiskPlugin.mockClear()
+
+    render(<PluginsTab profile={null} />)
+
+    screen.getByRole('button', { name: 'Uninstall: Clock' }).click()
+
+    await waitFor(() => expect($confirmRequest.get()?.title).toContain('Clock'))
+    expect(uninstallDiskPlugin).not.toHaveBeenCalled()
+
+    settleConfirm(true)
+
+    await waitFor(() => expect(uninstallDiskPlugin).toHaveBeenCalledWith('clock'))
+    // Nothing goes over the gateway: this half lives in this app, not the profile.
+    expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'remove' }))
+  })
+
+  it('offers no desktop Uninstall for a bundled plugin or a unified package half', () => {
+    $pluginRecords.set({
+      bots: { id: 'bots', name: 'Bot Mode', kind: 'bundled', status: 'loaded' },
+      media: { id: 'media', name: 'Media Studio', kind: 'disk', status: 'loaded', packageName: 'hermes-media-studio' }
+    })
+
+    render(<PluginsTab profile={null} />)
+
+    expect(screen.getByText('Bot Mode')).toBeTruthy()
+    expect(screen.getByText('Media Studio')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Uninstall:/ })).toBeNull()
+  })
+
+  it('offers no Uninstall for a pip-installed (entrypoint) agent plugin', () => {
+    $agentPlugins.set([
+      { description: '', key: 'demo-tool', name: 'demo-tool', source: 'entrypoint', status: 'enabled', version: '' }
+    ])
+
+    render(<PluginsTab profile={null} />)
+
+    expect(screen.getByText('demo-tool')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Uninstall: demo-tool' })).toBeNull()
   })
 
   it('refuses a catalog pick that is already installed and current', async () => {

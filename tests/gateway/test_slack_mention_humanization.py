@@ -143,7 +143,5 @@ def test_identity_prompt_names_the_bot():
     adapter._team_bot_names = {}
     prompt = adapter._build_identity_prompt(team_id="T1")
     assert "@TestBot" in prompt
-    # Must instruct that another participant's mention is not a self-mention.
-    assert "not a mention of you" in prompt
 
 

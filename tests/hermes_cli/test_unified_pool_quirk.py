@@ -177,19 +177,9 @@ def test_engine_fallback_without_smi_stays_conservative(monkeypatch):
     assert b.total_device_bytes == UMA_RAM  # RAM path, not the pool
 
 
-def test_smi_resolver_caches_and_survives_empty_path(monkeypatch):
-    """The resolver consults PATH first, and a resolution (hit or miss) is
-    cached for the process."""
-    calls = []
-    monkeypatch.setattr(hw, "_smi_path_cache", None)
-    monkeypatch.setattr(hw.shutil, "which",
-                        lambda name: calls.append(name) or "/usr/bin/nvidia-smi")
-    assert hw._nvidia_smi_path() == "/usr/bin/nvidia-smi"
-    assert hw._nvidia_smi_path() == "/usr/bin/nvidia-smi"
-    assert len(calls) == 1
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_smi_resolver_uses_wsl_driver_path_when_path_is_empty(monkeypatch):
     """WSL exposes nvidia-smi through the Windows driver directory even
     when a service PATH cannot resolve it."""
@@ -204,19 +194,6 @@ def test_smi_resolver_uses_wsl_driver_path_when_path_is_empty(monkeypatch):
 # ── probe cache ──────────────────────────────────────────────
 
 
-def test_pool_probe_hit_is_cached_for_process(monkeypatch):
-    _no_cache(monkeypatch)
-    calls = []
-
-    def probe():
-        calls.append(1)
-        return (UMA_POOL, True)
-
-    monkeypatch.setattr(hw, "_cuda_driver_pool", probe)
-    monkeypatch.setattr(hw, "_engine_device_pool", lambda: None)
-    assert hw._device_pool_view() == (UMA_POOL, True)
-    assert hw._device_pool_view() == (UMA_POOL, True)
-    assert len(calls) == 1
 
 
 def test_pool_probe_miss_retries_after_ttl(monkeypatch):

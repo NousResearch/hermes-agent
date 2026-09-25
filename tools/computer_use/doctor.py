@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tupl
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.permissions import _child_env as _sanitized_cua_env
+from tools.computer_use.permissions import stale_tcc_grant_hint
 
 # Match the ALLOWED_STATUS_VALUES + ALLOWED_OVERALL_VALUES the cua-driver integration test pins.
 _STATUS_GLYPH = {"pass": "✅", "fail": "❌", "skip": "⏭️"}
@@ -272,6 +273,19 @@ def _compose_fallback_report(binary: str, *, reason: str = "", timeout: float = 
             "overall": _overall_from(checks), "checks": checks,
             "fallback": True, "fallback_reason": reason or "health_report unavailable"}
 
+_TCC_CHECK_FIELDS = {"tcc_accessibility": "accessibility", "tcc_screen_recording": "screen_recording"}
+
+def _apply_stale_tcc_guard(report: Report) -> Report:
+    """Append the stale-row recovery to every failed ``tcc_*`` check. Applied at the report seam so the driver's
+    own health_report rows (0.22+) get it too, not only the 0.10 fallback probes — the users hit by a stale row
+    are on current drivers (trycua/cua#3170)."""
+    checks = report.get("checks")
+    for check in (c for c in (checks if isinstance(checks, list) else ()) if isinstance(c, dict)):
+        field = _TCC_CHECK_FIELDS.get(check.get("name"))
+        if field and check.get("status") == "fail":
+            check["hint"] = f"{check.get('hint') or ''} {stale_tcc_grant_hint(field)}".strip()
+    return report
+
 def _apply_display_count_guard(report: Report) -> Report:
     """Fail an 'ok' screen_capture_capability with ``display_count=0``: macOS ScreenCaptureKit reports 0 on headless
     / asleep panels — TCC fine, health_report ok, yet every capture is 0x0. Turns a silent failure actionable; applied
@@ -305,7 +319,7 @@ def cua_daemon_units(config_dir: Optional[str] = None) -> List[Tuple[str, str, s
             continue
         for name in names:
             try:
-                with open(os.path.join(directory, name), encoding="utf-8", errors="replace") as fh:
+                with open(os.path.join(directory, name), encoding="utf-8-sig", errors="replace") as fh:
                     text = fh.read()
             except OSError:
                 continue
@@ -441,6 +455,7 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
         print(f"cua-driver health_report failed: {e}", file=sys.stderr)
         return 2
     report = _apply_display_count_guard(report)
+    report = _apply_stale_tcc_guard(report)
     report = _apply_stale_unit_guard(report)
     report = _apply_daemon_liveness_guard(report, binary)
     identity = _build_identity(binary, report)

@@ -4,6 +4,7 @@ Split out of ``hermes_cli/main.py``. Names that still live in main (``PROJECT_RO
 are imported lazily inside the functions that use them (avoids an import cycle).
 """
 
+from pm import install_hint
 import sys
 
 
@@ -82,9 +83,10 @@ def cmd_acp(args):
         from acp_adapter.entry import main as acp_main
         acp_main([flag for attr, flag in _ACP_FLAGS if getattr(args, attr, False)])
     except ImportError as e:
-        from hermes_cli.main_dep_hints import missing_optional_deps_message
-
-        print(missing_optional_deps_message("ACP server", "its protocol packages", "acp"), file=sys.stderr)
+        print("The ACP server can't start: its protocol packages are missing from this install.", file=sys.stderr)
+        print("From the Hermes environment, run: "
+              f"{install_hint('acp')}", file=sys.stderr)
+        print("Then restart Hermes.", file=sys.stderr)
         print(f"Details: {e}", file=sys.stderr)
         sys.exit(1)
 

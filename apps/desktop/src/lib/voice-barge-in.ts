@@ -16,6 +16,10 @@
 // - During playback the trigger is additionally clamped up to a minimum so
 //   bleed alone can't trip it, and capped so speech always remains reachable.
 // - A short grace window after playback onset suppresses the start transient.
+// - `voice.barge_in_threshold_multiplier` (the backend's sensitivity knob)
+//   scales the quiet-floor multiplier AND the playback clamp relative to the
+//   backend default, so a Bluetooth HFP headset whose mic sits below the stock
+//   playback clamp can still interrupt (#117801). Unset keeps the stock levels.
 // - Detection is a windowed majority (>=80% of the last SUSTAINED_MS above
 //   trigger) so intra-word energy dips don't reset progress.
 
@@ -28,6 +32,9 @@ const FLOOR_MULTIPLIER = 3.5
 // ≈ byte-domain level 0.14 / 0.37 with the /42 normalization below).
 const PLAYBACK_MIN_TRIGGER_LEVEL = 0.14
 const TRIGGER_CEILING_LEVEL = 0.37
+// Backend default for voice.barge_in_threshold_multiplier
+// (tools/voice_mode.DEFAULT_BARGE_MULTIPLIER); the levels above are tuned for it.
+export const DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER = 3
 const PLAYBACK_GRACE_MS = 500
 const PLAYBACK_GAP_FOR_GRACE_MS = 1_000
 const FLOOR_SAMPLE_CAP = 200 // ~3s of quiet-phase levels at rAF cadence
@@ -50,9 +57,33 @@ export interface BargeMonitorCallbacks {
    * the old behavior of a monitor opened at playback start.
    */
   isPlaying?: () => boolean
+  /**
+   * `voice.barge_in_threshold_multiplier`. Lower = more sensitive. Omitted,
+   * null, or non-positive keeps the stock trigger levels.
+   */
+  thresholdMultiplier?: number | null
+}
+
+export interface BargeTriggerLevels {
+  /** Trigger = quiet floor x this (never below MIN_TRIGGER_LEVEL). */
+  floorMultiplier: number
+  /** Minimum trigger while TTS plays, so speaker bleed alone can't trip. */
+  playbackMinTrigger: number
+}
+
+/** Trigger levels for a configured `voice.barge_in_threshold_multiplier`,
+ *  scaled from the stock levels by its ratio to the backend default. */
+export function bargeInTriggerLevels(thresholdMultiplier?: number | null): BargeTriggerLevels {
+  const scale =
+    typeof thresholdMultiplier === 'number' && Number.isFinite(thresholdMultiplier) && thresholdMultiplier > 0
+      ? thresholdMultiplier / DEFAULT_BARGE_IN_THRESHOLD_MULTIPLIER
+      : 1
+
+  return { floorMultiplier: FLOOR_MULTIPLIER * scale, playbackMinTrigger: PLAYBACK_MIN_TRIGGER_LEVEL * scale }
 }
 
 export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): () => void {
+  const { floorMultiplier, playbackMinTrigger } = bargeInTriggerLevels(callbacks.thresholdMultiplier)
   let disposed = false
   let stream: MediaStream | null = null
   let context: AudioContext | null = null
@@ -250,10 +281,10 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
           // Phase-aware trigger: quiet baseline x multiplier; playback clamps
           // it up (bleed alone can't trip) but a ceiling keeps speech
           // reachable even over loud playback.
-          let trigger = Math.max(MIN_TRIGGER_LEVEL, quietFloor * FLOOR_MULTIPLIER)
+          let trigger = Math.max(MIN_TRIGGER_LEVEL, quietFloor * floorMultiplier)
 
           if (playing) {
-            trigger = Math.min(Math.max(trigger, PLAYBACK_MIN_TRIGGER_LEVEL), TRIGGER_CEILING_LEVEL)
+            trigger = Math.min(Math.max(trigger, playbackMinTrigger), TRIGGER_CEILING_LEVEL)
           }
 
           // Track ambient drift while quiet and below trigger.

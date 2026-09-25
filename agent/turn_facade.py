@@ -48,6 +48,7 @@ class TurnFacadeMixin:
             set_conversation_context,
         )
         from agent.prompt_cache_scope import declared_conversation_scope_safe
+        from agent.relay_cwd import resolve_relay_scope_cwds
         from agent.review_idle_queue import QUEUE as _review_queue
         from agent.subagent_lifecycle import bind_subagent_parent
         from agent.interrupt_scope import track_in_interrupt_scope
@@ -95,11 +96,19 @@ class TurnFacadeMixin:
             lease = admission.lease
             conversation_history = admission.conversation_history
 
+            relay_session_cwd, relay_turn_cwd = resolve_relay_scope_cwds(
+                self,
+                effective_task_id,
+                task_context["session_id"],
+                task_context["platform"],
+            )
             relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),
                 session_id=task_context["session_id"], platform=task_context["platform"],
                 parent_session_id=relay_parent_session_id,
                 model=str(getattr(self, "model", None) or ""),
+                session_cwd=relay_session_cwd,
+                turn_cwd=relay_turn_cwd,
             )
             relay_turn_kwargs: Dict[str, Any] = {
                 "turn_id": relay_turn_id,

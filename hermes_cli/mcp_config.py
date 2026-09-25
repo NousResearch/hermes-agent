@@ -19,7 +19,7 @@ from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool_config import _ENV_VAR_PATTERN
-from tools.mcp_tool_common import _env_ref_name
+from tools.mcp_tool_common import _env_ref_name, mcp_server_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -446,6 +446,12 @@ def _probe_single_server(
     tools_found: List[Tuple[str, str]] = []
 
     async def _probe():
+        from tools import mcp_tool as _core
+
+        claimed = []
+        claim_token = _core._connect_server_claim.set(claimed.append)
+        if details is not None:
+            details["initialized"] = False
         try:
             server = await asyncio.wait_for(_connect_server(name, config), timeout=connect_timeout)
         except asyncio.TimeoutError:
@@ -454,6 +460,10 @@ def _probe_single_server(
                 f"Connecting to MCP server '{name}' timed out after {float(connect_timeout):.0f}s "
                 "(bounded by connect_timeout; an OAuth login also by oauth.timeout)"
             ) from None
+        finally:
+            _core._connect_server_claim.reset(claim_token)
+            if details is not None and claimed:
+                details["initialized"] = claimed[0].initialize_result is not None
         try:
             for t in server._tools:
                 desc = getattr(t, "description", "") or ""
@@ -745,9 +755,7 @@ def cmd_mcp_list(args=None):
         else:
             tools_str = "all"
 
-        enabled = cfg.get("enabled", True)
-        if isinstance(enabled, str):
-            enabled = enabled.lower() in {"true", "1", "yes"}
+        enabled = mcp_server_enabled(cfg)
         status = color("✓ enabled", Colors.GREEN) if enabled else color("✗ disabled", Colors.DIM)
         print(f"  {name:<16} {transport:<30} {tools_str:<12} {status}")
     print()

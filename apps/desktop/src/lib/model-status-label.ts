@@ -31,6 +31,27 @@ export function currentPickerSelection(
   }
 }
 
+/** Canonical provider labels shared by onboarding and the model pill. OAuth
+ * provider ids stay distinct from their direct-API counterparts so a session on
+ * `xai-oauth` never reads as the plain `xai` key path, and internal route names
+ * never reach user-facing copy. */
+export const PROVIDER_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  anthropic: 'Anthropic API Key',
+  'claude-code': 'Anthropic OAuth: Required Extra Usage Credits to Use Subscription',
+  'minimax-oauth': 'MiniMax',
+  nous: 'Nous Portal',
+  'openai-codex': 'ChatGPT or Codex Subscription',
+  'qwen-oauth': 'Qwen Code',
+  xai: 'xAI',
+  'xai-oauth': 'xAI Grok'
+}
+
+export function providerDisplayName(provider: string): string {
+  const normalized = provider.trim().toLowerCase()
+
+  return PROVIDER_DISPLAY_NAMES[normalized] ?? provider.trim()
+}
+
 /** Strip provider prefix and normalize for display. */
 export function modelBaseId(model: string): string {
   const trimmed = model.trim()
@@ -52,10 +73,19 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
 function prettifyBase(base: string): string {
+  if (/^deepseek-flash$/i.test(base)) {
+    return 'DeepSeek V4.1 Flash'
+  }
+
   if (/^claude-/i.test(base)) {
     // Anthropic ids spell the version with hyphens (`haiku-4-5`, `fable-5-1`);
     // the human name is dotted ("Haiku 4.5"), not "Haiku 4 5".
-    return titleCase(base.replace(/^claude-/i, '').replace(/(\d)-(?=\d)/g, '$1.').replace(/-/g, ' '))
+    return titleCase(
+      base
+        .replace(/^claude-/i, '')
+        .replace(/(\d)-(?=\d)/g, '$1.')
+        .replace(/-/g, ' ')
+    )
   }
 
   if (/^gpt-/i.test(base)) {

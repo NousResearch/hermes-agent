@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from tools.mcp_tool_common import _core, _parse_boolish
+from tools.mcp_tool_common import _core, _parse_boolish, mcp_server_enabled
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -21,6 +21,26 @@ from tools.mcp_tool_schema import MCP_TOOL_NAME_PREFIX
 from tools.mcp_tool_scope import _key_name, _key_scope, _key_visible_in_scope, _resolve_server_key, _server_key
 
 logger = logging.getLogger("tools.mcp_tool")
+
+# Default max concurrent MCP server connections per discovery pass (one unbounded
+# `asyncio.gather` spawned every server's subprocess tree simultaneously); config.yaml
+# ``mcp.discovery_concurrency`` overrides it, 0 = unlimited (#117373).
+_DISCOVERY_CONNECT_CONCURRENCY = 4
+
+
+def _discovery_connect_concurrency() -> int:
+    """``mcp.discovery_concurrency`` from config (0 = unlimited); a non-integer or negative value
+    warns and falls back to the default rather than silently running unbounded."""
+    try:
+        from hermes_cli.config import load_config
+        raw = (load_config().get("mcp") or {}).get("discovery_concurrency", _DISCOVERY_CONNECT_CONCURRENCY)
+    except Exception:
+        return _DISCOVERY_CONNECT_CONCURRENCY
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 0:
+        logger.warning("mcp.discovery_concurrency=%r is not a non-negative integer; using %d",
+                       raw, _DISCOVERY_CONNECT_CONCURRENCY)
+        return _DISCOVERY_CONNECT_CONCURRENCY
+    return raw
 
 
 def _record_connect_failure(server_name: str) -> None:
@@ -44,10 +64,6 @@ def _connect_cooldown_active(server_name: str) -> bool:
     profile's failing ``x`` must not shadow another profile's healthy ``x``)."""
     deadline = _core._server_connect_retry_after.get(_server_key(server_name))
     return deadline is not None and time.monotonic() < deadline
-
-
-def _enabled(cfg: dict) -> bool:
-    return _parse_boolish(cfg.get("enabled", True), default=True)
 
 
 def _owner_scope_home() -> Optional[Path]:
@@ -79,7 +95,7 @@ async def _install_owner_secret_scope():
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     # Off-loop: an external source runs a helper subprocess (once per home, then cached).
     await asyncio.to_thread(hydrate_profile_secret_sources, home)
-    return set_secret_scope(build_profile_secret_scope(home))
+    return set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
 
 
 @contextmanager
@@ -97,7 +113,7 @@ def _owner_secret_scope():
         return
     from hermes_cli.env_loader import hydrate_profile_secret_sources
     hydrate_profile_secret_sources(home)
-    token = set_secret_scope(build_profile_secret_scope(home))
+    token = set_secret_scope(build_profile_secret_scope(home), profile_home=str(home))
     try:
         yield
     finally:
@@ -315,9 +331,9 @@ def _select_new_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
             k: v for k, v in servers.items()
             if keys[k] not in _core._servers and keys[k] not in _core._server_connecting
             and keys[k] not in _core._lazy_server_configs
-            and _enabled(v) and not _connect_cooldown_active(k)}
+            and mcp_server_enabled(v) and not _connect_cooldown_active(k)}
         stale_cached = [_core._servers[keys[k]] for k, v in servers.items()
-                        if keys[k] in _core._servers and _enabled(v)
+                        if keys[k] in _core._servers and mcp_server_enabled(v)
                         and getattr(_core._servers[keys[k]], "session", None) is None]
         for srv_name in new_servers:
             _core._server_connecting.add(keys[srv_name])
@@ -372,9 +388,24 @@ def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, d
 
 
 async def _discover_all(new_servers: Dict[str, dict]) -> None:
-    """Connect every candidate concurrently; record per-server outcome."""
+    """Connect every candidate concurrently; record per-server outcome.
+
+    Concurrency is bounded: every stdio server spawns child processes, so an
+    unbounded gather turns a config with many servers into a simultaneous
+    N-process spawn burst (RAM/CPU spike, EMFILE risk) on every backend boot.
+    """
+    # Flat cap for all transports; 0 (unlimited) keeps the original unbounded gather.
+    cap = _discovery_connect_concurrency()
+    semaphore = asyncio.Semaphore(cap) if cap > 0 else None
+
+    async def _connect_bounded(name: str, cfg: dict):
+        if semaphore is None:
+            return await _discover_and_register_server(name, cfg)
+        async with semaphore:
+            return await _discover_and_register_server(name, cfg)
+
     results = await asyncio.gather(
-        *(_discover_and_register_server(name, cfg) for name, cfg in new_servers.items()),
+        *(_connect_bounded(name, cfg) for name, cfg in new_servers.items()),
         return_exceptions=True)
     for name, result in zip(new_servers, results):
         if isinstance(result, BaseException):
@@ -395,7 +426,17 @@ def _run_discovery_pass(new_servers: Dict[str, dict]) -> None:
     if _was_interrupted:
         _set_interrupt(False)
     try:
-        _loop._run_on_mcp_loop(lambda: _discover_all(new_servers), timeout=120)
+        # Budget scales with the concurrency cap: a bounded gather finishes in
+        # ceil(N/cap) waves, so N > cap multiplies the wall clock the base
+        # (unbounded) gather never needed. 120s per wave keeps the original
+        # per-wave ceiling; a slow fleet aborts later, not never. Capped by
+        # _MCP_DISCOVERY_PASS_MAX_SEC so one stuck connect cannot pin the
+        # calling thread (and the cross-process discovery lock) for tens of
+        # minutes; the lock waiter's budget is derived from the same ceiling.
+        cap = _discovery_connect_concurrency() or len(new_servers) or 1
+        waves = max(1, -(-len(new_servers) // cap))
+        timeout = min(120 * waves, _core._MCP_DISCOVERY_PASS_MAX_SEC)
+        _loop._run_on_mcp_loop(lambda: _discover_all(new_servers), timeout=timeout)
     except (TimeoutError, InterruptedError) as _e:
         # Stranded _server_connecting entries would block future reconnects.
         how = "timed out" if isinstance(_e, TimeoutError) else "interrupted"
@@ -542,7 +583,7 @@ def discover_mcp_tools(allowed_mcp_names: Optional[List[str]] = None) -> List[st
             keys = {name: _resolve_server_key(name) for name in servers}
             new_server_names = [name for name, cfg in servers.items()
                                 if keys[name] not in _core._servers and keys[name] not in _core._server_connecting
-                                and _enabled(cfg)]
+                                and mcp_server_enabled(cfg)]
             prior_lazy = set(_core._lazy_server_configs)
         tool_names = register_mcp_servers(servers)
         if new_server_names:
@@ -574,7 +615,7 @@ def reconcile_mcp_servers_with_config() -> Dict[str, List[str]]:
     ``{"removed": [...], "added": [...], "pending": [...]}``; a no-op when nothing changed."""
     with _owner_secret_scope():
         servers = _config._load_mcp_config()
-    wanted = {name for name, cfg in servers.items() if _enabled(cfg)}
+    wanted = {name for name, cfg in servers.items() if mcp_server_enabled(cfg)}
     scope = _core._mcp_registry_scope()
     with _core._lock:
         owned = [key for key, owner in _core._server_scope_keys.items() if owner == scope]
@@ -663,7 +704,7 @@ def get_mcp_status(configured: Optional[Dict[str, dict]] = None, *, include_runt
 
     result: List[dict] = []
     for name, cfg in configured.items():
-        enabled = _enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
+        enabled = mcp_server_enabled(cfg)  # evaluated unconditionally: malformed values warn even when connected
         server = active_servers.get(name)
         live = server is not None and server.session is not None
         # An in-flight or failed first-use connect outranks "lazy": that server is no longer
@@ -709,7 +750,7 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     if not _core._ensure_mcp_sdk():
         return {}
     with _owner_secret_scope():
-        enabled = {k: v for k, v in (_config._load_mcp_config() or {}).items() if _enabled(v)}
+        enabled = {k: v for k, v in (_config._load_mcp_config() or {}).items() if mcp_server_enabled(v)}
     if not enabled:
         return {}
     _loop._ensure_mcp_loop()

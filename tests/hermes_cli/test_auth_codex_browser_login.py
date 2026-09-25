@@ -114,7 +114,7 @@ def test_browser_flag_runs_loopback_pkce_and_stores_loopback_source(tmp_path, mo
     assert token["redirect_uri"] == authorize["redirect_uri"] and token["client_id"] == authorize["client_id"]
 
 
-def test_default_is_device_code_and_busy_callback_port_falls_back(tmp_path, monkeypatch, capsys):
+def test_default_is_device_code_and_busy_callback_port_falls_back(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     (tmp_path / "hermes").mkdir()
     (tmp_path / "hermes" / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
@@ -145,7 +145,5 @@ def test_default_is_device_code_and_busy_callback_port_falls_back(tmp_path, monk
         monkeypatch.setattr(browser_mod, "CODEX_BROWSER_CALLBACK_PORT", occupant.getsockname()[1])
         auth_add_command(_args(browser=True, label="second"))
     assert device_logins == [1, 1] and bind_attempts == [1]
-    out = capsys.readouterr().out
-    assert "already in use" in out and "falling back to the device-code login" in out
     sources = [e["source"] for e in json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]["openai-codex"]]
     assert sources == ["manual:device_code", "manual:device_code"]

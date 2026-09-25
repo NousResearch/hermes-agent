@@ -54,16 +54,20 @@ def load_tracked() -> List[Dict[str, Any]]:
     tf.parent.mkdir(parents=True, exist_ok=True)
     if not tf.exists():
         return []
-    with contextlib.suppress(ValueError):
-        return json.loads(tf.read_text(encoding="utf-8"))
-    bak = tf.with_suffix(".json.bak")
-    if bak.exists():
-        with contextlib.suppress(Exception):
-            data = json.loads(bak.read_text(encoding="utf-8"))
-            _log("WARN: tracked.json corrupted — restored from .bak")
-            return data
-    _log("WARN: tracked.json corrupted, no backup — starting fresh")
-    return []
+
+    try:
+        return json.loads(tf.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, ValueError):
+        bak = tf.with_suffix(".json.bak")
+        if bak.exists():
+            try:
+                data = json.loads(bak.read_text(encoding="utf-8-sig"))
+                _log("WARN: tracked.json corrupted — restored from .bak")
+                return data
+            except Exception:
+                pass
+        _log("WARN: tracked.json corrupted, no backup — starting fresh")
+        return []
 
 
 def save_tracked(tracked: List[Dict[str, Any]]) -> None:

@@ -525,14 +525,15 @@ def _(rid, params: dict) -> dict:
     hint = _cli_exec_blocked(argv)
     if hint:
         return _ok(rid, {"blocked": True, "hint": hint, "code": -1, "output": ""})
-
-    # Can drive the agent → needs provider credentials; tier-1 secrets still stripped.
+    # Same-interpreter re-exec: ambient PYTHONPATH must survive the env factory's
+    # Hermes-owned strip (no-boot-through-venv).
+    _compat = _tools_mod("hermes_cli._subprocess_compat")
     return _captured_exec(
         rid, [sys.executable, "-m", "hermes_cli.main", *argv], min(int(params.get("timeout", 240)), 600),
         on_result=lambda r: _ok(rid, {
             "blocked": False, "code": r.returncode, "output": (_joined_output(r) or "(no output)")[:48_000]}),
         timeout_err=(5016, "cli.exec: timeout"), fail_code=5017,
-        env=hermes_subprocess_env(inherit_credentials=True))
+        env=_compat.restore_ambient_pythonpath(hermes_subprocess_env(inherit_credentials=True)))
 
 
 @_rpc("command.resolve", 5012)
@@ -777,13 +778,17 @@ def _cmd_retry(rid, params, session, name, arg):
 def _cmd_steer(rid, params, session, name, arg):
     if not arg:
         return _err(rid, 4004, "usage: /steer <prompt>")
-    agent = session.get("agent") if session else None
+    shown = f"{arg[:80]}{'...' if len(arg) > 80 else ''}"
+    # An idle agent still accepts steer(), but nothing drains it until the NEXT turn's pre-API
+    # drain, which splices it after whatever tool row is newest (#64578). Idle → a normal message.
+    if not (session and session.get("running")):
+        return _ok(rid, {"type": "send", "message": arg, "notice": f"No agent running; sent as next turn: {shown}"})
+    agent = session.get("agent")
     if agent and hasattr(agent, "steer"):
         with contextlib.suppress(Exception):
             if agent.steer(arg):
-                shown = f"{arg[:80]}{'...' if len(arg) > 80 else ''}"
                 return _exec_out(rid, f"⏩ Steer queued — arrives after the next tool call: {shown}")
-    return _ok(rid, {"type": "send", "message": arg})  # no active run: next-turn message
+    return _ok(rid, {"type": "send", "message": arg})  # turn still building / steer refused: next-turn message
 
 
 def _cmd_goal(rid, params, session, name, arg):
@@ -1358,10 +1363,23 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4090, f"server '{name}' already exists")
     raw_cfg = params.get("config")
     server_config: dict = dict(raw_cfg) if isinstance(raw_cfg, dict) else {}
-    if preset:  # fills url/command/args when omitted; mutates server_config in place
-        mc._apply_mcp_preset(
-            name, preset_name=preset, url=server_config.get("url"), command=server_config.get("command"),
-            cmd_args=list(server_config.get("args") or []), server_config=server_config)
+    # Explicit url/command wins. Otherwise a desktop catalog id is resolved
+    # before the CLI preset registry — that registry raises, and the wrapper
+    # turns the raise into 5024 before the 4063 check below can run.
+    if preset and not (server_config.get("url") or server_config.get("command")):
+        catalog = _tools_mod("hermes_cli.mcp_catalog")
+        entry = catalog.get_entry(preset)
+        if entry is not None:
+            for key, value in catalog._build_server_config(entry, install_dir=None).items():
+                server_config.setdefault(key, value)
+        else:
+            try:
+                mc._apply_mcp_preset(
+                    name, preset_name=preset, url=server_config.get("url"),
+                    command=server_config.get("command"),
+                    cmd_args=list(server_config.get("args") or []), server_config=server_config)
+            except ValueError:
+                return _err(rid, 4063, f"Unknown MCP catalog entry or preset: {preset}")
     if not server_config.get("url") and not server_config.get("command"):
         return _err(rid, 4063, "config must specify a 'url' (http) or 'command' (stdio), or a valid 'preset'")
     if bearer_token := params.get("bearer_token"):
@@ -1645,7 +1663,7 @@ def _plugins_update(rid, params):
         return _err(rid, 4019, "plugins.update requires a 'name'")
     pc, cat = _tools_mod("hermes_cli.plugins_cmd"), _tools_mod("hermes_cli.plugins_cmd_catalog")
     target = pc._plugins_dir() / name
-    sidecar = cat.read_catalog_sidecar(target) if target.is_dir() else None
+    sidecar = cat.catalog_install_record(target) if target.is_dir() else None
     if not sidecar:
         return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
     try:

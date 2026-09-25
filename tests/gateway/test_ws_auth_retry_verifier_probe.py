@@ -33,7 +33,6 @@ aiohttp = pytest.importorskip("aiohttp")
 
 from plugins.platforms.mattermost.adapter import MattermostAdapter
 
-
 def _make_adapter(closing: bool = False) -> MattermostAdapter:
     adapter = MattermostAdapter.__new__(MattermostAdapter)
     adapter._closing = closing
@@ -46,7 +45,6 @@ def _make_adapter(closing: bool = False) -> MattermostAdapter:
     adapter._running = True
     adapter._fatal_error_handler = None
     return adapter
-
 
 class TestMattermostWSAuthRetryBoundaryProbes:
     def test_403_handshake_stops_reconnect(self):
@@ -104,5 +102,3 @@ class TestMattermostWSAuthRetryBoundaryProbes:
             asyncio.run(adapter._ws_loop())
 
         assert call_count == 2
-
-

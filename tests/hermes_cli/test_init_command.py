@@ -11,21 +11,12 @@ from hermes_cli.init_command import (
     build_init_prompt_for_cwd,
 )
 
-
 class TestBuildInitPrompt:
-
-
-
-
 
     def test_includes_extra_notes_verbatim(self):
         notes = "focus on the test setup, and mention the flaky e2e suite"
         prompt = build_init_prompt("/tmp/proj", extra=notes)
         assert notes in prompt
-
-
-
-
 
 class TestBuildInitPromptForCwd:
 
@@ -39,6 +30,3 @@ class TestBuildInitPromptForCwd:
     def test_passes_extra_through(self, tmp_path):
         prompt = build_init_prompt_for_cwd(cwd=str(tmp_path), extra="keep it short")
         assert "keep it short" in prompt
-
-
-

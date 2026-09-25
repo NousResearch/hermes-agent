@@ -30,10 +30,8 @@ from pathlib import Path
 
 import pytest
 
-
 def _write_config(tmp_path: Path, body: str) -> None:
     (tmp_path / "config.yaml").write_text(body or "{}\n", encoding="utf-8")
-
 
 def _make_agent(tmp_path, monkeypatch, config_body: str = "", **overrides):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -55,9 +53,7 @@ def _make_agent(tmp_path, monkeypatch, config_body: str = "", **overrides):
     kwargs.update(overrides)
     return AIAgent(**kwargs)
 
-
 # ── normalization ──────────────────────────────────────────────────────────
-
 
 @pytest.mark.parametrize("raw,expected", [
     (None, None),
@@ -75,13 +71,7 @@ def test_normalize_run_budget_seconds(raw, expected):
     from agent.agent_init import _normalize_run_budget_seconds
     assert _normalize_run_budget_seconds(raw) == expected
 
-
 # ── constructor / config plumbing ─────────────────────────────────────────
-
-
-
-
-
 
 def test_config_key_sets_budget(monkeypatch, tmp_path):
     agent = _make_agent(
@@ -89,7 +79,6 @@ def test_config_key_sets_budget(monkeypatch, tmp_path):
         config_body="agent:\n  run_budget_seconds: 750\n",
     )
     assert agent.run_budget_seconds == 750.0
-
 
 def test_constructor_arg_wins_over_config(monkeypatch, tmp_path):
     agent = _make_agent(
@@ -99,9 +88,7 @@ def test_constructor_arg_wins_over_config(monkeypatch, tmp_path):
     )
     assert agent.run_budget_seconds == 900.0
 
-
 # ── stale-timeout deadline scaling ─────────────────────────────────────────
-
 
 def test_no_budget_stale_timeout_unchanged(monkeypatch, tmp_path):
     """Without a run budget the implicit 90s default is untouched."""
@@ -110,7 +97,6 @@ def test_no_budget_stale_timeout_unchanged(monkeypatch, tmp_path):
     agent = _make_agent(tmp_path, monkeypatch)
     base, _implicit = agent._resolved_api_call_stale_timeout_base()
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == base
-
 
 def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
     """deepseek-v4-pro's 600s implicit floor yields to a tighter deadline cap.
@@ -127,7 +113,6 @@ def test_active_budget_caps_implicit_reasoning_floor(monkeypatch, tmp_path):
     agent._run_budget_started_at = time.time() - 800
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 60.0
 
-
 def test_active_budget_cap_half_remaining(monkeypatch, tmp_path):
     """Cap is remaining * 0.5 when that exceeds the 60s floor."""
     import run_agent
@@ -141,7 +126,6 @@ def test_active_budget_cap_half_remaining(monkeypatch, tmp_path):
     timeout = agent._compute_non_stream_stale_timeout({"input": "hi"})
     assert 395.0 <= timeout <= 400.0
 
-
 def test_active_budget_never_raises_timeout(monkeypatch, tmp_path):
     """The deadline cap NEVER loosens an already-tighter implicit timeout.
 
@@ -154,7 +138,6 @@ def test_active_budget_never_raises_timeout(monkeypatch, tmp_path):
     agent._run_budget_started_at = time.time() - 10
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == base
 
-
 def test_explicit_provider_config_wins_over_budget_cap(monkeypatch, tmp_path):
     """Explicit stale_timeout_seconds is never capped by the run budget."""
     import run_agent
@@ -162,7 +145,6 @@ def test_explicit_provider_config_wins_over_budget_cap(monkeypatch, tmp_path):
     agent = _make_agent(tmp_path, monkeypatch, run_budget_seconds=900)
     agent._run_budget_started_at = time.time() - 800
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 1800.0
-
 
 def test_explicit_env_var_wins_over_budget_cap(monkeypatch, tmp_path):
     """HERMES_API_CALL_STALE_TIMEOUT is explicit config — never capped."""
@@ -172,7 +154,6 @@ def test_explicit_env_var_wins_over_budget_cap(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "1200")
     agent._run_budget_started_at = time.time() - 800
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == 1200.0
-
 
 def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
     """A configured budget with no running turn clock changes nothing."""
@@ -187,16 +168,13 @@ def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
     base, _implicit = agent._resolved_api_call_stale_timeout_base()
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == base
 
-
 # ── wrap-up injection one-time-ness ────────────────────────────────────────
-
 
 class _StubAgent:
     def __init__(self, budget=None, started=None):
         self.run_budget_seconds = budget
         self._run_budget_started_at = started
         self._run_budget_wrapup_injected = False
-
 
 def _tool_messages():
     return [
@@ -207,7 +185,6 @@ def _tool_messages():
         {"role": "tool", "tool_call_id": "t2", "content": "result two"},
     ]
 
-
 def test_wrapup_not_injected_when_unset():
     from agent.conversation_loop import _maybe_inject_run_budget_wrapup
     agent = _StubAgent(budget=None, started=time.time() - 10_000)
@@ -215,14 +192,12 @@ def test_wrapup_not_injected_when_unset():
     assert _maybe_inject_run_budget_wrapup(agent, messages) is False
     assert messages == _tool_messages()
 
-
 def test_wrapup_not_injected_before_threshold():
     from agent.conversation_loop import _maybe_inject_run_budget_wrapup
     agent = _StubAgent(budget=900, started=time.time() - 100)  # 11% elapsed
     messages = _tool_messages()
     assert _maybe_inject_run_budget_wrapup(agent, messages) is False
     assert agent._run_budget_wrapup_injected is False
-
 
 def test_wrapup_injected_once_after_threshold():
     from agent.conversation_loop import (
@@ -248,7 +223,6 @@ def test_wrapup_injected_once_after_threshold():
     assert messages == snapshot
     assert messages[-1]["content"].count(RUN_BUDGET_WRAPUP_NOTICE) == 1
 
-
 def test_wrapup_retries_when_no_tool_message_yet():
     """First iteration (no tool results) can't inject; the latch stays open
     so the next iteration with a tool result delivers the notice."""
@@ -268,13 +242,11 @@ def test_wrapup_retries_when_no_tool_message_yet():
     assert _maybe_inject_run_budget_wrapup(agent, messages) is True
     assert RUN_BUDGET_WRAPUP_NOTICE in messages[-1]["content"]
 
-
 def test_wrapup_not_injected_without_turn_clock():
     from agent.conversation_loop import _maybe_inject_run_budget_wrapup
     agent = _StubAgent(budget=900, started=None)
     messages = _tool_messages()
     assert _maybe_inject_run_budget_wrapup(agent, messages) is False
-
 
 def test_wrapup_skips_already_persisted_tool_row():
     """An already-flushed tool row is append-only; mutating it would diverge the
@@ -291,7 +263,6 @@ def test_wrapup_skips_already_persisted_tool_row():
     assert _maybe_inject_run_budget_wrapup(agent, messages) is False
     assert agent._run_budget_wrapup_injected is False
     assert messages == snapshot
-
 
 def test_wrapup_multimodal_tool_content():
     """Content-blocks tool results get a text block appended, not clobbered."""
@@ -311,9 +282,7 @@ def test_wrapup_multimodal_tool_content():
     assert blocks[0] == {"type": "text", "text": "block"}
     assert blocks[-1] == {"type": "text", "text": RUN_BUDGET_WRAPUP_NOTICE}
 
-
 # ── pre-flush wiring (the notice must reach durable bytes) ─────────────────
-
 
 def test_wrapup_lands_in_the_persisted_row_via_pre_flush_hook(monkeypatch, tmp_path):
     """The wrap-up notice must be injected BEFORE the tool row is flushed, or it
@@ -337,7 +306,4 @@ def test_wrapup_lands_in_the_persisted_row_via_pre_flush_hook(monkeypatch, tmp_p
     finally:
         session_db.close()
 
-
 # ── turn clock stamping ────────────────────────────────────────────────────
-
-

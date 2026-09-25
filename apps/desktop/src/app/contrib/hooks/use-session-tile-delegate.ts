@@ -8,6 +8,8 @@ import {
 } from '@/hermes'
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
+import { markReasoningEffortPending } from '@/lib/chat-runtime'
+import { profileScopeForSessionOwner, refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -401,13 +403,16 @@ export function useSessionTileDelegate({
         updateSessionState(
           runtimeId,
           state => ({
-            ...state,
+            // The deferred build reports the session's own effort later (#79807).
+            ...markReasoningEffortPending(state),
             busy: Boolean(info?.running),
             // Persist the session's own model/provider from resume so the tile
             // pill does not wait on a chrome-scoped catalog read (#93892).
             ...(typeof info?.model === 'string' ? { model: info.model } : {}),
             ...(typeof info?.provider === 'string' ? { provider: info.provider } : {}),
-            ...(typeof info?.reasoning_effort === 'string' ? { reasoningEffort: info.reasoning_effort } : {}),
+            ...(typeof info?.reasoning_effort === 'string'
+              ? { reasoningEffort: info.reasoning_effort, reasoningEffortPending: false }
+              : {}),
             ...(typeof info?.reasoning_effort_wire === 'string'
               ? { reasoningEffortWire: info.reasoning_effort_wire }
               : {}),
@@ -431,6 +436,36 @@ export function useSessionTileDelegate({
         }
 
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
+
+        if (storedSessionId) {
+          const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
+          const owner = await ownerForStoredSession(storedSessionId)
+
+          const refreshed = await refreshIfTranscriptStale(storedSessionId, cached?.messages ?? [], {
+            profile: profileScopeForSessionOwner(owner)
+          })
+
+          if (refreshed) {
+            updateSessionState(
+              runtimeId,
+              state => ({
+                ...state,
+                awaitingResponse: false,
+                busy: false,
+                messages: refreshed,
+                pendingBranchGroup: null
+              }),
+              storedSessionId
+            )
+            notify({
+              kind: 'warning',
+              message: translateNow('desktop.staleSessionBody'),
+              title: translateNow('desktop.staleSessionTitle')
+            })
+
+            return
+          }
+        }
 
         const routedRequest = storedSessionId
           ? <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>

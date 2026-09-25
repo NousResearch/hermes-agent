@@ -4,13 +4,14 @@
  * async entry points with a resolved git binary.
  */
 
-import { execFile, spawn } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-import { publishDesktopTree } from './desktop-plugins-root'
+import { publishDesktopTree, writeDesktopHalfMarker } from './desktop-plugins-root'
+import { execGit, hiddenGitSpawnSpec } from './no-console-git'
 
 const GITHUB_BROWSER_SEGMENTS = new Set(['tree', 'blob', 'commit'])
 
@@ -267,12 +268,13 @@ const GIT_TIMEOUT_MS = 300_000
 
 function runGit(gitBin: string, args: string[], cwd?: string): Promise<{ code: number; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(gitBin, args, {
+    const spec = hiddenGitSpawnSpec(gitBin, args, {
       cwd,
       env: noninteractiveGitEnv(),
-      stdio: ['ignore', 'ignore', 'pipe'],
-      windowsHide: true
+      stdio: ['ignore', 'ignore', 'pipe']
     })
+
+    const child = spawn(spec.command, spec.args, spec.options)
 
     let stderr = ''
 
@@ -428,7 +430,13 @@ export async function installDesktopPluginFromGit(
       const sourceDir =
         detected.desktopSourceSubdir === '.' ? pluginRoot : path.join(pluginRoot, detected.desktopSourceSubdir)
 
-      const pluginName = desktopPluginFolderName(gitUrl, subdir)
+      // A repo carrying BOTH halves is one package: land its desktop half under
+      // the AGENT package name, so the copy this app makes and the one
+      // `reconcileUnifiedDesktopHalves` would make are the same folder (#100412)
+      // and the Plugins page pairs them into one row. A desktop-only repo keeps
+      // the git-derived folder name and stays a standalone plugin.
+      const packageName = detected.agent ? (detected.agentName ?? desktopPluginFolderName(gitUrl, subdir)) : null
+      const pluginName = packageName ?? desktopPluginFolderName(gitUrl, subdir)
       const targetDir = path.join(desktopPluginsRoot, pluginName)
       const targetPlugin = path.join(targetDir, 'plugin.js')
 
@@ -445,7 +453,26 @@ export async function installDesktopPluginFromGit(
 
       // Staged copy + rename: a failed copy must not leave an empty `targetDir`
       // that turns every retry into "already exists. Enable force reinstall".
-      await publishDesktopTree(sourceDir, targetDir)
+      // The half of a unified package is stamped with the package marker as
+      // part of that publication — without it the Plugins page cannot tell this
+      // copy belongs to the agent row (it sits on "copying…" forever) and the
+      // half loads default-enabled instead of opt-in.
+      await publishDesktopTree(sourceDir, targetDir, async staged => {
+        if (!packageName) {
+          return
+        }
+
+        await writeDesktopHalfMarker(staged, {
+          package: packageName,
+          repo: gitUrl,
+          // The clone is deleted below, so this source never matches a local
+          // package's `desktop/` dir: the first reconcile that finds the agent
+          // half re-copies from there and the package folder takes over as the
+          // single source of truth.
+          source: sourceDir,
+          sourceMtimeMs: (await fsp.stat(path.join(sourceDir, 'plugin.js'))).mtimeMs
+        })
+      })
 
       if (!(await pathIsFile(targetPlugin))) {
         return { ok: false, error: `Install completed but ${targetPlugin} is missing.` }
@@ -462,9 +489,8 @@ export async function installDesktopPluginFromGit(
 
 /** Resolve git binary via execFile which path on unix; caller passes Windows-resolved path. */
 export function runGitVersion(gitBin: string): Promise<boolean> {
-  return new Promise(resolve => {
-    execFile(gitBin, ['--version'], { windowsHide: true, timeout: 5_000 }, err => {
-      resolve(!err)
-    })
-  })
+  return execGit(gitBin, ['--version'], { timeoutMs: 5_000 }).then(
+    result => result.code === 0,
+    () => false
+  )
 }

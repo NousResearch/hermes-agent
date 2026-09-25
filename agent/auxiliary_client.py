@@ -6148,20 +6148,20 @@ def _resolve_task_provider_model(
             api_key = cfg_api_key
     if base_url:
         kept = provider if _preserve_provider_with_base_url(provider) else "custom"
-        logger.info(
+        logger.debug(
             "Auxiliary %s: route resolved — %s/%s [explicit base_url override]",
             task or "call", kept, resolved_model or "default",
         )
         return kept, resolved_model, base_url, api_key, resolved_api_mode
     if provider:
-        logger.info(
+        logger.debug(
             "Auxiliary %s: route resolved — %s/%s [explicit provider arg]",
             task or "call", provider, resolved_model or "default",
         )
         return provider, resolved_model, base_url, api_key, resolved_api_mode
     if cfg_base_url and cfg_api_key:
         kept = cfg_provider if str(cfg_provider or "").strip().lower() in _LOCAL_SERVER_ALIASES else "custom"
-        logger.info(
+        logger.debug(
             "Auxiliary %s: route resolved — %s/%s [config: base_url + api_key]",
             task, kept, resolved_model or "default",
         )
@@ -6169,26 +6169,20 @@ def _resolve_task_provider_model(
     if cfg_base_url and cfg_provider and cfg_provider != "auto":
         # base_url without api_key: keep the provider so it can resolve credentials from env
         # vars instead of locking into "custom".
-        logger.info(
+        logger.debug(
             "Auxiliary %s: route resolved — %s/%s [config: base_url with provider]",
             task, cfg_provider, resolved_model or "default",
         )
         return cfg_provider, resolved_model, cfg_base_url, None, resolved_api_mode
     if cfg_provider and cfg_provider != "auto":
-        logger.info(
+        logger.debug(
             "Auxiliary %s: route resolved — %s/%s [config: per-task provider]",
             task, cfg_provider, resolved_model or "default",
         )
         return cfg_provider, resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
-    if task:
-        logger.info(
-            "Auxiliary %s: route resolved — auto/%s [no override — using auto-detection]",
-            task, resolved_model or "default",
-        )
-        return "auto", resolved_model, None, None, resolved_api_mode
-    logger.info(
-        "Auxiliary: route resolved — auto/%s [no task, no override — using auto-detection]",
-        resolved_model or "default",
+    logger.debug(
+        "Auxiliary %s: route resolved — auto/%s [no override — using auto-detection]",
+        task or "call", resolved_model or "default",
     )
     return "auto", resolved_model, None, None, resolved_api_mode
 

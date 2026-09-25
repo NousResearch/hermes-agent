@@ -1134,17 +1134,21 @@ def _detect_linux_password_store() -> str | None:
     return None
 
 
-def _desktop_launch_options() -> tuple[list[str], str, str, str]:
+_A11Y_OFF_WORDS = frozenset(("0", "false", "no", "off"))
+
+
+def _desktop_launch_options() -> tuple[list[str], str, str, str, bool]:
     """``desktop.*`` launch options: ``(electron_flags, disable_gpu "auto"/"1"/"0", password_store,
-    ozone_hint "auto"/"x11"/"wayland")``; unknown values and config errors yield "auto"/[] so a
-    malformed config never blocks the launch."""
+    ozone_hint "auto"/"x11"/"wayland", renderer_accessibility bool)``; unknown values and config
+    errors yield "auto"/[]/True so a malformed config never blocks the launch."""
     flags: list[str] = []
     disable_gpu = password_store = ozone_hint = "auto"
+    renderer_accessibility = True
     try:
         from hermes_cli.config import load_config
         desktop_cfg = (load_config() or {}).get("desktop") or {}
     except Exception:
-        return flags, disable_gpu, password_store, ozone_hint
+        return flags, disable_gpu, password_store, ozone_hint, renderer_accessibility
 
     raw_flags = desktop_cfg.get("electron_flags")
     if isinstance(raw_flags, str):
@@ -1164,7 +1168,12 @@ def _desktop_launch_options() -> tuple[list[str], str, str, str]:
         disable_gpu = _GPU_FLAG_WORDS.get(raw_gpu.strip().lower(), "auto")
     password_store = _choice("password_store", _LINUX_PASSWORD_STORES)
     ozone_hint = _choice("ozone_platform_hint", ("auto", "x11", "wayland"))
-    return flags, disable_gpu, password_store, ozone_hint
+    raw_a11y = desktop_cfg.get("renderer_accessibility", True)
+    if isinstance(raw_a11y, bool):
+        renderer_accessibility = raw_a11y
+    elif isinstance(raw_a11y, str):
+        renderer_accessibility = raw_a11y.strip().lower() not in _A11Y_OFF_WORDS
+    return flags, disable_gpu, password_store, ozone_hint, renderer_accessibility
 
 
 def _register_linux_desktop_entry(defer: bool = False):
@@ -1326,12 +1335,18 @@ def _desktop_launch_env(args: argparse.Namespace) -> tuple[dict, list[str]]:
     cwd = getattr(args, "cwd", None)
     env["HERMES_DESKTOP_CWD"] = str(Path(cwd).expanduser().resolve()) if cwd else os.getcwd()
 
-    config_electron_flags, config_disable_gpu, config_password_store, config_ozone_hint = (
+    config_electron_flags, config_disable_gpu, config_password_store, config_ozone_hint, config_renderer_a11y = (
         _desktop_launch_options())
     if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
         env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
     if config_ozone_hint != "auto" and "ELECTRON_OZONE_PLATFORM_HINT" not in os.environ:
         env["ELECTRON_OZONE_PLATFORM_HINT"] = config_ozone_hint
+
+    # Renderer accessibility tree (composer exposure to OS dictation/IME
+    # tools, #118271/#92607) defaults to ON inside the app; bridge only the
+    # explicit opt-out so the default never depends on the launcher path.
+    if not config_renderer_a11y and "HERMES_DESKTOP_RENDERER_ACCESSIBILITY" not in os.environ:
+        env["HERMES_DESKTOP_RENDERER_ACCESSIBILITY"] = "0"
 
     # Without --password-store safeStorage.isEncryptionAvailable() is often
     # false and the desktop app refuses to persist remote gateway tokens.

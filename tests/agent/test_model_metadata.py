@@ -506,7 +506,7 @@ class TestCodexOAuthContextLength:
         import agent.model_metadata as mm
         mm._codex_oauth_context_cache = {}
 
-        with patch("agent.model_metadata.requests.get") as mock_get:
+        with patch("agent.model_metadata.model_metadata_http.get") as mock_get:
             live, fresh = mm._fetch_codex_oauth_context_lengths_with_source("gateway-pool-key")
 
         assert (live, fresh) == ({}, False)
@@ -523,7 +523,7 @@ class TestCodexOAuthContextLength:
         fake_response.json.return_value = {
             "models": [{"slug": "gpt-5.5", "context_window": 272_000}]
         }
-        with patch("agent.model_metadata.requests.get", return_value=fake_response) as mock_get, \
+        with patch("agent.model_metadata.model_metadata_http.get", return_value=fake_response) as mock_get, \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.save_context_length"):
             ctx = get_model_context_length(

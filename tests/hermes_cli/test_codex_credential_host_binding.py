@@ -219,8 +219,7 @@ def test_picker_refuses_opaque_key_aimed_at_chatgpt(picker_http):
 def probe_http(monkeypatch):
     from agent import model_metadata as mm
     seen = []
-    monkeypatch.setattr(mm, "requests", SimpleNamespace(get=_catalog_recorder(seen)))
-    monkeypatch.setattr(mm, "_ensure_requests", lambda: None)
+    monkeypatch.setattr(mm.model_metadata_http, "get", _catalog_recorder(seen))
     monkeypatch.setattr(mm, "_codex_oauth_context_cache", {})
     return seen
 

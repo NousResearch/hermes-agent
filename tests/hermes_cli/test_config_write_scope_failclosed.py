@@ -90,3 +90,59 @@ class TestConfigWriteScopeFailClosed:
 
         with config_write_scope(None):
             pass  # single-profile host: the destructive_profile precedent holds
+
+
+# All mutating routes that go through config_write_scope (enumerated from grep + decorator reads).
+# Bodies must pass FastAPI schema validation; 409 fires INSIDE the handler, after body parse.
+MUTATING_ROUTES = [
+    # MCP four (Task 5 baseline)
+    ("PUT",    "/api/mcp/servers",                              {"servers": {}}),
+    ("POST",   "/api/mcp/servers",                              {"name": "guard-check", "url": "https://mcp.example"}),
+    ("DELETE", "/api/mcp/servers/guard-check",                  None),
+    ("PUT",    "/api/mcp/servers/guard-check/enabled",          {"enabled": False}),
+    # models.py:235 — PUT /api/model/moa  (body: MoaConfigPayload)
+    ("PUT",    "/api/model/moa",                                {"default_preset": "default", "presets": {}}),
+    # ops.py:172 — POST /api/webhooks/enable  (no body model; profile is query-only)
+    ("POST",   "/api/webhooks/enable",                          None),
+    # ops.py:497 — PUT /api/memory/provider  (body: MemoryProviderSelect)
+    ("PUT",    "/api/memory/provider",                          {"provider": "built-in"}),
+    # skills.py:374 — PUT /api/skills/toggle  (body: SkillToggle)
+    ("PUT",    "/api/skills/toggle",                            {"name": "dummy", "enabled": True}),
+    # tools.py:280 — PUT /api/tools/toolsets/{name}  (body: ToolsetToggle) — "web" is a known configurable toolset
+    ("PUT",    "/api/tools/toolsets/web",                       {"enabled": False}),
+    # tools.py:661 — PUT /api/tools/terminal/backend  (body: TerminalBackendSelect) — "local" is a valid backend
+    ("PUT",    "/api/tools/terminal/backend",                   {"backend": "local"}),
+]
+
+
+@pytest.fixture
+def client(monkeypatch, homes):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    import hermes_state
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", homes["launch"] / "state.db")
+    c = TestClient(app)
+    c.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    return c
+
+
+@pytest.mark.parametrize(("method", "path", "body"), MUTATING_ROUTES)
+def test_mutating_route_refuses_unnamed_profile_on_multiplexed_host(
+    client, multiplexed, method, path, body
+):
+    response = client.request(method, path, json=body)
+    assert response.status_code == 409, response.text
+    assert "profile required" in response.text
+
+
+@pytest.mark.parametrize(("method", "path", "body"), MUTATING_ROUTES)
+def test_mutating_route_named_profile_reaches_the_named_home(
+    client, homes, multiplexed, method, path, body
+):
+    response = client.request(method, f"{path}?profile=worker_beta", json=body)
+    assert response.status_code != 409, response.text

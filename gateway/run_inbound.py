@@ -1809,7 +1809,9 @@ class GatewayInboundMixin:
         get_plugin_manager().clear_gateway_message_injector(self)
 
     def _schedule_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
+        self, *, session_key: str, content: str, plugin_id: str,
+        idempotency_key: str | None = None, idle_only: bool = False,
+        enabled_toolsets: list[str] | None = None,
     ) -> bool:
         """Schedule a plugin-triggered turn on the live gateway loop (thread-safe)."""
         from gateway.run import safe_schedule_threadsafe
@@ -1817,8 +1819,29 @@ class GatewayInboundMixin:
         if not getattr(self, "_running", False) or loop is None or loop.is_closed():
             return False
 
+        if idempotency_key is not None:
+            if not isinstance(idempotency_key, str) or not 0 < len(idempotency_key) <= 200:
+                return False
+            try:
+                from gateway.delivery_ledger import ledger_enabled
+                from gateway.plugin_injection_ledger import claim
+                if not ledger_enabled():
+                    return False  # no durable final-response outcome to report
+                admission = claim(plugin_id, idempotency_key, session_key, content)
+            except (OSError, ValueError):
+                logger.warning("Plugin injection key admission failed: plugin=%s", plugin_id,
+                               exc_info=True)
+                return False
+            if admission == "existing":
+                return True
+
         coro = self._dispatch_plugin_message_injection(
             session_key=session_key, content=content, plugin_id=plugin_id,
+            **({"idempotency_key": idempotency_key} if idempotency_key is not None else {}),
+            **({"idle_only": idle_only} if idle_only else {}),
+            **({"enabled_toolsets": enabled_toolsets} if enabled_toolsets is not None else {}),
+            **({"notice_already_sent": True} if idempotency_key is not None
+               and admission == "retry_after_notice" else {}),
         )
         try:
             current_loop = asyncio.get_running_loop()
@@ -1830,6 +1853,9 @@ class GatewayInboundMixin:
                 future = loop.create_task(coro)
             except Exception:
                 coro.close()
+                if idempotency_key is not None:
+                    from gateway.plugin_injection_ledger import release_scheduled
+                    release_scheduled(plugin_id, idempotency_key, admission)
                 logger.warning("Plugin message injection scheduling failed", exc_info=True)
                 return False
             self._background_tasks.add(future)
@@ -1840,6 +1866,9 @@ class GatewayInboundMixin:
                 log_level=logging.WARNING,
             )
             if future is None:
+                if idempotency_key is not None:
+                    from gateway.plugin_injection_ledger import release_scheduled
+                    release_scheduled(plugin_id, idempotency_key, admission)
                 return False
 
         def _log_result(completed) -> None:
@@ -1859,16 +1888,26 @@ class GatewayInboundMixin:
         return True
 
     async def _dispatch_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
+        self, *, session_key: str, content: str, plugin_id: str,
+        idempotency_key: str | None = None, idle_only: bool = False,
+        enabled_toolsets: list[str] | None = None,
+        notice_already_sent: bool = False,
     ) -> bool:
         """Route a plugin-triggered turn through the session's live adapter."""
         def _accepting() -> bool:
             return getattr(self, "_running", False) and not getattr(self, "_draining", False)
 
+        def _mark(state: str, error: str | None = None) -> None:
+            if idempotency_key is not None:
+                from gateway.plugin_injection_ledger import advance
+                advance(plugin_id, idempotency_key, state, error=error)
+
         if not _accepting():
+            _mark("refused", "gateway unavailable")
             return False
         entry = await self.async_session_store.lookup_by_session_key(session_key)
         if entry is None or entry.origin is None or not _accepting():
+            _mark("refused", "session unavailable")
             return False
 
         from gateway.session_identity import replace_source
@@ -1876,12 +1915,14 @@ class GatewayInboundMixin:
         try:
             authorized = self._is_user_authorized_for_source(source, allow_adapter_delegation=False)
         except Exception:
+            _mark("refused", "authorization check failed")
             logger.warning(
                 "Plugin message injection authorization check failed: plugin=%s session=%s",
                 plugin_id, session_key, exc_info=True,
             )
             return False
         if not authorized:
+            _mark("refused", "authorization denied")
             logger.warning(
                 "Plugin message injection denied by current gateway authorization: "
                 "plugin=%s session=%s", plugin_id, session_key,
@@ -1890,17 +1931,66 @@ class GatewayInboundMixin:
 
         adapter = self._delivery_adapter_for(source)
         if adapter is None:
+            _mark("refused", "delivery adapter unavailable")
             return False
 
-        await adapter.handle_message(MessageEvent(
-            text=content, message_type=MessageType.TEXT, source=source, internal=True,
+        if idle_only and (session_key in getattr(adapter, "_active_sessions", {})
+                          or session_key in getattr(self, "_running_agents", {})):
+            _mark("notice_deferred" if notice_already_sent else "deferred", "session busy")
+            return False
+
+        if enabled_toolsets is not None and (not isinstance(enabled_toolsets, list)
+                                            or any(not isinstance(item, str) for item in enabled_toolsets)):
+            _mark("refused", "invalid toolsets")
+            return False
+
+        if idempotency_key is not None and source.platform == Platform.TELEGRAM and not notice_already_sent:
+            _mark("notice_attempting")
+            try:
+                notice = await adapter.send(
+                    source.chat_id,
+                    f"Delegated request from {plugin_id}:\n\n{content}",
+                    metadata=self._thread_metadata_for_source(source, None),
+                )
+            except Exception:
+                _mark("refused", "Telegram notice failed")
+                return False
+            _mark("notice_sent")
+            if not getattr(notice, "success", False):
+                _mark("refused", "Telegram notice failed")
+                return False
+            # The network send yielded. A human turn or /new may have won the
+            # session while the notice was in flight; idle-only wakes must not
+            # become queued work against a different session generation.
+            current = await self.async_session_store.lookup_by_session_key(session_key)
+            if (not _accepting() or current is None or current.session_id != entry.session_id
+                    or (idle_only and session_key in getattr(adapter, "_active_sessions", {}))):
+                _mark("notice_deferred" if current is not None
+                      and current.session_id == entry.session_id and _accepting()
+                      and session_key in getattr(adapter, "_active_sessions", {})
+                      else "refused", "session changed or became busy")
+                return False
+
+        event = MessageEvent(
+            text=(f"[Delegated request from {plugin_id}]\n{content}"
+                  if idempotency_key is not None else content),
+            message_type=MessageType.TEXT, source=source, internal=True,
             allow_gateway_control=False,
             metadata={
                 "hermes_plugin_id": plugin_id, "hermes_plugin_injection": True,
                 "gateway_session_key": session_key, "gateway_session_id": entry.session_id,
                 "gateway_session_strict": True,
+                **({"plugin_injection_key": idempotency_key} if idempotency_key is not None else {}),
+                **({"plugin_injection_toolsets": enabled_toolsets} if enabled_toolsets is not None else {}),
             },
-        ))
+        )
+        # Durable before adapter admission: a crash at any later boundary must
+        # leave an ambiguous receipt rather than start the same keyed turn twice.
+        _mark("dispatched")
+        await adapter.handle_message(event)
+        if idempotency_key is not None and not getattr(event, "_gateway_accepted", False):
+            _mark("refused", "adapter did not accept event")
+            return False
         logger.info(
             "Plugin message injection dispatched: plugin=%s session=%s session_id=%s",
             plugin_id, session_key, entry.session_id,

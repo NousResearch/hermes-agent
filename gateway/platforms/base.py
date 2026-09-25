@@ -4162,6 +4162,13 @@ class BasePlatformAdapter(ABC):
                 chat_id=source.chat_id, thread_id=getattr(source, "thread_id", None),
                 content=text_content,
                 adapter_profile=getattr(delivery_adapter, "_owner_profile", None))
+            injection_key = (event.metadata or {}).get("plugin_injection_key")
+            plugin_id = (event.metadata or {}).get("hermes_plugin_id")
+            if injection_key and plugin_id:
+                from gateway.plugin_injection_ledger import advance
+                await asyncio.to_thread(
+                    advance, plugin_id, injection_key, "turn_complete",
+                    obligation_id=obligation_id)
             await asyncio.to_thread(mark_attempting, obligation_id)
             return obligation_id
         except Exception:
@@ -4469,6 +4476,15 @@ class BasePlatformAdapter(ABC):
             await self._run_processing_hook("on_processing_start", event)
             event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
+            injection_key = (event.metadata or {}).get("plugin_injection_key")
+            plugin_id = (event.metadata or {}).get("hermes_plugin_id")
+            if injection_key and plugin_id:
+                from gateway.plugin_injection_ledger import advance
+                await asyncio.to_thread(
+                    advance, plugin_id, injection_key,
+                    "turn_complete" if getattr(event, "_heartbeat_execution_started", False) else "refused",
+                    error=None if getattr(event, "_heartbeat_execution_started", False)
+                    else "turn did not start")
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
             with self._media_delivery_scope(event.source):
@@ -4547,12 +4563,22 @@ class BasePlatformAdapter(ABC):
                 self._spawn_drain_task(pending_event, session_key)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
+            if (event.metadata or {}).get("plugin_injection_key"):
+                from gateway.plugin_injection_ledger import advance
+                await asyncio.to_thread(
+                    advance, event.metadata["hermes_plugin_id"],
+                    event.metadata["plugin_injection_key"], "cancelled")
             expected = asyncio.current_task() in self._expected_cancelled_tasks
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
             raise
         except BaseException as e:
+            if (event.metadata or {}).get("plugin_injection_key"):
+                from gateway.plugin_injection_ledger import advance
+                await asyncio.to_thread(
+                    advance, event.metadata["hermes_plugin_id"],
+                    event.metadata["plugin_injection_key"], "turn_failed", error=type(e).__name__)
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata

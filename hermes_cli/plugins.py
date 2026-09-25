@@ -602,6 +602,8 @@ class PluginContext:
     # manager's home, never the active profile's (#65593 constraint).
     def inject_message(
         self, content: str, role: str = "user", *, session_key: str | None = None,
+        idempotency_key: str | None = None, idle_only: bool = False,
+        enabled_toolsets: list[str] | None = None,
     ) -> bool:
         """Inject a message into a CLI, Ink TUI/desktop, or messaging-gateway conversation.
 
@@ -610,8 +612,12 @@ class PluginContext:
         (the durable key, not the ephemeral UI session id). Non-CLI injection needs that
         ``session_key`` plus ``plugins.entries.<plugin_id>.allow_gateway_injection``.
         ``True`` means a host accepted the request, not that the turn completed.
+        A gateway ``idempotency_key`` is durable: retrying the same request does
+        not start a second turn. ``injection_status`` reports its later outcome.
         """
         cli = self._manager._cli_ref
+        if (idempotency_key is not None or idle_only or enabled_toolsets is not None) and cli is not None:
+            return False  # these controls are gateway-only
         msg = content if role == "user" else f"[{role}] {content}"
         if cli is not None:
             queue_ = cli._interrupt_queue if getattr(cli, "_agent_running", False) else cli._pending_input
@@ -629,7 +635,8 @@ class PluginContext:
         # session_key; a miss falls through so a co-resident messaging gateway
         # still receives its own keys. An exception fails closed — do not also
         # hand the same text to the gateway.
-        if self._manager.has_tui_message_injector:
+        if (self._manager.has_tui_message_injector
+                and idempotency_key is None and not idle_only and enabled_toolsets is None):
             try:
                 if self._manager.inject_tui_message(
                     session_key=session_key, content=msg, plugin_id=self.plugin_id,
@@ -645,11 +652,26 @@ class PluginContext:
         try:
             return bool(self._manager.inject_gateway_message(
                 session_key=session_key, content=msg, plugin_id=self.plugin_id,
+                **({"idempotency_key": idempotency_key} if idempotency_key is not None else {}),
+                **({"idle_only": idle_only} if idle_only else {}),
+                **({"enabled_toolsets": enabled_toolsets} if enabled_toolsets is not None else {}),
             ))
         except Exception:
             logger.warning("inject_message: gateway scheduling failed for plugin %s", self.plugin_id,
                            exc_info=True)
             return False
+
+    def injection_status(self, idempotency_key: str) -> dict | None:
+        """Read a durable gateway injection receipt for this plugin's key."""
+        if not self._gateway_injection_allowed() or not idempotency_key:
+            return None
+        try:
+            from gateway.plugin_injection_ledger import state
+            return state(self.plugin_id, idempotency_key)
+        except Exception:
+            logger.warning("injection_status: status lookup failed for plugin %s", self.plugin_id,
+                           exc_info=True)
+            return None
 
     def _gateway_injection_allowed(self) -> bool:
         """Return whether this plugin may trigger gateway session turns."""

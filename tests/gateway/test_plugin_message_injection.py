@@ -12,6 +12,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import (
     BasePlatformAdapter,
     PlatformConfig,
+    SendResult,
 )
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
@@ -452,3 +453,208 @@ def test_install_and_clear_gateway_injector_preserves_newer_owner():
     assert manager.has_gateway_message_injector is True
     assert manager.inject_gateway_message(value="kept") is True
     newer_injector.assert_called_once_with(value="kept")
+
+
+@pytest.mark.asyncio
+async def test_keyed_injection_is_durable_and_replay_does_not_start_second_turn(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock(return_value=None))
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+
+    request = dict(session_key=entry.session_key, content="Where is the patch?",
+                   plugin_id="notify-plugin", idempotency_key="evt_123", idle_only=True,
+                   enabled_toolsets=["memory"])
+    assert runner._schedule_plugin_message_injection(**request) is True
+    task = next(iter(runner._background_tasks))
+    await asyncio.gather(task, return_exceptions=True)
+    await asyncio.sleep(0)
+    adapter.send.assert_awaited_once()
+    assert "Delegated request from notify-plugin" in adapter.send.await_args.args[1]
+    from gateway.plugin_injection_ledger import state
+    receipt = state("notify-plugin", "evt_123")
+    assert receipt["state"] == "dispatched"
+    assert runner._schedule_plugin_message_injection(**request) is True
+    await asyncio.sleep(0)
+    adapter.send.assert_awaited_once()
+    # A new runner against the same state.db sees the already claimed key and
+    # cannot start a second turn after an accepted-but-uncertain process exit.
+    replacement = _runner(entry, adapter)
+    replacement._gateway_loop = asyncio.get_running_loop()
+    replacement._thread_metadata_for_source = MagicMock(return_value=None)
+    assert replacement._schedule_plugin_message_injection(**request) is True
+    assert replacement._background_tasks == set()
+    adapter.send.assert_awaited_once()
+    with patch("gateway.run.safe_schedule_threadsafe"):
+        assert runner._schedule_plugin_message_injection(
+            **{**request, "content": "different request"}) is False
+
+
+@pytest.mark.asyncio
+async def test_keyed_injection_refuses_busy_session_without_queuing(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock())
+    adapter._active_sessions[entry.session_key] = asyncio.Event()
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+
+    assert runner._schedule_plugin_message_injection(
+        session_key=entry.session_key, content="hello", plugin_id="notify-plugin",
+        idempotency_key="evt_busy", idle_only=True) is True
+    task = next(iter(runner._background_tasks))
+    await asyncio.gather(task, return_exceptions=True)
+    from gateway.plugin_injection_ledger import state
+    receipt = state("notify-plugin", "evt_busy")
+    assert receipt["state"] == "deferred"
+    assert receipt["last_error"] == "session busy"
+    adapter._message_handler.assert_not_awaited()
+
+    adapter._active_sessions.clear()
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    assert runner._schedule_plugin_message_injection(
+        session_key=entry.session_key, content="hello", plugin_id="notify-plugin",
+        idempotency_key="evt_busy", idle_only=True) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    adapter.send.assert_awaited_once()
+    assert state("notify-plugin", "evt_busy")["state"] == "dispatched"
+
+
+@pytest.mark.asyncio
+async def test_retry_after_busy_race_does_not_repeat_telegram_notice(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock(return_value=None))
+    sends = 0
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        nonlocal sends
+        sends += 1
+        if sends == 1:
+            adapter._active_sessions[entry.session_key] = asyncio.Event()
+        return SendResult(success=True)
+
+    adapter.send = send
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    request = dict(session_key=entry.session_key, content="Question",
+                   plugin_id="notify-plugin", idempotency_key="evt_race", idle_only=True)
+
+    assert runner._schedule_plugin_message_injection(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    from gateway.plugin_injection_ledger import state
+    assert state("notify-plugin", "evt_race")["state"] == "notice_deferred"
+    assert sends == 1
+
+    adapter._active_sessions.clear()
+    assert runner._schedule_plugin_message_injection(**request) is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    assert state("notify-plugin", "evt_race")["state"] == "dispatched"
+    assert sends == 1
+    assert runner._schedule_plugin_message_injection(**request) is True
+    assert sends == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("final_succeeds", [True, False])
+async def test_keyed_injection_reports_actual_final_delivery(tmp_path, monkeypatch, final_succeeds):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+
+    async def answer(event):
+        event._heartbeat_execution_started = True
+        return "Daphne's answer"
+
+    sent = []
+
+    async def send(chat_id, content, reply_to=None, metadata=None):
+        sent.append(content)
+        if len(sent) == 1:
+            return SendResult(success=True)
+        return SendResult(success=final_succeeds, error=None if final_succeeds else "send_path_degraded")
+
+    adapter.set_message_handler(answer)
+    adapter.send = send
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+
+    assert runner._schedule_plugin_message_injection(
+        session_key=entry.session_key, content="Question", plugin_id="notify-plugin",
+        idempotency_key="evt_answer") is True
+    while runner._background_tasks:
+        await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+    while adapter._background_tasks:
+        await asyncio.gather(*list(adapter._background_tasks), return_exceptions=True)
+    from gateway.plugin_injection_ledger import state
+    receipt = state("notify-plugin", "evt_answer")
+    assert sent[:2] == ["Delegated request from notify-plugin:\n\nQuestion", "Daphne's answer"]
+    assert receipt["state"] == "turn_complete"
+    assert receipt["response"] == "Daphne's answer"
+    assert receipt["delivery_state"] == ("delivered" if final_succeeds else "failed")
+
+
+@pytest.mark.asyncio
+async def test_missing_injected_toolset_fails_before_agent_creation():
+    runner = _runner(_entry())
+    runner._get_proxy_url = MagicMock(return_value=None)
+    runner._run_agent_display_settings = MagicMock(
+        return_value=SimpleNamespace(enabled_toolsets=["messaging", "mempalace"]))
+    runner._run_agent_build_turn_context = MagicMock()
+
+    with pytest.raises(RuntimeError, match="not enabled"):
+        await runner._run_agent_inner(
+            message="delegated question", context_prompt="", history=[],
+            source=_entry().origin, session_id="session-42",
+            injected_toolsets=["mempalace-coordination"])
+    runner._run_agent_build_turn_context.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_plugin_context_exposes_keyed_gateway_receipt(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(yaml.safe_dump({
+        "plugins": {"entries": {"notify-plugin": {"allow_gateway_injection": True}}}}))
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    entry = _entry()
+    adapter = _RoutingAdapter()
+    adapter.set_message_handler(AsyncMock(return_value=None))
+    adapter.send = AsyncMock(return_value=SendResult(success=True))
+    runner = _runner(entry, adapter)
+    runner._gateway_loop = asyncio.get_running_loop()
+    runner._thread_metadata_for_source = MagicMock(return_value=None)
+    manager = PluginManager()
+    context = PluginContext(
+        PluginManifest(name="notify-plugin", key="notify-plugin", source="user"), manager)
+
+    with patch("hermes_cli.plugins.get_plugin_manager", return_value=manager):
+        runner._install_plugin_message_injector()
+        assert context.inject_message(
+            "Question", session_key=entry.session_key, idempotency_key="evt_api",
+            idle_only=True, enabled_toolsets=["memory"]) is True
+        while runner._background_tasks:
+            await asyncio.gather(*list(runner._background_tasks), return_exceptions=True)
+        assert context.injection_status("evt_api")["state"] == "dispatched"
+        assert context.injection_status("missing") is None
+        runner._clear_plugin_message_injector()

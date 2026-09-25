@@ -340,5 +340,22 @@ class TestDispatchIntegration(unittest.TestCase):
         self.assertIn("per-call ran", result["output"])
 
 
+class TestPostAdmissionTransportFailure(RemoteKernelBase):
+    def test_result_cleanup_failure_still_returns_result(self):
+        # Regression for #122317: the cell result is already in hand, so a
+        # transport failure removing the consumed res file must not raise —
+        # the caller treats any post-admission raise as "safe to re-execute
+        # per-call", which would run the admitted cell a second time.
+        def rm_raiser(command):
+            if "cell_res_" in command:
+                raise RuntimeError("transport lost after admission")
+            return {"output": "", "returncode": 0}
+
+        handlers = _spawn_ok_handlers([_cell(stdout="once\n")]) + [("rm -f", rm_raiser)]
+        out = _run(ScriptedEnv(handlers))
+        self.assertEqual(out["status"], "success", out)
+        self.assertEqual(out["stdout"], "once\n", out)
+
+
 if __name__ == "__main__":
     unittest.main()

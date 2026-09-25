@@ -432,6 +432,14 @@ def _ensure_windows_gateway_venv_imports() -> None:
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))
     candidates.append(project_root / "venv")
 
+    try:
+        # pyvenv.cfg declares the interpreter the tree was built with; a stale
+        # pre-PM in-tree venv (3.11) must never shadow the running (PM, 3.14)
+        # interpreter — its binary extensions are the wrong ABI (#122325, #122324).
+        from pm.environments import venv_python_version
+    except Exception:
+        venv_python_version = None  # type: ignore[assignment]
+
     seen: set[str] = set()
     for venv_dir in candidates:
         try:
@@ -442,6 +450,15 @@ def _ensure_windows_gateway_venv_imports() -> None:
         if venv_key in seen:
             continue
         seen.add(venv_key)
+
+        if venv_python_version is not None:
+            declared = venv_python_version(resolved_venv)
+            running = (sys.version_info.major, sys.version_info.minor)
+            if declared is not None and declared != running:
+                logger.debug(
+                    "Skipping venv %s (built for Python %s.%s, running %s.%s)",
+                    resolved_venv, *declared, *running)
+                continue
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():

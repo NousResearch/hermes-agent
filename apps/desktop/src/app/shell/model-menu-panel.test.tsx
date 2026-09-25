@@ -272,6 +272,28 @@ describe('ModelMenuPanel search', () => {
     })
   })
 
+  it('keeps model rows hit-testable before any pointer movement (#123040)', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const row = rowWithText(content, /Gemini 3\.1 Pro/i)!.closest('[role="menuitem"]')!
+
+    // CSS hit-testing is the regression boundary: the previous catalog put a
+    // pointer-events-none ancestor around every row until mousemove/wheel.
+    expect(row.closest('.pointer-events-none')).toBeNull()
+
+    fireEvent.click(row)
+
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'gemini-3.1-pro',
+        provider: 'google',
+        sessionId: 'runtime-1'
+      })
+    })
+  })
+
   it('hovering a model row leaves focus in the search field and arrows still drive the list (#53980)', async () => {
     const { content, onSelectModel } = renderPanel()
 
@@ -285,8 +307,8 @@ describe('ModelMenuPanel search', () => {
       expect(rowWithText(content, /Gemini 2\.5 Pro/i)).not.toBeNull()
     })
 
-    // A real hand on the mouse: wake the rows, then move over one.
-    fireEvent.mouseMove(window)
+    // No wake event is needed: DropdownMenu's search-safe hover suppresses
+    // Radix focus theft directly while leaving deliberate clicks enabled.
     fireEvent.pointerMove(rowWithText(content, /Gemini 2\.5 Pro/i)!, { pointerType: 'mouse' })
 
     expect(input.ownerDocument.activeElement).toBe(input)

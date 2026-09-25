@@ -5,6 +5,7 @@ Extracted from ``hermes_cli.web_server``; helpers/state that tests monkeypatch o
 """
 
 import asyncio
+import contextlib
 import logging
 from typing import Optional
 
@@ -56,7 +57,8 @@ def get_model_info(profile: Optional[str] = None):
     context length (so the UI can show "Auto-detected: 200K" beside the
     override) plus models.dev capabilities when available."""
     try:
-        model_cfg = _load_config_scoped(profile).get("model", "")
+        cfg = _load_config_scoped(profile)
+        model_cfg = cfg.get("model", "")
         model_name, provider = _main_model_fields(model_cfg)
         base_url = model_cfg.get("base_url", "") if isinstance(model_cfg, dict) else ""
         config_ctx = model_cfg.get("context_length") if isinstance(model_cfg, dict) else None
@@ -66,9 +68,22 @@ def get_model_info(profile: Optional[str] = None):
 
         try:
             from agent.model_metadata import get_model_context_length
-            # config_context_length=None: ignore the override — we want the auto value
-            auto_ctx = get_model_context_length(model=model_name, base_url=base_url, provider=provider,
-                                                config_context_length=None)
+            # config_context_length=None: ignore the override — we want the auto value.
+            # Resolve the runtime provider inside the profile scope first, the way the
+            # agent's own client path does: when the endpoint lives in a custom_providers
+            # entry, model.base_url is empty (the normal shape for that setup) and every
+            # resolver route is gated on a non-empty base_url, so the resolver fell
+            # straight through to the 256K default — shown as "Auto-detected" (#86097).
+            with _profile_scope(profile):
+                api_key = ""
+                with contextlib.suppress(Exception):
+                    from hermes_cli.runtime_provider import resolve_runtime_provider
+                    rt = resolve_runtime_provider(requested=provider or None, target_model=model_name) or {}
+                    base_url = str(rt.get("base_url") or base_url or "").strip()
+                    api_key = str(rt.get("api_key") or "")
+                auto_ctx = get_model_context_length(model=model_name, base_url=base_url, api_key=api_key,
+                                                    provider=provider, config_context_length=None,
+                                                    custom_providers=cfg.get("custom_providers"))
         except Exception:
             auto_ctx = 0
 

@@ -169,6 +169,30 @@ class TestCustomReasoningWireShape:
         )
         assert eb.get("think") is not True
 
+
+class TestCustomAdaptiveClaudeReasoningWireShape:
+    """CometAPI-style relays map ``reasoning_effort`` to Bedrock ``thinking.enabled`` (#122672)."""
+
+    def test_opus_55_thinking_sends_adaptive_not_reasoning_effort(self, custom_profile):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "medium"},
+            model="claude-opus-5-5-thinking",
+            base_url="https://api.cometapi.com/v1",
+        )
+        assert tl == {}
+        assert eb["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert eb["output_config"] == {"effort": "medium"}
+
+    def test_mandatory_opus_55_disable_emits_nothing(self, custom_profile):
+        eb, tl = custom_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": False},
+            model="claude-opus-5-5-thinking",
+            base_url="https://api.cometapi.com/v1",
+        )
+        assert eb == {}
+        assert tl == {}
+
+
     @pytest.mark.parametrize(
         "reasoning_config, expected",
         [({"enabled": True, "effort": "high"}, "default"), ({"enabled": False, "effort": "medium"}, "none")],

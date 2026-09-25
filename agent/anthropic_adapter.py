@@ -100,7 +100,7 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # Adaptive families where thinking is mandatory: ``thinking: {"type": "disabled"}`` answers HTTP
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
-_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
+_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable", "claude-opus-5-5")
 
 
 def _is_claude_model(model: str | None) -> bool:
@@ -580,25 +580,46 @@ def _apply_claude_code_identity(system, anthropic_tools, anthropic_messages, to_
     return system
 
 
+def adaptive_thinking_wire_fields(reasoning_config: Dict[str, Any], model: str) -> Dict[str, Any]:
+    """``thinking`` + ``output_config`` fields for adaptive-thinking models.
+
+    Shared by the native Anthropic Messages adapter and OpenAI-compat relays (custom/CometAPI)
+    that forward Claude to Bedrock: ``reasoning_effort`` on those relays maps to the legacy
+    ``thinking.type=enabled`` shape and 400s on Opus 5.5+."""
+    if reasoning_config.get("enabled") is False:
+        return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
+    if "haiku" in model.lower():
+        return {}
+    effort = str(reasoning_config.get("effort", "medium")).lower()
+    if effort == "none":
+        return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
+    if not _supports_adaptive_thinking(model):
+        return {}
+    adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
+    if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
+        adaptive_effort = "max"
+    return {
+        "thinking": {"type": "adaptive", "display": "summarized"},
+        "output_config": {"effort": adaptive_effort},
+    }
+
+
 def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max_tokens: int) -> Dict[str, Any]:
     """Map ``reasoning_config`` to Anthropic thinking kwargs. Adaptive models (Claude 4.6+,
     Kimi/Moonshot) get ``thinking.type=adaptive`` + ``output_config.effort``; older models and
     manual-only compat endpoints (MiniMax) get budget_tokens. Haiku has no extended thinking. On
     4.7+ ``thinking.display`` defaults to "omitted", hiding the reasoning Hermes shows in its CLI,
     so "summarized" is requested to keep the activity feed populated."""
+    adaptive = adaptive_thinking_wire_fields(reasoning_config, model)
+    if adaptive:
+        return adaptive
     if reasoning_config.get("enabled") is False:
-        # Adaptive models think by DEFAULT, so omitting the parameter is not a disable — the user
-        # silently keeps paying. Mandatory-thinking models 400 on the disable, so they keep the
-        # omission: a silently-ignored disable beats a dead turn.
-        return {"thinking": {"type": "disabled"}} if _accepts_thinking_disable(model) else {}
+        return {}
     if "haiku" in model.lower():
         return {}
     effort = str(reasoning_config.get("effort", "medium")).lower()
     if _supports_adaptive_thinking(model):
-        adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
-        if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
-            adaptive_effort = "max"
-        return {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": adaptive_effort}}
+        return {}
     budget = THINKING_BUDGET.get(effort, 8000)
     return {
         "thinking": {"type": "enabled", "budget_tokens": budget},

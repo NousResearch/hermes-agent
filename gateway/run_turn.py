@@ -3654,6 +3654,17 @@ class GatewayTurnMixin:
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
             pending_event = self._promote_queued_event(session_key, adapter, pending_event)
+            from gateway.process_notification_queue import refresh_process_notification
+            while pending_event is not None and pending_event.internal:
+                with self._profile_scope_for_source(pending_event.source):
+                    keep = await asyncio.to_thread(
+                        refresh_process_notification, pending_event, self._format_coalesced_process_completions,
+                    )
+                if keep:
+                    break
+                pending_event = self._promote_queued_event(
+                    session_key, adapter, _dequeue_pending_event(adapter, session_key),
+                )
             if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                 interrupt_message = result.get("interrupt_message")
                 if _is_control_interrupt_message(interrupt_message):

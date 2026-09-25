@@ -1279,6 +1279,21 @@ class GatewayInboundMixin:
         if _admitted is None:
             return None
         event, source, is_internal = _admitted
+        if is_internal:
+            from gateway.process_notification_queue import refresh_process_notification
+            with self._profile_scope_for_source(source):
+                keep = await asyncio.to_thread(
+                    refresh_process_notification, event, self._format_coalesced_process_completions,
+                )
+            if not keep:
+                # No turn will run its normal FIFO drain. Stage the next item for adapter cleanup.
+                adapter = self._delivery_adapter_for(source)
+                key = self._session_key_for_source(source)
+                if adapter is not None and key not in adapter._pending_messages:
+                    next_event = self._promote_queued_event(key, adapter, None)
+                    if next_event is not None:
+                        adapter._pending_messages[key] = next_event
+                return None
         # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
         # not on the adapter's raw inbound: profile routing, the ignored-channel
         # guard, plugin hooks and user authorization all reject events above,

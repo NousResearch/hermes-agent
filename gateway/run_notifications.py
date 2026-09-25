@@ -1321,7 +1321,8 @@ class GatewayNotificationsMixin:
             raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
             return await self._self_post_api_server(adapter, synth_text, raw_sid, evt)
         try:
-            metadata = {}
+            from gateway.process_notification_queue import notification_metadata
+            metadata = notification_metadata(synth_text, evt)
             session_key = str(evt.get("session_key") or "").strip()
             from agent.notification_presentation import diagnostic_process_event
             if diagnostic_process_event(evt):
@@ -1676,6 +1677,10 @@ class GatewayNotificationsMixin:
             # sibling is never discarded with it.
             delivered = None
             for _text, candidate_evt, _future in entries:
+                # Keep every member's identity until the queued wake actually starts its turn.
+                candidate_evt = {**candidate_evt, "_process_notification_entries": [
+                    (text, event) for text, event, _future in entries
+                ]}
                 delivered = await self._deliver_completion_notification(synth_text, candidate_evt)
                 if delivered is not None:
                     break

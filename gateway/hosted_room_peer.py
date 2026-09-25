@@ -15,6 +15,7 @@ import math
 import os
 import re
 import stat
+import time
 import urllib.parse
 from dataclasses import asdict, dataclass
 from functools import lru_cache, partial
@@ -30,6 +31,9 @@ from gateway.hosted_rooms_common import bounded_int, clock, compact_json, exact_
 PROTOCOL_VERSION = 2
 MAX_TOKEN_BYTES = 16 * 1024
 MAX_PROMPT_BYTES = 256 * 1024
+MAX_ROOM_LINK_ATTACHMENTS = 16
+MAX_ROOM_LINK_ATTACHMENT_BYTES = 15_000_000
+MAX_ROOM_LINK_ATTACHMENT_BATCH_BYTES = 50_000_000
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$")
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
 _LINK_MODES = frozenset({"direct", "overlay", "relay", "pull", "desktop"})
@@ -373,14 +377,19 @@ class HostedMemberDispatch:
     capability_digest: str
     execution_policy_digest: str
     trace_id: str
+    attachment_manifest_digest: str | None = None
 
     def as_mapping(self) -> dict[str, Any]:
         """Return the canonical wire mapping used for fingerprinting."""
-        return asdict(self)
+        mapping = asdict(self)
+        if self.attachment_manifest_digest is None:
+            mapping.pop("attachment_manifest_digest")
+        return mapping
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "HostedMemberDispatch":
-        _exact_fields(value, required=set(_DISPATCH_FIELDS) | {"prompt", "prompt_digest"}, label="dispatch")
+        _exact_fields(value, required=set(_DISPATCH_FIELDS) | {"prompt", "prompt_digest"},
+                      optional={"attachment_manifest_digest"}, label="dispatch")
         if not isinstance(prompt := value["prompt"], str) or not prompt.strip():
             raise HostedRoomPeerError("prompt must be a non-empty string")
         text(prompt, error=HostedRoomPeerError, label="prompt", max_bytes=MAX_PROMPT_BYTES, strip=False)
@@ -389,6 +398,9 @@ class HostedMemberDispatch:
             raise HostedRoomPeerError("prompt_digest does not match prompt")
         return cls(
             prompt=prompt, prompt_digest=prompt_digest,
+            attachment_manifest_digest=(
+                _digest(value["attachment_manifest_digest"], field="attachment_manifest_digest")
+                if "attachment_manifest_digest" in value else None),
             **{name: check(value[name], field=name) for name, check in _DISPATCH_FIELDS.items()})
 
 
@@ -399,7 +411,22 @@ _GRANT_SCOPE = (
 _GRANT_FIELDS = frozenset({
     "version", *_GRANT_SCOPE, "execution_policy_digest", "permissions", "issued_at", "expires_at"})
 _GRANT_REFRESH_FIELDS = _GRANT_FIELDS | {"status_expires_at"}
-_GRANT_PERMISSIONS = {"approve", "dispatch", "status", "stop"}
+_GRANT_PERMISSIONS = {"approve", "attachment.stage", "artifact.ack", "artifact.read", "dispatch", "status", "stop"}
+RoomGrantPermission = Literal["approve", "attachment.stage", "artifact.ack", "artifact.read", "dispatch", "status", "stop"]
+
+
+def invitation_permissions(catalog: Mapping[str, Any]) -> tuple[RoomGrantPermission, ...]:
+    """Select explicit invitation rights from the server's validated catalog.
+
+    This is metadata selection, not Files readiness. Generic signing and grant
+    refresh must keep their existing defaults/explicit rights instead.
+    """
+    checked = GatewayRoomCatalog.from_mapping(catalog)
+    if checked.attachments:
+        return ("approve", "attachment.stage", "dispatch", "status", "stop")
+    return ("approve", "dispatch", "status", "stop")
+
+
 MAX_DISPATCH_GRANT_TTL_SECONDS = 24 * 60 * 60
 MAX_STATUS_GRANT_TTL_SECONDS = 30 * 24 * 60 * 60
 
@@ -423,9 +450,14 @@ def issue_room_grant(
         or not math.isfinite(bounded_status_expiry) or bounded_status_expiry < now + float(ttl_seconds)
         or bounded_status_expiry > now + MAX_STATUS_GRANT_TTL_SECONDS):
         raise HostedRoomGrantError("room grant lifetime is invalid")
-    allowed = tuple(sorted(set(permissions)))
-    if not allowed or not set(allowed) <= _GRANT_PERMISSIONS:
+    try:
+        selected = tuple(permissions)
+    except TypeError as exc:
+        raise HostedRoomGrantError("room grant permissions are invalid") from exc
+    if (not selected or any(type(right) is not str or right not in _GRANT_PERMISSIONS for right in selected)
+            or len(set(selected)) != len(selected)):
         raise HostedRoomGrantError("room grant permissions are invalid")
+    allowed = tuple(sorted(selected))
     scope = locals()
     payload = {
         "version": PROTOCOL_VERSION,
@@ -454,20 +486,38 @@ def verify_room_grant(
     return payload
 
 
-def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float | None = None) -> dict[str, Any]:
-    """Verify grant signature, lifetime and operation without a dispatch."""
+def decode_room_grant(
+    secret: bytes,
+    token: str,
+    *,
+    permission: str,
+    now: float | None = None,
+    allow_expired_for_revocation: bool = False,
+) -> dict[str, Any]:
+    """Verify a signed grant without restoring expired operational authority."""
+    if allow_expired_for_revocation and permission != "status":
+        raise HostedRoomGrantError("expired grants are valid only for revocation")
     if not isinstance(token, str) or len(token.encode("utf-8")) > MAX_TOKEN_BYTES:
         raise HostedRoomGrantError("room grant is invalid")
-    encoded, supplied_signature = _split_token(token)
-    if not hmac.compare_digest(hmac.new(secret, encoded, hashlib.sha256).digest(), supplied_signature):
+    encoded_token, separator, signature_token = token.partition(".")
+    if not separator:
+        raise HostedRoomGrantError("room grant is invalid")
+    encoded = _b64decode(encoded_token)
+    supplied_signature = _b64decode(signature_token)
+    expected_signature = hmac.new(secret, encoded, hashlib.sha256).digest()
+    if not hmac.compare_digest(expected_signature, supplied_signature):
         raise HostedRoomGrantError("room grant signature is invalid")
     try:
         payload = json.loads(encoded.decode("ascii"))
     except Exception as exc:
         raise HostedRoomGrantError("room grant payload is invalid") from exc
-    if not isinstance(payload, dict) or frozenset(payload) not in {_GRANT_FIELDS, _GRANT_REFRESH_FIELDS}:
+    if not isinstance(payload, dict) or frozenset(payload) not in {
+        frozenset(_GRANT_FIELDS),
+        frozenset(_GRANT_REFRESH_FIELDS),
+    }:
         raise HostedRoomGrantError("room grant fields are invalid")
-    if not math.isfinite(checked_now := clock(now)):
+    checked_now = time.time() if now is None else float(now)
+    if not math.isfinite(checked_now):
         raise HostedRoomGrantError("room grant clock is invalid")
     try:
         issued_at = float(payload["issued_at"])
@@ -475,14 +525,34 @@ def decode_room_grant(secret: bytes, token: str, *, permission: str, now: float 
         status_expires_at = float(payload.get("status_expires_at", expires_at))
     except (TypeError, ValueError) as exc:
         raise HostedRoomGrantError("room grant lifetime is invalid") from exc
-    lifetimes = (issued_at, expires_at, status_expires_at)
-    if not (all(map(math.isfinite, lifetimes)) and issued_at < expires_at <= status_expires_at):
+    if not (
+        math.isfinite(issued_at)
+        and math.isfinite(expires_at)
+        and math.isfinite(status_expires_at)
+        and issued_at < expires_at <= status_expires_at
+    ):
         raise HostedRoomGrantError("room grant lifetime is invalid")
-    operation_expires_at = status_expires_at if permission in {"approve", "status", "stop"} else expires_at
-    if checked_now < issued_at - 30 or checked_now >= operation_expires_at:
+    operation_expires_at = (
+        status_expires_at
+        if permission in {"approve", "status", "stop"}
+        else expires_at
+    )
+    if (
+        not allow_expired_for_revocation
+        and (checked_now < issued_at - 30 or checked_now >= operation_expires_at)
+    ):
         raise HostedRoomGrantError("room grant is expired or not active")
-    if not isinstance(permissions := payload.get("permissions"), list) or permission not in permissions:
+    permissions = payload.get("permissions")
+    if (not isinstance(permissions, list) or not permissions
+            or any(type(right) is not str or right not in _GRANT_PERMISSIONS for right in permissions)
+            or len(set(permissions)) != len(permissions)):
+        raise HostedRoomGrantError("room grant permissions are invalid")
+    if type(permission) is not str or permission not in permissions:
         raise HostedRoomGrantError("room grant does not allow this operation")
+    # Hash the complete signed bearer in canonical base64 form so padding or
+    # equivalent base64 spellings cannot bypass exact revocation.
+    canonical_token = _b64encode(encoded) + "." + _b64encode(supplied_signature)
+    payload["_token_sha256"] = hashlib.sha256(canonical_token.encode("ascii")).hexdigest()
     return payload
 
 
@@ -499,7 +569,6 @@ def room_grant_needs_dispatch_refresh(token: str, *, now: float | None = None, l
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
-import time  # noqa: F401,E402
 
 @dataclass(frozen=True)
 class RoomLinkProbe:
@@ -547,3 +616,82 @@ def select_room_link(
         )
     return None
 # ---- END PLUGIN-COMPAT ----
+
+
+def attachment_manifest_digest(value: Any) -> str:
+    """Return the canonical SHA-256 identity for a validated manifest."""
+    manifest = canonical_attachment_manifest(value)
+    return hashlib.sha256(
+        json.dumps(
+            manifest,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("ascii")
+    ).hexdigest()
+
+
+def canonical_attachment_manifest(value: Any) -> list[dict[str, Any]]:
+    """Validate and normalize one bounded RoomLink attachment manifest.
+
+    The manifest contains metadata and content digests only. Bytes, local paths,
+    and bearer material are deliberately outside this durable wire contract.
+    Entry order is preserved because it is part of the user-visible message.
+    """
+    if not isinstance(value, list) or not value:
+        raise HostedRoomPeerError("attachment manifest must be a non-empty list")
+    if len(value) > MAX_ROOM_LINK_ATTACHMENTS:
+        raise HostedRoomPeerError("attachment manifest has too many entries")
+    required = {"attachment_id", "kind", "name", "size", "mime", "sha256"}
+    normalized: list[dict[str, Any]] = []
+    total = 0
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            raise HostedRoomPeerError("attachment manifest entries must be objects")
+        _exact_fields(raw, required=required, label="attachment manifest entry")
+        attachment_id = _identifier(raw["attachment_id"], field="attachment_id")
+        if attachment_id in seen:
+            raise HostedRoomPeerError("attachment ids must be unique")
+        seen.add(attachment_id)
+        kind = raw["kind"]
+        if not isinstance(kind, str) or kind not in {"image", "pdf", "file"}:
+            raise HostedRoomPeerError("attachment kind is unsupported")
+        name = raw["name"]
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or len(name) > 255
+            or name.strip() in {".", ".."}
+            or any(token in name for token in ("/", "\\", "\x00", "\n", "\r"))
+        ):
+            raise HostedRoomPeerError("attachment name must be a bounded basename")
+        mime = raw["mime"]
+        if (
+            not isinstance(mime, str)
+            or not mime.strip()
+            or len(mime) > 127
+            or "/" not in mime
+        ):
+            raise HostedRoomPeerError("attachment mime is invalid")
+        size = raw["size"]
+        if (
+            isinstance(size, bool)
+            or not isinstance(size, int)
+            or not 0 < size <= MAX_ROOM_LINK_ATTACHMENT_BYTES
+        ):
+            raise HostedRoomPeerError("attachment size is outside the RoomLink limit")
+        total += size
+        if total > MAX_ROOM_LINK_ATTACHMENT_BATCH_BYTES:
+            raise HostedRoomPeerError("attachment batch is too large")
+        normalized.append(
+            {
+                "attachment_id": attachment_id,
+                "kind": kind,
+                "name": name.strip(),
+                "size": size,
+                "mime": mime.strip().lower(),
+                "sha256": _digest(raw["sha256"], field="attachment sha256"),
+            }
+        )
+    return normalized

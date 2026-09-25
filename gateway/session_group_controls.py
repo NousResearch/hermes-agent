@@ -11,6 +11,10 @@ GROUP_METHODS = {
     'groups.state': 'session:read',
     'groups.log': 'session:read',
     'groups.create': 'session:control',
+    'groups.peer.register': 'session:control',
+    'groups.peer.invite': 'session:operator',
+    'groups.peer.revoke': 'session:operator',
+    'groups.peer.revoke_exact': 'session:operator',
     'groups.rename': 'session:control',
     'groups.disband': 'session:control',
     'groups.send': 'session:submit',
@@ -27,6 +31,13 @@ _FIELDS = {
     'groups.state': {'room_id', 'include_disbanded'},
     'groups.log': {'room_id', 'since_seq', 'limit', 'include_disbanded'},
     'groups.create': {'room_id', 'name', 'members'},
+    'groups.peer.register': {'request_id', 'room_id', 'member_id', 'target_url',
+                             'target_profile', 'grant', 'catalog', 'cancellation_scope_id',
+                             'trace_id', 'expected_grant_sha256'},
+    'groups.peer.invite': {'request_id', 'room_id', 'home_install_id', 'authority_gateway_id',
+                           'authority_epoch', 'member_id', 'grant_id', 'ttl_seconds', 'status_ttl_seconds'},
+    'groups.peer.revoke': {'grant'},
+    'groups.peer.revoke_exact': {'grant'},
     'groups.rename': {'room_id', 'event_id', 'name'},
     'groups.disband': {'room_id', 'cancel_id'},
     'groups.send': {'room_id', 'event_id', 'payload'},
@@ -68,7 +79,11 @@ async def dispatch_group_control(connection, method, params):
             if method == 'profiles.list':
                 return _profiles(authority, actor, home, supplied)
             try:
-                return _group(authority, actor, home, method, supplied)
+                if method in {'groups.peer.invite', 'groups.peer.revoke', 'groups.peer.revoke_exact'}:
+                    from gateway.session_group_peers import dispatch_group_peer
+                    return dispatch_group_peer(connection, method, supplied)
+                return _group(authority, actor, home, method, supplied,
+                              state_owner=connection._group_state_owner)
             except RuntimeStoreError:
                 raise
             except HostedRoomError as exc:
@@ -78,11 +93,17 @@ async def dispatch_group_control(connection, method, params):
     return await asyncio.to_thread(invoke)
 
 
-def _group(authority, actor, home, method, params):
+def _group(authority, actor, home, method, params, *, state_owner=None):
+    if method == 'groups.state':
+        from gateway.session_group_state import read_group_state
+        if state_owner is None:
+            raise RuntimeStoreError('group_state_unavailable')
+        return read_group_state(state_owner, authority, actor, params)
     from gateway import hosted_rooms as rooms
     db_path = authority.db.db_path
     gateway_id = rooms.local_authority_gateway_id()
     service = getattr(authority, 'hosted_room_service', None)
+    disband_service = service
     room_authorizer = getattr(service, 'authorize_room', None)
     if service is not None:
         if Path(service.db_path).resolve() != Path(db_path).resolve():
@@ -92,6 +113,11 @@ def _group(authority, actor, home, method, params):
             service = None
 
     execution_methods = {'groups.send', 'groups.stop', 'groups.retry', 'groups.discard', 'groups.approve'}
+    if method == 'groups.peer.register':
+        if service is None:
+            raise RuntimeStoreError('runtime_coordination_required')
+        from gateway.session_group_setup import register_peer
+        return register_peer(authority, actor, service, params)
     if getattr(authority, 'hosted_room_service', None) is not None and 'room_id' in params:
         if room_authorizer is None:
             raise RuntimeStoreError('permission_denied')
@@ -152,26 +178,20 @@ def _group(authority, actor, home, method, params):
                 name=params.get('name'), members=normalized, authority_gateway_id=gateway_id)}
 
     def disband():
-        from gateway.hosted_room_driver import list_tasks
-        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
-        if service is not None and state.get('disbanded_at') is None:
-            service.stop_room(params.get('room_id'),
-                              cancel_id=params.get('cancel_id') or 'room-disbanded',
-                              require_acknowledged=True)
-            service.revoke_room_routes(params.get('room_id'))
-        # Metadata control must not destroy an active execution or bypass Stop.
-        if service is None and any(list_tasks(db_path, room_id=params.get('room_id'), status=status)
-               for status in ('queued', 'running', 'stopping', 'indeterminate', 'deferred')):
-            raise RuntimeStoreError('runtime_coordination_required')
-        state = rooms.room_state(db_path, room_id=params.get('room_id'), include_disbanded=True)
-        return {'tombstone': rooms.disband_room(db_path, room_id=params.get('room_id'),
-                expected_gateway_id=gateway_id, expected_epoch=state['authority_epoch'])}
+        from gateway.session_group_disband import disband as canonical_disband
+        # Disband distinguishes a genuinely metadata-only connection from an
+        # installed pinned runtime which has stopped. General read/create
+        # downgrade behavior remains unchanged.
+        return canonical_disband(authority, actor, disband_service, params, state_owner)
 
     def state():
         room = rooms.room_state(db_path, **params)
         result = {'room': room}
         if service is not None and room.get('disbanded_at') is None:
             result['driver_status'] = service.status(room['room_id'])
+            if 'session:control' not in actor.capabilities:
+                result['driver_status']['pending_actions'] = [
+                    a for a in result['driver_status']['pending_actions'] if a['kind'] not in {'retry', 'discard'}]
         return result
 
     handlers = {

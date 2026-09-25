@@ -181,7 +181,10 @@ class TestStartRun:
         handler.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_start_returns_202(self, adapter):
+    async def test_start_returns_202(self, adapter, monkeypatch):
+        # Ordinary runs must not depend on the optional selected-room provider.
+        import sys
+        monkeypatch.setitem(sys.modules, "gateway.session_selected_route", None)
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_create_agent") as mock_create:
@@ -425,6 +428,7 @@ class TestRunStatus:
         adapter._run_idempotency_store.reserve(
             scope, "shutdown-test-key", "shutdown-test-fingerprint", "run_live", status)
         adapter._run_idempotency_ids.add("run_live")
+        adapter._run_receipt_stores["run_live"] = adapter._run_idempotency_store
         adapter._run_statuses["run_done"] = {
             "object": "hermes.run", "run_id": "run_done", "status": "completed"}
         _claim_run(adapter, "run_done")

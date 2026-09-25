@@ -19,6 +19,8 @@ _PROFILE_IMPLICIT = frozenset({'session.create', 'session.list', 'session.info',
 class AuthorityConnection:
     def __init__(self, authority, transport, identity, *, operator=False):
         self.authority = authority
+        from gateway.session_group_state import GroupStateOwner
+        self._group_state_owner = GroupStateOwner.capture(authority)
         self.transport = transport
         capabilities = frozenset({'session:read', 'session:submit', 'session:control',
                                   'session:approve', 'session:respond'})

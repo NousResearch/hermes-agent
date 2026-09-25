@@ -12,22 +12,33 @@ def _authority(adapter):
     return active_authority(adapter.gateway_runner)
 
 
-def run_admission(adapter, run_id):
+def raw_run_admission(adapter, run_id):
+    """Unique canonical ownership, retaining the digest for integrity checks."""
     authority = _authority(adapter)
     if authority is None:
         return None
     with authority.db._read_ctx() as conn:
-        rows = conn.execute("SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?", (run_id,)).fetchall()
+        rows = conn.execute("SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?", (run_id,)).fetchmany(2)
     if len(rows) > 1:
         raise RuntimeStoreError('admission_conflict')
-    return (authority, _row(rows[0])) if rows else None
+    return (authority, dict(rows[0])) if rows else None
 
 
-def run_projection(adapter, run_id):
+def run_admission(adapter, run_id):
+    owned = raw_run_admission(adapter, run_id)
+    return (owned[0], _row(owned[1])) if owned is not None else None
+
+
+def run_projection(adapter, run_id, *, receipt_identity=None):
     owned = run_admission(adapter, run_id)
     if owned is None:
         return None
     authority, row = owned
+    if receipt_identity is not None:
+        scope, session_id = receipt_identity
+        if (row['target_session_id'] != session_id or row['request_id'] != run_id
+                or row['payload'].get('api_turn_v1', {}).get('run_owner_scope') != scope):
+            raise RuntimeStoreError('admission_conflict')
     status = {'queued': 'queued', 'started': 'running', 'unknown': 'interrupted', 'terminal': row['outcome']}.get(row['status'])
     saved = admission_result(authority.db, row['admission_id'])
     result = saved.get('result', {}) if saved else {}
@@ -36,6 +47,13 @@ def run_projection(adapter, run_id):
             status = 'cancelled'
         elif result.get('failed') or result.get('error'):
             status = 'failed'
+    if receipt_identity is not None:
+        # POST replay observes the accepted run, not today's Output readiness.
+        # Artifact reads, result projections and ACK keep the default full path.
+        if status is None:
+            raise RuntimeStoreError('storage_unavailable')
+        return {'run_id': run_id, 'status': status, 'session_id': row['target_session_id'],
+                'admission_id': row['admission_id'], 'execution_generation': row['generation']}
     pending = []
     live = authority.sessions.get(row['target_session_id'])
     if live is not None and row['status'] == 'started':

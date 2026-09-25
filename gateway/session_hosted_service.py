@@ -12,11 +12,24 @@ from tui_gateway.hosted_room_service import HostedRoomService
 _OWNER = 'gateway.hosted.owner.v1:'
 
 
+def _output_owner_module():
+    import importlib
+    try:
+        return importlib.import_module('gateway.session_hosted_output_rpc')
+    except ModuleNotFoundError as exc:
+        if exc.name != 'gateway.session_hosted_output_rpc':
+            raise
+        return None
+
+
 class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def __init__(self, authority, loop):
         self.authority, self.loop = authority, loop
         self.member_rpcs = {}
         super().__init__(None, db_path=authority.db.db_path)
+        output = _output_owner_module()
+        if output is not None:
+            output.initialize_owner_output(self)
 
     def _make_rpc(self, server):
         # Member-specific canonical transports retain exact durable history. They
@@ -64,7 +77,21 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
         target_home = self.profile_homes().get(profile)
         if target_home is None or params.get('_target_home') != str(target_home):
             raise RuntimeStoreError('permission_denied')
+        if operation in {'submit', 'execute', 'attachment'}:
+            from gateway.hosted_room_route_schema import require_room_work_open
+            with self.authority.db._read_ctx() as conn:
+                try:
+                    require_room_work_open(conn, room_id, error=RuntimeStoreError)
+                except RuntimeStoreError as exc:
+                    raise RuntimeStoreError('permission_denied') from exc
         result = {'owner': owner, 'target_home': str(target_home)}
+        output = _output_owner_module()
+        if output is not None and operation in output.OUTPUT_OPERATIONS:
+            result.update(output.source_output_action_attestation(self, selector, operation, params))
+            return result
+        if operation == 'discard':
+            result.update(self.attest_discard_reservation(selector, params))
+            return result
         if operation in {'submit', 'execute', 'attachment'}:
             matches = [t for t in list_tasks(self.db_path, room_id=room_id)
                        if asdict(t['identity']) == params.get('task')
@@ -88,6 +115,12 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
                 manifest = payload.get('attachments', [])
                 result.update(prompt=payload['prompt'], attachments=manifest,
                               attachment_digests=source_attachment_digests(self, member, room_id, manifest))
+                if operation == 'submit' and output is not None:
+                    consent = output.source_output_admission(
+                        self, selector, params.get('task'), params.get('execution_generation'),
+                        owner=owner, target_home=str(target_home))
+                    if consent is not None:
+                        result['owner_output_admission'] = consent
         return result
 
 
@@ -100,7 +133,7 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
     def _turn_lock(self, profile):
         return nullcontext()
 
-    def authorize_room(self, actor_subject, room_id, *, create=False):
+    def authorize_room(self, actor_subject, room_id, *, create=False, conn=None):
         from gateway.hosted_rooms_common import IDENTIFIER_RE
         if (not isinstance(actor_subject, str) or not actor_subject
                 or not isinstance(room_id, str) or len(room_id) > 128
@@ -121,7 +154,8 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             if row is None or row[0] != actor_subject:
                 raise RuntimeStoreError('permission_denied')
             return True
-        return self.authority.db._execute_write(write)
+        # Setup's route writer reuses this check inside its existing transaction.
+        return write(conn) if conn is not None else self.authority.db._execute_write(write)
 
     def _owner(self, room_id):
         with self.authority.db._read_ctx() as conn:
@@ -130,9 +164,66 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             raise RuntimeStoreError('permission_denied')
         return row[0]
 
+    def _tracked_peer_client(self, room_id, member_id, client, *, route=None, **kwargs):
+        from gateway.session_group_renewal import CanonicalPeerRenewal
+        route = route or self.peer_routes.get((room_id, member_id))
+        return super()._tracked_peer_client(room_id, member_id, client, route=route,
+            prepare_renewal=lambda grant: CanonicalPeerRenewal(self, room_id, member_id, route, client, grant),
+            **kwargs)
+
+    def _refresh_peer_attachment_catalog(self, room_id, member_id, route, client):
+        # Canonical targets expose operation-private Files readiness. Revalidate
+        # the invitation and grant, never overwrite it from an idle capability GET.
+        from gateway import hosted_room_links as links, hosted_rooms as rooms
+        from gateway.session_group_setup import verify_invited_catalog
+        def current():
+            self._owned_authority(room_id)
+            room = self._owned_room(room_id)
+            stored = links.load_room_link(self.db_path, room_id=room_id, member_id=member_id)
+            if stored is None:
+                raise RuntimeStoreError('peer_setup_conflict')
+            catalog = stored.catalog
+            member = next((m for m in room['members'] if m['member_id'] == member_id), None)
+            target = member.get('target', {}) if member else {}
+            local = rooms.local_authority_gateway_id()
+            if (stored.status != 'ready' or stored.grant != route.grant
+                    or stored.target_profile != route.target_profile
+                    or stored.cancellation_scope_id != route.cancellation_scope_id or stored.trace_id != route.trace_id
+                    or catalog.installation_id != route.target_install_id
+                    or catalog.catalog_digest != route.capability_digest or catalog.attachments != route.attachments
+                    or catalog.execution_policy.policy_digest != route.execution_policy_digest
+                    or not catalog.persistent_process or not catalog.text
+                    or route.home_install_id != local or room['authority_gateway_id'] != local
+                    or not member or member['profile'] != route.target_profile or target.get('kind') != 'peer'
+                    or target.get('profile') != route.target_profile or target.get('installation_id') != route.target_install_id
+                    or target.get('capability_digest') != route.capability_digest):
+                raise RuntimeStoreError('peer_setup_conflict')
+            scope = dict(room_id=room_id, home_install_id=local, authority_gateway_id=local,
+                         authority_epoch=room['authority_epoch'], member_id=member_id, target_profile=route.target_profile)
+            return stored, scope, self._owner(room_id), room['members']
+        snapshot = current()
+        stored, scope = snapshot[:2]
+        verify_invited_catalog(client, route.grant, stored.catalog, scope)
+        transition = client.renewal_transition
+        if transition is not None:
+            from dataclasses import replace
+            previous, replacement = transition
+            if previous != stored:
+                raise RuntimeStoreError('peer_setup_conflict')
+            route = replace(route, grant=replacement.grant)
+            snapshot = (replacement, *snapshot[1:])
+        if current() != snapshot:
+            raise RuntimeStoreError('peer_setup_conflict')
+        return route
+
     def _resolve_member_transport(self, binding, task):
         if self._member_is_peer(binding.room_id, str(task['payload'].get('target_member_id') or task['payload'].get('target_profile'))):
-            return super()._resolve_member_transport(binding, task)
+            transport = super()._resolve_member_transport(binding, task)
+            if task.get('status') == 'queued':
+                from gateway.session_hosted_peer_retry import capture_retry_binding
+                transport.nonadmission_retry_binding = capture_retry_binding(
+                    self, binding, task, transport.route, transport.client)
+            return transport
         from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
         payload = task['payload']
         member = str(payload.get('target_member_id') or payload.get('target_profile'))

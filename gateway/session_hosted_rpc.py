@@ -129,6 +129,7 @@ class HostedRoomAuthorityRPC:
 
     async def _submit(self, params):
         task, generation = params['task'], params['execution_generation']
+        owner_output_context = params.pop('_owner_output_context', None)
         request_id = 'hosted:' + json.dumps([asdict(task), generation], sort_keys=True, separators=(',', ':'))
         # Refuse unknown before submit: submit itself schedules the queue on retries.
         rows = self._rows()
@@ -137,8 +138,14 @@ class HostedRoomAuthorityRPC:
         from gateway.session_hosted_attachments import submission_payload
         payload = await asyncio.to_thread(
             submission_payload, self, params['prompt'], params.get('attachments'))
+        authorize_output = None
+        if owner_output_context is not None:
+            from gateway.session_hosted_output_rpc import new_admission_authorizer
+            authorize_output = new_admission_authorizer(
+                self, owner_output_context, request_id=request_id, payload=payload,
+                task=task, generation=generation)
         receipt = await self.authority.submit(self.principal, Submission(
-            request_id, self.ref, payload, 'queue'))
+            request_id, self.ref, payload, 'queue'), _authorize_write=authorize_output)
         self.callbacks[receipt.admission_id] = params['on_terminal']
         if receipt.status in {'queued', 'started'}:
             waiter = self.authority.waiters.get(receipt.admission_id)
@@ -200,14 +207,36 @@ class HostedRoomAuthorityRPC:
         if row['status'] == 'unknown':
             raise RuntimeStoreError('unknown_execution')
         if row['status'] == 'queued':
-            await self.authority.cancel_queued(self.principal, self.ref, row['admission_id'])
+            try:
+                await self.authority.cancel_queued(self.principal, self.ref, row['admission_id'])
+            except RuntimeStoreError as exc:
+                if exc.reason != 'stale_generation':
+                    raise
+                # Claim won the queued CAS. Re-read this exact admission, never
+                # the next FIFO head or the hosted driver's generation counter.
+                matches = [fresh for fresh, task, _ in self._rows()
+                           if fresh['admission_id'] == row['admission_id'] and task == current[1]]
+                if len(matches) != 1 or any(matches[0][key] != row[key] for key in (
+                        'request_id', 'principal_id', 'target_session_id', 'owner_epoch',
+                        'payload', 'intent')):
+                    raise RuntimeStoreError('stale_generation') from None
+                fresh = matches[0]
+                if fresh['status'] == 'unknown':
+                    raise RuntimeStoreError('unknown_execution') from None
+                if fresh['status'] != 'started' or type(fresh['generation']) is not int or fresh['generation'] < 1:
+                    raise RuntimeStoreError('stale_generation') from None
+                await self.authority.interrupt(self.principal, self.ref, fresh['generation'])
         else:
             await self.authority.interrupt(self.principal, self.ref, row['generation'])
         return {'interrupted': True, 'status': 'interrupted'}
 
     async def _discard(self, params):
         generation = params['execution_generation']
-        if type(generation) is not int or generation < 1:
+        source_digest = params.pop('_source_discard_digest', None)
+        owner_output_cleanup = params.pop('_owner_output_cleanup', None)
+        if (type(generation) is not int or generation < 1
+                or not isinstance(source_digest, str) or len(source_digest) != 64
+                or any(ch not in '0123456789abcdef' for ch in source_digest)):
             raise RuntimeStoreError('invalid_params')
         matches = [(row, task) for row, task, hosted_generation in self._rows()
                    if (row['status'] == 'unknown' or (row['status'] == 'terminal' and row['outcome'] == 'interrupted'))
@@ -216,6 +245,13 @@ class HostedRoomAuthorityRPC:
         if len(matches) != 1:
             raise RuntimeStoreError('stale_generation')
         row, task = matches[0]
+        if owner_output_cleanup is not None:
+            output = __import__(
+                'gateway.session_hosted_output_rpc', fromlist=['discard_unknown_owner_output']
+            )
+            output.discard_unknown_owner_output(
+                self.authority, row, task, generation, owner_output_cleanup
+            )
         # The public fence is hosted; the canonical CAS uses its own generation.
         if row['status'] == 'unknown':
             await self.authority.resolve_unknown(
@@ -257,9 +293,11 @@ class HostedRoomAuthorityRPC:
     def interrupt(self, *, profile, session_id, source, expected_task_id):
         return self._call('interrupt', profile=profile, session_id=session_id, source=source, expected_task_id=expected_task_id)
 
-    def discard(self, *, profile, session_id, source, expected_task_id, execution_generation):
+    def discard(self, *, profile, session_id, source, expected_task_id, execution_generation,
+                _source_discard_digest):
         return self._call('discard', profile=profile, session_id=session_id, source=source,
-                          expected_task_id=expected_task_id, execution_generation=execution_generation)
+                          expected_task_id=expected_task_id, execution_generation=execution_generation,
+                          _source_discard_digest=_source_discard_digest)
 
     def approve(self, *, session_id, request_id, choice):
         return self._call('approve', session_id=session_id, request_id=request_id, choice=choice)

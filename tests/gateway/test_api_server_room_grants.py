@@ -1,7 +1,9 @@
 """RoomLink grant authority: policy drift, gateway-owned secret, superseded authority."""
 
+import contextlib
+import json
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -32,6 +34,57 @@ def test_grant_refresh_accepts_the_authorized_execution_policy():
         )
         is None
     )
+
+
+@pytest.mark.asyncio
+async def test_grant_refresh_rechecks_authority_after_mint(monkeypatch):
+    from gateway import hosted_rooms
+    from gateway import hosted_room_peer
+    from gateway import hosted_room_execution_policy
+
+    claims = {
+        "room_id": "room-1",
+        "home_install_id": "install-home",
+        "authority_gateway_id": "install-home",
+        "authority_epoch": 1,
+        "member_id": "member-reviewer",
+        "target_install_id": "install-target",
+        "target_profile": "reviewer",
+        "execution_policy_digest": "a" * 64,
+        "permissions": ["dispatch", "status"],
+        "expires_at": time.time() + 3600,
+        "status_expires_at": time.time() + 7200,
+    }
+    adapter = MagicMock()
+    adapter._read_json_body = AsyncMock(return_value=({}, None))
+    adapter._room_grant_claims.side_effect = [
+        claims,
+        room_grants.RoomGrantReauthorizationRequired("room grant is revoked"),
+    ]
+    adapter._profile_scope.return_value = contextlib.nullcontext()
+    monkeypatch.setattr(
+        hosted_rooms,
+        "local_authority_gateway_id",
+        lambda: "install-target",
+    )
+    monkeypatch.setattr(
+        hosted_room_execution_policy,
+        "execution_policy_mapping",
+        lambda **_kwargs: {"policy_digest": "a" * 64},
+    )
+    minted = MagicMock(return_value="replacement.room.grant")
+    monkeypatch.setattr(hosted_room_peer, "issue_room_grant", minted)
+
+    response = await room_grants._handle_room_member_grant_refresh(
+        adapter,
+        object(),
+        _openai_error=lambda message, **kwargs: {"message": message, **kwargs},
+        _api_request_profile=MagicMock(get=lambda: "reviewer"),
+    )
+
+    assert response.status == 403
+    assert adapter._room_grant_claims.call_count == 2
+    minted.assert_called_once()
 
 
 def test_room_grant_secret_stays_gateway_owned_on_named_profile(
@@ -114,5 +167,3 @@ def test_superseded_room_authority_cannot_reuse_its_grant(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="no longer current"):
         adapter._room_grant_claims(request, permission="status")
-
-

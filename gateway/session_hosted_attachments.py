@@ -5,7 +5,10 @@ import os
 from pathlib import Path
 import tempfile
 
-from gateway.hosted_room_attachments import HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES
+from gateway.hosted_room_attachments import (
+    AttachmentAdmissionError, HostedRoomAttachmentStore, MAX_ATTACHMENT_BYTES,
+    validate_manifest,
+)
 from hermes_state_runtime import RuntimeStoreError
 
 
@@ -30,9 +33,17 @@ def upload(service, actor, params):
         data = base64.b64decode(encoded, validate=True)
     except (ValueError, binascii.Error) as exc:
         raise RuntimeStoreError('invalid_params') from exc
-    return HostedRoomAttachmentStore(service.db_path).put(
-        room_id=room_id, upload_id=params.get('upload_id'), kind=params.get('kind'),
-        name=params.get('name'), mime=params.get('mime'), data=data)
+    # Canonical services reuse their initialized store. Compatibility callers
+    # without one may initialize only after principal/room authorization.
+    store = getattr(service, 'attachments', None)
+    if store is None:
+        store = HostedRoomAttachmentStore(service.db_path)
+    try:
+        return store.put_public(
+            room_id=room_id, upload_id=params.get('upload_id'), kind=params.get('kind'),
+            name=params.get('name'), mime=params.get('mime'), data=data)
+    except AttachmentAdmissionError as exc:
+        raise RuntimeStoreError('runtime_coordination_required') from exc
 
 
 def download(service, actor, params):
@@ -46,12 +57,17 @@ def download(service, actor, params):
     return {**saved.attachment, 'data_base64': base64.b64encode(saved.data).decode('ascii')}
 
 
-def append_user_event(service, *, room_id, event_id, payload, gateway_id, epoch):
+def append_user_event(
+        service, *, room_id, event_id, payload, gateway_id, epoch,
+        authorize_new=None, authorize_commit=None, existing_only=False):
     from gateway import hosted_rooms
-    store = HostedRoomAttachmentStore(service.db_path)
-    manifest = payload.get('attachments', [])
+    manifest = validate_manifest(payload.get('attachments', []))
+    store = None
     transitioned = []
     if manifest:
+        store = getattr(service, 'attachments', None)
+        if store is None:
+            store = HostedRoomAttachmentStore(service.db_path)
         _, transitioned = store.commit_message_with_receipt(
             room_id=room_id, event_id=event_id, manifest=manifest,
             recipient_member_ids=[m['member_id'] for m in service._room(room_id)['members']],
@@ -60,9 +76,12 @@ def append_user_event(service, *, room_id, event_id, payload, gateway_id, epoch)
         return hosted_rooms.append_event(
             service.db_path, room_id=room_id, event_id=event_id, kind='message.user',
             actor={'kind': 'user', 'id': 'desktop'}, payload=payload,
-            authority_gateway_id=gateway_id, authority_epoch=epoch)
+            authority_gateway_id=gateway_id, authority_epoch=epoch,
+            authorize_new=authorize_new, authorize_commit=authorize_commit,
+            existing_only=existing_only)
     except Exception:
         if transitioned:
+            assert store is not None
             store.abort_message_commit(room_id=room_id, event_id=event_id, attachment_ids=transitioned)
         raise
 

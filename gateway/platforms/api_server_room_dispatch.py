@@ -1,7 +1,6 @@
 """RoomLink dispatch validation and hidden member-session ownership."""
 
 import asyncio
-import hashlib
 import hmac
 import time
 from typing import Any
@@ -22,10 +21,8 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
     if db is None:
         raise RuntimeError("session database unavailable")
     title = f"Group: {dispatch.room_id}"
-    seed = (
-        f"{dispatch.home_install_id}\0{dispatch.room_id}\0"
-        f"{dispatch.member_id}\0{dispatch.target_profile}")
-    session_id = f"room_{hashlib.sha256(seed.encode()).hexdigest()[:32]}"
+    from gateway.session_api import hosted_session_id
+    session_id = hosted_session_id(dispatch)
     from gateway.session_authorities import active_authority
     authority = active_authority(self.gateway_runner)
     if authority is not None:
@@ -56,6 +53,10 @@ async def _ensure_hosted_member_session(self, dispatch: Any) -> str:
 
 
 def _room_dispatch_error(exc: Exception, *, _openai_error) -> "web.Response":
+    from hermes_state_runtime import RuntimeStoreError
+    if isinstance(exc, RuntimeStoreError) and exc.reason in {'storage_unavailable', 'admission_conflict'}:
+        return _json_error(_openai_error, exc.reason, code=exc.reason,
+                           status=503 if exc.reason == 'storage_unavailable' else 409)
     message, code = str(exc), "invalid_room_dispatch"
     lowered = message.lower()
     if "execution policy" in lowered or "remote room execution requires" in lowered:
@@ -81,31 +82,49 @@ async def _normalize_room_dispatch(
         from gateway import hosted_rooms
         from gateway.hosted_room_peer import GatewayRoomCatalog, HostedMemberDispatch, verify_room_grant
         from gateway.hosted_room_execution_policy import RoomExecutionPolicy
-        from gateway.platforms.api_server_room_grants import _local_room_catalog
+        from gateway.platforms.api_server_room_grants import _effective_room_profile, _local_room_catalog
         dispatch = HostedMemberDispatch.from_mapping(body.get("hosted_room_dispatch"))
         verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="dispatch")
-        active_profile = _api_server._api_request_profile.get() or "default"
+        active_profile = _effective_room_profile(_api_server._api_request_profile)
         local_install = hosted_rooms.local_authority_gateway_id()
         if dispatch.target_profile != active_profile or dispatch.target_install_id != local_install:
             raise ValueError("room dispatch target does not match this profile")
-        _, catalog_map = _local_room_catalog(self, active_profile, local_install)
-        catalog = GatewayRoomCatalog.from_mapping(catalog_map)
-        policy = RoomExecutionPolicy.from_mapping(catalog.execution_policy.as_mapping())
-        if not hmac.compare_digest(policy.policy_digest, dispatch.execution_policy_digest):
-            raise ValueError("room execution policy changed")
-        if not hmac.compare_digest(catalog.catalog_digest, dispatch.capability_digest):
-            raise ValueError("room capability catalog changed")
         if body.get("input") not in {None, dispatch.prompt}:
             raise ValueError("room dispatch input does not match its prompt")
         expected_key = f"room:{dispatch.task_id}:{dispatch.execution_generation}"
         if request.headers.get("Idempotency-Key", "").strip() != expected_key:
             raise ValueError("room dispatch idempotency key is invalid")
-        session_id = await self._ensure_hosted_member_session(dispatch)
-        return {
-            "input": dispatch.prompt,
-            "session_id": session_id,
-            "hosted_room_dispatch": dispatch.as_mapping(),
-            "_room_execution_policy": policy.as_mapping(),
-        }, None
+        # Replay is observation under current signed read authority, not NEW
+        # authorization. Never consult the catalog, bind, or capture first.
+        self._room_grant_claims(request, permission="dispatch")
+        verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission="status")
+        from gateway.platforms.api_server_room_replay import room_replay, normalized_room_body
+        replay = room_replay(self, request, dispatch, _openai_error=_openai_error)
+        if replay is not None:
+            return body, replay
+        if dispatch.attachment_manifest_digest is not None:
+            verify_room_grant(self._room_grant_secret(), room_token, dispatch, permission='attachment.stage')
+        _, catalog_map = _local_room_catalog(self, active_profile, local_install)
+        catalog = GatewayRoomCatalog.from_mapping(catalog_map)
+        if not catalog.text:
+            raise ValueError("canonical_room_peer_unsupported")
+        # Files NEW is validated against its fresh held route by /runs, after
+        # this replay-first immutable normalization and before any mutation.
+        policy = RoomExecutionPolicy.from_mapping(catalog.execution_policy.as_mapping())
+        if not hmac.compare_digest(policy.policy_digest, dispatch.execution_policy_digest):
+            raise ValueError("room execution policy changed")
+        from gateway.session_peer_route import catalog_matches_dispatch
+        if dispatch.attachment_manifest_digest is None and not catalog_matches_dispatch(catalog_map, dispatch):
+            raise ValueError("room capability catalog changed")
+        from gateway.platforms.api_server_room_grants import _canonical_room_peer
+        from gateway.session_api import hosted_session_id, prospective_room_session
+        session_id = hosted_session_id(dispatch)
+        if _canonical_room_peer(self, active_profile):
+            from gateway.session_peer_target import root_target
+            owner, _ = root_target(self, active_profile)
+            session_id = prospective_room_session(owner, dispatch)
+            # Transport-private evidence, never normalized/persisted caller JSON.
+            request._hermes_canonical_room_owner = owner
+        return normalized_room_body(dispatch, session_id, policy.as_mapping()), None
     except Exception as exc:
         return body, _room_dispatch_error(exc, _openai_error=_openai_error)

@@ -1839,12 +1839,6 @@
    "target": "(deleted; BASE body restored)"
   },
   {
-   "facade": "gateway.hosted_room_peer",
-   "name": "time",
-   "kind": "import",
-   "target": "time"
-  },
-  {
    "facade": "gateway.hosted_room_replicas",
    "name": "MAX_EVENT_JSON_BYTES",
    "kind": "moved-lazy",

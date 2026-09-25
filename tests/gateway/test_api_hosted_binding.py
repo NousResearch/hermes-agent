@@ -24,3 +24,30 @@ def test_hosted_binding_requires_exact_server_dispatch(owner):
     with pytest.raises(RuntimeStoreError, match='admission_conflict'):
         bind_api_session(owner, 'different-room-id', hosted_dispatch=dispatch)
     assert owner.db.get_session('different-room-id') is None
+
+
+@pytest.mark.parametrize('profile', [None, 'worker'])
+def test_prospective_hosted_session_preserves_served_profile(owner, profile):
+    from types import SimpleNamespace
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+    from gateway.session_api import hosted_session_id, prospective_room_session
+
+    owner.runner.session_authorities = SimpleNamespace(profile_name=lambda authority: profile)
+    dispatch = _dispatch(_policy())
+    sid = hosted_session_id(dispatch)
+    source = SessionSource(platform=Platform.API_SERVER, chat_id=sid, user_id='api',
+                           chat_type='dm', profile=profile)
+    route = owner.runner.session_store._generate_session_key(source)
+    owner.db.create_session(sid, source='bot_room')
+    owner.db._execute_write(lambda conn: conn.execute(
+        'UPDATE sessions SET title=?,session_key=? WHERE id=?',
+        ('Group: ' + dispatch.room_id, route, sid)))
+    owner.sessions[sid] = SimpleNamespace(source=source)
+
+    assert prospective_room_session(owner, dispatch) == sid
+    owner.sessions[sid].source = SessionSource(
+        platform=Platform.API_SERVER, chat_id=sid, user_id='api',
+        chat_type='dm', profile='foreign')
+    with pytest.raises(RuntimeStoreError, match='admission_conflict'):
+        prospective_room_session(owner, dispatch)

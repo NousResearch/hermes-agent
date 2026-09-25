@@ -282,7 +282,7 @@ class SessionAuthority:
                 results[sid] = exc.reason
         return results
 
-    async def submit(self, actor: Principal, request: Submission):
+    async def submit(self, actor: Principal, request: Submission, *, _authorize_write=None):
         self.authorize(actor, request.ref, 'session:submit')
         self._require_admission_open()
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
@@ -303,9 +303,11 @@ class SessionAuthority:
             payload['local_operator_v1'] = {
                 'profile_id': self.profile_id, 'session_id': request.ref.session_id,
                 'principal_id': actor.subject}
+        authorization = ({'_authorize_write': _authorize_write}
+                         if _authorize_write is not None else {})
         row = admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                   session_id=request.ref.session_id, request_id=request.request_id,
-                                  payload=payload, intent=request.intent)
+                                  payload=payload, intent=request.intent, **authorization)
         self._publish_pending(request.ref)
         self._schedule(request.ref)
         return self._receipt(row)

@@ -45,7 +45,8 @@ def check_api_turn(authority, ref, payload):
         if set(data['settings']) - set(_SETTING_KEYS):
             raise RuntimeStoreError('invalid_params')
     settings = payload.get('api_turn_v1', {}).get('settings') or api_settings(authority, ref)
-    check_api_settings(adapter, settings)
+    from gateway.session_peer_route import current_room_route
+    check_api_settings(adapter, settings, admitted=current_room_route(adapter) is None)
     return adapter
 
 
@@ -53,7 +54,7 @@ def _valid_owner_scope(value):
     return isinstance(value, str) and _OWNER_SCOPE_RE.fullmatch(value) is not None
 
 
-def check_api_settings(adapter, settings):
+def check_api_settings(adapter, settings, *, admitted=False):
     dispatch = settings.get('room_dispatch')
     if dispatch is not None:
         from gateway.hosted_room_peer import HostedMemberDispatch, GatewayRoomCatalog
@@ -64,7 +65,10 @@ def check_api_settings(adapter, settings):
             raise RuntimeStoreError('permission_denied')
         _, catalog = _local_room_catalog(adapter, bound.target_profile, bound.target_install_id)
         current = GatewayRoomCatalog.from_mapping(catalog)
-        if (current.catalog_digest != bound.capability_digest
+        from gateway.session_peer_route import catalog_matches_dispatch, require_room_route
+        if bound.attachment_manifest_digest is not None and not admitted:
+            require_room_route(adapter, bound)
+        if (not current.text or not catalog_matches_dispatch(catalog, bound, admitted=admitted)
                 or current.execution_policy.as_mapping() != settings.get('room_execution_policy')):
             raise RuntimeStoreError('permission_denied')
     return adapter
@@ -90,7 +94,8 @@ def admit_api_turn(adapter, **kwargs):
     # ``/p/<profile>/`` middleware scoped this request; the routed home's authority admits it.
     from gateway.session_authorities import active_authority
     authority = active_authority(adapter.gateway_runner)
-    if authority is None or adapter._ensure_session_db() is not authority.db:
+    if (authority is None or adapter._ensure_session_db() is not authority.db
+            or (kwargs.get('_room_authority') is not None and kwargs['_room_authority'] is not authority)):
         raise RuntimeStoreError('profile_mismatch')
     sid = kwargs.get('session_id') or uuid.uuid4().hex
     declared_key = kwargs.get('gateway_session_key') if kwargs.get('bind_declared_conversation') else None
@@ -98,7 +103,17 @@ def admit_api_turn(adapter, **kwargs):
         from gateway.session_api import declared_api_session
         sid = declared_api_session(authority.db, declared_key) or sid
     authority._require_admission_open()
+    # The trusted Output ingress pins its consumer when it captures consent,
+    # not here: replacement between capture and API entry must also refuse NEW.
+    output_authorizer = kwargs.get('_room_output_authorizer')
     settings = {key: kwargs.get(key) for key in _SETTING_KEYS}
+    if settings.get('room_dispatch') is not None:
+        from gateway.hosted_room_peer import HostedMemberDispatch
+        from gateway.session_api_replay import authenticate_room_retry
+        bound_dispatch = HostedMemberDispatch.from_mapping(settings['room_dispatch'])
+        authenticate_room_retry(adapter, authority, sid, bound_dispatch, kwargs.get('_room_grant_token'))
+        if kwargs['user_message'] != bound_dispatch.prompt:
+            raise RuntimeStoreError('admission_conflict')
     # Route credentials remain in the server's configuration, never admission JSON.
     route = settings.get('route')
     if route and route.get('api_key'):
@@ -126,6 +141,29 @@ def admit_api_turn(adapter, **kwargs):
             raise RuntimeStoreError('invalid_params')
         payload['api_turn_v1']['turn_author'] = author
     request_id = kwargs.get('request_id') or kwargs.get('active_run_id') or uuid.uuid4().hex
+    if settings.get('room_dispatch') is not None:
+        from gateway.session_api_replay import replay_room_admission
+        row = replay_room_admission(authority, session_id=sid, request_id=request_id, payload=payload)
+        if row is not None:
+            from gateway.session_contract import SessionRef
+            return authority, SessionRef(authority.profile_id, sid), row
+        # NEW-only: keep current catalog/policy and the final dual-store writer
+        # fences. Route preparation will enter here before bind/capture.
+        if bound_dispatch.attachment_manifest_digest is not None:
+            from gateway.hosted_room_peer import verify_room_grant
+            try:
+                verify_room_grant(adapter._room_grant_secret(), kwargs.get('_room_grant_token'),
+                    bound_dispatch, permission='attachment.stage')
+            except ValueError as exc:
+                raise RuntimeStoreError('permission_denied') from exc
+            from gateway.session_peer_route import require_room_route
+            b = require_room_route(adapter, bound_dispatch)
+            if (b._scope.purpose != 'admit' or kwargs.get('_room_selected_route') is not b
+                    or kwargs.get('_room_request_identity') is not b._scope.request_identity):
+                raise RuntimeStoreError('prepared_files_unsupported')
+        check_api_settings(adapter, settings)
+        from gateway.session_api import prospective_room_session
+        prospective_room_session(authority, HostedMemberDispatch.from_mapping(settings['room_dispatch']))
     from hermes_state_terminal import retry_terminal_admission
     row = retry_terminal_admission(authority.db, epoch=authority.epoch, principal_id='api',
         session_id=sid, request_id=request_id, payload=payload)
@@ -135,8 +173,28 @@ def admit_api_turn(adapter, **kwargs):
         return authority, SessionRef(authority.profile_id, sid), row
     ref = bind_api_session(authority, sid, hosted_dispatch=kwargs.get("room_dispatch"), declared_key=declared_key)
     check_api_turn(authority, ref, payload)
-    row = admit_session_input(authority.db, epoch=authority.epoch, principal_id='api',
-                              session_id=sid, request_id=request_id, payload=payload)
+    admission = dict(epoch=authority.epoch, principal_id='api',
+                     session_id=sid, request_id=request_id, payload=payload)
+    if settings.get('room_dispatch') is not None:
+        from gateway.hosted_room_peer import HostedMemberDispatch
+        from gateway.session_peer_target import grant_fence, authorize_dispatch
+        dispatch = HostedMemberDispatch.from_mapping(settings['room_dispatch'])
+        try:
+            with grant_fence(adapter, dispatch.target_profile) as (owner, shared):
+                if owner is not authority:
+                    raise RuntimeStoreError('profile_mismatch')
+                row = admit_session_input(authority.db, **admission,
+                    _authorize_write=lambda conn: authorize_dispatch(
+                        adapter, authority, shared, conn, kwargs['_room_grant_token'],
+                        dispatch, settings['room_execution_policy'],
+                        output_authorizer=output_authorizer,
+                        output_evidence=kwargs.get('_room_output_consent')))
+        except RuntimeStoreError:
+            raise
+        except ValueError as exc:
+            raise RuntimeStoreError('permission_denied') from exc
+    else:
+        row = admit_session_input(authority.db, **admission)
     return authority, ref, row
 
 

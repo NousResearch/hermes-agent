@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -167,6 +168,10 @@ def _uses_room_run_auth(self, request: "web.Request") -> bool:
 def _initialize_run_state(self, *, store_factory) -> None:
     """Initialize adapter-owned durable and live ``/v1/runs`` state."""
     self._run_idempotency_store = store_factory()
+    self._run_idempotency_store_lock = threading.Lock()
+    self._profile_run_idempotency_stores = {}
+    self._run_receipt_stores = {}
+    self._run_authorities = {}
     self._run_owner_pid = os.getpid()
     try:
         from gateway.status import get_process_start_time
@@ -207,6 +212,11 @@ def _idempotency_capabilities(self, *, store_type) -> dict[str, Any]:
 
 def _close_run_state(self) -> None:
     try:
+        from gateway.platforms.api_server_store import close_profile_run_idempotency_stores
+        close_profile_run_idempotency_stores(self)
+    except Exception:
+        logger.debug("Failed to close profile run idempotency stores for %s", self.name, exc_info=True)
+    try:
         if getattr(self, "_run_idempotency_store", None) is not None:
             self._run_idempotency_store.close()
     except Exception:
@@ -235,10 +245,38 @@ def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, 
             "output", "error", "usage", "pending_steer", "session_id", "shutdown_requested_at"}))
     if run_id in self._run_idempotency_ids and should_persist:
         try:
-            self._run_idempotency_store.update_status(run_id, current)
+            store = self._run_receipt_stores.get(run_id)
+            if store is None:
+                logger.error("[api_server] exact receipt owner unavailable for idempotent run %s", run_id)
+            else:
+                store.update_status(run_id, current)
         except Exception:
             logger.exception("[api_server] failed to persist idempotent run status %s", run_id)
     return current
+
+
+def _run_receipt_store(self, *, request=None, run_id=None):
+    """Select the durable receipt owner for this request or retained run."""
+    if run_id is not None:
+        retained = self._run_receipt_stores.get(run_id)
+        if retained is not None:
+            return retained
+        if run_id in self._run_idempotency_ids:
+            from hermes_state_runtime import RuntimeStoreError
+            raise RuntimeStoreError('run_receipt_owner_unavailable')
+    runner = getattr(self, 'gateway_runner', None)
+    if runner is not None:
+        from hermes_constants import get_hermes_home
+        from gateway.platforms.api_server_store import selected_run_idempotency_store
+        selected = selected_run_idempotency_store(self, get_hermes_home())
+        if selected is not None:
+            return selected
+        if request is not None:
+            from gateway.platforms.api_server import _api_request_profile
+            if _api_request_profile.get() not in (None, 'default'):
+                from hermes_state_runtime import RuntimeStoreError
+                raise RuntimeStoreError('canonical_room_peer_unsupported')
+    return self._run_idempotency_store
 
 
 def _mark_shutdown_interrupted_runs(self, run_ids) -> None:
@@ -356,20 +394,32 @@ def _owner_alive(owner_pid: int, owner_started: int) -> bool:
         return False
 
 
-def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, Any] | None:
+def _durable_run_status(self, request: "web.Request", run_id: str, *, receipt_identity=None) -> Dict[str, Any] | None:
     """Hydrate a scoped run status and fail stale owners closed."""
     from gateway.platforms.api_server_authority_runs import run_projection
-    canonical = run_projection(self, run_id)
+    canonical = run_projection(self, run_id, receipt_identity=receipt_identity)
     if canonical is not None:
+        # Projection can bypass hydration after re-serve. Rebind only through
+        # the current routed store's authenticated ownership of this exact run.
+        store = _run_receipt_store(self, request=request)
+        scope = self._run_idempotency_scope(request)
+        if store.owns_run(scope, run_id):
+            self._run_receipt_stores[run_id] = store
+            self._run_idempotency_ids.add(run_id)
+            self._run_owners[run_id] = scope
+        elif run_id in self._run_idempotency_ids:
+            from hermes_state_runtime import RuntimeStoreError
+            raise RuntimeStoreError('run_receipt_owner_unavailable')
         return canonical
     status = self._run_statuses.get(run_id)
+    store = _run_receipt_store(self, request=request, run_id=run_id)
     if status is not None:
         if run_id in self._run_idempotency_ids:
             scope = self._run_idempotency_scope(request)
-            self._run_idempotency_store.extend_retention(scope, run_id, _room_retention_until(request))
+            store.extend_retention(scope, run_id, _room_retention_until(request))
         return status
     scope = self._run_idempotency_scope(request)
-    record = self._run_idempotency_store.status_for_run(
+    record = store.status_for_run(
         scope, run_id, retention_until=_room_retention_until(request))
     if record is None:
         return None
@@ -379,7 +429,8 @@ def _durable_run_status(self, request: "web.Request", run_id: str) -> Dict[str, 
         status.update(
             status="interrupted", error="The gateway restarted before this run settled.",
             last_event="run.interrupted", updated_at=time.time())
-        self._run_idempotency_store.update_status(run_id, status)
+        store.update_status(run_id, status)
+    self._run_receipt_stores[run_id] = store
     self._run_statuses[run_id] = status
     self._run_idempotency_ids.add(run_id)
     self._run_owners[run_id] = scope
@@ -435,14 +486,24 @@ def _accepted_response(run_id: str, status: str, gateway_session_key, *, replaye
         {"run_id": run_id, "status": status, "replayed": replayed}, status=202, headers=headers)
 
 
-def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error) -> "web.Response":
+def _run_fingerprint(body, gateway_session_key):
+    return hashlib.sha256(json.dumps(
+        {"body": body, "gateway_session_key": gateway_session_key or ""},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode()).hexdigest()
+
+
+def _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error, *,
+                        receipt_identity=None) -> "web.Response":
     """409 for a fingerprint conflict, else a 202 replay of the already-admitted run."""
     if outcome == "conflict":
         return _json_error(
             _openai_error, "Idempotency-Key was already used with a different request payload",
             code="idempotency_key_conflict", status=409)
     original_id = str(record["run_id"])
-    status = self._durable_run_status(request, original_id) or record["status"]
+    status = (_durable_run_status(self, request, original_id, receipt_identity=receipt_identity)
+              if receipt_identity is not None else self._durable_run_status(request, original_id))
+    status = status or record["status"]
     return _accepted_response(original_id, status.get("status", "queued"), gateway_session_key, replayed=True)
 
 
@@ -515,7 +576,58 @@ def _forget_run(self, run_id: str, *tables) -> None:
 def _retire_live_run(self, run_id: str) -> None:
     """Retire agent/task/approval control state once the executor-backed task is done."""
     _forget_run(self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
-                self._stopping_run_ids, self._shutdown_interrupted_run_ids)
+                self._stopping_run_ids, self._shutdown_interrupted_run_ids, self._run_authorities)
+
+
+async def retire_profile_runs(self, authority) -> None:
+    """Cancel and await only API observers bound to *authority*.
+
+    The adapter status is made durably cancelled through its retained exact
+    receipt handle before any task is detached.  The authority's canonical
+    execution is not declared complete: its drain has already been cancelled
+    by the owner teardown and a replacement epoch recovers a started row as
+    unknown/interrupted.
+    """
+    run_ids = [
+        run_id for run_id, owner in list(getattr(self, '_run_authorities', {}).items())
+        if owner is authority
+    ]
+    if not run_ids:
+        return
+    tasks = []
+    for run_id in run_ids:
+        self._set_run_status(
+            run_id, 'cancelled', completed=False, interrupted=True,
+            last_event='run.cancelled')
+        self._stopping_run_ids.add(run_id)
+        task = self._active_run_tasks.get(run_id)
+        if task is not None and not task.done():
+            task.cancel()
+            tasks.append(task)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    observers = getattr(authority, 'api_observers', {})
+    for run_id in run_ids:
+        admission_id = None
+        with authority.db._read_ctx() as connection:
+            row = connection.execute(
+                "SELECT admission_id FROM session_admissions "
+                "WHERE principal_id='api' AND request_id=?", (run_id,)
+            ).fetchone()
+            if row is not None:
+                admission_id = row[0]
+        if admission_id is not None:
+            waiter = authority.waiters.pop(admission_id, None)
+            if waiter is not None and not waiter.done():
+                waiter.cancel()
+            observers.pop(admission_id, None)
+        _unregister_approval_notify(self._run_approval_sessions.get(run_id))
+        stream = self._run_streams.get(run_id)
+        if stream is not None and (not stream.events or stream.events[-1] is not None):
+            stream.put_nowait(None)
+        _retire_live_run(self, run_id)
+
 
 
 def _drop_run_transport(self, run_id: str) -> None:
@@ -618,6 +730,23 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     body, room_error = await self._normalize_room_dispatch(request, body)
     if room_error is not None:
         return room_error
+    room_dispatch = body.get('hosted_room_dispatch') if isinstance(body, dict) else None
+    if room_dispatch and room_dispatch.get('attachment_manifest_digest') is not None:
+        from gateway.hosted_room_peer import HostedMemberDispatch
+        from gateway.session_peer_route import prepared_room_route_async
+        from gateway.platforms.api_server_room_dispatch import _room_dispatch_error
+        try:
+            dispatch = HostedMemberDispatch.from_mapping(room_dispatch)
+            async with prepared_room_route_async(self, dispatch, request, 'admit') as binding:
+                return await _handle_runs_body(self, request, body, gateway_session_key,
+                    _api_server=_api_server, _room_binding=binding)
+        except Exception as exc:
+            return _room_dispatch_error(exc, _openai_error=_openai_error)
+    return await _handle_runs_body(self, request, body, gateway_session_key, _api_server=_api_server)
+
+
+async def _handle_runs_body(self, request, body, gateway_session_key, *, _api_server, _room_binding=None):
+    _openai_error = _api_server._openai_error
     room_dispatch, room_execution_policy = (
         v if isinstance(v, dict) else None for v in (
             (body.get("hosted_room_dispatch"), body.get("_room_execution_policy"))
@@ -628,12 +757,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             _openai_error, "Idempotency-Key must be 1-255 visible ASCII characters",
             code="invalid_idempotency_key", status=400)
     idempotency_scope = idempotency_fingerprint = ""
+    receipt_store = self._run_idempotency_store
     if idempotency_key:
+        receipt_store = _run_receipt_store(self, request=request)
         idempotency_scope = self._run_idempotency_scope(request)
-        idempotency_fingerprint = hashlib.sha256(json.dumps(
-            {"body": body, "gateway_session_key": gateway_session_key or ""},
-            sort_keys=True, separators=(",", ":"), ensure_ascii=False,
-        ).encode()).hexdigest()
+        idempotency_fingerprint = _run_fingerprint(body, gateway_session_key)
     raw_input = body.get("input")
     if not raw_input:
         return _json_error(_openai_error, "Missing 'input' field", status=400)
@@ -653,6 +781,14 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         return history_err
     previous_response_id = body.get("previous_response_id")
     session_id = body.get("session_id") or stored_session_id
+    # Ordinary API retries also observe the old receipt before dynamic route
+    # selection. Parsing and the exact normalized-body hash are unchanged.
+    if idempotency_key:
+        outcome, record = receipt_store.lookup(
+            idempotency_scope, idempotency_key, idempotency_fingerprint,
+            retention_until=_room_retention_until(request))
+        if outcome == "conflict" or (outcome == "reused" and record is not None):
+            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
     route = self._resolve_route(body.get("model"))
     agent_overrides = _api_server._request_agent_overrides(body, virtual_model=self._model_name)
     selection_error = self._request_route_conflict_error(
@@ -661,20 +797,22 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
         requested_provider=agent_overrides.get("requested_provider"), route=route)
     if selection_error:
         return _json_error(_openai_error, selection_error, status=400)
-    # A lost-acceptance replay must resolve even while the original run holds the last
-    # concurrency slot; this read reserves nothing (the atomic reserve below closes the race).
-    if idempotency_key:
-        outcome, record = self._run_idempotency_store.lookup(
-            idempotency_scope, idempotency_key, idempotency_fingerprint,
-            retention_until=_room_retention_until(request))
-        if outcome == "conflict" or (outcome == "reused" and record is not None):
-            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
-    # Enforce concurrency only for a genuinely new run.
-    limited = self._concurrency_limited_response()
-    if limited is not None:
-        return limited
+    if room_dispatch is not None and room_dispatch.get('attachment_manifest_digest') is None:
+        # NEW-only seam: selected-route preflight belongs before this first
+        # mutation (phase2B), never in immutable normalization or replay.
+        from gateway.hosted_room_peer import HostedMemberDispatch
+        from gateway.platforms.api_server_room_dispatch import _room_dispatch_error
+        try:
+            bound = await self._ensure_hosted_member_session(HostedMemberDispatch.from_mapping(room_dispatch))
+            if bound != session_id:
+                raise ValueError('room session identity conflicts with existing data')
+        except Exception as exc:
+            return _room_dispatch_error(exc, _openai_error=_openai_error)
+    if _room_binding is None:
+        limited = self._concurrency_limited_response()
+        if limited is not None:
+            return limited
     run_id = f"run_{uuid.uuid4().hex}"
-    self._run_owners[run_id] = self._run_idempotency_scope(request)
     # Same precedence as /v1/responses: body session_id > response chain > X-Hermes-Session-Key
     # conversation > run_id (which would otherwise re-key every affinity surface per run).
     # An explicit or chained session owns its routing key and is never rebound to the header.
@@ -699,72 +837,117 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
     session_history_delivery = not previous_response_id and not conversation_history
     if not conversation_history and selected_session_id and not previous_response_id:
         conversation_history = await self._conversation_history_for_session(str(selected_session_id))
-    q = self._run_streams[run_id] = _RunStream()
-    created_at = self._run_streams_created[run_id] = time.time()
-    self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
-    initial_status = self._set_run_status(
-        run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
-    if idempotency_key:
-        outcome, record = self._run_idempotency_store.reserve(
-            idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
-            owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
-            retention_until=_room_retention_until(request))
-        if outcome != "created":
-            _forget_run(
-                self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-                self._run_statuses, self._run_owners)
-            return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
-        self._run_idempotency_ids.add(run_id)
-    launch = _RunLaunch(
-        self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
-        conversation_history, session_history_delivery,
-        agent_kwargs=dict(
-            ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
-            route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
-            **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
-        request_profile=_api_server._api_request_profile.get(),
-        browser_control_principal=_api_server._api_request_browser_control_principal.get(),
-        browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
-        turn_author=turn_author)
-    # A canonical Bot Chat that a Desktop holds live is that Desktop's to run: executing here would
-    # be a second writer beside its lease (#114959). The owner's mailbox takes the turn and its
-    # receipt drives this run's status, so `peer run` keeps its run_id and `peer status` still works.
-    # Under session authority the same call admits the turn to the Bot Chat's own FIFO, which is
-    # why it is decided BEFORE ``admit_api_turn`` would bind the chat as an API conversation.
-    admitted = await self._admit_to_live_bot_chat(session_id, user_message, turn_author) if selected_session_id else None
-    if admitted is None and getattr(self.gateway_runner, 'session_authority', None) is not None:
-        from gateway.session_api_turn import admit_api_turn
-        from hermes_state_runtime import RuntimeStoreError
-        try:
-            with self._profile_scope(launch.request_profile):
-                launch.admission = admit_api_turn(self, user_message=launch.user_message,
-                    conversation_history=launch.conversation_history, active_run_id=run_id,
-                    run_owner_scope=self._run_owners[run_id],
-                    turn_author=launch.turn_author,
-                    history_from_session=session_history_delivery,
-                    session_history_delivery='1' if session_history_delivery else '',
-                    bind_declared_conversation=_declared_selected,
-                    **launch.agent_kwargs)
-        except RuntimeStoreError as exc:
-            # A refused admission owns no run: drop every reservation so an exact
-            # retry is refused again instead of replaying a run nobody executes.
-            _forget_run(
-                self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
-                self._run_statuses, self._run_owners, self._run_idempotency_ids)
-            if idempotency_key:
-                self._run_idempotency_store.forget(idempotency_scope, idempotency_key)
-            return _json_error(_openai_error, exc.reason, code=exc.reason, status=409)
-    self._activate_admitted_request()
-    if admitted is not None:
-        task = self._active_run_tasks[run_id] = asyncio.create_task(
-            _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
-    else:
-        task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
-    with suppress(TypeError):
-        self._background_tasks.add(task)  # tracked for shutdown drain
-    if hasattr(task, "add_done_callback"):
-        task.add_done_callback(self._background_tasks.discard)
-    return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
+    from contextlib import nullcontext
+    guard = nullcontext()
+    if _room_binding is not None:
+        from gateway.session_selected_route import hold_selected_route
+        guard = hold_selected_route(_room_binding._scope, _room_binding)
+    # A selected room must not await from here through publication: asyncio
+    # siblings must not inherit a thread-reentrant lock's authority mid-commit.
+    with guard:
+        if _room_binding is not None:
+            if _room_binding._scope.request_identity is not request:
+                from hermes_state_runtime import RuntimeStoreError
+                raise RuntimeStoreError('permission_denied')
+            from gateway.session_api_turn import check_api_settings
+            check_api_settings(self, {'room_dispatch': room_dispatch,
+                'room_execution_policy': room_execution_policy})
+            limited = self._concurrency_limited_response()
+            if limited is not None:
+                return limited
+        self._run_owners[run_id] = self._run_idempotency_scope(request)
+        if idempotency_key:
+            self._run_receipt_stores[run_id] = receipt_store
+        q = self._run_streams[run_id] = _RunStream()
+        created_at = self._run_streams_created[run_id] = time.time()
+        self._run_approval_sessions[run_id] = run_id  # approval session key (see _RunLaunch)
+        initial_status = self._set_run_status(
+            run_id, "queued", created_at=created_at, session_id=session_id, model=body.get("model", self._model_name))
+        if idempotency_key:
+            outcome, record = receipt_store.reserve(
+                idempotency_scope, idempotency_key, idempotency_fingerprint, run_id, initial_status,
+                owner_pid=self._run_owner_pid, owner_started=self._run_owner_started,
+                retention_until=_room_retention_until(request), room_policy=room_execution_policy)
+            if outcome != "created":
+                _forget_run(
+                    self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+                    self._run_statuses, self._run_owners)
+                return _replay_or_conflict(self, request, outcome, record, gateway_session_key, _openai_error)
+            self._run_idempotency_ids.add(run_id)
+        launch = _RunLaunch(
+            self, run_id, q, session_id, gateway_session_key, _declared_selected, user_message,
+            conversation_history, session_history_delivery,
+            agent_kwargs=dict(
+                ephemeral_system_prompt=instructions, session_id=session_id, gateway_session_key=gateway_session_key,
+                route=route, room_dispatch=room_dispatch, room_execution_policy=room_execution_policy,
+                **{k: agent_overrides.get(k) for k in ("requested_model", "requested_provider", "model_options")}),
+            request_profile=_api_server._api_request_profile.get(),
+            browser_control_principal=_api_server._api_request_browser_control_principal.get(),
+            browser_control_transport_family=_api_server._api_request_browser_control_transport_family.get(),
+            turn_author=turn_author)
+        # Only ordinary Bot Chats can hand a turn to their live owner. A selected
+        # room must retain its route guard across admission and publication;
+        # no await may run while that thread-reentrant guard is held.
+        admitted = (await self._admit_to_live_bot_chat(session_id, user_message, turn_author)
+                    if _room_binding is None and room_dispatch is None and selected_session_id else None)
+        canonical_room_owner = getattr(request, '_hermes_canonical_room_owner', None)
+        if admitted is None and (getattr(self.gateway_runner, 'session_authority', None) is not None
+                or canonical_room_owner is not None
+                or (room_dispatch is not None and self.gateway_runner is not None)):
+            from gateway.session_api_turn import admit_api_turn
+            from gateway.session_authorities import active_authority
+            from hermes_state_runtime import RuntimeStoreError, _row
+            admission_authority = canonical_room_owner or active_authority(self.gateway_runner)
+            try:
+                with self._profile_scope(launch.request_profile):
+                    launch.admission = admit_api_turn(self, user_message=launch.user_message,
+                        conversation_history=launch.conversation_history, active_run_id=run_id,
+                        run_owner_scope=self._run_owners[run_id],
+                        _room_grant_token=self._room_grant_token(request) if room_dispatch is not None else None,
+                        _room_authority=canonical_room_owner,
+                    _room_selected_route=_room_binding, _room_request_identity=request,
+                        turn_author=launch.turn_author,
+                        history_from_session=session_history_delivery,
+                        session_history_delivery='1' if session_history_delivery else '',
+                        bind_declared_conversation=_declared_selected,
+                        **launch.agent_kwargs)
+            except (RuntimeStoreError, sqlite3.Error) as exc:
+                # A post-commit fence-release error cannot erase accepted work. If
+                # the ledger cannot answer, retain the receipt for observation.
+                accepted = None
+                try:
+                    if admission_authority is not None:
+                        with admission_authority.db._read_ctx() as conn:
+                            accepted = conn.execute(
+                                "SELECT * FROM session_admissions WHERE principal_id='api' AND request_id=?",
+                                (run_id,)).fetchone()
+                except sqlite3.Error:
+                    return _json_error(_openai_error, 'storage_unavailable', code='storage_unavailable', status=503)
+                if accepted is not None:
+                    from gateway.session_contract import SessionRef
+                    launch.admission = (admission_authority,
+                        SessionRef(admission_authority.profile_id, accepted['target_session_id']), _row(accepted))
+                else:
+                    _forget_run(
+                        self, run_id, self._run_streams, self._run_streams_created, self._run_approval_sessions,
+                        self._run_statuses, self._run_owners, self._run_idempotency_ids)
+                    if idempotency_key:
+                        receipt_store.forget(idempotency_scope, idempotency_key, run_id=run_id)
+                    code = exc.reason if isinstance(exc, RuntimeStoreError) else 'storage_unavailable'
+                    return _json_error(_openai_error, code, code=code, status=409 if isinstance(exc, RuntimeStoreError) else 503)
+        self._activate_admitted_request()
+        if launch.admission is not None:
+            self._run_authorities[run_id] = launch.admission[0]
+        if admitted is not None:
+            task = self._active_run_tasks[run_id] = asyncio.create_task(
+                _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
+        else:
+            task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
+        with suppress(TypeError):
+            self._background_tasks.add(task)  # tracked for shutdown drain
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
+        return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
 
 
 def _run_usage(agent) -> Dict[str, int]:
@@ -1054,6 +1237,7 @@ def _release_run_owner_if_forgotten(self, run_id: str) -> None:
             self._run_approval_sessions)
     if not any(run_id in table for table in live):
         self._run_owners.pop(run_id, None)
+        self._run_receipt_stores.pop(run_id, None)
 
 
 def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
@@ -1066,7 +1250,7 @@ def _request_owns_run(self, request: "web.Request", run_id: str) -> bool:
     # Run state that exists without an owner stamp is an unanswered authorization question, not a run anyone
     # may control — under gateway.multiplex_profiles every served profile holds a valid key, so admitting it
     # would make the boundary allow-all (#93689).
-    if self._run_idempotency_store.owns_run(scope, run_id):
+    if _run_receipt_store(self, request=request, run_id=run_id).owns_run(scope, run_id):
         return True
     from gateway.session_api_turn import owns_api_run
     return owns_api_run(self, run_id, scope)

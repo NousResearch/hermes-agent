@@ -1,9 +1,9 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introKo } from './intro-ko'
 
-export const ko = defineLocale({
+export const koOverrides = {
   intro: introKo,
   connectors: {
     title: '앱 연결하기',
@@ -353,6 +353,13 @@ export const ko = defineLocale({
     on: '켜짐',
     off: '꺼짐'
   },
+  externalOpenFailed: {
+    title: '이 링크를 열지 못했습니다',
+    message: '이 주소를 열도록 등록된 브라우저가 없습니다. 링크를 복사해 직접 여세요.',
+    copyUrl: '링크 복사',
+    close: '닫기'
+  },
+
   fileMenu: {
     revealFinder: 'Finder에서 보기',
     revealExplorer: '파일 탐색기에서 보기',
@@ -426,6 +433,9 @@ export const ko = defineLocale({
       back: '뒤로',
       openLogs: '로그 열기',
       repairHint: '복구는 설치 프로그램을 다시 실행하며, 새 머신에서는 몇 분 걸릴 수 있습니다.',
+      bundledReinstallHint:
+        '이 번들 설치본은 앱 안에서 스스로 복구할 수 없습니다 — 백엔드를 되살리려면 앱을 다시 설치하세요.',
+      reinstallApp: '앱 다시 설치',
       remoteSignInHint: signInLabel =>
         `저장된 원격 브라우저 세션에서 로그아웃한 뒤 ${signInLabel}을(를) 엽니다. 대신 번들 백엔드로 바꾸려면 로컬 게이트웨이를 사용하세요.`,
       signOutAndSignIn: '로그아웃 후 로그인',
@@ -464,6 +474,10 @@ export const ko = defineLocale({
     backendOutOfDateMessage:
       'Hermes 백엔드가 이 데스크톱 빌드보다 오래되어 정상 동작하지 않을 수 있습니다. 업데이트해 버전을 맞추세요.',
     installMethodUnsupportedTitle: '지원하지 않는 설치 방식',
+    sharedProfileWarning:
+      '다른 Hermes 설치본이 이 프로필을 쓰고 있습니다. 두 설치본이 설정과 데이터를 공유하므로 변경이 서로 충돌할 수 있습니다. 그대로 진행해도 되고, 변경 전에 다른 설치본을 닫아도 됩니다.',
+    updateReadyMessageAppInstaller:
+      '새 버전의 Hermes가 준비되었습니다. 지금 업데이트하면 나머지는 Windows가 마무리합니다.',
     updateHermes: 'Hermes 업데이트',
     updateReadyTitle: '업데이트 준비됨',
     updateReadyMessage: count => `새 변경 사항 ${count}개가 있습니다.`,
@@ -1544,40 +1558,7 @@ export const ko = defineLocale({
       driverHealth: '드라이버 상태'
     },
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `버전 ${value}`,
-      versionUnavailable: '버전을 확인할 수 없음',
-      bundleOutOfSync: '앱 빌드가 오래됨',
-      bundleOutOfSyncDesc:
-        'Hermes 런타임은 업데이트되었지만 데스크톱 앱 자체는 아직 이전 빌드입니다 — 업데이트하기 전까지 봇 모드 같은 새 인터페이스 기능이 빠집니다. 아래 업데이트를 실행해 앱을 다시 빌드하세요. 그래도 이 경고가 사라지지 않으면 최신 데스크톱 설치 프로그램으로 다시 설치하세요.',
-      bundleOutOfSyncAction: '설치 프로그램 받기',
-      bundleSwapPending: '업데이트를 마치려면 재시작하세요',
-      bundleSwapPendingDesc:
-        '업데이트된 앱은 이미 설치되어 있습니다 — Hermes를 재시작하기만 하면 적용됩니다. 대화와 설정은 그대로입니다.',
-      bundleSwapPendingAction: 'Hermes 재시작',
-      updates: '업데이트',
-      checkNow: '지금 확인',
-      checking: '확인 중…',
-      seeWhatsNew: '새로운 기능 보기',
-      updateNow: '지금 업데이트',
-      releaseNotes: '릴리스 노트',
-      onLatest: '최신 버전을 사용 중입니다.',
-      installing: '업데이트를 설치하는 중입니다.',
-      cantUpdate: '이 빌드는 앱 안에서 스스로 업데이트할 수 없습니다.',
-      cantReach: '업데이트 서버에 연결하지 못했습니다.',
-      tapCheck: '"지금 확인"을 눌러 업데이트를 찾아보세요.',
-      updateReady: count => `새 업데이트가 준비되었습니다(변경 사항 ${count}개 포함).`,
-      updateReadyUnknown: '새 업데이트가 준비되었습니다.',
-      lastChecked: age => `마지막 확인 ${age}`,
-      justNowSuffix: ' · 방금',
-      automaticUpdates: '자동 업데이트',
-      automaticUpdatesDesc: 'Hermes가 백그라운드에서 자동으로 업데이트를 확인하고 준비되면 알려줍니다.',
-      branchCommit: (branch, commit) => `브랜치 ${branch} · 커밋 ${commit}`,
-      never: '없음',
-      justNow: '방금',
-      minAgo: count => `${count}분 전`,
-      hoursAgo: count => `${count}시간 전`,
-      daysAgo: count => `${count}일 전`
+      updates: '업데이트'
     },
     config: {
       minimizeToTrayTitle: '트레이로 최소화',
@@ -2091,6 +2072,18 @@ export const ko = defineLocale({
       updateTitle: '엔진 업데이트 있음',
       updateDetail: (next, current) =>
         `새 llama.cpp 빌드(${next})를 설치할 수 있습니다 — 현재 ${current}입니다. 다운로드하는 동안에도 모델은 계속 동작합니다.`,
+      connectionChanged: '로컬 모델 연결이 변경됨',
+      downloadStatusRunning: '다운로드 중',
+      downloadSpeed: rate => `${rate}`,
+      downloadEta: time => `약 ${time} 남음`,
+      downloadEtaSeconds: count => `${count}초`,
+      downloadEtaMinutes: count => `${count}분`,
+      downloadEtaHours: (hours, minutes) => (minutes ? `${hours}시간 ${minutes}분` : `${hours}시간`),
+      downloadPausedLabel: '일시 중지됨',
+      downloadPauseAction: '일시 중지',
+      downloadResumeAction: '재개',
+      downloadPauseFailed: model => `${model} 다운로드를 일시 중지하지 못했습니다`,
+      downloadResumeFailed: model => `${model} 다운로드를 재개하지 못했습니다`,
       updateAction: '엔진 업데이트',
       updating: '엔진을 업데이트하는 중…',
       upToDateTitle: '엔진 최신 상태',
@@ -4297,6 +4290,14 @@ export const ko = defineLocale({
   },
 
   updates: {
+    discontinuedTitle: '이 Hermes 빌드는 더 이상 지원되지 않습니다',
+    discontinuedBody:
+      '이 Hermes 빌드는 더 이상 지원되지 않아 오작동할 수 있습니다 — 제거하세요. 데이터는 디스크에 그대로 남습니다.',
+    channels: { stable: '안정', canary: '카나리' },
+    bundleSwapPending: '업데이트를 마치려면 재시작하세요',
+    bundleSwapPendingDesc:
+      '업데이트된 앱은 이미 설치되어 있습니다 — Hermes를 재시작하기만 하면 적용됩니다. 대화와 설정은 그대로입니다.',
+    bundleSwapPendingAction: 'Hermes 재시작',
     stages: {
       idle: '준비하는 중…',
       prepare: '준비하는 중…',
@@ -4318,6 +4319,51 @@ export const ko = defineLocale({
     changeLogOther: '기타 개선',
     changeLogFallbackLabel: '이번 업데이트',
     changeLogFallbackItem: '개선 및 수정',
+    appName: 'Hermes',
+    version: (value: string) => `버전 ${value}`,
+    versionUnavailable: '버전을 확인할 수 없음',
+    checkNow: '지금 확인',
+    seeWhatsNew: '새로운 기능 보기',
+    releaseNotes: '릴리스 노트',
+    onLatest: '최신 버전을 사용 중입니다.',
+    installing: '업데이트를 설치하는 중입니다.',
+    cantReach: '업데이트 서버에 연결하지 못했습니다.',
+    tapCheck: '"지금 확인"을 눌러 업데이트를 찾아보세요.',
+    updateReady: count => `새 업데이트가 준비되었습니다(변경 사항 ${count}개 포함).`,
+    updateReadyUnknown: '새 업데이트가 준비되었습니다.',
+    availableBodyRelease: tag => `버전 ${tag}을(를) 설치할 수 있습니다.`,
+    lastChecked: age => `마지막 확인 ${age}`,
+    never: '없음',
+    justNow: '방금',
+    minAgo: count => `${count}분 전`,
+    hoursAgo: count => `${count}시간 전`,
+    daysAgo: count => `${count}일 전`,
+    justNowSuffix: ' · 방금',
+    bundleOutOfSync: '앱 빌드가 오래됨',
+    bundleOutOfSyncDesc:
+      'Hermes 런타임은 업데이트되었지만 데스크톱 앱 자체는 아직 이전 빌드입니다. 최신 수정 사항을 받으려면 업데이트하세요.',
+    bundleOutOfSyncAction: '설치 프로그램 받기',
+    checkingShort: '확인 중…',
+    releaseAvailable: tag => `버전 ${tag}을(를) 사용할 수 있습니다.`,
+    versionDetailsTitle: '버전 정보',
+    versionDetailsBody: '이 설치본은 앱 바깥에서 관리됩니다. 설치할 때와 같은 방식으로 업데이트하세요.',
+    versionDetailsVersion: '버전',
+    versionDetailsCommit: '커밋',
+    versionDetailsBuildOrigin: '빌드 출처',
+    versionDetailsDistribution: '배포 형태',
+    versionDetailsDistributionDesktop: '데스크톱 앱',
+    versionDetailsDistributionDesktopMsix: '데스크톱 앱(MSIX)',
+    versionDetailsDistributionDesktopInstaller: '데스크톱 앱(설치 프로그램)',
+    versionDetailsDistributionSourceInstaller: '소스(설치 스크립트)',
+    versionDetailsDistributionSourceInstallerDesktop: '소스(설치 스크립트) + hermes desktop',
+    versionDetailsDistributionSource: '소스',
+    versionDetailsDistributionSourceDesktop: '소스 + hermes desktop',
+    versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsRuntime: '런타임',
+    versionDetailsRuntimeEmbedded: '내장 런타임',
+    versionDetailsRuntimeExternal: '외부(머신의 런타임 사용)',
+    versionDetailsInstallId: '설치 ID',
+    versionDetailsUncommittedChanges: '커밋하지 않은 변경',
     checking: '업데이트를 확인하는 중…',
     checkFailedTitle: '업데이트를 확인하지 못했습니다',
     tryAgain: '재시도',
@@ -4336,6 +4382,8 @@ export const ko = defineLocale({
     availableTitleBackend: '백엔드 업데이트 있음',
     availableBodyBackend: '연결된 Hermes 백엔드의 새 버전을 설치할 수 있습니다.',
     availableBodyNoChangelog: '새 버전을 설치할 수 있습니다. 이 설치 방식에서는 릴리스 노트를 제공하지 않습니다.',
+    availableBodyAppInstaller:
+      '새 버전의 Hermes가 준비되었습니다. Hermes가 종료되면 Windows가 업데이트를 마무리하고, Hermes가 스스로 다시 열립니다.',
     updateNow: '지금 업데이트',
     maybeLater: '나중에',
     moreChanges: count => `+ 변경 사항 ${count}개 추가 포함.`,
@@ -4352,6 +4400,12 @@ export const ko = defineLocale({
       'Hermes 업데이터가 별도 창에서 작업을 이어받고, 끝나면 Hermes를 자동으로 다시 엽니다. 업데이트 중에는 직접 Hermes를 열지 마세요.',
     applyingBodyBackend: '원격 백엔드가 업데이트를 적용하고 재시작합니다. 다시 올라오면 Hermes가 자동으로 연결합니다.',
     applyingClose: '업데이트가 실행되는 동안 이 창은 닫히고, 이후 Hermes가 스스로 다시 열립니다.',
+    applyingBodyAppInstaller:
+      'Hermes가 종료되고 Windows가 업데이트를 마무리합니다. 끝나면 Hermes가 다시 열리며, 따로 하실 일은 없습니다.',
+    applyingCloseAppInstaller: '이 창이 닫히면 Windows가 업데이트를 마무리하고, Hermes가 스스로 다시 열립니다.',
+    checkUnknownTitleAppInstaller: '업데이트를 확인하지 못했습니다',
+    checkUnknownBodyAppInstaller:
+      'Windows가 지금은 업데이트를 확인하지 못했습니다. Hermes를 재시작할 때도 업데이트가 자동으로 설치됩니다.',
     errorTitle: '업데이트가 끝나지 않았습니다',
     errorBody: '걱정하지 마세요 — 잃어버린 것은 없습니다. 지금 재시도할 수 있습니다.',
     blockerTitle: 'Hermes를 업데이트하려면 로컬 미리보기를 닫을까요?',
@@ -4418,6 +4472,10 @@ export const ko = defineLocale({
     retryAfterRun: '실행했습니다 — 재시도',
     setupChoiceTitle: 'Hermes Desktop 설정',
     setupChoiceDesc: '이미 운영 중인 Hermes 게이트웨이에 이 앱을 연결하거나, 이 컴퓨터에 Hermes를 설치하세요.',
+    setupChoiceDescLocal: '이 컴퓨터에 Hermes를 설치하거나, 이미 운영 중인 Hermes 게이트웨이에 연결하세요.',
+    useLocalTitle: '이 컴퓨터의 Hermes 사용',
+    useLocalDesc: '여기에 Hermes 런타임이 이미 설치되어 있습니다 — 클릭 한 번으로 시작합니다. 내려받는 것은 없습니다.',
+    bundledLocalDesc: '이 앱에 포함된 Hermes 런타임을 사용합니다 — 번들 백엔드가 곧 로컬 설치본입니다.',
     connectExistingTitle: '기존 Hermes에 연결',
     connectExistingShort: '기존에 연결',
     connectExistingDesc: '세션 토큰이나 브라우저 로그인으로 원격 백엔드를 사용합니다. 로컬 설치는 시작되지 않습니다.',
@@ -4719,6 +4777,7 @@ export const ko = defineLocale({
       restart: '재시작',
       update: '업데이트',
       updateInProgress: '업데이트 진행 중',
+      releaseAvailable: tag => `버전 ${tag}을(를) 사용할 수 있습니다.`,
       commitsBehind: (count, branch) => `${branch}보다 커밋 ${count}개 뒤처짐`,
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `백엔드 v${version}`,
@@ -5685,4 +5744,6 @@ export const ko = defineLocale({
       toggle: open => `사이드바 ${open ? '표시' : '숨김'}`
     }
   }
-})
+} satisfies TranslationOverrides
+
+export const ko = defineLocale(koOverrides)

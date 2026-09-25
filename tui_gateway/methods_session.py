@@ -111,7 +111,8 @@ def _cwd_info(session: dict, cwd: str, branch=None) -> dict:
     if (agent := session.get("agent")) is not None:
         return _session_info(agent, session)
     return {"cwd": cwd, "branch": git_probe.branch(cwd) if branch is None else branch,
-            "project": _project_info_for_cwd(cwd), "lazy": True}
+            "project": _project_info_for_cwd(cwd), "lazy": True,
+            "desktop_contract": DESKTOP_BACKEND_CONTRACT}
 
 
 def _session_row_summary(row: dict, *, tip_row: dict | None = None, resolved_id=None) -> dict:
@@ -649,6 +650,7 @@ def _resume_live_unpersisted(ctx: _Resume, live_sid: str, live: dict) -> dict:
         "session_id": live_sid, "stored_session_id": str(live.get("session_key") or ""),
         "message_count": len(messages), "messages": messages,
         "info": {"model": model, "provider": provider, "lazy": True,
+                 "desktop_contract": DESKTOP_BACKEND_CONTRACT,
                  "profile_name": profile_name_for_home(live.get("profile_home")) or _response_profile_name(ctx.profile)}}, live))
 
 

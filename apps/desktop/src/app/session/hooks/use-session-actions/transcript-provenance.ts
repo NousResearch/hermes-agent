@@ -80,7 +80,7 @@ export interface TranscriptViewCutoff {
 // the hold releases (bounded by the REST window).
 export function transcriptRowContentKey(message: ChatMessage): string {
   return `${message.role}:${(message.parts ?? [])
-    .map(part => ('text' in part && typeof part.text === 'string' ? `${part.type}:${part.text}` : JSON.stringify(part)))
+    .map(part => (part.type === 'text' ? `${part.type}:${part.text}` : JSON.stringify(part)))
     .join('|')}`
 }
 

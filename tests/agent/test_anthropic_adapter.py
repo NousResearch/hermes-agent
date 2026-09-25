@@ -62,7 +62,8 @@ class TestBuildAnthropicClient:
             headers = kwargs["default_headers"]
             assert headers["HTTP-Referer"] == "https://hermes-agent.nousresearch.com"
             assert headers["X-Title"] == "Hermes Agent"
-            assert headers["User-Agent"].startswith("HermesAgent/")
+            from hermes_cli.version_info import get_version_info
+            assert headers["User-Agent"] == f"HermesAgent/{get_version_info().base_version}"
             # Auth branch is unchanged: x-api-key via api_key, betas kept.
             assert kwargs["api_key"] == "sk-opencode-secret"
             assert "anthropic-beta" in headers
@@ -457,7 +458,7 @@ class TestWriteClaudeCodeCredentials:
         assert data["otherField"] == "keep-me"
         assert data["claudeAiOauth"]["accessToken"] == "new-tok"
 
-    @pytest.mark.skipif(sys.platform.startswith("win"), reason="POSIX mode bits not enforced on Windows")
+    @pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
     def test_credentials_file_created_with_0o600(self, tmp_path, monkeypatch):
         """Refreshed Claude Code credentials must land on disk at 0o600.
 
@@ -549,8 +550,8 @@ class TestRunOauthSetupToken:
 
         assert token == "from-cred-file"
         # Don't assert exact call count — the contract is "credentials flow
-        # through", not "exactly one subprocess call". xdist cross-test
-        # pollution (other tests shimming subprocess via plugins) has flaked
+        # through", not "exactly one subprocess call". Cross-test pollution
+        # (other tests shimming subprocess via plugins) has flaked
         # assert_called_once() in CI.
         assert mock_run.called
 

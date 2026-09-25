@@ -444,11 +444,14 @@ let
           Python packages to add to PYTHONPATH for entry-point plugin discovery.
           These are pip-packaged plugins that register via the
           hermes_agent.plugins entry-point group. Each package must be built
-          with the same Python interpreter as hermes (python312).
+          with the same Python interpreter as hermes. The interpreter
+          major.minor is derived from pm/lock.json by nix/pythonLock.nix —
+          take packages from config.services.hermes-agent.package.python.pkgs so the set always
+          matches the interpreter hermes was built with.
         '';
         example = literalExpression ''
           [
-            (pkgs.python312Packages.buildPythonPackage {
+            (config.services.hermes-agent.package.python.pkgs.buildPythonPackage {
               pname = "rtk-hermes";
               version = "1.0.0";
               src = pkgs.fetchFromGitHub {
@@ -471,10 +474,10 @@ let
           dependencies — no PYTHONPATH patching or collision risk.
 
           Use this for optional extras already declared in hermes-agent's
-          pyproject.toml (e.g. "honcho", "voice").
+          pyproject.toml (e.g. "hindsight", "honcho", "voice").
           Use extraPythonPackages for external packages not in pyproject.toml.
         '';
-        example = [ "honcho" ];
+        example = [ "hindsight" ];
       };
 
       # ── Service behaviour ──────────────────────────────────────────────

@@ -623,7 +623,8 @@ export function useMessageStream({
       responsePreviewed?: boolean,
       failure?: { error: string; partial: boolean; surface?: ErrorSurface | null },
       occurredAt = Date.now() / 1000,
-      persistedTurn?: PersistedTurn | null
+      persistedTurn?: PersistedTurn | null,
+      responseTransformed?: boolean
     ) => {
       let shouldHydrate = false
 
@@ -802,7 +803,10 @@ export function useMessageStream({
 
             if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
               nextMessages = settleAt(index)
-            } else if ((interimBoundaryPending && responsePreviewed) || finalContinuesInterim) {
+            } else if (
+              (interimBoundaryPending && (responsePreviewed || responseTransformed)) ||
+              finalContinuesInterim
+            ) {
               // Settle the interim in place instead of creating a duplicate —
               // the DB has one row, so the live UI must agree. Two distinct
               // settle paths with different boundary requirements:
@@ -817,6 +821,10 @@ export function useMessageStream({
               //   (otherwise interim('old') → message.start →
               //   complete({response_previewed: true, text: 'new'}) would
               //   silently destroy 'old').
+              //
+              // • responseTransformed (a transform_llm_output hook rewrote the
+              //   final after streaming, e.g. pseudonym restore) shares the
+              //   same no-continuity shape, so it takes the same boundary gate.
               //
               // • finalContinuesInterim (prefix-either-way continuity, same
               //   text or one a prefix of the other) is safe to settle

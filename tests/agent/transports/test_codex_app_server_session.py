@@ -1137,3 +1137,26 @@ class TestTransportLoss:
         assert steer_session.request_steer("more") is False
         control.fail_on = "turn/interrupt"
         steer_session._issue_interrupt("turn-fake-001")  # must not raise
+
+
+def test_only_current_turn_progress_reaches_hermes_activity_clock():
+    from agent.activity_tracking import ActivityTrackingMixin
+    from agent.codex_runtime import make_codex_app_server_event_bridge
+
+    agent = ActivityTrackingMixin()
+    agent._touch_activity("starting new turn")
+    generation = agent._turn_liveness_activity_generation
+    client = FakeClient()
+    for thread_id, turn_id in (
+        ("thread-child-001", "turn-child-001"),
+        ("thread-fake-001", "previous-turn"),
+    ):
+        client.queue_notification("item/agentMessage/delta", threadId=thread_id, turnId=turn_id, delta="foreign")
+        client.queue_notification("item/completed", threadId=thread_id, turnId=turn_id,
+                                  item={"id": "foreign-tool", "type": "commandExecution", "command": "true"})
+    client.queue_notification("item/agentMessage/delta", threadId="t", turnId="tu1", delta="current")
+    client.queue_notification("turn/completed", threadId="t", turn={"id": "tu1", "status": "completed"})
+    result = make_session(client, on_event=make_codex_app_server_event_bridge(agent)).run_turn("work", turn_timeout=2)
+    assert result.error is None and not result.interrupted
+    assert agent._turn_liveness_activity_generation == generation + 1
+    assert agent._last_activity_desc == "codex app-server: item/agentMessage/delta"

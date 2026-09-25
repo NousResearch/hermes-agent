@@ -31,7 +31,7 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"

@@ -8,8 +8,8 @@ the human-merged approval gate; SHA bumps are new, re-reviewed PRs; ``removed.ya
 
 Live refresh: the docs build publishes the same data as ONE JSON document
 (``website/scripts/extract-plugins.py`` → ``/docs/api/plugin-catalog.json``, like the skills index), so
-an installed Hermes sees new entries and removals without updating. Any fetch failure falls back to the
-in-tree copy silently.
+an installed Hermes sees new entries and removals without updating. A fetch failure reuses the last valid
+cached copy regardless of age, then falls back to the in-tree copy when no valid cache exists.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import yaml
+import hermes_yaml as yaml
 
 logger = logging.getLogger(__name__)
 
@@ -33,9 +33,6 @@ CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
-# Past this age an offline cache no longer supplies PINS (the in-tree catalog does); its removals
-# still count — a kill-list entry never expires.
-LIVE_CATALOG_MAX_STALE_SECONDS = 24 * 60 * 60
 LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
 _MAX_LIVE_BYTES = 2 * 1024 * 1024
@@ -177,7 +174,7 @@ def entry_from_mapping(data: Any, label: str) -> Optional[PluginCatalogEntry]:
 
 def _read_yaml(path: Path) -> Any:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
     except Exception as exc:
         logger.warning("Plugin catalog: failed to read %s: %s", path, exc)
         return None
@@ -317,17 +314,9 @@ _live_fetch_failed_until = 0.0
 
 
 def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
-    """A previously fetched copy still beats the in-tree one when the network is down — for
-    :data:`LIVE_CATALOG_MAX_STALE_SECONDS`. Past that its pins may trail the checkout's own catalog
-    (a 90-day-old cache outranked a freshly updated in-tree pin), so the entries are dropped and the
-    caller falls back to in-tree; the removals are kept."""
+    """A previously fetched copy still beats the in-tree one when the network is down."""
     try:
-        if not cache.is_file():
-            return None
-        data = json.loads(cache.read_text(encoding="utf-8"))
-        if time.time() - cache.stat().st_mtime > LIVE_CATALOG_MAX_STALE_SECONDS:
-            data = {**data, "entries": []}
-        return data
+        return json.loads(cache.read_text(encoding="utf-8-sig")) if cache.is_file() else None
     except Exception:
         return None
 
@@ -342,7 +331,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
     cache = _live_cache_path()
     try:
         if not force and cache.is_file() and time.time() - cache.stat().st_mtime < LIVE_CATALOG_TTL_SECONDS:
-            return json.loads(cache.read_text(encoding="utf-8"))
+            return json.loads(cache.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         logger.debug("Plugin catalog: unreadable live cache %s: %s", cache, exc)
     if not force and time.time() < _live_fetch_failed_until:

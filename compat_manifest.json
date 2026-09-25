@@ -9418,12 +9418,6 @@
   },
   {
    "facade": "tools.browser_tool",
-   "name": "warm_agent_browser_npx_cache",
-   "kind": "moved-lazy",
-   "target": "tools.browser_tool_install"
-  },
-  {
-   "facade": "tools.browser_tool",
    "name": "windows_hide_flags",
    "kind": "moved-lazy",
    "target": "hermes_cli._subprocess_compat"

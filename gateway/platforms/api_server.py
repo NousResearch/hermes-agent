@@ -204,16 +204,9 @@ async def _call_verifier(verifier, *args, **kwargs):
 
 
 def _hermes_version() -> str:
-    """Canonical Hermes version: ``hermes_cli.__version__`` (dist-info can be stale on
-    source checkouts), then distribution metadata, then "dev". Never raises."""
-    with suppress(Exception):
-        from hermes_cli import __version__
-        return __version__
-    try:
-        from importlib.metadata import version
-        return version("hermes-agent")
-    except Exception:
-        return "dev"
+    """Canonical base version for API protocol and compatibility payloads."""
+    from hermes_cli.version_info import get_version_info
+    return get_version_info().base_version
 
 
 # Default settings
@@ -257,10 +250,12 @@ class ThreadSafeAsyncQueue(asyncio.Queue):
         self._loop_ref = asyncio.get_running_loop()
 
 
-def _sse_frame(data: Any, *, event: str = None, ensure_ascii: bool = True) -> bytes:
-    """Encode one SSE frame (``event:`` line if given, then ``data: <json>\n\n``) for every
-    SSE writer. ``ensure_ascii=False`` keeps raw non-ASCII on the wire."""
-    prefix = f"event: {event}\n" if event else ""
+def _sse_frame(
+    data: Any, *, event: str = None, ensure_ascii: bool = True, id: Optional[int] = None
+) -> bytes:
+    """Encode one SSE frame (``id:``/``event:`` lines if given, then ``data: <json>\n\n``) for
+    every SSE writer. ``ensure_ascii=False`` keeps raw non-ASCII on the wire."""
+    prefix = (f"id: {id}\n" if id is not None else "") + (f"event: {event}\n" if event else "")
     return f"{prefix}data: {json.dumps(data, ensure_ascii=ensure_ascii)}\n\n".encode()
 
 
@@ -1206,6 +1201,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False)
+        # ``platforms.api_server.tool_progress_events: false`` drops the custom
+        # ``hermes.tool.progress`` SSE frames from Chat Completions streams for strict OpenAI
+        # clients that choke on named events (#12020). Default on.
+        self._tool_progress_events: bool = _coerce_request_bool(
+            extra.get("tool_progress_events"), default=True)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -1372,6 +1372,16 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             return None
         return {**_CORS_HEADERS, "Access-Control-Allow-Origin": origin, "Vary": "Origin",
                 "Access-Control-Max-Age": "600"}
+
+    def _sse_headers(self, request: "web.Request", extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """Headers for an SSE StreamResponse prepared inside a handler: the CORS middleware only
+        touches the response after the handler returns, by which point ``prepare()`` has already
+        flushed the head, so CORS must be resolved up front (#72892, #6358)."""
+        headers = {"Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+        headers.update(self._cors_headers_for_origin(request.headers.get("Origin", "")) or {})
+        if extra:
+            headers.update(extra)
+        return headers
 
     def _origin_allowed(self, origin: str) -> bool:
         """Allow non-browser clients and explicitly configured browser origins."""
@@ -3351,10 +3361,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         if admitted is None:
             return None
         events = _SessionEventQueue(session_id, f"run_{uuid.uuid4().hex}")
-        response = web.StreamResponse(status=200, headers={
-            "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-            **self._session_headers(session_id, ctx["gateway_session_key"])})
-        await response.prepare(request)
+        response = await self._prepare_sse_response(request, session_id, ctx["gateway_session_key"])
 
         async def _write(name: str, payload: Dict[str, Any]) -> None:
             name, payload = events.payload(name, payload)
@@ -3465,7 +3472,12 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if event_type == "reasoning.available":
                 events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
-                events.enqueue(event_type, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
+                event_name = (
+                    "tool.failed"
+                    if event_type == "tool.completed" and kwargs.get("is_error")
+                    else event_type
+                )
+                events.enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
         def _commentary(text: str, *, already_streamed: bool = False) -> None:
             # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls)
@@ -3527,11 +3539,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # NOT in _active_run_tasks: _run_agent already counts this turn for the shutdown drain.
         task = asyncio.create_task(_run_and_signal())
         self._track_background_task(task)
-        headers = {
-            "Content-Type": "text/event-stream", "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no", **self._session_headers(session_id, gateway_session_key)}
-        response = web.StreamResponse(status=200, headers=headers)
-        await response.prepare(request)
+        response = await self._prepare_sse_response(request, session_id, gateway_session_key)
         try:
             while True:
                 try:

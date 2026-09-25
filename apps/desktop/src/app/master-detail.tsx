@@ -391,6 +391,16 @@ export function ListStripMenu({
   )
 }
 
+const LIST_STRIP_LABEL_CLASS = 'text-[0.68rem] font-medium text-muted-foreground/70'
+
+export function ListStripLabel({ children }: { children: ReactNode }) {
+  return (
+    <span className={LIST_STRIP_LABEL_CLASS} role="status">
+      {children}
+    </span>
+  )
+}
+
 export function ListStripButton({
   active,
   children,
@@ -405,7 +415,8 @@ export function ListStripButton({
   return (
     <button
       className={cn(
-        'cursor-pointer text-[0.68rem] font-medium transition-colors disabled:opacity-40',
+        LIST_STRIP_LABEL_CLASS,
+        'cursor-pointer transition-colors disabled:opacity-40',
         active ? 'text-foreground' : 'text-muted-foreground/70 hover:text-foreground'
       )}
       disabled={disabled}

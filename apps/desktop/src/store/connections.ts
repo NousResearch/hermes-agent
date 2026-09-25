@@ -272,22 +272,26 @@ export async function initializeConnectionsRegistry(): Promise<DesktopConnection
     return $connectionsRegistry.get() ?? registry
   }
 
-  // Residual drift: a window can be live on a source the registry cannot name
-  // (a v1-configured remote that reconciliation has not repaired yet, e.g. a
-  // read-only userData that rejected the healed write). $activeConnectionId is
-  // null there, so the preferred-id guard below would miss and "restore" the
-  // registry primary over a connection that is already up and painting —
-  // re-homing the user onto a different backend seconds after boot. The
-  // registry has no claim on a source it does not know; leave the live one be.
-  if ($connection.get() && $activeConnectionId.get() === null) {
-    return registry
-  }
-
   const lastUsed = registry.connections.some(connection => connection.id === registry.lastUsed)
     ? registry.lastUsed
     : registry.primary
 
   const preferredId = registry.launchMode === 'last-used' ? lastUsed : registry.primary
+  const preferred = registry.connections.find(connection => connection.id === preferredId)
+  const live = $connection.get()
+
+  // An unqualified local descriptor is the post-update empty-backend boot, not
+  // a v1 remote the registry cannot name. launchMode=primary must still select
+  // the registered SSH/remote primary instead of staying on that local spawn.
+  const replaceUnqualifiedLocal =
+    live?.mode === 'local' &&
+    $activeConnectionId.get() === null &&
+    registry.launchMode !== 'last-used' &&
+    Boolean(preferred && preferred.kind !== 'local')
+
+  if (live && $activeConnectionId.get() === null && !replaceUnqualifiedLocal) {
+    return registry
+  }
 
   if (!preferredId) {
     return registry

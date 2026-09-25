@@ -39,7 +39,9 @@ _EMAIL_FS_RE = re.compile(r"[^a-z0-9._@-]+")
 # subsequent messages.create; no drive.file or other scopes.
 SCOPES: List[str] = ["https://www.googleapis.com/auth/chat.messages.create"]
 
-# Pip packages required by the Google Chat adapter and its OAuth flow.
+# Declared extras (pyproject) and the exact pins they carry; the pins double as the
+# staleness probe so a half-synced interpreter is repaired instead of trusted.
+_DEPENDENCY_EXTRAS = ["google", "google-chat"]
 _REQUIRED_PACKAGES = [
     "google-cloud-pubsub==2.39.0",
     "google-api-python-client==2.194.0",
@@ -238,20 +240,13 @@ def install_deps() -> bool:
         return True
     print("Installing Google Chat dependencies...")
     try:
-        from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
-
-        # lazy_deps honors HERMES_LAZY_INSTALL_TARGET on sealed hosted images;
-        # _pip_install always writes the venv and Permission-denied there.
-        _lazy_ensure("platform.google_chat", prompt=False)
+        import pm
+        pm.sync_venv(_DEPENDENCY_EXTRAS, explicit=True)
         remaining = _missing_required_packages()
         if remaining:
             raise RuntimeError("dependencies remain stale after install: " + " ".join(remaining))
-        print("Dependencies installed.")
+        print("Dependencies installed. Restart Hermes to activate any new dependency environment.")
         return True
-    except FeatureUnavailable as exc:
-        print(f"ERROR: Failed to install dependencies: {exc.reason}")
-        print("Run `hermes setup` to repair the managed installation, then retry.")
-        return False
     except Exception as exc:
         print(f"ERROR: Failed to install dependencies: {exc}")
         print("Run `hermes setup` to repair the managed installation, then retry.")
@@ -277,7 +272,7 @@ def store_client_secret(path: str) -> None:
     if not src.exists():
         _fail(f"ERROR: File not found: {src}")
     try:
-        data = json.loads(src.read_text(encoding="utf-8"))
+        data = json.loads(src.read_text(encoding="utf-8-sig"))
     except json.JSONDecodeError:
         _fail("ERROR: File is not valid JSON.")
     if "installed" not in data and "web" not in data:
@@ -301,7 +296,7 @@ def _load_pending_auth(email: Optional[str] = None) -> dict:
     if not pending.exists():
         _fail("ERROR: No pending OAuth session found. Run --auth-url first.")
     try:
-        data = json.loads(pending.read_text(encoding="utf-8"))
+        data = json.loads(pending.read_text(encoding="utf-8-sig"))
     except Exception as exc:
         _fail(f"ERROR: Could not read pending OAuth session: {exc}", "Run --auth-url again to start a fresh session.")
     if not data.get("state") or not data.get("code_verifier"):

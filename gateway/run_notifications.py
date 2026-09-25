@@ -553,7 +553,7 @@ class GatewayNotificationsMixin:
             if not path.exists():
                 continue
             with suppress(Exception):
-                pending = json.loads(path.read_text(encoding="utf-8"))
+                pending = json.loads(path.read_text(encoding="utf-8-sig"))
                 platform_str = pending.get("platform")
                 chat_id = pending.get("chat_id")
                 session_key = pending.get("session_key")
@@ -594,7 +594,7 @@ class GatewayNotificationsMixin:
 
     @staticmethod
     def _update_exit_code(paths: "_UpdatePaths") -> int:
-        return int(paths.exit_code.read_text(encoding="utf-8").strip() or "1")
+        return int(paths.exit_code.read_text(encoding="utf-8-sig").strip() or "1")
 
     @staticmethod
     def _read_update_output_since(path: Path, offset: int) -> tuple[str, int]:
@@ -701,7 +701,7 @@ class GatewayNotificationsMixin:
                 getattr(_pending_state, "persistent", None), "update_prompt_pending", False
             ):
                 try:
-                    prompt_data = json.loads(paths.prompt.read_text(encoding="utf-8"))
+                    prompt_data = json.loads(paths.prompt.read_text(encoding="utf-8-sig"))
                     prompt_text = prompt_data.get("prompt", "")
                     if prompt_text:
                         await _flush_buffer()  # user sees context before the prompt
@@ -746,7 +746,7 @@ class GatewayNotificationsMixin:
                         return True
             elif not paths.claimed.exists():
                 return True
-            pending = json.loads(paths.claimed.read_text(encoding="utf-8"))
+            pending = json.loads(paths.claimed.read_text(encoding="utf-8-sig"))
             platform_str = pending.get("platform")
             chat_id = pending.get("chat_id")
             if not paths.exit_code.exists():
@@ -801,7 +801,7 @@ class GatewayNotificationsMixin:
         if not notify_path.exists():
             return None
         try:
-            data = json.loads(notify_path.read_text(encoding="utf-8"))
+            data = json.loads(notify_path.read_text(encoding="utf-8-sig"))
             platform_str = data.get("platform")
             chat_id = data.get("chat_id")
             thread_id = data.get("thread_id")
@@ -953,7 +953,7 @@ class GatewayNotificationsMixin:
             if not path.exists():
                 return
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(path.read_text(encoding="utf-8-sig"))
                 delivered = {tuple(target) for target in data.get("delivered_targets", [])}
                 # Owed targets come from config, not live transports: a removed home or an opt-out
                 # (gateway_restart_notification=false) must not keep the marker alive forever.
@@ -1331,9 +1331,23 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            # The queued event's ``message_id`` is the message that STARTED the process, and the
+            # persisted origin carries the same stale id. A synthetic completion is not a reply to
+            # it: by delivery time the user has often continued elsewhere, and an event anchored
+            # there makes the finished job's reply quote that old message on every reply-anchoring
+            # platform (#52694: a background completion visibly replying to a stale Discord DM
+            # message). Routing is unaffected — topic lanes carry thread_id and the anchor-less
+            # synthetic-send branches are covered (#87051); the original id rides metadata for
+            # debugging only.
+            trigger_message_id = str(evt.get("message_id") or "").strip() or None
+            if trigger_message_id:
+                metadata["original_trigger_message_id"] = trigger_message_id
+            if getattr(source, "message_id", None):
+                from gateway.session_identity import replace_source
+                source = replace_source(source, message_id=None)
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
+                metadata=metadata,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",

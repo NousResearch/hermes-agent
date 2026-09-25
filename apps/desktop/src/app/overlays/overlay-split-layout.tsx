@@ -34,13 +34,18 @@ interface OverlayMainProps {
 interface OverlayNavItemProps {
   active: boolean
   current?: boolean
-  icon: IconComponent
+  /** Optional: filter/value rows (catalog facets) read as plain labels. */
+  icon?: IconComponent
   /** Stable identity for the row, used as its `data-tour` handle. */
   id?: string
   label: string
   // Renders as an indented child of another nav item: smaller icon and a
   // lighter active state so it never competes with the boxed parent item.
   nested?: boolean
+  /** Presentational only (e.g. `CheckboxMark`); the row stays the one control. */
+  leading?: ReactNode
+  /** Toggle rows (multi-select facets) announce their state. */
+  pressed?: boolean
   onClick: () => void
   trailing?: ReactNode
 }
@@ -112,19 +117,22 @@ export const OverlayNavItem = memo(function OverlayNavItem({
   label,
   nested,
   onClick,
+  leading,
+  pressed,
   trailing
 }: OverlayNavItemProps) {
   return (
     <button
       aria-current={current ? 'page' : undefined}
+      aria-pressed={pressed}
       className={cn(
-        'flex h-7 w-full items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
+        'row-hover flex h-7 w-full shrink-0 items-center justify-start gap-2 rounded-md border px-2 text-left text-[length:var(--conversation-text-font-size)] font-normal transition-colors',
         nested
           ? active
-            ? 'border-transparent bg-(--chrome-action-hover) font-medium text-foreground'
+            ? 'border-transparent bg-(--ui-row-active-background) font-medium text-foreground'
             : 'border-transparent bg-transparent text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
           : active
-            ? 'border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) text-foreground'
+            ? 'border-(--ui-stroke-tertiary) bg-(--ui-row-active-background) text-foreground'
             : 'border-transparent bg-transparent text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
       )}
       // Names the row by its own id, so a tour can address one link
@@ -133,13 +141,16 @@ export const OverlayNavItem = memo(function OverlayNavItem({
       onClick={onClick}
       type="button"
     >
-      <Icon
-        className={cn(
-          'shrink-0',
-          nested ? 'size-3.5' : 'size-4',
-          active ? 'text-foreground/80' : 'text-muted-foreground/80'
-        )}
-      />
+      {leading}
+      {Icon && (
+        <Icon
+          className={cn(
+            'shrink-0',
+            nested ? 'size-3.5' : 'size-4',
+            active ? 'text-foreground/80' : 'text-muted-foreground/80'
+          )}
+        />
+      )}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {trailing}
     </button>

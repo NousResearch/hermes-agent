@@ -423,6 +423,38 @@ class TestStdioPgroupReaping:
 
 
 # ---------------------------------------------------------------------------
+# Fix 2c: whole-tree reap when os.killpg is unavailable (Windows) (#122378)
+# ---------------------------------------------------------------------------
+#
+# Windows has no process groups: ``_stdio_pgids`` stays empty (see its module
+# docstring) and a bare ``os.kill(pid, sig)`` only reaches the direct MCP
+# child, leaking any worker subprocess it spawned. ``_signal_mcp_process``
+# must route that case through the portable ``agent.deadline.kill_process_tree``
+# (``taskkill /F /T`` on Windows) instead.
+
+class TestWindowsWholeTreeReap:
+    """_signal_mcp_process reaps the whole descendant tree when os.killpg is unavailable."""
+
+    def test_missing_killpg_routes_through_kill_process_tree(self, monkeypatch):
+        monkeypatch.delattr(os, "killpg", raising=False)
+        with patch("agent.deadline.kill_process_tree", return_value=True) as mock_tree, \
+             patch("tools.mcp_tool_lifecycle.os.kill") as mock_kill:
+            _mcp_lifecycle._signal_mcp_process(12345, signal.SIGTERM, "test-server", None, None)
+
+        mock_tree.assert_called_once_with(12345, sig=signal.SIGTERM)
+        mock_kill.assert_not_called()
+
+    def test_missing_killpg_falls_back_to_kill_pid_when_tree_kill_fails(self, monkeypatch):
+        monkeypatch.delattr(os, "killpg", raising=False)
+        with patch("agent.deadline.kill_process_tree", return_value=False) as mock_tree, \
+             patch("tools.mcp_tool_lifecycle.os.kill") as mock_kill:
+            _mcp_lifecycle._signal_mcp_process(12345, signal.SIGTERM, "test-server", None, None)
+
+        mock_tree.assert_called_once_with(12345, sig=signal.SIGTERM)
+        mock_kill.assert_called_once_with(12345, signal.SIGTERM)
+
+
+# ---------------------------------------------------------------------------
 # Fix 3: MCP reload timeout (cli.py)
 # ---------------------------------------------------------------------------
 

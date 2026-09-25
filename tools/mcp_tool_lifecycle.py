@@ -241,7 +241,10 @@ def _take_reapable_pids(include_active: bool, server_name: Optional[str]) -> tup
 
 def _signal_mcp_process(pid: int, sig: int, server_name: str, pgid: Optional[int], my_pgid: Optional[int]) -> None:
     """SIGTERM/SIGKILL via the spawn-time pgroup on POSIX (reaches reparented grandchildren),
-    falling back to a per-pid signal."""
+    falling back to a per-pid signal. Windows has no process groups (``pgid`` is always
+    ``None``, see ``_stdio_pgids``): a bare per-pid signal only reaches the direct MCP child
+    and leaks any workers it spawned (#122378), so that case routes through the portable
+    ``kill_process_tree`` (``taskkill /F /T`` on Windows) before falling back."""
     killpg = getattr(os, "killpg", None)
     if pgid is not None and killpg is not None:
         if my_pgid is not None and pgid == my_pgid:
@@ -262,6 +265,14 @@ def _signal_mcp_process(pid: int, sig: int, server_name: str, pgid: Optional[int
                 # Pgroup gone or refused — still try the direct child.
                 logger.debug("killpg(%d, %d) failed for MCP server '%s': %s; falling back to kill(pid)",
                              pgid, sig, server_name, exc)
+    elif killpg is None:
+        from agent.deadline import kill_process_tree
+        try:
+            if kill_process_tree(pid, sig=sig):
+                return
+        except Exception:
+            logger.debug("kill_process_tree failed for MCP server '%s' pid %d; "
+                         "falling back to kill(pid)", server_name, pid, exc_info=True)
     try:
         os.kill(pid, sig)
     except (ProcessLookupError, PermissionError, OSError):

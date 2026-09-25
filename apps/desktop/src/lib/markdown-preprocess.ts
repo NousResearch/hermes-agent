@@ -311,7 +311,7 @@ function rewriteProseSegment(segment: string): string {
   return linkifySessionRefs(
     autoLinkRawUrls(
       routeFileLinksToPreview(
-        segment.replace(/`{3,}/g, '').replace(LOCAL_PREVIEW_URL_RE, '$1').replace(CITATION_MARKER_RE, '')
+        segment.replace(/`{3,}/g, '').replace(CITATION_MARKER_RE, '')
       )
     )
   )

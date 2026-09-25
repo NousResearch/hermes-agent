@@ -291,8 +291,8 @@ def test_offer_released_after_a_failed_tui_turn_is_re_offered(tmp_path, monkeypa
     delegation_id = _orphan(home)
     later = _row(home, delegation_id)["updated_at"] + ad._ORPHAN_STALE_S + 1
     q = queue.Queue()
-    registry = type("Registry", (), {"completion_queue": q, "completion_routing_lock": threading.RLock(),
-                                     "is_completion_consumed": lambda self, sid: False})()
+    monkeypatch.setattr(process_registry, "completion_queue", q)
+    registry = process_registry
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(server, "_run_prompt_submit",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no free worker")))

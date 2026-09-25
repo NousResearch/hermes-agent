@@ -15,7 +15,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 def _make_agent(**kwargs):
     """Create a minimal AIAgent for streaming tests."""
     from run_agent import AIAgent
@@ -32,7 +31,6 @@ def _make_agent(**kwargs):
     agent = AIAgent(**defaults)
     agent.api_mode = "chat_completions"
     return agent
-
 
 class TestStreamInterruptBeforeRetry:
     """Verify _interrupt_requested is checked before each streaming retry."""
@@ -240,5 +238,3 @@ class TestStreamInterruptBeforeRetry:
         assert "new final" in delivered
         assert response.choices[0].message.content == "new final"
         assert mock_abort.called
-
-

@@ -24,7 +24,7 @@ def _fake_bash(tmp_path, body: str):
     return script
 
 
-@pytest.mark.linux_only  # POSIX shebang fixture; the Windows half is the wine2e receipt
+@pytest.mark.platforms("linux")  # POSIX shebang fixture; the Windows half is the wine2e receipt
 def test_shell_filter_runs_under_find_bash_interpreter(tmp_path, monkeypatch):
     """The .sh filter must be spawned through ``_find_bash()``, never a PATH/``which`` lookup (#116818)."""
     marker = tmp_path / "ran"
@@ -38,7 +38,7 @@ def test_shell_filter_runs_under_find_bash_interpreter(tmp_path, monkeypatch):
     assert accepted is True and transformed == {"ok": True}
 
 
-@pytest.mark.linux_only  # POSIX shebang fixture; the Windows half is the wine2e receipt
+@pytest.mark.platforms("linux")  # POSIX shebang fixture; the Windows half is the wine2e receipt
 def test_silent_nonzero_exit_is_logged_as_warning(tmp_path, monkeypatch, caplog):
     """rc!=0 with no stdout AND no stderr is the interpreter-never-ran signature: WARNING, not INFO."""
     fake = _fake_bash(tmp_path, "exit 1\n")

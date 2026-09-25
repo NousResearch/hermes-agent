@@ -101,7 +101,7 @@ def _read_lines(path: Path, fail_log: str) -> List[str]:
     if not path.exists():
         return []
     try:
-        return [s for s in (line.strip() for line in path.read_text(encoding="utf-8").splitlines()) if s]
+        return [s for s in (line.strip() for line in path.read_text(encoding="utf-8-sig").splitlines()) if s]
     except OSError as e:
         logger.debug(fail_log, e)
         return []
@@ -160,7 +160,7 @@ def _read_hub_installed_names() -> Set[str]:
     try:
         # errors="replace": hub descriptions can carry Windows-1252 high bytes; a strict read raises
         # UnicodeDecodeError (a ValueError, not caught below) and would 500 the whole /api/skills endpoint.
-        data = json.loads(lock_path.read_text(encoding="utf-8", errors="replace"))
+        data = json.loads(lock_path.read_text(encoding="utf-8-sig", errors="replace"))
         installed = (data.get("installed") or {}) if isinstance(data, dict) else None
         if not isinstance(installed, dict):
             return set()
@@ -243,7 +243,7 @@ def list_archived_skill_names() -> List[str]:
 def _read_skill_name(skill_md: Path, fallback: str) -> str:
     """The frontmatter ``name:`` field of a SKILL.md (first 4000 chars), else *fallback*."""
     try:
-        lines = [line.strip() for line in skill_md.read_text(encoding="utf-8", errors="replace")[:4000].split("\n")]
+        lines = [line.strip() for line in skill_md.read_text(encoding="utf-8-sig", errors="replace")[:4000].split("\n")]
     except OSError:
         return fallback
     if "---" not in lines:
@@ -367,7 +367,7 @@ def load_usage() -> Dict[str, Dict[str, Any]]:
     """The whole .usage.json map (non-dict values dropped); {} on missing/corrupt."""
     path = _usage_file()
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read %s: %s", path, e)
         return {}

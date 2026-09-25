@@ -16,6 +16,7 @@ import {
   setCurrentCwdTransient,
   setFreshDraftReady,
   setMessages,
+  setMessagingListServer,
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
@@ -201,6 +202,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   invalidateCronJobsRequests()
   setCronJobs([])
   setMessagingSessions([])
+  setMessagingListServer(null)
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
   // Clearing $sessionStates automatically clears $workingSessionIds and

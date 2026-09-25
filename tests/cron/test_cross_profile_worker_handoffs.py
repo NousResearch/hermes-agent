@@ -129,7 +129,7 @@ def test_cron_handoff_reprojects_target_grants_on_each_launch(
         reset_hermes_home_override(token)
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_kanban_cross_profile_child_observes_only_current_assignee_grant(
     worker_profiles, tmp_path, monkeypatch
 ):

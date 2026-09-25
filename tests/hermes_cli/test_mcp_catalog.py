@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 # ---------------------------------------------------------------------------
@@ -284,11 +284,6 @@ class TestManifestParsing:
             _parse_manifest(path)
 
 
-
-
-
-
-
     def test_tools_default_excluded_parsed(self, catalog_dir):
         body = _basic_manifest(
             tools={"default_excluded": ["docs", "*_radar_*"]},
@@ -357,8 +352,9 @@ class TestInstall:
         assert server["tools"]["exclude"] == ["docs", "*_radar_*"]
         assert "include" not in server["tools"]
 
+    @pytest.mark.parametrize('stale', [False, True])
     def test_reinstall_prior_include_wins_over_default_excluded(
-        self, catalog_dir, monkeypatch
+        self, catalog_dir, monkeypatch, stale
     ):
         """A user's prior include selection survives reinstall of an
         exclude-mode manifest (prior selection > manifest default)."""
@@ -378,6 +374,9 @@ class TestInstall:
         }
         save_config(cfg)
 
+        if stale:
+            cfg['mcp_servers']['demo']['tools']['exclude'] = ['tool_a']
+            save_config(cfg)
         import sys as _sys
         probed = [("tool_a", "a"), ("tool_b", "b")]
         monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
@@ -421,38 +420,6 @@ class TestInstall:
         assert server["tools"]["exclude"] == user_exclude
         assert "include" not in server["tools"]
 
-    def test_include_mode_reinstall_ignores_stale_exclude(
-        self, catalog_dir, monkeypatch
-    ):
-        """When the user previously chose an include selection, a leftover
-        exclude value must not shadow it on reinstall of an exclude-mode
-        manifest — include (explicit user checklist choice) wins."""
-        body = _basic_manifest(
-            tools={"default_excluded": ["*_radar_*"]},
-        )
-        _write_manifest(catalog_dir, "demo", body)
-        import hermes_cli.mcp_catalog as mc
-        from hermes_cli.config import load_config, save_config
-
-        cfg = load_config()
-        cfg.setdefault("mcp_servers", {})["demo"] = {
-            "command": "npx",
-            "args": ["-y", "demo-mcp"],
-            "enabled": True,
-            "tools": {"include": ["tool_a"]},
-        }
-        save_config(cfg)
-
-        import sys as _sys
-        probed = [("tool_a", "a"), ("tool_b", "b")]
-        monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
-        monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
-
-        mc.install_entry(_entry("demo"), enable=True)
-
-        server = load_config()["mcp_servers"]["demo"]
-        assert server["tools"]["include"] == ["tool_a"]
-        assert "exclude" not in server["tools"]
 
     def test_probe_fail_reinstall_preserves_prior_selection(self, catalog_dir):
         """A failed probe during reinstall (e.g. OAuth not yet completed)
@@ -646,8 +613,6 @@ class TestInstall:
             mcp_catalog._parse_manifest(path)
 
 
-
-
 # ---------------------------------------------------------------------------
 # Uninstall
 # ---------------------------------------------------------------------------
@@ -738,8 +703,6 @@ class TestToolSelection:
         install_entry(_entry("demo"), enable=True)
         server = load_config()["mcp_servers"]["demo"]
         assert server["tools"]["include"] == ["a", "b", "c"]
-
-
 
 
     def test_reinstall_preserves_prior_user_selection(

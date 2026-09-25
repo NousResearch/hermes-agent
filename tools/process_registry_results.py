@@ -102,7 +102,7 @@ def load_completed_results(prefix: str = "") -> dict:
         if not path.stem.startswith(prefix):
             continue
         try:
-            record = json.loads(path.read_text(encoding="utf-8"))
+            record = json.loads(path.read_text(encoding="utf-8-sig"))
             if record["id"] != path.stem or not re.fullmatch(r"proc_[\w]+", record["id"]):
                 continue
             if not _owns_result(owner, record.get("parent_session_id")):

@@ -5,8 +5,62 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+
+
+from tests.tools._child_env_fixtures import child_env, observe_terminal  # noqa: F401
+
+
+@pytest.mark.platforms("linux", "macos", "windows")
+@pytest.mark.parametrize("multiplex", [False, True])
+def test_shared_snapshot_excludes_routed_ownership_after_revocation(child_env, monkeypatch, multiplex):
+    from agent import secret_scope as ss
+    from hermes_constants import (
+        get_routing_process_hermes_home, pin_process_hermes_home,
+        process_hermes_home_is_pinned, reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from tools.environments.local import LocalEnvironment
+
+    launch, target = child_env / "launch", child_env / "target"
+    launch.mkdir()
+    target.mkdir()
+    names = ["ACME_LOGIN", "APPTAINERENV_ACME_LOGIN"]
+    (launch / ".env").write_text(
+        "APPTAINERENV_ACME_LOGIN=launch-private\n", encoding="utf-8")
+    (target / ".env").write_text("", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(launch))
+    for name in names:
+        monkeypatch.setenv(name, "launch-private")
+    prior_pin = get_routing_process_hermes_home() if process_hermes_home_is_pinned() else None
+    prior_mode = ss.is_multiplex_active()
+    pin_process_hermes_home(launch)
+    ss.set_multiplex_active(multiplex)
+    env = None
+    try:
+        env = LocalEnvironment(cwd=str(child_env), timeout=30)
+        assert observe_terminal(env, names) == dict.fromkeys(names, "launch-private")
+        home_token = set_hermes_home_override(target)
+        secret_token = ss.set_secret_scope(ss.build_profile_secret_scope(target))
+        try:
+            assert observe_terminal(env, names) == dict.fromkeys(names)
+            snapshot = Path(env._snapshot_path)
+            assert all(name not in snapshot.read_text(encoding="utf-8") for name in names)
+            # Removing the source declaration must not release its old snapshot values.
+            (launch / ".env").write_text("", encoding="utf-8")
+            assert observe_terminal(env, names) == dict.fromkeys(names)
+        finally:
+            ss.reset_secret_scope(secret_token)
+            reset_hermes_home_override(home_token)
+        assert observe_terminal(env, names) == dict.fromkeys(names, "launch-private")
+        assert all(name not in snapshot.read_text(encoding="utf-8") for name in names)
+    finally:
+        if env is not None:
+            env.cleanup()
+        ss.set_multiplex_active(prior_mode)
+        pin_process_hermes_home(prior_pin)
 
 
 @pytest.mark.parametrize("multiplex", [False, True])

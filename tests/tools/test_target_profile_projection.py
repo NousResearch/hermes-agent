@@ -235,7 +235,7 @@ def test_wrapped_source_ownership_excludes_raw_snapshot_value(profiles, monkeypa
         environment.cleanup()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_native_windows_profile_boundary_removes_mixed_case_carriers(profiles):
     source, target = profiles
     names = ["source_only", "aPpTaInErEnV_sOuRcE_oNlY",

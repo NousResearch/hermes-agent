@@ -32,8 +32,8 @@ def _profile_user_agent() -> str:
     (OpenCode Zen, etc.) sit behind a WAF that returns 403 for that.
     """
     try:
-        from hermes_cli import __version__ as _ver  # lazy: avoid layer cycle at import time
-        return f"hermes-cli/{_ver}"
+        from hermes_cli.version_info import get_version_info  # lazy: avoid layer cycle at import time
+        return f"hermes-cli/{get_version_info().base_version}"
     except Exception:
         return "hermes-cli"
 

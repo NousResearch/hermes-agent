@@ -169,11 +169,15 @@ def _profile_config_scope(profile: str) -> Iterator[None]:
 
     home = get_profile_dir(normalized)
     home_token = set_hermes_home_override(home)
-    secret_token = set_secret_scope(build_profile_secret_scope(home))
     try:
-        yield
+        # Register home cleanup before secret construction/binding can fail.
+        # A failed read must not leave this task routed to a different profile.
+        secret_token = set_secret_scope(build_profile_secret_scope(home))
+        try:
+            yield
+        finally:
+            reset_secret_scope(secret_token)
     finally:
-        reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
 
 

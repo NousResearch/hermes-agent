@@ -1,6 +1,6 @@
 name: microsoft-graph-security
 repo: https://github.com/RohiRIK/microsoft-graph-security
-sha: dfa50c1c546b4475c2024362fba1c62995ee3e45
+sha: fa18c2e7e49c97e163a6ba0458e2ff62bac9877c
 subdir: plugins/microsoft-graph-security
 description: Cross-plane Microsoft 365 security investigation skills (Entra ID, Intune, Exchange Online, Defender, Purview) with read-only defaults, tenant-first reporting, and confirm-gated writes. Skills only - no tools, hooks, or network calls of its own.
 maintainer: RohiRIK

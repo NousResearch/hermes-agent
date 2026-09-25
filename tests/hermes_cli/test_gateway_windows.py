@@ -473,6 +473,36 @@ def test_reconcile_leaves_one_autostart_mechanism(monkeypatch, tmp_path):
     assert [p.name for p in (tmp_path / "no-task" / "Startup").iterdir()] == ["Hermes_Gateway_alice.vbs"]
 
 
+def test_reconcile_warns_when_legacy_entry_cannot_be_removed(monkeypatch, tmp_path):
+    """#80569: no task, legacy .cmd locked. The .vbs gets written but the .cmd survives, so both fire
+    at logon; reconcile must warn instead of reporting a migration, and doctor --fix must not count it."""
+    import sys
+    from hermes_cli import doctor_platform
+    from hermes_cli.doctor_report import Finding
+
+    startup, _script = _startup_with_fallback_and_legacy_entries(monkeypatch, tmp_path)
+    (startup / "Hermes_Gateway_alice.vbs").unlink()   # legacy-only install
+    monkeypatch.setattr(gateway_windows, "is_task_registered", lambda: False)
+    real_unlink = Path.unlink
+
+    def locked_unlink(self, *args, **kwargs):
+        if self.suffix == ".cmd":
+            raise PermissionError(13, "Access is denied", str(self))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", locked_unlink)
+
+    done, warnings = gateway_windows.reconcile_autostart_launchers()
+    assert done == [] and len(warnings) == 1 and "Hermes_Gateway_alice.cmd" in warnings[0]
+    assert sorted(p.name for p in startup.iterdir()) == ["Hermes_Gateway_alice.cmd", "Hermes_Gateway_alice.vbs"]
+    assert [p.suffix for p in gateway_windows.redundant_autostart_entries()] == [".cmd"]
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    f = Finding()
+    doctor_platform._check_windows_gateway_autostart(True, f)
+    assert f.fixed == 0 and len(f.manual_issues) == 1
+
+
 def test_status_names_and_uninstall_removes_pre_suffix_launchers(monkeypatch, tmp_path, capsys):
     """#116157: a Scheduled Task ``Hermes_Gateway`` and a Startup ``Hermes_Gateway.vbs`` left from before
     per-profile suffixes are invisible to every ``get_task_name()``-keyed operation. ``status`` must name

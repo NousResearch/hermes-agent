@@ -648,8 +648,11 @@ def reconcile_autostart_launchers() -> tuple[list[str], list[str]]:
     """
     if is_task_registered():
         return _remove_startup_entries()
-    if _legacy_startup_entry_path().exists():
+    legacy = _legacy_startup_entry_path()
+    if legacy.exists():
         entry = _install_startup_entry(_write_task_script())
+        if legacy.exists():  # _install_startup_entry swallows the unlink failure; both would fire at logon
+            return [], [f"Could not remove legacy Windows login item: {legacy} (locked or access denied; it still fires at logon beside {entry})"]
         return [f"Migrated legacy Windows login item to: {entry}"], []
     return [], []
 

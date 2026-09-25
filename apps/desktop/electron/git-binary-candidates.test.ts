@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
+
 import { describe, test } from 'vitest'
 
-import { ugitGitBinaries, windowsGitCandidates, type GitCandidateFs } from './git-binary-candidates'
+import { type GitCandidateFs, ugitGitBinaries, windowsGitCandidates } from './git-binary-candidates'
 
 const LAD = path.join('C:', 'Users', 'suceru', 'AppData', 'Local')
 

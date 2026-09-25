@@ -412,3 +412,45 @@ def test_dump_wedged_turn_stacks_never_raises(monkeypatch):
     from gateway.run import _dump_wedged_turn_stacks
 
     _dump_wedged_turn_stacks("t-no-raise")  # must not raise
+
+
+def test_inactivity_timeout_discards_pending_followups_instead_of_replaying_them():
+    """Messages accumulated behind a wedged turn must not cross its timeout boundary."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from gateway.run import GatewayRunner
+
+    pending = object()
+    overflow = [object(), object()]
+
+    class _Adapter:
+        def __init__(self):
+            self._pending = pending
+
+        def get_pending_message(self, session_key):
+            assert session_key == "session-a"
+            value, self._pending = self._pending, None
+            return value
+
+    runner = object.__new__(GatewayRunner)
+    runner._overflow_queue = lambda session_key: overflow
+
+    # Production timeout flow has no executor result yet: the marker lives on
+    # the synthetic response returned by _run_agent_await_turn_worker.
+    terminal = runner._run_agent_result_for_pending_drain(
+        {"failed": True, "gateway_inactivity_timeout": True}, [None]
+    )
+
+    pending_event, pending_text = asyncio.run(
+        runner._run_agent_drain_pending(
+            terminal,
+            _Adapter(),
+            SimpleNamespace(chat_id="chat-a"),
+            "session-a",
+        )
+    )
+
+    assert pending_event is None
+    assert pending_text is None
+    assert overflow == []

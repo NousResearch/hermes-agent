@@ -3464,6 +3464,7 @@ class GatewayTurnMixin:
             "tools": tools_holder[0] or [],
             "history_offset": 0,
             "failed": True,
+            "gateway_inactivity_timeout": True,
         }
 
     async def _run_agent_await_turn_worker(
@@ -3552,6 +3553,21 @@ class GatewayTurnMixin:
         pending_event = None
         pending = None
         if result and adapter and session_key:
+            if result.get("gateway_inactivity_timeout"):
+                # Buffered input behind a wedged turn may be a duplicate
+                # resend. Never promote it automatically across the timeout
+                # boundary; the user can send a fresh message after recovery.
+                dropped = int(adapter.get_pending_message(session_key) is not None)
+                overflow = self._overflow_queue(session_key)
+                if overflow:
+                    dropped += len(overflow)
+                    overflow.clear()
+                if dropped:
+                    logger.warning(
+                        "Discarded %d pending follow-up(s) after inactivity timeout for session %s",
+                        dropped, session_key,
+                    )
+                return None, None
             pending_event = _dequeue_pending_event(adapter, session_key)
             # /queue overflow: promote the next queued event into the consumed "next-up" slot so the
             # recursive drain sees it (keeps FIFO order; a mid-chain /queue can't jump the queue).
@@ -3606,6 +3622,18 @@ class GatewayTurnMixin:
             pending_event = None
             pending = None
         return pending_event, pending
+
+    @staticmethod
+    def _run_agent_result_for_pending_drain(response: Any, result_holder: list) -> Any:
+        """Return the terminal result that owns pending-queue disposition.
+
+        Timeout responses are synthesized outside the still-running executor,
+        so its holder is normally empty at exactly the point this decision is
+        made.  Prefer the synthetic terminal marker in that one case.
+        """
+        if isinstance(response, dict) and response.get("gateway_inactivity_timeout"):
+            return response
+        return result_holder[0]
 
     async def _run_agent_deliver_first_response(
         self, turn_ctx: TurnContext, adapter: Any, response: Any, result: Any, stream_task: Any,
@@ -4190,7 +4218,7 @@ class GatewayTurnMixin:
             self._run_agent_evict_on_fallback(turn_ctx)
 
             # Interrupted OR queued message (/queue)?
-            result = turn_ctx.result_holder[0]
+            result = self._run_agent_result_for_pending_drain(response, turn_ctx.result_holder)
             adapter = self._adapter_for_source(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
             pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)

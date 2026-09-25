@@ -251,6 +251,32 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     assert completed_events[0][1] == "web_search"
 
 
+def test_interrupt_during_subdirectory_hint_commit_prevents_next_dispatch():
+    """A watchdog interrupt while committing hints stops later tool side effects."""
+    agent = _make_agent("web_search", platform="weixin")
+    calls = [
+        _mock_tool_call("web_search", json.dumps({"query": "first"}), "c-first"),
+        _mock_tool_call("web_search", json.dumps({"query": "must-not-run"}), "c-stale"),
+    ]
+    msg = SimpleNamespace(content="", tool_calls=calls)
+    messages = []
+
+    def interrupt_during_hint_commit(*_args, **_kwargs):
+        agent._interrupt_requested = True
+        agent._tool_interrupt_reason = "gateway inactivity watchdog"
+        return None
+
+    with (
+        patch.object(agent._subdirectory_hints, "check_tool_call", side_effect=interrupt_during_hint_commit),
+        patch("model_tools.handle_function_call", return_value="first-result") as dispatch,
+    ):
+        agent._execute_tool_calls_sequential(msg, messages, "task-timeout")
+
+    dispatch.assert_called_once()
+    assert [row["tool_call_id"] for row in messages] == ["c-first", "c-stale"]
+    assert "skipped" in messages[1]["content"].lower()
+
+
 def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispatch():
     agent = _make_agent("write_file")
     original_args = {"path": "/original/path", "content": "old"}

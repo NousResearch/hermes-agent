@@ -1472,7 +1472,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         return
 
     parsed_calls = [_parse_tool_call(agent, tc) for tc in tool_calls]
-
     tool_names_str = ", ".join(pc.name for pc in parsed_calls)
     if _tool_progress_enabled(agent):
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")

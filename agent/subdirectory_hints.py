@@ -5,13 +5,16 @@ touching the system prompt (prompt caching preserved). Complements the startup
 CWD-only loading in ``prompt_builder.py``."""
 
 import hashlib
+import json
 import logging
 import os
 import shlex
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
-from agent.prompt_builder import _read_text_with_timeout, _scan_context_content, _truncate_content
+from agent.prompt_builder import _get_context_file_read_timeout, _scan_context_content, _truncate_content
 from agent.search_policy import SEARCH_PRUNE_DIR_NAMES
 
 logger = logging.getLogger(__name__)
@@ -32,6 +35,59 @@ _MAX_ANCESTOR_WALK = 5  # ancestor levels walked per path — bounds deep-path s
 # different dependency/cache/build trees (those hold *copies* of context files, never authoritative ones).
 _EXCLUDED_DIR_NAMES = SEARCH_PRUNE_DIR_NAMES
 
+_ISOLATED_READ_SCRIPT = r"""
+import json, pathlib, sys
+payload = json.loads(sys.stdin.read())
+directory = pathlib.Path(payload["directory"])
+working_dir = pathlib.Path(payload["working_dir"]).resolve()
+for filename in payload["filenames"]:
+    try:
+        candidate = (directory / filename).resolve()
+        candidate.relative_to(working_dir)
+        content = candidate.read_text(encoding="utf-8").strip()
+    except Exception:
+        continue
+    if content:
+        sys.stdout.write(json.dumps({"ok": True, "filename": filename, "content": content}))
+        break
+else:
+    sys.stdout.write(json.dumps({"ok": False}))
+"""
+
+
+def _first_hint_isolated(directory: Path, working_dir: Optional[Path] = None):
+    """Read a directory's first hint in one killable child; leave no stuck worker."""
+    proc = subprocess.Popen(
+        [sys.executable, "-c", _ISOLATED_READ_SCRIPT],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    try:
+        stdout, _ = proc.communicate(
+            json.dumps({
+                "directory": str(directory),
+                "working_dir": str(working_dir or directory),
+                "filenames": _HINT_FILENAMES,
+            }),
+            timeout=_get_context_file_read_timeout(),
+        )
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=0.2)
+        except subprocess.TimeoutExpired:
+            # SIGKILL is already pending; never let reap wait re-wedge the turn.
+            pass
+        logger.warning("Subdirectory context discovery in %s timed out; skipping", directory)
+        return None
+    try:
+        payload = json.loads(stdout)
+    except (TypeError, ValueError):
+        return None
+    if not payload.get("ok"):
+        return None
+    return directory / payload["filename"], payload["content"]
+
 
 def _digest(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -40,16 +96,7 @@ def _digest(content: str) -> str:
 def _first_hint_file(directory: Path):
     """``(path, stripped content)`` of the first readable non-empty hint file
     in *directory* (priority order), or None. Unreadable files are skipped."""
-    for filename in _HINT_FILENAMES:
-        candidate = directory / filename
-        try:
-            if not candidate.is_file():
-                continue
-            content = candidate.read_text(encoding="utf-8").strip()
-        except (OSError, UnicodeDecodeError):
-            continue
-        return candidate, content
-    return None
+    return _first_hint_isolated(directory, directory)
 
 
 _NAV_COMMANDS = frozenset({"cd", "pushd"})
@@ -89,7 +136,9 @@ class SubdirectoryHintTracker:
         # AGENTS.md/CLAUDE.md injection at startup must not get the same files spliced into
         # tool results later — cron jobs relaying exact stdout leaked them to chat (#9441).
         self.enabled = enabled
-        self.working_dir = Path(working_dir or os.getcwd()).resolve()
+        # Lexical normalization only: resolve()/stat() may block forever on an
+        # unavailable network or cloud mount before our isolated reader starts.
+        self.working_dir = Path(os.path.abspath(os.path.expanduser(working_dir or os.getcwd())))
         # The working dir is pre-marked loaded (startup context handles it).
         self._loaded_dirs: Set[Path] = {self.working_dir}
         # Content digests already injected: the same file reached through
@@ -124,11 +173,11 @@ class SubdirectoryHintTracker:
         levels, stopping at the first already-loaded dir) so reading
         ``project/src/main.py`` still discovers ``project/AGENTS.md``."""
         try:
-            p = Path(raw_path).expanduser()
+            p = Path(os.path.expanduser(raw_path))
             if not p.is_absolute():
                 p = self.working_dir / p
-            p = p.resolve()
-            if p.suffix or (p.exists() and p.is_file()):
+            p = Path(os.path.normpath(str(p)))
+            if p.suffix:
                 p = p.parent
             for _ in range(_MAX_ANCESTOR_WALK):
                 if p in self._loaded_dirs:
@@ -173,11 +222,8 @@ class SubdirectoryHintTracker:
 
     def _is_valid_subdir(self, path: Path) -> bool:
         """Directory inside the working-dir tree, not yet loaded, not an excluded copy dir."""
-        try:
-            if not path.is_dir():
-                return False
-        except OSError:
-            return False
+        # Do not stat here.  Candidate existence is established by the
+        # isolated hint-file read; metadata probes can block just like reads.
         return path not in self._loaded_dirs and self._within_working_dir(path) and not self._is_excluded(path)
 
     def _is_excluded(self, path: Path) -> bool:
@@ -195,30 +241,24 @@ class SubdirectoryHintTracker:
         if not self._within_working_dir(directory):
             logger.debug("Skipping hint files in %s — outside working_dir %s", directory, self.working_dir)
             return None
-        for filename in _HINT_FILENAMES:
-            hint_path = directory / filename
+        found = _first_hint_isolated(directory, self.working_dir)
+        if found:
+            hint_path, content = found
             try:
-                if not hint_path.is_file():
-                    continue
-            except OSError:
-                continue
-            try:
-                content = (_read_text_with_timeout(hint_path) or "").strip()
-                if not content:
-                    continue
                 digest = _digest(content)
                 if digest in self._loaded_digests:
                     logger.debug("Skipping duplicate hint content at %s (digest %s)", hint_path, digest[:12])
                     return None
                 self._loaded_digests.add(digest)
                 # Same security scan as startup context loading.
+                filename = hint_path.name
                 content = _scan_context_content(content, filename)
                 rel_path = self._display_path(hint_path)
                 content = _truncate_content(
                     content, filename, max_chars=_MAX_HINT_CHARS, read_path=rel_path, queue_warning=False,
                 )
                 logger.debug("Loaded subdirectory hints from %s: %s", directory, [rel_path])
-                return f"[Subdirectory context discovered: {rel_path}]\n{content}"  # first match wins per directory
+                return f"[Subdirectory context discovered: {rel_path}]\n{content}"
             except Exception as exc:
                 logger.debug("Could not read %s: %s", hint_path, exc)
         return None

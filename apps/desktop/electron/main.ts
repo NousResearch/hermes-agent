@@ -82,8 +82,8 @@ import { isPidAliveWindows, waitForBackendRelease } from './backend-release-gate
 import { createBackendServeSupportResolver } from './backend-serve-support'
 import {
   isHostKeyChangedBootFailure,
-  isSshAuthFailedBootFailure,
   isRetryableRemoteBootFailure,
+  isSshAuthFailedBootFailure,
   shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,

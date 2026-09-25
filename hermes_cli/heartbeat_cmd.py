@@ -166,7 +166,7 @@ def _cmd_set(args) -> int:
         return 1
     if args.prompt_file:
         try:
-            prompt = Path(args.prompt_file).expanduser().read_text(encoding="utf-8")
+            prompt = Path(args.prompt_file).expanduser().read_text(encoding="utf-8-sig")
         except OSError as exc:
             print(f"Error: cannot read --prompt-file: {exc}", file=sys.stderr)
             return 1

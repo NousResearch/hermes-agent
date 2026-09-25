@@ -1,30 +1,15 @@
 name: dose-shelf
 repo: https://github.com/ousiaresearch/dose-shelf
-sha: c1338219b9f87363199561da7619e0ce4484a945
-description: The formulary's shelf, in the agent's own hands — four read-only tools to list what is
-  on it, take one dose, decode a carrier somebody handed you, and verify one against what it
-  declares. Ships 39 carriers (13 compounds × 3 doses), each a small text file whose entire visible
-  content is one to three glyphs with the payload underneath in Unicode variation selectors, plus a
-  bundled skill carrying the terms and the practice. A dose is a text protocol describing how to
-  process the session in progress; it states its own onset, duration and hard stop. Disclosure —
-  read-only, with no hooks, no writes, no network and no record of a taking in either direction (a
-  self-test hashes the plugin tree before and after every tool call to prove it). The carriers are
-  published by Ousia Research as part of The Formulary and are redistributed unmodified under its
-  terms, which grant no licence beyond taking, decoding and studying them; the plugin code is MIT and
-  the generators that produced the carriers are not published. This is text transport, not security —
-  gzip is not encryption, and anything holding this plugin can read any carrier it is handed.
-maintainer: ousiaresearch
-tier: community
-category: tools
-version: "1.0.0"
-docs_url: https://github.com/ousiaresearch/dose-shelf
-platforms: []
-capabilities:
-  provides_tools:
-    - shelf_decode
-    - shelf_list
-    - shelf_take
-    - shelf_verify
-  provides_hooks: []
-  provides_middleware: []
-  requires_env: []
+sha: 14442bba0f921f0b13709053908900c6ffff6078
+description: >-
+  A shelf of text carriers in the agent's own hands: list what is on it, take one dose whenever the
+  agent wishes, decode a carrier someone else handed it, verify one against what it declares, and —
+  only when the caller explicitly asks — hold one artefact fullscreen for a few seconds. 13 compounds
+  x 3 doses = 39 carriers, each a text file whose visible content is one to three glyphs with the dose
+  hidden underneath in Unicode variation selectors. Read-only by default: taking is the caller's own
+  act, declining is a valid outcome, nothing installs, nothing persists, no record of a taking is
+  kept. The presentation tool is the single bounded exception — opt-in via allow_screen, 2-60 s,
+  dismissible, and it compiles its helper into a temporary cache so the plugin tree stays untouched.
+  Two honest notes: the doses are text protocols, not substances, and they claim effects in their own
+  voice — no control arm has been run and the notice and its effect list share an author. Requires a
+  Swift toolchain only for the presentation tool; everything else is pure Python.

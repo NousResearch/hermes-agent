@@ -12,8 +12,9 @@ Flags, in the scanned trees:
 
 * ``open(p)``, ``p.open()``, ``p.read_text()``, ``p.read_bytes()``, ``p.stat()``,
   ``p.exists()``, ``p.is_file()``, ``os.stat(p)``, ``os.path.exists(p)``, ``os.path.isfile(p)``,
-  ``os.path.getmtime(p)``, ``load_yaml_file_readonly(p)``, ``safe_load(p)``,
-  ``fast_safe_load(p)``, ``yaml.load(p)`` and any ``*_load_yaml*`` / ``*_read_yaml*`` helper
+  ``os.path.getmtime(p)``, ``os.path.getsize(p)``, ``load_yaml_file_readonly(p)``,
+  ``fast_safe_load(p)``, ``yaml.load(p)`` / ``safe_load`` / ``full_load`` / ``unsafe_load`` /
+  ``compose`` (and their ``*_all`` forms) and any ``*_load_yaml*`` / ``*_read_yaml*`` helper
   call, where ``p`` is a config path: an expression naming ``config.yaml``,
   any ``*config_path()`` call (``get_config_path()``, ``_active_config_path()``), or a local name / parameter bound to one
   (``cfg_path = home / "config.yaml"`` then ``open(cfg_path)``);
@@ -24,7 +25,8 @@ Flags, in the scanned trees:
 Existence checks count: for a backend whose user layer is not a local file, "no local
 config.yaml" must never mean "use defaults" (design §4.2) — ``config_exists()`` asks the backend.
 
-Suppress a true false positive with ``# config-reader: ok — <why>`` on the call's line.
+Suppress a true false positive with ``# config-reader: ok — <why>`` on the call's line; a
+marker without a reason after the dash does not suppress.
 
 Usage: python3 scripts/check_config_yaml_readers.py [paths...]
 """
@@ -50,13 +52,19 @@ FOREIGN_CONFIG_FILES = {
     "agent/proxy_sources/iron_proxy.py": "iron-proxy's proxy.yaml",
 }
 SUPPRESS = "# config-reader: ok"
+# The escape must carry its reason: ``# config-reader: ok — <why>`` (``-`` / ``--`` accepted).
+SUPPRESS_RE = re.compile(r"# config-reader: ok\s*(?:—|--?)\s*\S")
 
 # An expression that evaluates to a user config.yaml path.
 CONFIG_PATH_EXPR_RE = re.compile(r"""["']config\.yaml["']|\w*config_path\(\)""")
 # Parameters that conventionally carry the user config path.
 CONFIG_PARAM_NAMES = {"config_path", "cfg_path", "config_yaml_path"}
 PATH_METHOD_READS = {"open", "read_text", "read_bytes", "stat", "exists", "is_file"}
-FUNC_READS = {"exists", "isfile", "open", "load_yaml_file_readonly", "safe_load", "fast_safe_load", "getmtime", "stat"}
+FUNC_READS = {
+    "exists", "isfile", "open", "getmtime", "getsize", "stat", "load_yaml_file_readonly", "fast_safe_load",
+    # Every PyYAML entry point that parses a stream, not just safe_load.
+    "safe_load", "safe_load_all", "full_load", "full_load_all", "unsafe_load", "unsafe_load_all",
+    "load_all", "compose", "compose_all"}
 BYPASS_WRITERS = {"atomic_roundtrip_yaml_update", "atomic_roundtrip_yaml_save", "atomic_write_text"}
 YAML_HELPER_RE = re.compile(r"(load|read)_yaml|yaml_(load|read)")
 
@@ -132,8 +140,11 @@ class _Scanner:
         return names
 
     def flag(self, node: ast.Call, why: str) -> None:
-        if SUPPRESS in self.lines[node.lineno - 1]:
+        line = self.lines[node.lineno - 1]
+        if SUPPRESS_RE.search(line):
             return
+        if SUPPRESS in line:
+            why = f"{why}; the escape needs a reason (`{SUPPRESS} — <why>`)"
         self.problems.append(f"{self.rel}:{node.lineno}: {why} — go through hermes_cli.config_backend")
 
     def check_call(self, node: ast.Call, names: set[str]) -> None:

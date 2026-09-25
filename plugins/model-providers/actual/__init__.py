@@ -37,7 +37,9 @@ class ActualProfile(ProviderProfile):
 
         return {"ssl_ca_cert": certifi.where()}
 
-    def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...] | None:
+    def supported_reasoning_efforts(
+        self, model: str | None, base_url: str | None = None
+    ) -> tuple[str, ...] | None:
         from agent.reasoning_effort import ACTUAL_RELAY_EFFORTS
 
         return ACTUAL_RELAY_EFFORTS

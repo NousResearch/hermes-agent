@@ -384,6 +384,15 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
 // signals can never queue back-to-back sweeps into a hot loop.
 export const POWER_RESUME_REVALIDATION_HOLDOFF_MS = 15_000
 
+// The 15s baseline assumes the default 10s probe timeout. Now that the probe
+// timeout is a live Settings value (up to 120s, #121941), the fixed baseline
+// alone can no longer stay "comfortably above" it, which would let a resume
+// sweep queue back-to-back onto one still awaiting its probes. Track the live
+// timeout so the guarantee above holds at every setting, not just the default.
+export function getPowerResumeRevalidationHoldoffMs(): number {
+  return Math.max(POWER_RESUME_REVALIDATION_HOLDOFF_MS, getPooledRemoteDispatchProbeTimeoutMs() + 5_000)
+}
+
 export interface AttachPowerResumeRemoteRevalidationOptions {
   log: (message: string) => void
   now?: () => number
@@ -414,7 +423,7 @@ export function attachPowerResumeRemoteRevalidation({
   const trigger = async (): Promise<void> => {
     const at = now()
 
-    if (lastKickAt !== null && at - lastKickAt < POWER_RESUME_REVALIDATION_HOLDOFF_MS) {
+    if (lastKickAt !== null && at - lastKickAt < getPowerResumeRevalidationHoldoffMs()) {
       return
     }
 

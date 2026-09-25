@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ensureHealthyPooledRemoteBackendForDispatch,
   getPooledRemoteDispatchProbeTimeoutMs,
+  getPowerResumeRevalidationHoldoffMs,
   getRemoteLivenessTimeoutMs,
   POWER_RESUME_REVALIDATION_HOLDOFF_MS,
   REMOTE_LIVENESS_FAILURE_LIMIT,
@@ -13,6 +14,7 @@ import {
   revalidateRemoteConnection,
   setRemoteLivenessTimeoutMs
 } from './remote-liveness'
+import { REMOTE_LIVENESS_TIMEOUT_BOUNDS } from './remote-liveness-timeout'
 
 describe('getRemoteLivenessTimeoutMs / setRemoteLivenessTimeoutMs', () => {
   afterEach(() => {
@@ -289,6 +291,16 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     expect(getPooledRemoteDispatchProbeTimeoutMs()).toBeGreaterThanOrEqual(getRemoteLivenessTimeoutMs())
     expect(getPooledRemoteDispatchProbeTimeoutMs()).toBeGreaterThanOrEqual(8_000)
     expect(POWER_RESUME_REVALIDATION_HOLDOFF_MS).toBeGreaterThan(getPooledRemoteDispatchProbeTimeoutMs())
+  })
+
+  it('keeps the power-resume holdoff above the dispatch probe timeout at the ceiling', () => {
+    setRemoteLivenessTimeoutMs(REMOTE_LIVENESS_TIMEOUT_BOUNDS.max)
+
+    try {
+      expect(getPowerResumeRevalidationHoldoffMs()).toBeGreaterThan(getPooledRemoteDispatchProbeTimeoutMs())
+    } finally {
+      setRemoteLivenessTimeoutMs(10_000)
+    }
   })
 
   it('returns a healthy cached descriptor without retiring or reconnecting', async () => {

@@ -22,10 +22,21 @@ def _normalize_completion_path(path_part: str) -> str:
 
 def _completion_cwd(params: dict | None = None) -> str:
     params = params or {}
+    # Provenance for the client-sent ``cwd`` (#52589): the desktop seeds a new chat's cwd
+    # from its app-global workspace (the launch profile's configured directory or the
+    # project scope) when the user did NOT pick one. That inherited default must NOT
+    # override a NAMED profile's own ``terminal.cwd`` — only a deliberate per-session
+    # workspace pick (``cwd_explicit``) wins over the profile config. Path equality
+    # cannot tell the two apart, so the desktop ships the flag alongside the path.
+    client_cwd = params.get("cwd")
+    if not params.get("cwd_explicit") and client_cwd:
+        profile_cwd = _profile_configured_cwd(_profile_home(params.get("profile")))
+        if profile_cwd:
+            return profile_cwd
     # A session bound to another profile resolves its workspace from THAT profile's config before the launch profile's
     # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
     # terminal.cwd is read directly.
-    raw = (params.get("cwd") or _sessions.get(params.get("session_id") or "", {}).get("cwd")
+    raw = (client_cwd or _sessions.get(params.get("session_id") or "", {}).get("cwd")
            or _profile_configured_cwd(_profile_home(params.get("profile"))) or _launch_configured_cwd()
            or os.environ.get("TERMINAL_CWD") or os.getcwd())
     with contextlib.suppress(Exception):

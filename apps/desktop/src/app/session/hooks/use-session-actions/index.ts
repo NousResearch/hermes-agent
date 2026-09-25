@@ -63,6 +63,7 @@ import {
   $activeSessionStoredIdRotation,
   $connection,
   $currentCwd,
+  $currentCwdExplicit,
   $currentFastMode,
   $currentModel,
   $currentProvider,
@@ -82,6 +83,7 @@ import {
   setBusy,
   setCurrentBranch,
   setCurrentCwd,
+  setCurrentCwdExplicit,
   setCurrentCwdTransient,
   setCurrentServiceTier,
   setCurrentUsage,
@@ -348,6 +350,9 @@ async function desktopSessionCreateParams(
     cols: 96,
     source: 'desktop',
     ...(cwd && { cwd }),
+    // #52589: explicit provenance for the shipped cwd — an inherited app-global
+    // workspace must not override the target profile's configured terminal.cwd.
+    ...(cwd && { cwd_explicit: $currentCwdExplicit.get() }),
     ...(profile ? { profile: capturedRoute?.targetProfile || profile } : {}),
     ...(includeComposerSelection
       ? {
@@ -586,6 +591,10 @@ export function useSessionActions({
       setCurrentServiceTier('')
       setYoloActive(false)
       setNewChatWorkspaceTarget(hasWorkspaceTarget ? workspaceTarget : undefined)
+      // #52589 provenance: only a deliberate string workspace target is an explicit
+      // cwd choice. A plain new chat (or a detached `null`) is not — its inherited
+      // launch/project workspace must yield to a named profile's configured cwd.
+      setCurrentCwdExplicit(typeof workspaceTarget === 'string')
 
       if (!hasWorkspaceTarget) {
         // In a project → the repo's default-branch checkout; not in a project →
@@ -901,6 +910,10 @@ export function useSessionActions({
 
         const cwd =
           options?.cwd === null ? '' : typeof options?.cwd === 'string' ? options.cwd.trim() : resolveNewSessionCwd()
+
+        // #52589 provenance for the tile path: an explicitly-passed cwd is a
+        // deliberate workspace pick; a resolved default is inherited.
+        setCurrentCwdExplicit(typeof options?.cwd === 'string')
 
         // Bot-workspace tabs target an agent profile without switching the
         // window's ambient composer. Do not leak that unrelated session's

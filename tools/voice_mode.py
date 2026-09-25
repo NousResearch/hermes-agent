@@ -35,7 +35,21 @@ DTYPE = "int16"
 SAMPLE_WIDTH = 2  # bytes per sample (int16)
 SILENCE_RMS_THRESHOLD = 200  # RMS below this = silence (int16 range 0-32767)
 SILENCE_DURATION_SECONDS = 3.0  # continuous silence before auto-stop
-_TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
+
+
+def _recordings_dir() -> str:
+    """``<HERMES_HOME>/cache/hermes_voice``, created owner-only and resolved per call.
+
+    Not the temp dir: a user-exported ``TMPDIR`` is often the shared ``/tmp``, where a
+    fixed-name directory may already exist and belong to another account. Resolved per
+    call so a long-lived TUI/Desktop backend follows the active profile (#98749)."""
+    from hermes_constants import apply_secure_dir_policy, get_hermes_home
+
+    path = get_hermes_home() / "cache" / "hermes_voice"
+    path.mkdir(parents=True, exist_ok=True)
+    if sys.platform != "win32":
+        apply_secure_dir_policy(path)
+    return str(path)
 
 
 # ── Lazy audio imports ──
@@ -518,9 +532,8 @@ def stop_thinking_sound() -> None:
 
 # ── Recorders ──
 def _new_recording_path(ext: str) -> str:
-    """Timestamped ``recording_*.<ext>`` path under _TEMP_DIR (created on demand)."""
-    os.makedirs(_TEMP_DIR, exist_ok=True)
-    return os.path.join(_TEMP_DIR, f"recording_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
+    """Timestamped ``recording_*.<ext>`` path under :func:`_recordings_dir`."""
+    return os.path.join(_recordings_dir(), f"recording_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
 
 
 # WAV path -> live STT session that heard the same take (``stt.streaming``). transcribe_recording
@@ -1543,7 +1556,7 @@ def cleanup_temp_recordings(max_age_seconds: int = 3600) -> int:
     """Remove ``recording_*.wav`` temp files older than *max_age_seconds*; returns the count."""
     from utils import unlink_files_older_than
 
-    deleted = unlink_files_older_than(_TEMP_DIR, "recording_*.wav", max_age_seconds)
+    deleted = unlink_files_older_than(_recordings_dir(), "recording_*.wav", max_age_seconds)
     if deleted:
         logger.debug("Cleaned up %d old voice recordings", deleted)
     return deleted

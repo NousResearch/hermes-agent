@@ -642,36 +642,94 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
             f"({request_len} > {max_len} chars). Reduce the persona/audio-tag "
             "prompt or lower tts.gemini.max_text_length so long-form text is "
             "split with enough prompt headroom.")
-    part: Dict[str, Any] = {"text": prompt_text}
-    if is_38:
-        part["speech_metadata"] = {"style": style}
-    payload: Dict[str, Any] = {
-        "contents": [{"role": "user", "parts": [part]}] if is_38 else [{"parts": [part]}],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {"voiceConfig": {"voice": voice} if is_38 else
-                             {"prebuiltVoiceConfig": {"voiceName": voice}}},
-        },
-    }
+    proxy_url = str(
+        gemini_config.get("proxy") or gemini_config.get("proxy_url") or get_env_value("GEMINI_PROXY_URL") or ""
+    ).strip()
+    extra_post_kwargs = {"proxies": {"http": proxy_url, "https": proxy_url}} if proxy_url else {}
+
+    protocol = str(gemini_config.get("protocol") or "").strip().lower()
+    is_google_official = urlparse(base_url).hostname == "generativelanguage.googleapis.com"
+    if protocol == "interactions":
+        use_interactions = True
+    elif protocol in ("generatecontent", "generate_content"):
+        use_interactions = False
+    else:  # auto
+        use_interactions = not is_google_official or base_url.endswith("/interactions")
+
     headers = {"Content-Type": "application/json"}
-    if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
+    if is_google_official:
         try:
             from hermes_cli.version_info import get_version_info
             headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
         except Exception:
             headers["X-Goog-Api-Client"] = "hermes-agent/0.0.0"
-    response = _post_json(f"{base_url}/models/{model}:generateContent", payload, headers, params={"key": api_key})
-    if response.status_code != 200:
-        raise RuntimeError(f"Gemini TTS API error (HTTP {response.status_code}): {_gemini_error_detail(response)}")
+
+    response: Any = None
+    if use_interactions:
+        url = base_url if base_url.endswith("/interactions") else f"{base_url}/interactions"
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+            headers["x-goog-api-key"] = api_key
+        interactions_payload: Dict[str, Any] = {
+            "model": model,
+            "input": [{"type": "text", "text": prompt_text}],
+        }
+        if voice:
+            interactions_payload["generation_config"] = {
+                "speech_config": {
+                    "speakers": [{"voice": voice}]
+                }
+            }
+        params = {"key": api_key} if is_google_official else {}
+        resp = _post_json(url, interactions_payload, headers, params=params, **extra_post_kwargs)
+        if resp.status_code == 200:
+            response = resp
+        elif protocol in ("interactions",):
+            response = resp
+        else:
+            # Fallback to generateContent if auto-detected and interactions endpoint failed
+            use_interactions = False
+
+    if not use_interactions:
+        part: Dict[str, Any] = {"text": prompt_text}
+        if is_38:
+            part["speech_metadata"] = {"style": style}
+        payload: Dict[str, Any] = {
+            "contents": [{"role": "user", "parts": [part]}] if is_38 else [{"parts": [part]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {"voiceConfig": {"voice": voice} if is_38 else
+                                 {"prebuiltVoiceConfig": {"voiceName": voice}}},
+            },
+        }
+        response = _post_json(
+            f"{base_url}/models/{model}:generateContent", payload, headers, params={"key": api_key}, **extra_post_kwargs
+        )
+
+    if response is None or response.status_code != 200:
+        err = _gemini_error_detail(response) if response is not None else "No response"
+        code = response.status_code if response is not None else 500
+        raise RuntimeError(f"Gemini TTS API error (HTTP {code}): {err}")
     try:
         data = _read_tts_response_json(response, label="Gemini TTS")
-        parts = data["candidates"][0]["content"]["parts"]
-        audio_part = next((p for p in parts if "inlineData" in p or "inline_data" in p), None)
-        if audio_part is None:
-            raise RuntimeError("Gemini TTS response contained no audio data")
-        inline_data = audio_part.get("inlineData") or audio_part.get("inline_data") or {}
-        audio_b64 = inline_data.get("data", "")
-        mime_type = str(inline_data.get("mimeType") or inline_data.get("mime_type") or "").lower()
+        audio_b64 = ""
+        mime_type = "audio/wav"
+        if use_interactions:
+            for step in data.get("steps", []):
+                for c in step.get("content", []):
+                    if c.get("type") == "audio" or "data" in c:
+                        audio_b64 = c.get("data", "")
+                        mime_type = str(c.get("mime_type") or c.get("mimeType") or "audio/wav").lower()
+                        break
+                if audio_b64:
+                    break
+        else:
+            parts = data["candidates"][0]["content"]["parts"]
+            audio_part = next((p for p in parts if "inlineData" in p or "inline_data" in p), None)
+            if audio_part is not None:
+                inline_data = audio_part.get("inlineData") or audio_part.get("inline_data") or {}
+                audio_b64 = inline_data.get("data", "")
+                mime_type = str(inline_data.get("mimeType") or inline_data.get("mime_type") or "").lower()
     except (KeyError, IndexError, TypeError) as e:
         raise RuntimeError(f"Gemini TTS response was malformed: {e}") from e
     if not audio_b64:

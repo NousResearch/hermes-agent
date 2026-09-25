@@ -306,3 +306,95 @@ class TestGeminiInCheckRequirements:
             return_value={"provider": "gemini"},
         ), patch("builtins.__import__", side_effect=fake_import):
             assert check_tts_requirements() is True
+
+
+class TestGeminiInteractionsProtocol:
+    def test_interactions_protocol_wire_shape_and_speakers(self, tmp_path, monkeypatch, fake_pcm_bytes):
+        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_delivery import _wrap_pcm_as_wav
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        wav = _wrap_pcm_as_wav(fake_pcm_bytes)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "steps": [
+                {
+                    "type": "model_output",
+                    "content": [
+                        {
+                            "type": "audio",
+                            "data": base64.b64encode(wav).decode(),
+                            "mime_type": "audio/wav",
+                        }
+                    ],
+                }
+            ]
+        }
+        config = {
+            "gemini": {
+                "model": "gemini-3.8-flash-tts",
+                "voice": "Kore",
+                "protocol": "interactions",
+            }
+        }
+        with patch("requests.post", return_value=response) as post:
+            _generate_gemini_tts("Hello world", str(tmp_path / "out.wav"), config)
+
+        assert post.call_args.args[0].endswith("/interactions")
+        payload = post.call_args.kwargs["json"]
+        assert payload["model"] == "gemini-3.8-flash-tts"
+        assert payload["input"] == [{"type": "text", "text": "Hello world"}]
+        assert payload["generation_config"]["speech_config"]["speakers"] == [{"voice": "Kore"}]
+        assert (tmp_path / "out.wav").read_bytes() == wav
+
+    def test_interactions_auto_detects_custom_base_url(self, tmp_path, monkeypatch, fake_pcm_bytes):
+        from tools.tts_tool import _generate_gemini_tts
+        from tools.tts_tool_delivery import _wrap_pcm_as_wav
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        wav = _wrap_pcm_as_wav(fake_pcm_bytes)
+        response = MagicMock(status_code=200)
+        response.json.return_value = {
+            "steps": [
+                {
+                    "content": [
+                        {
+                            "type": "audio",
+                            "data": base64.b64encode(wav).decode(),
+                            "mime_type": "audio/wav",
+                        }
+                    ]
+                }
+            ]
+        }
+        config = {
+            "gemini": {
+                "base_url": "http://192.168.21.6:8317/v1beta",
+                "model": "Gemini 3.8 Flash TTS",
+            }
+        }
+        with patch("requests.post", return_value=response) as post:
+            _generate_gemini_tts("Custom proxy test", str(tmp_path / "out.wav"), config)
+
+        assert post.call_args.args[0] == "http://192.168.21.6:8317/v1beta/interactions"
+        assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer test-key"
+        assert post.call_args.kwargs["headers"]["x-goog-api-key"] == "test-key"
+
+    def test_proxy_configuration_forwarded_to_requests(self, tmp_path, monkeypatch, mock_gemini_response):
+        from tools.tts_tool import _generate_gemini_tts
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+        config = {
+            "gemini": {
+                "model": "gemini-3.8-flash-tts",
+                "proxy": "http://192.168.21.6:17893",
+            }
+        }
+        with patch("requests.post", return_value=mock_gemini_response) as post:
+            _generate_gemini_tts("Proxy test", str(tmp_path / "out.wav"), config)
+
+        assert post.call_args.kwargs["proxies"] == {
+            "http": "http://192.168.21.6:17893",
+            "https": "http://192.168.21.6:17893",
+        }
+

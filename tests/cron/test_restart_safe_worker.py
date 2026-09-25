@@ -639,13 +639,44 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
 
     assert scheduler._launch_external_cron_worker(job) is True
     entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
-    assert entries == [str(repo_root), str(tmp_path / "kept-by-sanitizer")]
+    assert entries[0] == str(repo_root)
+    assert str(tmp_path / "kept-by-sanitizer") in entries
+    assert str(tmp_path / "raw-environ-only") not in entries
+
 
     # Wheel / pipx layout: repo_root == purelib -> untouched.
     monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: repo_root)
     untouched = {"PYTHONPATH": str(tmp_path / "kept-by-sanitizer")}
     assert worker_env_mod.pin_hermes_tree_on_pythonpath(dict(untouched), repo_root) == untouched
     assert "PYTHONPATH" not in worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root)
+
+
+def test_pin_hermes_tree_restores_activated_dependency_site_packages(tmp_path, monkeypatch):
+    import sys
+    import cron.scheduler_worker_env as worker_env_mod
+
+    # Setup simulated venv with pyvenv.cfg and site-packages
+    fake_venv = tmp_path / "installs" / "gen1" / "venv"
+    fake_sp = fake_venv / "lib" / "python3.12" / "site-packages"
+    fake_sp.mkdir(parents=True)
+    (fake_venv / "pyvenv.cfg").write_text("home = /usr/bin\n", encoding="utf-8")
+
+    # Non-venv site-packages that lacks pyvenv.cfg
+    stray_dir = tmp_path / "stray" / "site-packages"
+    stray_dir.mkdir(parents=True)
+
+    repo_root = tmp_path / "hermes-agent"
+    repo_root.mkdir()
+
+    monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: tmp_path / "system-purelib")
+    monkeypatch.setattr(sys, "path", [str(tmp_path / "other"), str(stray_dir), str(fake_sp)])
+
+    worker_env = {"PYTHONPATH": str(tmp_path / "sanitized")}
+    res = worker_env_mod.pin_hermes_tree_on_pythonpath(worker_env, repo_root)
+
+    entries = res["PYTHONPATH"].split(os.pathsep)
+    assert entries == [str(repo_root), str(fake_sp.resolve()), str(tmp_path / "sanitized")]
+
 
 
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):

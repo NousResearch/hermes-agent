@@ -1049,6 +1049,12 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
     if not pid:
         raise RuntimeError("Windows gateway cold-start did not return a process ID")
     ready_pids = gateway_windows._wait_for_gateway_ready()
+    via = "cold-start after update"
+    if not ready_pids:
+        # Reaped by the updater's Job Object (#48820) — retry under Task Scheduler, which escapes it.
+        ready_pids = gateway_windows.run_scheduled_task_and_wait()
+        if ready_pids:
+            via = "cold-start after update (scheduled task)"
     if not ready_pids:
         raise RuntimeError(f"Windows gateway cold-start PID {pid} did not become ready")
     # The dead attestation has done its job (it authorized this spawn under Desktop ownership). Consume
@@ -1057,9 +1063,9 @@ def _cold_start_windows_gateway_after_update(token: dict | None = None) -> bool:
     # success without a gateway (#110020 review).
     if generation:
         gateway_windows._consume_start_attestation(generation)
-    print(f"\n✓ Gateway started via cold-start after update (PID: {', '.join(map(str, ready_pids))})")
+    print(f"\n✓ Gateway started via {via} (PID: {', '.join(map(str, ready_pids))})")
     with suppress(Exception):
-        gateway_windows._write_start_attestation(ready_pids, "cold-start after update")
+        gateway_windows._write_start_attestation(ready_pids, via)
     return True
 
 
@@ -1211,6 +1217,14 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
     with _abort_on_error("Could not load Windows gateway liveness helpers"):
         from hermes_cli import gateway_windows
     ready_pids = gateway_windows._wait_for_gateway_ready(timeout_s=30.0, all_profiles=True)
+    via = "post-update relaunch"
+    if not ready_pids:
+        # The detached relaunch was reaped by the updater's Job Object (#48820). Retry via the Scheduled
+        # Task, which runs the gateway under Task Scheduler — outside any Job Object — so updates self-heal.
+        ready_pids = gateway_windows.run_scheduled_task_and_wait(all_profiles=True)
+        if ready_pids:
+            via = "post-update relaunch (scheduled task)"
+            print("\n  ✓ Windows gateway relaunched via Scheduled Task (Job-Object-safe recovery)")
     if not ready_pids:
         token["profiles"] = dict(profiles)
         token["unmapped"] = list(unmapped)
@@ -1221,7 +1235,7 @@ def _verify_relaunched_gateways_alive(token: dict, profiles: dict, unmapped: lis
         )
         raise RuntimeError("Windows gateway relaunch after update was not verified alive")
     with suppress(Exception):
-        gateway_windows._write_start_attestation(ready_pids, "post-update relaunch")
+        gateway_windows._write_start_attestation(ready_pids, via)
 
 
 def _resume_windows_gateways_after_update(token: dict | None) -> None:

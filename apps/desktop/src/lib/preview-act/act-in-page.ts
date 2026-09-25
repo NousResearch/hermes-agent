@@ -492,6 +492,11 @@ export function actInPageCore(
 
     return answer({
       acted: 'looking at ' + describe(el),
+      // The page's device-pixel ratio, so the caller can translate this CSS-px
+      // point into the coordinate space `sendInputEvent` expects. On a fractional
+      // DPR display (e.g. 4K under Wayland where DPR lands on ~1.25), un-scaled
+      // coords land ~1/DPR short of the target and clicks miss entirely.
+      devicePixelRatio: win ? win.devicePixelRatio : 1,
       point: { x: spot.clientX, y: spot.clientY },
       success: true,
       // Real typing starts with a triple-click to clear the field. On anything

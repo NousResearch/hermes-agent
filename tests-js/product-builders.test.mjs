@@ -233,6 +233,7 @@ test('built web freshness follows shared sources and build inputs, not mtimes or
   put(icons, 'web/public/favicon.ico', 'icon')
   put(source, 'apps/shared/src/client.ts', 'export const version = 1')
   put(source, 'scripts/build/web.mjs', '// build input')
+  put(source, 'assets/logo.svg', '<svg></svg>')
   await buildWeb({ source, icons, out })
   expect(productCurrent({ source, product: 'web', out })).toBe(true)
   put(source, 'web/node_modules/.tmp/tsbuildinfo', 'generated')

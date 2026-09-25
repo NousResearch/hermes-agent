@@ -1503,11 +1503,11 @@ def check_respawn_guard(
     (quota/auth pattern; the breaker still trips eventually), then for the
     ready lane only ``"recent_success"`` (completed run within the window, unless
     a re-queue event arrived after it — a deliberate re-run) and ``"active_pr"``
-    (PR URL in a recent comment; re-spawning risks a duplicate PR — unless a
-    handoff event followed the comment: the named profile must work on that
-    PR). The review lane skips the last two: they are the *inputs* to a review
-    handoff. Stale / dead claim locks are NOT a guard reason — the reclaim
-    passes own those.
+    (PR URL in a recent comment on a card that has a run of its own;
+    re-spawning risks a duplicate PR — unless a handoff event followed the
+    comment: the named profile must work on that PR). The review lane skips
+    the last two: they are the *inputs* to a review handoff. Stale / dead claim
+    locks are NOT a guard reason — the reclaim passes own those.
     """
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
@@ -1586,11 +1586,20 @@ def check_respawn_guard(
             return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Only a card with a run of its own can have opened it: a card that never
+    #    ran (a dispatcher-created review or repair card whose routing comments
+    #    cite the PR it must work on) carries the URL as an input, so there is
+    #    nothing to duplicate and nothing to hold it for the PR window (#85663).
     #    Exception: a handoff AFTER the newest PR comment (operator reassign,
     #    reviewer changes_requested, review reopen) names the profile that must
     #    now work on THAT PR — a closer or the implementer finishing it, not a
     #    duplicate implementation (#111910). A crash/reclaim is not a handoff,
     #    so the worker that opened the PR is still not re-spawned against it.
+    has_own_run = conn.execute(
+        "SELECT 1 FROM task_runs WHERE task_id = ? LIMIT 1", (task_id,),
+    ).fetchone()
+    if has_own_run is None:
+        return None
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body, created_at FROM task_comments "

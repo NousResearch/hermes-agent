@@ -430,8 +430,8 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
     A task parked in ``review`` with a PR link younger than 24h is the
     CANONICAL review handoff (worker opened a PR then requested review) —
     the review-lane dispatch must still claim/spawn it. The same comment on
-    a ready-lane task is a duplicate-work signal and stays deferred.
-    Rate-limit cooldown still applies in the review lane.
+    a ready-lane task whose worker has run is a duplicate-work signal and
+    stays deferred. Rate-limit cooldown still applies in the review lane.
     """
     import hermes_cli.config as cfgmod
     import hermes_cli.profiles as profmod
@@ -453,9 +453,10 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
             conn, review_id, summary="PR ready",
             expected_run_id=claimed.current_run_id,
         )
-        # Ready-lane task with the same fresh PR comment.
-        ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
-        kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
+        # Ready-lane task whose worker ran and posted the same fresh PR comment.
+        ready_id = _ran_and_cited_pr(
+            conn, title="already PRed", assignee="worker", body=pr_comment,
+        )
 
         assert kbd.check_respawn_guard(conn, ready_id) == "active_pr"
         assert kbd.check_respawn_guard(conn, review_id, lane="review") is None
@@ -493,6 +494,17 @@ def _backdate_comments(conn, tid, seconds=60):
         )
 
 
+def _ran_and_cited_pr(conn, *, title, assignee, body):
+    """An implementer card that ran, cited its PR and was reclaimed back to
+    ``ready`` (a reclaim is not a handoff): the shape ``active_pr`` guards. A
+    card that never ran carries a PR URL as an input and is never guarded."""
+    tid = kb.create_task(conn, title=title, assignee=assignee)
+    assert kb.claim_task(conn, tid) is not None
+    kb.add_comment(conn, tid, author=assignee, body=body)
+    assert kb.reclaim_task(conn, tid) is True
+    return tid
+
+
 def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -514,10 +526,12 @@ def test_active_pr_guard_lifts_for_profile_handed_the_card_after_the_pr(
     pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
 
     with kbc.connect() as conn:
-        dev_id = kb.create_task(conn, title="dev own pr", assignee="dev")
-        kb.add_comment(conn, dev_id, author="dev", body=pr_comment)
-        closer_id = kb.create_task(conn, title="closer recovery", assignee="dev")
-        kb.add_comment(conn, closer_id, author="dev", body=pr_comment)
+        dev_id = _ran_and_cited_pr(
+            conn, title="dev own pr", assignee="dev", body=pr_comment,
+        )
+        closer_id = _ran_and_cited_pr(
+            conn, title="closer recovery", assignee="dev", body=pr_comment,
+        )
         _backdate_comments(conn, closer_id)
         assert kb.assign_task(conn, closer_id, "closer") is True
 
@@ -552,8 +566,9 @@ def test_active_pr_guard_holds_through_same_profile_reassign_and_unassign(
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: {})
     pr_comment = "Opened https://github.com/example/repo/pull/44 for review."
     with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="same assign", assignee="dev")
-        kb.add_comment(conn, tid, author="dev", body=pr_comment)
+        tid = _ran_and_cited_pr(
+            conn, title="same assign", assignee="dev", body=pr_comment,
+        )
         _backdate_comments(conn, tid)
         assert kb.assign_task(conn, tid, "dev") is True
         assert kbd.check_respawn_guard(conn, tid) == "active_pr"

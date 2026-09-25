@@ -5329,6 +5329,37 @@ def _start_gateway_claim_pid_file(force: bool = False) -> bool:
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
+
+    # Same-profile orphan check (#35240 follow-up). The PID-file/lock race
+    # above only proves *this* process won the race to become the recorded
+    # gateway — it says nothing about an already-running process for the
+    # SAME profile that escaped its service supervisor (e.g. reparented to
+    # PID 1 after a launchd/systemd restart raced the old process's exit)
+    # and therefore never held the PID file to begin with. That gateway is
+    # invisible to every check above yet keeps polling the same
+    # Telegram/Discord/etc. sessions and writing to the same kanban DB as a
+    # silent second writer. Best-effort, log-only: this must never block or
+    # kill anything here (cross-profile ownership mistakes here caused the
+    # #f8196717 mutual-kill loop) — it only makes the condition loud so an
+    # operator or the next `hermes gateway restart --replace` sweep can act.
+    try:
+        from hermes_cli.gateway import find_gateway_pids
+
+        _orphan_candidates = [
+            p for p in find_gateway_pids(exclude_pids={os.getpid()}) if p != os.getpid()
+        ]
+        if _orphan_candidates:
+            logger.warning(
+                "Detected %d other gateway process(es) for this profile besides "
+                "our own PID %d: %s. If these are not a supervisor's own "
+                "management commands, one of them is likely an orphan that "
+                "escaped its service supervisor (#35240) — verify with `ps` "
+                "and stop it manually; do not assume it will self-resolve.",
+                len(_orphan_candidates), os.getpid(), _orphan_candidates,
+            )
+    except Exception:
+        logger.debug("Same-profile orphan gateway scan failed", exc_info=True)
+
     _claim_host_gateway_role(force=force)
     return True
 

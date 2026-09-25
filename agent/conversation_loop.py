@@ -797,6 +797,13 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     """Return False when the persisted runtime-identity lines are stale."""
 
     _identity, runtime_marker, runtime = split_runtime_boundary(prompt)
+    from agent.system_prompt import _white_label_runtime_fingerprint
+    stored_fingerprint = identity_line_value(prompt, "Runtime identity fingerprint")
+    if getattr(agent, "_white_label_prompt", False):
+        if stored_fingerprint != _white_label_runtime_fingerprint(agent):
+            return False
+    elif stored_fingerprint:
+        return False
 
     def host_info_value(label: str) -> str:
         """New prompts delimit runtime hints; legacy prompts put them before context."""

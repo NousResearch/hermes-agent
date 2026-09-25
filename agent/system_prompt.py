@@ -10,6 +10,7 @@ provider, timestamp line).  See ``references/system-prompt-invariant.md``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -369,7 +370,7 @@ def _ambient_file_safety_profile_name() -> str:
     return _resolve_active_profile_name()
 
 
-def _active_profile_line(agent: Any) -> str:
+def _active_profile_line(agent: Any, *, white_label: bool = False) -> str:
     """Name the running profile so the agent doesn't conflate ``~/.hermes/skills``
     (default) with ``~/.hermes/profiles/<active>/skills``.  Resolved from the
     agent's OWN home first (a build thread that lost the ContextVar would
@@ -381,8 +382,9 @@ def _active_profile_line(agent: Any) -> str:
         # ROOT (get_hermes_home() on a bound profile session is the PROFILE dir).
         # Without one, keep the ambient (patchable) resolution byte-identical.
         _root_str = str(get_default_hermes_root() if _agent_home_path is not None else get_hermes_home())
+        profile_intro = "Active profile" if white_label else "Active Hermes profile"
         return (
-            "Active Hermes profile: default. Other profiles (if any) live "
+            f"{profile_intro}: default. Other profiles (if any) live "
             "under " + _root_str + "/profiles/<name>/. Each profile has its own "
             "skills/, plugins/, cron/, and memories/ that affect a different "
             "session than this one. Do not modify another profile's "
@@ -399,7 +401,7 @@ def _active_profile_line(agent: Any) -> str:
     # NOT get_hermes_home().
     default_root = get_default_hermes_root()
     return (
-        f"Active Hermes profile: {active_profile}. This session reads "
+        f"{'Active profile' if white_label else 'Active Hermes profile'}: {active_profile}. This session reads "
         f"and writes {profile_home}/. The default "
         f"profile's data lives at {default_root}/skills/, {default_root}/plugins/, "
         f"{default_root}/cron/, {default_root}/memories/ — those belong to a "
@@ -484,6 +486,12 @@ def _zone_bits(now: Any, tz: Any) -> List[str]:
     return bits
 
 
+def _white_label_runtime_fingerprint(agent: Any) -> str:
+    """Opaque, stable resume key; keep model/provider names out of the visible trailer."""
+    identity = json.dumps([str(agent.model or ""), str(agent.provider or "")], ensure_ascii=False)
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
 def _timestamp_line(agent: Any) -> str:
     """Date-only so the prompt is byte-stable for the day; zone + offset so
     tools needn't guess EST vs EDT. Long-lived sessions get an "as of" line on
@@ -507,7 +515,9 @@ def _timestamp_line(agent: Any) -> str:
     if getattr(agent, "_bot_chat_timeless_prompt", False):
         timestamp_line = f"Timezone: {', '.join(_bits)}" if _bits else ""
     trailer = (("Session ID", agent.session_id if agent.pass_session_id else None),)
-    if not getattr(agent, "_white_label_prompt", False):
+    if getattr(agent, "_white_label_prompt", False):
+        trailer += (("Runtime identity fingerprint", _white_label_runtime_fingerprint(agent)),)
+    else:
         trailer += (("Model", agent.model), ("Provider", agent.provider))
     trailer += (("Platform", agent.platform),)
     return timestamp_line + "".join(f"\n{label}: {value}" for label, value in trailer if value)
@@ -564,8 +574,8 @@ def _guidance_parts(agent: Any) -> List[str]:
     if not agent.valid_tool_names:
         return parts
     # Steering only lands inside tool results, so only reachable with tools.
-    if not getattr(agent, "_white_label_prompt", False):
-        parts.append(STEER_CHANNEL_NOTE)
+    parts.append(STEER_CHANNEL_NOTE.replace("Hermes delivers", "The application delivers")
+                 if getattr(agent, "_white_label_prompt", False) else STEER_CHANNEL_NOTE)
     # agent.tool_use_enforcement / agent.execution_guidance: "auto" (default)
     # matches the hardcoded model lists; true/false force; a list gives custom
     # model-name substrings.  Execution guidance is an independent gate so
@@ -636,8 +646,7 @@ def _post_workspace_parts(agent: Any) -> List[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    if not getattr(agent, "_white_label_prompt", False):
-        parts.append(_active_profile_line(agent))
+    parts.append(_active_profile_line(agent, white_label=getattr(agent, "_white_label_prompt", False)))
     parts.append(platform_hint(agent))
     return parts
 
@@ -687,7 +696,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # in the rendered index (pure string check — inherits the index's stability).
     if not _white_label and "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
-    stable_parts.extend(_alibaba_identity_part(agent))
+    if not _white_label:
+        stable_parts.extend(_alibaba_identity_part(agent))
     # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
     stable_parts.extend(_auto_load_parts(agent))
     # Coding posture: the operating brief stays in the stable prefix. The

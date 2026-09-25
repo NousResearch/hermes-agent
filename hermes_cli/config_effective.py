@@ -30,8 +30,10 @@ _LAST_GOOD_USER_RAW: Dict[str, Dict[str, Any]] = {}
 _EFFECTIVE_CACHE: Dict[str, Tuple[Any, ...]] = {}
 
 
-def _effective(raw: Dict[str, Any]) -> Dict[str, Any]:
+def _effective(raw: Dict[str, Any], *, manifest_home: Optional[Path] = None) -> Dict[str, Any]:
     expanded = _config._expand_env_vars(raw)
+    from hermes_cli.harness_manifest import apply_active_overlays
+    expanded = apply_active_overlays(expanded if isinstance(expanded, dict) else {}, path=(manifest_home / "harness.yaml") if manifest_home else None)
     merged = managed_scope.apply_managed_overlay(expanded if isinstance(expanded, dict) else {})
     return _config._normalize_root_model_keys(merged if isinstance(merged, dict) else {})
 
@@ -66,9 +68,9 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
-                return copy.deepcopy(cached[8])
+        if cached is not None and cache_sig is not None and cached[:len(cache_sig)] == cache_sig:
+            if all(_config._env_ref_lookup(k) == v for k, v in cached[len(cache_sig) + 1].items()):
+                return copy.deepcopy(cached[len(cache_sig)])
 
         raw: Dict[str, Any] = {}
         recovered = False
@@ -99,7 +101,7 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
         managed = managed_scope.load_managed_config()
         if managed:
             _config._env_ref_snapshot(managed, env_snapshot)
-        effective = _effective(raw)
+        effective = _effective(raw, manifest_home=config_path.parent)
         # A recovered result is never cached under the corrupt file's signature: a later
         # ``fail_closed`` caller must still see the parse error, not a cache hit.
         if cache_sig is not None and not recovered:

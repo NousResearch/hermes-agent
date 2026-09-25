@@ -289,9 +289,7 @@ describe('knownOwnerForSession / requestForOwnedSession', () => {
       expect(knownOwnerForSession('telegram-stamped')).toEqual({ connectionId: 'homelab', profile: 'default' })
 
       setMessagingListServer({ connectionId: null, profile: null })
-      setMessagingSessions([
-        makeSessionInfo({ connection_id: 'homelab', id: 'telegram-tagged', source: 'telegram' })
-      ])
+      setMessagingSessions([makeSessionInfo({ connection_id: 'homelab', id: 'telegram-tagged', source: 'telegram' })])
       expect(knownOwnerForSession('telegram-tagged')).toEqual({ connectionId: 'homelab', profile: 'default' })
 
       setSessions([makeSessionInfo({ id: 'fresh-desktop', profile: 'omar', source: 'desktop' })])

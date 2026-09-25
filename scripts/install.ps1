@@ -485,12 +485,11 @@ function Invoke-DownloadWithProgress {
 # (<store>\uv-<version>-<target>\), sha256-verified, so pm adopts the same
 # bytes — no astral-latest, no irm|iex. Returns the uv.exe path.
 function Get-Uv {
-    $existing = Get-Command uv -ErrorAction SilentlyContinue
-    if ($existing) {
-        # Developer shortcut: fetches nothing, but only for a new-enough uv.
-        if (Test-UvAtLeastPin $existing.Source) { return $existing.Source }
-        Log "uv on PATH ($($existing.Source)) is older than the pinned $($script:UvPinVersion) or does not run; downloading our own copy"
-    }
+    # No PATH borrow (#101269): a uv the user installed is theirs, and it is
+    # not the pin — running it here makes a user-controlled binary the byte
+    # authority for the whole bootstrap, and leaves the store without the copy
+    # pm/doctor/MCP resolve later. The staged copy is sha256-verified against
+    # pm/lock.json, and a rerun hits it and fetches nothing.
     $target = "win32-$(Get-WindowsArch)"
     $pin = $script:UvPinFiles[$target]
     if (-not $pin) {

@@ -53,6 +53,7 @@ from hermes_cli.config_read_errors import (
     _yaml_error_location)
 
 logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 def is_uv_tool_install() -> bool:
@@ -1315,8 +1316,14 @@ def _persist_migration(config: Dict[str, Any]) -> None:
     """Persist a migrated config under THE migration write invariant: a migration may only
     persist values that DIFFER from the schema default, plus explicit removals/renames of user
     data. Every migration step MUST write through here (``save_config`` with default-stripping
-    ON, no ``merge_existing``) so the invariant cannot regress one migration at a time."""
-    save_config(config)
+    ON, no ``merge_existing``) so the invariant cannot regress one migration at a time.
+
+    Migrations are full rewrites: any top-level user-data key present on disk but absent from
+    the migrated config was removed/renamed on purpose, so it is declared via ``removed_keys``
+    rather than triggering the accidental-omission guard."""
+    prior = read_raw_config()
+    removed = {k for k in prior if k not in config}
+    save_config(config, removed_keys=removed)
 
 
 def _prompt_and_save_env(name: str, info: Dict[str, Any], prompt: str, results: Dict[str, Any]) -> bool:
@@ -2448,9 +2455,16 @@ def _commented_sections_for_save(normalized: Dict[str, Any]) -> Optional[str]:
     return "".join(parts) or None
 
 
+def _save_config_caller() -> str:
+    """file:line name of whoever called save_config (frame 0 = helper, 1 = save_config)."""
+    frame = sys._getframe(2)
+    return f"{frame.f_code.co_filename}:{frame.f_lineno} {frame.f_code.co_name}"
+
+
 def save_config(
     config: Dict[str, Any], *, strip_defaults: bool = True,
-    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False):
+    preserve_keys: Optional[Set[Tuple[str, ...]]] = None, merge_existing: bool = False,
+    removed_keys: Optional[Set[str]] = None):
     """Save configuration to ~/.hermes/config.yaml.
     Schema defaults are not written unless the user explicitly set them (the path exists in the
     raw config before normalisation), so config.yaml is never contaminated with defaults that
@@ -2464,6 +2478,7 @@ def save_config(
         config_path = get_config_path()
         _refuse_failed_read(config_path, config)
         config = _strip_managed_keys_for_save(config)
+        removed = {str(k) for k in (removed_keys or ())}
 
         ensure_hermes_home()
         # Explicit user paths come from the RAW dict BEFORE normalisation (which may inject
@@ -2486,6 +2501,20 @@ def save_config(
             # ``_strip_default_values`` always preserves ``_config_version`` itself.
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
+
+        # G1 guard rail: a full-replace save that omits a user-data root key
+        # (present on disk, unknown to DEFAULT_CONFIG, not explicitly surrendered
+        # via removed_keys) silently deleted it — mcp_servers lost everything on
+        # 2026-09-24 that way. Re-preserve loudly instead of dropping silently.
+        protected = set(_raw_for_paths) - set(normalized) - set(DEFAULT_CONFIG) - removed
+        if protected:
+            for key in sorted(protected):
+                log.warning(
+                    "save_config: incoming config omitted user-data key %r present on disk; "
+                    "re-preserving it. If removal is intentional, pass removed_keys={%r}. "
+                    "(caller: %s)", key, key, _save_config_caller(), stacklevel=2)
+            normalized = {**normalized,
+                          **{key: copy.deepcopy(_raw_for_paths[key]) for key in protected}}
 
         atomic_config_write(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)

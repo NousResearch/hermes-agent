@@ -263,3 +263,45 @@ def test_check_is_registered_with_the_doctor(monkeypatch) -> None:
 
     names = {getattr(fn, "__name__", "") for _, fn in doctor.DOCTOR_CHECKS}
     assert "_check_installed_distributions" in names
+
+
+def test_scan_is_bounded_by_the_display_cap(tmp_path: Path) -> None:
+    """An environment full of broken dists must not cost a full metadata sweep.
+
+    Enumeration stays complete (so ``total`` is accurate), but the per-dist
+    METADATA/RECORD reads stop once the reportable cap is reached — those reads
+    are what make the scan noticeable on a thousands-of-dists environment.
+    """
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    broken_names = [f"broken{i}" for i in range(12)]
+    for name in broken_names:
+        dist_info = _make_dist(site, name)
+        (dist_info / "RECORD").write_text("", encoding="utf-8")
+
+    broken, total = dp._scan_installed_distributions([str(site)])
+
+    assert total == 12, "total must still count every enumerated distribution"
+    assert len(broken) == dp._BROKEN_SCAN_CAP == 10, (
+        "the scan must stop reading after the cap, not collect all 12"
+    )
+    assert all(name in broken_names for name, _ in broken)
+
+
+def test_capped_scan_reports_that_more_may_exist(tmp_path: Path, monkeypatch, capsys) -> None:
+    """The warning must not claim an exact remaining count it never computed."""
+    site = tmp_path / "site-packages"
+    site.mkdir()
+    for i in range(11):
+        dist_info = _make_dist(site, f"busted{i}")
+        (dist_info / "RECORD").write_text("", encoding="utf-8")
+
+    broken, total = dp._scan_installed_distributions([str(site)])
+    assert len(broken) == dp._BROKEN_SCAN_CAP  # precondition: the cap was reached
+    monkeypatch.setattr(dp, "_scan_installed_distributions",
+                        lambda *a, **kw: (broken, total))
+
+    dp._check_installed_distributions(False)
+    out = capsys.readouterr().out
+
+    assert "more may exist" in out

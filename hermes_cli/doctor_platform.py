@@ -516,6 +516,13 @@ _SAFE_DIST_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
 
 _UNNAMED_DIST = "<unnamed distribution>"
 
+# Bound the per-distribution metadata/RECORD reads. Enumeration itself is cheap,
+# but reading METADATA (and RECORD) for every dist on an environment with
+# thousands of them is the expensive part of an interactive `hermes doctor`.
+# The check displays at most this many broken entries anyway, so once we have
+# that many the remaining reads cannot change the report.
+_BROKEN_SCAN_CAP = 10
+
 
 def _scan_installed_distributions(
     paths: list[str] | None = None,
@@ -542,10 +549,14 @@ def _scan_installed_distributions(
         return [], 0
 
     for dist in dists:
+        if len(broken) >= _BROKEN_SCAN_CAP:
+            break  # enough to report; skip the remaining (expensive) reads
         path = getattr(dist, "_path", None)
         where = f" at {path}" if path is not None else ""
         try:
-            name = (dist.metadata["Name"] or "").strip()
+            # .get() rather than []: subscripting a missing header implicitly
+            # returned None with a DeprecationWarning, and is slated to raise.
+            name = (dist.metadata.get("Name") or "").strip()
         except Exception:
             # Keep the path in the *reason*, never in the name slot: the name is
             # interpolated into a pip command, and a path there yields something
@@ -602,8 +613,9 @@ def _check_installed_distributions(should_fix: bool, f: Finding) -> None:
             fix = (f"Reinstall without uninstalling: {_python_install_cmd()} "
                    f"--ignore-installed {name}")
         _fail_and_issue(f"Half-installed package: {name}", f"({reason})", fix, f.issues)
-    if len(broken) > 10:
-        check_warn("Half-installed packages", f"(+{len(broken) - 10} more not shown)")
+    if len(broken) >= _BROKEN_SCAN_CAP:
+        check_warn("Half-installed packages",
+                   f"(listing first {_BROKEN_SCAN_CAP}; scan stopped early — more may exist)")
 
 
 @doctor_check()

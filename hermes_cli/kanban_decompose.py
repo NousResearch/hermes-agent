@@ -69,9 +69,13 @@ Rules:
     them no parents so the dispatcher fans them out at once.
   - Use 2-6 tasks for normal work. Don't create 20 tiny tasks. Don't
     cram everything into 1 task.
-  - Pick assignees from the roster by matching the task to the profile's
-    DESCRIPTION (not just the name). When nothing matches well, use null
-    and the system will route to the default_assignee.
+  - If the task already has a current assignee, that profile owns the
+    work: keep each child on it (use null) unless another profile's
+    DESCRIPTION clearly fits that child better. A profile's NAME alone
+    (e.g. one called "default") is never a reason to pick it.
+  - Otherwise pick assignees from the roster by matching the task to the
+    profile's DESCRIPTION (not just the name). When nothing matches well,
+    use null and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
     context — be specific about goal, approach, and acceptance criteria.
 
@@ -99,10 +103,12 @@ Title: {title}
 Body:
 {body}
 
+Current assignee (owner of this task): {current_assignee}
+
 Available profiles (assignees you may pick from):
 {roster}
 
-Default assignee (used when no profile fits a task): {default_assignee}
+Default assignee (used for a null or unknown assignee): {default_assignee}
 """
 
 
@@ -318,6 +324,7 @@ def decompose_task(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(
             **_task_prompt_fields(task),
+            current_assignee=(task.assignee or "").strip() or "(none)",
             roster=_format_roster(routing.roster),
             default_assignee=routing.default_assignee,
         ),

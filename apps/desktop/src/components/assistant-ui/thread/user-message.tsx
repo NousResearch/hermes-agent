@@ -412,9 +412,11 @@ export const UserMessage: FC<{
         attachments={
           // Attachments live BELOW the sticky bubble in normal flow, so they
           // scroll away behind the pinned bubble instead of riding along with
-          // it. Image refs render as thumbnails, file refs as chips; no border.
+          // it. No negative margin: -mt-* pulls the row up into the sticky box,
+          // where the sticky-prompt clip hides its top even at rest. Image refs
+          // render as thumbnails, file refs as chips; no border.
           attachmentRefs.length > 0 ? (
-            <div className="flex flex-wrap gap-1 -mt-3 mb-2">
+            <div className="mb-2 flex flex-wrap gap-1">
               <DirectiveContent text={attachmentRefs.join(' ')} />
             </div>
           ) : null

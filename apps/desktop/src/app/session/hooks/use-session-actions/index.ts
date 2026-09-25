@@ -2976,6 +2976,44 @@ export function useSessionActions({
     ]
   )
 
+  // The Archived view reuses the sidebar row menu; its already-archived rows
+  // dispatch here through the same archive verb (#98813). Mirrors the Settings
+  // → Archived Chats restore (sessions-settings.tsx): flip the persisted flag
+  // back off, drop the archived-view row, and resurface the session in the
+  // sidebar without waiting for a full refresh.
+  const unarchiveSession = useCallback(
+    async (storedSessionId: string) => {
+      clearNotifications()
+
+      const archived = $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const profile = archived?.profile?.trim() || undefined
+
+      try {
+        await setSessionArchived(storedSessionId, false, profile)
+
+        // Drop the archived-view row first so the view reflects the restore
+        // even when the session cannot be re-listed below (e.g. it belongs to
+        // a profile the current query does not cover).
+        $archivedSessions.set(
+          $archivedSessions.get().filter(session => !sessionMatchesStoredId(session, storedSessionId))
+        )
+
+        if (archived) {
+          // Lift any optimistic eviction so the grouped tree shows it again,
+          // and re-list through the slice router so a messaging/cron row lands
+          // back in its own list, not the sessions one.
+          untombstoneSessions([storedSessionId, archived._lineage_root_id])
+          restoreListedSession({ ...archived, archived: false })
+        }
+
+        notify({ durationMs: 2_000, kind: 'success', message: copy.restored })
+      } catch (err) {
+        notifyError(err, copy.unarchiveFailed)
+      }
+    },
+    [copy]
+  )
+
   return {
     archiveSession,
     branchCurrentSession,
@@ -2987,6 +3025,7 @@ export function useSessionActions({
     removeSession,
     resumeSession,
     selectSidebarItem,
-    startFreshSessionDraft
+    startFreshSessionDraft,
+    unarchiveSession
   }
 }

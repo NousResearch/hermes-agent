@@ -1,10 +1,10 @@
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
+import { clearClarifyRequest } from '@/store/clarify'
 import { reconcileSessionCompacting } from '@/store/compaction'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { followActiveSessionCwd } from '@/store/projects'
-import { clearClarifyRequest } from '@/store/clarify'
 import { clearAllPrompts } from '@/store/prompts'
 import {
   $activeSessionId,
@@ -298,6 +298,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         clearAllPrompts(sessionId)
         clearClarifyRequest(undefined, sessionId)
       }
+
       // Set when THIS event releases a confirmed live turn whose terminal
       // message never arrived. The updater is invoked exactly once,
       // synchronously, by updateSessionState.

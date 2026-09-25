@@ -1,6 +1,7 @@
 import type { GatewayEvent } from '@hermes/shared'
 import type { HermesSkin } from '@hermes/shared/skin'
 
+import { clearClarifyRequest } from '@/store/clarify'
 import {
   notifyCronChanged,
   notifyPairingChanged,
@@ -12,7 +13,6 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
-import { clearClarifyRequest } from '@/store/clarify'
 import { clearAllPrompts } from '@/store/prompts'
 import { markRuntimeGone } from '@/store/runtime-gone'
 import { dropSessionState, unbindTileRuntime } from '@/store/session-states'

@@ -6,6 +6,7 @@ import os
 import platform
 import shutil
 import stat
+import subprocess
 import sys
 import threading
 import tempfile
@@ -301,6 +302,33 @@ def tree_digest(root: Path) -> str:
     return digest.hexdigest()
 
 
+def _restore_inheritable_dacl(path: Path) -> None:
+    """Let a fresh scratch dir inherit the store root's Windows ACL.
+
+    Python >= 3.12.4 hardens ``tempfile.mkdtemp()`` directories with a
+    protected DACL — SYSTEM, Administrators and OWNER RIGHTS only, with
+    inheritance disabled (the CVE-2024-4030 ``0700`` approximation).
+    ``publish()`` moves the staged tree into the store by same-volume
+    rename, which keeps that descriptor, so a machine-scoped store filled
+    from an elevated update ends up with entries the interactive user
+    cannot execute at all (#122935). Re-enabling inheritance from the
+    store root before any bytes are staged covers the whole subtree —
+    fetch caches and the published entry alike.
+    """
+    if os.name != "nt":
+        return
+    try:
+        subprocess.run(
+            ["icacls", str(path), "/reset", "/C", "/Q"], check=True, capture_output=True
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(
+            f"warning: could not restore inheritable ACL on {path}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 class Store:
     """One directory of immutable published entries plus a scratch area.
     Hash-keyed archives survive failed installs. Publication releases them."""
@@ -364,6 +392,7 @@ class Store:
     def scratch(self):
         self.root.mkdir(parents=True, exist_ok=True)
         path = Path(tempfile.mkdtemp(prefix=".staging-", dir=self.root))
+        _restore_inheritable_dacl(path)
         try:
             yield path
         finally:

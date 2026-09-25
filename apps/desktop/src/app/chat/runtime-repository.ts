@@ -5,6 +5,7 @@ import { useMemo, useRef } from 'react'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { withUniqueToolCallIdsWithinMessage } from '@/lib/chat-messages'
 import { coalesceToolOnlyAssistants, createToolMergeCache, toRuntimeMessage } from '@/lib/chat-runtime'
+import { chatMessageText } from '@/lib/chat-messages/parts'
 
 // The exact fallback status ExportedMessageRepository.fromBranchableArray uses.
 // Normalization happens HERE, once per message, so the cached record below is
@@ -32,8 +33,21 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
     const items: { message: ThreadMessage; parentId: string | null }[] = []
     const branchParentByGroup = new Map<string, string | null>()
     const seenIds = new Set<string>()
+    const seenContentKeys = new Set<string>()
     let visibleParentId: string | null = null
     let headId: string | null = null
+
+    // Build a lightweight content key for dedup: role + normalized text +
+    // timestamp + first tool-call id. This catches the post-compaction case
+    // where the same logical message appears twice with different `id`s
+    // (streaming copy vs rehydrated durable copy).
+    const contentKey = (message: ChatMessage): string => {
+      const toolCallIds = message.parts
+        .filter((part): part is ChatMessage['parts'][number] & { type: 'tool-call'; toolCallId: string } => part.type === 'tool-call' && typeof part.toolCallId === 'string')
+        .map(part => part.toolCallId)
+
+      return `${message.role}\u0000${chatMessageText(message)}\u0000${message.timestamp ?? ''}\u0000${toolCallIds[0] ?? ''}`
+    }
 
     for (const message of coalesceToolOnlyAssistants(messages, toolMergeCacheRef.current)) {
       // A repeated id is a transcript bug upstream, but it must not reach the
@@ -46,6 +60,20 @@ export function useRuntimeMessageRepository(messages: ChatMessage[]): ExportedMe
       }
 
       seenIds.add(message.id)
+
+      // Content-level fallback dedup: after context compaction the backend
+      // can return byte-identical copies with new ids. The id-only skip above
+      // misses that class, so the runtime would emit both and assistant-ui
+      // would render duplicates. Restrict to settled, non-branch messages so
+      // we don't collapse legitimate branch siblings or cross-turn tool ids.
+      if (!message.branchGroupId && typeof message.timestamp === 'number') {
+        const key = contentKey(message)
+        if (seenContentKeys.has(key)) {
+          continue
+        }
+
+        seenContentKeys.add(key)
+      }
 
       let parentId = visibleParentId
 

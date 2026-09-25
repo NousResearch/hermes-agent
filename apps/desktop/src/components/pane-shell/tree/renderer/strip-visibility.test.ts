@@ -11,8 +11,8 @@ const toolPanel = (): StripPane => ({ collapsePane: true, placement: 'bottom' })
 const sideChrome = (): StripPane => ({ collapsePane: false, placement: 'right' })
 
 describe('auto (no stored choice)', () => {
-  it('gives a lone workspace no strip and a stack of two a strip', () => {
-    expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(false)
+  it('gives a lone workspace its strip so the tab and + stay on screen', () => {
+    expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(true)
     expect(resolveTabStripVisible({ shown: [workspace(), sideChrome()] })).toBe(true)
   })
 
@@ -85,19 +85,16 @@ describe('a full-page view', () => {
   })
 })
 
-// Dragging a session out of the chat strip into its own zone left main a lone
-// workspace: the tile kept its tab (stranded), main lost its tab and its "+",
-// and the two chats side by side read as "the tabs disappeared". Tiles are a
-// tabbed workflow — a main zone keeps its strip while another main zone exists.
-describe('a lone main tile beside another main zone', () => {
+// Every launch and client update lands on a lone workspace. Chromeless, that
+// layout had no session switcher and no "+" until the app-wide default was
+// flipped to always — the "tab header disappeared" reports (#89350).
+describe('a lone workspace', () => {
   it('keeps its strip on auto, and only on auto', () => {
-    expect(resolveTabStripVisible({ shown: [workspace()], siblingMainZone: true })).toBe(true)
-    // The whole-window chat is still chromeless, and standing side chrome
-    // never joins the tabbed workflow.
-    expect(resolveTabStripVisible({ shown: [workspace()], siblingMainZone: false })).toBe(false)
-    expect(resolveTabStripVisible({ shown: [sideChrome()], siblingMainZone: true })).toBe(false)
+    expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(true)
+    // Standing side chrome never joins the tabbed workflow.
+    expect(resolveTabStripVisible({ shown: [sideChrome()] })).toBe(false)
     // Hide tabs (menu row / ⌘⌥T) still wins — the workspace strands nothing.
-    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()], siblingMainZone: true })).toBe(false)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(false)
   })
 })
 
@@ -123,14 +120,14 @@ describe('tabStripVisibleForZone', () => {
       isCollapsePane: id => id === 'terminal',
       mode,
       paneFor: id => contributions[id],
-      shown,
-      siblingMainZone: false
+      shown
     })
 
   afterEach(() => setTabStripDefault('auto'))
 
   it('reads placement, uncloseable and collapse off the contributions', () => {
-    expect(visible(['workspace'])).toBe(false)
+    expect(visible(['workspace'])).toBe(true)
+    expect(visible(['workspace'], 'never')).toBe(false)
     expect(visible(['tile:a'], 'never')).toBe(true)
     expect(visible(['terminal'], 'never')).toBe(true)
   })
@@ -140,6 +137,7 @@ describe('tabStripVisibleForZone', () => {
     expect(visible(['workspace'])).toBe(true)
 
     setTabStripDefault('never')
+    expect(visible(['workspace'])).toBe(false)
     expect(visible(['workspace', 'terminal'])).toBe(false)
   })
 

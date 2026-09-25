@@ -6,7 +6,7 @@ import copy
 import json
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Collection, Dict, List, Optional, Tuple
 
 from tools.registry import tool_error
 from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
@@ -210,14 +210,24 @@ def local_batch_error(entries: List[Dict[str, Any]]) -> str:
     )
 
 
-def not_deferrable_error(name: str) -> str:
+def not_deferrable_error(name: str, session_tool_names: Optional[Collection[str]] = None) -> str:
     """Rejection for a ``tool_call`` naming something that is not a deferred tool.
     Two different mistakes reach here and need opposite corrections: a directly-listed
     tool (call it without the bridge) vs. an unknown name — typically a deferred MCP tool
     cited by its bare suffix instead of the full ``mcp__<server>__<tool>`` name. Telling
-    the second group 'call it directly' is the opposite of what they must do."""
+    the second group 'call it directly' is the opposite of what they must do.
+
+    ``session_tool_names`` (the names this session's tool list actually offers) splits
+    the first group once more: a known name the session doesn't list wasn't sent through
+    the wrong door at all — its toolset is disabled for this platform/profile — so the
+    correct advice is to not retry, not to call it directly. ``None`` (no session list
+    available) keeps the legacy wording for every caller."""
     from tools.tool_search import _core_tool_names  # late: tool_search imports this module
     if name in _core_tool_names() or _registry_entry(name) is not None:
+        if session_tool_names is not None and name not in session_tool_names:
+            return (f"'{name}' is not enabled in this session (its toolset is disabled "
+                    "for this platform/profile, or its requirements are not met). "
+                    "It is not among the tools available to you — do not retry it.")
         return (f"'{name}' is a directly-listed tool, not a deferred one. "
                 "Call it directly instead of via tool_call.")
     suffix = f"__{name}"

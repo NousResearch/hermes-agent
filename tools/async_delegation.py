@@ -434,6 +434,29 @@ def mark_completion_delivered(delegation_id: str) -> bool:
            WHERE delegation_id=? AND delivery_state!='delivered'""", (now, now, delegation_id))
 
 
+def validate_tool_carrier_claims(conn, session_id: str, messages: list[dict]) -> None:
+    """Fence fresh carrier insertion on its exact tokens inside the transcript write transaction."""
+    from hermes_state_errors import DelegationClaimLostError
+
+    for message in messages:
+        if "_delegation_delivery_claims" not in message:
+            continue
+        claims = message["_delegation_delivery_claims"]
+        metadata = message.get("display_metadata") or {}
+        identities = metadata.get("delegation_event_ids") or []
+        if (message.get("role") != "tool" or metadata.get("delegation_delivery") != "tool_boundary"
+                or not isinstance(claims, dict) or not claims or set(claims) != set(identities)):
+            raise DelegationClaimLostError("Missing exact claim for fresh delegation carrier")
+        for event_id, token in claims.items():
+            row = conn.execute(
+                "SELECT delivery_state, delivery_claim, parent_session_id FROM async_delegations "
+                "WHERE delegation_id=?", (event_id,),
+            ).fetchone()
+            if (not token or row is None or row[0] != "pending"
+                    or row[1] != token or row[2] != session_id):
+                raise DelegationClaimLostError(f"Delegation carrier claim lost: {event_id}")
+
+
 def _reconcile_tool_carrier(conn, delegation_id: str, payload: str | None) -> bool:
     """An exact transcript receipt closes the commit-before-ack crash window.
 

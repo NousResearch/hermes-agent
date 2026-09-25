@@ -220,6 +220,13 @@ def _db_flush_row(agent, msg: Dict, is_current_turn_user: bool) -> Dict[str, Any
     }
     if isinstance(msg.get("_row_id"), int):
         row["_row_id"] = msg["_row_id"]
+    if msg.get("_delegation_event_ids"):
+        # Admission-only tokens travel to the SQLite writer, never into saved metadata.
+        row["_delegation_delivery_claims"] = {
+            entry["event_id"]: entry["claim_id"]
+            for entry in getattr(agent, "_pending_delegation_inject_claims", ())
+            if entry.get("message") is msg and entry.get("event_id") in msg["_delegation_event_ids"]
+        }
     return row
 
 
@@ -256,21 +263,42 @@ def _db_flush_collect(agent, messages: List[Dict], conversation_history: Optiona
 
 
 def _db_flush_write(agent, batch_rows: List[Dict[str, Any]], batch_msgs: List[Dict], messages: List[Dict]) -> None:
-    """One transaction for the turn's new rows: on failure nothing lands and no markers are stamped."""
+    """Write the turn atomically, falling back to ordinary tool text if a carrier lost its claim."""
     if not batch_rows:
         return
-    agent._session_db.append_messages_batch(
-        session_id=agent.session_id, messages=batch_rows,
-        compression_lock_holder=getattr(agent, "_active_compression_lock_holder", None),
-        turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
-        turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
-    )
-    sync_flushed_message_markers(batch_msgs, batch_rows)
-    if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
-        # The insert already rewrote the older rows (SessionDB._drop_shadowed_checkpoint_rows); mirror it on
-        # the live transcript so forks/compaction built from memory carry one checkpoint too. Markers stay:
-        # the rows are durable exactly as the dicts now read.
-        drop_shadowed_checkpoints(messages)
+    from hermes_state_errors import DelegationClaimLostError
+
+    def write():
+        return agent._session_db.append_messages_batch(
+            session_id=agent.session_id, messages=batch_rows,
+            compression_lock_holder=getattr(agent, "_active_compression_lock_holder", None),
+            turn_lease_holder=getattr(agent, "_active_session_turn_lease_holder", None),
+            turn_lease_ttl_seconds=getattr(agent, "_active_session_turn_lease_ttl_seconds", 300.0) or 300.0,
+        )
+
+    try:
+        try:
+            write()
+        except DelegationClaimLostError:
+            # The write rolled back. Release only tokens still owned by this carrier.
+            from agent.delegation_inject import release_pending_injects
+            release_pending_injects(agent, messages,
+                                    turn_id=str(getattr(agent, "_active_turn_id", "") or ""))
+            for msg, row in zip(batch_msgs, batch_rows):
+                if "_delegation_delivery_claims" in row:
+                    if msg.get("_delegation_event_ids"):
+                        raise  # never persist unproven carrier metadata
+                    row.clear()
+                    row.update(_db_flush_row(agent, msg, False))
+            write()  # one bounded fallback; ordinary errors still propagate
+        sync_flushed_message_markers(batch_msgs, batch_rows)
+        if _newest_checkpoint_carrier(batch_msgs, "codex_reasoning_items") >= 0:
+            # Keep live replay in step with the committed checkpoint deduplication.
+            drop_shadowed_checkpoints(messages)
+    finally:
+        # Never leak private admission tokens into JSONL diversion on failed writes.
+        for row in batch_rows:
+            row.pop("_delegation_delivery_claims", None)
 
 
 def _db_flush_adopt_compression_tip(agent) -> bool:

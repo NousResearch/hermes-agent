@@ -139,3 +139,7 @@ def test_switch_preserves_non_fast_service_tier():
     a.service_tier = "priority"
     arh._apply_switched_provider_request_overrides(a, "custom:main-think")
     assert a.request_overrides == {"service_tier": "flex", "temperature": 0.2}
+
+    a.model, a.provider, a.base_url = "gpt-5.4", "openai", "https://api.openai.com/v1"
+    arh._apply_switched_provider_request_overrides(a, "openai")
+    assert a.request_overrides == {"service_tier": "flex", "temperature": 0.2}

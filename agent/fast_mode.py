@@ -49,7 +49,10 @@ def rederive_static_fast_overrides(agent: Any) -> None:
         overrides.pop("speed")
     if overrides.get("service_tier") == "priority":
         overrides.pop("service_tier")
-    overrides.update(_route_fast_overrides(agent))
+    route_fast = _route_fast_overrides(agent)
+    if "service_tier" in overrides:
+        route_fast.pop("service_tier", None)
+    overrides.update(route_fast)
     agent.request_overrides = overrides
 
 

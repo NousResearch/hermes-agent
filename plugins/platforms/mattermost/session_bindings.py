@@ -60,7 +60,9 @@ def normalize_mattermost_id(value: Any, *, field: str) -> str:
     )
 
 
-def _normalize_identifier(value: Any, *, field: str, maximum: int, pattern: re.Pattern[str]) -> str:
+def _normalize_identifier(
+    value: Any, *, field: str, maximum: int, pattern: re.Pattern[str]
+) -> str:
     if not isinstance(value, str):
         raise BindingValidationError(f"{field} must be a string")
     normalized = value.strip()
@@ -150,7 +152,9 @@ class MattermostSessionBindingStore:
             updated_at=float(row["updated_at"]),
         )
 
-    def replace(self, session_id: Any, channel_id: Any, root_post_id: Any) -> SessionBinding:
+    def replace(
+        self, session_id: Any, channel_id: Any, root_post_id: Any
+    ) -> SessionBinding:
         session = normalize_session_id(session_id)
         channel = normalize_mattermost_id(channel_id, field="channel_id")
         root = normalize_mattermost_id(root_post_id, field="root_post_id")
@@ -221,7 +225,9 @@ class MattermostSessionBindingStore:
         finally:
             conn.close()
 
-    def list_bindings(self, *, limit: int = 100, offset: int = 0) -> list[SessionBinding]:
+    def list_bindings(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> list[SessionBinding]:
         """Return bindings ordered by most recently replaced first."""
         safe_limit = max(0, min(int(limit), 200))
         safe_offset = max(0, int(offset))
@@ -232,14 +238,18 @@ class MattermostSessionBindingStore:
                 "FROM session_bindings ORDER BY updated_at DESC, session_id ASC LIMIT ? OFFSET ?",
                 (safe_limit, safe_offset),
             ).fetchall()
-            return [binding for row in rows if (binding := self._from_row(row)) is not None]
+            return [
+                binding for row in rows if (binding := self._from_row(row)) is not None
+            ]
         finally:
             conn.close()
 
     def delete(self, session_id: Any) -> bool:
         session = normalize_session_id(session_id)
         with transaction(self._connect(), immediate=True) as conn:
-            cursor = conn.execute("DELETE FROM session_bindings WHERE session_id = ?", (session,))
+            cursor = conn.execute(
+                "DELETE FROM session_bindings WHERE session_id = ?", (session,)
+            )
             return cursor.rowcount > 0
 
     def claim_delivery(
@@ -268,7 +278,8 @@ class MattermostSessionBindingStore:
                 (session, turn, role),
             ).fetchone()
             if row is not None and (
-                row["state"] == "completed" or float(row["updated_at"]) > now - stale_after
+                row["state"] == "completed"
+                or float(row["updated_at"]) > now - stale_after
             ):
                 return False
             conn.execute(

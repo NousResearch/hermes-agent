@@ -9,6 +9,8 @@ import threading
 from collections.abc import Callable
 from typing import Any
 
+from hermes_cli.profiles import get_active_profile_name
+
 from .session_binding_api import MattermostSessionBindingAPI
 from .session_bindings import (
     MattermostSessionBindingStore,
@@ -25,36 +27,59 @@ class MattermostSessionBindingRuntime:
     def __init__(
         self,
         *,
-        store_factory: Callable[[], MattermostSessionBindingStore] = MattermostSessionBindingStore,
+        store_factory: Callable[
+            [], MattermostSessionBindingStore
+        ] = MattermostSessionBindingStore,
+        profile_name_getter: Callable[[], str] = get_active_profile_name,
     ) -> None:
-        self._mattermost_adapter: Any = None
-        self._mattermost_loop: asyncio.AbstractEventLoop | None = None
+        self._mattermost_targets: dict[
+            str, tuple[Any, asyncio.AbstractEventLoop | None]
+        ] = {}
+        self._targets_lock = threading.Lock()
         self._store_factory = store_factory
-        self._pending_api_turns: dict[tuple[str, str], tuple[SessionBinding, str, str]] = {}
+        self._profile_name_getter = profile_name_getter
+        self._pending_api_turns: dict[
+            tuple[str, str, str], tuple[SessionBinding, str, str]
+        ] = {}
         self._pending_lock = threading.Lock()
 
     def wire_mattermost(self, _native: Any, adapter: Any) -> None:
-        self._mattermost_adapter = adapter
         try:
-            self._mattermost_loop = asyncio.get_running_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
-            self._mattermost_loop = None
+            loop = None
+        profile = str(getattr(adapter, "_owner_profile", None) or "default")
+        with self._targets_lock:
+            self._mattermost_targets[profile] = (adapter, loop)
+
+    def _active_profile(self) -> str:
+        return str(self._profile_name_getter() or "default")
+
+    def _target_for_profile(
+        self, profile: str
+    ) -> tuple[Any, asyncio.AbstractEventLoop | None]:
+        with self._targets_lock:
+            return self._mattermost_targets.get(profile, (None, None))
 
     def mattermost_connected(self) -> bool:
-        adapter = self._mattermost_adapter
+        adapter, _loop = self._target_for_profile(self._active_profile())
         return bool(adapter is not None and getattr(adapter, "is_connected", False))
 
-    async def normalize_target(self, channel_id: str, root_post_id: str) -> tuple[str, str]:
+    async def normalize_target(
+        self, channel_id: str, root_post_id: str
+    ) -> tuple[str, str]:
         channel = normalize_mattermost_id(channel_id, field="channel_id")
         requested_post = normalize_mattermost_id(root_post_id, field="root_post_id")
-        adapter = self._mattermost_adapter
+        adapter, _loop = self._target_for_profile(self._active_profile())
         if adapter is None or not getattr(adapter, "is_connected", False):
             raise RuntimeError("Mattermost adapter is not connected")
         post = await adapter._api_get(f"posts/{requested_post}")
         if not post or not post.get("id"):
             raise LookupError(f"Mattermost post not found: {requested_post}")
         if str(post.get("channel_id") or "") != channel:
-            raise LookupError("Mattermost post does not belong to the requested channel")
+            raise LookupError(
+                "Mattermost post does not belong to the requested channel"
+            )
         root = str(post.get("root_id") or post["id"])
         return channel, normalize_mattermost_id(root, field="root_post_id")
 
@@ -62,7 +87,7 @@ class MattermostSessionBindingRuntime:
         self, session_id: str, channel_id: str, title: str
     ) -> tuple[str, str]:
         channel = normalize_mattermost_id(channel_id, field="channel_id")
-        adapter = self._mattermost_adapter
+        adapter, _loop = self._target_for_profile(self._active_profile())
         if adapter is None or not getattr(adapter, "is_connected", False):
             raise RuntimeError("Mattermost adapter is not connected")
         result = await adapter.create_session_thread(
@@ -102,13 +127,18 @@ class MattermostSessionBindingRuntime:
         try:
             binding = self._store_factory().get_by_session(session_id)
         except Exception:
-            logger.exception("Mattermost binding lookup failed for API session %s", session_id)
+            logger.exception(
+                "Mattermost binding lookup failed for API session %s", session_id
+            )
             return
         if binding is None:
             return
+        profile = self._active_profile()
         with self._pending_lock:
-            self._pending_api_turns[(session_id, turn_id)] = (
-                binding, user_text, assistant_text
+            self._pending_api_turns[(profile, session_id, turn_id)] = (
+                binding,
+                user_text,
+                assistant_text,
             )
 
     def on_session_end(
@@ -122,17 +152,20 @@ class MattermostSessionBindingRuntime:
         **_: Any,
     ) -> None:
         """Mirror only turns the agent finalizer classified as successful."""
+        profile = self._active_profile()
         with self._pending_lock:
-            pending = self._pending_api_turns.pop((session_id, turn_id), None)
+            pending = self._pending_api_turns.pop((profile, session_id, turn_id), None)
         if pending is None or not completed or failed or interrupted:
             return
         binding, user_text, assistant_text = pending
-        adapter, loop = self._mattermost_adapter, self._mattermost_loop
+        adapter, loop = self._target_for_profile(profile)
         if adapter is None or loop is None or not loop.is_running():
             return
 
         async def _deliver() -> None:
-            await self._mirror_api_turn(adapter, binding, turn_id, user_text, assistant_text)
+            await self._mirror_api_turn(
+                adapter, binding, turn_id, user_text, assistant_text
+            )
 
         def _schedule() -> None:
             task = loop.create_task(_deliver())

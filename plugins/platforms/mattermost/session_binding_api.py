@@ -23,7 +23,13 @@ ConnectedProbe = Callable[[], bool]
 
 def _error(message: str, status: int, code: str) -> web.Response:
     return web.json_response(
-        {"error": {"message": message, "type": "mattermost_binding_error", "code": code}},
+        {
+            "error": {
+                "message": message,
+                "type": "mattermost_binding_error",
+                "code": code,
+            }
+        },
         status=status,
     )
 
@@ -42,12 +48,16 @@ class MattermostSessionBindingAPI:
         target_normalizer: TargetNormalizer | None = None,
         thread_creator: ThreadCreator | None = None,
         connected_probe: ConnectedProbe | None = None,
-        store_factory: Callable[[], MattermostSessionBindingStore] = MattermostSessionBindingStore,
+        store_factory: Callable[
+            [], MattermostSessionBindingStore
+        ] = MattermostSessionBindingStore,
     ) -> None:
         self._api_adapter = api_adapter
         self._target_normalizer = target_normalizer
         self._thread_creator = thread_creator
-        self._connected_probe = connected_probe or (lambda: target_normalizer is not None)
+        self._connected_probe = connected_probe or (
+            lambda: target_normalizer is not None
+        )
         self._store_factory = store_factory
 
     def register_routes(self, app: web.Application) -> None:
@@ -55,10 +65,18 @@ class MattermostSessionBindingAPI:
             ("GET", f"{API_PREFIX}/capabilities", self.capabilities),
             ("GET", f"{API_PREFIX}/session-bindings", self.list_bindings),
             ("GET", f"{API_PREFIX}/session-bindings/resolve", self.resolve_binding),
-            ("POST", f"{API_PREFIX}/session-bindings/{{session_id}}/thread", self.create_thread),
+            (
+                "POST",
+                f"{API_PREFIX}/session-bindings/{{session_id}}/thread",
+                self.create_thread,
+            ),
             ("GET", f"{API_PREFIX}/session-bindings/{{session_id}}", self.get_binding),
             ("PUT", f"{API_PREFIX}/session-bindings/{{session_id}}", self.put_binding),
-            ("DELETE", f"{API_PREFIX}/session-bindings/{{session_id}}", self.delete_binding),
+            (
+                "DELETE",
+                f"{API_PREFIX}/session-bindings/{{session_id}}",
+                self.delete_binding,
+            ),
         )
         for method, path, handler in routes:
             app.router.add_route(method, path, handler)
@@ -72,9 +90,13 @@ class MattermostSessionBindingAPI:
             limit = int(request.query.get("limit", "100"))
             offset = int(request.query.get("offset", "0"))
         except ValueError:
-            return _error("limit and offset must be integers", 400, "invalid_pagination")
+            return _error(
+                "limit and offset must be integers", 400, "invalid_pagination"
+            )
         if limit < 0 or offset < 0:
-            return _error("limit and offset must be non-negative", 400, "invalid_pagination")
+            return _error(
+                "limit and offset must be non-negative", 400, "invalid_pagination"
+            )
         return min(limit, 200), offset
 
     async def capabilities(self, request: web.Request) -> web.Response:
@@ -137,7 +159,9 @@ class MattermostSessionBindingAPI:
         if auth_error := self._auth_error(request):
             return auth_error
         session_id = request.match_info["session_id"]
-        _, session_error = await self._api_adapter._get_existing_session_or_404(session_id)
+        _, session_error = await self._api_adapter._get_existing_session_or_404(
+            session_id
+        )
         if session_error:
             return session_error
         body, body_error = await self._api_adapter._read_json_body(request)
@@ -154,7 +178,9 @@ class MattermostSessionBindingAPI:
         root_post_id = body.get("root_post_id")
         if self._target_normalizer is not None:
             try:
-                channel_id, root_post_id = await self._target_normalizer(channel_id, root_post_id)
+                channel_id, root_post_id = await self._target_normalizer(
+                    channel_id, root_post_id
+                )
             except BindingValidationError as exc:
                 return _error(str(exc), 400, "invalid_binding")
             except LookupError as exc:
@@ -174,9 +200,13 @@ class MattermostSessionBindingAPI:
         if auth_error := self._auth_error(request):
             return auth_error
         if self._thread_creator is None:
-            return _error("Mattermost adapter is not connected", 503, "mattermost_unavailable")
+            return _error(
+                "Mattermost adapter is not connected", 503, "mattermost_unavailable"
+            )
         session_id = request.match_info["session_id"]
-        session, session_error = await self._api_adapter._get_existing_session_or_404(session_id)
+        session, session_error = await self._api_adapter._get_existing_session_or_404(
+            session_id
+        )
         if session_error:
             return session_error
         try:

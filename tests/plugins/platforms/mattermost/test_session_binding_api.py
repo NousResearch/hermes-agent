@@ -25,14 +25,18 @@ class _FakeAPIServerAdapter:
     async def _get_existing_session_or_404(self, session_id):
         session = self.sessions.get(session_id)
         if session is None:
-            return None, web.json_response({"error": {"code": "session_not_found"}}, status=404)
+            return None, web.json_response(
+                {"error": {"code": "session_not_found"}}, status=404
+            )
         return session, None
 
     async def _read_json_body(self, request):
         try:
             body = await request.json()
         except Exception:
-            return {}, web.json_response({"error": {"code": "invalid_json"}}, status=400)
+            return {}, web.json_response(
+                {"error": {"code": "invalid_json"}}, status=400
+            )
         return body, None
 
 
@@ -80,9 +84,13 @@ async def test_binding_crud_and_reverse_resolution(client):
     assert response.status == 200
     assert (await response.json())["binding"]["session_id"] == "session-1"
 
-    response = await client.get("/api/plugins/mattermost/v1/session-bindings", headers=_auth())
+    response = await client.get(
+        "/api/plugins/mattermost/v1/session-bindings", headers=_auth()
+    )
     assert response.status == 200
-    assert [item["session_id"] for item in (await response.json())["data"]] == ["session-1"]
+    assert [item["session_id"] for item in (await response.json())["data"]] == [
+        "session-1"
+    ]
 
     response = await client.delete(
         "/api/plugins/mattermost/v1/session-bindings/session-1", headers=_auth()

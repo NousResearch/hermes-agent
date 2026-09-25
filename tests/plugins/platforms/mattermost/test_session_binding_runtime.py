@@ -12,7 +12,9 @@ import pytest
 from plugins.platforms.mattermost.adapter import register
 from plugins.platforms.mattermost.adapter import MattermostAdapter
 from gateway.config import PlatformConfig
-from plugins.platforms.mattermost.session_binding_runtime import MattermostSessionBindingRuntime
+from plugins.platforms.mattermost.session_binding_runtime import (
+    MattermostSessionBindingRuntime,
+)
 from plugins.platforms.mattermost.session_bindings import MattermostSessionBindingStore
 
 
@@ -21,9 +23,9 @@ async def test_target_normalization_resolves_reply_to_canonical_root():
     runtime = MattermostSessionBindingRuntime()
     adapter = SimpleNamespace(
         is_connected=True,
-        _api_get=AsyncMock(return_value={
-            "id": "reply1", "root_id": "root1", "channel_id": "channel1"
-        }),
+        _api_get=AsyncMock(
+            return_value={"id": "reply1", "root_id": "root1", "channel_id": "channel1"}
+        ),
     )
     runtime.wire_mattermost(None, adapter)
 
@@ -34,12 +36,19 @@ async def test_target_normalization_resolves_reply_to_canonical_root():
 @pytest.mark.asyncio
 async def test_target_normalization_rejects_cross_channel_post():
     runtime = MattermostSessionBindingRuntime()
-    runtime.wire_mattermost(None, SimpleNamespace(
-        is_connected=True,
-        _api_get=AsyncMock(return_value={
-            "id": "root1", "root_id": "", "channel_id": "otherchannel"
-        }),
-    ))
+    runtime.wire_mattermost(
+        None,
+        SimpleNamespace(
+            is_connected=True,
+            _api_get=AsyncMock(
+                return_value={
+                    "id": "root1",
+                    "root_id": "",
+                    "channel_id": "otherchannel",
+                }
+            ),
+        ),
+    )
 
     with pytest.raises(LookupError, match="does not belong"):
         await runtime.normalize_target("channel1", "root1")
@@ -50,18 +59,56 @@ async def test_thread_creation_uses_existing_mattermost_adapter():
     runtime = MattermostSessionBindingRuntime()
     adapter = SimpleNamespace(
         is_connected=True,
-        create_session_thread=AsyncMock(return_value=SimpleNamespace(
-            success=True, message_id="root1", error=None
-        )),
+        create_session_thread=AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="root1", error=None)
+        ),
     )
     runtime.wire_mattermost(None, adapter)
 
     assert await runtime.create_thread("session-1", "channel1", "Freunde") == (
-        "channel1", "root1"
+        "channel1",
+        "root1",
     )
     adapter.create_session_thread.assert_awaited_once_with(
         "channel1", "Freunde", session_id="session-1"
     )
+
+
+@pytest.mark.asyncio
+async def test_target_normalization_uses_mattermost_adapter_for_active_profile():
+    active_profile = {"name": "default"}
+    runtime = MattermostSessionBindingRuntime(
+        profile_name_getter=lambda: active_profile["name"]
+    )
+    default_adapter = SimpleNamespace(
+        is_connected=True,
+        _owner_profile=None,
+        _api_get=AsyncMock(
+            return_value={"id": "default-root", "root_id": "", "channel_id": "channel1"}
+        ),
+    )
+    work_adapter = SimpleNamespace(
+        is_connected=True,
+        _owner_profile="work",
+        _api_get=AsyncMock(
+            return_value={"id": "work-root", "root_id": "", "channel_id": "channel1"}
+        ),
+    )
+    runtime.wire_mattermost(None, default_adapter)
+    runtime.wire_mattermost(None, work_adapter)
+
+    assert await runtime.normalize_target("channel1", "default-root") == (
+        "channel1",
+        "default-root",
+    )
+    active_profile["name"] = "work"
+    assert await runtime.normalize_target("channel1", "work-root") == (
+        "channel1",
+        "work-root",
+    )
+
+    default_adapter._api_get.assert_awaited_once_with("posts/default-root")
+    work_adapter._api_get.assert_awaited_once_with("posts/work-root")
 
 
 def test_plugin_registers_both_platform_handlers_without_core_changes():
@@ -81,29 +128,38 @@ async def test_api_turn_is_mirrored_once_in_user_then_assistant_order(tmp_path):
     store_factory = lambda: MattermostSessionBindingStore(path)
     binding = store_factory().replace("session-1", "channel1", "root1")
     adapter = SimpleNamespace(
-        send_session_mirror=AsyncMock(side_effect=[
-            SimpleNamespace(success=True, message_id="post-user", error=None),
-            SimpleNamespace(success=True, message_id="post-assistant", error=None),
-        ])
+        send_session_mirror=AsyncMock(
+            side_effect=[
+                SimpleNamespace(success=True, message_id="post-user", error=None),
+                SimpleNamespace(success=True, message_id="post-assistant", error=None),
+            ]
+        )
     )
     runtime = MattermostSessionBindingRuntime(store_factory=store_factory)
 
     await runtime._mirror_api_turn(adapter, binding, "turn-1", "Hallo", "Hi zurück")
     await runtime._mirror_api_turn(adapter, binding, "turn-1", "Hallo", "Hi zurück")
 
-    assert [call.kwargs["role"] for call in adapter.send_session_mirror.await_args_list] == [
-        "user", "assistant"
-    ]
+    assert [
+        call.kwargs["role"] for call in adapter.send_session_mirror.await_args_list
+    ] == ["user", "assistant"]
     assert [call.args[2] for call in adapter.send_session_mirror.await_args_list] == [
-        "Hallo", "Hi zurück"
+        "Hallo",
+        "Hi zurück",
     ]
 
 
 @pytest.mark.asyncio
-async def test_post_llm_hook_schedules_bound_api_turn_on_mattermost_loop(tmp_path):
-    path = tmp_path / "bindings.db"
-    store_factory = lambda: MattermostSessionBindingStore(path)
-    store_factory().replace("session-1", "channel1", "root1")
+async def test_post_llm_hook_schedules_bound_api_turn_on_mattermost_loop():
+    binding = SimpleNamespace(
+        session_id="session-1", channel_id="channel1", root_post_id="root1"
+    )
+    store = SimpleNamespace(
+        get_by_session=lambda _session_id: binding,
+        claim_delivery=lambda *_args: True,
+        complete_delivery=lambda *_args: None,
+        release_delivery=lambda *_args: None,
+    )
     delivered = asyncio.Event()
 
     async def send(*_args, **_kwargs):
@@ -112,8 +168,10 @@ async def test_post_llm_hook_schedules_bound_api_turn_on_mattermost_loop(tmp_pat
             delivered.set()
         return SimpleNamespace(success=True, message_id=f"post-{role}", error=None)
 
-    adapter = SimpleNamespace(is_connected=True, send_session_mirror=AsyncMock(side_effect=send))
-    runtime = MattermostSessionBindingRuntime(store_factory=store_factory)
+    adapter = SimpleNamespace(
+        is_connected=True, send_session_mirror=AsyncMock(side_effect=send)
+    )
+    runtime = MattermostSessionBindingRuntime(store_factory=lambda: store)
     runtime.wire_mattermost(None, adapter)
 
     runtime.post_llm_call(
@@ -123,9 +181,7 @@ async def test_post_llm_hook_schedules_bound_api_turn_on_mattermost_loop(tmp_pat
         assistant_response="Hi",
         platform="api_server",
     )
-    runtime.on_session_end(
-        session_id="session-1", turn_id="turn-1", completed=True
-    )
+    runtime.on_session_end(session_id="session-1", turn_id="turn-1", completed=True)
     await asyncio.wait_for(delivered.wait(), timeout=2)
 
     assert adapter.send_session_mirror.await_count == 2
@@ -160,11 +216,15 @@ async def test_failed_mirror_role_can_retry(tmp_path):
     path = tmp_path / "bindings.db"
     store_factory = lambda: MattermostSessionBindingStore(path)
     binding = store_factory().replace("session-1", "channel1", "root1")
-    adapter = SimpleNamespace(send_session_mirror=AsyncMock(side_effect=[
-        SimpleNamespace(success=False, message_id=None, error="offline"),
-        SimpleNamespace(success=True, message_id="post-user", error=None),
-        SimpleNamespace(success=True, message_id="post-assistant", error=None),
-    ]))
+    adapter = SimpleNamespace(
+        send_session_mirror=AsyncMock(
+            side_effect=[
+                SimpleNamespace(success=False, message_id=None, error="offline"),
+                SimpleNamespace(success=True, message_id="post-user", error=None),
+                SimpleNamespace(success=True, message_id="post-assistant", error=None),
+            ]
+        )
+    )
     runtime = MattermostSessionBindingRuntime(store_factory=store_factory)
 
     with pytest.raises(RuntimeError, match="offline"):
@@ -206,7 +266,9 @@ async def test_authorized_mattermost_reply_continues_bound_hermes_session(tmp_pa
     async_store = _AsyncSessionStore()
     gateway = SimpleNamespace(
         _is_user_authorized_for_source=lambda *_args, **_kwargs: True,
-        _session_db=SimpleNamespace(get_session=AsyncMock(return_value={"id": "session-1"})),
+        _session_db=SimpleNamespace(
+            get_session=AsyncMock(return_value={"id": "session-1"})
+        ),
         _session_key_for_source=lambda _source: "mattermost:channel1:root1",
         async_session_store=async_store,
     )
@@ -284,11 +346,13 @@ async def test_unauthorized_bound_reply_does_not_repoint_session(tmp_path):
 
 @pytest.mark.asyncio
 async def test_adapter_posts_hidden_origin_metadata_on_mirrors():
-    adapter = MattermostAdapter(PlatformConfig(
-        enabled=True,
-        token="token",
-        extra={"url": "https://mattermost.example"},
-    ))
+    adapter = MattermostAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="token",
+            extra={"url": "https://mattermost.example"},
+        )
+    )
     adapter._api_post = AsyncMock(return_value={"id": "post1"})
 
     result = await adapter.send_session_mirror(
@@ -315,11 +379,13 @@ async def test_adapter_posts_hidden_origin_metadata_on_mirrors():
 
 @pytest.mark.asyncio
 async def test_adapter_creates_origin_marked_thread_root():
-    adapter = MattermostAdapter(PlatformConfig(
-        enabled=True,
-        token="token",
-        extra={"url": "https://mattermost.example"},
-    ))
+    adapter = MattermostAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="token",
+            extra={"url": "https://mattermost.example"},
+        )
+    )
     adapter._api_post = AsyncMock(return_value={"id": "root1"})
 
     result = await adapter.create_session_thread(
@@ -336,11 +402,13 @@ async def test_adapter_creates_origin_marked_thread_root():
 
 @pytest.mark.asyncio
 async def test_adapter_drops_bridge_echo_even_from_another_bot_identity():
-    adapter = MattermostAdapter(PlatformConfig(
-        enabled=True,
-        token="token",
-        extra={"url": "https://mattermost.example"},
-    ))
+    adapter = MattermostAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="token",
+            extra={"url": "https://mattermost.example"},
+        )
+    )
     adapter._bot_user_id = "our-bot"
     adapter.handle_message = AsyncMock()
     post = {

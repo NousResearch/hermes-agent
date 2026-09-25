@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from dataclasses import field
 from pathlib import Path
@@ -1574,6 +1575,186 @@ def _call_spawn_fn(spawn_fn, task: Task, workspace: str, board: Optional[str]) -
         return spawn_fn(task, workspace)
     except (TypeError, ValueError):
         return spawn_fn(task, workspace)
+
+
+# Deliberately explicit, controller-only recovery surface.  Ordinary dispatcher
+# scanning below still uses check_respawn_guard unchanged.
+from hermes_cli.kanban_same_lane_resume import (  # noqa: E402
+    GatedChild,
+    GatedChildIdentity,
+    LinuxGatedChild,
+    SameLaneResumeObservation,
+    SameLaneResumeOutcome,
+    SameLaneResumeRequest,
+    SameLaneLaunchError,
+    authorised_same_lane_request,
+    resume_same_lane,
+)
+
+
+def _same_lane_worker_material(
+    task: Task, workspace: str, board: Optional[str], session_id: str,
+) -> tuple[list[str], dict[str, str]]:
+    """Build the exact worker argv/env without starting the agent runtime."""
+    if not task.assignee:
+        raise ValueError(f"task {task.id} has no assignee")
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from agent.secret_scope import (
+        build_profile_secret_scope, is_multiplex_active, reset_secret_scope, set_secret_scope)
+    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+
+    profile_arg = normalize_profile_name(task.assignee)
+    try:
+        profile_home = resolve_profile_env(profile_arg)
+    except FileNotFoundError:
+        profile_home = None
+    multiplex_active = is_multiplex_active()
+    secret_token = (
+        set_secret_scope(build_profile_secret_scope(Path(profile_home)))
+        if multiplex_active and profile_home else None)
+    try:
+        env = build_subprocess_env(
+            scrub_secrets=multiplex_active,
+            inherit_profile_home=True,
+        )
+    finally:
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
+    from gateway.session_context import _VAR_MAP
+    for key in _VAR_MAP:
+        env.pop(key, None)
+    if profile_home:
+        env["HERMES_HOME"] = profile_home
+        strip_launch_profile_env(env, profile_home)
+    if task.tenant:
+        env["HERMES_TENANT"] = task.tenant
+    env.update({
+        "HERMES_KANBAN_TASK": task.id,
+        "HERMES_KANBAN_WORKSPACE": workspace,
+        "HERMES_SESSION_SOURCE": "kanban",
+        "HERMES_SESSION_ID": session_id,
+        "HERMES_KANBAN_DB": str(_kb.kanban_db_path(board=board)),
+        "HERMES_KANBAN_WORKSPACES_ROOT": str(_kb.workspaces_root(board=board)),
+        "HERMES_KANBAN_BOARD": _kb._normalize_board_slug(board) or _kb.get_current_board(),
+        "HERMES_PROFILE": profile_arg,
+    })
+    if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
+        env["TERMINAL_CWD"] = workspace
+    if task.branch_name:
+        env["HERMES_KANBAN_BRANCH"] = task.branch_name
+    if task.goal_mode:
+        env["HERMES_KANBAN_GOAL_MODE"] = "1"
+        if task.goal_max_turns is not None:
+            env["HERMES_KANBAN_GOAL_MAX_TURNS"] = str(int(task.goal_max_turns))
+    for var in ("TERMINAL_TIMEOUT", "TERMINAL_MAX_FOREGROUND_TIMEOUT"):
+        override = _worker_terminal_timeout_env(task.max_runtime_seconds, env.get(var))
+        if override is not None:
+            env[var] = override
+    _retag_legacy_worker_sessions(env["HERMES_KANBAN_WORKSPACES_ROOT"])
+    from agent.delegation_context import DELEGATED_CHILD_ENV_MARKER
+    env.pop(DELEGATED_CHILD_ENV_MARKER, None)
+    env.pop("HERMES_TUI", None)
+    return _worker_argv(task, profile_arg, env.get("HERMES_HOME")), env
+
+
+def _launch_same_lane_worker(
+    request: SameLaneResumeRequest,
+    task: Task,
+    *,
+    identity_path: str,
+    launch_nonce: str,
+    deadline: int,
+    controller_started_at: int,
+    board: Optional[str] = None,
+) -> GatedChild:
+    """Start the Linux parent-death wrapper and return only after its fsynced handshake."""
+    import json
+    import select
+
+    session_id = f"kanban-resume-{uuid.uuid4().hex}"
+    worker_argv, env = _same_lane_worker_material(
+        task, request.expected_workspace, board, session_id
+    )
+    gate_r, gate_w = os.pipe()
+    ack_r, ack_w = os.pipe()
+    wrapper = [
+        sys.executable,
+        "-m",
+        "hermes_cli.kanban_same_lane_child",
+        "--gate-fd", str(gate_r),
+        "--ack-fd", str(ack_w),
+        "--db", str(_kb.kanban_db_path(board=board)),
+        "--task-id", request.task_id,
+        "--authorization-id", request.resume_authorization_id,
+        "--session-id", session_id,
+        "--identity-path", identity_path,
+        "--launch-nonce", launch_nonce,
+        "--parent-pid", str(os.getpid()),
+        "--parent-start", str(controller_started_at),
+        "--deadline", str(deadline),
+        "--",
+        *worker_argv,
+    ]
+    log_f = _open_worker_log(task, board)
+    proc = None
+    try:
+        proc = subprocess.Popen(
+            wrapper,
+            cwd=request.expected_workspace,
+            stdin=subprocess.DEVNULL,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            env=env,
+            pass_fds=(gate_r, ack_w),
+            start_new_session=True,
+        )
+        os.close(gate_r)
+        os.close(ack_w)
+        log_f.close()
+        ready, _, _ = select.select([ack_r], [], [], 15.0)
+        if not ready:
+            raise TimeoutError("same-lane child handshake timed out")
+        raw = bytearray()
+        while True:
+            chunk = os.read(ack_r, 1)
+            if not chunk:
+                raise RuntimeError("same-lane child exited before handshake")
+            if chunk == b"\n":
+                break
+            raw.extend(chunk)
+            if len(raw) > 8192:
+                raise RuntimeError("same-lane child handshake too large")
+        payload = json.loads(raw.decode("utf-8"))
+        persisted = json.loads(Path(identity_path).read_text(encoding="utf-8"))
+        if payload != persisted:
+            raise RuntimeError("same-lane child identity fsync readback mismatch")
+        identity = GatedChildIdentity(
+            pid=int(payload["pid"]),
+            process_started_at=int(payload["process_started_at"]),
+            process_group_id=int(payload["process_group_id"]),
+            session_id=str(payload["session_id"]),
+            ready_but_gated=payload.get("phase") == "gated",
+        )
+        return LinuxGatedChild(proc, gate_w, ack_r, identity)
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            log_f.close()
+        for fd in (gate_r, gate_w, ack_r, ack_w):
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        cleanup_confirmed = proc is None
+        if proc is not None:
+            with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(Exception):
+                proc.wait(timeout=5)
+            cleanup_confirmed = (
+                proc.poll() is not None
+                and not LinuxGatedChild._group_members(proc.pid)
+            )
+        raise SameLaneLaunchError(
+            str(exc), cleanup_confirmed=cleanup_confirmed
+        ) from exc
 
 
 def _dispatch_lane_task(

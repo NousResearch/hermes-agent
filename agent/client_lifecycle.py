@@ -111,6 +111,10 @@ class ClientLifecycleMixin:
             # Never match the environment key (e.g. "default"), shared by parent and siblings.
             owners = getattr(self, "_process_owner_task_ids", ())
             for process in process_registry.list_sessions():
+                # persist_on_release processes are deliberately exempt from lifecycle cleanup;
+                # the user opted in to having them outlive the session.
+                if process.get("persist_on_release"):
+                    continue
                 if process["owner_task_id"] in owners and process["status"] == "running":
                     process_registry.kill_process(
                         process["session_id"], source="agent_close", consume_output=True,

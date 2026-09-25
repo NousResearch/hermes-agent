@@ -71,6 +71,59 @@ def _spawn_python_sleep(seconds: float) -> subprocess.Popen:
     )
 
 
+def test_persist_on_release_exempts_sessions_from_kill_all(registry):
+    """Issue #41225: a persist_on_release session survives kill_all() and the
+    turn-abandon reaper (kill_started_since); a normal sibling is still killed."""
+    persisted = _make_session(sid="proc_persist", task_id="session-a")
+    persisted.persist_on_release = True
+    normal = _make_session(sid="proc_normal", task_id="session-a")
+    registry._running[persisted.id] = persisted
+    registry._running[normal.id] = normal
+
+    calls = []
+
+    def fake_kill(session_id, **kwargs):
+        calls.append(session_id)
+        return {"status": "killed"}
+
+    registry.kill_process = fake_kill
+
+    assert registry.kill_all(task_id="session-a") == 1
+    assert calls == ["proc_normal"]
+    del registry._running["proc_normal"]  # fake_kill doesn't update registry state
+
+    calls.clear()
+    baseline = registry.snapshot_running_ids("session-a")
+    new = _make_session(sid="proc_new", task_id="session-a")
+    registry._running[new.id] = new
+    assert registry.kill_started_since("session-a", baseline, source="gateway_turn_timeout") == 1
+    assert calls == ["proc_new"]
+
+    # A globally scoped kill (shutdown, process.stop) also respects the flag.
+    calls.clear()
+    registry.kill_all()
+    assert calls == ["proc_new"]
+
+    # The persisted session remains individually killable.
+    assert registry.kill_process(persisted.id, source="manual") == {"status": "killed"}
+    assert calls == ["proc_new", "proc_persist"]
+
+
+def test_persist_on_release_round_trips_through_checkpoint(registry, tmp_path):
+    """The flag survives a crash-recovery checkpoint write/read."""
+    checkpoint = tmp_path / "procs.json"
+    s = _make_session(sid="proc_persist_ck", task_id="session-a")
+    s.persist_on_release = True
+    s.pid = 12345
+    s.host_start_time = int(time.time())
+    registry._running[s.id] = s
+    with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+        registry._write_checkpoint()
+        data = json.loads(checkpoint.read_text())
+        entry = next(e for e in data if e["session_id"] == "proc_persist_ck")
+        assert entry["persist_on_release"] is True
+
+
 def test_kill_started_since_preserves_preexisting_and_foreign_processes(registry):
     old = _make_session(sid="proc_old", task_id="session-a")
     finished = _make_session(

@@ -2910,21 +2910,22 @@ def _get_channel_override(
 
 
 def _resolve_hermes_bin() -> Optional[list[str]]:
-    """Hermes update/restart argv: the running interpreter's ``python -m hermes_cli.main``
-    (exactly this install), else ``hermes`` on PATH, else None. The module argv must win: a
-    PATH-first lookup lets an attacker-planted ``hermes`` shadow the running install when
-    /update or /restart re-execs it (#111569)."""
+    """Build an installation-bound Hermes update/restart command.
+
+    Re-enter the current managed checkout through its durable launcher or
+    isolated bootstrap before consulting PATH. A plain ``python -m`` loses the
+    source/dependency roots that the launcher activated, especially after the
+    process changes CWD or starts from an isolated child environment.
+    """
     try:
-        import importlib.util
-        if importlib.util.find_spec("hermes_cli") is not None:
-            return [sys.executable, "-m", "hermes_cli.main"]
+        from hermes_cli._launchers import current_installation_command
+
+        return current_installation_command()
     except Exception:
-        pass
-    import shutil
-    hermes_bin = shutil.which("hermes")
-    if hermes_bin:
-        return [hermes_bin]
-    return None
+        import shutil
+
+        hermes_bin = shutil.which("hermes")
+        return [hermes_bin] if hermes_bin else None
 
 
 _PROFILE_ID_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")

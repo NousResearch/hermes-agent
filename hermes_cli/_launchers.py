@@ -76,6 +76,17 @@ def installation_command(repo_root: Path, args=(), *, module: str = "hermes_cli.
     prefix = [] if module == "hermes_cli.main" else ["--run-module", module]
     return [str(root / ".hermes" / "bin" / "hermes"), *prefix, *args]
 
+
+def current_installation_command(args=(), *, module: str = "hermes_cli.main") -> list[str]:
+    """Build an argv for this imported Hermes checkout without consulting CWD or PATH.
+
+    Managed source installs use their durable local launcher; developer/Nix
+    checkouts use ``runtime_command``'s isolated bootstrap with this module's
+    absolute source root. Both paths survive a Kanban workspace CWD and ``-I``.
+    """
+    root = Path(__file__).resolve().parents[1]
+    return installation_command(root, args, module=module)
+
 #: Launcher command names — keep in lockstep with scripts/install.ps1
 #: Publish-UserCommand and hermes_cli/_install_repair.py.
 WINDOWS_BIN_LAUNCHERS = ("hermes", "hermes-acp")

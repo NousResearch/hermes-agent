@@ -1669,21 +1669,22 @@ def test_resolve_hermes_argv_module_actually_runs():
     assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
 
 
-def test_resolve_hermes_argv_uses_install_shim_when_child_cannot_import(tmp_path, monkeypatch):
-    """The gateway's sys.path is not proof that its bare worker interpreter can import Hermes."""
+def test_resolve_hermes_argv_uses_source_launcher_when_child_cannot_import(tmp_path, monkeypatch):
+    """The fallback launches this checkout, even if PATH names another install."""
     from hermes_cli import kanban_db_dispatch as kbd
 
-    package = tmp_path / "hermes_cli"
-    package.mkdir()
-    shim = tmp_path / ".hermes" / "bin" / "hermes"
-    shim.parent.mkdir(parents=True)
-    shim.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    shim.chmod(0o755)
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    monkeypatch.setattr(kbd, "__file__", str(package / "kanban_db_dispatch.py"))
     monkeypatch.delenv("HERMES_BIN", raising=False)
-    child_env = {"PATH": os.environ.get("PATH", "")}
+    child_env = dict(os.environ)
+    child_env.pop("PYTHONPATH", None)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    foreign_shim = foreign / ("hermes.EXE" if kb._IS_WINDOWS else "hermes")
+    foreign_shim.write_text("not this checkout", encoding="utf-8")
+    foreign_shim.chmod(0o755)
+    child_env["PATH"] = str(foreign) + os.pathsep + child_env.get("PATH", "")
+    actual_run = subprocess.run
 
     def probe(argv, **kwargs):
         assert argv[0] == sys.executable
@@ -1692,7 +1693,13 @@ def test_resolve_hermes_argv_uses_install_shim_when_child_cannot_import(tmp_path
         return subprocess.CompletedProcess(argv, 1, "", "No module named 'hermes_cli'")
 
     monkeypatch.setattr(kbd.subprocess, "run", probe)
-    assert kbd._resolve_hermes_argv(cwd=str(workspace), env=child_env) == [str(shim)]
+    argv = kbd._resolve_hermes_argv(cwd=str(workspace), env=child_env)
+    source_launcher = str(Path(kbd.__file__).resolve().parent.parent / "hermes")
+    assert argv == [sys.executable, source_launcher]
+    result = actual_run(argv + ["--version"], cwd=workspace, env=child_env,
+                        capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "Hermes Agent" in result.stdout
 
 
 # ---------------------------------------------------------------------------

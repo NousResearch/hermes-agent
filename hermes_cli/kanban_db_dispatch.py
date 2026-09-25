@@ -2471,26 +2471,27 @@ def _is_windows_batch_shim(path: str) -> bool:
     return path.lower().endswith((".cmd", ".bat"))
 
 
-def _path_search_names(command: str) -> list[str]:
+def _path_search_names(command: str, env: Mapping[str, str]) -> list[str]:
     """Return executable names to try for an unqualified command."""
     if not _kb._IS_WINDOWS or os.path.splitext(command)[1]:
         return [command]
-    raw = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+    raw = env.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
     return [command + ext for ext in raw.split(";") if ext]
 
 
-def _safe_which_no_cwd(command: str) -> Optional[str]:
+def _safe_which_no_cwd(command: str, env: Optional[Mapping[str, str]] = None) -> Optional[str]:
     """Resolve a bare command from PATH without implicit current-dir search.
 
     On Windows ``shutil.which`` may search the current directory before PATH
     for bare names — unsafe for a dispatcher. Only explicit PATH entries are
     considered; empty / ``.`` entries are skipped.
     """
-    for raw_dir in os.environ.get("PATH", "").split(os.pathsep):
+    search_env = env if env is not None else os.environ
+    for raw_dir in search_env.get("PATH", "").split(os.pathsep):
         if not raw_dir or raw_dir == ".":
             continue
         directory = os.path.expanduser(raw_dir)
-        for name in _path_search_names(command):
+        for name in _path_search_names(command, search_env):
             candidate = os.path.join(directory, name)
             if os.path.isfile(candidate) and (_kb._IS_WINDOWS or os.access(candidate, os.X_OK)):
                 return candidate
@@ -2517,13 +2518,11 @@ def _resolve_hermes_argv(*, cwd: Optional[str] = None, env: Optional[Mapping[str
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
     sits below ``gateway`` in the dependency order.
     """
-    import shutil
-
     env_bin = os.environ.get("HERMES_BIN", "").strip()
     if env_bin:
         if _looks_like_path(env_bin):
             return _hermes_path_argv(env_bin)
-        resolved_env_bin = _safe_which_no_cwd(env_bin)
+        resolved_env_bin = _safe_which_no_cwd(env_bin, env)
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
@@ -2546,13 +2545,13 @@ def _resolve_hermes_argv(*, cwd: Optional[str] = None, env: Optional[Mapping[str
     if same_install:
         return _module_hermes_argv()
 
-    # The checked-out install's shim is preferable to an unrelated executable
-    # on PATH when the gateway was itself bootstrapped through that shim.
-    local_shim = Path(__file__).resolve().parent.parent / ".hermes" / "bin" / "hermes"
-    if local_shim.is_file() and os.access(local_shim, os.X_OK):
-        return [str(local_shim)]
+    # Running the source entry point puts its checkout on the child's sys.path,
+    # even when the bare interpreter cannot import it from the worker workspace.
+    source_launcher = Path(__file__).resolve().parent.parent / "hermes"
+    if source_launcher.is_file():
+        return [sys.executable, str(source_launcher)]
 
-    hermes_bin = _safe_which_no_cwd("hermes") if _kb._IS_WINDOWS else shutil.which("hermes")
+    hermes_bin = _safe_which_no_cwd("hermes", env)
     if hermes_bin:
         return _hermes_path_argv(hermes_bin)
     return _module_hermes_argv()
@@ -2690,7 +2689,7 @@ def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str],
                  launcher: Optional[list[str]] = None) -> list[str]:
     """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command."""
     cmd = [
-        *(launcher if launcher is not None else _kb._resolve_hermes_argv()),
+        *(launcher if launcher is not None else _resolve_hermes_argv()),
         "-p", profile_arg,
         # A worker must NEVER boot the interactive TUI: its no-TTY bail-out
         # exits 0 without doing the task → "protocol violation" every attempt.

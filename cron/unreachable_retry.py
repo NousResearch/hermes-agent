@@ -69,13 +69,43 @@ def _is_recurring(job: Dict[str, Any]) -> bool:
 
 def will_retry(job: Dict[str, Any]) -> bool:
     """Predict whether ``plan_retry`` will schedule a re-run for this flagged failure —
-    used by the scheduler to suppress the interim failure notice."""
+    used by the scheduler to suppress the interim failure notice.
+
+    Must mirror ``plan_retry`` (and the ``mark_job_run`` guards around it) decision-for-
+    decision, so a notice is held exactly when a re-run really is coming:
+
+    - exhausted ladder / disabled / paused / non-recurring → no re-run;
+    - the yield branch: when the schedule's own next occurrence lands at or before the
+      pending rung, ``plan_retry`` schedules nothing (the natural fire IS the retry).
+      Without this mirror, a job on a cadence at or under a rung held EVERY failure
+      notice for as long as the outage lasted: each failure yielded without consuming an
+      attempt, so the "once the ladder is exhausted, the next failure alerts normally"
+      escape in the suppression contract was unreachable and the operator saw silence.
+      (The final run of a finite repeat is a separate terminal-state edge handled by
+      #109991.)
+
+    Called before ``mark_job_run`` records the run; the occurrence is recomputed exactly
+    as ``_advance_after_run`` will (delivery-time skew between here and the store write
+    can only err toward delivering the notice, never toward suppressing it unheard).
+    """
     if not _is_recurring(job) or job.get("state") == "paused":
         return False
     state = job.get(STATE_KEY) or {}
-    if int(state.get("attempt") or 0) >= len(RETRY_DELAYS_SECONDS):
+    attempt = int(state.get("attempt") or 0)
+    if attempt >= len(RETRY_DELAYS_SECONDS):
         return False
-    return retry_enabled()
+    if not retry_enabled():
+        return False
+    from cron.jobs import _instant_after, _parse_aware, _seconds_after, compute_next_run
+
+    natural_next = _parse_aware(
+        compute_next_run(job.get("schedule") or {}, _hermes_now().isoformat()))
+    if natural_next is None:
+        # The natural occurrence is uncomputable (e.g. croniter missing): _advance_after_run
+        # leaves the record state=error — terminal — so plan_retry never runs either.
+        return False
+    retry_dt = _seconds_after(_hermes_now(), RETRY_DELAYS_SECONDS[attempt])
+    return _instant_after(natural_next, retry_dt)
 
 
 def clear_state(job: Dict[str, Any]) -> None:

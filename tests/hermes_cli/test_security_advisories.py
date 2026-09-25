@@ -229,6 +229,11 @@ class TestRealCatalog:
 
         Catches data-entry mistakes (empty IDs, missing remediation, bad
         compromised tuples) before they ship.
+
+        NOTE: this must accept an advisory that carries ONLY `vulnerable_below`
+        and no `compromised` entries (the whole point of adding `vulnerable_below`
+        is to eventually ship a Node-CVE-only advisory) — asserting `compromised`
+        unconditionally here would reject the first real Node CVE entry on day one.
         """
         seen_ids: set[str] = set()
         for advisory in adv.ADVISORIES:
@@ -240,12 +245,37 @@ class TestRealCatalog:
             assert advisory.remediation, f"{advisory.id}: empty remediation"
             assert advisory.url.startswith("http"), \
                 f"{advisory.id}: bad url {advisory.url!r}"
-            assert advisory.compromised, \
-                f"{advisory.id}: empty compromised tuple"
+            assert advisory.compromised or advisory.vulnerable_below, \
+                f"{advisory.id}: neither compromised nor vulnerable_below is populated"
             for pkg, versions in advisory.compromised:
                 assert pkg, f"{advisory.id}: empty package name"
                 assert isinstance(versions, frozenset), \
                     f"{advisory.id}: versions must be frozenset"
+
+    def test_vulnerable_below_entries_are_well_formed_ranges(self):
+        """Structural contract for any `vulnerable_below` triple that ships.
+
+        A stray typo like `"v20.18.1"` (a leading, non-numeric character) does not
+        raise anywhere in the pipeline — `_semver_tuple` silently collapses it to
+        `(0, 0, 0)` (see `test_semver_tuple_non_numeric_leading_segment_collapses_to_zero`),
+        which would quietly turn a scoped floor into "vulnerable since the dawn of
+        time". A strict `\\d+\\.\\d+\\.\\d+` shape check here catches that class of
+        typo at test time instead of at false-positive-report time. Likewise, a
+        `floor_version >= fixed_version` entry can never match anything (dead
+        weight that silently never fires) and is almost certainly a copy-paste
+        mistake, not intentional.
+        """
+        import re
+        semver_shape = re.compile(r"^\d+\.\d+\.\d+$")
+        for advisory in adv.ADVISORIES:
+            for source, floor_version, fixed_version in advisory.vulnerable_below:
+                assert source, f"{advisory.id}: empty vulnerable_below source"
+                assert semver_shape.match(floor_version), \
+                    f"{advisory.id}: floor_version {floor_version!r} is not a plain X.Y.Z"
+                assert semver_shape.match(fixed_version), \
+                    f"{advisory.id}: fixed_version {fixed_version!r} is not a plain X.Y.Z"
+                assert adv._semver_tuple(floor_version) < adv._semver_tuple(fixed_version), \
+                    f"{advisory.id}: floor {floor_version!r} must be below fixed {fixed_version!r}"
 
 
 def _node_advisory(fixed_version: str, floor_version: str = "0.0.0") -> adv.Advisory:
@@ -394,3 +424,135 @@ def test_existing_exact_version_advisories_are_unaffected(monkeypatch):
     hits = adv.detect_compromised(advisories=(advisory,))
     assert len(hits) == 1
     assert hits[0].package == "mistralai"
+
+
+# ---------------------------------------------------------------------------
+# _semver_tuple edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_semver_tuple_ignores_segments_beyond_patch():
+    """A 4-part version (e.g. a vendor build tag `22.9.0.5`) must compare on its
+    major.minor.patch core only, never raise, and never silently grow the tuple."""
+    assert adv._semver_tuple("22.9.0.5") == (22, 9, 0)
+
+
+def test_semver_tuple_empty_string_is_zero_not_a_crash():
+    """An empty version string (never expected from a real resolver, but must not
+    be able to reach here and blow up detect_compromised) parses as 0.0.0."""
+    assert adv._semver_tuple("") == (0, 0, 0)
+
+
+def test_semver_tuple_non_numeric_leading_segment_collapses_to_zero():
+    """Documents a real landmine: a stray leading 'v' in a HARDCODED floor_version
+    or fixed_version constant (e.g. a typo'd `"v20.18.1"` instead of `"20.18.1"`)
+    is not rejected anywhere — it silently parses as (0, 0, 0). For a floor_version
+    this SILENTLY WIDENS the range to "vulnerable since 0.0.0", the exact
+    false-positive-across-release-lines bug this triple shape exists to prevent.
+    `test_vulnerable_below_entries_are_well_formed_ranges` guards the real catalog
+    against this landmine structurally; this test pins the underlying behavior so
+    a future refactor of `_semver_tuple` cannot silently change it without notice."""
+    assert adv._semver_tuple("v20.18.1") == (0, 0, 0)
+
+
+def test_semver_tuple_tolerates_surrounding_whitespace():
+    assert adv._semver_tuple(" 22.9.0 ") == (22, 9, 0)
+
+
+# ---------------------------------------------------------------------------
+# Range-boundary edge cases
+# ---------------------------------------------------------------------------
+
+
+def test_zero_width_range_never_matches_anything(monkeypatch):
+    """A misconfigured advisory where floor_version == fixed_version describes an
+    empty interval. No installed version — including the boundary value itself —
+    should ever be reported, and evaluating it must not raise."""
+    advisory = _node_advisory("20.18.1", floor_version="20.18.1")
+    for installed in ("20.18.0", "20.18.1", "20.18.2"):
+        monkeypatch.setattr(adv, "_installed_node_version", lambda v=installed: v)
+        assert adv.detect_compromised(advisories=(advisory,)) == []
+
+
+def test_floor_above_fixed_never_matches_and_never_raises(monkeypatch):
+    """A reversed/misconfigured triple (floor_version > fixed_version) describes an
+    impossible interval. It must degrade to "never fires", not raise and not be
+    silently interpreted as "everything is vulnerable"."""
+    advisory = _node_advisory("20.0.0", floor_version="22.0.0")
+    for installed in ("19.0.0", "21.0.0", "23.0.0"):
+        monkeypatch.setattr(adv, "_installed_node_version", lambda v=installed: v)
+        assert adv.detect_compromised(advisories=(advisory,)) == []
+
+
+def test_installed_node_version_subprocess_timeout_never_raises(monkeypatch):
+    """`node --version` hanging (the reason `timeout=10` exists on the subprocess.run
+    call) must resolve to None like any other execution failure, not propagate
+    TimeoutExpired up through the advisory scan."""
+    import subprocess as sp
+    monkeypatch.setattr("hermes_constants.find_node_executable", lambda name: "/opt/hermes/node/bin/node")
+    def raise_timeout(*a, **k):
+        raise sp.TimeoutExpired(cmd=["node", "--version"], timeout=10)
+    with patch("subprocess.run", raise_timeout):
+        assert adv._installed_node_version() is None
+
+
+# ---------------------------------------------------------------------------
+# Rendering pipeline with a Node-sourced hit
+# ---------------------------------------------------------------------------
+# The pre-existing TestRendering/TestBannerCache coverage only ever exercises a
+# PyPI-style hit (fake_advisory). None of it proves the rendering functions handle
+# a "node" package name / bare-version hit correctly — the exact shape this PR
+# introduces. These close that gap.
+
+
+def _node_hit(installed_version: str = "22.9.0", fixed_version: str = "22.14.0") -> adv.AdvisoryHit:
+    return adv.AdvisoryHit(
+        advisory=_node_advisory(fixed_version),
+        package="node",
+        installed_version=installed_version,
+    )
+
+
+def test_short_banner_lines_render_a_node_hit():
+    lines = adv.short_banner_lines([_node_hit()])
+    text = "\n".join(lines)
+    assert "node==22.9.0" in text
+    assert "test-node-cve" in text
+
+
+def test_full_remediation_text_renders_a_node_hit():
+    body = "\n".join(adv.full_remediation_text(_node_hit()))
+    assert "node==22.9.0" in body
+    assert "Upgrade the pm-managed Node runtime." in body
+
+
+def test_gateway_log_message_renders_a_node_hit(monkeypatch):
+    monkeypatch.setattr(adv, "get_acked_ids", lambda: set())
+    msg = adv.gateway_log_message([_node_hit()])
+    assert msg is not None
+    assert "node==22.9.0" in msg
+
+
+# ---------------------------------------------------------------------------
+# Real-environment (non-mocked) resolution — AGENTS.md E2E requirement: anything
+# touching a resolution chain must be exercised against the real path at least
+# once, not only through mocks.
+# ---------------------------------------------------------------------------
+
+
+def test_installed_node_version_real_resolution_chain_does_not_raise():
+    """No monkeypatching: runs the real find_node_executable + subprocess.run path
+    on whatever machine executes the suite. Must return either None or a bare
+    dotted-numeric version string — never raise, regardless of whether this host
+    has Node installed."""
+    result = adv._installed_node_version()
+    assert result is None or __import__("re").match(r"^\d+(\.\d+){0,2}", result)
+
+
+def test_detect_compromised_real_catalog_against_real_environment_does_not_raise():
+    """No monkeypatching: the shipped ADVISORIES tuple evaluated against whatever
+    packages/Node are actually installed on the machine running the suite. Must
+    not raise regardless of environment (CI runner, dev laptop, or a machine with
+    no Node on PATH at all)."""
+    hits = adv.detect_compromised()
+    assert isinstance(hits, list)

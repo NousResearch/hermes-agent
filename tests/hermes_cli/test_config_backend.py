@@ -74,6 +74,132 @@ class TestFileBackend:
         assert cb.read_config_doc(path) == {"model": {"default": "c"}}
 
 
+class _RecordingBackend(cb.FileBackend):
+    """The file backend, recording which operations each pipeline asks of it."""
+
+    name = "recording"
+
+    def __init__(self):
+        self.calls = []
+
+    def _rec(self, op, home):
+        self.calls.append((op, Path(home)))
+
+    def read_user_layer(self, home):
+        self._rec("read", home)
+        return super().read_user_layer(home)
+
+    def read_user_doc_readonly(self, home):
+        self._rec("read", home)
+        return super().read_user_doc_readonly(home)
+
+    def version(self, home):
+        self._rec("version", home)
+        return super().version(home)
+
+    def exists(self, home):
+        self._rec("exists", home)
+        return super().exists(home)
+
+    def write_changes(self, home, changes):
+        self._rec("write", home)
+        return super().write_changes(home, changes)
+
+    def ops(self, home):
+        return {op for op, h in self.calls if h == Path(home)}
+
+
+@pytest.fixture
+def recording(monkeypatch, tmp_path):
+    """A fresh HERMES_HOME with a config.yaml and every config read/write recorded."""
+    from hermes_cli import config as config_mod
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "# hand-tuned\nmodel:\n  default: my-model\nsecrets:\n  sources: []\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv(cb.BACKEND_ENV, raising=False)
+    for cache in (config_mod._LOAD_CONFIG_CACHE, config_mod._RAW_CONFIG_CACHE):
+        cache.clear()
+    backend = _RecordingBackend()
+    monkeypatch.setattr(cb, "get_config_backend", lambda: backend)
+    return home, backend
+
+
+class TestPipelinesConsultTheBackend:
+    """Every read pipeline and writer reaches the selected backend, keyed by the hermes home."""
+
+    def test_load_config(self, recording):
+        from hermes_cli.config import load_config
+        home, backend = recording
+        assert load_config()["model"]["default"] == "my-model"
+        assert {"version", "read"} <= backend.ops(home)
+
+    def test_raw_primitives(self, recording):
+        from hermes_cli.config import read_raw_config, read_user_config_raw
+        home, backend = recording
+        assert read_raw_config()["model"]["default"] == "my-model"
+        assert read_user_config_raw()["model"]["default"] == "my-model"
+        assert {"version", "read"} <= backend.ops(home)
+
+    def test_effective_loader(self, recording):
+        from hermes_cli import config_effective
+        home, backend = recording
+        config_effective._EFFECTIVE_CACHE.clear()
+        assert config_effective.load_user_config_effective()["model"]["default"] == "my-model"
+        assert {"version", "read"} <= backend.ops(home)
+
+    def test_cli_loader(self, recording):
+        from hermes_cli.cli_config_load import load_cli_config
+        home, backend = recording
+        load_cli_config()
+        assert {"exists", "read"} <= backend.ops(home)
+
+    def test_gateway_yaml_layers(self, recording):
+        from gateway.config_loader import read_yaml_layers
+        home, backend = recording
+        assert read_yaml_layers(home)["model"]["default"] == "my-model"
+        assert "read" in backend.ops(home)
+
+    def test_dotenv_secrets_read(self, recording):
+        from hermes_cli.env_loader import _load_secrets_config
+        home, backend = recording
+        _load_secrets_config(home)
+        assert "read" in backend.ops(home)
+
+    def test_writers(self, recording):
+        from hermes_cli.config import load_config, save_config
+        from hermes_cli.personality import persist_personality
+        home, backend = recording
+        cfg = load_config()
+        cfg["model"]["default"] = "other-model"
+        save_config(cfg)
+        assert persist_personality("kawaii")
+        assert [op for op, h in backend.calls if op == "write" and h == home] == ["write", "write"]
+        text = (home / "config.yaml").read_text(encoding="utf-8")
+        assert "# hand-tuned" in text and "other-model" in text and "kawaii" in text
+
+
+class TestFileTooling:
+
+    def test_file_backend_allows_it(self, home):
+        cb.require_file_tooling("x")
+
+    def test_backend_without_a_file_refuses_it(self, home, monkeypatch):
+        class NoFile(cb.FileBackend):
+            name = "nofile"
+
+            def supports_file_tooling(self):
+                return False
+        monkeypatch.setattr(cb, "get_config_backend", NoFile)
+        from hermes_cli.config_backups import backup_config
+        (home / "config.yaml").write_text("a: 1\n", encoding="utf-8")
+        assert backup_config(home / "config.yaml", "test") is None
+        with pytest.raises(cb.ConfigBackendUnavailable, match="Profile clone"):
+            from hermes_cli.profiles import _resolve_clone_source
+            _resolve_clone_source(None)
+
+
 class TestReaderGate:
 
     def _guard(self):

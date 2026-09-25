@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Iterator
+from unittest.mock import patch
 
 import pytest
 
@@ -245,3 +246,151 @@ class TestRealCatalog:
                 assert pkg, f"{advisory.id}: empty package name"
                 assert isinstance(versions, frozenset), \
                     f"{advisory.id}: versions must be frozenset"
+
+
+def _node_advisory(fixed_version: str, floor_version: str = "0.0.0") -> adv.Advisory:
+    return adv.Advisory(
+        id="test-node-cve", title="Test Node CVE", summary="test", url="https://example.invalid",
+        vulnerable_below=(("node", floor_version, fixed_version),),
+        remediation=("Upgrade the pm-managed Node runtime.",))
+
+
+def test_installed_below_fixed_version_is_a_hit(monkeypatch):
+    monkeypatch.setattr(adv, "_installed_node_version", lambda: "22.9.0")
+    hits = adv.detect_compromised(advisories=(_node_advisory("22.14.0"),))
+    assert len(hits) == 1
+    assert hits[0].package == "node"
+    assert hits[0].installed_version == "22.9.0"
+
+
+def test_installed_at_or_above_fixed_version_is_not_a_hit(monkeypatch):
+    monkeypatch.setattr(adv, "_installed_node_version", lambda: "22.14.0")
+    assert adv.detect_compromised(advisories=(_node_advisory("22.14.0"),)) == []
+    monkeypatch.setattr(adv, "_installed_node_version", lambda: "24.0.0")
+    assert adv.detect_compromised(advisories=(_node_advisory("22.14.0"),)) == []
+
+
+def test_installed_below_floor_is_not_a_hit(monkeypatch):
+    """An advisory scoped to a single release line (e.g. fixed at 20.18.1 on the 20.x line) must
+    not fire against an older, unrelated line (e.g. 19.5.0) just because 19.5.0 < 20.18.1 —
+    the floor excludes it."""
+    monkeypatch.setattr(adv, "_installed_node_version", lambda: "19.5.0")
+    assert adv.detect_compromised(advisories=(_node_advisory("20.18.1", floor_version="20.0.0"),)) == []
+
+
+def test_installed_at_floor_is_a_hit(monkeypatch):
+    monkeypatch.setattr(adv, "_installed_node_version", lambda: "20.0.0")
+    hits = adv.detect_compromised(advisories=(_node_advisory("20.18.1", floor_version="20.0.0"),))
+    assert len(hits) == 1
+
+
+def test_no_resolvable_node_never_raises(monkeypatch):
+    monkeypatch.setattr(adv, "_installed_node_version", lambda: None)
+    assert adv.detect_compromised(advisories=(_node_advisory("22.14.0"),)) == []
+
+
+def test_installed_node_version_resolves_whichever_node_hermes_uses(monkeypatch):
+    """Must go through find_node_executable (pm-managed first, PATH fallback), not a bespoke
+    resolver — reuse the existing precedence rather than duplicating it."""
+    with patch("hermes_constants.find_node_executable", return_value="/opt/hermes/node/bin/node") as find, \
+         patch("subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = "v22.9.0\n"
+        assert adv._installed_node_version() == "22.9.0"
+    find.assert_called_once_with("node")
+
+
+def test_prerelease_suffix_is_not_treated_as_below_the_fixed_version(monkeypatch):
+    """Documents the deliberate _semver_tuple behavior: a pre-release of the fixed version itself
+    (e.g. `24.0.0-rc.1` for a fix landing at `24.0.0`) must NOT count as vulnerable, since the
+    suffix is stripped before comparison and the numeric core is equal, not lower."""
+    monkeypatch.setattr(adv, "_installed_node_version", lambda: "24.0.0-rc.1")
+    assert adv.detect_compromised(advisories=(_node_advisory("24.0.0"),)) == []
+
+
+def test_multiple_vulnerable_below_sources_in_one_advisory_are_independent(monkeypatch):
+    """A single advisory naming both a Node range and a PyPI-package range must report a hit for
+    each source independently, not just the first one checked or a merged/deduped single hit."""
+    advisory = adv.Advisory(
+        id="multi-source-cve", title="t", summary="s", url="https://example.invalid",
+        vulnerable_below=(("node", "0.0.0", "22.14.0"), ("some-pkg", "0.0.0", "3.0.0")),
+        remediation=("upgrade",))
+    monkeypatch.setattr(adv, "_installed_node_version", lambda: "22.9.0")
+    monkeypatch.setattr(adv, "_installed_version", lambda pkg: "2.9.0" if pkg == "some-pkg" else None)
+
+    hits = adv.detect_compromised(advisories=(advisory,))
+
+    packages_hit = {hit.package for hit in hits}
+    assert packages_hit == {"node", "some-pkg"}
+    assert len(hits) == 2
+
+
+def test_multiple_release_lines_in_one_advisory_do_not_cross_contaminate(monkeypatch):
+    """A CVE fixed separately on two release lines (e.g. 20.18.1 on 20.x, 22.10.0 on 22.x) must be
+    expressed as two floor-scoped triples, and an installed version on a THIRD, unrelated line
+    (e.g. 19.5.0, never affected) must not be flagged by either."""
+    advisory = adv.Advisory(
+        id="multi-line-cve", title="t", summary="s", url="https://example.invalid",
+        vulnerable_below=(("node", "20.0.0", "20.18.1"), ("node", "22.0.0", "22.10.0")),
+        remediation=("upgrade",))
+    monkeypatch.setattr(adv, "_installed_node_version", lambda: "19.5.0")
+    assert adv.detect_compromised(advisories=(advisory,)) == []
+
+
+def test_advisory_with_both_compromised_and_vulnerable_below_reports_both(monkeypatch):
+    """The two mechanisms (exact-set `compromised` and range-based `vulnerable_below`) must
+    compose within a single advisory, not be mutually exclusive."""
+    advisory = adv.Advisory(
+        id="combo-advisory", title="t", summary="s", url="https://example.invalid",
+        compromised=(("mistralai", frozenset({"2.4.6"})),),
+        vulnerable_below=(("node", "0.0.0", "22.14.0"),),
+        remediation=("upgrade",))
+    monkeypatch.setattr(adv, "_installed_version", lambda pkg: "2.4.6" if pkg == "mistralai" else None)
+    monkeypatch.setattr(adv, "_installed_node_version", lambda: "22.9.0")
+
+    hits = adv.detect_compromised(advisories=(advisory,))
+
+    packages_hit = {hit.package for hit in hits}
+    assert packages_hit == {"mistralai", "node"}
+
+
+def test_installed_node_version_resolver_exception_never_raises(monkeypatch):
+    """If `find_node_executable` itself raises (not just returns None — e.g. a broken import or
+    an unexpected internal error), the whole advisory scan must not crash on it."""
+    def raise_it(name):
+        raise RuntimeError("boom")
+    monkeypatch.setattr("hermes_constants.find_node_executable", raise_it)
+    assert adv._installed_node_version() is None
+
+
+def test_installed_node_version_subprocess_exception_never_raises(monkeypatch):
+    """`node --version` failing to even execute (missing binary despite find_node_executable
+    returning a path, permissions, etc.) must not crash the scan either."""
+    def raise_it(*a, **k):
+        raise OSError("no such file")
+    monkeypatch.setattr("hermes_constants.find_node_executable", lambda name: "/opt/hermes/node/bin/node")
+    with patch("subprocess.run", raise_it):
+        assert adv._installed_node_version() is None
+
+
+def test_installed_node_version_empty_output_is_none_not_empty_string(monkeypatch):
+    """An empty/garbage `--version` output must resolve to None (never a hit against any range),
+    not an empty string that a naive semver-tuple parse could otherwise choke on or silently
+    treat as version 0.0.0."""
+    with patch("hermes_constants.find_node_executable", return_value="/opt/hermes/node/bin/node"), \
+         patch("subprocess.run") as run:
+        run.return_value.returncode = 0
+        run.return_value.stdout = "v\n"
+        assert adv._installed_node_version() is None
+
+
+def test_existing_exact_version_advisories_are_unaffected(monkeypatch):
+    """Regression guard: the pre-existing mistralai-style entries must behave identically —
+    vulnerable_below defaults to () and contributes nothing when absent."""
+    monkeypatch.setattr(adv, "_installed_version", lambda pkg: "2.4.6" if pkg == "mistralai" else None)
+    advisory = adv.Advisory(
+        id="regression-check", title="t", summary="s", url="https://example.invalid",
+        compromised=(("mistralai", frozenset({"2.4.6"})),))
+    hits = adv.detect_compromised(advisories=(advisory,))
+    assert len(hits) == 1
+    assert hits[0].package == "mistralai"

@@ -14,6 +14,47 @@
 
 export type TerminalClipboardIntent = 'copy' | 'paste' | null
 
+interface Osc52Terminal {
+  parser: {
+    registerOscHandler(identifier: number, handler: (data: string) => boolean): { dispose(): void }
+  }
+}
+
+// Support only OSC 52 writes to the system clipboard. Reads would let terminal
+// output retrieve private clipboard contents; empty payloads are clear requests.
+export function installOsc52ClipboardHandler(
+  terminal: Osc52Terminal,
+  writeClipboardText: (text: string) => Promise<unknown>
+) {
+  return terminal.parser.registerOscHandler(52, data => {
+    const separator = data.indexOf(';')
+
+    if (separator < 0 || data.slice(0, separator) !== 'c') {
+      return false
+    }
+
+    const payload = data.slice(separator + 1)
+
+    if (!payload || payload === '?') {
+      return false
+    }
+
+    try {
+      const binary = atob(payload)
+      const bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+
+      void writeClipboardText(text).catch(() => {
+        // Clipboard access may be denied by the platform or user settings.
+      })
+
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
 export function terminalClipboardIntent(
   event: KeyboardEvent,
   { hasSelection, isMac }: { hasSelection: boolean; isMac: boolean }

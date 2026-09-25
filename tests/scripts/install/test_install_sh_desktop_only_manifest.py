@@ -16,7 +16,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
-AGENT_STAGES = ("venv", "python-deps", "node-deps", "path", "config", "setup", "gateway")
+AGENT_STAGES = ("venv", "python-deps", "config", "setup", "gateway")
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
 
@@ -43,6 +43,7 @@ def test_desktop_only_manifest_excludes_agent_runtime():
 def test_include_desktop_manifest_keeps_agent_runtime():
     names = manifest_names("--include-desktop")
 
-    assert "desktop" in names
+    assert "products" in names
+    assert "desktop" not in names
     for stage in AGENT_STAGES:
         assert stage in names

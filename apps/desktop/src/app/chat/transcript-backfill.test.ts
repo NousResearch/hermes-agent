@@ -366,6 +366,7 @@ describe('backfillOlderTranscriptPage', () => {
     truncatedTail()
     let resolvePage!: (value: unknown) => void
     vi.mocked(getOlderSessionMessages).mockReturnValue(
+      // SAFETY: this controlled promise resolves with the exact RPC response shape below.
       new Promise(resolve => {
         resolvePage = resolve
       }) as never
@@ -400,6 +401,7 @@ describe('backfillOlderTranscriptPage', () => {
     let resolvePage: (value: unknown) => void = () => {}
 
     vi.mocked(getOlderSessionMessages).mockReturnValue(
+      // SAFETY: this controlled promise resolves with the exact RPC response shape below.
       new Promise(resolve => {
         resolvePage = resolve
       }) as never

@@ -850,7 +850,9 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # reach the chain instead of dying at init with a misleading "No LLM provider configured" error. See
     # #17929.
     _explicit = (agent.provider or "").strip().lower()
+    _refused_entries = []
     for _fb in _fallback_entries(fallback_model):
+        _fb_provider = str(_fb["provider"])
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
             _fb_explicit_key = resolve_entry_api_key(_fb)
@@ -859,20 +861,46 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
                 explicit_base_url=_fb.get("base_url"), explicit_api_key=_fb_explicit_key,
             )
         except Exception as _fb_exc:
-            logger.debug("Init-time fallback entry %s failed: %s", _fb.get("provider"), _fb_exc)
+            logger.debug("Init-time fallback entry %s failed: %s", _fb_provider, _fb_exc)
+            # A bare exception (``KeyError()``) stringifies empty; name its type instead.
+            _refused_entries.append((_fb_provider, str(_fb_exc) or type(_fb_exc).__name__))
             continue
-        if _fb_client is not None:
-            agent._fallback_activated = True
-            if str(_fb["provider"]).strip().lower() == "moa":
-                # The chokepoint handed back the preset's aggregator client, which only proves the
-                # preset resolves and its aggregator has credentials. A MoA entry means the preset
-                # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
-                from agent.moa_loop import bind_moa_runtime
-                bind_moa_runtime(agent, _fb["model"])
-                return None
-            agent.provider = _fb["provider"]
-            agent.model = _fb_model or _fb["model"]
-            return _client_kwargs_from_routed(_fb_client, _provider_timeout)
+        if _fb_client is None:
+            # The router returns None when no credentials are usable for the entry — a skip
+            # that leaves no trace otherwise, hiding key-less fallback entries from the log.
+            logger.debug(
+                "Init-time fallback entry %s resolved no usable credentials", _fb_provider
+            )
+            _refused_entries.append((_fb_provider, "no usable credentials"))
+            continue
+        agent._fallback_activated = True
+        if _fb_provider.strip().lower() == "moa":
+            # The chokepoint handed back the preset's aggregator client, which only proves the
+            # preset resolves and its aggregator has credentials. A MoA entry means the preset
+            # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
+            from agent.moa_loop import bind_moa_runtime
+            bind_moa_runtime(agent, _fb["model"])
+            return None
+        agent.provider = _fb["provider"]
+        agent.model = _fb_model or _fb["model"]
+        return _client_kwargs_from_routed(_fb_client, _provider_timeout)
+    # A burned credential pool (#119533) is otherwise indistinguishable from missing config,
+    # so name it even when no fallback entries are configured.
+    _pool_exhausted = False
+    if _explicit and _explicit != "auto":
+        with suppress(Exception):
+            from agent.credential_pool import load_pool
+            _pool = load_pool(_explicit)
+            _pool_exhausted = _pool.has_credentials() and not _pool.has_available(model=agent.model)
+    if _refused_entries or _pool_exhausted:
+        # Neutral wording: the explicit-provider branch below raises the provider-specific
+        # missing-credentials message, not the generic "No LLM provider configured" one.
+        logger.warning(
+            "Init-time provider resolution failed: primary %r unresolvable (%s); fallback entries refused: %s",
+            agent.provider,
+            "credential pool exhausted" if _pool_exhausted else "no usable credentials",
+            "; ".join(f"{_p} ({_r})" for _p, _r in _refused_entries) or "none configured",
+        )
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
         from agent.auxiliary_unavailable import missing_provider_credentials_message
@@ -945,8 +973,6 @@ def _init_openai_client(agent, api_key, base_url, fallback_model, _provider_time
     agent.api_key = client_kwargs.get("api_key", "")
     agent.base_url = client_kwargs.get("base_url", agent.base_url)
     try:
-        from agent.ssl_guard import verify_ca_bundle
-        verify_ca_bundle()
         agent.client = agent._create_openai_client(client_kwargs, reason="agent_init", shared=True)
         if not agent.quiet_mode:
             print(f"🤖 AI Agent initialized with model: {agent.model}")
@@ -1207,6 +1233,7 @@ def _apply_display_config(agent, _agent_cfg, platform):
             "Invalid model.streaming=%r; expected a boolean. Using streaming (default).",
             _model_section.get("streaming"),
         )
+    agent._stream_5xx_probe_ts = None  # monotonic time of the last streaming-5xx unmask probe
 
     try:
         agent._tool_guardrails = ToolCallGuardrailController(

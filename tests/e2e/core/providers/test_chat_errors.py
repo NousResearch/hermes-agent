@@ -44,11 +44,7 @@ pytestmark = pytest.mark.skipif(not sys.platform.startswith("linux"), reason="su
 
 # Scenario -> (pattern, "#issue one-line symptom") for scenarios red on origin/main: a
 # KnownBugError from bug_assertions() matching the pattern XFAILs the cell (known_gate).
-KNOWN: dict[str, tuple[str, str]] = {
-    "in_stream_ban_fails_once": (
-        r"(?s)\d+ requests for a permanent account ban: .*temporarily unavailable",
-        "#121270 in-stream error code 403 ignored: ban retried, reported as temporarily unavailable"),
-}
+KNOWN: dict[str, tuple[str, str]] = {}
 
 DOTENV = {"OPENAI_API_KEY": "sk-fake"}
 # Generic retry backoff for the first retry is jittered in [2.0, 3.0] s; the hints below

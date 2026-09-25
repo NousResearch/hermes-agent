@@ -756,6 +756,13 @@ def _stdin_is_interactive(*, isatty: bool, console_mode_ok: bool | None) -> bool
     return isatty and console_mode_ok is not False
 
 
+def _stdout_isatty() -> bool:
+    """The question is printed to stdout. When stdout is captured, nobody sees it. Desktop update
+    hand-offs before #122234 captured each step's stdout while leaving it the console's stdin, so a
+    prompt there waited forever for an answer to a question nobody saw."""
+    return sys.stdout is not None and sys.stdout.isatty()
+
+
 def _stdin_console_mode_ok() -> bool | None:
     if sys.platform != "win32":
         return None
@@ -1067,7 +1074,7 @@ def _consume_start_attestation(generation: str, home: Path | None = None) -> Non
 def _read_start_attestation(home: Path | None = None) -> object | None:
     """Parsed attestation payload (any JSON type), or ``None`` when absent/unreadable. Never raises."""
     try:
-        return json.loads(_start_attestation_path(home).read_text(encoding="utf-8"))
+        return json.loads(_start_attestation_path(home).read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         return None
 
@@ -1102,7 +1109,7 @@ def _attested_pid_exited_cleanly(pid: int, create_time: float | None = None, hom
         from gateway.lifecycle_ledger import get_lifecycle_sentinel_path
 
         sentinel = get_lifecycle_sentinel_path(home if home is not None else _hermes_home())
-        data = json.loads(sentinel.read_text(encoding="utf-8"))
+        data = json.loads(sentinel.read_text(encoding="utf-8-sig"))
     except OSError:
         return False
     except Exception:
@@ -1436,7 +1443,7 @@ def _probe_pid_file(pid_path: Path) -> int | None:
     if _probe_missing(1, pid_path, "PID file"):
         return None
     try:
-        data = json.loads(pid_path.read_text(encoding="utf-8"))
+        data = json.loads(pid_path.read_text(encoding="utf-8-sig"))
         pid_value = int(data.get("pid")) if data.get("pid") is not None else None
         _probe(1, True, f"PID file present: {pid_path} (pid={pid_value})")
         return pid_value
@@ -1485,7 +1492,7 @@ def _probe_state_file(state_path: Path) -> None:
     if _probe_missing(5, state_path, "gateway_state.json"):
         return
     try:
-        state_data = json.loads(state_path.read_text(encoding="utf-8"))
+        state_data = json.loads(state_path.read_text(encoding="utf-8-sig"))
         gateway_state = state_data.get("gateway_state")
         updated_at = state_data.get("updated_at")
         age_str = ""
@@ -1592,7 +1599,7 @@ def start() -> None:
             from hermes_cli.setup import is_interactive_stdin, is_noninteractive, prompt_yes_no
 
             print("✗ Gateway service is not installed")
-            if is_noninteractive() or not _stdin_is_interactive(
+            if is_noninteractive() or not _stdout_isatty() or not _stdin_is_interactive(
                 isatty=is_interactive_stdin(), console_mode_ok=_stdin_console_mode_ok()
             ):
                 start_on_login = False

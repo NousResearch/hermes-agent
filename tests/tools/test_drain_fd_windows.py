@@ -16,7 +16,7 @@ import pytest
 from tools.environments.base_output import _BoundedOutputCollector, _drain_fd_windows
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_drain_fd_windows_returns_promptly_when_writer_remains_open():
     """Data already in the pipe is captured; the drain stops shortly after the
     process reports exit even though the write end is still open."""
@@ -40,7 +40,7 @@ def test_drain_fd_windows_returns_promptly_when_writer_remains_open():
         os.close(w)
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_local_environment_returns_while_background_grandchild_holds_pipe(tmp_path):
     """End-to-end on Git Bash: ``execute()`` returns promptly with the marker while a
     backgrounded grandchild still holds the stdout pipe (issues #105865 / #67362)."""

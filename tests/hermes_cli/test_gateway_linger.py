@@ -7,6 +7,8 @@ import pytest
 
 import hermes_cli.gateway as gateway
 
+pytestmark = pytest.mark.platforms("linux")
+
 
 def _stub_linger_file(monkeypatch, tmp_path, *, exists: bool) -> None:
     """Point the ``/var/lib/systemd/linger/<user>`` probe at a real file under tmp_path.
@@ -39,7 +41,6 @@ def _root_with_system_unit_pinned_home(monkeypatch, tmp_path) -> None:
 class TestEnsureLingerEnabled:
     def test_linger_already_enabled_via_file(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         _stub_linger_file(monkeypatch, tmp_path, exists=True)
 
@@ -53,7 +54,6 @@ class TestEnsureLingerEnabled:
 
     def test_loginctl_success_enables_linger(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         _stub_linger_file(monkeypatch, tmp_path, exists=False)
         monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda username=None: (False, ""))
@@ -74,7 +74,6 @@ class TestEnsureLingerEnabled:
 
     def test_loginctl_failure_shows_manual_guidance(self, monkeypatch, capsys, tmp_path):
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
-        monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr("getpass.getuser", lambda: "testuser")
         _stub_linger_file(monkeypatch, tmp_path, exists=False)
         _root_with_system_unit_pinned_home(monkeypatch, tmp_path)
@@ -204,6 +203,7 @@ def test_systemd_install_targets_linger_at_system_service_user(monkeypatch, tmp_
     monkeypatch.setattr(gateway, "_require_root_for_system_service", lambda action: None)
     monkeypatch.setattr(gateway, "has_legacy_hermes_units", lambda: False)
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(gateway, "_prepare_service_launcher", lambda **kwargs: None)
     monkeypatch.setattr(
         gateway,
         "generate_systemd_unit",

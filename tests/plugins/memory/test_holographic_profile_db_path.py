@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 import hermes_cli.memory_setup as memory_setup
 from hermes_cli.profiles import create_profile, rename_profile

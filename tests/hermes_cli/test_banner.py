@@ -8,6 +8,23 @@ import hermes_cli.banner as banner
 import model_tools
 import tools.mcp_tool_discovery
 
+def test_banner_snapshot_accepts_bom_without_weakening_freshness(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(banner, "get_git_banner_state", lambda: None)
+    monkeypatch.setattr(banner, "get_available_skills", lambda: {"notes": ["café"]})
+    tools = [{"function": {"name": "read_file"}}]
+    banner.save_banner_snapshot(tools, ["file"], {}, {"read_file": "file"})
+    path = banner._banner_snapshot_path()
+    raw = path.read_bytes()
+    assert not raw.startswith(b"\xef\xbb\xbf")
+    expected = json.loads(raw)
+    path.write_text(json.dumps(expected, ensure_ascii=False), encoding="utf-8-sig")
+    assert banner.load_banner_snapshot(["file"]) == expected
+    assert banner.load_banner_snapshot(["web"]) is None
+    (tmp_path / "config.yaml").write_text("display: {skin: mono}", encoding="utf-8")
+    assert banner.load_banner_snapshot(["file"]) is None
 
 def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(capsys):
     with patch(
@@ -17,21 +34,6 @@ def test_cprint_falls_back_to_plain_print_when_prompt_toolkit_has_no_console(cap
         banner.cprint("fallback text")
 
     assert capsys.readouterr().out == "fallback text\n"
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 def test_empty_model_shows_the_free_tier_route_when_it_carries_inference(tmp_path, monkeypatch):
     """The banner prints before credentials resolve, so ``model`` is empty on a fresh install. On the
@@ -81,3 +83,10 @@ def test_build_welcome_banner_does_not_center_pad_hero_art():
 
     hero_line = next(line for line in buf.getvalue().splitlines() if "\u2800X" in line)
     assert hero_line.startswith("\u2502  \u2800X"), repr(hero_line)
+
+
+def test_baked_banner_uses_live_identity(monkeypatch):
+    from hermes_cli import banner, version_info
+
+    monkeypatch.setattr(version_info, "get_code_identity", lambda: {"short_sha": "a1b2c3d4"})
+    assert banner._baked_banner_state() == {"upstream": "a1b2c3d4", "local": "a1b2c3d4", "ahead": 0}

@@ -550,7 +550,6 @@ async fn run_bootstrap(
     let source_note = match &script.source {
         ScriptSource::DevCheckout => "dev checkout",
         ScriptSource::Bundled => "bundled",
-        ScriptSource::Cached => "cached",
         ScriptSource::Downloaded => "downloaded",
     };
     emit_log(&format!(

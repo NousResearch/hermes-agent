@@ -523,8 +523,11 @@ def _(rid, params: dict, db) -> dict:
         from hermes_cli.session_listing import show_subagent_sessions
 
         # ``sessions.show_subagents`` (the store's own profile config) re-admits delegate runs (#97202).
+        # A store without a path has no profile config to read, so it keeps the default shape.
+        db_path = getattr(db, "db_path", None)
+        include_subagents = bool(db_path) and show_subagent_sessions(Path(db_path).parent)
         rows = _listing_rows(db, max(limit * 2, 200), include_hidden=_flag(params, "include_hidden"),
-                             include_subagents=show_subagent_sessions(Path(db.db_path).parent))[:limit]
+                             include_subagents=include_subagents)[:limit]
         return _ok(rid, {"sessions": [_session_row_summary(s) for s in rows]})
     except Exception as e:
         return _err(rid, 5006, str(e))

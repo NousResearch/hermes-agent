@@ -155,6 +155,24 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_boards_pause(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "pause", must_exist=True)
+    if rc:
+        return rc
+    kb.write_board_metadata(normed, paused=True, paused_reason=getattr(args, "reason", None))
+    print(f"Board {normed!r} paused: no new workers are spawned; running workers continue.")
+    return 0
+
+
+def _cmd_boards_resume(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "resume", must_exist=True)
+    if rc:
+        return rc
+    kb.write_board_metadata(normed, paused=False)
+    print(f"Board {normed!r} resumed.")
+    return 0
+
+
 def _cmd_boards_export(args: argparse.Namespace) -> int:
     from hermes_cli import kanban_transfer
     from hermes_cli.sizefmt import format_bytes
@@ -209,6 +227,7 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "pause": _cmd_boards_pause, "resume": _cmd_boards_resume,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

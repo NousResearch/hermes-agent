@@ -169,6 +169,12 @@ hermes kanban boards show             # who's active right now?
 # Rename the display name (the slug is immutable — it's the directory name).
 hermes kanban boards rename atm10-server "ATM10 (Prod)"
 
+# Pause dispatch: no new workers from the next tick on, running workers keep
+# running (nothing is killed or reclaimed). Read live from board.json, so no
+# gateway restart is needed. `resume` clears it.
+hermes kanban boards pause atm10-server --reason "provider window exhausted"
+hermes kanban boards resume atm10-server
+
 # Archive (default) — moves the board's dir to boards/_archived/<slug>-<ts>/.
 # Recoverable by moving the dir back.
 hermes kanban boards rm atm10-server

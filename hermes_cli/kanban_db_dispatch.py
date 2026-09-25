@@ -152,6 +152,10 @@ class DispatchResult:
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
     Reclaim/promotion bookkeeping still ran; deferred tasks stay queued."""
+    paused: bool = False
+    """True when the board's ``board.json`` has ``paused`` set (``hermes kanban
+    boards pause``): reclaim/promotion ran, no worker was spawned, running
+    workers were not touched."""
 
 
 def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
@@ -175,6 +179,8 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
             counts["rate_limited"] = counts.get("rate_limited", 0) + len(res.rate_limited)
         if res.skipped_locked:
             counts["skipped_locked"] = counts.get("skipped_locked", 0) + 1
+        if res.paused:
+            counts["paused"] = counts.get("paused", 0) + 1
         if res.memory_pressure:
             pressure = res.memory_pressure
     parts = [f"{k}={v}" for k, v in sorted(counts.items())]
@@ -2303,6 +2309,9 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
+    if _kb.read_board_metadata(board).get("paused"):
+        result.paused = True
+        return result
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )

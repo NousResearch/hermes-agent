@@ -30,6 +30,16 @@ from hermes_state import SessionDB
 from tests.agent.test_api_content_sidecar import _FakeAgent, _build
 
 
+# ``invoke_hook`` fans out by hook NAME — a stub answering every name with the same
+# payload also feeds ``pre_persist_user_message``, whose returns are *durable* and are
+# composed into ``content``. These tests pin the sidecar invariant (clean ``content``,
+# composed body in ``api_content``), so scope the stub to the hook it models.
+def _pre_llm_call_context(*results):
+    def _stub(hook_name, **_kwargs):
+        return list(results) if hook_name == "pre_llm_call" else []
+    return _stub
+
+
 class TestSetMessageApiContent:
     """The store primitive: addressed by row id, guarded on the rest."""
 
@@ -89,7 +99,7 @@ class TestPrologueRowAddressedBackfill:
         agent._session_db = MagicMock()
         with patch(
             "hermes_cli.plugins.invoke_hook",
-            return_value=[{"context": "PLUGIN-CTX"}],
+            side_effect=_pre_llm_call_context({"context": "PLUGIN-CTX"}),
         ):
             ctx = _build(agent)
 
@@ -140,7 +150,7 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             # Now build_turn_context runs
             with patch(
                 "hermes_cli.plugins.invoke_hook",
-                return_value=[{"context": "PLUGIN-CTX"}],
+                side_effect=_pre_llm_call_context({"context": "PLUGIN-CTX"}),
             ):
                 ctx = _build(agent)
 
@@ -227,7 +237,7 @@ class TestRealEarlyFlushAndOverrideLifecycle:
             # Prologue backfills Turn 2
             with patch(
                 "hermes_cli.plugins.invoke_hook",
-                return_value=[{"context": "TURN-2-CTX"}],
+                side_effect=_pre_llm_call_context({"context": "TURN-2-CTX"}),
             ):
                 _build(agent, user_message="ok")
 

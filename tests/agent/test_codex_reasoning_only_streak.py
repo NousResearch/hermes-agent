@@ -12,6 +12,7 @@ Codex-only nudge from the wire.
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import run_agent
 from agent.conversation_loop import _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE
@@ -48,6 +49,64 @@ def _drive(agent, monkeypatch, responses):
 
     monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
     return api_calls
+
+
+def _direct_incomplete_agent():
+    """Minimal direct-call harness matching continue_codex_incomplete's owned state.
+
+    Full-loop tests above use AIAgent.run_conversation(), which initializes these
+    fields at turn start. Direct unit tests must seed the same state themselves.
+    """
+    agent = MagicMock()
+    agent.max_tokens = 2000
+    agent.max_iterations = 6
+    agent.iteration_budget = run_agent.IterationBudget(6)
+    agent.quiet_mode = True
+    agent.log_prefix = ""
+    agent._codex_incomplete_retries = 0
+    agent._codex_reasoning_only_streak = 0
+    agent._ephemeral_reasoning_off = False
+    agent._ephemeral_max_output_tokens = None
+    agent._try_activate_fallback.return_value = False
+
+    def _build(msg, finish_reason):
+        return {
+            "role": "assistant",
+            "content": getattr(msg, "content", None) or "",
+            "finish_reason": finish_reason,
+            "reasoning": getattr(msg, "reasoning", None),
+            "codex_reasoning_items": getattr(msg, "codex_reasoning_items", None),
+            "codex_message_items": getattr(msg, "codex_message_items", None),
+        }
+
+    def _visible(message):
+        if not isinstance(message, dict):
+            return ""
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+        for item in message.get("codex_message_items") or []:
+            if not isinstance(item, dict):
+                continue
+            phase = item.get("phase")
+            if not (isinstance(phase, str) and phase.strip().lower() == "commentary"):
+                continue
+            parts = item.get("content") or []
+            if isinstance(parts, str):
+                return parts.strip()
+            if isinstance(parts, list):
+                text = "".join(
+                    str(part.get("text") or "")
+                    for part in parts
+                    if isinstance(part, dict)
+                ).strip()
+                if text:
+                    return text
+        return ""
+
+    agent._build_assistant_message.side_effect = _build
+    agent._interim_assistant_visible_text.side_effect = _visible
+    return agent
 
 
 def test_reasoning_only_streak_reaches_fallback_with_one_grace_call(monkeypatch):
@@ -97,7 +156,7 @@ def test_commentary_only_is_not_reasoning_stall_and_uses_action_nudge(monkeypatc
     ladder or receive the nudge that tells the model to produce a final answer now."""
     from agent.codex_responses_adapter import _normalize_codex_response
 
-    agent = _build_agent(monkeypatch)
+    agent = _direct_incomplete_agent()
     messages = [{"role": "user", "content": "audit it"}]
 
     for api_call_count, text in enumerate(
@@ -122,7 +181,8 @@ def test_commentary_only_is_not_reasoning_stall_and_uses_action_nudge(monkeypatc
         assert agent._codex_reasoning_only_streak == 0
 
     assert not any(m.get("content") == _CODEX_INCOMPLETE_NUDGE for m in messages)
-    assert messages[-1] == {"role": "user", "content": _CODEX_ACK_CONTINUATION_NUDGE}
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"] == _CODEX_ACK_CONTINUATION_NUDGE
 
 
 def test_commentary_max_output_does_not_disable_reasoning(monkeypatch):
@@ -130,7 +190,7 @@ def test_commentary_max_output_does_not_disable_reasoning(monkeypatch):
     reasoning-off/output-cap recovery is for reasoning-only exhaustion, not commentary."""
     from agent.codex_responses_adapter import _normalize_codex_response
 
-    agent = _build_agent(monkeypatch)
+    agent = _direct_incomplete_agent()
     response = _codex_commentary_message_response("Checking one more path before the fix.")
     response.status = "incomplete"
     response.incomplete_details = SimpleNamespace(reason="max_output_tokens")
@@ -152,6 +212,39 @@ def test_commentary_max_output_does_not_disable_reasoning(monkeypatch):
     assert result is None
     assert agent._codex_reasoning_only_streak == 0
     assert agent._ephemeral_reasoning_off is False
+
+
+def test_genuine_reasoning_only_still_uses_internal_reasoning_nudge():
+    """The commentary exclusion must not disarm #67321's real reasoning-only ladder."""
+    agent = _direct_incomplete_agent()
+    messages = [{"role": "user", "content": "keep thinking"}]
+    assistant_message = SimpleNamespace(
+        content="",
+        tool_calls=None,
+        reasoning=None,
+        codex_reasoning_items=[
+            {"type": "reasoning", "id": "rs_1", "encrypted_content": "opaque"}
+        ],
+        codex_message_items=None,
+    )
+    response = SimpleNamespace(status="in_progress", incomplete_details=None, usage=None)
+
+    for api_call_count in (1, 2):
+        result = continue_codex_incomplete(
+            agent,
+            assistant_message,
+            "incomplete",
+            messages=messages,
+            conversation_history=[],
+            api_call_count=api_call_count,
+            response=response,
+        )
+        assert result is None
+
+    assert agent._codex_reasoning_only_streak == 2
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"] == _CODEX_INCOMPLETE_NUDGE
+    assert not any(m.get("content") == _CODEX_ACK_CONTINUATION_NUDGE for m in messages)
 
 
 def test_cross_protocol_fallback_wire_drops_codex_nudge_and_replay_state(monkeypatch):

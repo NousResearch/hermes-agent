@@ -1260,6 +1260,7 @@ def terminal_tool(
     _host_local: bool = False,
     _completion_output_chars: int = 0,
     heartbeat: int = 0,
+    persist_on_release: bool = False,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1273,6 +1274,10 @@ def terminal_tool(
     use it only for rare one-shot signals on long-lived processes. ``heartbeat`` (seconds,
     background-only, implies notify_on_complete) emits a "still running + output since last
     time" event every N seconds so the agent stays current on a long job without polling.
+    ``persist_on_release`` (background-only) exempts the process from lifecycle cleanup: it is
+    skipped by ``kill_started_since``/``kill_all`` on turn-abandon reaping and by agent ``close()``,
+    so an overnight batch survives /quit, /new, disconnects and compression. It remains killable
+    via process(action='kill').
     ``_completion_output_chars`` (internal) sizes the completion notification's output for a
     spawner whose output is the payload (a bot DM's reply); 0 keeps the usual tail.
     ``_host_local`` forces the local backend for Hermes-owned control-plane
@@ -1341,6 +1346,7 @@ def terminal_tool(
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
                 completion_output_chars=_completion_output_chars,
                 heartbeat_seconds=heartbeat,
+                persist_on_release=persist_on_release,
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
@@ -1413,6 +1419,11 @@ TERMINAL_SCHEMA = {
                 "type": "integer",
                 "minimum": 60,
                 "description": "With background=true: also notify every N seconds (min 60) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
+            },
+            "persist_on_release": {
+                "type": "boolean",
+                "description": "With background=true: exempt this process from lifecycle cleanup — it survives session end (/new, /quit), turn timeouts, disconnects, and compression. Use ONLY for long-running jobs that must finish regardless of the session lifecycle (overnight batches). The process is still listed in process_manage and can be killed individually.",
+                "default": False
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
@@ -1442,12 +1453,13 @@ def _handle_terminal(args, **kw):
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
     heartbeat = args.get("heartbeat") or 0
+    persist_on_release = args.get("persist_on_release", False)
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (min 60).")
     if not args.get("background", False):
-        if notify or watch_patterns or notify_on_complete or heartbeat:
+        if notify or watch_patterns or notify_on_complete or heartbeat or persist_on_release:
             return tool_error(
-                "notify/heartbeat only apply to background commands (foreground "
+                "notify/heartbeat/persist_on_release only apply to background commands (foreground "
                 "results return directly). Either drop them, or run as "
                 "terminal(command=..., background=true, notify=...)."
             )
@@ -1483,6 +1495,7 @@ def _handle_terminal(args, **kw):
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
         heartbeat=heartbeat,
+        persist_on_release=persist_on_release,
     )
 
 

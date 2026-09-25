@@ -557,6 +557,7 @@ class ProcessSession:
     # session was closed at a user boundary (/new) instead of injecting into the NEW one.
     parent_session_id: str = ""
     notify_on_complete: bool = False            # Queue agent notification on exit
+    persist_on_release: bool = False            # Exempt from lifecycle cleanup (turn-abandon reap, agent close)
     completion_output_chars: int = 0            # Output chars the completion carries; 0 = COMPLETION_OUTPUT_CHARS
     watch_patterns: List[str] = field(default_factory=list)
     heartbeat_seconds: int = 0                  # 0 = off; else a "heartbeat" event every N s while running
@@ -611,7 +612,7 @@ _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
     "started_at", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
-    "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
+    "parent_session_id", "notify_on_complete", "persist_on_release", "completion_output_chars", "watch_patterns",
     "heartbeat_seconds")
 _CHECKPOINT_DEFAULTS = {
     f.name: ([] if f.name == "watch_patterns" else f.default)
@@ -1212,7 +1213,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "") -> ProcessSession:
+        env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
+        persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing."""
@@ -1224,6 +1226,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
         safe_command = _rewrite_bg(command)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()))
+        session.persist_on_release = persist_on_release
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -1310,12 +1313,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "") -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context."""
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox")
+        session.persist_on_release = persist_on_release
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
@@ -2367,6 +2371,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 entry.update(watch_patterns=list(s.watch_patterns), watch_hit=s._watch_hits > 0)
             if s.notify_on_complete:
                 entry["notify_on_complete"] = True
+            if s.persist_on_release:
+                entry["persist_on_release"] = True
             if s.exited:
                 entry["exit_code"] = s.exit_code
                 entry["exited_at"] = s.exited_at
@@ -2454,12 +2460,14 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self, task_id: Optional[str] = None, *, exclude_ids: frozenset = frozenset(),
         source: str = "kill_all", consume_output: bool = False) -> int:
         """Kill all running processes, optionally only those ``task_id`` spawned (its ``owner_task_id``).
-        Returns count killed."""
+        Sessions flagged ``persist_on_release`` are exempt: an explicitly persisted background
+        process survives lifecycle cleanup (gateway turn-abandon reaping via ``kill_started_since``,
+        agent ``close()``). It can still be killed individually via ``kill_process``. Returns count killed."""
         with self._lock:
             targets = [
                 s for s in self._running.values()
                 if (task_id is None or s.owner_task_id == task_id)
-                and s.id not in exclude_ids and not s.exited
+                and s.id not in exclude_ids and not s.exited and not s.persist_on_release
             ]
         return sum(
             self.kill_process(s.id, source=source, consume_output=consume_output).get("status")

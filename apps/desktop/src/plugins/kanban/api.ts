@@ -28,7 +28,12 @@ import {
 } from '@hermes/plugin-sdk'
 
 // Native completion notification.
-import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
+import {
+  bindCompletionNotify,
+  type CompletionEvent,
+  onKanbanEventsFrame,
+  seedCompletionBaseline
+} from './completion-notify'
 import type {
   BoardExportResult,
   BoardImportResult,
@@ -113,8 +118,7 @@ const cursorKey = (scope: string, slug: string) => `${scope}\n${slug}`
 
 /** The cursor a fresh socket for `slug` on `scope` starts from: the last frame
  *  this session saw, else the cached board snapshot's `latest_event_id` (the
- *  board is already rendered from it), else nothing — the server then starts
- *  at the board's current tail. */
+ *  board is already rendered from it), else nothing yet. */
 function eventsSince(scope: string, slug: string): number | undefined {
   const seen = eventCursors.get(cursorKey(scope, slug))
 
@@ -199,26 +203,52 @@ export function bindApi(
   persist($collapsedLanes, COLLAPSED_KEY, {})
 
   let close: (() => void) | null = null
+  let dialGeneration = 0
 
   const open = (slug: string) => {
+    const generation = ++dialGeneration
     close?.()
-    const params = new URLSearchParams()
-
-    if (slug) {
-      params.set('board', slug)
-    }
-
+    close = null
     // The connection this socket dials: a frame arriving after a switch
     // still belongs to the gateway that sent it.
     const scope = routedScope()
+
+    const dial = (since?: number) => {
+      if (generation !== dialGeneration) {
+        return
+      }
+
+      const params = new URLSearchParams()
+
+      if (slug) {
+        params.set('board', slug)
+      }
+
+      if (since !== undefined) {
+        params.set('since', String(since))
+        // Notifications baseline where the stream starts. Read from /board when
+        // the first frame arrives, the baseline already includes that frame.
+        seedCompletionBaseline(slug, since)
+      }
+
+      const query = params.toString()
+      close = socket(query ? `/events?${query}` : '/events', data => onEventsFrame(scope, slug, data))
+    }
+
     const since = eventsSince(scope, slug)
 
     if (since !== undefined) {
-      params.set('since', String(since))
+      dial(since)
+
+      return
     }
 
-    const query = params.toString()
-    close = socket(query ? `/events?${query}` : '/events', data => onEventsFrame(scope, slug, data))
+    // Nothing known yet: start the stream at the snapshot the board renders
+    // from (the same query), so no event can land between the two reads.
+    void queryClient.fetchQuery({ queryFn: () => fetchBoard(false), queryKey: boardKey(scope, slug, false) }).then(
+      board => dial(typeof board.latest_event_id === 'number' ? board.latest_event_id : undefined),
+      () => dial()
+    )
   }
 
   // The local connection keeps the BARE key (the bare-local rule of
@@ -256,6 +286,7 @@ export function bindApi(
   )
 
   return () => {
+    dialGeneration += 1
     unsubs.forEach(unsub => unsub())
     close?.()
     rest = null

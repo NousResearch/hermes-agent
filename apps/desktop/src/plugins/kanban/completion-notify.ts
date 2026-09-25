@@ -17,11 +17,12 @@
  *    desktop shell fires only while the user is AWAY from Hermes. This is the
  *    door that covers "walked away and the worker hit a blocker".
  *
- * Cursor contract: first observation of a board baselines
+ * Cursor contract: a board's baseline is the cursor its events stream starts
+ * from (api.ts seeds it at dial); failing that, the first frame baselines
  * seen[board] = GET /board latest_event_id (MAX task_events.id for that
  * board). Events id <= seen are historical/replay — never notified, no
  * cursor change. id > seen advances cursor for EVERY kind; only terminal
- * kinds emit. Reconnect replays from 0; cursor filters. Board switch never
+ * kinds emit. A replayed frame is filtered by the cursor. Board switch never
  * mixes cursors; returning reuses prior cursor (never reset to current MAX).
  * Fail-closed: while a board's baseline is unknown, no event can be
  * classified so none is notified. Empty slug ('') suppressed.
@@ -89,6 +90,14 @@ export function bindCompletionNotify(r: Rest, pluginTranslate?: PluginTranslate,
   rest = r
   translate = pluginTranslate ?? null
   osDoor = os ?? null
+}
+
+/** The events stream for `slug` starts right after `eventId`: that is the
+ *  baseline, taken with the subscription itself. Never moves an existing one. */
+export function seedCompletionBaseline(slug: string, eventId: number): void {
+  if (!seenEventIdByBoard.has(slug)) {
+    seenEventIdByBoard.set(slug, eventId)
+  }
 }
 
 async function ensureBaseline(slug: string): Promise<void> {

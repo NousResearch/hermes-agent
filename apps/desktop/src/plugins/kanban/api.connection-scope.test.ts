@@ -17,6 +17,9 @@ const { $boardSlug, bindApi, boardsKey, useKanbanScope } = await import('./api')
 const { setConnection } = await import('@/store/session')
 const { queryClient } = await import('@/lib/query-client')
 
+// A socket with no known cursor dials after the board snapshot resolves.
+const settle = () => new Promise(resolve => setTimeout(resolve, 0))
+
 const noopStorage = { get: <T>(_key: string, fallback: T) => fallback, remove: vi.fn(), set: vi.fn() }
 
 afterEach(() => {
@@ -37,7 +40,7 @@ describe('kanban connection scope', () => {
     expect(boardsKey(result.current)).toEqual(['kanban', 'boards', 'spark'])
   })
 
-  it('remembers the slug per connection and dials the socket once per switch', () => {
+  it('remembers the slug per connection and dials the socket once per switch', async () => {
     const stored = new Map<string, unknown>([
       ['boardSlug', 'ops'],
       ['boardSlug.spark', 'research']
@@ -60,15 +63,18 @@ describe('kanban connection scope', () => {
     const dispose = bindApi(async () => ({}) as never, storage, socket)
 
     expect($boardSlug.get()).toBe('ops')
+    await settle()
     expect(dials).toEqual(['/events?board=ops'])
 
     // Boot publishes the local descriptor after plugins bound: same scope, no dial.
     setConnection({ mode: 'local' } as never)
+    await settle()
     expect(dials).toEqual(['/events?board=ops'])
 
     // Different slug on the next gateway: exactly one dial, not one per listener.
     setConnection({ connectionId: 'spark', mode: 'remote' } as never)
     expect($boardSlug.get()).toBe('research')
+    await settle()
     expect(dials).toEqual(['/events?board=ops', '/events?board=research'])
 
     // Same slug on the way back to a gateway with an equal selection still
@@ -76,6 +82,7 @@ describe('kanban connection scope', () => {
     stored.set('boardSlug', 'research')
     setConnection({ mode: 'local' } as never)
     expect($boardSlug.get()).toBe('research')
+    await settle()
     expect(dials).toEqual(['/events?board=ops', '/events?board=research', '/events?board=research'])
 
     // Writes land under the scope current at write time.
@@ -86,7 +93,7 @@ describe('kanban connection scope', () => {
     dispose()
   })
 
-  it('an event cursor never crosses to another connection', () => {
+  it('an event cursor never crosses to another connection', async () => {
     // Both gateways have a board named `ship`, with unrelated event ids.
     const storage = {
       ...noopStorage,
@@ -103,10 +110,12 @@ describe('kanban connection scope', () => {
 
     const dispose = bindApi(async () => ({}) as never, storage, socket)
 
+    await settle()
     dials.at(-1)!.onMessage({ cursor: 14_386, events: [{ id: 14_386, kind: 'created', task_id: 't_1' }] })
 
     routed.id = 'spark'
     setConnection({ connectionId: 'spark', mode: 'remote' } as never)
+    await settle()
     expect(dials.at(-1)!.path).toBe('/events?board=ship')
 
     // Back on local, local's own cursor is still there.

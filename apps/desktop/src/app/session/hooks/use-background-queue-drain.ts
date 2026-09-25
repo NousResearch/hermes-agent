@@ -15,9 +15,11 @@ import {
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
 import {
+  $sessionProfilesTruncated,
   $sessions,
+  $sessionsLoadError,
   $sessionsLoading,
-  getSessionOwnerHint,
+  getSessionOwnerHints,
   idsShareLineage,
   sessionMatchesStoredId
 } from '@/store/session'
@@ -109,18 +111,29 @@ export function useBackgroundQueueDrain({
         if (failures >= MAX_AUTO_DRAIN_ATTEMPTS) {
           // The session rejected every drain attempt. Discovery has settled
           // (the effect gates on it), so the loaded list plus owner hints are
-          // authoritative: a session no row or hint answers to — by id or
-          // lineage — is gone from this backend (deleted from another
-          // surface, or its stored resume refuses permanently). Owner hints
-          // count: a hidden bot chat never occupies the recents list, yet
-          // its queue is exactly the one worth preserving. Its queued prompt
-          // can never send; keep it and every future boot replays this
-          // cycle for nothing. Drop it and say so quietly.
+          // authoritative — but only when they can actually PROVE absence.
+          // "Maybe" must never mean delete:
+          // - getSessionOwnerHint is undefined both for "no route" AND for
+          //   "two or more routes" (a cloud gateway plus a local backend);
+          //   the plural accessor keeps those apart, and ≥1 route is alive.
+          // - $sessions is one PAGE of the sidebar list. A session that fell
+          //   off the loaded window ($sessionProfilesTruncated) is unknown
+          //   by row and hint, not gone.
+          // Only a session no row, no hint AND a complete, untruncated list
+          // answer to — by id or lineage — is gone from this backend (deleted
+          // from another surface, or its stored resume refuses permanently).
+          // Owner hints count: a hidden bot chat never occupies the recents
+          // list, yet its queue is exactly the one worth preserving. A truly
+          // gone session's queued prompt can never send; drop it and say so
+          // quietly. An unprovable one keeps its entry for a manual send.
           const sessionKnown =
             $sessions.get().some(session => sessionMatchesStoredId(session, sessionKey)) ||
-            getSessionOwnerHint(sessionKey) !== undefined
+            getSessionOwnerHints(sessionKey).length > 0
 
-          if (!sessionKnown) {
+          const listIncomplete =
+            $sessionsLoadError.get() || Object.values($sessionProfilesTruncated.get()).some(Boolean)
+
+          if (!sessionKnown && !listIncomplete) {
             removeQueuedPrompt(sessionKey, entry.id)
             notify({
               id: `composer-background-queue-stuck-${sessionKey}`,

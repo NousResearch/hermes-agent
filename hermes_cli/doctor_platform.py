@@ -534,6 +534,14 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
     pm_launcher = selected != base_venv(PROJECT_ROOT) or resolve_store_python(PROJECT_ROOT) is not None
     venv_bin = PROJECT_ROOT / "hermes" if pm_launcher else selected / "bin" / "hermes"
     if not venv_bin.is_file():
+        # A PM-managed runtime can execute doctor FROM a workspace snapshot
+        # (pm.workspace._copy_core_inputs ships only package dirs and *.py
+        # files — the extensionless root ``hermes`` launcher is never copied),
+        # so the environment's own console script is the entry point there.
+        fallback = selected / "bin" / "hermes"
+        if pm_launcher and fallback.is_file():
+            venv_bin = fallback
+    if not venv_bin.is_file():
         check_warn("Hermes entry point not found", f"({venv_bin})")
         return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")
     check_ok(f"Hermes entry point exists ({venv_bin})")

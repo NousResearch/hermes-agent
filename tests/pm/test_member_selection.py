@@ -87,3 +87,22 @@ def test_buildable_pyproject_member_keeps_its_declared_name(tmp_path):
     member = _workspace_member(plugin, root, identity=plugin)
     assert (member / "pyproject.toml").read_text(encoding="utf-8") == (
         plugin / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_virtual_member_without_project_metadata_gets_a_version(tmp_path):
+    """A metadata-only member whose pyproject declares no [project] (lint config
+    only) is emitted as ``[project] name = …``; uv rejects a [project] table
+    without ``version`` (or ``dynamic``) at ``uv lock`` time, aborting the whole
+    update. Generated virtual members carry the same inert version plugin-deps
+    use."""
+    import tomllib
+    from pm.workspace import _workspace_member
+
+    plugin = tmp_path / "home" / "plugins" / "hermes-lcm"
+    plugin.mkdir(parents=True)
+    (plugin / "pyproject.toml").write_text('[tool.ruff]\ntarget-version = "py311"\n', encoding="utf-8")
+    root = tmp_path / "gen"
+    root.mkdir()
+    member = _workspace_member(plugin, root, identity=plugin)
+    project = tomllib.loads((member / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    assert project["version"] == "0.0.0"

@@ -52,6 +52,15 @@ class TestCommandRegistry:
         }
         assert set(skills.desktop_subcommands or ()) <= set(skills.subcommands)
 
+    def test_empty_desktop_subcommand_scope_serializes_as_deny_all(self):
+        assert command_desktop_meta(
+            CommandDef("demo", "Demo", "Session", desktop_subcommands=())
+        ) == {
+            "argument_mode": None,
+            "desktop": None,
+            "desktop_subcommands": [],
+        }
+
 
     def test_argument_mode_infers_text_from_any_args_hint(self):
         assert infer_argument_mode(CommandDef("demo", "Demo", "Session", args_hint="<prompt>")) == "text"

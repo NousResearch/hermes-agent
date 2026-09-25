@@ -338,7 +338,7 @@ def infer_argument_mode(cmd: CommandDef) -> str | None:
 def command_desktop_meta(cmd: CommandDef) -> dict[str, object]:
     """Wire shape for ``commands.catalog`` — reads the CommandDef, nothing else."""
     meta: dict[str, object] = {"argument_mode": infer_argument_mode(cmd), "desktop": cmd.desktop}
-    if cmd.desktop_subcommands:
+    if cmd.desktop_subcommands is not None:
         meta["desktop_subcommands"] = list(cmd.desktop_subcommands)
     return meta
 

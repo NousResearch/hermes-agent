@@ -4,7 +4,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { PluginSettingField } from '@/store/agent-plugins'
 import { stubMenuDomApis } from '@/test/jsdom'
 
-import { collectChanges, initialDraft, PluginSettingsForm } from './plugin-settings-form'
+import { collectChanges, enumItems, initialDraft, PluginSettingsForm } from './plugin-settings-form'
 
 const FIELDS: PluginSettingField[] = [
   {
@@ -102,5 +102,51 @@ describe('PluginSettingsForm (#46600, #87934)', () => {
     fireEvent.submit(screen.getByTestId('p-settings-form'))
 
     await vi.waitFor(() => expect(onSave).toHaveBeenCalledWith({ secrets: {}, values: { model: 'claude' } }))
+  })
+
+  it('renders a stored value the choices no longer offer instead of an empty select', () => {
+    const onSave = vi.fn(async () => true)
+
+    const fields: PluginSettingField[] = [
+      {
+        choice_labels: ['Model one', 'retired (unavailable)'],
+        choices: ['m1', 'retired'],
+        description: '',
+        key: 'model',
+        label: 'Model',
+        required: false,
+        type: 'enum',
+        value: 'retired'
+      }
+    ]
+
+    render(<PluginSettingsForm disabled={false} fields={fields} idPrefix="p" onSave={onSave} />)
+
+    expect(screen.getByRole('combobox', { name: 'Model' }).textContent).toContain('retired (unavailable)')
+    // Unchanged, it is not re-sent.
+    expect(collectChanges(fields, initialDraft(fields))).toEqual({ secrets: {}, values: {} })
+  })
+
+  it('lists a missing current value and dedupes repeated choice values (first wins)', () => {
+    const field: PluginSettingField = {
+      choice_labels: ['first', 'second', 'b'],
+      choices: ['a', 'a', 'b'],
+      description: '',
+      key: 'k',
+      label: 'K',
+      required: false,
+      type: 'enum',
+      value: 'gone'
+    }
+
+    expect(enumItems(field, 'gone')).toEqual([
+      ['a', 'first'],
+      ['b', 'b'],
+      ['gone', 'gone']
+    ])
+    expect(enumItems(field, 'b')).toEqual([
+      ['a', 'first'],
+      ['b', 'b']
+    ])
   })
 })

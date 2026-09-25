@@ -532,9 +532,10 @@ def test_terminal_early_return_reaps_a_real_worker_process(monkeypatch):
 
 
 def test_launch_external_worker_stays_in_process_outside_managed_gateway(
-    monkeypatch,
+    tmp_path, monkeypatch,
 ):
     import cron.scheduler as scheduler
+    import hermes_cli._launchers as launchers
     from tools.process_registry import GatewayChildDispatch
 
     command_calls = []
@@ -546,14 +547,25 @@ def test_launch_external_worker_stays_in_process_outside_managed_gateway(
     monkeypatch.setattr(
         "tools.process_registry.restart_safe_gateway_child_argv", passthrough
     )
-    popen = Mock()
-    monkeypatch.setattr(scheduler.subprocess, "Popen", popen)
-
+    # A PM source gateway runs under a bare store interpreter.  The launcher's
+    # bootstrap, not the parent's interpreter environment, must make both the
+    # first-party worker and its third-party imports available.
+    monkeypatch.setattr(
+        scheduler, "sys", Mock(executable=str(tmp_path / "bare-store-python"))
+    )
+    monkeypatch.setattr(
+        launchers, "resolve_store_python", lambda _root: Path(sys.executable)
+    )
     assert scheduler._launch_external_cron_worker(
         {"id": "job-1", "execution_id": "exec-1"}
     ) is False
     assert command_calls
-    popen.assert_not_called()
+
+    result = subprocess.run(
+        command_calls[0][0], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert result.returncode == 1
+    assert "ModuleNotFoundError" not in result.stderr
 
 
 @pytest.mark.platforms("linux")

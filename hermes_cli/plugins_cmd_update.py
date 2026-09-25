@@ -39,7 +39,7 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
             raise _pc().PluginOperationError(not_git_msg())
         if before_pull is not None:
             before_pull()
-        return _reclone_plugin_update(source, install_record.get("revision"))
+        return _reclone_plugin_update(source, install_record.get("revision"), target)
     if before_pull is not None:
         before_pull()
     from hermes_cli.plugins_transaction import update_plugin
@@ -47,12 +47,35 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None,
     return update_plugin(target, interactive=interactive)
 
 
-def _reclone_plugin_update(source: str, previous_revision: object) -> str:
+def _reclone_plugin_update(source: str, previous_revision: object, target: Path | None = None) -> str:
     """Update a plugin whose tree is not a git checkout: a subdirectory install ships only
     ``<clone>/<subdir>``, so the ``.git`` stays in the temp clone (#65314). Re-run the install
     from the recorded source (same URL, same subdir) and swap the fresh tree in; the metadata
-    revision is rewritten by the installer. Returns pull-shaped output for the callers."""
-    new_target, _manifest, _name = _pc()._install_plugin_core(source, force=True)
+    revision is rewritten by the installer. Returns pull-shaped output for the callers.
+
+    The user's own files — config, data files and data directories the new tree does not ship —
+    are carried across the force-replace swap (#122006).
+    """
+    import shutil
+    import tempfile
+
+    from hermes_cli.plugins_cmd_catalog import _stash_local_files, _tree_files
+
+    carried: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="hermes-plugin-carry-") as carry_tmp:
+        if target is not None and target.is_dir():
+            carried = sorted(_tree_files(target))
+            _stash_local_files(target, carried, Path(carry_tmp))
+        new_target, _manifest, _name = _pc()._install_plugin_core(source, force=True)
+        if carried:
+            shipped = _tree_files(new_target)
+            for rel in carried:
+                if rel in shipped:
+                    continue
+                src = Path(carry_tmp) / rel
+                dst = new_target / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
     revision = str(_pc()._read_install_metadata().get(new_target.name, {}).get("revision") or "")
     previous = previous_revision if isinstance(previous_revision, str) else ""
     if revision and revision == previous:

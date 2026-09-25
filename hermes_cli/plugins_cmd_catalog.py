@@ -313,6 +313,46 @@ def _stash_local_files(target: Path, rels: list[str], stash: Path) -> None:
             dst = stash / rel
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
+        elif src.is_dir():
+            # A wholly ignored directory arrives as one '!! data/' entry; its
+            # contents are the user's too and must be carried, not dropped.
+            for path in src.rglob("*"):
+                if path.is_file():
+                    dst = stash / path.relative_to(target)
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, dst)
+
+
+def _tree_files(tree: Path) -> set[str]:
+    """Relative POSIX paths of every regular file under *tree* (cache and sidecar parts skipped)."""
+    out: set[str] = set()
+    for path in tree.rglob("*"):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(tree)
+        if any(part in _PRESERVE_SKIP or part.endswith(".pyc") for part in rel.parts):
+            continue
+        out.add(rel.as_posix())
+    return out
+
+
+def _carry_unshipped_files(target: Path, shipped: set[str], stash: Path) -> list[str]:
+    """Copy the user's own files — everything *target* holds that the replacement tree does not
+    ship — into *stash* so a force-replace swap can re-apply them. Returns the carried rel paths.
+
+    A subdirectory install carries no ``.git``, so nothing inside the tree can be told apart from
+    the clone; the replacement's file list is the only marker of what is the user's own.
+    """
+    carried = []
+    for rel in sorted(_tree_files(target)):
+        if rel in shipped:
+            continue
+        src = target / rel
+        dst = stash / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+        carried.append(rel)
+    return carried
 
 
 class RepinResult(NamedTuple):
@@ -420,15 +460,22 @@ def repin_catalog_plugin(
     # The catalog pin is immutable. Preview it before PM begins publication so a widened surface can
     # be declined without touching the live tree or writing a backup; update_plugin clones the same pin
     # again and owns validation, dependency preparation, metadata and code publication as one handoff.
+    shipped_files: Optional[set[str]] = None
     with tempfile.TemporaryDirectory(prefix=".repin-preview-", dir=_plugins_dir()) as preview_tmp:
         preview_root = Path(preview_tmp) / "plugin"
         git_url, subdir = _resolve_git_url(entry.install_identifier)
         _clone_plugin_repo(preview_root, git_url, entry.sha)
         preview_target = _resolve_subdir_within(preview_root, subdir) if subdir else preview_root
         _consent_gate(_read_manifest_for_install(preview_target), preview_target)
+        if not (target / ".git").exists():
+            # Without .git every file the new pin does not ship is the user's own
+            # (edited config, data files, data directories) — record the shipped set.
+            shipped_files = _tree_files(preview_target)
 
     with tempfile.TemporaryDirectory(prefix=".repin-", dir=_plugins_dir()) as tmp:
         stash = Path(tmp) / "local"
+        if shipped_files is not None:
+            _carry_unshipped_files(target, shipped_files, stash)
         _stash_local_files(target, local, stash)
         # Outside the plugins dir: the discovery scanners recurse into every subdirectory there.
         backup = _plugins_dir().parent / "plugins-backup" / f"{target.name}-{old_sha8}"

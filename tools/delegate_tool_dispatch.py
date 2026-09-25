@@ -9,7 +9,7 @@ import contextvars
 import json
 import logging
 import time
-from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
+from concurrent.futures import FIRST_COMPLETED, TimeoutError as _cf_timeout, wait as _cf_wait
 from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +22,28 @@ from tools.delegate_tool_registry import _capture_gateway_steer_authority
 from tools.delegate_tool_results import _finalize_child_results
 
 logger = logging.getLogger("tools.delegate_tool")  # log-record parity with the origin module
+
+# Floor for the join wall-clock cap. Prevents a silly-small config value from killing healthy long
+# subagents; tests shrink it via monkeypatching this module constant.
+_JOIN_CAP_FLOOR = 60.0
+
+
+def _join_wall_cap() -> float | None:
+    """Wall-clock ceiling for a synchronous delegation join, or ``None`` for no cap.
+
+    Reads ``delegation.child_timeout_seconds``. The setting defaults to off, so this is opt-in: there
+    is deliberately no magic default, because a fixed deadline here previously "timed out every real
+    batch while its children ran on as orphans" (see ``_SEQUENTIAL_DEADLINE_EXEMPT_TOOLS`` in
+    ``agent/tool_executor.py``). Operators who want a bound opt in by setting the value.
+    """
+    try:
+        from tools.delegate_tool import _get_child_timeout
+        raw = _get_child_timeout()
+    except Exception:
+        return None
+    if not raw:
+        return None
+    return max(float(raw), _JOIN_CAP_FLOOR)
 
 
 @dataclass
@@ -146,6 +168,13 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
     # it interrupted and returns, then the join hangs forever. Shutdown without
     # waiting on the interrupt path instead (same shape as moa_loop).
     interrupted = False
+    # Wall-clock ceiling for the join, from delegation.child_timeout_seconds (opt-in, floor _JOIN_CAP_FLOOR).
+    # The heartbeat bounds a child whose *activity clock* froze; this bounds a child that keeps signalling
+    # activity (or never reaches the heartbeat at all) while its future stays unresolvable — the #109749
+    # shape, where the transcript reached a terminal state and the worker future still never resolved.
+    _batch_cap = _join_wall_cap()
+    _batch_deadline = (time.monotonic() + _batch_cap) if _batch_cap else None
+    _capped_reported = False
     try:
         futures = {executor.submit(contextvars.copy_context().run, batch.run_child, i, t, child): i for i, t, child in batch.children}
         pending = set(futures)
@@ -153,6 +182,26 @@ def _run_children_parallel(batch: _Batch, results: list, *, honor_parent_interru
             if honor_parent_interrupt and getattr(parent_agent, "_interrupt_requested", False) is True:
                 results.extend(_entry_of(f, futures[f]) for f in pending)
                 interrupted = True
+                break
+            if _batch_deadline is not None and time.monotonic() >= _batch_deadline:
+                logger.warning(
+                    "delegate_task: batch join exceeded %ss cap — fabricating timeout entries for %d pending child(ren).",
+                    _batch_cap, len(pending),
+                )
+                if not _capped_reported:
+                    _capped_reported = True
+                    with _quiet("stall notice failed", exc_info=True):
+                        _print_completion_line(
+                            parent_agent, spinner_ref,
+                            f"⚠ [{_tag}] batch join capped at {_batch_cap:.0f}s — {len(pending)} child(ren) pending; "
+                            "their transcripts retain partial output")
+                for f in pending:
+                    _signal_child_stop(_child_by_index.get(futures[f]), "delegate_task batch join wall-clock cap")
+                results.extend(
+                    _fabricated_entry(futures[f], "timeout", "batch join wall-clock cap", _child_by_index.get(f))
+                    for f in pending
+                )
+                interrupted = True  # abandon the join: shutdown(wait=True) here is the hang this cap prevents
                 break
             done, pending = _cf_wait(pending, timeout=0.5, return_when=FIRST_COMPLETED)
             for future in done:
@@ -185,7 +234,33 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     from tools.delegation_live_log import update_manifest_statuses
     results: list = []
     if len(batch.children) == 1:
-        results.append(batch.run_child(*batch.children[0]))
+        i, t, child = batch.children[0]
+        _cap = _join_wall_cap()
+        if _cap:
+            # Bound the single-child call: the heartbeat bounds a *frozen-activity* child, but a child that
+            # finishes its transcript and then wedges in post-turn machinery still holds the turn forever
+            # (#109749). A wall clock is the only bound that catches that shape.
+            from tools.daemon_pool import DaemonThreadPoolExecutor
+            executor = DaemonThreadPoolExecutor(max_workers=1)
+            abandoned = False
+            try:
+                _fut = executor.submit(contextvars.copy_context().run, batch.run_child, i, t, child)
+                try:
+                    results.append(_fut.result(timeout=_cap))
+                except _cf_timeout:
+                    logger.warning(
+                        "delegate_task: single child exceeded its %ss cap — fabricating a timeout entry. "
+                        "The child transcript retains any output.", _cap)
+                    _signal_child_stop(child, "delegate_task child wall-clock cap")
+                    results.append(_fabricated_entry(i, "timeout", "child wall-clock cap", child))
+                    abandoned = True
+                except Exception as exc:
+                    results.append(_fabricated_entry(i, "error", str(exc), child))
+            finally:
+                # wait=False on the capped path: joining a wedged worker is the hang this cap exists to prevent.
+                executor.shutdown(wait=not abandoned, cancel_futures=abandoned)
+        else:
+            results.append(batch.run_child(*batch.children[0]))
         # A one-child unit has no join to wait on, but everything after the child returns — host-owned finalize,
         # transcript, manifest, then the durable write — is still owner-lifetime: record before any of it (#116000).
         _record_finished_child(batch, results[-1], honor_parent_interrupt)

@@ -15,6 +15,7 @@ def installed_plugin(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(plugins, "get_bundled_plugins_dir", lambda: tmp_path / "no-bundled")
     local = home / "skills"
     local.mkdir()
     monkeypatch.setattr(skills_tool, "SKILLS_DIR", local)
@@ -37,20 +38,23 @@ def installed_plugin(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("query", ["example", "example:example", "missing"])
-def test_not_found_names_a_loadable_plugin_even_after_twenty_local_skills(installed_plugin, query):
+@pytest.mark.parametrize("local_count", [0, 25])
+def test_not_found_names_a_loadable_plugin_even_after_twenty_local_skills(installed_plugin, query, local_count):
     from tools.registry import registry
     from tools import skills_tool  # registers the real tool handler
 
     local, namespace = installed_plugin
-    for index in range(25):
+    for index in range(local_count):
         folder = local / f"aaa-{index:02}"
         folder.mkdir()
         (folder / "SKILL.md").write_text(f"---\nname: {folder.name}\n---\nLocal.\n", encoding="utf-8")
+    if not local_count:
+        local.rmdir()
     skills_tool._SKILLS_CACHE.clear()
     result = json.loads(registry.dispatch("skill_view", {"name": query}))
     qualified = f"{namespace}:example"
     assert result["success"] is False
-    assert qualified in result["available_skills"]
+    assert qualified in result.get("available_skills", [])
     loaded = json.loads(registry.dispatch("skill_view", {"name": qualified}))
     assert loaded["success"] is True
     assert "Plugin content." in loaded["content"]
@@ -60,7 +64,18 @@ def test_local_resolution_and_missing_result_survive_plugin_listing_failure(inst
     from hermes_cli import plugins
     from tools.skills_tool import skill_view
 
-    local, _ = installed_plugin
+    local, namespace = installed_plugin
+    manager = plugins.get_plugin_manager()
+    from hermes_cli.plugins import PluginContext, PluginManifest
+    context = PluginContext(PluginManifest(name=namespace, version="1.0.0", description="fixture", source="user"), manager)
+    skill_md = manager.find_plugin_skill(f"{namespace}:example")
+    for index in range(25):
+        context.register_skill(f"aaa-{index:02}", skill_md)
+    suggestions = json.loads(skill_view("example", preprocess=False))["available_skills"]
+    assert suggestions[0] == f"{namespace}:example"
+    assert len(suggestions) <= 20
+    monkeypatch.setattr("tools.skills_tool._is_skill_disabled", lambda name: ":" in name)
+    assert not json.loads(skill_view("absent", preprocess=False))["available_skills"]
     folder = local / "example"
     folder.mkdir()
     (folder / "SKILL.md").write_text("---\nname: example\n---\nLocal winner.\n", encoding="utf-8")

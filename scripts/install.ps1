@@ -1,4 +1,4 @@
-# Hermes Agent bootstrap: git checkout + venv + hermes command on PATH.
+﻿# Hermes Agent bootstrap: git checkout + venv + hermes command on PATH.
 # Heavy dependencies (tool binaries, browsers, node) are pm's job after
 # this: `hermes pm install`. Stage protocol kept for Hermes-Setup:
 #   -Manifest             print the stage list as JSON
@@ -526,6 +526,32 @@ function Get-Uv {
     return $uvExe
 }
 
+# Extract a tar archive with the pinned uv's managed CPython when the inbox
+# bsdtar cannot (no bzip2 filter on stock Windows). Applies pm's exact
+# MSYS-link skip policy (pm/store.py extract_tar git_msys): dev/fd,
+# dev/stdin, dev/stdout, dev/stderr and etc/mtab are symlinks into /proc that
+# cannot exist on Windows; every other member is extracted and any other
+# failure fails the stage. Exit code in $LASTEXITCODE; no stdout.
+function Invoke-PythonTarExtract {
+    param(
+        [Parameter(Mandatory = $true)][string]$Archive,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+    $py = Get-BootstrapPython
+    $code = @'
+import sys, tarfile
+archive, dest = sys.argv[1], sys.argv[2]
+skip = {("dev/fd", "/proc/self/fd"), ("dev/stderr", "/proc/self/fd/2"),
+        ("dev/stdin", "/proc/self/fd/0"), ("dev/stdout", "/proc/self/fd/1"),
+        ("etc/mtab", "/proc/mounts")}
+with tarfile.open(archive, "r:bz2") as tf:
+    tf.extractall(dest, filter="data",
+                  members=[m for m in tf.getmembers()
+                           if (m.name, m.linkname) not in skip])
+'@
+    Invoke-Native { & $py -c $code $Archive $Destination 2>$null }
+}
+
 # Provision git for this host from the pinned pm/lock.json artifact, into
 # the same store slot (<store>\git-<version>-<target>\) pm uses. Returns the
 # git.exe path, or $null when no pinned artifact exists for this target.
@@ -557,7 +583,19 @@ function Get-PinnedGit {
         $msysProcLinks = @('dev/fd', 'dev/stdin', 'dev/stdout', 'dev/stderr', 'etc/mtab')
         $excludes = foreach ($link in $msysProcLinks) { '--exclude'; "^$link" }
         Invoke-Native { & $inboxTar @excludes -xf $tarPath -C $extractDir }
-        if ($LASTEXITCODE) { Fail "failed to extract pinned git archive" }
+        if ($LASTEXITCODE) {
+            # Stock Windows 10/11 ships a bsdtar built without bzip2: it can
+            # only "decompress" a .tar.bz2 by spawning an external bzip2 -d,
+            # which a fresh host does not have, so the pinned git artifact
+            # can never unpack there ("Can't initialize filter; unable to run
+            # program bzip2 -d"). GitHub runners pass only because Git's own
+            # usr\bin\bzip2.exe is on PATH. Retry with the pinned uv's own
+            # managed Python, whose stdlib tarfile reads bz2 natively (the
+            # same move pm made for host xz in #11197); the fallback covers
+            # every bsdtar failure, not just the missing-filter one.
+            Invoke-PythonTarExtract -Archive $tarPath -Destination $extractDir
+            if ($LASTEXITCODE) { Fail "failed to extract pinned git archive" }
+        }
         # Layout: Git-<ver>/cmd\git.exe — flatten the single wrapper dir.
         $inner = @(Get-ChildItem $extractDir)
         $src = $extractDir
@@ -895,9 +933,15 @@ function Get-BootstrapPython {
     # this interpreter; resolve uv and Python once per process.
     if ($script:BootstrapPython) { return $script:BootstrapPython }
     $uv = Get-Uv
-    $lock = Get-Content (Join-Path $InstallDir "pm\lock.json") -Raw | ConvertFrom-Json
-    $pyPin = $lock.packages.python
-    $pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' } else { '3.14' }
+    # prerequisites runs before a checkout exists; the lock is read only for
+    # the (optional) python pin, so fall back to the installer's baseline.
+    $lockPath = Join-Path $InstallDir "pm\lock.json"
+    $pyVersion = '3.14'
+    if (Test-Path $lockPath) {
+        $lock = Get-Content $lockPath -Raw | ConvertFrom-Json
+        $pyPin = $lock.packages.python
+        if ($pyPin) { $pyVersion = ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' }
+    }
     # A bare version lets uv pick emulated x86_64 on Windows-on-ARM.
     $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
     $pyRequest = "cpython-$pyVersion-windows-$pyArch-none"

@@ -38,7 +38,12 @@ logger = logging.getLogger("hermes_cli.plugins")
 # the tool loop hot path. - kanban_task_* — fire after the board DB commit, observers only, in
 # dispatcher/worker processes; kanban has its own heartbeat/stale reclaim. Abandon-without-join also leaves
 # a daemon thread that may still mutate shared state — safer for value-returning observers than for
-# gates/flushes.
+# gates/flushes. - gateway_platform_event — deliberately unbounded here. The bounded path still blocks
+# the caller for the full timeout, then suppresses the callback for 60s, and its running-gate keys on
+# tool_call_id/turn_id, which these events lack: a second Telegram button tap while the first is being
+# handled would be skipped, and one slow tap would disable the plugin for a minute. Instead the gateway
+# runs ``callback_query`` events off the loop (asyncio.to_thread) and the Telegram adapter answers the tap
+# itself after 10s when no plugin claims it (gateway/run_adapters.py, plugins/platforms/telegram).
 _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",

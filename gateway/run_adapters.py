@@ -1674,13 +1674,24 @@ class GatewayAdapterLifecycleMixin:
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))
 
-    async def _handle_gateway_platform_event(self, event: dict, source) -> None:
-        """Authorize and publish one normalized adapter event to plugin hooks."""
+    async def _handle_gateway_platform_event(self, event: dict, source) -> Optional[list]:
+        """Authorize and publish one normalized adapter event to plugin hooks.
+
+        Returns the hook results (``None`` when nothing was dispatched) so a caller that owes the
+        platform an acknowledgement (Telegram inline-button taps) can tell whether a plugin claimed it.
+        ``callback_query`` events run the hook off the event loop: a plugin answering a button tap does
+        network I/O, and a slow or hung plugin must not stall every other update on this gateway.
+        """
+        results = None
         # Observer failures must never break the adapter's update loop.
         with _log_suppressed(logging.DEBUG, "gateway_platform_event hook dispatch failed", exc_info=True):
             from hermes_cli.lifecycle import has_hook, invoke_hook
             if has_hook("gateway_platform_event") and self._is_user_authorized_for_source(source):
-                invoke_hook("gateway_platform_event", **event)
+                if event.get("event_type") == "callback_query":
+                    results = await asyncio.to_thread(invoke_hook, "gateway_platform_event", **event)
+                else:
+                    results = invoke_hook("gateway_platform_event", **event)
+        return results
 
     def _make_profile_platform_event_handler(self, profile_name: str):
         """Bind platform-event auth and hook dispatch to one multiplex profile."""

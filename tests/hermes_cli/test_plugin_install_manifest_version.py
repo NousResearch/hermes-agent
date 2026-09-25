@@ -12,9 +12,10 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugins import SUPPORTED_MANIFEST_VERSION
+from tests.pm._fixtures import client, isolated_python  # noqa: F401
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -40,10 +41,11 @@ def _plugin_repo(root: Path, manifest: dict) -> Path:
     "manifest_version", list(range(1, SUPPORTED_MANIFEST_VERSION + 1))
 )
 def test_install_accepts_every_loader_supported_manifest_version(
-    monkeypatch, tmp_path, manifest_version
+    client, monkeypatch, tmp_path, manifest_version
 ):
-    from hermes_cli.plugins_cmd import _install_plugin_core
+    from hermes_cli import plugins_cmd
 
+    monkeypatch.setattr(plugins_cmd, "_scan_on_install_enabled", lambda: False)
     repo = _plugin_repo(
         tmp_path,
         {"name": "demo", "version": "1.0.0", "manifest_version": manifest_version},
@@ -51,7 +53,7 @@ def test_install_accepts_every_loader_supported_manifest_version(
     home = tmp_path / "home"
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    target, manifest, name = _install_plugin_core(repo.as_uri(), force=False)
+    target, manifest, name = plugins_cmd._install_plugin_core(repo.as_uri(), force=False)
 
     assert name == "demo"
     assert target.exists()
@@ -59,10 +61,11 @@ def test_install_accepts_every_loader_supported_manifest_version(
 
 
 def test_manifest_version_above_shared_support_is_refused_cleanly(
-    monkeypatch, tmp_path
+    client, monkeypatch, tmp_path
 ):
-    from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+    from hermes_cli import plugins_cmd
 
+    monkeypatch.setattr(plugins_cmd, "_scan_on_install_enabled", lambda: False)
     repo = _plugin_repo(
         tmp_path,
         {
@@ -75,10 +78,10 @@ def test_manifest_version_above_shared_support_is_refused_cleanly(
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     with pytest.raises(
-        PluginOperationError,
+        plugins_cmd.PluginOperationError,
         match=rf"supports up to {SUPPORTED_MANIFEST_VERSION}\b",
     ):
-        _install_plugin_core(repo.as_uri(), force=False)
+        plugins_cmd._install_plugin_core(repo.as_uri(), force=False)
 
     assert not (home / "plugins" / "demo").exists()
     assert not (home / "plugins" / ".install-metadata.json").exists()

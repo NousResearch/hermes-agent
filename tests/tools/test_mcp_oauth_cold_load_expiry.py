@@ -39,14 +39,11 @@ import time
 
 import pytest
 
-
 pytest.importorskip("mcp.client.auth.oauth2", reason="MCP SDK 1.26.0+ required")
-
 
 # ---------------------------------------------------------------------------
 # HermesTokenStorage — absolute expiry persistence
 # ---------------------------------------------------------------------------
-
 
 class TestSetTokensAbsoluteExpiry:
     def test_set_tokens_persists_absolute_expires_at(self, tmp_path, monkeypatch):
@@ -104,7 +101,6 @@ class TestSetTokensAbsoluteExpiry:
             (tmp_path / "mcp-tokens" / "srv.json").read_text()
         )
         assert "expires_at" not in on_disk
-
 
 class TestGetTokensReconstructsExpiresIn:
     def test_get_tokens_uses_expires_at_for_remaining_ttl(
@@ -209,11 +205,9 @@ class TestGetTokensReconstructsExpiresIn:
             "expires_in=0 so the SDK refreshes on next request."
         )
 
-
 # ---------------------------------------------------------------------------
 # HermesMCPOAuthProvider._initialize — seed token_expiry_time
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.asyncio
 async def test_initialize_seeds_token_expiry_time_from_stored_tokens(
@@ -278,7 +272,6 @@ async def test_initialize_seeds_token_expiry_time_from_stored_tokens(
     # Should be ~7200s in the future (fresh write).
     assert provider.context.token_expiry_time > time.time() + 7000
     assert provider.context.token_expiry_time <= time.time() + 7200 + 5
-
 
 @pytest.mark.asyncio
 async def test_initialize_marks_zero_ttl_cold_loaded_token_invalid(
@@ -349,19 +342,15 @@ async def test_initialize_marks_zero_ttl_cold_loaded_token_invalid(
         "between refresh and authorization-code flow."
     )
 
-
 async def _noop_redirect(_url: str) -> None:
     return None
-
 
 async def _noop_callback() -> tuple[str, str | None]:
     raise AssertionError("callback handler should not be invoked in these tests")
 
-
 # ---------------------------------------------------------------------------
 # Pre-flight OAuth metadata discovery
 # ---------------------------------------------------------------------------
-
 
 @pytest.mark.asyncio
 async def test_initialize_prefetches_oauth_metadata_when_missing(
@@ -496,5 +485,3 @@ async def test_initialize_prefetches_oauth_metadata_when_missing(
     # so they must carry the stamped User-Agent or WAF-fronted providers 403 them (#113771).
     from tools.mcp_oauth_provider import DEFAULT_AUTH_REQUEST_USER_AGENT
     assert seen_user_agents and set(seen_user_agents) == {DEFAULT_AUTH_REQUEST_USER_AGENT}
-
-

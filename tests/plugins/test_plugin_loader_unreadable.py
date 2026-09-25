@@ -8,15 +8,22 @@ from plugins import plugin_loader
 
 
 def _deny(monkeypatch, denied: Path) -> None:
-    """chmod 000 does not bite as root, so fail the stat of the denied child's ``__init__.py``."""
-    real_stat = Path.stat
+    """chmod 000 does not bite as root, so fail the probes of the denied child's ``__init__.py``.
 
-    def stat(self, *args, **kwargs):
-        if self.parent == denied:
-            raise PermissionError(13, "Permission denied", str(self))
-        return real_stat(self, *args, **kwargs)
+    ``Path.exists``/``is_dir`` route through ``os.path`` on 3.12+, which swallows
+    ``PermissionError`` into False; the loader's own guard sees the error only when the
+    pathlib probe raises, so fail both layers the way a real ACL denial can."""
+    real_exists, real_is_dir = Path.exists, Path.is_dir
 
-    monkeypatch.setattr(Path, "stat", stat)
+    def refuse(method):
+        def probe(self, *args, **kwargs):
+            if self.parent == denied or self == denied:
+                raise PermissionError(13, "Permission denied", str(self))
+            return method(self, *args, **kwargs)
+        return probe
+
+    monkeypatch.setattr(Path, "exists", refuse(real_exists))
+    monkeypatch.setattr(Path, "is_dir", refuse(real_is_dir))
 
 
 def test_iter_plugin_dirs_skips_unreadable_child(tmp_path, monkeypatch):

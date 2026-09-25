@@ -491,7 +491,9 @@ class GatewaySessionCommandsMixin:
         from gateway.session_ingress_context import carry_callback
         turn = MessageEvent(
             text=last_user_msg, message_type=MessageType.TEXT, source=source,
-            raw_message=event.raw_message, channel_prompt=event.channel_prompt)
+            raw_message=event.raw_message, channel_prompt=event.channel_prompt,
+            ephemeral_context_ref=event.ephemeral_context_ref,
+        )
         carry_callback(event, turn)
         return await self._handle_message(turn)
 
@@ -550,7 +552,9 @@ class GatewaySessionCommandsMixin:
                                                write=write, on_commit=committed)
         turn = MessageEvent(
             text=resend_text, message_type=MessageType.TEXT, source=event.source,
-            raw_message=event.raw_message, channel_prompt=event.channel_prompt)
+            raw_message=event.raw_message, channel_prompt=event.channel_prompt,
+            ephemeral_context_ref=event.ephemeral_context_ref,
+        )
         carry_callback(event, turn)
         token = retry_admission.bind(rewrite)
         try:

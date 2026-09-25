@@ -132,7 +132,7 @@ class SessionContextMixin:
         result: dict[str, str] = {}
 
         def _summary() -> None:
-            if session.honcho_session_id not in self._sessions_cache:
+            if not session.honcho_session_id:
                 return
             ctx = self._authed_call(
                 "session summary fetch",
@@ -183,7 +183,7 @@ class SessionContextMixin:
         session = self._cached_session(session_key)
         if not session:
             return {}
-        if session.honcho_session_id not in self._sessions_cache:
+        if not session.honcho_session_id:
             # Fall back to peer-level context, respecting the requested peer.
             peer_id = self._resolve_peer_id(session, peer)
             return self._fetch_peer_context(peer_id, target=peer_id)

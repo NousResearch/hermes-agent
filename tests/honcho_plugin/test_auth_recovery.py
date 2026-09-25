@@ -297,8 +297,9 @@ class _FlakyPeer:
 def _make_manager(peer, *, reauth_ok=True):
     cfg = HonchoClientConfig(host="hermes", api_key="hch-at-x", enabled=True)
     mgr = HonchoSessionManager(config=cfg)
+    # These fakes provide peer operations, not a remote SDK session.
     session = HonchoSession(
-        key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s"
+        key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id=None
     )
     mgr._cache["k"] = session
     mgr._get_or_create_peer = lambda peer_id: peer
@@ -790,7 +791,7 @@ class TestClientRebuildRetry:
         mgr = HonchoSessionManager(config=cfg)
         mgr._peers_cache["u"] = stale_peer
         mgr._cache["k"] = HonchoSession(
-            key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id="s"
+            key="k", user_peer_id="u", assistant_peer_id="a", honcho_session_id=None
         )
 
         ctx = mgr.get_session_context("k")

@@ -254,8 +254,9 @@ def test_recall_read_counts_as_activity_for_the_idle_sweep():
     assert "read-only" in mgr._cache
 
 
-def test_sdk_object_hit_moves_the_key_to_the_recent_end():
+def test_sdk_object_hit_moves_the_key_to_the_recent_end(monkeypatch):
     mgr = _manager()
+    monkeypatch.setattr("plugins.memory.honcho.session.get_honcho_client", lambda config: mgr._honcho)
     mgr._peers_cache = {"a": object(), "b": object()}
 
     mgr._cached_sdk_object(mgr._peers_cache, "a", lambda: None)

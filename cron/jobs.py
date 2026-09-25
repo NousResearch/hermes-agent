@@ -2214,17 +2214,28 @@ def rearm_oneshot(job_id: str, run_at: Any) -> Optional[Dict[str, Any]]:
 
 
 def remove_job(job_id: str) -> bool:
-    """Remove a job by ID or name."""
+    """Remove a job by ID or name; refuse external removal while a live claim owns it."""
     job = resolve_job_ref(job_id)
     if not job:
         return False
     canonical_id = job["id"]
     with _jobs_lock():
         jobs = load_jobs()
-        original_len = len(jobs)
-        jobs = [j for j in jobs if j["id"] != canonical_id]
-        if len(jobs) == original_len:
+        current = next((j for j in jobs if j["id"] == canonical_id), None)
+        if current is None:
             return False
+        marker = _self_removal_delivery.get()
+        # Check the locked record, not the earlier name-resolution snapshot: a fire may
+        # have claimed the job in between. Self-removal already preserves final delivery.
+        if marker is None or marker.job_id != canonical_id:
+            now = _hermes_now()
+            if (_claim_is_live(current.get("fire_claim"), now, FIRE_CLAIM_TTL_SECONDS)
+                    or _claim_is_live(current.get("run_claim"), now, _oneshot_run_claim_ttl_seconds())):
+                raise ValueError(
+                    f"Cannot remove job '{canonical_id}': it is currently running. "
+                    "Removing it would discard its result. Pause it to prevent future runs, "
+                    "then remove it after the current run finishes.")
+        jobs = [j for j in jobs if j["id"] != canonical_id]
         # Resolve BEFORE saving so a legacy unsafe ID fails closed without a half-applied removal.
         job_output_dir = _job_output_dir(canonical_id)
         save_jobs(jobs, removed_ids={canonical_id})

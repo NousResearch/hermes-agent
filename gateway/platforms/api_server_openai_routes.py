@@ -867,13 +867,14 @@ class OpenAICompatRoutesMixin:
         """Stream ``chat.completion.chunk`` frames from the agent's delta queue. On client
         disconnect the agent is interrupted (stops LLM calls), then its task wrapper cancelled."""
         from gateway.platforms.api_server import (
-            _abandon_agent_task, _chat_usage_payload, _sse_frame)
+            _abandon_agent_task, _chat_usage_payload, _resolve_media_to_data_urls, _sse_frame)
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
 
         def _chunk(delta: Dict[str, Any], finish_reason=None, **extra) -> Dict[str, Any]:
             return {"id": completion_id, "object": "chat.completion.chunk", "created": created,
                     "model": model,
                     "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}], **extra}
+        content_sent = False
         try:
             await response.write(_sse_frame(_chunk({"role": "assistant"})))
             async for delta in _iter_stream_items(stream_q, agent_task, response):
@@ -881,6 +882,8 @@ class OpenAICompatRoutesMixin:
                     break
                 if isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__tool_progress__":
                     # Custom event: tool lifecycle for frontends without markers in history.
+                    if not self._tool_progress_events:
+                        continue  # opted out for strict OpenAI clients (#12020)
                     await response.write(_sse_frame(delta[1], event="hermes.tool.progress"))
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__reasoning__":
                     # DeepSeek-style ``delta.reasoning_content`` (#99552), the field Open WebUI,
@@ -891,6 +894,8 @@ class OpenAICompatRoutesMixin:
                 elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
                     await response.write(_sse_frame(delta[1], event="approval.request"))
                 else:
+                    if delta:
+                        content_sent = True
                     await response.write(_sse_frame(_chunk({"content": delta})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
             # partial): surface a non-"stop" finish_reason like the non-streaming path.
@@ -912,6 +917,14 @@ class OpenAICompatRoutesMixin:
                 (isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True)
                 or getattr(agent_error, "_notification_presentation_suppressed", False) is True
             )
+            # Recovery paths (guardrail halt, partial_stream_recovery, fallback prior-turn
+            # content) can return a final_response without firing any content delta; emit it
+            # once so the client does not see an empty stream (#31449). Mirrors
+            # _ResponsesStream.collect_result for /v1/responses.
+            if not content_sent and not presentation_muted and isinstance(result, dict):
+                fallback_text = _resolve_media_to_data_urls(result.get("final_response") or "")
+                if fallback_text:
+                    await response.write(_sse_frame(_chunk({"content": fallback_text})))
             if finish_reason != "stop":
                 if err_msg and not presentation_muted:
                     finish_chunk["error"] = {

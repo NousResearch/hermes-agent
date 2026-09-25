@@ -26,7 +26,7 @@ def _pc():
 
 
 def _install_plugin_python_deps(
-    manifest: dict, target: Path, console
+    manifest: dict, target: Path, console, *, preconsented: bool = False
 ) -> tuple[bool, Optional[str]]:
     """Consent gate for plugin python deps (settled 2026-09-02; C13 rework).
 
@@ -78,13 +78,18 @@ def _install_plugin_python_deps(
 
     if not has_python:
         return True, None
-    return _consent_python_deps(manifest.get("name", "this plugin"), deps, console)
+    return _consent_python_deps(
+        manifest.get("name", "this plugin"), deps, console, preconsented=preconsented
+    )
 
 
-def _consent_python_deps(plugin_name: str, deps: tuple[str, ...], console) -> tuple[bool, Optional[str]]:
+def _consent_python_deps(
+    plugin_name: str, deps: tuple[str, ...], console, *, preconsented: bool = False
+) -> tuple[bool, Optional[str]]:
     """The y/N gate for Python deps entering the shared environment — install,
     reinstall AND an update that declares new ones all pass through here.
-    Returns (consented, reason); never raises."""
+    Returns (consented, reason); never raises. *preconsented* (an explicit --enable)
+    implies consent without a TTY; otherwise a non-interactive invocation still fails closed."""
     console.print(
         f"\n[bold]{plugin_name}[/bold] declares Python dependencies:"
     )
@@ -94,6 +99,13 @@ def _consent_python_deps(plugin_name: str, deps: tuple[str, ...], console) -> tu
     else:
         console.print("  - (declared in its pyproject.toml)")
 
+    # An explicit --enable is dependency consent: the user already opted into
+    # activation, so a missing TTY must not fail the install closed (#122134).
+    if preconsented:
+        console.print(
+            "[dim]--enable given: dependency consent implied; preparing with Hermes through PM.[/dim]"
+        )
+        return True, None
     # A decline or non-interactive invocation leaves the new plugin disabled.
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         console.print(
@@ -406,6 +418,7 @@ def cmd_install(
     metadata. An explicit different ``--ref`` is a custom pin. URLs/shorthand are custom sources. Every
     install is checked against the catalog kill list unless *allow_removed*.
     *enable* None prompts "Enable now? [y/N]"; True/False skip the prompt.
+    An explicit True also implies Python dependency consent (no TTY needed).
     """
     from hermes_cli import plugins_cmd_catalog as catalog
     console = _pc()._console()
@@ -472,7 +485,9 @@ def cmd_install(
         should_enable = _pc()._is_tty() and _pc()._ask_yes(f"  Enable '{installed_name}' now? [y/N]: ")
     deps_ok, deps_reason = (True, None)
     if should_enable and not already_active:
-        deps_ok, deps_reason = _install_plugin_python_deps(installed_manifest, target, console)
+        deps_ok, deps_reason = _install_plugin_python_deps(
+            installed_manifest, target, console, preconsented=(enable is True)
+        )
 
     _pc()._display_after_install(target, identifier)
 

@@ -36,13 +36,18 @@ def test_install_only_requests_relevant_python_consent(admission_env, monkeypatc
     assert not (installed / 'node_modules').exists()
     enabled = yaml.safe_load(config_path.read_text(encoding='utf-8'))['plugins']['enabled']
     output = capsys.readouterr().out
-    if python_surface is None:
-        assert 'sidecar-plugin' in enabled
-        assert 'declares Python dependencies' not in output
-    else:
+    if python_surface == 'legacy':
+        # --enable now implies dependency consent, but the fixture's fake
+        # dependency cannot resolve, so admission refuses and the plugin
+        # stays installed but disabled.
         assert 'sidecar-plugin' not in enabled
         assert config_path.read_bytes() == before
-        assert 'dependency install skipped (non-interactive)' in output
+        assert 'dependency install skipped (non-interactive)' not in output
+    else:
+        assert 'sidecar-plugin' in enabled
+        assert 'dependency install skipped (non-interactive)' not in output
+        if python_surface is None:
+            assert 'declares Python dependencies' not in output
 
 
 def test_node_sidecar_question_stays_independent(tmp_path, monkeypatch):
@@ -64,3 +69,42 @@ def test_node_sidecar_question_stays_independent(tmp_path, monkeypatch):
     assert installs == [(target, {'explicit': True})]
     assert len(prompts) == 1 and 'node_modules' in prompts[0]
     assert not any('Python dependencies' in str(line) for line in lines)
+
+
+def _dep_consent_target(tmp_path):
+    target = tmp_path / 'plugin'
+    target.mkdir()
+    (target / 'plugin.yaml').write_text('name: implied-consent\n', encoding='utf-8')
+    (target / 'pyproject.toml').write_text(
+        '[project]\nname="implied-consent"\nversion="1.0"\nrequires-python=">=3.14"\ndependencies=["requests>=2"]\n',
+        encoding='utf-8',
+    )
+    return target
+
+
+def _stub_console(lines):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(print=lambda *args, **kwargs: lines.append(' '.join(str(a) for a in args)))
+
+
+def test_explicit_enable_implies_python_dep_consent_noninteractive(tmp_path, monkeypatch):
+    """#122134: an explicit --enable is dependency consent, even with no TTY."""
+    lines = []
+    monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: False)
+    monkeypatch.setattr(plugins_cmd.sys.stdout, 'isatty', lambda: False)
+    result = plugins_cmd._install_plugin_python_deps(
+        {'name': 'implied-consent'}, _dep_consent_target(tmp_path),
+        _stub_console(lines), preconsented=True)
+    assert result == (True, None)
+    assert any('implied-consent' in line for line in lines)
+
+
+def test_dep_consent_stays_fail_closed_without_explicit_enable(tmp_path, monkeypatch):
+    """Without --enable, a non-interactive install still refuses consent."""
+    lines = []
+    monkeypatch.setattr(plugins_cmd.sys.stdin, 'isatty', lambda: False)
+    monkeypatch.setattr(plugins_cmd.sys.stdout, 'isatty', lambda: False)
+    result = plugins_cmd._install_plugin_python_deps(
+        {'name': 'implied-consent'}, _dep_consent_target(tmp_path), _stub_console(lines))
+    assert result == (False, 'dependency install skipped (non-interactive)')

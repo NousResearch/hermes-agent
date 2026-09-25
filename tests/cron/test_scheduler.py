@@ -1988,6 +1988,109 @@ class TestDeliverOriginUnresolvableIsLocal:
         assert self._deliver(job, monkeypatch) is None
 
 
+class TestDeliverOriginNullRecurringStampsError:
+    """25/9 blindspot hardening: a desktop/agent-created RECURRING job (origin null,
+    deliver=origin, no home channel) burned every run silently into last_output —
+    the support-portal draft-queue poller ran blind for days while looking healthy
+    in ``hermes cron list``. _deliver_result must return an error string so
+    mark_job_run stamps last_delivery_error and cron list shows the job as
+    delivery-broken with a fix hint. One-shots and exhausted finite repeats (the
+    invoker consumes last_output directly) and captured-but-unresolvable origins
+    keep the #43014 expected-silent path.
+
+    Review r1 (25/9): all job shapes here mirror the STORE — ``repeat`` is persisted
+    as ``{"times": N, "completed": M}`` (jobs.py:1855), never the bare int the
+    ``create_job`` API accepts. Synthetic int-shaped one-shots gave false confidence.
+    """
+
+    def _deliver(self, job, monkeypatch):
+        from cron import scheduler_delivery as sched_delivery
+        monkeypatch.setattr(sched_delivery, "_get_home_target_chat_id", lambda *_: "")
+        return _deliver_result(job, "poller output")
+
+    # ---- recurring (stored shapes) → error string ----
+
+    def test_recurring_origin_null_returns_error(self, monkeypatch):
+        job = {"id": "blind-poller", "name": "blind-poller", "deliver": "origin",
+               "origin": None, "repeat": {"times": None, "completed": 5}}
+        result = self._deliver(job, monkeypatch)
+        assert result is not None
+        assert "origin null" in result
+        assert "cron edit" in result
+
+    def test_recurring_origin_absent_returns_error(self, monkeypatch):
+        job = {"id": "no-origin-key", "deliver": "origin"}
+        assert self._deliver(job, monkeypatch) is not None
+
+    def test_finite_recurring_origin_null_returns_error(self, monkeypatch):
+        job = {"id": "daily-brief", "deliver": "origin", "origin": None,
+               "repeat": {"times": 30, "completed": 0}}
+        assert self._deliver(job, monkeypatch) is not None
+
+    # ---- no future fires (stored shapes) → silent ----
+
+    def test_one_shot_origin_null_stays_silent(self, monkeypatch):
+        job = {"id": "oneshot", "deliver": "origin", "origin": None,
+               "repeat": {"times": 1, "completed": 0}}
+        assert self._deliver(job, monkeypatch) is None
+
+    def test_exhausted_finite_origin_null_stays_silent(self, monkeypatch):
+        job = {"id": "spent-digest", "deliver": "origin", "origin": None,
+               "repeat": {"times": 3, "completed": 3}}
+        assert self._deliver(job, monkeypatch) is None
+
+    def test_legacy_int_one_shot_stays_silent(self, monkeypatch):
+        job = {"id": "legacy-int", "deliver": "origin", "origin": None, "repeat": 1}
+        assert self._deliver(job, monkeypatch) is None
+
+    # ---- #43014 regression guards ----
+
+    def test_captured_unresolvable_origin_stays_silent_43014(self, monkeypatch):
+        job = {"id": "cli-job", "deliver": "origin", "origin": "cli-session-provenance"}
+        assert self._deliver(job, monkeypatch) is None
+
+
+class TestOriginNullStampsRecordEndToEnd:
+    """End-to-end through the real store: a recurring origin-null job's burn must land
+    on the job record as last_status=delivery_failed with the fix hint visible via
+    get_job (the surface `hermes cron list` reads). Review r1 (25/9) asked for the
+    chain, not just the string."""
+
+    @pytest.fixture()
+    def tmp_cron_dir(self, tmp_path, monkeypatch):
+        """Redirect cron storage to a temp directory (same isolation as test_jobs.py)."""
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+        return tmp_path
+
+    def test_recurring_origin_null_stamp_reaches_store(self, tmp_cron_dir, monkeypatch):
+        from cron import jobs as jobs_mod
+        from cron import scheduler_delivery as sched_delivery
+        monkeypatch.setattr(sched_delivery, "_get_home_target_chat_id", lambda *_: "")
+        job = jobs_mod.create_job(prompt="poll queue", schedule="every 1h", deliver="origin")
+        err = _deliver_result(job, "poller output")
+        assert err is not None and "origin null" in err
+        jobs_mod.mark_job_run(job["id"], success=True, delivery_error=err)
+        updated = jobs_mod.get_job(job["id"])
+        assert updated is not None
+        assert updated["last_status"] == "delivery_failed"
+        assert "origin null" in updated["last_delivery_error"]
+        assert "hermes cron edit" in updated["last_delivery_error"]
+
+    def test_one_shot_origin_null_record_stays_ok(self, tmp_cron_dir, monkeypatch):
+        from cron import jobs as jobs_mod
+        from cron import scheduler_delivery as sched_delivery
+        monkeypatch.setattr(sched_delivery, "_get_home_target_chat_id", lambda *_: "")
+        job = jobs_mod.create_job(prompt="once", schedule="in 30m", repeat=1, deliver="origin")
+        assert _deliver_result(job, "one-shot output") is None
+        jobs_mod.mark_job_run(job["id"], success=True)
+        updated = jobs_mod.get_job(job["id"])
+        assert updated is not None
+        assert updated["last_status"] == "ok"
+        assert updated["last_delivery_error"] is None
+
+
 class TestSendMediaTimeoutCancelsFuture:
     """Same orphan-coroutine guarantee for _send_media_via_adapter's
     future.result(timeout=30) call. If this times out mid-batch, the

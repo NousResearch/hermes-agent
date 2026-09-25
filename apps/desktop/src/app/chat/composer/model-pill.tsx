@@ -55,14 +55,19 @@ export function ModelPill({
 }) {
   const { t } = useI18n()
   const copy = t.shell.statusbar
+  const scope = useComposerScope()
   const registry = useStore($connectionsRegistry)
-  const connection = registry?.connections.find(item => item.id === model.ownerConnectionId)
+  // An in-place cross-gateway session keeps the ambient shell owner, while
+  // ChatRuntimeBoundary publishes the session's resolved owner in this scope.
+  const ownerConnectionId = scope.connectionId ?? model.ownerConnectionId
+  const ownerProfile = scope.profile ?? model.ownerProfile
+  const connection = registry?.connections.find(item => item.id === ownerConnectionId)
   // ponytail: display the same owner as the catalog; never infer persistence scope.
-  const gatewayLabel = connection?.label || model.ownerConnectionId
+  const gatewayLabel = connection?.label || ownerConnectionId
 
   const owner = gatewayLabel
-    ? t.profiles.fleet.onGateway(model.ownerProfile || '', gatewayLabel)
-    : model.ownerProfile || ''
+    ? t.profiles.fleet.onGateway(ownerProfile || '', gatewayLabel)
+    : ownerProfile || ''
 
   // Two return branches below, one handle: only ever one of them mounts.
   const tourMarker = useTourMarker('model-pill')
@@ -79,7 +84,6 @@ export function ModelPill({
   const runtimeId = useStore(view.$runtimeId)
   const [open, setOpen] = useState(false)
   const restoreSelection = useRef<(() => void) | null>(null)
-  const scope = useComposerScope()
   const hasLiveMenu = Boolean(model.modelMenuContent)
 
   // The `composer.modelPicker` hotkey, routed to exactly one surface (the pane

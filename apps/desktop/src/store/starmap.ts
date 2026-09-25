@@ -63,3 +63,21 @@ export function resetStarmapGraph(): void {
   $starmapGraph.set(null)
   $starmapError.set(null)
 }
+
+// ── /recall mode ────────────────────────────────────────────────────────────
+//
+// `/recall` opens the star map in "recall mode": the search sidebar opens
+// focused so the user can find a node and insert its knowledge straight into
+// the CURRENT chat's composer (as reviewed reference context). The star map is
+// an overlay on the active session, so the insert targets the 'main' composer —
+// no session id needs threading. This atom is the one-bit signal the slash
+// handler raises and the StarmapView consumes (and clears on close).
+export const $starmapRecallMode = atom(false)
+
+export function openStarmapRecall(): void {
+  $starmapRecallMode.set(true)
+}
+
+export function clearStarmapRecall(): void {
+  $starmapRecallMode.set(false)
+}

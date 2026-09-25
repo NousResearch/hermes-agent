@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   type CommandCatalogMeta,
   type CommandsCatalogLike,
+  desktopBuiltinSlashCompletions,
   desktopSkinSlashCompletions,
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
@@ -142,6 +143,94 @@ describe('desktop slash command curation', () => {
         session_id: 's-1'
       })
     }
+  })
+
+  it('keeps commands with richer CLI semantics on the slash worker', () => {
+    for (const name of ['/agents', '/steer', '/usage']) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
+  })
+
+  it('still routes commands without dedicated RPCs through exec()', () => {
+    // /btw is an action (prompt.btw) — the slash-worker print never reached Desktop.
+    const execNames = [
+      '/bg',
+      '/debug',
+      '/goal',
+      '/personality',
+      '/queue',
+      '/retry',
+      '/rollback',
+      '/tools',
+      '/undo',
+      '/version'
+    ]
+
+    for (const name of execNames) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
+  })
+
+  it('routes /btw to the prompt.btw side-question action', () => {
+    expect(resolveDesktopCommand('/btw')?.surface).toEqual({ kind: 'action', action: 'btw' })
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(isDesktopSlashSuggestion('/btw')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/btw')).toBeNull()
+  })
+
+  it('distinguishes free prose from finite slash option lists', () => {
+    expect(desktopSlashCommandArgumentMode('/goal')).toBe('mixed')
+    expect(desktopSlashCommandArgumentMode('/steer')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/queue')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/personality')).toBe('options')
+    expect(desktopSlashCommandArgumentMode('/handoff')).toBe('options')
+    expect(desktopSlashCommandArgumentMode('/version')).toBeNull()
+  })
+
+  it('routes /journey (and aliases) to the memory graph overlay action', () => {
+    expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/learning')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(isDesktopSlashCommand('/journey')).toBe(true)
+    expect(isDesktopSlashCommand('/memory-graph')).toBe(true)
+    expect(isDesktopSlashSuggestion('/journey')).toBe(true)
+    // Aliases execute but stay out of the popover.
+    expect(isDesktopSlashSuggestion('/memory-graph')).toBe(false)
+    expect(desktopSlashUnavailableMessage('/journey')).toBeNull()
+  })
+
+  it('routes /recall to the memory graph recall action and surfaces it', () => {
+    // /recall is DESKTOP-ONLY (no backend twin), so it must be both executable
+    // and discoverable purely from the local table — the backend completion
+    // source never emits it. Regression guard for autocomplete showing
+    // "No matches" while Enter still ran the command.
+    expect(resolveDesktopCommand('/recall')?.surface).toEqual({ kind: 'action', action: 'recall' })
+    expect(isDesktopSlashCommand('/recall')).toBe(true)
+    expect(isDesktopSlashSuggestion('/recall')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/recall')).toBeNull()
+  })
+
+  it('completes desktop-only built-ins the backend never emits (e.g. /recall)', () => {
+    // The popover sources candidates from the backend and only filters them; a
+    // desktop-only command like /recall must be seeded from this list so
+    // discovery matches local dispatch.
+    const all = desktopBuiltinSlashCompletions('')
+    const recall = all.find(item => item.text === '/recall')
+
+    expect(recall).toBeDefined()
+    expect(recall?.meta).toContain('Search the memory graph')
+
+    // Prefix match, canonical local-only names only. Registry-backed twins stay
+    // owned by the backend's relevance list.
+    expect(desktopBuiltinSlashCompletions('/rec').map(item => item.text)).toEqual(['/recall'])
+    expect(desktopBuiltinSlashCompletions('/journey')).toEqual([])
+
+    // Excludes hidden, unavailable, aliases, and registry-backed commands.
+    const names = new Set(all.map(item => item.text))
+    expect(names.has('/model')).toBe(false) // hidden
+    expect(names.has('/clear')).toBe(false) // unavailable (terminal-only)
+    expect(names.has('/memory-graph')).toBe(false) // alias of /journey
+    expect(names.has('/journey')).toBe(false) // supplied by the backend registry
   })
 
   it('allows aliases to execute without cluttering the popover', () => {

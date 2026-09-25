@@ -68,6 +68,10 @@ def _to_int_ts(value: Any) -> Optional[int]:
     try:
         if value is None or not (s := str(value).strip()):
             return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return int(value.timestamp())
         if isinstance(value, (int, float)):
             return int(value)
         try:
@@ -141,8 +145,33 @@ def memory_fingerprint(entry: str) -> str:
 
 
 def memory_node_id(card: dict[str, Any], index: int) -> str:
-    """``memory:<source>:<index>:<fingerprint>`` — position for the occurrence, text for identity."""
-    return f"memory:{card['source']}:{index}:{card['fingerprint']}"
+    """``memory:<source>:<index>:<fingerprint>`` — position for the occurrence, text for identity.
+
+    Cards without a fingerprint (external memory-provider cards, which are read-only in the
+    journey) keep the positional ``memory:<source>:<index>`` shape."""
+    fingerprint = card.get("fingerprint")
+    return f"memory:{card['source']}:{index}:{fingerprint}" if fingerprint else f"memory:{card['source']}:{index}"
+
+
+# Bulk importers name provider sessions ``<source>-import-…`` (the ChatGPT
+# importer already does). New import sources inherit origin detection by
+# following the convention — no code change required here.
+_IMPORT_SESSION_RE = re.compile(r"^([a-z0-9]+)-import-", re.IGNORECASE)
+
+
+def _card_origin(entry: dict[str, Any], session_id: str) -> str:
+    """Where a provider entry's knowledge originally came from.
+
+    Extensible by convention, not code: an explicit ``origin`` on the card
+    (future importers/providers) wins, then the ``<source>-import-`` session
+    naming convention, then "hermes" (per-session sync of Hermes-born
+    conversations).
+    """
+    explicit = str(entry.get("origin") or "").strip().lower()
+    if explicit:
+        return explicit
+    m = _IMPORT_SESSION_RE.match(session_id or "")
+    return m.group(1).lower() if m else "hermes"
 
 
 def _memory_cards() -> list[dict[str, Any]]:
@@ -169,6 +198,77 @@ def _memory_cards() -> list[dict[str, Any]]:
                 # Digest the WHOLE chunk, not the truncated ``body`` a long memory renders with.
                 "fingerprint": memory_fingerprint(chunk),
             })
+    return cards
+
+
+def _active_provider_name() -> Optional[str]:
+    """Name of the active external memory provider ('honcho', …), or None.
+
+    Exposed on the graph payload so the desktop can gate provider-specific UI
+    (e.g. the conclusion node kind, which only makes sense under Honcho)
+    explicitly — never by inferring it from the presence of provider nodes,
+    which would silently misclassify when a provider has zero durable entries.
+    Best-effort by contract: any failure → None.
+    """
+    try:
+        from plugins.memory import _get_active_memory_provider
+
+        name = _get_active_memory_provider()
+        return str(name).strip().lower() or None if name else None
+    except Exception:
+        return None
+
+
+def _provider_memory_cards(limit: int = 10000) -> list[dict[str, Any]]:
+    """Durable entries from the active external memory provider, as cards.
+
+    Providers opt in by implementing ``MemoryProvider.journey_cards()``.
+    Best-effort by contract: no active provider, provider unavailable, hook
+    missing (older provider), backend down, or any error → ``[]``. The
+    journey must render regardless of external-backend health.
+
+    Cards are appended AFTER the file-based cards in the combined list, so
+    ``memory:<source>:<index>[:<fingerprint>]`` ids for ``MEMORY.md``/``USER.md``
+    chunks are unchanged by a provider's presence (legacy positional ids stay valid).
+    Provider cards carry no fingerprint (read-only in the journey), so their ids
+    stay ``memory:<provider>:<index>``.
+    """
+    try:
+        from plugins.memory import _get_active_memory_provider, load_memory_provider
+
+        name = _get_active_memory_provider()
+        if not name:
+            return []
+        provider = load_memory_provider(name)
+        if provider is None or not hasattr(provider, "journey_cards"):
+            return []
+        raw = provider.journey_cards(limit=limit) or []
+    except Exception:
+        return []
+
+    cards: list[dict[str, Any]] = []
+    for entry in raw[:limit]:
+        if not isinstance(entry, dict):
+            continue
+        body = str(entry.get("body") or "").strip()
+        if not body:
+            continue
+        title = str(entry.get("title") or "").strip()
+        if not title:
+            title = body.splitlines()[0].strip()
+        session_id = str(entry.get("session_id") or "").strip()
+        level = str(entry.get("level") or "").strip().lower()
+        cards.append(
+            {
+                "source": name,
+                "origin": _card_origin(entry, session_id),
+                "timestamp": _to_int_ts(entry.get("timestamp")),
+                "title": (title[:80] + "…") if len(title) > 80 else title,
+                "body": body[:1200],
+                **({"level": level} if level else {}),
+                **({"sessionId": session_id} if session_id else {}),
+            }
+        )
     return cards
 
 
@@ -200,15 +300,28 @@ def _has_learning_signal(node: SkillNode) -> bool:
     return node.created_by in {"agent", "learn"} or node.use_count > 0
 
 
+def _skill_roots() -> list[tuple[str, Path]]:
+    repo = Path(__file__).resolve().parent.parent
+    return [("base", repo / "skills"), ("profile", get_hermes_home() / "skills")]
+
+
 def build_learning_graph() -> dict[str, Any]:
-    """Full payload for the desktop learning panel: non-base skills with real
-    learning signal (agent-created or used) plus memory chunks as graph nodes."""
-    roots = [("base", Path(__file__).resolve().parent.parent / "skills"), ("profile", get_hermes_home() / "skills")]
+    """Full payload for the desktop learning panel.
+
+    Focus on what is profile-learned and actionable:
+    - skills that are NOT base-installed and show real learning signal
+      (agent-created, user-taught, or used),
+    - memory chunks as first-class graph nodes connected to those learned skills:
+      built-in ``MEMORY.md``/``USER.md`` cards first, then durable entries from
+      the active external memory provider (``journey_cards()``), when any.
+    """
+    all_skills = build_skill_nodes(_skill_roots())
     learned_skills = {
-        name: node for name, node in build_skill_nodes(roots).items()
+        name: node for name, node in all_skills.items()
         if node.source != "base" and _has_learning_signal(node)
     }
-    skill_edges, memory_cards = build_edges(learned_skills), _memory_cards()
+    skill_edges = build_edges(learned_skills)
+    memory_cards = _memory_cards() + _provider_memory_cards()
     memory_edges = _memory_skill_edges(memory_cards, list(learned_skills.values()))
     clusters = Counter(node.category for node in learned_skills.values())
     if memory_cards:
@@ -220,19 +333,35 @@ def build_learning_graph() -> dict[str, Any]:
             "useCount": n.use_count, "state": n.state, "createdBy": n.created_by, "pinned": n.pinned,
         }
         for n in learned_skills.values()
-    ] + [
-        {
-            "id": memory_node_id(card, i), "label": card["title"], "kind": "memory",
-            "memorySource": card["source"], "timestamp": card.get("timestamp"), "category": "memory",
-            "useCount": 0, "state": "active", "createdBy": "memory", "pinned": False,
-        }
-        for i, card in enumerate(memory_cards)
     ]
+    for i, card in enumerate(memory_cards):
+        graph_nodes.append(
+            {
+                "id": memory_node_id(card, i),
+                "label": card["title"],
+                "kind": "memory",
+                "memorySource": card["source"],
+                "origin": card.get("origin") or "hermes",
+                **({"memoryLevel": card["level"]} if card.get("level") else {}),
+                "timestamp": card.get("timestamp"),
+                "category": "memory",
+                "useCount": 0,
+                "state": "active",
+                "createdBy": "memory",
+                "pinned": False,
+                **({"sessionId": card["sessionId"]} if card.get("sessionId") else {}),
+            }
+        )
+
     return {
         "nodes": graph_nodes,
         "edges": [{"source": a, "target": b} for a, b in skill_edges + memory_edges],
         "clusters": [{"category": c, "count": n} for c, n in sorted(clusters.items(), key=lambda kv: -kv[1])],
         "memory": memory_cards,
+        # Active external memory provider ('honcho', …) or None. The desktop
+        # gates provider-specific journey UI (conclusion nodes) on this rather
+        # than inferring the provider from node presence.
+        "memoryProvider": _active_provider_name(),
         "stats": {
             **density_stats(learned_skills, skill_edges),
             "memory_nodes": len(memory_cards), "memory_skill_edges": len(memory_edges), "learned_skills": len(learned_skills),

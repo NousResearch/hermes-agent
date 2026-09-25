@@ -218,6 +218,12 @@ class LearningNodeRef(BaseModel):
     id: str
     profile: Optional[str] = None
 
+
+class ProviderSessionMaterialize(BaseModel):
+    session_id: str
+    profile: Optional[str] = None
+
+
 class LearningNodeEdit(BaseModel):
     id: str
     content: str

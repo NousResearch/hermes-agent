@@ -170,17 +170,30 @@ def _node_score(node: dict[str, Any], rec: float) -> float:
     return 3.5 + rec if _is_memory(node) else rec * 2 + math.sqrt(max(0.0, float(node.get("useCount", 0) or 0))) + (2.0 if node.get("pinned") else 0.0)
 
 
+def _node_meta(node: dict[str, Any]) -> str:
+    if _is_memory(node):
+        mem_source = str(node.get("memorySource") or "memory")
+        if mem_source == "profile":
+            source = "profile memory"
+        elif mem_source == "memory":
+            source = "memory"
+        else:
+            source = f"{mem_source} memory"
+        return f"{source} · {format_date(_node_ts(node))}"
+    count = int(node.get("useCount", 0) or 0)
+    return " · ".join(
+        [str(node.get("category") or "skill"), format_date(_node_ts(node))]
+        + ([f"x{count}"] if count else [])
+        + (["pinned"] if node.get("pinned") else [])
+    )
+
+
 def _node_card(node: dict[str, Any]) -> dict[str, Any]:
     """Shared glyph/label/meta/style fields for label rows and bucket trees."""
-    mem, text, date = _is_memory(node), _node_raw_label(node), format_date(_node_ts(node))
-    if mem:
-        meta = f"{'profile memory' if node.get('memorySource') == 'profile' else 'memory'} · {date}"
-    else:
-        count = int(node.get("useCount", 0) or 0)
-        meta = " · ".join([str(node.get("category") or "skill"), date] + ([f"x{count}"] if count else []) + (["pinned"] if node.get("pinned") else []))
+    mem, text = _is_memory(node), _node_raw_label(node)
     return {
         "glyph": MEMORY_GLYPH if mem else SKILL_GLYPH, "label": text if len(text) <= 26 else text[:23].rstrip() + "…",
-        "meta": meta, "style": STYLE_MEMORY if mem else STYLE_SKILL,
+        "meta": _node_meta(node), "style": STYLE_MEMORY if mem else STYLE_SKILL,
     }
 
 

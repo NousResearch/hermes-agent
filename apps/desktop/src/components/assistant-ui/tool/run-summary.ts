@@ -24,48 +24,64 @@ export function isToolCallPart<T extends { type: string }>(part: T): part is Ext
   return part.type === 'tool-call'
 }
 
-type RunCategory = 'delegate' | 'edit' | 'explore' | 'other' | 'run'
+type RunCategory = 'analyze' | 'browse' | 'delegate' | 'edit' | 'explore' | 'other' | 'read' | 'run' | 'search'
 
 // Clause order is fixed so the same run always reads the same way, whichever
 // category happens to be live.
-const CATEGORY_ORDER: readonly RunCategory[] = ['edit', 'explore', 'run', 'delegate', 'other']
+const CATEGORY_ORDER: readonly RunCategory[] = [
+  'edit',
+  'explore',
+  'search',
+  'read',
+  'browse',
+  'analyze',
+  'run',
+  'delegate',
+  'other'
+]
 
 const CATEGORY_COPY: Record<RunCategory, { noun: [string, string]; past: string; present: string }> = {
+  analyze: { noun: ['image', 'images'], past: 'Analyzed', present: 'Analyzing' },
+  browse: { noun: ['page', 'pages'], past: 'Browsed', present: 'Browsing' },
   delegate: { noun: ['task', 'tasks'], past: 'Delegated', present: 'Delegating' },
   edit: { noun: ['file', 'files'], past: 'Edited', present: 'Editing' },
   explore: { noun: ['file', 'files'], past: 'Explored', present: 'Exploring' },
   other: { noun: ['tool', 'tools'], past: 'Used', present: 'Using' },
-  run: { noun: ['command', 'commands'], past: 'Ran', present: 'Running' }
+  read: { noun: ['page', 'pages'], past: 'Read', present: 'Reading' },
+  run: { noun: ['command', 'commands'], past: 'Ran', present: 'Running' },
+  search: { noun: ['query', 'queries'], past: 'Searched', present: 'Searching' }
 }
 
-const EXPLORE_TOOLS = new Set([
-  'list_files',
-  'read_file',
-  'search_files',
-  'session_search_recall',
-  'vision_analyze',
-  'web_extract',
-  'web_search'
-])
+// File-system tools — the ones a "files" noun is honest about. Everything else
+// is routed by name below, so a web search never counts as an explored file.
+const EXPLORE_TOOLS = new Set(['list_files', 'read_file', 'search_files'])
+
+const TOOL_CATEGORY: Record<string, RunCategory> = {
+  delegate_task: 'delegate',
+  execute_code: 'run',
+  session_search_recall: 'search',
+  terminal: 'run',
+  vision_analyze: 'analyze',
+  web_extract: 'read',
+  web_search: 'search'
+}
 
 function toolCategory(toolName: string): RunCategory {
   if (isFileEditTool(toolName)) {
     return 'edit'
   }
 
-  if (toolName === 'terminal' || toolName === 'execute_code') {
-    return 'run'
+  const named = TOOL_CATEGORY[toolName]
+
+  if (named) {
+    return named
   }
 
-  if (toolName === 'delegate_task') {
-    return 'delegate'
-  }
-
-  if (EXPLORE_TOOLS.has(toolName) || toolName.startsWith('browser_')) {
+  if (EXPLORE_TOOLS.has(toolName)) {
     return 'explore'
   }
 
-  return 'other'
+  return toolName.startsWith('browser_') ? 'browse' : 'other'
 }
 
 function isPending(tool: ToolCallLike): boolean {

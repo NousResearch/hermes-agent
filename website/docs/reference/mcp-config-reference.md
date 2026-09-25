@@ -365,7 +365,9 @@ A named profile reads and refreshes `~/.hermes/mcp-tokens/linear.json` instead o
 - the profile has its own entry for that name (nothing is inherited — no entry, no server);
 - both entries have the same `url`, `transport` and `oauth` block (ignoring the flag itself), and none of those contains a `${VAR}` reference — a reference resolves per profile scope, so two profiles could read different endpoints or clients from the same text.
 
-Lifecycle follows ownership. A profile that edits or removes its own entry *leaves* the pool (its cached provider is dropped; the root's grant is untouched and its siblings keep working). The root editing the exported entry's identity, or removing it, revokes the grant for every participant. `hermes mcp login linear` from any participant re-authorizes the shared pool. Trust, tool filters and connections stay per profile as documented above.
+Lifecycle follows ownership. A profile that edits or removes its own entry *leaves* the pool (its cached provider is dropped; the root's grant is untouched and its siblings keep working). The root editing the exported entry's identity, or removing it, revokes the grant for every participant. Setting `share_with_profiles` back to `false` (or deleting it) withdraws every participant but keeps the root's own grant. `hermes mcp login linear` from any participant re-authorizes the shared pool. Trust, tool filters and connections stay per profile as documented above.
+
+Withdrawal reaches profiles that are already running, including ones in other processes (a separate gateway, cron, a CLI session), without a restart. Each connection re-checks the pool's authority on disk before every request and every token refresh, so a withdrawn participant's next request fails and it reconnects on its own pool. This applies whether the change was made with `hermes mcp`, the dashboard, or by editing `config.yaml` by hand. While a sibling is re-authorizing, the token file is briefly missing; that is not a withdrawal and does not disconnect anyone. If a `config.yaml` involved cannot be read, requests fail until it can, then resume without a reconnect.
 
 ### Device-code login (RFC 8628)
 

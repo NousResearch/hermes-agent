@@ -38,7 +38,8 @@ secrets:
     )
 
     dispatch = (
-        "hermes_main.cmd_update = lambda _args: 0\n"
+        "from hermes_cli import update_cmd\n"
+        "update_cmd._cmd_update_check = lambda **kwargs: 0\n"
         "hermes_main.main()\n"
         if run_main
         else ""
@@ -113,7 +114,7 @@ def test_dotenv_loading_is_preserved_when_external_secrets_are_skipped(
     assert applied == ([home] if external_secrets else [])
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="the 'command' secret source is POSIX-only")
+@pytest.mark.platforms("posix")  # the 'command' secret source is POSIX-only
 def test_update_probe_children_skip_external_secret_sources(tmp_path):
     """The critical-module import probe imports ``run_agent``, whose dotenv load must not run a
     configured secret helper: a slow helper (op/bws/command, 120s budget) inside the 120s probe
@@ -127,7 +128,7 @@ def test_update_probe_children_skip_external_secret_sources(tmp_path):
     result = subprocess.run(
         [sys.executable, "-c",
          "import sys; sys.argv = ['hermes', 'update']\n"
-         "from hermes_cli.update_cmd_deps import _validate_critical_modules_import\n"
+         "from hermes_cli.update_cmd_validation import _validate_critical_modules_import\n"
          "print('PROBE=' + repr(_validate_critical_modules_import(__import__('os').getcwd())))"],
         capture_output=True, text=True, timeout=180, cwd=REPO_ROOT,
         env={**os.environ, "HERMES_HOME": str(home)},

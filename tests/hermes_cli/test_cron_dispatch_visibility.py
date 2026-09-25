@@ -17,7 +17,6 @@ from hermes_cli.cron import (
     cron_list,
 )
 
-
 @pytest.fixture()
 def tmp_cron_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
@@ -25,14 +24,12 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
 
-
 def _stamp_last_dispatch(job_id, stamp):
     jobs = load_jobs()
     for job in jobs:
         if job["id"] == job_id:
             job["last_dispatch"] = stamp
     save_jobs(jobs)
-
 
 def _catch_up_stamp(late_seconds=1860.0, kind="catch_up"):
     scheduled = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
@@ -42,7 +39,6 @@ def _catch_up_stamp(late_seconds=1860.0, kind="catch_up"):
         "lateness_seconds": late_seconds,
         "kind": kind,
     }
-
 
 class TestCronListDispatchLine:
     def test_catch_up_dispatch_rendered(self, tmp_cron_dir, capsys, monkeypatch):
@@ -83,7 +79,6 @@ class TestCronListDispatchLine:
         cron_list()
 
         assert "Dispatch:" not in capsys.readouterr().out
-
 
 class TestStatusLateJobsCallout:
     def test_late_jobs_called_out(self, capsys):
@@ -126,7 +121,6 @@ class TestStatusLateJobsCallout:
 
         assert "fired late" not in capsys.readouterr().out
 
-
 class TestDisplayHelpers:
     def test_format_lateness(self):
         assert _format_lateness(45) == "45s"
@@ -140,4 +134,3 @@ class TestDisplayHelpers:
         assert _dispatch_display("late") is None
         assert _dispatch_display({}) is None
         assert _dispatch_display({"scheduled_at": "x"}) is None
-

@@ -436,6 +436,21 @@ def _custom_provider_extra_headers(base_url) -> Dict[str, str]:
         return {}
 
 
+def _custom_provider_preserves_thinking(base_url, preserve_thinking: bool | None = None) -> bool:
+    """Whether the ``custom_providers`` entry routed at *base_url* opts in to keeping signed
+    thinking blocks (#120723). An explicit ``preserve_thinking`` argument (session-level
+    override) wins; otherwise the provider entry's ``preserve_thinking`` decides. Config
+    lookups are best-effort: an unreadable config keeps the default strip behavior."""
+    if preserve_thinking is not None:
+        return bool(preserve_thinking)
+    try:
+        from hermes_cli.config import get_custom_provider_preserve_thinking
+        return get_custom_provider_preserve_thinking(str(base_url))
+    except Exception:
+        logger.debug("custom-provider preserve_thinking lookup failed for Anthropic client", exc_info=True)
+    return False
+
+
 def _auth_style(api_key, base_url, normalized_base_url) -> str:
     """Order-sensitive endpoint/key classification for :func:`build_anthropic_client`. ``kimi``:
     Kimi's /coding endpoint 403s without a User-Agent (the Kimi team asked for proper attribution).
@@ -616,6 +631,7 @@ def build_anthropic_kwargs(
     reasoning_config: Optional[Dict[str, Any]], tool_choice: Optional[str] = None,
     is_oauth: bool = False, preserve_dots: bool = False, context_length: Optional[int] = None,
     base_url: str | None = None, fast_mode: bool = False, drop_context_1m_beta: bool = False,
+    preserve_thinking: bool | None = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create(). ``max_tokens`` is the OUTPUT cap for one
     response; ``context_length`` is the TOTAL window (input + output). ``max_tokens=None`` uses the
@@ -623,9 +639,13 @@ def build_anthropic_kwargs(
     clamped to ``context_length - 1``. The clamp ignores prompt size — callers must catch
     "max_tokens too large given prompt" and retry smaller (parse_available_output_tokens_from_error).
     ``is_oauth`` applies Claude Code compatibility transforms; ``preserve_dots`` keeps model-name
-    dots (DashScope: qwen3.5-plus); a third-party ``base_url`` strips thinking signatures;
+    dots (DashScope: qwen3.5-plus); a third-party ``base_url`` strips thinking signatures,
+    unless the endpoint's provider entry opts in with ``preserve_thinking`` — or the caller
+    passes ``preserve_thinking`` explicitly, which wins over the config (#120723);
     ``fast_mode`` adds ``extra_body.speed="fast"`` plus the fast-mode beta on native Anthropic only."""
-    system, anthropic_messages = convert_messages_to_anthropic(messages, base_url=base_url, model=model)
+    system, anthropic_messages = convert_messages_to_anthropic(
+        messages, base_url=base_url, model=model,
+        preserve_thinking=_custom_provider_preserves_thinking(base_url, preserve_thinking))
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
     # Nous Portal routes on its own catalog ids (``anthropic/claude-opus-4.8``); normalizing would
     # make the model unresolvable there (prefix AND dots kept).

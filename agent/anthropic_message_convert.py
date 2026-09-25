@@ -564,17 +564,23 @@ def _keep_valid_latest_thinking(content: List[Any], signature_dead: bool) -> Lis
     return new_content
 
 
-def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | None, model: str | None) -> None:
+def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | None, model: str | None,
+                                preserve_thinking: bool | None = False) -> None:
     """Strip or preserve thinking blocks per endpoint. Mutates ``result`` in place.
 
     Anthropic signs thinking blocks against the full turn; any upstream mutation invalidates them
     (400 "Invalid signature in thinking block"), so on direct Anthropic only the LATEST assistant
-    turn keeps signed blocks. Signatures are proprietary: third-party endpoints strip all thinking.
+    turn keeps signed blocks. Signatures are proprietary: third-party endpoints strip all thinking,
+    unless the endpoint's provider entry opts in with ``preserve_thinking: true`` (#120723) — a
+    trusted proxy that re-signs on the way out gets the native latest-turn keep path.
     Kimi replays as-is; DeepSeek needs unsigned blocks round-tripped but rejects signed ones. Nous
     Portal proxies Claude with sticky sessions and validates the same signatures, so it takes the
     native path despite not being anthropic.com.
     """
     is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
+    # Trusted-proxy opt-in (#120723): the provider entry relaxes the third-party strip to the
+    # native latest-turn keep path. Kimi/DeepSeek handling keeps precedence over it.
+    trusted_proxy = bool(preserve_thinking) and is_third_party
     is_kimi = _is_kimi_family_endpoint(base_url, model)
     is_deepseek = _is_deepseek_anthropic_endpoint(base_url) or (
         is_third_party and _model_name_is_deepseek_thinking(model)
@@ -589,6 +595,9 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
                 b for b in m["content"]
                 if _block_type(b) not in _THINKING_TYPES or not (b.get("signature") or b.get("data"))
             ]
+            m["content"] = new_content or [_text_block("(empty)")]
+        elif trusted_proxy:
+            new_content = _keep_valid_latest_thinking(m["content"], bool(m.get("_thinking_signature_invalidated")))
             m["content"] = new_content or [_text_block("(empty)")]
         elif is_third_party or idx != last_assistant_idx:
             m["content"] = _strip_thinking(m["content"]) or [_text_block("(thinking elided)")]
@@ -708,12 +717,16 @@ def _convert_system_content(content: Any) -> Any:
 
 
 def convert_messages_to_anthropic(
-    messages: List[Dict], base_url: str | None = None, model: str | None = None
+    messages: List[Dict], base_url: str | None = None, model: str | None = None,
+    preserve_thinking: bool | None = None,
 ) -> Tuple[Optional[Any], List[Dict]]:
     """Convert OpenAI-format messages to Anthropic format -> ``(system, messages)``. System is
     extracted into its own param (a string, or a block list when cache_control is present).
     ``base_url``/``model`` drive thinking-signature policy — third-party endpoints strip signatures
-    (proprietary, they 400 on them); Kimi-family endpoints/models keep unsigned
+    (proprietary, they 400 on them); ``preserve_thinking=True`` relaxes that strip to the native
+    keep path for trusted re-signing proxies (#120723, the endpoint's provider entry supplies it) —
+    valid signed thinking survives every turn, mirroring the Kimi replay semantics; Kimi-family
+    endpoints/models keep unsigned
     reasoning_content-derived blocks, which Kimi requires even when empty."""
     system = None
     result: List[Dict[str, Any]] = []
@@ -730,7 +743,7 @@ def convert_messages_to_anthropic(
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
     _ensure_leading_user_turn(result)
-    _manage_thinking_signatures(result, base_url, model)
+    _manage_thinking_signatures(result, base_url, model, preserve_thinking=preserve_thinking)
     _evict_old_screenshots(result)
     _scrub_blank_text_blocks(result)
     return system, result

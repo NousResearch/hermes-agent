@@ -576,7 +576,30 @@ def _s6_supervised_gateway_run(argv: list) -> bool:
 
 
 def _apply_profile_override() -> None:
-    """Pre-parse --profile/-p and set HERMES_HOME before imports."""
+    """Pre-parse --profile/-p and set HERMES_HOME before imports.
+
+    The launcher bootstrap executes this module body TWICE per process:
+    ``runpy.run_module('hermes_cli.main', run_name='__main__')`` resolves the
+    profile (and strips ``-p`` from argv), then the boot chain's
+    ``import hermes_cli.main`` re-runs the body in a second module namespace —
+    where a re-resolution would adopt the sticky ``active_profile`` and
+    silently re-home a ``-p default`` launch to that profile. The bootstrap
+    execution therefore marks the ``__main__`` namespace and the import
+    execution stands down when it sees the marker.
+
+    The marker lives on ``sys.modules['__main__']`` on purpose: it is visible
+    across the two namespaces of one interpreter, but neither an environment
+    variable (which would suppress resolution in every spawned ``hermes``
+    child whose bare commands must still follow ``active_profile``, #22502)
+    nor a ``sys`` attribute (which would disable re-resolution for in-process
+    callers that legitimately resolve per task).
+    """
+    main_ns = sys.modules.get("__main__")
+    is_bootstrap_execution = main_ns is not None and getattr(main_ns, "__dict__", None) is globals()
+    if is_bootstrap_execution:
+        main_ns._hermes_profile_override_ran = True
+    elif main_ns is not None and getattr(main_ns, "_hermes_profile_override_ran", False):
+        return
     argv = sys.argv[1:]
     profile_name, consume, profile_index = _scan_profile_flag(argv)
 

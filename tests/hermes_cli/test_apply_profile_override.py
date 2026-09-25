@@ -138,6 +138,99 @@ class TestApplyProfileOverrideHermesHomeGuard:
 
 
 
+class TestProfileOverrideRunsOncePerBootstrap:
+    """The launcher bootstrap executes this module body TWICE in one interpreter:
+    ``runpy.run_module(..., run_name='__main__')`` resolves the profile (and strips
+    ``-p`` from argv), then the boot chain's ``import hermes_cli.main`` re-runs the
+    body in a second namespace — where re-resolving would adopt the sticky
+    ``active_profile`` and silently re-home a ``-p default`` launch to that profile
+    (the shape the multiplexer refuses for host gateways after every update).
+    """
+
+    def test_import_execution_stands_down_on_the_bootstrap_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """The import-namespace execution must skip resolution when the
+        __main__ namespace already ran it (the bootstrap marker)."""
+        import types
+
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text("briefer")
+        for name in ("briefer", "coder"):
+            (hermes_root / "profiles" / name).mkdir(parents=True, exist_ok=True)
+            (hermes_root / "profiles" / name / "config.yaml").write_text("{}\n")
+
+        fake_main = types.ModuleType("__main__")
+        fake_main.__dict__["_hermes_profile_override_ran"] = True
+        monkeypatch.setitem(sys.modules, "__main__", fake_main)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
+        # argv as the bootstrap leaves it after -p was stripped.
+        monkeypatch.setattr(sys, "argv", ["hermes", "chat"])
+        for var in ("HERMES_SUPERVISED_CHILD", "HERMES_S6_SUPERVISED_CHILD",
+                    "INVOCATION_ID", "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"):
+            monkeypatch.delenv(var, raising=False)
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        # Stood down: HERMES_HOME still points at the root the launch pinned,
+        # NOT at the sticky briefer profile.
+        assert os.environ.get("HERMES_HOME") == str(hermes_root)
+
+    def test_double_execution_inside_the_launcher_bootstrap_keeps_the_flag(
+        self, tmp_path
+    ):
+        """End-to-end red/green: run the REAL double execution (runpy __main__
+        pass, then a forced fresh import pass) in a subprocess with a sticky
+        non-default profile. The explicit -p from the first pass must survive
+        the second; on unfixed code the second pass re-homes to the sticky
+        profile."""
+        import subprocess
+        import textwrap
+
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text("briefer")
+        for name in ("briefer", "coder"):
+            (hermes_root / "profiles" / name).mkdir(parents=True, exist_ok=True)
+            (hermes_root / "profiles" / name / "config.yaml").write_text("{}\n")
+
+        repo = str(Path(__file__).resolve().parents[2])
+        script = textwrap.dedent("""
+            import os, sys
+            sys.path.insert(0, {repo!r})
+            import threading, runpy
+            outcome = {{}}
+            def boot():
+                try:
+                    runpy.run_module('hermes_cli.main', run_name='__main__',
+                                     alter_sys=True)
+                except SystemExit as exit_exc:
+                    outcome['exit'] = exit_exc.code
+            thread = threading.Thread(target=boot)
+            thread.start()
+            thread.join(timeout=180)
+            # Second namespace execution, as the boot chain's import does.
+            sys.modules.pop('hermes_cli.main', None)
+            import hermes_cli.main  # noqa: F401
+            print(os.environ.get('HERMES_HOME'))
+        """).format(repo=repo)
+
+        proc = subprocess.run(
+            [sys.executable, "-I", "-c", script, "-p", "coder", "gateway", "status"],
+            capture_output=True, text=True, timeout=300,
+            env={**os.environ, "HERMES_HOME": str(hermes_root),
+                 "HERMES_DISABLE_LAZY_INSTALLS": "1"},
+        )
+        home = (proc.stdout.strip().splitlines() or [""])[-1]
+        assert home.endswith(str(Path("profiles") / "coder")), (
+            f"expected the explicit -p coder home to stick, got {home!r}; "
+            f"stderr tail: {proc.stderr[-400:]}"
+        )
+
+
 class TestSupervisedChildIgnoresStickyProfile:
     """The reserved default gateway s6 slot must not follow active_profile.
 

@@ -22,7 +22,7 @@ from tools.binary_extensions import (
     is_pdf_path,
     is_sqlite_sidecar,
 )
-from tools.file_tools_paths import _expand_tilde, _resolve_path_for_task
+from tools.file_tools_paths import _expand_tilde, _posix_match_forms, _resolve_path_for_task
 from tools.file_tools_read_tracking import _has_full_write_baseline, _read_mtime_drifted
 
 # Prefixes matched after realpath. macOS: /private/var mirrors /var — block the
@@ -152,7 +152,7 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     nt_err = get_nt_namespace_error(filepath, verb="Write")
     if nt_err:
         return nt_err
-    candidates = (_resolved_or_raw(filepath, task_id), os.path.normpath(_expand_tilde(filepath)))
+    candidates = (_resolved_or_raw(filepath, task_id), *_posix_match_forms(filepath))
     if any(c.startswith(_SENSITIVE_PATH_PREFIXES) or c in _SENSITIVE_EXACT_PATHS for c in candidates):
         return (
             f"Refusing to write to sensitive system path: {filepath}\n"

@@ -39,6 +39,18 @@ def _expand_tilde(path: str) -> str:
     return os.path.expanduser(path)
 
 
+def _posix_match_forms(path: str) -> tuple[str, ...]:
+    """``~``-expanded, normalized *path*, plus its ``/``-separated spelling where ``os.sep`` is
+    ``\\``. ``os.path.normpath`` turns ``/etc/hosts`` into ``\\etc\\hosts`` on Windows, so a
+    guard built from POSIX literals (``/etc/``, ``/dev/zero``) must also see the POSIX form;
+    the path may still reach a POSIX filesystem (Git Bash, WSL, container backends). A native
+    Windows path is drive- or UNC-anchored, so its POSIX form never matches a ``/``-rooted
+    literal."""
+    normalized = os.path.normpath(_expand_tilde(path))
+    posix_form = normalized.replace(os.sep, "/")
+    return (normalized,) if posix_form == normalized else (normalized, posix_form)
+
+
 def _terminal_env_type_for_task(task_id: str = "default") -> str:
     """Best-effort terminal backend type for path-resolution decisions."""
     try:

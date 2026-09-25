@@ -2790,6 +2790,7 @@ export const ar = defineLocale({
     replaceCurrent: 'استبدال القيمة الحالية',
     pasteApiKey: 'ألصق مفتاح API',
     localApiKeyPlaceholder: 'مفتاح API (اختياري — فقط إذا كانت نقطة النهاية تتطلبه)',
+    localModelPlaceholder: 'اسم النموذج (اختياري — فقط إذا لم يكن /v1/models متاحًا)',
     couldNotSave: 'تعذر حفظ بيانات الاعتماد.',
     connecting: 'جار الاتصال',
     update: 'تحديث',

@@ -167,14 +167,13 @@ def titled_rows(raw_results: List[Dict[str, Any]], description_key: str) -> List
     ]
 
 
-def lazy_ensure(feature: str) -> None:
-    """Best-effort ``tools.lazy_deps.ensure``: its own ImportError is benign and swallowed;
-    an install hint (any other error) is re-raised as ImportError."""
+def lazy_ensure(extra: str) -> None:
+    """Best-effort ``pm.ensure_import``: a missing-but-unavailable extra raises
+    ``pm.InstallError``, re-raised as ImportError for the caller's own handling."""
+    import pm
+
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure(feature, prompt=False)
-    except ImportError:
-        pass
+        pm.ensure_import(extra)
     except Exception as exc:  # noqa: BLE001
         raise ImportError(str(exc))
 

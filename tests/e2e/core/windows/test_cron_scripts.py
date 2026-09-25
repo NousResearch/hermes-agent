@@ -24,7 +24,7 @@ import pytest
 from tests.e2e.core._pending_fixes import known_gate
 from tests.e2e.core.windows._helpers import KnownBugSymptom, WinHome, expect, hermes, make_home, nonce
 
-pytestmark = [pytest.mark.windows_only, pytest.mark.integration]
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration]
 
 # key -> (the bug's own failure signature, "#issue reason"); see _pending_fixes.known_failure.
 KNOWN: dict[str, tuple[str, str]] = {

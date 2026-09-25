@@ -7,6 +7,7 @@ Covers:
 
 from __future__ import annotations
 
+from tests.agent.metadata_transport import metadata_transport  # noqa: F401
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -136,7 +137,6 @@ class TestLocalhostIPv4SiblingSites:
     """#37595 widened: every probe helper rewrites localhost→127.0.0.1,
     not just detect_local_server_type."""
 
-
     def test_rewrite_is_host_only_not_substring(self):
         """A URL that merely EMBEDS 'http://localhost' in its path/query must
         not be corrupted — only the URL's own host is rewritten."""
@@ -158,61 +158,25 @@ class TestLocalhostIPv4SiblingSites:
 
         assert client.post.call_args[0][0].startswith("http://127.0.0.1:11434")
 
-    def test_fetch_endpoint_model_metadata_generic_probe_uses_ipv4(self):
-        """The generic (non-LM-Studio) /models fetch loop must also rewrite
-        localhost->127.0.0.1 before probing, like the LM Studio branch above."""
-        from agent import model_metadata
-        from agent.model_metadata import fetch_endpoint_model_metadata
+    @pytest.mark.parametrize("llamacpp", [False, True])
+    def test_endpoint_and_props_followup_use_ipv4(self, metadata_transport, llamacpp):
+        import httpx
+        from agent import model_metadata as mm
 
-        model_metadata._endpoint_model_metadata_cache.clear()
-        model_metadata._endpoint_model_metadata_cache_time.clear()
-
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.raise_for_status = MagicMock()
-        resp.json.return_value = {"data": []}
-
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
-             patch("agent.model_metadata.requests.get", return_value=resp) as mock_get:
-            fetch_endpoint_model_metadata("http://localhost:8000/v1")
-
-        assert mock_get.call_args[0][0].startswith("http://127.0.0.1:8000")
-
-    def test_fetch_endpoint_model_metadata_llamacpp_props_followup_uses_ipv4(self):
-        """The llama.cpp /props context-length follow-up must also rewrite
-        localhost->127.0.0.1 before probing, not just the initial /models call."""
-        from agent import model_metadata
-        from agent.model_metadata import fetch_endpoint_model_metadata
-
-        model_metadata._endpoint_model_metadata_cache.clear()
-        model_metadata._endpoint_model_metadata_cache_time.clear()
-
-        models_resp = MagicMock()
-        models_resp.status_code = 200
-        models_resp.raise_for_status = MagicMock()
-        models_resp.json.return_value = {
-            "data": [{"id": "llama-3-8b", "owned_by": "llamacpp"}],
-        }
-
-        props_resp = MagicMock()
-        props_resp.ok = True
-        props_resp.json.return_value = {
-            "default_generation_settings": {"n_ctx": 32768},
-            "model_alias": "llama-3-8b",
-        }
-
-        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
-             patch(
-                 "agent.model_metadata.requests.get",
-                 side_effect=[models_resp, props_resp],
-             ) as mock_get:
-            result = fetch_endpoint_model_metadata("http://localhost:8000/v1")
-
-        assert mock_get.call_count == 2
-        props_call_url = mock_get.call_args_list[1][0][0]
-        assert props_call_url.startswith("http://127.0.0.1:8000")
-        assert result["llama-3-8b"]["context_length"] == 32768
-
+        mm._endpoint_model_metadata_cache.clear()
+        mm._endpoint_model_metadata_cache_time.clear()
+        responses, requests = metadata_transport
+        models = [{"id": "llama-3-8b", "owned_by": "llamacpp"}] if llamacpp else []
+        responses.extend([
+            httpx.Response(200, json={"data": models}),
+            httpx.Response(200, json={"default_generation_settings": {"n_ctx": 32768}, "model_alias": "llama-3-8b"}),
+        ])
+        result = mm.fetch_endpoint_model_metadata("http://localhost:8000/v1", force_refresh=True)
+        assert len(requests) == (2 if llamacpp else 1)
+        assert all(request.url.host == "127.0.0.1" for request in requests)
+        if llamacpp:
+            assert requests[1].url.path == "/v1/props"
+            assert result["llama-3-8b"]["context_length"] == 32768
 
 
 class TestContextCacheKeyNormalization:
@@ -235,12 +199,12 @@ class TestContextCacheKeyNormalization:
 
 
     def test_invalidate_clears_both_key_shapes(self, tmp_path, monkeypatch):
-        import yaml
+        import hermes_yaml as yaml
         from agent import model_metadata
 
         path = tmp_path / "context_lengths.yaml"
         monkeypatch.setattr(model_metadata, "_get_context_cache_path", lambda: path)
-        path.write_text(yaml.dump({"context_lengths": {
+        path.write_text(yaml.safe_dump({"context_lengths": {
             "m1@http://host/v1": 128_000,
             "m1@http://host/v1/": 64_000,
         }}))

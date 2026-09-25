@@ -173,3 +173,97 @@ def test_acceptance_runs_gh_as_the_assignee_profile(tmp_path, monkeypatch):
     assert captured["GH_TOKEN"] == "b-token"
     assert captured.get("GH_CONFIG_DIR") != "/nonexistent/launch/gh"
     assert "credentials" in (kb.get_task(conn, tid).last_failure_error or "")
+
+
+# --- refusal classification: the operation and structured response, not "any 40x" ---
+
+def _receipt_for(tmp_path, monkeypatch, gh_script):
+    """Complete one contract card through a scripted gh; return the last receipt."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    shim = tmp_path / "bin"
+    shim.mkdir(exist_ok=True)
+    gh = shim / "gh"
+    gh.write_text(f"#!{sys.executable}\n" + gh_script)
+    gh.chmod(0o755)
+    monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
+    kb.init_db()
+    with connect() as conn:
+        tid = kb.create_task(conn, title="classify", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, tid, result="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/7"})
+        task = kb.get_task(conn, tid)
+        assert task is not None and task.status != "done"
+        rows = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchall()
+        assert rows
+        return json.loads(rows[-1][0])
+
+
+@pytest.mark.platforms("posix")
+def test_graphql_not_found_on_nonzero_exit_is_auth_not_infra(tmp_path, monkeypatch):
+    """gh prints the GraphQL error (no 'HTTP 40x') and exits nonzero: a visibility
+    refusal must classify `auth` naming the repo, never retryable `infra`."""
+    receipt = _receipt_for(tmp_path, monkeypatch,
+        "import json,sys\n"
+        "sys.stderr.write('GraphQL: Could not resolve to a Repository with the name acme/repo.\\n')\n"
+        "print(json.dumps({'data':{'repository':None},"
+        "'errors':[{'type':'NOT_FOUND','path':['repository'],"
+        "'message':'Could not resolve to a Repository with the name acme/repo.'}]}))\n"
+        "sys.exit(1)\n")
+    assert receipt["classification"] == "auth"
+    assert "acme/repo" in receipt["detail"]
+
+
+@pytest.mark.platforms("posix")
+def test_graphql_errors_on_zero_exit_is_not_success_evidence(tmp_path, monkeypatch):
+    """A zero-exit body with a structured errors array is not usable evidence;
+    it must never pass acceptance (and reports the refusal, not silence)."""
+    receipt = _receipt_for(tmp_path, monkeypatch,
+        "import json\n"
+        "print(json.dumps({'data':{'repository':None},"
+        "'errors':[{'type':'NOT_FOUND','path':['repository'],"
+        "'message':'Could not resolve to a Repository.'}]}))\n")
+    assert receipt["ok"] is False
+    assert receipt["classification"] == "auth"
+
+
+@pytest.mark.platforms("posix")
+def test_rules_403_after_successful_repository_read_is_policy_not_auth(tmp_path, monkeypatch):
+    """Visibility proven, then the branch-policy read is refused: the diagnosis is
+    a fail-closed `policy` gap, never 'fix the assignee's credentials' (#122009)."""
+    receipt = _receipt_for(tmp_path, monkeypatch,
+        "import json,sys\n"
+        "if sys.argv[2] == 'graphql':\n"
+        "    print(json.dumps({'data':{'repository':{'pullRequest':{"
+        "'headRefOid':'a'*40,'baseRefName':'main','state':'OPEN',"
+        "'baseRef':{'branchProtectionRule':None}}}}}))\n"
+        "elif '/rules/branches/' in sys.argv[2]:\n"
+        "    sys.stderr.write('gh: HTTP 403: Resource not accessible by integration\\n')\n"
+        "    sys.exit(1)\n")
+    assert receipt["classification"] == "policy"
+    assert "not evidence" in receipt["detail"].lower() or "NOT evidence" in receipt["detail"]
+    assert "credentials" not in receipt["detail"]
+
+
+@pytest.mark.platforms("posix")
+def test_rate_limit_403_is_retry_not_auth(tmp_path, monkeypatch):
+    receipt = _receipt_for(tmp_path, monkeypatch,
+        "import json,sys\n"
+        "if sys.argv[2] == 'graphql':\n"
+        "    print(json.dumps({'data':{'repository':{'pullRequest':{"
+        "'headRefOid':'a'*40,'baseRefName':'main','state':'OPEN',"
+        "'baseRef':{'branchProtectionRule':None}}}}}))\n"
+        "else:\n"
+        "    sys.stderr.write('gh: HTTP 403: API rate limit exceeded\\n')\n"
+        "    sys.exit(1)\n")
+    assert receipt["classification"] == "retry"
+    assert "rate limit" in receipt["detail"].lower()
+
+
+@pytest.mark.platforms("posix")
+def test_http_500_on_repository_read_stays_infra(tmp_path, monkeypatch):
+    receipt = _receipt_for(tmp_path, monkeypatch,
+        "import sys\n"
+        "sys.stderr.write('gh: HTTP 500: Internal Server Error\\n')\n"
+        "sys.exit(1)\n")
+    assert receipt["classification"] == "infra"

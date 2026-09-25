@@ -28,8 +28,81 @@ def validate_contract(value: str | None) -> str:
     return value
 
 
+class _GateAuthError(RuntimeError):
+    """The assignee login could not resolve the repository — private to another
+    login, missing grant, or wrong name. An ambiguity to verify, not proof the
+    credentials are wrong, and not a transient failure to retry."""
+
+
+class _GatePolicyError(RuntimeError):
+    """Required-check policy was refused after the repository resolved. Never
+    evidence that no checks are required: completion stays blocked (fail-closed)."""
+
+
+class _GateRetryError(RuntimeError):
+    """Transient refusal (rate limit): wait and retry; not a credential problem."""
+
+
+def _json_or_none(text: str | None):
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def _graphql_refusal(payload: dict, name: str) -> None:
+    """Raise on any structured GraphQL refusal; return only on complete evidence.
+
+    A visibility refusal rides HTTP 200: ``data.repository`` null with a
+    ``NOT_FOUND``/``FORBIDDEN`` error (or no error at all), at any exit status —
+    gh need not put ``HTTP 40x`` in stderr, so the body is the only signal.
+    """
+    data = payload.get("data")
+    data = data if isinstance(data, dict) else {}
+    errors = payload.get("errors") or []
+    unresolved = "repository" not in data or data["repository"] is None
+    if not unresolved and not errors:
+        return
+    if unresolved and (not errors or any(e.get("type") in {"NOT_FOUND", "FORBIDDEN"} for e in errors)):
+        raise _GateAuthError(f"repository unresolved on {name}")
+    raise ValueError("GitHub returned incomplete GraphQL evidence")
+
+
+# (operation, HTTP status) → gate raised at the subprocess boundary. Unlisted
+# combinations (5xx, timeouts, odd 40x after visibility was proven) re-raise the
+# original failure → generic infra. Only the repository read turns a 40x into an
+# identity/visibility ambiguity; a policy 403 is a fail-closed capability gap
+# (#122009), never a wrong-credential diagnosis.
+_REFUSALS = {
+    ("repository", "401"): _GateAuthError,
+    ("repository", "403"): _GateAuthError,
+    ("repository", "404"): _GateAuthError,
+    ("policy", "403"): _GatePolicyError,
+    ("evidence", "401"): _GateAuthError,
+}
+
+
+def _gate_transport(failure: subprocess.CalledProcessError, name: str,
+                    repository_read: bool) -> None:
+    """Classify a nonzero-exit refusal, or re-raise it (→ generic infra)."""
+    stderr = failure.stderr or ""
+    if re.search(r"rate limit", stderr, re.I):
+        raise _GateRetryError(f"rate-limited on {name}")
+    status = re.search(r"HTTP (\d{3})", stderr)
+    code = status[1] if status else ""
+    op = ("repository" if repository_read
+          else "policy" if "/rules/branches/" in name else "evidence")
+    gate = _REFUSALS.get((op, code))
+    if gate is not None:
+        raise gate(f"HTTP {code} on {name}")
+    raise failure
+
+
 def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
-         profile_home: str | None = None):
+         profile_home: str | None = None, label: str | None = None):
+    name = label or endpoint.split("?")[0]
     command = ["gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
@@ -38,24 +111,21 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False,
     try:
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, timeout=30, check=True, env=_gh_env(profile_home))
-    except subprocess.CalledProcessError as exc:
-        # 401/403/404 = the login cannot see this repository (wrong profile identity
-        # or missing grant), not a transient API failure. Persist only the status
-        # code + endpoint, never gh's stderr (credentials/host details).
-        denied = re.search(r"HTTP (40[134])", exc.stderr or "")
-        if denied:
-            raise _GateAuthError(f"HTTP {denied[1]} on {endpoint.split('?')[0]}") from None
-        raise
-    value = json.loads(result.stdout)
-    if isinstance(value, dict) and value.get("errors"):
-        raise ValueError("GitHub returned incomplete GraphQL evidence")
-    return value
-
-
-class _GateAuthError(RuntimeError):
-    """gh was refused at HTTP 401/403/404 (or GraphQL returned no repository):
-    this profile's login cannot see the repo — an identity problem to fix, not
-    an infrastructure blip to retry."""
+    except subprocess.CalledProcessError as caught:
+        stdout, failure = caught.stdout, caught
+    else:
+        stdout, failure = result.stdout, None
+    # Gate errors persist only status code + endpoint, never gh's stderr
+    # (credentials/host details). The body is parsed even on failure: GraphQL
+    # refusals travel on HTTP 200 regardless of the exit status.
+    payload = _json_or_none(stdout)
+    if query is not None and isinstance(payload, dict):
+        _graphql_refusal(payload, name)
+    if failure is not None:
+        _gate_transport(failure, name, query is not None)
+    if payload is None:
+        payload = json.loads(stdout)  # non-JSON body → ValueError → infra
+    return payload
 
 
 def _gh_env(profile_home: str | None) -> dict[str, str]:
@@ -131,10 +201,8 @@ def collect_acceptance(contract: str, published_pr: str | None,
         query = '''{repository(owner:%s,name:%s){pullRequest(number:%d){headRefOid baseRefName state
             baseRef{branchProtectionRule{requiredStatusChecks{context app{databaseId}}}}}}}''' % (
                 json.dumps(owner), json.dumps(name), number)
-        repository = _api("graphql", query=query, profile_home=profile_home)["data"]["repository"]
-        if repository is None:
-            # A private repo the login cannot read resolves to null, not an error.
-            raise _GateAuthError(f"HTTP 404 on graphql {repo}")
+        repository = _api("graphql", query=query, profile_home=profile_home,
+                          label=f"graphql {repo}")["data"]["repository"]
         pr = repository["pullRequest"]
         sha, branch = pr["headRefOid"], pr["baseRefName"]
         receipt["head_sha"] = sha
@@ -190,7 +258,19 @@ def collect_acceptance(contract: str, published_pr: str | None,
     except _GateAuthError as exc:
         receipt.update(classification="auth",
                        detail=f"GitHub refused the acceptance read ({exc}) as the assignee profile's gh login; "
-                              "fix that profile's GitHub credentials/access to the repository, then retry completion.")
+                              "the repository is invisible to that login (private, missing grant, or wrong name) — "
+                              "check that the profile's GitHub credentials can access the repository, then retry completion.")
+        return receipt
+    except _GatePolicyError as exc:
+        receipt.update(classification="policy",
+                       detail=f"Required-check policy read refused ({exc}) after the repository resolved; "
+                              "the login may lack rulesets/branch-policy read capability. This is NOT evidence "
+                              "that no checks are required — completion stays blocked until the policy is readable "
+                              "(grant the rulesets read or configure checks another way), then retry.")
+        return receipt
+    except _GateRetryError as exc:
+        receipt.update(classification="retry",
+                       detail=f"GitHub API rate limit ({exc}); wait for the window to reset, then retry completion.")
         return receipt
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError, IndexError):
         # Never persist gh stderr (credentials/host details); the failed phase is actionable.

@@ -8,7 +8,7 @@ import { runBackendStartStep } from './backend-start-cancellation'
  * Pure, dependency-injected gate that parks local backend spawns while an
  * in-app update is running (#73822, #50238).
  *
- * Three independent signals mean "an update owns the venv right now":
+ * Three independent signals mean "an update owns the local runtime right now":
  *
  *  - the on-disk marker (`HERMES_HOME/.hermes-update-in-progress`), written
  *    by the updater — and by the desktop itself just before hand-off — and
@@ -17,14 +17,11 @@ import { runBackendStartStep } from './backend-start-cancellation'
  *  - the successful detached hand-off state, which remains true while this
  *    Desktop is waiting to quit after the wrapper has handed control away.
  *
- * The marker alone is NOT enough (#73822): `applyUpdates` kills its own
- * backend early (`releaseBackendLock`) but only writes the marker AFTER the
- * Windows venv-blocker scan. Killing the backend drops the renderer's
- * WebSocket, the renderer reconnects within ~1s, and a marker-only gate
- * happily spawns a fresh backend inside the update's own critical section —
- * which `scanVenvBlockers` then reports as a blocker, aborting every update
- * attempt forever. Consulting the flag closes that window. On the success
- * path the marker is written BEFORE the flag clears in `applyUpdates`'
+ * The marker alone is NOT enough (#73822): `applyUpdates` stops its backend
+ * early (`releaseBackendLock`) before committing the hand-off. The renderer
+ * reconnects after the WebSocket closes; a marker-only gate can spawn a new
+ * backend on the runtime being replaced. Consulting the flag closes that
+ * window. On success the marker is written BEFORE the flag clears in `applyUpdates`'
  * `finally`, so there is no instant where both signals are false and a
  * waiter could slip through mid-update.
  */

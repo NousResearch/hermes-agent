@@ -535,8 +535,59 @@ export function projectOwnerBySessionId(projects: SidebarProjectTree[]): Readonl
   return owners
 }
 
-const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
-  [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+/**
+ * Every id a row has answered to. Compression rotates a chat's live id (root ->
+ * tip), so the snapshot and the live cache can each hold a different segment
+ * of one conversation; the projected row carries its lineage root and chain.
+ */
+const conversationIds = (session: SessionInfo): string[] => [
+  session.id,
+  ...(session._lineage_root_id ? [session._lineage_root_id] : []),
+  ...(session._lineage_ids ?? [])
+]
+
+/** A predicate matching any row that is the same conversation as `session`. */
+function sameConversationAs(session: SessionInfo): (row: SessionInfo) => boolean {
+  const ids = new Set(conversationIds(session))
+
+  return row => conversationIds(row).some(id => ids.has(id))
+}
+
+/** The snapshot's owner for a live row, found by any id its conversation has had. */
+function ownerOf(owners: ReadonlyMap<string, string>, session: SessionInfo): string | undefined {
+  for (const id of conversationIds(session)) {
+    const owner = owners.get(id)
+
+    if (owner) {
+      return owner
+    }
+  }
+
+  return undefined
+}
+
+/** Rows minus any that repeat an earlier row's conversation (first wins). */
+function uniqueConversations(rows: SessionInfo[]): SessionInfo[] {
+  const seen = new Set<string>()
+
+  return rows.filter(row => {
+    const ids = conversationIds(row)
+
+    if (ids.some(id => seen.has(id))) {
+      return false
+    }
+
+    ids.forEach(id => seen.add(id))
+
+    return true
+  })
+}
+
+const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] => {
+  const isSame = sameConversationAs(session)
+
+  return [session, ...rows.filter(row => !isSame(row))].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+}
 
 /** A live row's placement path, with an exact repo-root fallback when cwd is absent. */
 function livePathForRepo(repoRoot: string, session: SessionInfo): string {
@@ -688,9 +739,11 @@ export function overlayRepoLanes(
     // new worktree — the overlay places it into the worktree lane, but without
     // this eviction the stale main-lane entry persists and the session appears
     // under both groups until the next backend tree refresh).
+    const isSame = sameConversationAs(session)
+
     for (const g of lanes) {
       if (g !== lane) {
-        const idx = g.sessions.findIndex(s => s.id === session.id)
+        const idx = g.sessions.findIndex(isSame)
 
         if (idx >= 0) {
           g.sessions = [...g.sessions.slice(0, idx), ...g.sessions.slice(idx + 1)]
@@ -728,8 +781,7 @@ function overlayHomeLane(
   owners: ReadonlyMap<string, string>
 ): SidebarProjectTree {
   const ownedElsewhere = (session: SessionInfo): boolean => {
-    const owner =
-      owners.get(session.id) ?? (session._lineage_root_id ? owners.get(session._lineage_root_id) : undefined)
+    const owner = ownerOf(owners, session)
 
     return Boolean(owner) && owner !== NO_PROJECT_ID
   }
@@ -826,7 +878,7 @@ export function overlayLiveLanes(
   let changed = false
 
   const projectLive = live.filter(session => {
-    const owner = authoritativeOwners.get(session.id)
+    const owner = ownerOf(authoritativeOwners, session)
 
     return !owner || owner === project.id
   })
@@ -860,8 +912,8 @@ export function reconcileEnteredProjectSessions(
     return live
   }
 
-  const liveIds = new Set(live.map(session => session.id))
-  const missingPreviews = previewSessions.filter(session => !liveIds.has(session.id))
+  const liveIds = new Set(live.flatMap(conversationIds))
+  const missingPreviews = previewSessions.filter(session => !conversationIds(session).some(id => liveIds.has(id)))
 
   return missingPreviews.length ? [...live, ...missingPreviews] : live
 }
@@ -888,7 +940,7 @@ export function overlayLivePreviews(
       continue
     }
 
-    const projectId = authoritativeOwners.get(session.id) ?? sessionBucketId(session, explicitProjects)
+    const projectId = ownerOf(authoritativeOwners, session) ?? sessionBucketId(session, explicitProjects)
 
     if (!projectId) {
       continue
@@ -909,16 +961,9 @@ export function overlayLivePreviews(
       continue
     }
 
-    // Live rows take precedence (fresher title/activity/working state).
-    const map = new Map<string, SessionInfo>()
-
-    for (const session of [...liveRows, ...base]) {
-      if (!map.has(session.id)) {
-        map.set(session.id, session)
-      }
-    }
-
-    const pool = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+    // Live rows take precedence (fresher title/activity/working state), and a
+    // compressed chat's live tip stands in for the snapshot's older segment.
+    const pool = uniqueConversations([...liveRows, ...base]).sort((a, b) => sessionRecency(b) - sessionRecency(a))
 
     out[node.id] = rankSessions(pool, rankIds).slice(0, limit)
   }

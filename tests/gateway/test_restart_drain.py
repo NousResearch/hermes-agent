@@ -47,7 +47,7 @@ async def test_restart_command_while_busy_requests_drain_without_interrupt(monke
     expected = t("gateway.draining", count=1)
     assert result == expected
     # Guard against the silent-degradation regression in #22266: if the i18n
-    # catalog cannot be resolved (e.g. xdist workers losing the locales path)
+    # catalog cannot be resolved (e.g. workers losing the locales path)
     # then ``t("gateway.draining", count=1)`` returns the bare key
     # ``"gateway.draining"`` instead of the formatted English string, and both
     # sides of the equality above would still match. Assert on the catalog
@@ -300,7 +300,7 @@ async def test_restart_from_served_profile_chat_restarts_the_host_gateway(monkey
     assert seen == {"stop_home": launch_home, "stop_secret_scope": None}
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.asyncio
 async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_path):
     """Faking sys.platform="win32" on Linux could not reach the real Windows
@@ -308,14 +308,10 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     this runs on the Windows CI job instead."""
     runner, _adapter = make_restart_runner()
     popen_calls = []
-    venv_dir = tmp_path / "venv"
-    site_packages = venv_dir / "Lib" / "site-packages"
-    site_packages.mkdir(parents=True)
 
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
-    monkeypatch.setenv("VIRTUAL_ENV", str(venv_dir))
 
     import hermes_cli._subprocess_compat as subprocess_compat
 
@@ -337,13 +333,16 @@ async def test_windows_detached_restart_scrubs_gateway_marker(monkeypatch, tmp_p
     cmd, kwargs = popen_calls[0]
     assert cmd[-3:] == ["hermes", "gateway", "restart"]
     assert kwargs["env"].get("_HERMES_GATEWAY") is None
-    assert kwargs["env"]["VIRTUAL_ENV"] == str(venv_dir)
-    assert str(site_packages) in kwargs["env"]["PYTHONPATH"].split(gateway_run.os.pathsep)
+    # The watcher is an installation-bound command: PM's bootstrap selects the
+    # dependency generation at child start, no venv is captured in its env.
+    from hermes_cli._launchers import runtime_command
+    from pathlib import Path
+    assert cmd[:3] == runtime_command(Path(gateway_run.__file__).resolve().parent.parent)[:3]
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.asyncio
 async def test_windows_detached_restart_watcher_keeps_console_python(monkeypatch, tmp_path):
     """The restart watcher must run sys.executable (console python) under the

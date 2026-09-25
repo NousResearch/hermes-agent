@@ -630,7 +630,7 @@ def test_migration_backfill_idempotent_under_re_run(tmp_path, monkeypatch):
 # Battle-test findings (May 2026: stress/ suite exposed zombie + id collision)
 # -------------------------------------------------------------------------
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_pid_alive_detects_zombie(kanban_home):
     """_pid_alive must return False for a zombie process.
 
@@ -1273,6 +1273,7 @@ def _drive_nonzero_crash(conn, tid, fake_pid):
     return _drive_worker_exit(conn, tid, fake_pid, 256)
 
 
+@pytest.mark.platforms("linux")
 def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
     """Mixed failure kinds must not consume the violation retry budget.
 

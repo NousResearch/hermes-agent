@@ -6,6 +6,7 @@ receipts only after rechecking the captured run/status/contract under its lock.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from urllib.parse import quote
@@ -28,7 +29,15 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
         command += ["-f", "query=" + query]
     if paginate:
         command += ["--paginate", "--slurp"]
-    result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
+    env = os.environ.copy()
+    real_home = env.get("HERMES_REAL_HOME")
+    if real_home:
+        # Kanban workers run with HOME scoped to the active Hermes profile, but
+        # GitHub CLI authentication is owned by the operator account. Keep
+        # tokens from the current environment if present; otherwise let gh read
+        # its normal config from the real user home instead of the profile home.
+        env["HOME"] = real_home
+    result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, env=env,
                             text=True, timeout=30, check=True)
     value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):

@@ -146,6 +146,30 @@ test('a relaunch adopts a backend that published a session token instead of spaw
   assert.equal(setup.kind === 'attached' ? setup.attached.token : null, token)
 })
 
+test('a refused backend does not adopt its stale published session token', async () => {
+  let publishedTokenReads = 0
+  let readyProbes = 0
+
+  const attached = await attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, {
+    ...attachDeps(LEDGER),
+    publishedTokenFor: () => {
+      publishedTokenReads += 1
+
+      return 'stale-published-session-token'
+    },
+    resolveServedToken: async () => {
+      throw new Error('fetch failed', { cause: { code: 'ECONNREFUSED' } })
+    },
+    waitForReady: async () => {
+      readyProbes += 1
+    }
+  } as Parameters<typeof attachToHostBackend>[1])
+
+  assert.equal(attached, null)
+  assert.equal(publishedTokenReads, 0, 'a refused connection cannot have a live token publication')
+  assert.equal(readyProbes, 0, 'a refused port must not consume the backend readiness budget')
+})
+
 test('a published token the websocket rejects is not adopted', async () => {
   let probed = 0
 

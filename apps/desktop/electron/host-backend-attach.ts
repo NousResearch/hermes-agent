@@ -59,6 +59,12 @@ function nonemptyToken(value: string | null | undefined): string | null {
   return token || null
 }
 
+function isConnectionRefused(error: unknown): boolean {
+  const failure = error as { cause?: { code?: unknown }; code?: unknown } | null
+
+  return failure?.code === 'ECONNREFUSED' || failure?.cause?.code === 'ECONNREFUSED'
+}
+
 /**
  * Validate one candidate all the way to a usable connection, or return null.
  *
@@ -68,10 +74,19 @@ function nonemptyToken(value: string | null | undefined): string | null {
  */
 async function validate(record: HostBackendRecord, deps: HostBackendAttachDeps): Promise<AttachedBackend | null> {
   const baseUrl = recordBaseUrl(record)
-  const servedToken = nonemptyToken(await deps.resolveServedToken(baseUrl).catch(() => null))
+  let refused = false
+
+  const servedToken = nonemptyToken(
+    await deps.resolveServedToken(baseUrl).catch(error => {
+      refused = isConnectionRefused(error)
+
+      return null
+    })
+  )
+
   let publishedToken: string | null = null
 
-  if (!servedToken && deps.publishedTokenFor) {
+  if (!servedToken && !refused && deps.publishedTokenFor) {
     try {
       publishedToken = nonemptyToken(deps.publishedTokenFor(record))
     } catch {

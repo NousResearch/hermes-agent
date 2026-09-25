@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+from typing import Callable
 
 
 def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
@@ -80,12 +81,14 @@ def update_plugin(
     *,
     catalog_entry=None,
     interactive: bool = False,
-    preserved_files: Path | None = None,
+    carry_user_files: Callable[[Path], None] | None = None,
 ) -> str:
     """Prepare a catalog re-pin or custom Git pull without changing the live tree.
 
     *interactive*: a terminal user is present to consent to newly declared dependencies;
-    the dashboard and the gateway's auto-apply pass False and get a refusal instead."""
+    the dashboard and the gateway's auto-apply pass False and get a refusal instead.
+    *carry_user_files(staged)* copies the user's files into the fresh clone before it is
+    validated and before ``*.example`` defaults are materialised, so the user's copies win."""
     import tempfile
 
     from hermes_cli import plugins_cmd as pc
@@ -158,8 +161,8 @@ def update_plugin(
                     if not ok:
                         raise pc.PluginOperationError(output)
                 revision = pc._git_head_revision(staged, pc._resolve_git_executable())
-            if preserved_files is not None and preserved_files.exists():
-                shutil.copytree(preserved_files, staged, dirs_exist_ok=True)
+            if carry_user_files is not None:
+                carry_user_files(staged)
             manifest = pc._read_manifest_for_install(staged)
             installed_name = str(manifest.get("name") or target.name)
             if catalog_entry is None and installed_name != target.name:

@@ -204,6 +204,93 @@ def test_repin_keeps_local_files_backs_up_edits_and_follows_manifest_rename(worl
     assert any("plugins-backup" in w for w in result["warnings"]) and any("renamed" in w for w in result["warnings"])
 
 
+@pytest.mark.parametrize("via", ["url", "catalog", "url-old-revision-gone"])
+def test_update_of_a_subdir_install_keeps_user_files_and_drops_removed_code(world, tmp_path, monkeypatch, via):
+    """A subdirectory install carries no ``.git``, so ``update`` re-installs and swaps the whole tree —
+    through the catalog re-pin or the URL re-clone. The user's files survive, code the new version removed
+    is not resurrected, and whatever cannot be carried (an edit to a shipped file, a file where the new
+    tree has a directory or the reverse) is copied to ``plugins-backup/`` rather than lost — also when
+    the installed revision can no longer be fetched to tell user files from the old version's."""
+    mono = tmp_path / "mono"
+    src = mono / "plugins" / "sub-plugin"
+    (src / "utils").mkdir(parents=True)
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 1.0.0\ndescription: d\n")
+    (src / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    (src / "config.yaml.example").write_text("endpoint: default\n")
+    (src / "settings.py").write_text("LIMIT = 1\n")
+    (src / "utils" / "__init__.py").write_text("OLD = True\n")
+    sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
+    pin = {"sha": _commit(mono, "v1")}
+
+    def entry():
+        return pc_cat.PluginCatalogEntry(name="sub-plugin", repo=mono.as_uri(), sha=pin["sha"],
+                                         description="d", maintainer="t", subdir="plugins/sub-plugin")
+
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [entry()])
+    if via == "catalog":
+        target = cat.install_catalog_entry(entry(), force=False)[0]
+    else:
+        target = pc._install_plugin_core(f"{mono.as_uri()}#plugins/sub-plugin", force=False)[0]
+    assert not (target / ".git").exists()
+    (target / "config.yaml").write_text("endpoint: mine\n")
+    (target / "data").mkdir()
+    (target / "data" / "state.json").write_text("{}")
+    (target / "settings.py").write_text("LIMIT = 99\n")
+    (target / "extras").write_text("mine")
+    (target / "cache").mkdir()
+    (target / "cache" / "blob").write_text("mine")
+
+    # v2: the utils/ package becomes utils.py; extras and cache ship with the type the user did not use.
+    shutil.rmtree(src / "utils")
+    (src / "utils.py").write_text("NEW = True\n")
+    (src / "extras").mkdir()
+    (src / "extras" / "a.txt").write_text("upstream")
+    (src / "cache").write_text("upstream")
+    (src / "settings.py").write_text("LIMIT = 2\n")
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 2.0.0\ndescription: d\n")
+    (src / "config.yaml.example").write_text("endpoint: new-default\n")
+    if via == "url-old-revision-gone":  # upstream rewrote history: the installed revision is unfetchable
+        sp.run(["git", "add", "-A"], cwd=mono, check=True, env=_GIT_ENV)
+        sp.run(["git", "commit", "-q", "--amend", "-m", "v2"], cwd=mono, check=True, env=_GIT_ENV)
+        sp.run(["git", "reflog", "expire", "--expire=now", "--all"], cwd=mono, check=True, env=_GIT_ENV)
+        sp.run(["git", "gc", "-q", "--prune=now"], cwd=mono, check=True, env=_GIT_ENV)
+    else:
+        pin["sha"] = _commit(mono, "v2")
+    assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is True
+
+    assert "version: 2.0.0" in (target / "plugin.yaml").read_text()
+    assert (target / "config.yaml").read_text() == "endpoint: mine\n"
+    assert (target / "data" / "state.json").read_text() == "{}"
+    assert not (target / "utils").exists() and (target / "utils.py").read_text() == "NEW = True\n"
+    assert (target / "settings.py").read_text() == "LIMIT = 2\n"
+    assert (target / "extras" / "a.txt").read_text() == "upstream"
+    assert (target / "cache").read_text() == "upstream"
+    backup, = (world["plugins_dir"].parent / "plugins-backup").iterdir()
+    assert (backup / "settings.py").read_text() == "LIMIT = 99\n"
+    assert (backup / "extras").read_text() == "mine" and (backup / "cache" / "blob").read_text() == "mine"
+    # The old version's own code is told apart from the user's files whenever its revision is fetchable.
+    assert (backup / "utils" / "__init__.py").exists() is (via == "url-old-revision-gone")
+
+
+def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
+    """``git status --ignored=matching`` reports an ignored dir as ONE ``data/`` entry; its files must
+    still be carried into the re-pinned tree."""
+    repo = world["repo"]
+    (repo / ".gitignore").write_text("data/\n")
+    world["state"]["pin"] = _commit(repo, "ignore data")
+    target = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)[0]
+    assert (target / ".git").exists()
+    (target / "data" / "db").mkdir(parents=True)
+    (target / "data" / "db" / "index.db").write_text("user data")
+
+    (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v3\n")
+    world["state"]["pin"] = _commit(repo, "v3")
+    assert pc.dashboard_update_user_plugin("cat-plugin")["unchanged"] is False
+
+    assert _head(target) == world["state"]["pin"]
+    assert (target / "data" / "db" / "index.db").read_text() == "user data"
+
+
 def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, tmp_path, monkeypatch):
     """A URL install whose name lands on the kill list AFTER install must stop pulling, cannot be enabled
     and is refused at load; an install made with --allow-removed keeps working."""

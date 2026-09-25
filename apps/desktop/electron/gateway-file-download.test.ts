@@ -338,7 +338,13 @@ test('nativeGatewayPath hands the gateway a path its own resolver maps to the sa
   const native = nativeGatewayPath(delivered, 'win32')
 
   assert.equal(native, 'C:\\Users\\fabio\\Downloads\\BP-PedidosAbertos-BluePrism-download.zip')
-  assert.equal(path.resolve(native), path.win32.resolve('C:/Users/fabio/Downloads/BP-PedidosAbertos-BluePrism-download.zip'))
+  // Both sides go through the Windows resolver: the injected platform is
+  // `win32`, while the bare `path` import is POSIX on the Linux CI lane and
+  // would resolve the backslash string against that host's cwd instead.
+  assert.equal(
+    path.win32.resolve(native),
+    path.win32.resolve('C:/Users/fabio/Downloads/BP-PedidosAbertos-BluePrism-download.zip')
+  )
   // The old spelling is what made the gateway append it to its own cwd instead.
   assert.notEqual(path.win32.resolve(native), path.win32.resolve('C:/Users/fabio/hermes-agent', delivered))
 })

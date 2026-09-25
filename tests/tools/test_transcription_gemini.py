@@ -283,3 +283,25 @@ class TestGeminiSTT:
             payload = mock_post.call_args.kwargs["json"]
             t_cfg = payload["generation_config"]["transcription_config"]
             assert "language_codes" not in t_cfg, f"Expected no language_codes for {trad_lang}"
+
+
+class TestCheckVoiceRequirementsGemini:
+    def test_voice_mode_gate_accepts_gemini_provider(self, monkeypatch):
+        """tools/voice_mode.py:check_voice_requirements accepts gemini as a valid native STT provider."""
+        from tools.voice_mode import check_voice_requirements
+
+        monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
+        stt_cfg = {
+            "enabled": True,
+            "provider": "gemini",
+            "gemini": {
+                "model": "gemini-3.5-transcribe",
+            },
+        }
+        with patch("tools.transcription_tools._load_stt_config", return_value=stt_cfg), \
+             patch("tools.voice_mode._audio_available", return_value=True), \
+             patch("tools.voice_mode.detect_audio_environment", return_value={"environment": "linux", "warnings": [], "available": True}):
+            reqs = check_voice_requirements()
+
+        assert reqs["stt_available"] is True
+        assert "Google Gemini" in reqs["details"]

@@ -323,7 +323,7 @@ async def test_post_turn_watch_drain_all_injects_from_queued_event_origin(monkey
 
 
 @pytest.mark.asyncio
-async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeypatch, tmp_path):
+async def test_inject_watch_notification_does_not_reuse_stale_message_id_anchor(monkeypatch, tmp_path):
     from gateway.session import SessionSource
 
     runner = _build_runner(monkeypatch, tmp_path, "all")
@@ -342,6 +342,8 @@ async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeyp
     evt = {
         "session_id": "proc_watch",
         "session_key": "agent:main:telegram:dm:123:24296",
+        # The id of the user message that armed the watch — stale by delivery time
+        # (#52694): it must not become the reply anchor of the synthetic notice.
         "message_id": "777",
     }
 
@@ -349,8 +351,10 @@ async def test_inject_watch_notification_carries_message_id_reply_anchor(monkeyp
 
     adapter.handle_message.assert_awaited_once()
     synth_event = adapter.handle_message.await_args.args[0]
-    assert synth_event.message_id == "777"
-    assert synth_event.source.thread_id == "24296"
+    assert synth_event.message_id is None  # fresh message, not a reply to the stale anchor
+    assert synth_event.source.thread_id == "24296"  # topic routing preserved
+    assert "[INTERNAL NOTIFICATION" in synth_event.text  # unambiguous machine provenance
+    assert synth_event.metadata.get("notification_origin") == "process_registry_synthetic"
 
 
 @pytest.mark.asyncio

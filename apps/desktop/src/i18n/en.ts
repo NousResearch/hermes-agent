@@ -1240,6 +1240,10 @@ export const en: Translations = {
       backendIdleTimeoutAria: 'Backend idle timeout in milliseconds',
       backendIdleTimeoutTitle: 'Backend Idle Timeout'
     },
+    remoteLivenessTimeout: {
+      aria: 'Remote liveness timeout in milliseconds',
+      title: 'Remote Liveness Timeout'
+    },
     customEndpoints: {
       active: 'Active',
       apiKeySet: 'API key set',

@@ -1,40 +1,39 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   ensureHealthyPooledRemoteBackendForDispatch,
-  POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS,
+  getPooledRemoteDispatchProbeTimeoutMs,
+  getRemoteLivenessTimeoutMs,
   POWER_RESUME_REVALIDATION_HOLDOFF_MS,
   REMOTE_LIVENESS_FAILURE_LIMIT,
   REMOTE_LIVENESS_FAILURE_WINDOW_MS,
-  REMOTE_LIVENESS_TIMEOUT_MS,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
-  resolveRemoteLivenessTimeoutMs,
   revalidatePooledRemoteBackends,
-  revalidateRemoteConnection
+  revalidateRemoteConnection,
+  setRemoteLivenessTimeoutMs
 } from './remote-liveness'
 
-describe('resolveRemoteLivenessTimeoutMs', () => {
-  it('defaults to 10s and matches the module constant when unset', () => {
-    expect(resolveRemoteLivenessTimeoutMs({})).toBe(10_000)
-    // Module constant is read from process.env at load time; tests run
-    // without HERMES_REMOTE_LIVENESS_TIMEOUT_MS set.
-    expect(REMOTE_LIVENESS_TIMEOUT_MS).toBe(10_000)
-    expect(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS).toBe(REMOTE_LIVENESS_TIMEOUT_MS)
+describe('getRemoteLivenessTimeoutMs / setRemoteLivenessTimeoutMs', () => {
+  afterEach(() => {
+    setRemoteLivenessTimeoutMs(10_000)
   })
 
-  it('honours a configured HERMES_REMOTE_LIVENESS_TIMEOUT_MS', () => {
-    expect(resolveRemoteLivenessTimeoutMs({ HERMES_REMOTE_LIVENESS_TIMEOUT_MS: '30000' })).toBe(30_000)
+  it('defaults to 10s', () => {
+    expect(getRemoteLivenessTimeoutMs()).toBe(10_000)
+    expect(getPooledRemoteDispatchProbeTimeoutMs()).toBe(getRemoteLivenessTimeoutMs())
   })
 
-  it('falls back to the default on missing, zero, or unparsable values', () => {
-    expect(resolveRemoteLivenessTimeoutMs({ HERMES_REMOTE_LIVENESS_TIMEOUT_MS: '0' })).toBe(10_000)
-    expect(resolveRemoteLivenessTimeoutMs({ HERMES_REMOTE_LIVENESS_TIMEOUT_MS: 'nope' })).toBe(10_000)
-    expect(resolveRemoteLivenessTimeoutMs({ HERMES_REMOTE_LIVENESS_TIMEOUT_MS: '' })).toBe(10_000)
+  it('applies a new value live, with the pooled dispatch alias following it', () => {
+    expect(setRemoteLivenessTimeoutMs(30_000)).toBe(30_000)
+    expect(getRemoteLivenessTimeoutMs()).toBe(30_000)
+    expect(getPooledRemoteDispatchProbeTimeoutMs()).toBe(30_000)
   })
 
-  it('clamps runaway values so a typo cannot hang dispatch forever', () => {
-    expect(resolveRemoteLivenessTimeoutMs({ HERMES_REMOTE_LIVENESS_TIMEOUT_MS: '999999' })).toBe(120_000)
+  it('clamps runaway or invalid values instead of accepting them verbatim', () => {
+    expect(setRemoteLivenessTimeoutMs(999_999)).toBe(120_000)
+    expect(setRemoteLivenessTimeoutMs(0)).toBe(10_000)
+    expect(setRemoteLivenessTimeoutMs(Number.NaN)).toBe(10_000)
   })
 })
 
@@ -211,7 +210,7 @@ describe('revalidateRemoteConnection', () => {
       expect.objectContaining({ baseUrl: 'https://gateway.example.com/' }),
       '/api/status',
       {
-        timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
+        timeoutMs: getRemoteLivenessTimeoutMs()
       }
     )
     expect(test.resetConnection).not.toHaveBeenCalled()
@@ -287,9 +286,9 @@ describe('revalidateRemoteConnection', () => {
 
 describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
   it('covers quiet-box cold-start and stays below the power-resume holdoff', () => {
-    expect(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS).toBeGreaterThanOrEqual(REMOTE_LIVENESS_TIMEOUT_MS)
-    expect(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS).toBeGreaterThanOrEqual(8_000)
-    expect(POWER_RESUME_REVALIDATION_HOLDOFF_MS).toBeGreaterThan(POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS)
+    expect(getPooledRemoteDispatchProbeTimeoutMs()).toBeGreaterThanOrEqual(getRemoteLivenessTimeoutMs())
+    expect(getPooledRemoteDispatchProbeTimeoutMs()).toBeGreaterThanOrEqual(8_000)
+    expect(POWER_RESUME_REVALIDATION_HOLDOFF_MS).toBeGreaterThan(getPooledRemoteDispatchProbeTimeoutMs())
   })
 
   it('returns a healthy cached descriptor without retiring or reconnecting', async () => {
@@ -310,7 +309,7 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     ).resolves.toBe(healthy)
 
     expect(probe).toHaveBeenCalledWith(healthy, '/api/health', {
-      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      timeoutMs: getPooledRemoteDispatchProbeTimeoutMs()
     })
     expect(retire).not.toHaveBeenCalled()
     expect(reconnect).not.toHaveBeenCalled()
@@ -349,7 +348,7 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     ).resolves.toBe(replacement)
 
     expect(probe).toHaveBeenCalledWith(stale, '/api/health', {
-      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      timeoutMs: getPooledRemoteDispatchProbeTimeoutMs()
     })
     expect(retire).toHaveBeenCalledOnce()
     expect(reconnect).toHaveBeenCalledOnce()
@@ -379,7 +378,7 @@ describe('ensureHealthyPooledRemoteBackendForDispatch', () => {
     ).resolves.toBe(legacy)
 
     expect(probe).toHaveBeenCalledWith(legacy, '/api/status', {
-      timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+      timeoutMs: getPooledRemoteDispatchProbeTimeoutMs()
     })
     expect(retire).not.toHaveBeenCalled()
     expect(reconnect).not.toHaveBeenCalled()
@@ -443,7 +442,7 @@ describe('revalidatePooledRemoteBackends', () => {
     expect(pool.probe).toHaveBeenCalledWith(
       expect.objectContaining({ remoteBaseUrl: 'https://remote.example.com' }),
       '/api/status',
-      { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS }
+      { timeoutMs: getRemoteLivenessTimeoutMs() }
     )
     expect(pool.stopBackend).not.toHaveBeenCalled()
   })
@@ -460,7 +459,7 @@ describe('revalidatePooledRemoteBackends', () => {
     await pool.run(new RemoteLivenessTracker())
 
     expect(pool.probe).toHaveBeenCalledWith(expect.objectContaining({ authMode: 'oauth' }), '/api/status', {
-      timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS
+      timeoutMs: getRemoteLivenessTimeoutMs()
     })
     expect(pool.stopBackend).not.toHaveBeenCalled()
   })

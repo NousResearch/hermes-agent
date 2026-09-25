@@ -70,6 +70,12 @@ declare global {
         ok: boolean
         limits: PoolLimits
       }>
+      // Remote liveness/dispatch probe timeout (Settings → Advanced):
+      // device-local, live-applied by the main process. get resolves the
+      // timeout currently in force; set applies (and persists) a new one —
+      // every consumer reads it live, no restart needed.
+      getRemoteLivenessTimeout: () => Promise<{ timeoutMs: number }>
+      setRemoteLivenessTimeout: (timeoutMs: number) => Promise<{ ok: boolean; timeoutMs: number }>
       getGatewayWsUrl: (profile?: null | string) => Promise<GatewayWsUrlResult>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false

@@ -990,6 +990,10 @@ export const zhHant = defineLocale({
       backendIdleTimeoutAria: '後端閒置逾時（毫秒）',
       backendIdleTimeoutTitle: '後端閒置逾時（毫秒）'
     },
+    remoteLivenessTimeout: {
+      aria: '遠端存活逾時（毫秒）',
+      title: '遠端存活逾時'
+    },
     customEndpoints: {
       active: '已啟用',
       apiKeySet: '已設定 API 金鑰',

@@ -1203,6 +1203,10 @@ export const zh = defineLocale({
       backendIdleTimeoutAria: '后端空闲超时（毫秒）',
       backendIdleTimeoutTitle: '后端空闲超时（毫秒）'
     },
+    remoteLivenessTimeout: {
+      aria: '远程存活超时（毫秒）',
+      title: '远程存活超时'
+    },
     customEndpoints: {
       active: '已启用',
       apiKeySet: '已设置 API 密钥',

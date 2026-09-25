@@ -44,6 +44,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   touchBackend: (profile, options) => ipcRenderer.invoke('hermes:backend:touch', profile, options),
   getPoolLimits: () => ipcRenderer.invoke('hermes:pool-limits:get'),
   setPoolLimits: limits => ipcRenderer.invoke('hermes:pool-limits:set', limits),
+  getRemoteLivenessTimeout: () => ipcRenderer.invoke('hermes:remote-liveness-timeout:get'),
+  setRemoteLivenessTimeout: timeoutMs => ipcRenderer.invoke('hermes:remote-liveness-timeout:set', { timeoutMs }),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   // Registry-scoped fresh WS URL: { connectionId, profile } → result shape of
   // getGatewayWsUrl, minted against that connection's backend.

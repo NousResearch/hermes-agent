@@ -419,12 +419,18 @@ import * as remoteLifecycle from './remote-lifecycle'
 import {
   attachPowerResumeRemoteRevalidation,
   ensureHealthyPooledRemoteBackendForDispatch,
+  getRemoteLivenessTimeoutMs,
   RemoteLivenessTracker,
   RemoteRevalidationCoordinator,
   revalidatePooledRemoteBackends,
   revalidateRemoteConnection,
-  revalidateSuspectPooledRemoteBackends
+  revalidateSuspectPooledRemoteBackends,
+  setRemoteLivenessTimeoutMs
 } from './remote-liveness'
+import {
+  parsePersistedRemoteLivenessTimeoutMs,
+  resolveRemoteLivenessTimeoutMsFromEnv
+} from './remote-liveness-timeout'
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
 import {
   attachRemoteRequestHeaderListener,
@@ -1538,6 +1544,48 @@ function persistPoolLimits(limits) {
   }
 }
 
+// Remote liveness/dispatch probe timeout (Settings → Advanced): device-local,
+// live-applied like pool sizing above. The legacy HERMES_REMOTE_LIVENESS_TIMEOUT_MS
+// env var remains the initial-value fallback for scripted/headless setups
+// (a Finder/Dock-launched app never sees it — backend-env.ts); after launch
+// the stored preference wins.
+const REMOTE_LIVENESS_TIMEOUT_PATH = path.join(app.getPath('userData'), 'remote-liveness-timeout.json')
+
+function readPersistedRemoteLivenessTimeoutMs(): number {
+  try {
+    const persisted = parsePersistedRemoteLivenessTimeoutMs(fs.readFileSync(REMOTE_LIVENESS_TIMEOUT_PATH, 'utf8'))
+
+    if (persisted != null) {
+      rememberLog(`[remote-liveness-timeout] loaded from ${REMOTE_LIVENESS_TIMEOUT_PATH}: ${persisted}ms`)
+
+      return persisted
+    }
+  } catch {
+    // No persisted file yet — fall through to the env-var fallback below.
+  }
+
+  const fromEnv = resolveRemoteLivenessTimeoutMsFromEnv()
+
+  if (fromEnv !== 10_000) {
+    rememberLog(`[remote-liveness-timeout] no saved file; using env-var override: ${fromEnv}ms`)
+  } else {
+    rememberLog('[remote-liveness-timeout] no saved file and no env override; using default')
+  }
+
+  return fromEnv
+}
+
+function persistRemoteLivenessTimeoutMs(ms: number): void {
+  try {
+    fs.mkdirSync(path.dirname(REMOTE_LIVENESS_TIMEOUT_PATH), { recursive: true })
+    const tmpPath = `${REMOTE_LIVENESS_TIMEOUT_PATH}.tmp`
+    fs.writeFileSync(tmpPath, JSON.stringify({ timeoutMs: ms }, null, 2), 'utf8')
+    fs.renameSync(tmpPath, REMOTE_LIVENESS_TIMEOUT_PATH)
+  } catch (error) {
+    rememberLog(`[remote-liveness-timeout] write failed: ${error.message}`)
+  }
+}
+
 // rememberLog() state. Declared here, before the top-level
 // readPersistedPoolLimits() call below, because that call logs during module
 // evaluation; declaring these later crashed launch with `undefined.push` in
@@ -1548,6 +1596,7 @@ let desktopLogFlushTimer = null
 let desktopLogFlushPromise = Promise.resolve()
 
 let poolLimits = readPersistedPoolLimits()
+setRemoteLivenessTimeoutMs(readPersistedRemoteLivenessTimeoutMs())
 // Hard cap on local backends that are starting OR running (the LRU eviction
 // above is soft — it spares keepalive-fresh entries). Follows the live
 // preference: setPoolLimits() pushes a new max into the coordinator.
@@ -1652,6 +1701,18 @@ function setPoolLimits(raw) {
   startPoolIdleReaper()
 
   return { ...poolLimits }
+}
+
+/**
+ * Apply a new remote liveness/dispatch probe timeout live: every consumer in
+ * remote-liveness.ts reads the value on its next probe, so no restart or
+ * reconnect is needed. Returns the value actually in force (post-clamp).
+ */
+function setRemoteLivenessTimeoutPreference(ms: number): number {
+  const applied = setRemoteLivenessTimeoutMs(ms)
+  persistRemoteLivenessTimeoutMs(applied)
+
+  return applied
 }
 
 // A backend touched within this window has a live renderer socket (the keepalive
@@ -14723,6 +14784,15 @@ ipcMain.handle('hermes:pool-limits:set', async (_event, raw) => {
   })
 
   return { ok: true, limits: next }
+})
+// Remote liveness timeout (Settings → Advanced): device-local, live-applied.
+ipcMain.handle('hermes:remote-liveness-timeout:get', async () => ({ timeoutMs: getRemoteLivenessTimeoutMs() }))
+ipcMain.handle('hermes:remote-liveness-timeout:set', async (_event, raw) => {
+  const timeoutMs = setRemoteLivenessTimeoutPreference(
+    typeof raw?.timeoutMs === 'number' ? raw.timeoutMs : getRemoteLivenessTimeoutMs()
+  )
+
+  return { ok: true, timeoutMs }
 })
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => {
   return gatewayWsUrlIpcResult(() => freshGatewayWsUrl(profile))

@@ -1557,6 +1557,10 @@ export const esOverrides = {
       backendIdleTimeoutAria: 'Tiempo de inactividad del backend en milisegundos',
       backendIdleTimeoutTitle: 'Tiempo de inactividad del backend'
     },
+    remoteLivenessTimeout: {
+      aria: 'Tiempo de espera de actividad remota en milisegundos',
+      title: 'Tiempo de espera de actividad remota'
+    },
     customEndpoints: {
       active: 'Activo',
       apiKeySet: 'Clave API configurada',

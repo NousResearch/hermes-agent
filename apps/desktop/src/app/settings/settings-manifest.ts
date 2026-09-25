@@ -165,6 +165,11 @@ export const SETTINGS_MANIFEST = {
       keywords: ['pool', 'backends', 'idle', 'timeout', 'milliseconds'],
       copy: t => ({ label: t.settings.poolLimits.backendIdleTimeoutTitle })
     },
+    remoteLivenessTimeout: {
+      subpage: 'desktop',
+      keywords: ['remote', 'liveness', 'timeout', 'probe', 'ssh', 'dispatch', 'milliseconds'],
+      copy: t => ({ label: t.settings.remoteLivenessTimeout.title })
+    },
     quickEntry: {
       subpage: 'desktop',
       keywords: ['quick entry', 'global shortcut', 'spotlight', 'summon', 'prompt anywhere'],

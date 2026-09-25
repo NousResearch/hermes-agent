@@ -1,38 +1,38 @@
 import { isMissingHealthEndpointError } from './backend-health'
+import { clampRemoteLivenessTimeoutMs, REMOTE_LIVENESS_TIMEOUT_DEFAULT_MS } from './remote-liveness-timeout'
 
-const DEFAULT_REMOTE_LIVENESS_TIMEOUT_MS = 10_000
+let currentRemoteLivenessTimeoutMs = REMOTE_LIVENESS_TIMEOUT_DEFAULT_MS
 
 /**
- * Resolve the remote liveness/dispatch probe timeout (ms).
- * Honours HERMES_REMOTE_LIVENESS_TIMEOUT_MS when it parses as a positive
- * integer, so a host under transient load (spawn-under-load starvation, #121941)
- * can raise the budget without a code change.
+ * The live remote liveness/dispatch probe timeout (ms). A device-local
+ * Settings preference (see remote-liveness-timeout.ts); main seeds it at
+ * startup from the persisted preference (or the legacy
+ * HERMES_REMOTE_LIVENESS_TIMEOUT_MS env var / 10s default) and pushes a new
+ * value here on every Settings save — every consumer below reads live so a
+ * host under transient load (spawn-under-load starvation, #121941) can raise
+ * the budget without an app restart.
  */
-export function resolveRemoteLivenessTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
-  const raw = env.HERMES_REMOTE_LIVENESS_TIMEOUT_MS
-
-  if (raw == null || raw === '') {
-    return DEFAULT_REMOTE_LIVENESS_TIMEOUT_MS
-  }
-
-  const n = Number.parseInt(String(raw), 10)
-
-  if (!Number.isFinite(n) || n <= 0) {
-    return DEFAULT_REMOTE_LIVENESS_TIMEOUT_MS
-  }
-
-  // Clamp absurd values (ms) so a typo can't hang dispatch/reconnect forever.
-  return Math.min(n, 120_000)
+export function getRemoteLivenessTimeoutMs(): number {
+  return currentRemoteLivenessTimeoutMs
 }
 
-export const REMOTE_LIVENESS_TIMEOUT_MS = resolveRemoteLivenessTimeoutMs()
+/** Set the live timeout; returns the clamped value actually in force. */
+export function setRemoteLivenessTimeoutMs(ms: number): number {
+  currentRemoteLivenessTimeoutMs = clampRemoteLivenessTimeoutMs(ms)
+
+  return currentRemoteLivenessTimeoutMs
+}
+
 // Dispatch is synchronous user intent: a cached descriptor must prove its
 // forwarded endpoint is alive before it can be returned. Probe cheap
 // /api/health — not /api/status, whose cold payload (gateway probe, topology,
 // state.db session count) on a fresh SSH forward routinely runs seconds — and
 // reuse the background liveness budget so a quiet-box cold-start (~6-8s) can
 // finish instead of failing the probe and kicking off a reconnect storm.
-export const POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS = REMOTE_LIVENESS_TIMEOUT_MS
+export function getPooledRemoteDispatchProbeTimeoutMs(): number {
+  return getRemoteLivenessTimeoutMs()
+}
+
 export const REMOTE_LIVENESS_FAILURE_LIMIT = 3
 // Even at the capped retry path, consecutive liveness observations are at most
 // about 48s apart (ticket mint + socket open + backoff + the next status probe).
@@ -131,7 +131,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
 
     try {
       await probe(connection, '/api/health', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+        timeoutMs: getPooledRemoteDispatchProbeTimeoutMs()
       })
     } catch (healthError) {
       // A remote that predates /api/health would otherwise 404 every dispatch,
@@ -142,7 +142,7 @@ export async function ensureHealthyPooledRemoteBackendForDispatch<TConnection ex
       }
 
       await probe(connection, '/api/status', {
-        timeoutMs: POOLED_REMOTE_DISPATCH_PROBE_TIMEOUT_MS
+        timeoutMs: getPooledRemoteDispatchProbeTimeoutMs()
       })
     }
   } catch (error) {
@@ -259,7 +259,7 @@ export async function revalidatePooledRemoteBackends<TConnection extends RemoteC
         }
 
         const connection = await entry.connectionPromise
-        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+        await probe(connection, '/api/status', { timeoutMs: getRemoteLivenessTimeoutMs() })
         tracker.recordSuccess(baseUrl)
       } catch {
         const failure = tracker.recordFailure(baseUrl)
@@ -334,7 +334,7 @@ export async function revalidateSuspectPooledRemoteBackends<TConnection extends 
         }
 
         const connection = await entry.connectionPromise
-        await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+        await probe(connection, '/api/status', { timeoutMs: getRemoteLivenessTimeoutMs() })
         tracker.recordSuccess(baseUrl)
 
         return
@@ -468,7 +468,7 @@ export async function revalidateRemoteConnection<TConnection extends RemoteConne
   const baseUrl = connection.baseUrl.replace(/\/+$/, '')
 
   try {
-    await probe(connection, '/api/status', { timeoutMs: REMOTE_LIVENESS_TIMEOUT_MS })
+    await probe(connection, '/api/status', { timeoutMs: getRemoteLivenessTimeoutMs() })
 
     if (currentConnectionPromise() !== connectionPromise) {
       return { ok: true, rebuilt: false }

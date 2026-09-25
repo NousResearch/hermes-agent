@@ -1558,6 +1558,10 @@ export const deOverrides = {
       backendIdleTimeoutAria: 'Leerlauf-Timeout des Backends in Millisekunden',
       backendIdleTimeoutTitle: 'Leerlauf-Timeout des Backends'
     },
+    remoteLivenessTimeout: {
+      aria: 'Timeout für Remote-Liveness in Millisekunden',
+      title: 'Remote-Liveness-Timeout'
+    },
     customEndpoints: {
       active: 'Aktiv',
       apiKeySet: 'API-Schlüssel gesetzt',

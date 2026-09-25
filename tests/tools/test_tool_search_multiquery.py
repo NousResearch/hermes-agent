@@ -536,3 +536,105 @@ class TestConfigAndSchema:
         describe_params = schemas["tool_describe"]["parameters"]
         assert describe_params["required"] == ["names"]
         assert describe_params["properties"]["names"]["type"] == "array"
+
+
+# ---------------------------------------------------------------------------
+# Session-scoped not-deferrable diagnosis (#108663)
+# ---------------------------------------------------------------------------
+
+
+class TestSessionScopedToolDiagnosis:
+    """A registered direct-surface name the session never listed (its toolset is
+    disabled for this platform/profile) must be told 'not enabled, don't retry',
+    not 'call it directly' — the old wording sends the model into a retry loop on
+    a function it doesn't have."""
+
+    NAME = "mq_diag_desktop_action"
+
+    def _register_direct_surface(self):
+        return _register(self.NAME, "desktop_ui", "A GUI-surface tool.")
+
+    def test_describe_absent_direct_surface_says_not_enabled(self):
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        self._register_direct_surface()
+        # Session defs list only an unrelated deferred tool: the direct-surface
+        # name is registered globally but not offered here.
+        result = json.loads(dispatch_tool_describe(
+            {"names": [self.NAME]},
+            current_tool_defs=[_register("mq_diag_deferred", "mcp-mq-diag")],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        msg = result["errors"][self.NAME]
+        assert "not enabled in this session" in msg
+        assert "do not retry" in msg
+        assert "Call it directly" not in msg
+
+    def test_describe_listed_direct_surface_keeps_call_directly(self):
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        tool_def = self._register_direct_surface()
+        result = json.loads(dispatch_tool_describe(
+            {"names": [self.NAME]},
+            current_tool_defs=[tool_def],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        msg = result["errors"][self.NAME]
+        assert "directly-listed tool" in msg
+        assert "Call it directly" in msg
+
+    def test_describe_without_session_defs_keeps_legacy_wording(self):
+        from tools.tool_search import ToolSearchConfig, dispatch_tool_describe
+
+        self._register_direct_surface()
+        # No session list at all: behaviour must be exactly the legacy one.
+        result = json.loads(dispatch_tool_describe(
+            {"names": [self.NAME]},
+            current_tool_defs=[],
+            config=ToolSearchConfig.from_raw({}),
+        ))
+        assert "Call it directly" in result["errors"][self.NAME]
+
+    def test_resolve_underlying_call_with_session_defs_says_not_enabled(self):
+        from tools.tool_search import resolve_underlying_call
+
+        self._register_direct_surface()
+        _, _, err = resolve_underlying_call(
+            {"calls": [{"name": self.NAME, "arguments": {}}]},
+            current_tool_defs=[_register("mq_diag_deferred", "mcp-mq-diag")],
+        )
+        assert err is not None
+        assert "not enabled in this session" in err
+        assert "Call it directly" not in err
+
+    def test_resolve_underlying_call_without_session_defs_keeps_legacy_wording(self):
+        # Display/trajectory callers pass no session list: legacy message unchanged.
+        from tools.tool_search import resolve_underlying_call
+
+        self._register_direct_surface()
+        _, _, err = resolve_underlying_call(
+            {"calls": [{"name": self.NAME, "arguments": {}}]},
+        )
+        assert err is not None
+        assert "Call it directly" in err
+
+    def test_bridge_dispatch_routes_session_list_to_the_rejection(self):
+        """End-to-end via the model_tools bridge, mirroring the issue repro:
+        a core tool whose toolset is disabled for the session gets the
+        don't-retry rejection from both tool_describe and tool_call."""
+        import model_tools
+
+        r, _ = model_tools._dispatch_bridge_tool(
+            "tool_describe", {"names": ["read_file"]}, None, ["file"])
+        assert "read_file" in r and "not enabled in this session" in r
+
+        r, _ = model_tools._dispatch_bridge_tool(
+            "tool_call",
+            {"calls": [{"name": "read_file", "arguments": {"path": "/etc/hostname"}}]},
+            None, ["file"])
+        assert "not enabled in this session" in r
+
+        # And the session that does list the tool keeps the legacy wording.
+        r, _ = model_tools._dispatch_bridge_tool(
+            "tool_describe", {"names": ["read_file"]}, None, None)
+        assert "Call it directly" in r

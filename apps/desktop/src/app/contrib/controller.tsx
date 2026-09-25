@@ -34,7 +34,11 @@ import {
   togglePaneVisible,
   toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
-import { $workspaceOwnerLabels, workspaceSessionTitle } from '@/components/pane-shell/workspace-scope'
+import {
+  $workspaceOwnerLabels,
+  workspaceSessionTitle,
+  workspaceSessionUsesDraftTitle
+} from '@/components/pane-shell/workspace-scope'
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
@@ -507,7 +511,11 @@ const syncWorkspaceTitle = () => {
       // A draft's name lives in its composer, not in any session row, so the
       // label subscribes to it directly — typing renames the tab without
       // re-registering the pane.
-      tabTitle: stored ? undefined : () => <SessionDraftTitle scope={selected} />,
+      // Hidden canonical Bot Chats are absent from `$sessions`, but they are
+      // not drafts: their owner caption registered above must remain visible.
+      tabTitle: workspaceSessionUsesDraftTitle(Boolean(stored), botScope)
+        ? () => <SessionDraftTitle scope={selected} />
+        : undefined,
       // Pages aren't tab-able: the main zone's bar stands down while one shows.
       headerVeto: $workspaceIsPage.get(),
       // Page-owned controls take the vetoed tab row. Deliberately NOT the

@@ -904,6 +904,9 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   tabWrap: (storedSessionId, tab) => (
     <SessionTabMenu
       onClose={() => requestCloseSessionTile(storedSessionId)}
+      renamable={workspaceSessionRenamable(
+        $sessionTiles.get().find(tile => tile.storedSessionId === storedSessionId)
+      )}
       storedSessionId={storedSessionId}
       tabPaneId={`session-tile:${storedSessionId}`}
     >

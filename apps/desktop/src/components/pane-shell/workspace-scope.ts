@@ -88,6 +88,16 @@ export function workspaceSessionTitle(
   return workspaceOwnerTitle(title, scope)
 }
 
+/** A hidden canonical Bot Chat has no row in the visible session list, but it
+ * is not a draft. Its registered owner caption must win over the composer's
+ * ordinary `New session` live title. */
+export function workspaceSessionUsesDraftTitle(
+  hasStoredSession: boolean,
+  scope: { workspaceTabTitle?: string } | undefined
+): boolean {
+  return !hasStoredSession && !scope?.workspaceTabTitle?.trim()
+}
+
 /** Canonical Bot Chat titles are registry keys, not user-facing labels. */
 export function workspaceSessionRenamable(
   scope: { workspaceMode?: WorkspaceMode; workspaceTabTitle?: string } | undefined

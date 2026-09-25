@@ -13,7 +13,8 @@ import {
   setWorkspaceScope,
   workspaceOwnerTitle,
   workspaceSessionRenamable,
-  workspaceSessionTitle
+  workspaceSessionTitle,
+  workspaceSessionUsesDraftTitle
 } from './workspace-scope'
 
 afterEach(() => {
@@ -81,6 +82,9 @@ describe('workspace owner title', () => {
 
     expect(workspaceSessionTitle(null, 'New session', botChat)).toBe('Hermes')
     expect(workspaceSessionTitle(null, 'New session', undefined)).toBe('New session')
+    expect(workspaceSessionUsesDraftTitle(false, botChat)).toBe(false)
+    expect(workspaceSessionUsesDraftTitle(false, undefined)).toBe(true)
+    expect(workspaceSessionUsesDraftTitle(true, undefined)).toBe(false)
     expect(workspaceSessionRenamable(botChat)).toBe(false)
     expect(workspaceSessionRenamable(undefined)).toBe(true)
   })

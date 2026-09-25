@@ -100,11 +100,13 @@ class GatewayTurnRoutingMixin:
                     ):
                         selected_model = selected_model.strip()
                         selected_provider = selected_provider.strip()
-                        if selected_provider != current_requested:
+                        if selected_provider != current_requested or selected_model != model:
                             from gateway.run import _resolve_runtime_agent_kwargs_for_provider
 
                             runtime, base_request_overrides = _project_runtime_agent_kwargs(
-                                _resolve_runtime_agent_kwargs_for_provider(selected_provider)
+                                _resolve_runtime_agent_kwargs_for_provider(
+                                    selected_provider, target_model=selected_model
+                                )
                             )
                         runtime["requested_provider"] = selected_provider
                         route["model"] = selected_model

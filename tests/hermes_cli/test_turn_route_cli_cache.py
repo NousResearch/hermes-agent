@@ -181,3 +181,49 @@ def test_routed_credentials_rotate_without_leaking_or_rebuilding_per_request_tok
         assert secret not in repr(public)
         assert secret not in repr(route.get("middleware_trace"))
         assert secret not in repr(route["signature"])
+
+
+def test_same_provider_model_change_resolves_selected_model_wire(routed_chat, monkeypatch):
+    """A model-only selection on the same provider must resolve the new model's api_mode/base_url."""
+    from hermes_cli.plugins import PluginManager
+
+    shell, selected, credential, agents, turn_agents = routed_chat
+    manager = PluginManager()
+    manager._middleware["turn_route"] = [
+        lambda route, **kw: {"route": {**route, "model": "claude-sonnet-4-5", "requested_provider": "opencode-zen"}}
+    ]
+    monkeypatch.setattr("hermes_cli.plugins._delivery_manager", lambda: manager)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda *, requested, target_model: {
+            "api_key": "zen-key",
+            "base_url": (
+                "https://opencode.ai/zen"
+                if target_model == "claude-sonnet-4-5"
+                else "https://opencode.ai/zen/v1"
+            ),
+            "provider": requested,
+            "requested_provider": requested,
+            "api_mode": (
+                "anthropic_messages"
+                if target_model == "claude-sonnet-4-5"
+                else "codex_responses"
+            ),
+            "command": None,
+            "args": [],
+            "credential_pool": None,
+        },
+    )
+    shell.model = "gpt-5.4"
+    shell.provider = "opencode-zen"
+    shell.requested_provider = "opencode-zen"
+    shell.api_mode = "codex_responses"
+    shell.base_url = "https://opencode.ai/zen/v1"
+    shell.api_key = "zen-key"
+    shell._active_agent_route_signature = None
+    shell.agent = None
+
+    route = shell._resolve_turn_agent_config("hello")
+    assert route["model"] == "claude-sonnet-4-5"
+    assert route["runtime"]["api_mode"] == "anthropic_messages"
+    assert route["runtime"]["base_url"] == "https://opencode.ai/zen"

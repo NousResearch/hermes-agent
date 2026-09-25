@@ -567,7 +567,7 @@ class CLIAgentSetupMixin:
                     if isinstance(selected_model, str) and selected_model.strip() and isinstance(selected_provider, str) and selected_provider.strip():
                         selected_model = selected_model.strip()
                         selected_provider = selected_provider.strip()
-                        if selected_provider != current_requested:
+                        if selected_provider != current_requested or selected_model != self.model:
                             from hermes_cli.runtime_provider import resolve_runtime_provider
                             resolved = resolve_runtime_provider(requested=selected_provider, target_model=selected_model)
                             runtime = {

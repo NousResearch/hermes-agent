@@ -1128,7 +1128,7 @@ class GatewayInboundMixin:
                     user_args = event.get_command_args().strip()
                     with self._session_env_scope(_plugin_context):
                         if asyncio.iscoroutinefunction(plugin_handler):
-                            result = invoke_plugin_command(
+                            result = await invoke_plugin_command(
                                 plugin_handler,
                                 user_args,
                                 session_id=physical_session_id,
@@ -1145,8 +1145,8 @@ class GatewayInboundMixin:
                                     platform=source.platform.value if source.platform else None,
                                 )
                             )
-                    if asyncio.iscoroutine(result):
-                        result = await result
+                        if asyncio.iscoroutine(result):
+                            result = await result
                     return True, str(result) if result else None, command
             except Exception as e:
                 logger.warning("Plugin command dispatch failed: %s", e)

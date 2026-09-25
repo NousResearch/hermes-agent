@@ -3410,6 +3410,59 @@ class TestCompressionChainProjection:
         assert "_lineage_root_id" not in row
         assert row["end_reason"] == "compression"
 
+    def test_list_projects_post_reap_ui_continuation_but_not_live_delegate(self, db):
+        """A recovered primary chat stays visible; a delegate created while its parent lived does not."""
+        db.create_session("root", "desktop")
+        db.append_message("root", "user", "old title")
+        db.create_session(
+            "delegate", "desktop", parent_session_id="root",
+            model_config={"_delegate_from": "root"},
+        )
+        db.append_message("delegate", "user", "background task")
+        db.end_session("root", "ws_orphan_reap")
+        ended_at = db.get_session("root")["ended_at"]
+        db.create_session(
+            "continued", "desktop", parent_session_id="root",
+            model_config={"_delegate_from": "root"},
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (ended_at + 1, "Current title", "continued"),
+        )
+        db.append_message("continued", "user", "live continuation")
+        db._conn.commit()
+
+        rows = db.list_sessions_rich(source="desktop", limit=20)
+
+        assert [row["id"] for row in rows] == ["continued"]
+        assert rows[0]["title"] == "Current title"
+        assert rows[0]["_lineage_ids"] == ["root", "continued"]
+
+    def test_v31_repairs_only_post_reap_ui_delegate_marker(self, db):
+        db.create_session("root", "desktop")
+        db.create_session(
+            "delegate", "desktop", parent_session_id="root",
+            model_config={"_delegate_from": "root"},
+        )
+        db.end_session("root", "ws_orphan_reap")
+        ended_at = db.get_session("root")["ended_at"]
+        db.create_session(
+            "continued", "desktop", parent_session_id="root",
+            model_config={"_delegate_from": "root", "kept": True},
+        )
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ? WHERE id = ?", (ended_at + 1, "continued"),
+        )
+        db._conn.execute("UPDATE schema_version SET version = 30")
+        db._conn.commit()
+
+        db._run_data_migrations(db._conn.cursor(), 30, fts5_available=True)
+        repaired = json.loads(db.get_session("continued")["model_config"])
+        delegate = json.loads(db.get_session("delegate")["model_config"])
+
+        assert repaired == {"kept": True}
+        assert delegate["_delegate_from"] == "root"
+
 
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)

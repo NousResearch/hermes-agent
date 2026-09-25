@@ -24,7 +24,8 @@ from hermes_state_common import (
     DEFERRED_INDEX_SQL, FTS_CJK_STALE_KEY, FTS_REBUILD_DEFERRAL_KEY, FTS_STALE_KEY, FTS_SQL,
     FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS, FTS_TRIGRAM_SQL, LEGACY_FTS_SQL,
     LEGACY_FTS_TRIGRAM_SQL, SCHEMA_SQL,
-    SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql, _sql_json_extract, fts_rebuild_admission,
+    SCHEMA_VERSION, _FTS_CJK_TRIGGERS, _FTS_TRIGGERS, _ephemeral_child_sql,
+    _picker_continuation_edge_sql, _sql_json_extract, fts_rebuild_admission,
 )
 from hermes_state_fts import _drop_orphan_fts_shadow_tables
 from hermes_state_holders import _read_proc_argv
@@ -1015,7 +1016,9 @@ class SessionSchemaMixin:
                     "COALESCE(model_config, '{}'), '$._delegate_from', parent_session_id) "
                     f"WHERE parent_session_id IS NOT NULL "
                     f"AND {_sql_json_extract('model_config', '$._delegate_from')} IS NULL "
-                    f"AND {_ephemeral_child_sql('sessions')}"
+                    f"AND {_ephemeral_child_sql('sessions')} "
+                    "AND NOT EXISTS (SELECT 1 FROM sessions parent "
+                    f"WHERE {_picker_continuation_edge_sql('parent', 'sessions')})"
                 )
                 cursor.execute(
                     "UPDATE sessions SET model_config = json_set("
@@ -1051,6 +1054,19 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
+        if current_version < 31:
+            # v31: v16 classified every unmarked non-compression child as a delegate.  A Desktop/TUI
+            # continuation minted after ws_orphan_reap is instead the same user conversation; remove only
+            # that proven false marker.  Pre-reap delegate children retain theirs.
+            with contextlib.suppress(sqlite3.OperationalError):
+                edge = _picker_continuation_edge_sql("parent", "child")
+                cursor.execute(
+                    "UPDATE sessions SET model_config = NULLIF("
+                    "json_remove(COALESCE(model_config, '{}'), '$._delegate_from'), '{}') "
+                    "WHERE id IN (SELECT child.id FROM sessions parent "
+                    f"JOIN sessions child ON {edge} "
+                    f"WHERE {_sql_json_extract('child.model_config', '$._delegate_from')} IS NOT NULL)"
+                )
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
             # v29: cron sessions leave the trigram substring index (they stay in the word index);

@@ -21,6 +21,7 @@ from hermes_state_common import (
     _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
     _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
+from hermes_state_common import _picker_continuation_edge_sql
 
 # caplog tests pin the "hermes_state" logger name.
 logger = logging.getLogger("hermes_state")
@@ -1025,14 +1026,45 @@ class SessionSessionsMixin:
         combined = " AND ".join(clauses)
         return (f"{where_sql} AND {combined}" if where_sql else f"WHERE {combined}"), params
 
-    def _project_compression_tips(self, sessions: List[Dict[str, Any]], compact_rows: bool) -> List[Dict[str, Any]]:
-        """Replace each compression root's surfaced fields with its live tip's (root ``started_at`` kept
-        for stable ordering), one batched query. ``_lineage_ids`` carries every chain id (a tile may
-        hold a MIDDLE segment's id)."""
+    def _picker_continuation_chain(self, session_id: str) -> List[str]:
+        """Compression plus proven post-reap UI continuations, rooted at *session_id*."""
+        chain = [session_id] if session_id else []
+        seen = set(chain)
+        for _ in range(100):
+            current = self.get_session(chain[-1]) if chain else None
+            if not current:
+                break
+            if current.get("end_reason") == "compression":
+                segment = self.get_compression_chain(current["id"])[1:]
+                if not segment:
+                    break
+                for child_id in segment:
+                    if child_id in seen:
+                        return chain
+                    seen.add(child_id)
+                    chain.append(child_id)
+                continue
+            if current.get("end_reason") != "ws_orphan_reap":
+                break
+            edge = _picker_continuation_edge_sql("parent", "child")
+            row = self._read_one(
+                f"SELECT child.id FROM sessions parent JOIN sessions child ON {edge} "
+                "WHERE parent.id = ? ORDER BY child.started_at DESC, child.id DESC LIMIT 1",
+                (current["id"],),
+            )
+            child_id = row[0] if row is not None else None
+            if not child_id or child_id in seen:
+                break
+            seen.add(child_id)
+            chain.append(child_id)
+        return chain
+
+    def _project_continuation_tips(self, sessions: List[Dict[str, Any]], compact_rows: bool) -> List[Dict[str, Any]]:
+        """Replace a picker root with its live continuation tip while retaining stable root ordering."""
         chain_by_root: Dict[str, List[str]] = {}  # only roots whose tip differs from themselves
         for s in sessions:
-            if s.get("end_reason") == "compression":
-                chain = self.get_compression_chain(s["id"])
+            if s.get("end_reason") in {"compression", "ws_orphan_reap"}:
+                chain = self._picker_continuation_chain(s["id"])
                 if chain and chain[-1] != s["id"]:
                     chain_by_root[s["id"]] = chain
         tip_rows = (
@@ -1294,10 +1326,10 @@ class SessionSessionsMixin:
         )
         from_sessions = f"FROM sessions s\n                {prompt_join}"
         if order_by_last_active:
-            # The CTE walks compression-continuation edges forward from the admitted
-            # rows; MAX over the chain gives effective_last_active in SQL. Do NOT
-            # require child.started_at >= parent.ended_at: races insert the
-            # continuation before ended_at is written.
+            # The CTE walks user-visible continuation edges forward from the admitted
+            # rows; MAX over the chain gives effective_last_active in SQL. Compression edges deliberately
+            # ignore timestamp ordering because races can insert the child before ended_at is written; the
+            # post-reap recovery arm requires ordering because that is what separates it from a live delegate.
             outer_where, id_params = self._chain_search_where(
                 where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
             )
@@ -1315,11 +1347,19 @@ class SessionSessionsMixin:
                       AND NOT ({_RESET_CHILD_SQL.format(a='child')})
                       AND COALESCE(child.source, '') != 'tool'
                 ),
+                picker_chain(root_id, cur_id) AS (
+                    SELECT root_id, cur_id FROM chain
+                    UNION
+                    SELECT c.root_id, child.id
+                    FROM picker_chain c
+                    JOIN sessions parent ON parent.id = c.cur_id
+                    JOIN sessions child ON {_picker_continuation_edge_sql('parent', 'child')}
+                ),
                 chain_max AS (
                     SELECT
                         root_id,
                         MAX({_sql_session_last_active_by_id("cur_id")}) AS effective_last_active
-                    FROM chain
+                    FROM picker_chain
                     GROUP BY root_id
                 )
                 {select_head}{_sql_session_last_active("s")} AS last_active,
@@ -1369,7 +1409,7 @@ class SessionSessionsMixin:
                     seen_ids.add(s["id"])
                     sessions.append(s)
         if project_compression_tips and not include_children:
-            sessions = self._project_compression_tips(sessions, compact_rows)
+            sessions = self._project_continuation_tips(sessions, compact_rows)
         # last_read_at is lineage-stamped, so root and tip watermarks agree.
         for s in sessions:
             s["unread"] = self.session_unread(s)

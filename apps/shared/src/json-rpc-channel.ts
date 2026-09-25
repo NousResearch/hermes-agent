@@ -182,6 +182,11 @@ export class JsonRpcRequestChannel {
   private heartbeatSequence = 0
   private readonly outstandingPings = new Set<string>()
   private lastLivenessAt = 0
+  /**
+   * hidden→visible clock refresh for the heartbeat. Held as a field so
+   * stopHeartbeat() removes exactly the listener it installed.
+   */
+  private visibilityHandler: (() => void) | null = null
   private readonly requestHandlers: ServerRequestHandler[] = []
   private readonly options: Required<
     Omit<JsonRpcRequestChannelOptions, 'onEvent' | 'onHeartbeatFailure' | 'onRequestHandlerError' | 'onUnhandledRequest'>
@@ -506,12 +511,35 @@ export class JsonRpcRequestChannel {
       return
     }
 
+    // A hidden window cannot be told apart from a dead backend by a silent
+    // deadline: Chromium/macOS throttle renderer timers while the window is
+    // occluded or minimized, so inbound frames pause for minutes and the check
+    // below would close a perfectly healthy socket. That self-close is not
+    // harmless — the backend parks the session, the WS-orphan reap tears it
+    // down ~20s later, and the redial only lands 30-60s out, so every idle
+    // stretch churned the session. While hidden we keep pinging but skip the
+    // deadline; a genuinely dead socket still surfaces through its close/error
+    // events, and the visible/focus/online recovery paths probe liveness when
+    // the window returns. Keep the clock fresh on hidden→visible so the first
+    // unthrottled tick cannot trip against a stale timestamp.
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+      this.visibilityHandler = () => {
+        if (typeof document !== 'undefined' && document.visibilityState !== 'hidden') {
+          this.lastLivenessAt = Date.now()
+        }
+      }
+
+      document.addEventListener('visibilitychange', this.visibilityHandler)
+    }
+
     this.heartbeatTimer = setInterval(() => {
       if (this.transport !== transport) {
         return
       }
 
-      if (Date.now() - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
+      const hidden = typeof document !== 'undefined' && document.visibilityState === 'hidden'
+
+      if (!hidden && Date.now() - this.lastLivenessAt >= this.options.heartbeatDeadlineMs) {
         this.failHeartbeat(new Error('WebSocket heartbeat acknowledgement timed out'))
 
         return
@@ -541,6 +569,14 @@ export class JsonRpcRequestChannel {
 
   stopHeartbeat(): void {
     this.outstandingPings.clear()
+
+    if (this.visibilityHandler !== null) {
+      if (typeof document !== 'undefined' && typeof document.removeEventListener === 'function') {
+        document.removeEventListener('visibilitychange', this.visibilityHandler)
+      }
+
+      this.visibilityHandler = null
+    }
 
     if (this.heartbeatTimer !== null) {
       clearInterval(this.heartbeatTimer)

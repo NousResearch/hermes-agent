@@ -4730,6 +4730,8 @@ export const en: Translations = {
     imported: 'Page imported to the canvas',
     importedElement: label => `Imported ${label} to the canvas`,
     importFailed: 'Could not import to the canvas',
+    importUndo: 'Undo',
+    importUndoFailed: 'Could not undo the import',
     showCanvas: 'Show canvas'
   },
 

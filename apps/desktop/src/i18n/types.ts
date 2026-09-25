@@ -4003,6 +4003,8 @@ export interface Translations {
     imported: string
     importedElement: (label: string) => string
     importFailed: string
+    importUndo: string
+    importUndoFailed: string
     showCanvas: string
   }
 

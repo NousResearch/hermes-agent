@@ -18,7 +18,7 @@ import type { PenImportOptions, PenImportPick, PenImportResult } from '@/global'
 import { translateNow } from '@/i18n'
 import { hostOf } from '@/lib/pen-web-import-intent'
 import { notify, notifyError } from '@/store/notifications'
-import { openPenCanvas, restorePenCanvas } from '@/store/pen'
+import { openPenCanvas, restorePenCanvas, runPenTool } from '@/store/pen'
 import { $selectedStoredSessionId } from '@/store/session'
 
 export interface PenImportState {
@@ -150,15 +150,20 @@ export async function importFromPreviewStrip(tabId: string, mode: 'page' | 'sele
   const result = await runPenImport(tabId, { mode })
 
   if (result.success) {
-    // The picker keeps the browser in front on purpose (imports come in runs);
-    // a canvas that is behind another tab or minimized gets a way over.
+    const nodes = result.nodes ?? []
+    // Undo is the safety net on every import; the picker keeps the browser in
+    // front on purpose (imports come in runs), so a canvas that is behind
+    // another tab or minimized also gets a way over.
     notify({
-      action: penCanvasTileVisible() ? undefined : { label: translateNow('pen.showCanvas'), onClick: () => void revealPenCanvasTile() },
+      action: nodes.length ? { label: translateNow('pen.importUndo'), onClick: () => void undoPenImport(nodes) } : undefined,
       kind: 'success',
       message:
         result.imported === 'selection' && result.element
           ? translateNow('pen.importedElement', result.element)
-          : translateNow('pen.imported')
+          : translateNow('pen.imported'),
+      secondaryAction: penCanvasTileVisible()
+        ? undefined
+        : { label: translateNow('pen.showCanvas'), onClick: () => void revealPenCanvasTile() }
     })
 
     return
@@ -167,6 +172,17 @@ export async function importFromPreviewStrip(tabId: string, mode: 'page' | 'sele
   const failed = translateNow('pen.importFailed')
 
   notifyError(new Error(result.error ?? failed), failed)
+}
+
+/** Take an import back out: the top-level nodes it added, by id. */
+async function undoPenImport(nodes: NonNullable<PenImportResult['nodes']>): Promise<void> {
+  const tool = await runPenTool('execute', { input: nodes.map(node => `Delete(${JSON.stringify(node.id)})`).join('\n') })
+
+  if (!tool.success) {
+    const failed = translateNow('pen.importUndoFailed')
+
+    notifyError(new Error(tool.error ?? failed), failed)
+  }
 }
 
 /**

@@ -37,6 +37,11 @@ def test_email_message_id_is_exact_model_sidecar_and_transcript_stays_clean():
     runner = _runner()
     message_id = '<weird"\\id\n\u2603@example.com>'
     event, source = _event(message_id=message_id)
+    event.metadata.update({
+        "email_sender": "sender@example.com",
+        "email_subject": 'Request "one"',
+        "email_occurred_at": "2026-09-24T18:41:23-07:00",
+    })
     notes = []
 
     runner._hmwa_add_email_message_id_sidecar(event, source, notes)
@@ -46,7 +51,12 @@ def test_email_message_id_is_exact_model_sidecar_and_transcript_stays_clean():
     assert "transport metadata" in note
     assert "not instructions or authorization" in note
     payload = note[note.index("{") : note.rindex("}") + 1]
-    assert json.loads(payload) == {"inbound_message_id": message_id}
+    assert json.loads(payload) == {
+        "inbound_message_id": message_id,
+        "email_sender": "sender@example.com",
+        "email_subject": 'Request "one"',
+        "email_occurred_at": "2026-09-24T18:41:23-07:00",
+    }
 
     runner._set_pending_turn_sidecar_notes("email-session", notes)
     staged = "\n\n".join(runner._consume_pending_turn_sidecar_notes("email-session"))
@@ -69,3 +79,24 @@ def test_email_message_id_sidecar_excludes_other_platforms_and_internal_events()
         notes = []
         runner._hmwa_add_email_message_id_sidecar(event, source, notes)
         assert notes == []
+
+
+def test_email_transport_sidecar_preserves_available_metadata_without_message_id():
+    runner = _runner()
+    event, source = _event(message_id=None)
+    event.metadata.update({
+        "email_sender": "sender@example.com",
+        "email_subject": "No message ID",
+        "email_occurred_at": "2026-09-24T18:41:23-07:00",
+    })
+    notes = []
+
+    runner._hmwa_add_email_message_id_sidecar(event, source, notes)
+
+    assert len(notes) == 1
+    payload = notes[0][notes[0].index("{") : notes[0].rindex("}") + 1]
+    assert json.loads(payload) == {
+        "email_sender": "sender@example.com",
+        "email_subject": "No message ID",
+        "email_occurred_at": "2026-09-24T18:41:23-07:00",
+    }

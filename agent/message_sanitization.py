@@ -589,7 +589,7 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
 # Cerebras, Groq, SambaNova, … (#45655). Strip the key entirely, even a single-space pad.
 _REASONING_ECHO_RULES: tuple = (
     # (family, exact providers (raw), exact providers (lowered), model substrings (lowered), hosts)
-    ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), (), ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
+    ("kimi", frozenset({"kimi-coding", "kimi-coding-cn"}), frozenset(), ("kimi", "moonshot"), ("api.kimi.com", "moonshot.ai", "moonshot.cn")),
     ("deepseek", frozenset(), frozenset({"deepseek"}), ("deepseek",), ("api.deepseek.com",)),
     ("mimo", frozenset(), frozenset({"xiaomi"}), ("mimo",), ("api.xiaomimimo.com", "xiaomimimo.com")),
 )

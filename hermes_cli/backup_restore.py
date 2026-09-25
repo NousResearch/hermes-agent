@@ -97,6 +97,16 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
     under a live holder is the #90950 split-brain, so that branch fails
     closed (returns ``False``) and the caller reports the file as skipped.
     """
+    from hermes_cli.backup import verify_sqlite_integrity
+
+    # backup() copies pages without validating their contents; its fallback
+    # copies bytes even when SQLite rejected the source. Neither may touch the
+    # destination until the snapshot passes the existing bounded integrity policy.
+    source_check = verify_sqlite_integrity(src)
+    if not source_check["valid"]:
+        logger.error("Refusing SQLite restore from %s: %s", src, source_check["message"])
+        return False
+
     dst_conn: Optional[sqlite3.Connection] = None
     try:
         dst_conn = sqlite3.connect(str(dst))

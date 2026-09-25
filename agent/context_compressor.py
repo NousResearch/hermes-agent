@@ -1382,6 +1382,21 @@ def _content_text_for_contains(content: Any) -> str:
     return "" if content is None else content if isinstance(content, str) else str(content)
 
 
+def _is_text_only_content(content: Any) -> bool:
+    """Whether the active request can be restated without losing a content part."""
+    if isinstance(content, str):
+        return True
+    return isinstance(content, list) and all(
+        isinstance(part, str)
+        or (
+            isinstance(part, dict)
+            and part.get("type") in {"text", "input_text"}
+            and isinstance(part.get("text"), str)
+        )
+        for part in content
+    )
+
+
 def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -> Any:
     """Append or prepend plain text to message content (string or multimodal list)."""
     if content is None:
@@ -4903,6 +4918,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         if (
             allow_split_turn
             and user_anchored_cut < cut_idx
+            # The handoff can restate text, but cannot replace an audio, image,
+            # or unknown structured input with its text-only projection.
+            and _is_text_only_content(messages[last_user_idx].get("content"))
             # A single oversized user message is indivisible and must stay verbatim in the tail; this
             # exception is only for aggregate turn growth after a normally sized opening request.
             and _estimate_msg_budget_tokens(messages[last_user_idx]) <= soft_ceiling

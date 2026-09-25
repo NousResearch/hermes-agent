@@ -260,3 +260,30 @@ def test_active_request_survives_repeated_compaction_and_restart(
                 messages = db.get_messages_as_conversation(session_id)
     finally:
         db.close()
+
+
+@pytest.mark.parametrize(
+    "payload, can_split",
+    [
+        ([{"type": "audio", "source": {"data": "AA=="}}], False),
+        ([{"type": "input_audio", "input_audio": {"data": "AA=="}}], False),
+        ([{"type": "future_input", "payload": {"value": 7}}], False),
+        ([{"type": "text", "text": _ACTIVE_REQUEST}, {"type": "audio", "source": {"data": "AA=="}}], False),
+        ([{"type": "text", "text": _ACTIVE_REQUEST}], True),
+    ],
+    ids=["audio", "input-audio", "future-input", "text-and-audio", "text-parts"],
+)
+def test_split_requires_a_request_that_can_be_restated_as_text(payload, can_split):
+    compressor = _make_compressor()
+    messages = _oversized_active_turn()
+    messages[3]["content"] = payload
+    cut = compressor._find_tail_cut_by_tokens(messages, compressor._protect_head_size(messages))
+    assert (cut > 3) is can_split
+    with patch.object(compressor, "_generate_summary", return_value=None):
+        compressed = compressor.compress(messages, current_tokens=90_000, force=True)
+    if can_split:
+        assert len(compressed) < len(messages)
+        assert any(_ACTIVE_REQUEST in str(m.get("content")) for m in compressed)
+    else:
+        assert any(m.get("content") == payload for m in compressed)
+    _assert_tool_pairs_are_complete(compressed)

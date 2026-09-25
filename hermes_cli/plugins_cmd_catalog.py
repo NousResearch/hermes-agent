@@ -299,23 +299,20 @@ def _revision_owned_without_git(rel: Path) -> bool:
     )
 
 
-
 def _local_changes(target: Path) -> Optional[tuple[list[str], list[str]]]:
     """``(untracked_or_ignored, modified_tracked)`` in a git checkout, or ``None`` when git
     cannot classify the installed tree (notably subdirectory installs, which carry no ``.git``)."""
-    from hermes_cli.plugins_cmd import _resolve_git_executable, _run_plugin_git
+    from hermes_cli.plugins_cmd import PluginOperationError, _resolve_git_executable, _run_plugin_git
     git_exe = _resolve_git_executable()
     if not (target / ".git").exists():
         return None
     if not git_exe:
-        from hermes_cli.plugins_cmd import PluginOperationError
         raise PluginOperationError(
             f"Could not inspect local changes for '{target.name}': git executable is unavailable."
         )
     status = _run_plugin_git(git_exe, target, "status", "--porcelain", "--ignored", "-z", "--untracked-files=all",
                              "--ignored=matching", timeout=30)
     if status.returncode != 0:
-        from hermes_cli.plugins_cmd import PluginOperationError
         detail = (status.stderr or status.stdout or "git status failed").strip()
         raise PluginOperationError(
             f"Could not inspect local changes for '{target.name}': {detail}"
@@ -350,18 +347,24 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
     user-owned path cannot be represented safely in the new tree, fail before publication rather
     than silently dropping it.
     """
+    from hermes_cli.plugins_cmd import PluginOperationError
+
     keep = {Path(rel) for rel in local or ()}
 
     def _walk_error(exc: OSError) -> None:
-        from hermes_cli.plugins_cmd import PluginOperationError
         raise PluginOperationError(f"Could not preserve user files from '{old}': {exc}") from exc
+
+    def _dir_clash(rel: Path) -> PluginOperationError:
+        return PluginOperationError(
+            f"Cannot preserve user file '{rel}': the updated plugin now has a directory "
+            "at that path. The installed plugin was left unchanged."
+        )
 
     for dirpath, dirnames, filenames in os.walk(old, onerror=_walk_error):
         here = Path(dirpath)
         links = [name for name in dirnames if (here / name).is_symlink()]
         dirnames[:] = [
-            name for name in dirnames
-            if name not in links and name != ".git" and name not in _PRESERVE_SKIP
+            name for name in dirnames if name not in links and name not in _PRESERVE_SKIP
         ]
         for name in (*filenames, *links):
             src = here / name
@@ -381,28 +384,19 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
                     # A file -> directory clash is different: silently skipping it would delete a
                     # user-state file, so keep the live install intact and make the user resolve it.
                     if dst.is_dir() and not dst.is_symlink():
-                        from hermes_cli.plugins_cmd import PluginOperationError
-                        raise PluginOperationError(
-                            f"Cannot preserve user file '{rel}': the updated plugin now has a directory "
-                            "at that path. The installed plugin was left unchanged."
-                        )
+                        raise _dir_clash(rel)
                     continue
             elif keep.isdisjoint((rel, *rel.parents)):
                 continue
 
             if dst.is_dir() and not dst.is_symlink():
-                from hermes_cli.plugins_cmd import PluginOperationError
-                raise PluginOperationError(
-                    f"Cannot preserve user file '{rel}': the updated plugin now has a directory "
-                    "at that path. The installed plugin was left unchanged."
-                )
+                raise _dir_clash(rel)
 
             parent = new
             for part in rel.parent.parts:
                 parent /= part
                 if os.path.lexists(parent):
                     if parent.is_symlink() or not parent.is_dir():
-                        from hermes_cli.plugins_cmd import PluginOperationError
                         raise PluginOperationError(
                             f"Cannot preserve user file '{rel}': its destination conflicts with the "
                             "updated plugin. The installed plugin was left unchanged."
@@ -411,7 +405,6 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
                 try:
                     parent.mkdir()
                 except OSError as exc:
-                    from hermes_cli.plugins_cmd import PluginOperationError
                     raise PluginOperationError(
                         f"Cannot preserve user file '{rel}': its destination could not be prepared. "
                         "The installed plugin was left unchanged."

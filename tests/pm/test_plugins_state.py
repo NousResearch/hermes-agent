@@ -145,6 +145,34 @@ def test_empty_config_is_an_explicit_empty_selection(homes, content):
     assert pstate.enabled_plugins_ordered() == {}
 
 
+def test_legacy_false_provider_reads_as_unset(homes):
+    """Older config writers emitted `memory.provider: false` to mean unset; the runtime reader
+    coerces falsy to no-provider, so the PM validator must not reject the literal — that blocks
+    `hermes pm repair`, the only tool that could heal such a config."""
+    default_home, _ = homes
+    (default_home / "config.yaml").write_text(
+        "memory:\n  memory_enabled: true\n  provider: false\n", encoding="utf-8"
+    )
+
+    config = pstate.read_home_selection(default_home)
+
+    assert config == {"memory": {"memory_enabled": True, "provider": False}}
+
+
+def test_memory_provider_must_still_be_a_name(homes):
+    """Anything else non-string (a mapping, a number) stays a hard error: it cannot be traced
+    to a writer Hermes ever shipped."""
+    import pytest
+
+    default_home, _ = homes
+    (default_home / "config.yaml").write_text(
+        "memory:\n  provider: 5\n", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="memory.provider must be a name"):
+        pstate.read_home_selection(default_home)
+
+
 @pytest.mark.parametrize("enabled, provider, exists, expected", [
     (["z-first", "a-second"], "provider", True, ["z-first", "a-second", "provider"]),
     (["provider"], "provider", True, ["provider"]),

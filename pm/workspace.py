@@ -230,6 +230,14 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
         shutil.copytree(plugin_dir, member, symlinks=True,
                         ignore=_member_ignored)
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+        # uv identifies a workspace member by [project].name, so the same virtual
+        # plugin enabled in two profiles would declare one name twice and fail
+        # `uv lock`. A member with no build backend is metadata-only: it can carry
+        # the unique key in its name, as manifest-only members already do. A
+        # buildable member keeps its declared name — uv verifies it against the
+        # package metadata its backend produces.
+        # tool.uv.package = true opts into uv package mode: real build metadata, so buildable.
+        virtual = "build-system" not in document and document.get("tool", {}).get("uv", {}).get("package") is not True
         changed = declaration.install_requirements != declaration.requirements
         if changed:
             document["project"]["dependencies"] = list(declaration.install_requirements)
@@ -245,7 +253,9 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                     continue  # The referenced tree was copied with this member.
                 spec["path"] = (identity / relative).resolve().as_posix()
                 changed = True
-        if changed:
+        if virtual:
+            document.setdefault("project", {})["name"] = f"hermes-plugin-{key}"
+        if virtual or changed:
             import tomli_w
 
             (member / "pyproject.toml").write_text(tomli_w.dumps(document), encoding="utf-8")

@@ -2120,7 +2120,7 @@ describe('branchStoredSession desktop source tagging', () => {
     vi.spyOn(Date, 'now').mockReturnValue(runtimeStartedAt)
 
     const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'session.create') {
+      if (method === 'session.create' || method === 'session.branch_stored') {
         return { session_id: 'branch-runtime', stored_session_id: 'branch-stored' } as never
       }
 

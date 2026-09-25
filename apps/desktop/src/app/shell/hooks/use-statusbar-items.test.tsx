@@ -4,25 +4,18 @@ import { isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-<<<<<<< HEAD
 import {
   $connection,
   $currentCwd,
   $selectedStoredSessionId,
   $sessions,
   $sessionStartedAt,
-  $tileSessionFocusStartedAt
+  $tileSessionFocusStartedAt,
+  setActiveSessionId
 } from '@/store/session'
-import { $focusedTreePaneId as $focusedTreePaneIdMock } from '@/store/session-focus'
-import { $sessionTiles } from '@/store/session-states'
-=======
-import { group } from '@/components/pane-shell/tree/model'
-import { $activeTreeGroup, $layoutTree } from '@/components/pane-shell/tree/store'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $activeSessionId, $selectedStoredSessionId, $sessions, $sessionStartedAt } from '@/store/session'
+import { $focusedTreePaneId as $focusedTreePaneIdMock } from '@/store/session-focus'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
-import type { SessionInfo } from '@/types/hermes'
->>>>>>> 5c4eee88f4 (style(desktop): format runtime timer changes)
 
 import { useStatusbarItems } from './use-statusbar-items'
 
@@ -108,6 +101,12 @@ describe('statusbar workspace menu — "Open containing folder"', () => {
 })
 
 const statusbarOptions = {
+  agentsOpen: false,
+  chatOpen: true,
+  commandCenterOpen: false,
+  extraLeftItems: [],
+  extraRightItems: [],
+  freshDraftReady: false,
   gatewayState: 'ready' as const,
   inferenceStatus: null,
   openAgents: () => {},
@@ -201,6 +200,9 @@ describe('useStatusbarItems session timer — runtime cache anchor', () => {
     const parentRowStartedAt = 1_600_000_000
     const branchRuntimeStartedAt = 1_800_000_000_000
 
+    // The branch is a live runtime on the focused tile; its slice carries the
+    // runtime's own start, which must win over the parent row's stored age.
+    setActiveSessionId('branch-runtime')
     $selectedStoredSessionId.set('parent-stored')
     $sessionStartedAt.set(1_700_000_000_000)
     $sessions.set([
@@ -214,6 +216,9 @@ describe('useStatusbarItems session timer — runtime cache anchor', () => {
         storedSessionId: 'branch-stored'
       }
     ] as never)
+    $sessionStates.set({
+      'branch-runtime': { ...createClientSessionState('branch-stored'), runtimeStartedAt: branchRuntimeStartedAt }
+    } as never)
     $focusedTreePaneId.set('session-tile:branch-stored')
 
     const item = sessionTimerItem()

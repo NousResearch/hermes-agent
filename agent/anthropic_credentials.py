@@ -47,6 +47,10 @@ _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
 # (_read_claude_code_credentials_from_keychain) and, since #98334, mirrors the
 # refresh write into it so the two stores stop diverging on a single-use rotation.
 _CLAUDE_CODE_KEYCHAIN_SERVICE = "Claude Code-credentials"
+# ``security -i`` reads its input in lines of at most 4095 characters; a longer line is split in
+# two and the first fragment runs as the command, so a mirror line past this limit would overwrite
+# the item with a truncated payload instead of failing cleanly.
+_SECURITY_I_LINE_LIMIT = 4095
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -595,6 +599,16 @@ def _mirror_claude_code_credentials_to_keychain(
             return
         argv, line = _keychain_mirror_command(
             account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
+        if len(line.rstrip("\n")) > _SECURITY_I_LINE_LIMIT:
+            # A skipped mirror leaves the item holding the spent pair (Claude Code re-logins); a
+            # truncated one overwrites it with an unparsable payload and logs Claude Code out.
+            logger.warning(
+                "Keychain mirror skipped: the security -i command line is %d chars, over the "
+                "%d-char line limit (the Keychain item keeps its previous contents)",
+                len(line.rstrip("\n")),
+                _SECURITY_I_LINE_LIMIT,
+            )
+            return
         result = subprocess.run(
             argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )

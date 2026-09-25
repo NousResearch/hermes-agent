@@ -138,6 +138,14 @@ class MessageEvent:
     # display data only, never a path. Appended for positional compat.
     media_filenames: list[str] = field(default_factory=list)
 
+    # Adapter-owned, process-local capability for resolving volatile context immediately
+    # before a foreground agent turn. It must never contain the context itself (notably,
+    # location coordinates) and is intentionally omitted from every serialized shape.
+    ephemeral_context_ref: Any = field(default=None, repr=False, compare=False)
+    # Coordinate-free veto propagated through batching/dataclasses.replace. A fixed
+    # location pin sets it so ambient live context cannot join the same turn.
+    _ephemeral_context_blocked: bool = field(default=False, repr=False, compare=False)
+
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Set when ``admit_internal_event`` hands its producer a receipt before any drain began. The

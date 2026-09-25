@@ -1016,11 +1016,22 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+            # Volatile platform data is a fixed snapshot for this turn. The agent keeps
+            # only a bounded RAM sidecar keyed by the stable platform message id so the
+            # exact provider bytes can be replayed on later turns without persistence.
             from agent.notification_presentation import notification_turn
+            from agent.turn_context import bind_volatile_user_context
             from gateway.session_results import execution_result
             captured = execution_result.get()
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
                       getattr(agent, 'session_completion_tokens', 0) or 0)
+            volatile_context = ctx.volatile_user_context
+            if (
+                getattr(agent, "provider", None) == "moa"
+                or getattr(agent, "api_mode", None) == "codex_app_server"
+                or ctx.moa_config is not None
+            ):
+                volatile_context = None
             with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
                 from gateway.response_filters import silence_allowed
                 # Where a bare marker would become the "needed a reply" warning, the agent ends a
@@ -1028,7 +1039,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                 agent._silence_marker_needs_reply = not silence_allowed(
                     ctx.persist_user_display_kind, ctx.reply_expected)
                 try:
-                    result = agent.run_conversation(api_message, **kwargs)
+                    with bind_volatile_user_context(
+                        agent, volatile_context, ctx.inbound_message_id
+                    ):
+                        result = agent.run_conversation(api_message, **kwargs)
                 finally:
                     agent._silence_marker_needs_reply = False
             if captured is not None:

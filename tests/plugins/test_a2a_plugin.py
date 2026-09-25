@@ -36,6 +36,46 @@ def _free_port() -> int:
 
 
 # --------------------------------------------------------------------------
+# Enablement gate (profile scope)
+# --------------------------------------------------------------------------
+
+class TestConnectionGateScope:
+    """``A2A_PORT`` decides whether the inbound server starts, so it must resolve through the
+    profile-scoped reader. A bare ``os.getenv`` hands every secondary profile the DEFAULT
+    profile's port under multiplexing: all of them instantiate, the first binds and the rest
+    die with ``bind_failed``."""
+
+    def test_missing_scoped_port_is_not_connected(self, monkeypatch):
+        import hermes_cli.gateway as gw
+        from plugins.platforms import a2a
+
+        seen: list[str] = []
+
+        def fake_get_env_value(key: str):
+            seen.append(key)
+            return None  # a secondary profile's own scope carries no A2A_PORT
+
+        monkeypatch.setattr(gw, "get_env_value", fake_get_env_value)
+        monkeypatch.setattr(os, "getenv", lambda *a, **k: pytest.fail("raw os.getenv during enablement"))
+        assert a2a.is_connected(SimpleNamespace(extra={})) is False
+        assert seen == ["A2A_PORT"]
+
+    def test_scoped_port_connects(self, monkeypatch):
+        import hermes_cli.gateway as gw
+        from plugins.platforms import a2a
+
+        monkeypatch.setattr(gw, "get_env_value", lambda key: "9902" if key == "A2A_PORT" else None)
+        assert a2a.is_connected(SimpleNamespace(extra={})) is True
+
+    def test_explicit_extra_enabled_wins(self, monkeypatch):
+        import hermes_cli.gateway as gw
+        from plugins.platforms import a2a
+
+        monkeypatch.setattr(gw, "get_env_value", lambda key: None)
+        assert a2a.is_connected(SimpleNamespace(extra={"enabled": True})) is True
+
+
+# --------------------------------------------------------------------------
 # Security
 # --------------------------------------------------------------------------
 

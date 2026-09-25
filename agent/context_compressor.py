@@ -810,6 +810,15 @@ _TERMINAL_SUMMARY_FAILURES = (
 # capped request after its per-turn attempt budget was refilled (#69637).
 _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
 
+# Sustained-overload escalation (#123167): ONE overload aborts so a later retry can still win (#115906),
+# but if every summary attempt keeps aborting the transcript only grows until the session exits
+# compression_exhausted and the gateway auto-resets — bounded middle-window loss becomes a total
+# session wipe, just deferred. After this many consecutive overload aborts in one session the overload
+# stops counting as terminal and compress() commits the deterministic fallback instead — the same
+# bounded degrade the repeated-stall ladder takes (#112420). abort_on_summary_failure=true still
+# hard-aborts every attempt. A successful summary resets the count.
+_CONSECUTIVE_OVERLOAD_ABORT_ESCALATION = 3
+
 
 def _next_timeout_cooldown(compressor: Any, counter: str = "_consecutive_timeout_failures") -> int:
     """Bump ``compressor.<counter>`` and return the ladder rung for it.
@@ -2205,6 +2214,9 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # named in the user-visible warning and falls back to the main model (#116472).
         self._last_aux_resolved_model = None
         self._consecutive_timeout_failures = self._consecutive_truncation_failures = 0
+        # Sustained-overload escalation bookkeeping (#123167): per-session, reset by success.
+        self._consecutive_overload_aborts = 0
+        self._last_summary_overload_degraded = False
         # Turns unrecoverably dropped by a static fallback, so callers can warn.
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = self._last_feasibility_skip = False
@@ -2240,6 +2252,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._cooldown_persist_failed = False
         self._last_summary_error = None
         self._consecutive_timeout_failures = self._consecutive_truncation_failures = self._fallback_compression_streak = 0
+        self._consecutive_overload_aborts = 0
         self._ineffective_compression_count = self._prellm_skip_count = 0
         self._anti_thrash_recovery_deadline = self._structural_no_op_backoff_until = 0.0
         self._reset_proactive_prune_rearm()
@@ -3904,6 +3917,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             self._last_summary_error = None
             for flag, _class, _msg in _TERMINAL_SUMMARY_FAILURES:
                 setattr(self, flag, False)
+            # The provider answered a summary again: the sustained-overload budget restarts (#123167).
+            self._consecutive_overload_aborts = 0
             return self._with_summary_prefix(summary)
         except Exception as e:
             return self._on_summary_failure(e, turns_to_summarize, focus_topic, memory_context)
@@ -4118,7 +4133,15 @@ Write only the summary body. Do not include any preamble or prefix."""
         elif kind.empty_content:
             self._last_summary_empty_content_failure = True
         elif kind.overloaded:
-            self._last_summary_overload_failure = True
+            self._consecutive_overload_aborts += 1
+            # Sustained-overload escalation (#123167): keep aborting only while a retry could still
+            # succeed soon (#115906); once every recent attempt has aborted, stop treating the
+            # overload as terminal so compress() commits the deterministic fallback instead of
+            # growing the transcript into a compression_exhausted auto-reset (total session wipe).
+            self._last_summary_overload_failure = (
+                self._consecutive_overload_aborts < _CONSECUTIVE_OVERLOAD_ABORT_ESCALATION
+            )
+            self._last_summary_overload_degraded = not self._last_summary_overload_failure
         logger.warning(
             "Failed to generate context summary: %s. Further summary attempts paused for %d seconds.", e,
             _transient_cooldown,
@@ -4996,6 +5019,7 @@ Write only the summary body. Do not include any preamble or prefix."""
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
         self._last_compress_refused_would_grow = False
+        self._last_summary_overload_degraded = False
         self._last_compression_made_progress = False
         # Do NOT reset the *_failure flags: the cooldown early-return doesn't re-assert them, so a
         # reset would fall through to the destructive static fallback (#29559). Success clears them.
@@ -5081,7 +5105,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         self, telemetry: Dict[str, Any], n_skipped: int, previous_summary_before_scan: Optional[str],
     ) -> bool:
         """Abort (messages unchanged) on a terminal failure or when configured to; True when aborted.
-        Access/quota, network, truncated and empty-content failures ALWAYS abort (#29559); otherwise
+        Access/quota, network, truncated and empty-content failures ALWAYS abort (#29559); an overload
+        aborts only until the sustained-overload escalation (#123167); otherwise
         ``abort_on_summary_failure`` decides between abort and the static fallback."""
         terminal_failure = next(
             ((failure_class, message) for flag, failure_class, message in _TERMINAL_SUMMARY_FAILURES if getattr(self, flag)),
@@ -5142,7 +5167,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         telemetry["fallback_used"] = True
         # Feasibility skip is deliberate, not aux-model breakage — keep the telemetry class distinct.
         telemetry["failure_class"] = telemetry.get("failure_class") or (
-            "feasibility_skip" if feasibility_skip else "summary_generation_failed"
+            "feasibility_skip" if feasibility_skip
+            else "summary_overload_degraded" if getattr(self, "_last_summary_overload_degraded", False)
+            else "summary_generation_failed"
         )
         return self._build_static_fallback_summary(
             turns_to_summarize,

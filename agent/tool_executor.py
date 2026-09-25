@@ -1554,7 +1554,7 @@ def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeou
         suffix = f"{timeout_s:.1f}s" if timeout_s is not None else "the configured timeout"
         function_result = f"Error executing tool '{ref.name}': timed out after {suffix}"
         outcome = dict(duration_ms=int((timeout_s or 0.0) * 1000), status="timeout", error_type="tool_timeout", error_message=function_result)
-        tool_duration, effect_disposition = float(timeout_s or 0.0), "unknown"
+        tool_duration, effect_disposition = float(timeout_s or 0.0), "timeout"
     elif agent._interrupt_requested:
         why = interrupt_skip_wording(agent)
         function_result = f"[Tool execution cancelled — {ref.name} was skipped. {why}]"
@@ -1563,7 +1563,7 @@ def _unfinished_tool_result(agent, ref: _ToolCallRef, *, timed_out: bool, timeou
     else:
         function_result = f"Error executing tool '{ref.name}': thread did not return a result"
         outcome = dict(status="error", error_type="thread_missing_result", error_message=function_result)
-        tool_duration, effect_disposition = 0.0, None
+        tool_duration, effect_disposition = 0.0, "error"
     ref.emit_post(agent, function_result, **outcome)
     return function_result, tool_duration, effect_disposition
 
@@ -1582,7 +1582,12 @@ def _append_batch_results(agent, messages: list, effective_task_id: str, batch: 
             )
         else:
             ref, function_result, tool_duration, is_error, blocked = r.ref, r.result, r.duration, r.is_error, r.blocked
-            effect_disposition = "none" if blocked else None
+            if not blocked and i in batch.timed_out_indices:
+                # The deadline fan-out interrupts slow workers, whose synthesized cancel
+                # artifact surfaces here with is_error=True; the batch's truth is "timeout".
+                effect_disposition = "timeout"
+            else:
+                effect_disposition = "blocked" if blocked else ("error" if is_error else "success")
             if pc.parse_error is not None:
                 ref.emit_invalid_arguments(agent, r.result)
         committed = _commit_tool_result(
@@ -1788,7 +1793,7 @@ def _skip_remaining_sequential(agent, messages: list, remaining, effective_task_
 def _append_invalid_arguments_result(agent, messages: list, ref: _ToolCallRef, parse_error: str) -> bool:
     """Emit + append the parse-error result for a call whose arguments were not a JSON object."""
     ref.emit_invalid_arguments(agent, parse_error)
-    messages.append(make_tool_result_message(ref.name, parse_error, ref.call_id))
+    messages.append(make_tool_result_message(ref.name, parse_error, ref.call_id, effect_disposition="error"))
     return _flush_session_db_after_tool_progress(agent, messages, stage=f"invalid tool arguments {ref.name}")
 
 
@@ -1851,6 +1856,7 @@ def _publish_sequential_result(agent, messages: list, ref: _ToolCallRef, managed
     result; False when the incremental flush failed (the caller must stop the batch)."""
     ref.args, ref.trace, function_result = managed.args, managed.middleware_trace, managed.result
     _execution_timed_out = isinstance(function_result, (_ToolTimeoutResult, _ToolCancelledResult))
+    _execution_cancelled = isinstance(function_result, _ToolCancelledResult)
     # Inline-dispatched runtime tools never reach handle_function_call, so the
     # executor owns the one terminal post_tool_call per tool_call_id (the inner
     # observer is suppressed); also stops an abandoned timeout worker reporting late.

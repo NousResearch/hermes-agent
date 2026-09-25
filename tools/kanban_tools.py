@@ -1047,9 +1047,16 @@ def _handle_create(args: dict, **kw) -> str:
                       or (self_task.session_id if self_task else None)
                       or _persisted_session_id(_current_origin_session_id())
                       or _persisted_session_id(get_session_env("HERMES_SESSION_ID", "")))
-        if project_id is None and workspace_kind is None and workspace_path is None:
-            if self_task is not None and self_task.project_id:
-                project_id, project_source_task_id = self_task.project_id, self_task.id
+        if self_task is not None and self_task.project_id:
+            # The filer's own card is the project context for whatever it files:
+            # the project id sits on the shared board row while the repo path
+            # lives in the CREATOR's projects.db — which a worker profile may not
+            # have at all. Handing the DB its own task as ``project_source_task_id``
+            # lets it recover the repo from the worktree the filer is already in,
+            # for an explicit ``project=`` exactly as for the implicit inherit.
+            project_source_task_id = self_task.id
+            if project_id is None and workspace_kind is None and workspace_path is None:
+                project_id = self_task.project_id
         new_tid = kb.create_task(
             conn, title=str(title).strip(), body=args.get("body"), assignee=str(assignee),
             parents=tuple(parents), tenant=args.get("tenant") or os.environ.get("HERMES_TENANT"),
@@ -1068,9 +1075,15 @@ def _handle_create(args: dict, **kw) -> str:
             initial_status=str(args.get("initial_status") or "running"),
             created_by=_persisted_identity(), session_id=session_id)
         landed = _fields(kb.get_task(conn, new_tid), _CREATED_FIELDS)
-        wait = [e for e in kb.list_events(conn, new_tid) if e.kind == "dependency_wait"]
+        events = kb.list_events(conn, new_tid)
+        wait = [e for e in events if e.kind == "dependency_wait"]
         gate = {"gated": True, "gated_by": wait[-1].payload["parent"]} if wait else {"gated": False}
-        return _ok(task_id=new_tid, **landed, **gate,
+        # What became of the project request this create carried: the DB records
+        # it on the card's own ``created`` event, so surface it here too. A
+        # dropped link must not read as a caller that asked for no project.
+        link = next((e.payload["project_link"] for e in events
+                     if e.kind == "created" and (e.payload or {}).get("project_link")), None)
+        return _ok(task_id=new_tid, **landed, **gate, project_link=link,
                    subscribed=_maybe_auto_subscribe(conn, new_tid))
 
 

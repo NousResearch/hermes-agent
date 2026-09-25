@@ -1083,6 +1083,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
         if cat_result.exit_code != 0:
             return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
+        # UTF-16 fail-closed (#121663): shell cat decodes bytes as text; a
+        # UTF-16 file surfaces here with NULs and a lost BOM, then comes back
+        # garbled. Refuse instead of returning mojibake — read_file() has the
+        # byte-layer _try_read_utf16 rescue; read_file_bytes() is binary-safe.
+        if "\x00" in cat_result.stdout:
+            return ReadResult(error=f"File appears to be UTF-16 or binary ({path}): "
+                                     "use read_file() for the UTF-16 rescue path or "
+                                     "read_file_bytes() for raw bytes.")
         # Strip a leading BOM (a phantom U+FEFF defeats an exact first-line match);
         # write_file re-probes disk and restores it.
         raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout))

@@ -304,6 +304,7 @@ import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
+import { decideNvidiaEglFallback, parseNvidiaDriverMajor } from './linux-nvidia-egl-fallback'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { localSkinProfileKey, readLocalSkinPayload } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
@@ -718,6 +719,38 @@ if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
   app.commandLine.appendSwitch('enable-gpu-rasterization')
   app.commandLine.appendSwitch('enable-zero-copy')
   console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
+}
+
+// #40077: NVIDIA driver 580+ breaks ANGLE's EGL probing (Invalid visual ID),
+// killing the GPU process at startup. Route ANGLE through its SwiftShader
+// backend instead — the app then launches and stays up (CPU rendering, slow
+// but stable). Deliberately NOT disableHardwareAcceleration(): on 580.173.02 +
+// Electron 40 that SIGKILLs the renderer (see the closed #40119). Must run
+// before app `ready` — the switch only applies pre-launch. Override with
+// HERMES_DESKTOP_NVIDIA_SWIFTSHADER (1/true → force on, 0/false → never).
+const NVIDIA_EGL_FALLBACK = decideNvidiaEglFallback({
+  driverMajor: parseNvidiaDriverMajor(
+    (() => {
+      try {
+        return fs.readFileSync('/proc/driver/nvidia/version', 'utf8')
+      } catch {
+        return ''
+      }
+    })()
+  ),
+  env: process.env,
+  platform: process.platform,
+  isWsl: IS_WSL,
+  remoteDisplayReason: REMOTE_DISPLAY_REASON
+})
+
+if (NVIDIA_EGL_FALLBACK.enable) {
+  app.commandLine.appendSwitch('use-angle', 'swiftshader')
+  console.log(
+    `[hermes] NVIDIA EGL fallback enabled (${NVIDIA_EGL_FALLBACK.reason}); routing ANGLE ` +
+      'through SwiftShader to avoid the NVIDIA 580+ EGL probe crash (#40077). ' +
+      'HERMES_DESKTOP_NVIDIA_SWIFTSHADER=0 to opt out.'
+  )
 }
 
 // Linux: point Chromium at the session's keychain backend so safeStorage can

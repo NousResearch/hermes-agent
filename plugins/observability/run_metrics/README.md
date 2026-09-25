@@ -12,12 +12,15 @@ The report distinguishes logical model calls from physical provider attempts,
 including retries inside a streaming call and the non-streaming 5xx probe.
 Each logical call has an `attempts[]` entry; internal wire requests are in its
 `transport_attempts[]`. `provider_attempts_complete=false` means the selected
-transport has internal retries not yet exposed through the generic hook; the
-numeric attempt count is then a lower bound. Provider-reported tokens belong to the successful
+transport or a final budget-summary call has requests not exposed through the
+generic hooks; the numeric attempt count is then a lower bound.
+Provider-reported tokens belong to the successful
 response only; failed requests may have consumed unreported tokens. `input_tokens`
 is the provider's total prompt-token count, including cached tokens when the
 provider reports them. `uncached_input_tokens`, `cache_read_tokens`, and
 `cache_write_tokens` are separate buckets; null means unavailable, not zero.
+Native adapters that fill absent usage fields with synthetic zeroes leave
+provider-usage attribution unavailable until they expose raw-field provenance.
 Request-size estimates are never substituted for provider usage. `time_to_first_chunk_s`
 is the first wire chunk, which may not contain generated text;
 `time_to_first_delta_s` is the first text, reasoning, or tool-name delta. Both
@@ -39,6 +42,11 @@ GPU/VRAM/RAM sampler by `run_id` and `started_at`/`ended_at`; Hermes does not
 claim those host-side measurements. The report describes agent execution, not
 the correctness of its code or tests. Validate that independently before
 running a batch.
+
+`finish_reason` is the loop's recovery reason; `provider_finish_reason` is the
+normalized provider response. A partial stream and an inferred truncation are
+not counted as provider output caps. Exhausting the iteration budget is a
+distinct `budget_exhausted` status even if a final fallback answer was returned.
 
 `sample-report.json` is redacted from a loopback fake-provider smoke. Its
 20,000 tokens/s figure is **not** a model-performance measurement. A separate

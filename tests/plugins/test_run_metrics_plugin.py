@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ import pytest
 
 from hermes_cli import lifecycle, plugins
 from agent.conversation_compression import _notify_context_engine_compression_complete
+from agent.chat_completion_helpers import _StreamingCall
 from agent.turn_context import PreflightCompressionTimedOut
 from plugins.observability import run_metrics as metrics
 from scripts.run_metrics_report import aggregate
@@ -485,3 +487,80 @@ def test_historical_timeout_is_not_terminal_stop_cause(enabled):
     report = _reports(enabled)[0]
     assert aggregate(enabled / "logs" / "run-metrics")["stop_causes"] == {"max_iterations": 1}
     assert report["attempts"][0]["error_reason"] == "timeout"
+
+
+def test_native_adapter_usage_without_provenance_is_unknown(enabled):
+    raw = SimpleNamespace(prompt_tokens=100, completion_tokens=20,
+                          cache_read_input_tokens=0, cache_creation_input_tokens=0)
+    bedrock = SimpleNamespace(provider="bedrock", api_mode="bedrock_converse", base_url="")
+    from agent.api_request_hooks import ApiRequestHooksMixin
+
+    usage = ApiRequestHooksMixin._usage_summary_for_api_request_hook(
+        bedrock, SimpleNamespace(usage=raw))
+    assert not any(usage["reported_usage_fields"].values())
+    lifecycle.invoke_hook("on_turn_start", **_event())
+    lifecycle.invoke_hook("pre_api_request", **_event(api_request_id="session:api:0", started_at=100))
+    lifecycle.invoke_hook("post_api_request", **_event(
+        api_request_id="session:api:0", ended_at=101, finish_reason="stop", usage=usage,
+    ))
+    lifecycle.invoke_hook("on_turn_result", **_event(completed=True))
+    attempt = _reports(enabled)[0]["attempts"][0]
+    assert attempt["input_tokens"] is None
+    assert attempt["cache_read_tokens"] is None
+    assert attempt["token_source"] == "unavailable"
+
+
+def test_provider_attempt_coverage_flags_hidden_turn_paths(enabled):
+    lifecycle.invoke_hook("on_turn_start", **_event(api_mode="codex_app_server"))
+    lifecycle.invoke_hook("on_turn_result", **_event(completed=True))
+    report = _reports(enabled)[0]
+    assert report["attempts"] == []
+    assert report["summary"]["provider_attempts_complete"] is False
+    lifecycle.invoke_hook("on_turn_start", **_event(turn="budget-turn", api_mode="chat_completions"))
+    lifecycle.invoke_hook("pre_api_request", **_event(turn="budget-turn", api_request_id="budget:0", started_at=100))
+    lifecycle.invoke_hook("post_api_request", **_event(
+        turn="budget-turn", api_request_id="budget:0", ended_at=101, finish_reason="stop",
+    ))
+    lifecycle.invoke_hook("on_turn_result", **_event(turn="budget-turn", completed=True,
+                                                     turn_exit_reason="max_iterations_reached(1/1)"))
+    budget = next(r for r in _reports(enabled) if r["turn_id"] == "budget-turn")
+    assert budget["summary"]["provider_attempts_complete"] is False
+    assert budget["status"] == "budget_exhausted"
+    assert aggregate(enabled / "logs" / "run-metrics")["stop_causes"] == {
+        "completed": 1, "max_iterations_reached": 1,
+    }
+
+
+def test_first_delta_is_measured_again_on_stream_retry():
+    callback = MagicMock()
+    agent = SimpleNamespace(_last_api_first_delta_at=None)
+    call = SimpleNamespace(
+        stream_attempt_lock=threading.Lock(), stream_attempt_state={"current": 0},
+        provider_tool_in_flight={"yes": False}, result={"partial_tool_names": []},
+        agent=agent, first_delta_fired={"done": False}, on_first_delta=callback,
+        _quiet=lambda fn: fn(),
+    )
+    _StreamingCall._start_stream_attempt(call)
+    _StreamingCall._fire_first_delta(call)
+    first = call._attempt_first_delta_at
+    _StreamingCall._start_stream_attempt(call)
+    assert call._attempt_first_delta_at is None
+    _StreamingCall._fire_first_delta(call)
+    assert call._attempt_first_delta_at >= first
+    assert agent._last_api_first_delta_at == call._attempt_first_delta_at
+    callback.assert_called_once()
+
+
+def test_heuristic_length_is_not_reported_as_provider_cap(enabled):
+    lifecycle.invoke_hook("on_turn_start", **_event())
+    lifecycle.invoke_hook("pre_api_request", **_event(api_request_id="session:api:0", started_at=100))
+    lifecycle.invoke_hook("post_api_request", **_event(
+        api_request_id="session:api:0", ended_at=101, finish_reason="length",
+        provider_finish_reason="stop", provider_output_capped=False,
+    ))
+    lifecycle.invoke_hook("on_turn_result", **_event(completed=False, failed=True,
+                                                     failure_reason="truncated"))
+    report = _reports(enabled)[0]
+    assert report["attempts"][0]["status"] == "inferred_truncation"
+    assert report["summary"]["output_capped_attempts"] == 0
+    assert report["status"] == "failed"

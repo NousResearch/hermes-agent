@@ -2890,6 +2890,8 @@ class _StreamingCall(StreamingWaitMonitor):
         # Attempt-local like provider_tool_in_flight: a tool name from a stream that died
         # before any text must not label a later attempt's partial stub or its retry decision.
         self.result["partial_tool_names"] = []
+        self._attempt_first_delta_at = None
+        self.agent._last_api_first_delta_at = None
         return attempt_id
 
     def _observe_stream_attempt(self, phase: str, attempt_id: int, started_at: float, error=None) -> None:
@@ -2913,7 +2915,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 status=("error" if error else "completed") if phase == "end" else "running",
                 error_type=type(error).__name__ if error else None,
                 first_chunk_at=diag.get("first_chunk_at") if phase == "end" else None,
-                first_delta_at=getattr(self.agent, "_last_api_first_delta_at", None) if phase == "end" else None,
+                first_delta_at=getattr(self, "_attempt_first_delta_at", None) if phase == "end" else None,
             )
         except Exception:
             logger.debug("Stream attempt observer failed", exc_info=True)
@@ -2953,9 +2955,11 @@ class _StreamingCall(StreamingWaitMonitor):
         )
 
     def _fire_first_delta(self):
+        if getattr(self, "_attempt_first_delta_at", None) is None:
+            self._attempt_first_delta_at = time.time()
+            self.agent._last_api_first_delta_at = self._attempt_first_delta_at
         if not self.first_delta_fired["done"]:
             self.first_delta_fired["done"] = True
-            self.agent._last_api_first_delta_at = time.time()
             if self.on_first_delta:
                 self._quiet(self.on_first_delta)
 

@@ -50,6 +50,22 @@ class ApiRequestHooksMixin:
         summary["total_tokens"] = cu.total_tokens
         # CanonicalUsage uses zero for *both* absent and reported-zero buckets.
         # Preserve raw field presence, not raw content, for diagnostic consumers.
+        # Some native adapters already synthesize absent fields as zero before
+        # this hook receives usage. Do not claim their fields as provider-reported.
+        provenance_lost = self.api_mode == "bedrock_converse"
+        if not provenance_lost:
+            from agent.auxiliary_client import _GEMINI_NATIVE_PROVIDER_NAMES
+
+            if self.provider in _GEMINI_NATIVE_PROVIDER_NAMES:
+                from agent.gemini_native_adapter import is_native_gemini_base_url
+
+                provenance_lost = is_native_gemini_base_url(str(self.base_url or ""))
+        if provenance_lost:
+            summary["reported_usage_fields"] = {
+                field: False for field in ("prompt_tokens", "input_tokens", "output_tokens",
+                                           "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+            }
+            return summary
         shape = (_ANTHROPIC_USAGE_SHAPE if self.api_mode == "anthropic_messages" or self.provider == "anthropic"
                  else _CODEX_USAGE_SHAPE if self.api_mode == "codex_responses"
                  else _CHAT_USAGE_SHAPE)

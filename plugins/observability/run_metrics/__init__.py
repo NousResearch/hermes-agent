@@ -87,6 +87,7 @@ def _run(event: dict[str, Any], *, create: bool = True) -> dict[str, Any] | None
         "turn_id": key[1],
         "session_id": _id(event.get("session_id")),
         "platform": _route(event.get("platform")),
+        "api_mode": _route(event.get("api_mode")),
         "agent_role": _route(event.get("agent_role")),
         "phase": _route(event.get("phase")),
         "hermes_commit": get_version_info().commit,
@@ -111,7 +112,12 @@ def _summary(data: dict[str, Any]) -> dict[str, Any]:
     complete_transport_coverage = all(
         a["transport_attempts"] or a.get("api_mode") not in {"codex_responses", "bedrock_converse"}
         for a in attempts
-    )
+    ) and data.get("api_mode") != "codex_app_server"
+    if not attempts and data.get("turn_exit_reason") != "context_compression_timeout":
+        complete_transport_coverage = False
+    if str(data.get("turn_exit_reason") or "").startswith("max_iterations_reached"):
+        # The final toolless summary call bypasses the ordinary API hooks.
+        complete_transport_coverage = False
     model_time = sum(
         sum(t["duration_s"] or 0 for t in a["transport_attempts"])
         if a["transport_attempts"] else (a["duration_s"] or 0)
@@ -191,7 +197,8 @@ def _attempt(state: dict[str, Any], event: dict[str, Any], *, create: bool = Tru
         "output_tokens": None, "reasoning_tokens": None,
         "token_source": "unavailable", "started_at": _number(event.get("attempt_started_at")) or _number(event.get("started_at")) or time.time(),
         "ended_at": None, "duration_s": None, "time_to_first_chunk_s": None,
-        "time_to_first_delta_s": None, "finish_reason": None, "status": "running",
+        "time_to_first_delta_s": None, "finish_reason": None,
+        "provider_finish_reason": None, "synthetic_response": None, "status": "running",
         "error_type": None, "error_reason": None,
         "transport_attempts": [],
     }
@@ -317,8 +324,11 @@ def _finish_attempt(event: dict[str, Any], *, error: bool) -> None:
         else:
             attempt["finish_reason"] = _route(event.get("finish_reason"))
             attempt["synthetic_response"] = bool(event.get("synthetic_response"))
+            attempt["provider_finish_reason"] = _route(event.get("provider_finish_reason"))
             attempt["status"] = ("incomplete_stream" if attempt["synthetic_response"] else
-                                 "output_capped" if attempt["finish_reason"] == "length" else "completed")
+                                 "output_capped" if attempt["finish_reason"] == "length"
+                                 and event.get("provider_output_capped", True) else
+                                 "inferred_truncation" if attempt["finish_reason"] == "length" else "completed")
             attempt["response_model"] = _route(event.get("response_model"))
             usage = event.get("usage")
             if isinstance(usage, dict):
@@ -421,6 +431,8 @@ def on_session_end(**event: Any) -> None:
             event.get("turn_exit_reason") or event.get("failure_reason"))
         if event.get("interrupted"):
             data["status"] = "interrupted"
+        elif reason == "max_iterations_reached":
+            data["status"] = "budget_exhausted"
         elif event.get("failed") or not event.get("completed"):
             data["status"] = "failed"
         elif (reason == "text_response(finish_reason=length)"

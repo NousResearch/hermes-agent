@@ -1041,6 +1041,7 @@ def build_turn_context(
                 "on_turn_start", session_id=agent.session_id or "",
                 task_id=effective_task_id, turn_id=turn_id,
                 platform=agent.platform or "", agent_role=getattr(agent, "_turn_origin", None),
+                api_mode=agent.api_mode,
             )
     except Exception:
         logger.debug("Turn-start observer failed", exc_info=True)

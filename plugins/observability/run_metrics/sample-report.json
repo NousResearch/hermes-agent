@@ -6,6 +6,7 @@
   "turn_id": "redacted-turn",
   "session_id": "redacted-session",
   "platform": "cli",
+  "api_mode": "chat_completions",
   "agent_role": null,
   "phase": null,
   "hermes_commit": "5307e93252ac655cd13fadbd561c0995142138c6",
@@ -30,7 +31,7 @@
       "cache_read_tokens": null,
       "cache_write_tokens": null,
       "output_tokens": 20,
-      "reasoning_tokens": 0,
+      "reasoning_tokens": null,
       "token_source": "provider_reported",
       "started_at": 1790351882.310152,
       "ended_at": 1790351882.4996428,
@@ -38,6 +39,7 @@
       "time_to_first_chunk_s": 0.188,
       "time_to_first_delta_s": 0.188,
       "finish_reason": "stop",
+      "provider_finish_reason": "stop",
       "synthetic_response": false,
       "status": "completed",
       "error_type": null,
@@ -55,7 +57,7 @@
           "finish_reason": "stop",
           "input_tokens": 100,
           "output_tokens": 20,
-          "reasoning_tokens": 0,
+          "reasoning_tokens": null,
           "token_source": "provider_reported"
         }
       ]

@@ -63,6 +63,16 @@ def _fire_post_api_request_hook(
     from agent.conversation_loop import _moa_reference_metrics_for_hook
     from hermes_constants import PARTIAL_STREAM_STUB_ID
 
+    raw_finish_reason = getattr(assistant_message, "finish_reason", None)
+    incomplete_details = getattr(response, "incomplete_details", None)
+    incomplete_reason = (incomplete_details.get("reason") if isinstance(incomplete_details, dict)
+                         else getattr(incomplete_details, "reason", None))
+    synthetic_response = getattr(response, "id", None) == PARTIAL_STREAM_STUB_ID
+    provider_output_capped = not synthetic_response and (
+        raw_finish_reason in {"length", "max_tokens"}
+        or incomplete_reason in {"max_output_tokens", "length"}
+    )
+
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
         if has_hook("post_api_request"):
@@ -86,7 +96,9 @@ def _fire_post_api_request_hook(
                 first_chunk_at=getattr(agent, "_last_api_first_chunk_at", None),
                 first_delta_at=getattr(agent, "_last_api_first_delta_at", None),
                 finish_reason=finish_reason,
-                synthetic_response=getattr(response, "id", None) == PARTIAL_STREAM_STUB_ID,
+                synthetic_response=synthetic_response,
+                provider_finish_reason=raw_finish_reason,
+                provider_output_capped=provider_output_capped,
                 message_count=len(api_messages),
                 response_model=getattr(response, "model", None),
                 response=agent._api_response_payload_for_hook(

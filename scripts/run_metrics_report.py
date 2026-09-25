@@ -38,7 +38,7 @@ def _diagnosis(run: dict[str, Any]) -> dict[str, str | None]:
         last = attempts[-1]
         error = (str(last.get("error_reason") or "") + " " + str(last.get("error_type") or "")).lower()
         stop = "timeout" if "timeout" in error else "context_exhausted" if "context" in error else "failed"
-    elif reason in {"max_iterations", "iteration_budget", "truncated"}:
+    elif reason in {"max_iterations", "max_iterations_reached", "iteration_budget", "truncated"}:
         stop = reason
     else:
         stop = status

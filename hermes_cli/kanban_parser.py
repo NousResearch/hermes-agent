@@ -413,8 +413,15 @@ _SPECS = [
     _cmd("notify-list", [_arg("task_id", nargs="?"), _json_flag()],
          help="List notification subscriptions (optionally for a single task)"),
     _cmd("notify-unsubscribe", [_TASK_ID, *_NOTIFY_TARGET], help="Remove a gateway subscription from a task"),
-    _cmd("log", [_TASK_ID, _arg("--tail", type=int, help="Only print the last N bytes")],
-         help="Print the worker log for a task (from <kanban-root>/kanban/logs/)"),
+    _cmd("log", [
+             _TASK_ID,
+             _arg("--tail", type=int, help="Only print the last N bytes"),
+             _arg("--board", dest="log_board", default=argparse.SUPPRESS, metavar="<slug>",
+                  help="Board the task ran on; defaults to the current board. Worker logs are "
+                       "board-anchored (<kanban-root>/kanban/logs/ for the default board, "
+                       "<kanban-root>/kanban/boards/<slug>/logs/ otherwise)."),
+         ],
+         help="Print the worker log for a task (board-anchored; see --board)"),
     _cmd("runs", [_TASK_ID, _json_flag(), *_run_state_args("filter runs by task_runs column")],
          help="Show attempt history for a task (one row per run: profile, outcome, elapsed, summary)"),
     _cmd("heartbeat", [

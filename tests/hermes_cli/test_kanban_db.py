@@ -1116,7 +1116,11 @@ class TestSharedBoardPaths:
                 captured["env"] = kwargs.get("env", {})
                 self.pid = 4242
 
+            def poll(self):
+                return None
+
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda **kwargs: ["hermes"])
 
         task = kb.Task(
             id="t_dispatch_env",

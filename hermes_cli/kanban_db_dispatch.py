@@ -2886,7 +2886,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
 
     # Resolve against the exact environment and cwd handed to the worker.
     worker_cwd = workspace if os.path.isdir(workspace) else None
-    launcher = _kb._resolve_hermes_argv(cwd=worker_cwd, env=env)
+    launcher = _resolve_hermes_argv(cwd=worker_cwd, env=env)
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"), launcher)
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker

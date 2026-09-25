@@ -50,6 +50,47 @@ _CONFIG_SCHEMA_TYPES: Dict[str, tuple] = {
     "secret": (str,),
 }
 
+# ``choices_from: "<module>:<function>"`` — a dotted module inside the plugin's own package (never an
+# absolute or relative-dots path) and a function in it. See hermes_cli.plugins_settings.
+CHOICES_FROM_RE = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*")
+
+
+def normalize_choices(raw: object) -> Optional[List[tuple]]:
+    """``[(value, label), ...]`` from a ``choices``/``enum`` list (or a ``choices_from`` return value).
+
+    Entries are scalars (``str(entry)`` is both value and label — the historical behaviour) or
+    ``{value: str, label?: str}`` mappings. ``[]`` for an empty list; ``None`` when *raw* is not a list or
+    any entry is malformed.
+    """
+    if not isinstance(raw, list):
+        return None
+    out: List[tuple] = []
+    for item in raw:
+        if isinstance(item, Mapping):
+            value = item.get("value")
+            label = item.get("label", value)
+            if not isinstance(value, str) or not isinstance(label, str):
+                return None
+            out.append((value, label))
+        elif isinstance(item, (str, int, float)):  # bool is an int: YAML ``yes`` keeps rendering "True"
+            out.append((str(item), str(item)))
+        else:
+            return None
+    return out
+
+
+def config_choices_problems(spec: Mapping) -> List[str]:
+    """Shape problems in one ``config_schema`` entry's ``choices``/``enum``/``choices_from`` (empty = ok)."""
+    problems = [f"{name} must be a list of strings or {{value, label}} mappings"
+                for name in ("choices", "enum") if name in spec and normalize_choices(spec[name]) is None]
+    if "choices_from" in spec:
+        ref = spec["choices_from"]
+        if not isinstance(ref, str) or not CHOICES_FROM_RE.fullmatch(ref):
+            problems.append('choices_from must be "<module>:<function>" (a module inside the plugin package)')
+        elif str(spec.get("type") or "str").lower() not in ("str", "string"):
+            problems.append("choices_from is only supported on str fields")
+    return problems
+
 
 def _plugins_debug() -> bool:
     from hermes_cli import plugins as _origin
@@ -168,6 +209,8 @@ def _parse_manifest_v2_fields(data: Mapping, key: str) -> Dict[str, Any]:
                 "(known: %s); type check will be skipped for it",
                 key, skey, stype, ", ".join(sorted(_CONFIG_SCHEMA_TYPES)),
             )
+        for problem in config_choices_problems(spec):
+            logger.warning("Plugin %s: config_schema key %r: %s; the settings form ignores it", key, skey, problem)
         schema[str(skey)] = dict(spec)
     tags = [str(t) for t in (_manifest_field_of_type(data, key, "tags", list, "a list") or [])]
     # Forward compat: unknown fields warn (never fail); v1 manifests only at debug.

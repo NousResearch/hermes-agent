@@ -21123,7 +21123,7 @@
       },
       "PluginSettingField": {
         "additionalProperties": false,
-        "description": "One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub\n(``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``\nnames the ``.env`` variable and ``has_value`` whether it is set.",
+        "description": "One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub\n(``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``\nnames the ``.env`` variable and ``has_value`` whether it is set. ``choices`` are always the values;\n``choice_labels`` (same length, same order) is present only when a choice has a label other than its\nvalue, so a client that predates it still renders and saves values.",
         "properties": {
           "key": {
             "title": "Key",
@@ -21178,6 +21178,21 @@
             ],
             "default": null,
             "title": "Choices"
+          },
+          "choice_labels": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Choice Labels"
           },
           "env": {
             "anyOf": [

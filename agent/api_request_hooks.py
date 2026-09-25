@@ -10,7 +10,9 @@ from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from agent.usage_pricing import normalize_usage
+from agent.usage_pricing import (
+    _ANTHROPIC_USAGE_SHAPE, _CHAT_USAGE_SHAPE, _CODEX_USAGE_SHAPE, normalize_usage,
+)
 
 _SENSITIVE_HOOK_KEYS = {"api_key", "authorization", "proxy_authorization", "cookie", "set_cookie"}
 
@@ -46,6 +48,34 @@ class ApiRequestHooksMixin:
         summary.pop("raw_usage", None)
         summary["prompt_tokens"] = cu.prompt_tokens
         summary["total_tokens"] = cu.total_tokens
+        # CanonicalUsage uses zero for *both* absent and reported-zero buckets.
+        # Preserve raw field presence, not raw content, for diagnostic consumers.
+        shape = (_ANTHROPIC_USAGE_SHAPE if self.api_mode == "anthropic_messages" or self.provider == "anthropic"
+                 else _CODEX_USAGE_SHAPE if self.api_mode == "codex_responses"
+                 else _CHAT_USAGE_SHAPE)
+
+        def present(paths: Any) -> bool:
+            for path in paths:
+                value = raw_usage
+                for part in path:
+                    value = value.get(part) if isinstance(value, dict) else getattr(value, part, None)
+                    if value is None:
+                        break
+                if value is not None:
+                    return True
+            return False
+
+        prompt, output, cache_read, cache_write = (present(paths) for paths in shape)
+        reasoning = present((("output_tokens_details", "reasoning_tokens"),
+                             ("completion_tokens_details", "reasoning_tokens")))
+        summary["reported_usage_fields"] = {
+            "prompt_tokens": prompt and (shape is not _ANTHROPIC_USAGE_SHAPE or (cache_read and cache_write)),
+            "input_tokens": prompt and (shape is _ANTHROPIC_USAGE_SHAPE or (cache_read and cache_write)),
+            "output_tokens": output,
+            "cache_read_tokens": cache_read,
+            "cache_write_tokens": cache_write,
+            "reasoning_tokens": reasoning,
+        }
         return summary
 
     @staticmethod
@@ -188,6 +218,8 @@ class ApiRequestHooksMixin:
                 api_duration=ended_at - api_start_time,
                 started_at=api_start_time,
                 ended_at=ended_at,
+                first_chunk_at=getattr(self, "_last_api_observed_chunk_at", None),
+                first_delta_at=getattr(self, "_last_api_first_delta_at", None),
                 status_code=status_code,
                 retry_count=retry_count,
                 max_retries=max_retries,

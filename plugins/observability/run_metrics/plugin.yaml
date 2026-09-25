@@ -1,0 +1,17 @@
+name: run-metrics
+version: "1.0.0"
+description: "Opt-in, local metadata-only diagnostic reports for Hermes turns. No network export."
+author: NousResearch
+provides_hooks:
+  - on_turn_start
+  - pre_llm_call
+  - pre_api_request
+  - stream_attempt
+  - post_api_request
+  - api_request_error
+  - post_tool_call
+  - subagent_start
+  - subagent_stop
+  - context_compaction
+  - on_session_end
+  - on_turn_result

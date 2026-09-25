@@ -2548,6 +2548,15 @@ def _notify_context_engine_compression_complete(agent: Any, *, new_session_id: s
         relay_runtime.SESSION_COORDINATOR.notify_session_compacted(
             profile_key=relay_runtime.current_profile_key(), session_id=new_session_id, old_session_id=old_session_id
         )
+    # A durable boundary, not an inferred drop in estimated token count. Observers are
+    # best-effort and must never roll back a committed compression.
+    with _swallow('context compaction observer failed', exc_info=True):
+        from hermes_cli.lifecycle import invoke_hook
+        invoke_hook(
+            "context_compaction", session_id=new_session_id, old_session_id=old_session_id,
+            task_id=getattr(agent, "_current_task_id", ""),
+            turn_id=getattr(agent, "_current_turn_id", ""),
+        )
     callback = getattr(agent.context_compressor, "on_session_start", None)
     if not callable(callback):
         return False

@@ -2892,6 +2892,32 @@ class _StreamingCall(StreamingWaitMonitor):
         self.result["partial_tool_names"] = []
         return attempt_id
 
+    def _observe_stream_attempt(self, phase: str, attempt_id: int, started_at: float, error=None) -> None:
+        """Expose actual transport retries without coupling the stream to a metrics backend."""
+        try:
+            from hermes_cli.lifecycle import has_hook, invoke_hook
+
+            if not has_hook("stream_attempt"):
+                return
+            diag = self.clients.diag if isinstance(self.clients.diag, dict) else {}
+            invoke_hook(
+                "stream_attempt", phase=phase,
+                session_id=self.agent.session_id or "",
+                task_id=getattr(self.agent, "_current_task_id", ""),
+                turn_id=getattr(self.agent, "_current_turn_id", ""),
+                api_request_id=getattr(self.agent, "_current_api_request_id", ""),
+                stream_attempt_id=attempt_id,
+                provider=self.agent.provider, model=self.agent.model,
+                started_at=started_at,
+                ended_at=time.time() if phase == "end" else None,
+                status=("error" if error else "completed") if phase == "end" else "running",
+                error_type=type(error).__name__ if error else None,
+                first_chunk_at=diag.get("first_chunk_at") if phase == "end" else None,
+                first_delta_at=getattr(self.agent, "_last_api_first_delta_at", None) if phase == "end" else None,
+            )
+        except Exception:
+            logger.debug("Stream attempt observer failed", exc_info=True)
+
     def _cancel_current_stream_attempt(self, reason: str) -> None:
         with self.stream_attempt_lock:
             current = int(self.stream_attempt_state["current"])
@@ -2927,9 +2953,11 @@ class _StreamingCall(StreamingWaitMonitor):
         )
 
     def _fire_first_delta(self):
-        if not self.first_delta_fired["done"] and self.on_first_delta:
+        if not self.first_delta_fired["done"]:
             self.first_delta_fired["done"] = True
-            self._quiet(self.on_first_delta)
+            self.agent._last_api_first_delta_at = time.time()
+            if self.on_first_delta:
+                self._quiet(self.on_first_delta)
 
     def _emit_text(self, text: str) -> None:
         self._fire_first_delta()
@@ -2971,6 +2999,7 @@ class _StreamingCall(StreamingWaitMonitor):
             diag["chunks"] = int(diag.get("chunks", 0)) + 1
             if diag.get("first_chunk_at") is None:
                 diag["first_chunk_at"] = self.last_chunk_time["t"]
+                self.agent._last_api_observed_chunk_at = self.last_chunk_time["t"]
             # Delta-length estimate: ~3x cheaper than repr() per chunk.
             diag["bytes"] = int(diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
 
@@ -3683,11 +3712,19 @@ class _StreamingCall(StreamingWaitMonitor):
         probe_kwargs = {k: v for k, v in self.api_kwargs.items() if k not in ("stream", "stream_options")}
         stale_timeout = self._stream_stale_timeout
         self._stream_stale_timeout = float("inf")  # no chunks arrive during the probe
+        # The compatibility probe is another physical provider request, even
+        # though it is hidden inside one logical streaming call.
+        probe_attempt_id = 1_000_000 + int(self.stream_attempt_state["current"])
+        probe_started_at = time.time()
+        self._observe_stream_attempt("start", probe_attempt_id, probe_started_at)
         try:
             probe = interruptible_api_call(self.agent, probe_kwargs)
-        except (KeyboardInterrupt, InterruptedError):
+        except (KeyboardInterrupt, InterruptedError) as probe_interrupt:
+            self._observe_stream_attempt("end", probe_attempt_id, probe_started_at,
+                                         error=probe_interrupt)
             raise  # the outer handler routes user interrupts; never swallow them
         except Exception as probe_err:
+            self._observe_stream_attempt("end", probe_attempt_id, probe_started_at, error=probe_err)
             probe_status = _extract_status_code(probe_err)
             if probe_status is not None and probe_status < 500:
                 # The provider's REAL validation error beats the opaque 5xx.
@@ -3696,6 +3733,8 @@ class _StreamingCall(StreamingWaitMonitor):
                 return True
             logger.info("Non-streaming unmask probe failed: %s", probe_err)
             return False
+        else:
+            self._observe_stream_attempt("end", probe_attempt_id, probe_started_at)
         finally:
             self._stream_stale_timeout = stale_timeout
         logger.info("Streaming 5xx re-issued non-streaming successfully for %s/%s "
@@ -3739,11 +3778,15 @@ class _StreamingCall(StreamingWaitMonitor):
                 if self.agent._interrupt_requested:
                     self._cancel_current_stream_attempt("interrupt_before_stream_retry")
                     raise InterruptedError("Agent interrupted before stream retry")
+                attempt_started_at = time.time()
+                self._observe_stream_attempt("start", stream_attempt_id, attempt_started_at)
                 try:
                     self.result["response"] = _with_stream_emitters(
                         self.agent, lambda: self._call_wire(stream_attempt_id))
+                    self._observe_stream_attempt("end", stream_attempt_id, attempt_started_at)
                     return  # success
                 except Exception as e:
+                    self._observe_stream_attempt("end", stream_attempt_id, attempt_started_at, error=e)
                     self._close_managed_stream()
                     if not self._handle_stream_error(e, _stream_attempt, _max_stream_retries):
                         return

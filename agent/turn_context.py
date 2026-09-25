@@ -1032,6 +1032,18 @@ def build_turn_context(
         agent, task_id, stream_callback, persist_user_message,
         persist_user_timestamp, persist_user_platform_id,
     )
+    # Generic metadata-only boundary: preflight compression precedes pre_llm_call.
+    try:
+        from hermes_cli.lifecycle import has_hook, invoke_hook
+
+        if has_hook("on_turn_start"):
+            invoke_hook(
+                "on_turn_start", session_id=agent.session_id or "",
+                task_id=effective_task_id, turn_id=turn_id,
+                platform=agent.platform or "", agent_role=getattr(agent, "_turn_origin", None),
+            )
+    except Exception:
+        logger.debug("Turn-start observer failed", exc_info=True)
     _reset_per_turn_agent_state(agent)
 
     _preview_text = summarize_user_message_for_log(user_message)

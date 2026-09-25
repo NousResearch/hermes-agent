@@ -61,6 +61,7 @@ def _fire_post_api_request_hook(
     effective_task_id: Any, turn_id: Any,
 ) -> None:
     from agent.conversation_loop import _moa_reference_metrics_for_hook
+    from hermes_constants import PARTIAL_STREAM_STUB_ID
 
     try:
         from hermes_cli.lifecycle import has_hook, invoke_hook as _invoke_hook
@@ -83,7 +84,9 @@ def _fire_post_api_request_hook(
                 # First stream chunk time (epoch s); None if not streamed / no chunk.
                 # TTFB = first_chunk_at - started_at.
                 first_chunk_at=getattr(agent, "_last_api_first_chunk_at", None),
+                first_delta_at=getattr(agent, "_last_api_first_delta_at", None),
                 finish_reason=finish_reason,
+                synthetic_response=getattr(response, "id", None) == PARTIAL_STREAM_STUB_ID,
                 message_count=len(api_messages),
                 response_model=getattr(response, "model", None),
                 response=agent._api_response_payload_for_hook(

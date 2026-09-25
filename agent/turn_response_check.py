@@ -150,6 +150,24 @@ def check_api_response(
     agent._turn_received_provider_response = True
     finish_reason = _derive_finish_reason(agent, response, messages)
 
+    # These paths leave before normalize_model_response, which normally emits
+    # post_api_request. Report the completed provider attempt before recovery
+    # so a length/refusal response does not disappear behind a later retry.
+    if finish_reason in {"length", "content_filter"}:
+        try:
+            from agent.turn_response_intake import _fire_post_api_request_hook
+
+            assistant_message = agent._get_transport().normalize_response(response)
+            _fire_post_api_request_hook(
+                agent, response, assistant_message, finish_reason,
+                api_messages=api_messages, api_call_count=api_call_count,
+                api_duration=api_duration, api_start_time=api_start_time,
+                api_request_id=api_request_id, effective_task_id=effective_task_id,
+                turn_id=turn_id,
+            )
+        except Exception:
+            logger.debug("Unable to observe short-circuited provider response", exc_info=True)
+
     # HTTP-200 refusals are deterministic: one fallback try, else return the refusal.
     if finish_reason == "content_filter":
         _rv = handle_content_policy_refusal(

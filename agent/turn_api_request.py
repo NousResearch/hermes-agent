@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import time
 from typing import Any
 
 from agent.message_sanitization import sanitize_outbound_kwargs, strip_images_for_rejecting_model
@@ -82,6 +83,8 @@ def _fire_pre_api_request_hook(
                 request_char_count=total_chars,
                 max_tokens=agent.max_tokens,
                 started_at=api_start_time,
+                attempt_started_at=time.time(),
+                context_limit_tokens=getattr(getattr(agent, "context_compressor", None), "_resolved_context_length", None),
                 middleware_trace=list(_llm_middleware_trace),
                 request=agent._api_request_payload_for_hook(api_kwargs),
             )
@@ -104,6 +107,8 @@ def build_api_request(
     agent._reset_stream_delivery_tracking()
     # Per-attempt first-chunk timestamp so a stale value never leaks into post_api_request.
     agent._last_api_first_chunk_at = None
+    agent._last_api_observed_chunk_at = None
+    agent._last_api_first_delta_at = None
     # api_messages was built for the primary; a fallback (DeepSeek / Kimi / MiMo) may
     # require reasoning_content — re-apply the echo-back pad (idempotent) and re-render
     # the prompt-cache decoration for the current provider.

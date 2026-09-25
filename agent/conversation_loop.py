@@ -1696,6 +1696,24 @@ def run_conversation(
         )
     result = export_current_turn_boundary(agent, result, user_message)
     _close_durable_failed_turn(agent, result)
+    # finalize_turn emits on_session_end only on its own path. Early returns
+    # (provider refusal, retry exhaustion, preflight failure) still need one
+    # generic, content-free terminal boundary for opt-in observers.
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+
+        if isinstance(result, dict):
+            invoke_hook(
+                "on_turn_result", session_id=getattr(agent, "session_id", None),
+                task_id=getattr(agent, "_current_task_id", None),
+                turn_id=getattr(agent, "_current_turn_id", None),
+                completed=result.get("completed"), failed=result.get("failed"),
+                interrupted=result.get("interrupted"),
+                turn_exit_reason=result.get("turn_exit_reason"),
+                failure_reason=result.get("failure_reason"),
+            )
+    except Exception:
+        logger.debug("Turn result observer failed", exc_info=True)
     return result
 
 

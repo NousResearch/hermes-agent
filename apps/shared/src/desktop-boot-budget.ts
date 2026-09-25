@@ -57,13 +57,15 @@ export function resolvePortAnnounceTimeoutMs(env: AnnounceTimeoutEnv): number {
  * Covers main's whole cold-start chain: the port-announce wait, the health
  * poll after it, and `BOOT_CONNECT_MARGIN_MS` for the work around them, so a
  * backend that announces near the deadline and then turns healthy still
- * reaches the renderer. Non-finite or non-positive announce inputs fall back
- * to the default deadline, so the result is never an immediate fail and never
- * Infinity (a dead backend with no recovery overlay).
+ * reaches the renderer. A missing, non-finite or non-positive announce input
+ * falls back to the default deadline, so the result is never an immediate
+ * fail and never Infinity (a dead backend with no recovery overlay).
  */
-export function resolveRendererBootWaitMs(announceTimeoutMs: number): number {
+export function resolveRendererBootWaitMs(announceTimeoutMs?: number): number {
   const announce =
-    Number.isFinite(announceTimeoutMs) && announceTimeoutMs > 0 ? announceTimeoutMs : DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS
+    typeof announceTimeoutMs === 'number' && Number.isFinite(announceTimeoutMs) && announceTimeoutMs > 0
+      ? announceTimeoutMs
+      : DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS
 
   return announce + DEFAULT_BACKEND_READY_TIMEOUT_MS + BOOT_CONNECT_MARGIN_MS
 }

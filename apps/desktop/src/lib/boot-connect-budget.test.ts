@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   BOOT_CONNECT_MARGIN_MS,
@@ -30,12 +30,23 @@ describe('renderer boot connect budget', () => {
     expect(Number.isFinite(fallback)).toBe(true)
   })
 
-  it('stretches with a longer announce override so the health phase stays covered', () => {
+  it('sizes the renderer wait from the announce deadline main publishes through preload', async () => {
+    // Main resolves HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS=180000 and hands
+    // it to the renderer on the launch-flags bridge before any script runs.
     const announce = resolvePortAnnounceTimeoutMs({ HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS: '180000' })
-    const wait = resolveRendererBootWaitMs(announce)
+    const previous = window.hermesDesktop
 
-    expect(announce).toBe(180_000)
-    expect(wait).toBeGreaterThan(announce + DEFAULT_BACKEND_READY_TIMEOUT_MS)
-    expect(wait).toBeGreaterThan(BACKEND_BOOT_WAIT_TIMEOUT_MS)
+    window.hermesDesktop = { ...previous, portAnnounceTimeoutMs: announce } as typeof window.hermesDesktop
+    vi.resetModules()
+
+    try {
+      const { BACKEND_BOOT_WAIT_TIMEOUT_MS: wait } = await import('./with-timeout')
+
+      expect(announce).toBe(180_000)
+      expect(wait).toBe(announce + DEFAULT_BACKEND_READY_TIMEOUT_MS + BOOT_CONNECT_MARGIN_MS)
+    } finally {
+      window.hermesDesktop = previous
+      vi.resetModules()
+    }
   })
 })

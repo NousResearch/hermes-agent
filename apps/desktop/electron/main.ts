@@ -184,7 +184,7 @@ import {
 } from './connection-registry'
 import type { RosterProfileMetadata } from './connection-registry'
 import { describeCrashReason, installCrashForensics } from './crash-forensics'
-import { adoptServedDashboardToken, resolveServedDashboardToken } from './dashboard-token'
+import { adoptServedDashboardToken, isAttachedBackendTokenDrifted, resolveServedDashboardToken } from './dashboard-token'
 import { resolveDesktopHermesHome, resolveDesktopUserData } from './data-paths'
 import { loadOrCreateInstallationId, sshOwnershipId } from './desktop-installation'
 import { formatDesktopLogLine } from './desktop-log-line'
@@ -12055,17 +12055,29 @@ function stopAttachedBackendMonitor() {
  * invalidates the connection and hands the respawn to the same supervisor path
  * a dead child would (which re-runs discovery and spawns, since the host now
  * has no backend).
+ *
+ * A backend recycled by an external supervisor (e.g. launchd `KeepAlive`)
+ * into a new process on the same port passes the readiness probe (it's a
+ * public route) while serving a brand-new session token, so also re-read the
+ * served token on every tick and treat drift the same as "gone" (#121988).
  */
 function startAttachedBackendMonitor(attached: AttachedBackend) {
   stopAttachedBackendMonitor()
 
   attachedBackendMonitor = setInterval(() => {
-    void waitForHermes(attached.baseUrl, attached.token, undefined, 'token', {}).catch(() => {
-      stopAttachedBackendMonitor()
-      rememberLog(`[attach] attached backend on ${attached.baseUrl} (pid ${attached.pid}) is gone; recovering`)
-      invalidatePrimaryConnection()
-      scheduleUnexpectedPrimaryRecovery({ error: 'The Hermes backend this app attached to exited.', ready: true })
-    })
+    void waitForHermes(attached.baseUrl, attached.token, undefined, 'token', {})
+      .then(() => resolveServedDashboardToken(attached.baseUrl, attached.token).catch(() => attached.token))
+      .then(servedToken => {
+        if (isAttachedBackendTokenDrifted({ servedToken, adoptedToken: attached.token })) {
+          throw new Error('attached backend is serving a different session token')
+        }
+      })
+      .catch(() => {
+        stopAttachedBackendMonitor()
+        rememberLog(`[attach] attached backend on ${attached.baseUrl} (pid ${attached.pid}) is gone; recovering`)
+        invalidatePrimaryConnection()
+        scheduleUnexpectedPrimaryRecovery({ error: 'The Hermes backend this app attached to exited.', ready: true })
+      })
   }, ATTACHED_LIVENESS_POLL_MS)
 
   attachedBackendMonitor.unref?.()

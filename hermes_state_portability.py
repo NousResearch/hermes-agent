@@ -16,6 +16,7 @@ from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
 from hermes_state_ids import new_session_id
 from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
+from hermes_state_messages import _parse_tool_calls, _tool_calls_count
 
 # Pre-split logger identity so log filtering/capture is unchanged.
 logger = logging.getLogger("hermes_state")
@@ -276,23 +277,29 @@ class SessionPortabilityMixin:
 
     # ── Export ─────────────────────────────────────────────────────────────
 
-    def _with_messages(self, session: Dict[str, Any], include_compacted: bool = False) -> Dict[str, Any]:
-        messages = self.get_messages(session["id"], include_compacted=include_compacted)
+    def _with_messages(self, session: Dict[str, Any], include_compacted: bool = False,
+                       include_inactive: bool = False) -> Dict[str, Any]:
+        messages = self.get_messages(session["id"], include_inactive=include_inactive, include_compacted=include_compacted)
         return {**session, "messages": messages, "timings": _export_timings(messages, session["id"])}
 
-    def export_session(self, session_id: str, include_compacted: bool = False) -> Optional[Dict[str, Any]]:
+    def export_session(self, session_id: str, include_compacted: bool = False,
+                       include_inactive: bool = False) -> Optional[Dict[str, Any]]:
         """Export a single session with all its messages as a dict. ``include_compacted`` adds the turns
         in-place compaction archived (the history the user still sees); it stays off for payloads that go
-        back through :meth:`import_sessions`, which would insert those turns as live context."""
+        back through :meth:`import_sessions`, because that projection is deduped and ordered for display, and
+        importing it would make those turns live context. ``include_inactive`` exports every row in storage
+        order with its ``active``/``compacted`` flags, which :meth:`import_sessions` restores as archived."""
         session = self.get_session(session_id)
-        return self._with_messages(session, include_compacted) if session else None
+        return self._with_messages(session, include_compacted, include_inactive) if session else None
 
-    def export_session_lineage(self, session_id: str, include_compacted: bool = False) -> Optional[Dict[str, Any]]:
-        """Export a compression lineage as one logical session dict (``include_compacted`` as in :meth:`export_session`)."""
+    def export_session_lineage(self, session_id: str, include_compacted: bool = False,
+                               include_inactive: bool = False) -> Optional[Dict[str, Any]]:
+        """Export a compression lineage as one logical session dict (flags as in :meth:`export_session`)."""
         lineage_ids = self.get_compression_lineage(session_id)
         if not lineage_ids:
             return None
-        segments = [seg for seg in (self.export_session(sid, include_compacted) for sid in lineage_ids) if seg]
+        segments = [seg for seg in (self.export_session(sid, include_compacted, include_inactive)
+                                    for sid in lineage_ids) if seg]
         if not segments:
             return None
         messages = [msg for seg in segments for msg in (seg.get("messages") or [])]
@@ -330,8 +337,10 @@ class SessionPortabilityMixin:
         heal: a profile bot's rows accumulated in the DEFAULT profile's state.db before the
         desktop routed session RPCs by target session). Pure composition
         ``donor_db.export_session_lineage()`` -> ``self.import_sessions()``: runtime
-        fields reset, already-present ids skipped (idempotent). With ``retire_donor`` and
-        a complete adoption, donor rows are ARCHIVED (never deleted) with
+        fields reset, already-present ids skipped (idempotent). Every message row is carried
+        with its archived state, so turns in-place compaction archived stay visible here and
+        stay out of model context. With ``retire_donor`` and a complete adoption, donor rows
+        are ARCHIVED (never deleted) with
         ``end_reason='adopted_by_profile'`` — deliberately NOT in the recoverable set, so
         resurrection cannot undo an adoption. Returns the ``import_sessions`` dict plus
         ``adopted`` and ``donor_retired`` (True only when EVERY segment retired).
@@ -340,7 +349,9 @@ class SessionPortabilityMixin:
         the same chat 4001'd for the opposite reason. This method moves the conversation to where routing
         now looks for it. See #93091, #93296.
         """
-        payload = donor_db.export_session_lineage(session_id)
+        # Every row, not just live ones: the retired donor is unrecoverable, so any turn left behind
+        # (compaction-archived history included) would be visible nowhere.
+        payload = donor_db.export_session_lineage(session_id, include_inactive=True)
         if not payload:
             return {"ok": False, "adopted": False, "donor_retired": False,
                     "error": f"session {session_id!r} not found in donor store"}
@@ -355,7 +366,7 @@ class SessionPortabilityMixin:
             if not seg_id or self.get_session(seg_id) is None:
                 continue
             donor_count = len(seg.get("messages") or [])
-            local_count = len(self.get_messages(seg_id))
+            local_count = len(self.get_messages(seg_id, include_inactive=True))
             if donor_count > local_count:
                 donor_ahead = True
                 logger.warning("adoption divergence: donor segment %s has %d messages, "
@@ -382,8 +393,8 @@ class SessionPortabilityMixin:
         A retirement failure must not fail the adoption (a later resume retries
         idempotently), but never claims success it didn't have."""
         try:
-            donor_now = len(donor_db.get_messages(seg_id))
-            local_now = len(self.get_messages(seg_id))
+            donor_now = len(donor_db.get_messages(seg_id, include_inactive=True))
+            local_now = len(self.get_messages(seg_id, include_inactive=True))
             if donor_now > local_now:
                 logger.warning(
                     "adoption divergence at retire time: donor segment %s grew to %d messages (local %d) — "
@@ -535,6 +546,14 @@ class SessionPortabilityMixin:
             {**msg, **{key: _json_value(msg.get(key)) for key in _IMPORT_MESSAGE_JSON_FIELDS}} for msg in messages
         ]
         total_messages, total_tool_calls = self._insert_message_rows(conn, session_id, sanitized_messages)
+        # A row exported archived (``include_inactive``) must stay archived: inserted live, compacted or
+        # rewound turns would re-enter model context. Session counters count live rows only.
+        archived = [msg for msg in sanitized_messages if "active" in msg and not msg["active"] and "_row_id" in msg]
+        if archived:
+            conn.executemany("UPDATE messages SET active = 0, compacted = ? WHERE id = ?",
+                             [(1 if msg.get("compacted") else 0, msg["_row_id"]) for msg in archived])
+            total_messages -= len(archived)
+            total_tool_calls -= sum(_tool_calls_count(_parse_tool_calls(msg.get("tool_calls"))) for msg in archived)
         conn.execute("UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
                      (total_messages, total_tool_calls, session_id))
 

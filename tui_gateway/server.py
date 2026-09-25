@@ -1602,7 +1602,9 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     attributes DELETE the key rather than skip the write: resume reads provider/endpoint from this JSON
     (model column written separately), so a stale provider would route the resumed chat to the wrong endpoint."""
     config = dict(existing or {})
-    attr = lambda k: str(getattr(agent, k, "") or "").strip()
+    from agent.session_route import requested_session_runtime
+    route = requested_session_runtime(agent)
+    attr = lambda k: str(route.get(k) or "").strip()
     model, provider, base_url = attr("model"), attr("provider"), attr("base_url")
     if provider.lower() == "custom":
         # ``agent.provider`` resolves every named custom entry to the literal "custom", losing the entry
@@ -1612,12 +1614,12 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
             provider = canonical_custom_identity(base_url=base_url, model=model or None) or provider
         except Exception:
             logger.debug("custom provider identity lookup failed", exc_info=True)
-    reasoning_config = getattr(agent, "reasoning_config", None)
+    reasoning_config = route.get("reasoning_config")
     live = {
         "model": model, "provider": provider, "base_url": base_url, "api_mode": attr("api_mode"),
         # An empty dict is still a real (present) reasoning config.
         "reasoning_config": reasoning_config if isinstance(reasoning_config, dict) else None,
-        "service_tier": getattr(agent, "service_tier", None),
+        "service_tier": route.get("service_tier"),
     }
     for key, value in live.items():
         if value or isinstance(value, dict):
@@ -1643,7 +1645,7 @@ def _persist_live_session_runtime(session: dict | None) -> None:
         if (tier_override := session.get("create_service_tier_override")) is not None:
             # agent.service_tier is None for explicit normal; without this the distinction is erased on every persist.
             model_config["service_tier"] = tier_override or "normal"
-        model = str(getattr(agent, "model", "") or "").strip()
+        model = model_config.get("model", "")
         if hasattr(db, "update_session_meta"):
             db.update_session_meta(session_key, json.dumps(model_config), model or None)
         elif model and hasattr(db, "update_session_model"):
@@ -1716,7 +1718,8 @@ def _append_model_switch_marker(session: dict | None, *, model: str, provider: s
     provider_part = f" via provider {provider}" if provider else ""
     marker = (
         f"{_MODEL_SWITCH_MARKER_PREFIX}{model}{provider_part}. From this point forward, use this runtime "
-        "metadata when answering questions about what model/provider is active.]")
+        "metadata when answering questions about the requested route. A fallback may serve an individual "
+        "turn; when it does, the current runtime Model/Provider identity takes precedence.]")
     # A user message, not system: strict OpenAI-compatible providers (vLLM, Qwen) reject non-leading system messages.
     # See #48338.
     entry: dict[str, Any] = {"role": "user", "content": marker, "display_kind": "model_switch"}

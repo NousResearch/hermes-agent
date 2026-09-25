@@ -335,7 +335,12 @@ class AIAgent(
         The row is created lazily on the first turn, so this is the only chance to record a pre-first-turn
         /yolo toggle for ``hermes --resume``.
         """
-        model_config = self._session_init_model_config
+        from agent.session_route import requested_session_runtime
+        route = requested_session_runtime(self)
+        model_config = dict(self._session_init_model_config or {})
+        model_config.update({key: route.get(key) for key in ("model", "provider", "base_url", "api_mode") if route.get(key)})
+        if getattr(self, "_fallback_activated", False):
+            model_config["reasoning_config"] = route.get("reasoning_config")
         try:
             from tools.approval import is_session_yolo_enabled
             if is_session_yolo_enabled(self.session_id):
@@ -365,8 +370,9 @@ class AIAgent(
                 profile_for_session = None
             # Carry the gateway routing identity: when the gateway SessionStore degraded to JSONL (corrupt
             # state.db) this lazy create is the ONLY durable write, and an identity-less row is unrecoverable.
+            from agent.session_route import requested_session_runtime
             self._session_db.create_session(
-                session_id=self.session_id, source=source, model=self.model,
+                session_id=self.session_id, source=source, model=requested_session_runtime(self)["model"],
                 model_config=self._session_row_model_config(), system_prompt=self._cached_system_prompt,
                 user_id=getattr(self, "_user_id", None), session_key=getattr(self, "_gateway_session_key", None),
                 chat_id=getattr(self, "_chat_id", None), chat_type=getattr(self, "_chat_type", None),

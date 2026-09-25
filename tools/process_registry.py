@@ -672,7 +672,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         seconds = max(int(seconds), HEARTBEAT_MIN_SECONDS)
         session.heartbeat_seconds = seconds
         session._heartbeat_last = time.time()
-        session._heartbeat_total_at_last = session.total_output_chars
+        # The output baseline stays at spawn (field default 0), never here: the spawn call
+        # arms the heartbeat only after its bookkeeping, and a fast-starting process has
+        # already written its first lines by then. Those lines belong to the first heartbeat.
         self._ensure_heartbeat_thread()
         return seconds
 

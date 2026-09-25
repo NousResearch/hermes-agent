@@ -63,6 +63,24 @@ def test_heartbeat_carries_only_new_output_and_stops_at_exit(tmp_path, monkeypat
                            timeout=2.5)
 
 
+@pytest.mark.platforms("linux")
+def test_first_heartbeat_carries_output_produced_before_arming(tmp_path, monkeypatch):
+    """The terminal tool arms the heartbeat after its spawn bookkeeping; whatever the process
+    printed in that gap belongs to the first heartbeat, not to nobody (CI: 'first' vanished)."""
+    monkeypatch.setattr(pr, "HEARTBEAT_MIN_SECONDS", 1)
+    monkeypatch.setattr(pr, "HEARTBEAT_TICK_SECONDS", 0.1)
+    registry = ProcessRegistry()
+    session = registry.spawn_local("echo first; sleep 3", cwd=str(tmp_path))
+    session.notify_on_complete = True
+    assert _wait_until(lambda: "first" in registry.poll(session.id).get("output_preview", ""), timeout=10)
+    registry.arm_heartbeat(session, 1)
+
+    assert _wait_until(lambda: any(e.get("type") == "heartbeat" for e in list(registry.completion_queue.queue)),
+                       timeout=10)
+    first_beat = next(e for e in _drain(registry.completion_queue) if e["type"] == "heartbeat")
+    assert "first" in first_beat["output"], first_beat
+
+
 def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monkeypatch):
     from tools import terminal_tool as tt
 

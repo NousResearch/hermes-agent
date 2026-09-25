@@ -38,6 +38,8 @@ def test_linux_terminal_commands_keep_profile_out_of_shell_text():
     assert commands
     assert all(name not in arg for _, argv in commands for arg in argv)
     assert all("HERMES_SETUP_PROFILE_NAME" in " ".join(argv) for _, argv in commands)
+    assert all("exec hermes -p default setup" in " ".join(argv)
+               for _, argv in _linux_terminal_commands("default"))
 
 
 def test_macos_terminal_argv_keeps_profile_out_of_applescript():
@@ -49,7 +51,9 @@ def test_macos_terminal_argv_keeps_profile_out_of_applescript():
     assert args[-2:] == ["--", name]
     assert name not in args[2]
     assert "quoted form of (item 1 of argv)" in args[2]
-    assert _macos_terminal_argv("default")[-1] == "--"
+    default_args = _macos_terminal_argv("default")
+    assert default_args[-1] == "--"
+    assert 'do script "exec hermes -p default setup"' in default_args[2]
 
 
 @pytest.mark.macos_only
@@ -106,8 +110,13 @@ def test_open_profile_terminal_scopes_child_home_on_windows(monkeypatch, tmp_pat
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE_NAME", "other")
     monkeypatch.setenv("HERMES_PROFILE", "other")
-    launcher = str(tmp_path / "managed bin" / "hermes.cmd")
-    monkeypatch.setattr(routes.shutil, "which", lambda name: launcher if name == "hermes" else None)
+    launcher_file = tmp_path / "managed bin" / "hermes.cmd"
+    launcher_file.parent.mkdir()
+    launcher_file.write_text("@echo off\nexit /b 0\n", encoding="ascii")
+    monkeypatch.setenv("PATH", str(launcher_file.parent) + os.pathsep + os.environ.get("PATH", ""))
+    monkeypatch.setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+    launcher = routes.locate_command("hermes").command[0]
+    assert Path(launcher).resolve() == launcher_file.resolve()
     calls = []
     monkeypatch.setattr(routes.subprocess, "Popen", lambda *args, **kwargs: calls.append((args, kwargs)))
 

@@ -1,0 +1,73 @@
+name: E2E workers bench (temporary)
+
+# TEMPORARY: measures the e2e lane's HERMES_TEST_WORKERS setting on the real
+# runner class (ubuntu-latest-32-core) instead of a developer box. Three jobs,
+# one per worker count, same commit, same 90-file set, same 900 s file budget.
+# Delete this file and its branch once the number is chosen.
+#
+# Why it duplicates tests.yml's e2e job instead of calling it: tests.yml is
+# `workflow_call`-only and hardcodes HERMES_TEST_WORKERS in the step env, so a
+# caller cannot vary it. Keep the steps below in sync with tests.yml.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: e2e @ ${{ matrix.workers }} workers
+    runs-on: ubuntu-latest-32-core
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        workers: ["3", "4", "5"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up locked Python, Node and test dependencies
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: all
+          extras: '["all", "anthropic", "bedrock", "mistral", "fal", "modal", "daytona", "parallel-web"]'
+          test-environment: 'true'
+          prune-python-cache: true
+
+      - name: Install Node deps and build the Ink TUI
+        uses: ./.github/actions/retry
+        with:
+          command: npm ci --workspace ui-tui --ignore-scripts --no-audit --no-fund && npm run build --workspace ui-tui
+
+      - name: Install ripgrep (prebuilt binary)
+        run: |
+          set -euo pipefail
+          RG_VERSION=15.1.0
+          RG_SHA256=1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599
+          RG_TARBALL=ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl.tar.gz
+          curl -sSfL --retry 3 --retry-delay 5 -o "$RG_TARBALL" \
+            "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_TARBALL}"
+          echo "${RG_SHA256}  ${RG_TARBALL}" | sha256sum -c -
+          tar -xzf "$RG_TARBALL"
+          sudo mv "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl/rg" /usr/local/bin/rg
+          rm -rf "$RG_TARBALL" "ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+          rg --version
+
+      - name: Require a WAL-capable SQLite
+        run: |
+          "$HERMES_PYTHON" -c "import sqlite3, hermes_state_wal as w; print('sqlite', sqlite3.sqlite_version); assert not w.is_sqlite_wal_reset_vulnerable()"
+
+      - name: Run e2e tests
+        run: |
+          scripts/run_tests.sh --include-integration tests/e2e \
+            --exclude tests/e2e/core/upgrade
+        env:
+          HERMES_TEST_WORKERS: ${{ matrix.workers }}
+          HERMES_TEST_FILE_TIMEOUT: "900"
+          HERMES_TEST_FILE_RETRIES: "0"
+          HERMES_E2E_REQUIRE_TUI: "1"
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""

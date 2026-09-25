@@ -57,12 +57,12 @@ describe('onboarding Picker', () => {
     // Fireworks stays behind the disclosure with the other alternatives; only
     // Nous Portal is visible before the user expands the list.
     expect(screen.queryByText('Fireworks AI')).toBeNull()
-    expect(screen.queryByText('Anthropic API Key')).toBeNull()
+    expect(screen.queryByText('Anthropic Account')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Other providers' }))
 
     expect(screen.getByText('Fireworks AI')).toBeTruthy()
-    expect(screen.getByText('Anthropic API Key')).toBeTruthy()
+    expect(screen.getByText('Anthropic Account')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Collapse' })).toBeTruthy()
   })
 
@@ -74,7 +74,7 @@ describe('onboarding Picker', () => {
     render(<Picker ctx={ctx} />)
 
     expect(screen.getByText('Fireworks AI')).toBeTruthy()
-    expect(screen.getByText('Anthropic API Key')).toBeTruthy()
+    expect(screen.getByText('Anthropic Account')).toBeTruthy()
     expect(screen.getByText('ChatGPT or Codex Subscription')).toBeTruthy()
     expect(screen.queryByText('Other sign-in options')).toBeNull()
     expect(screen.queryByText('Recommended')).toBeNull()

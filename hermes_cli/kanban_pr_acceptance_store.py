@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from hermes_cli.kanban_db_connect import write_txn
-from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
+from hermes_cli.kanban_pr_acceptance import bind_contract, collect_acceptance
 
 
 def _snapshot(conn, task_id):
@@ -20,15 +20,15 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
     if status not in {"running", "ready", "blocked", "review"} or (expected_run_id is not None and run_id != expected_run_id):
         return False
     published_pr = metadata.get("published_pr") if isinstance(metadata, dict) else None
-    match = _PR.fullmatch(published_pr) if isinstance(published_pr, str) else None
+    bound = bind_contract(contract, published_pr)
     # Publication binds once. Retrying cannot replace the task's PR with a green sibling.
-    if match and contract == match[1]:
+    if bound:
         with write_txn(conn):
             if _snapshot(conn, task_id) != snapshot:
                 return False
-            conn.execute("UPDATE tasks SET completion_contract=? WHERE id=?", (published_pr, task_id))
-        snapshot = (run_id, status, published_pr)
-        contract = published_pr
+            conn.execute("UPDATE tasks SET completion_contract=? WHERE id=?", (bound, task_id))
+        snapshot = (run_id, status, bound)
+        contract = bound
     return snapshot, collect_acceptance(contract, published_pr)
 
 

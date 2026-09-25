@@ -116,7 +116,7 @@ def test_create_task_with_model_and_provider(conn):
 
 
 def _spawn_and_capture(monkeypatch, tmp_path, task):
-    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda: ["hermes"])
+    monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda **kwargs: ["hermes"])
     captured = {}
 
     class FakeProc:

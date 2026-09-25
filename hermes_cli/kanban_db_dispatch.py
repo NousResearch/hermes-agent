@@ -2471,26 +2471,27 @@ def _is_windows_batch_shim(path: str) -> bool:
     return path.lower().endswith((".cmd", ".bat"))
 
 
-def _path_search_names(command: str) -> list[str]:
+def _path_search_names(command: str, env: Mapping[str, str]) -> list[str]:
     """Return executable names to try for an unqualified command."""
     if not _kb._IS_WINDOWS or os.path.splitext(command)[1]:
         return [command]
-    raw = os.environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
+    raw = env.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD"
     return [command + ext for ext in raw.split(";") if ext]
 
 
-def _safe_which_no_cwd(command: str) -> Optional[str]:
+def _safe_which_no_cwd(command: str, env: Optional[Mapping[str, str]] = None) -> Optional[str]:
     """Resolve a bare command from PATH without implicit current-dir search.
 
     On Windows ``shutil.which`` may search the current directory before PATH
     for bare names — unsafe for a dispatcher. Only explicit PATH entries are
     considered; empty / ``.`` entries are skipped.
     """
-    for raw_dir in os.environ.get("PATH", "").split(os.pathsep):
+    search_env = env if env is not None else os.environ
+    for raw_dir in search_env.get("PATH", "").split(os.pathsep):
         if not raw_dir or raw_dir == ".":
             continue
         directory = os.path.expanduser(raw_dir)
-        for name in _path_search_names(command):
+        for name in _path_search_names(command, search_env):
             candidate = os.path.join(directory, name)
             if os.path.isfile(candidate) and (_kb._IS_WINDOWS or os.access(candidate, os.X_OK)):
                 return candidate
@@ -2506,40 +2507,82 @@ def _hermes_path_argv(path: str) -> list[str]:
     return [_absolute_hermes_path(path)]
 
 
-def _resolve_hermes_argv() -> list[str]:
+def _worker_cli_works(argv: list[str], *, cwd: Optional[str],
+                      env: Optional[Mapping[str, str]]) -> bool:
+    """Check the worker's parser and imports, not the dependency-free version path."""
+    try:
+        probe = subprocess.run(
+            [*argv, "--cli", "chat", "--help"], cwd=cwd, env=env,
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        return probe.returncode == 0 and "--query" in probe.stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _resolve_hermes_argv(*, cwd: Optional[str] = None, env: Optional[Mapping[str, str]] = None) -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
     same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
-    systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
-    search, batch shims fall back to the module form) only when ``hermes_cli``
-    is not importable. The module argv must win over PATH: a PATH-first lookup
+    hermes_cli.main`` when a fresh interpreter in the worker's cwd and env
+    resolves this installation and loads the chat CLI, then this checkout's
+    entry point under a compatible Python. Fail before spawning if none works.
+    The module argv must win over PATH when it actually works: a PATH-first lookup
     lets an attacker-planted ``hermes`` shadow the running install (#111569).
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
     sits below ``gateway`` in the dependency order.
     """
-    import importlib.util
-    import shutil
-
     env_bin = os.environ.get("HERMES_BIN", "").strip()
     if env_bin:
         if _looks_like_path(env_bin):
             return _hermes_path_argv(env_bin)
-        resolved_env_bin = _safe_which_no_cwd(env_bin)
+        resolved_env_bin = _safe_which_no_cwd(env_bin, env)
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
 
+    # A launcher may insert the checkout into the gateway's sys.path without
+    # installing it into sys.executable. Probe the *child* import context: the
+    # worker runs in its workspace, not in the gateway's current directory.
     try:
-        if importlib.util.find_spec("hermes_cli") is not None:
-            return _module_hermes_argv()
-    except Exception:
-        pass
+        probe = subprocess.run(
+            [sys.executable, "-c", "import hermes_cli; print(hermes_cli.__file__)"],
+            cwd=cwd, env=env, capture_output=True, text=True, timeout=10, check=False,
+        )
+        same_install = (
+            probe.returncode == 0
+            and os.path.normcase(os.path.realpath(probe.stdout.strip()))
+            == os.path.normcase(os.path.realpath(str(Path(__file__).with_name("__init__.py"))))
+        )
+    except (OSError, subprocess.SubprocessError):
+        same_install = False
+    if same_install and _worker_cli_works(_module_hermes_argv(), cwd=cwd, env=env):
+        return _module_hermes_argv()
 
-    hermes_bin = _safe_which_no_cwd("hermes") if _kb._IS_WINDOWS else shutil.which("hermes")
-    if hermes_bin:
-        return _hermes_path_argv(hermes_bin)
-    return _module_hermes_argv()
+    # Running the source entry point pins this checkout, but a bare interpreter
+    # may still lack dependencies that the parent loaded from a managed venv.
+    source_launcher = Path(__file__).resolve().parent.parent / "hermes"
+    if source_launcher.is_file():
+        candidates = [sys.executable]
+        venvs = []
+        if sys.prefix != sys.base_prefix:
+            venvs.append(Path(sys.prefix))
+        if os.environ.get("VIRTUAL_ENV"):
+            venvs.append(Path(os.environ["VIRTUAL_ENV"]))
+        venvs.extend((source_launcher.parent / ".venv", source_launcher.parent / "venv"))
+        for venv in venvs:
+            python = venv / ("Scripts/python.exe" if _kb._IS_WINDOWS else "bin/python")
+            if python.is_file() and str(python) not in candidates:
+                candidates.append(str(python))
+        for python in candidates:
+            argv = [python, str(source_launcher)]
+            if _worker_cli_works(argv, cwd=cwd, env=env):
+                return argv
+
+    raise RuntimeError(
+        "No Python environment can launch this Hermes installation's worker CLI. "
+        "Install its dependencies in the active venv or set HERMES_BIN to a working launcher."
+    )
 
 
 def _worker_terminal_timeout_env(
@@ -2673,10 +2716,11 @@ def _retag_legacy_worker_sessions(workspaces_root_path: str) -> None:
         _kb._log.debug("kanban worker: legacy session retag skipped (%s)", exc)
 
 
-def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str]) -> list[str]:
+def _worker_argv(task: Task, profile_arg: str, hermes_home: Optional[str],
+                 launcher: Optional[list[str]] = None) -> list[str]:
     """Build the ``hermes -p <profile> --cli ... chat -q ...`` worker command."""
     cmd = [
-        *_resolve_hermes_argv(),
+        *(launcher if launcher is not None else _resolve_hermes_argv()),
         "-p", profile_arg,
         # A worker must NEVER boot the interactive TUI: its no-TTY bail-out
         # exits 0 without doing the task → "protocol violation" every attempt.
@@ -2870,7 +2914,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # older hermes builds on PATH that predate the flag's precedence.
     env.pop("HERMES_TUI", None)
 
-    cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    # Resolve against the exact environment and cwd handed to the worker.
+    worker_cwd = workspace if os.path.isdir(workspace) else None
+    launcher = _resolve_hermes_argv(cwd=worker_cwd, env=env)
+    cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"), launcher)
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

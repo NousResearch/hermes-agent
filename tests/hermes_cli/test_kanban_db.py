@@ -1113,7 +1113,11 @@ class TestSharedBoardPaths:
                 captured["env"] = kwargs.get("env", {})
                 self.pid = 4242
 
+            def poll(self):
+                return None
+
         monkeypatch.setattr("subprocess.Popen", _FakePopen)
+        monkeypatch.setattr(kbd, "_resolve_hermes_argv", lambda **kwargs: ["hermes"])
 
         task = kb.Task(
             id="t_dispatch_env",
@@ -1547,7 +1551,7 @@ def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_ho
 # spawn fails with FileNotFoundError and the task gets stuck. The resolver
 # prefers the interpreter-bound module form (exactly this install; a PATH
 # shim could be attacker-planted or belong to another install, #111569) and
-# only falls back to the PATH shim when ``hermes_cli`` is not importable.
+# only uses a child environment that can load the real chat CLI.
 # ---------------------------------------------------------------------------
 
 
@@ -1593,6 +1597,38 @@ def test_resolve_hermes_argv_module_actually_runs():
         f"`{' '.join(argv)} --version` failed (rc={r.returncode}); "
         f"stderr={r.stderr[:200]!r}"
     )
+
+
+def test_resolve_hermes_argv_uses_source_launcher_when_child_cannot_import(tmp_path, monkeypatch):
+    """A bare child without dependencies must use a managed Python and this checkout."""
+    import venv
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    bare_env = tmp_path / "bare"
+    venv.EnvBuilder(with_pip=False).create(bare_env)
+    bare_python = bare_env / ("Scripts/python.exe" if kb._IS_WINDOWS else "bin/python")
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    child_env = dict(os.environ)
+    child_env.pop("PYTHONPATH", None)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    foreign_shim = foreign / ("hermes.EXE" if kb._IS_WINDOWS else "hermes")
+    foreign_shim.write_text("not this checkout", encoding="utf-8")
+    foreign_shim.chmod(0o755)
+    child_env["PATH"] = str(foreign) + os.pathsep + child_env.get("PATH", "")
+    assert subprocess.run([str(bare_python), "-c", "import yaml"], cwd=workspace,
+                          env=child_env, capture_output=True).returncode != 0
+    managed_python = sys.executable
+    monkeypatch.setattr(kbd.sys, "executable", str(bare_python))
+    argv = kbd._resolve_hermes_argv(cwd=str(workspace), env=child_env)
+    source_launcher = str(Path(kbd.__file__).resolve().parent.parent / "hermes")
+    assert argv == [managed_python, source_launcher]
+    result = subprocess.run(argv + ["--cli", "chat", "--help"], cwd=workspace, env=child_env,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert "--query" in result.stdout
 
 
 # ---------------------------------------------------------------------------

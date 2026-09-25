@@ -696,9 +696,12 @@ export function mergeSessionPage(
   // `_lineage_ids` — every id the chain has answered to — so matching a
   // survivor id against that list identifies absorption WITHOUT evicting a
   // genuinely-pinned row aged off the page: a pinned row's id never appears
-  // inside another session's lineage.
+  // inside another session's lineage. Like the identity and lineage keys
+  // above, members are qualified by the owning row's profile — stored ids
+  // are only unique per-profile (#92454), so a bare-id match would evict a
+  // kept twin in another profile whose id merely coincides with a lineage.
   const incomingLineageIdMembers = new Set(
-    merged.flatMap(session => session._lineage_ids ?? [])
+    merged.flatMap(session => (session._lineage_ids ?? []).map(id => `${profileKeyOf(session)}::${id}`))
   )
 
   const survivors = previous.filter(
@@ -709,7 +712,7 @@ export function mergeSessionPage(
       !session.hidden &&
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
-      !incomingLineageIdMembers.has(session.id) &&
+      !incomingLineageIdMembers.has(identity(session)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 

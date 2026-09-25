@@ -649,6 +649,50 @@ describe('mergeSessionPage', () => {
     expect(merged.map(s => s.id)).toEqual(['pinned', 'recent'])
   })
 
+  it('keeps a pinned twin in another profile when an incoming lineage carries the same stored id (#92454)', () => {
+    // Bare-id lineage matching evicted a kept row whose id merely coincided
+    // with another profile's `_lineage_ids`: in that other profile the id
+    // really was absorbed into the projected tip, but the pinned row is a
+    // different session. Lineage members must be profile-qualified like
+    // every other key in the survivor predicate.
+    const previous = [
+      session({ id: 'sess-42', profile: 'quietbot', title: 'Pinned quiet work' })
+    ] as SessionInfo[]
+
+    const incoming = [
+      session({
+        id: 'tip',
+        profile: 'testbot',
+        _lineage_ids: ['sess-42', 'fresh-root', 'tip'],
+        _lineage_root_id: 'fresh-root'
+      })
+    ] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['sess-42'])
+
+    expect(merged.map(s => `${s.profile}:${s.id}`).sort()).toEqual(['quietbot:sess-42', 'testbot:tip'])
+  })
+
+  it('drops a same-profile segment in the keep set when the incoming lineage absorbed it', () => {
+    // Counterpart to the twin guard: qualification must not weaken the actual
+    // absorption. seg2 was absorbed into testbot's projected tip and must be
+    // evicted even though it sits in the keep set.
+    const previous = [session({ id: 'seg2', profile: 'testbot' })] as SessionInfo[]
+
+    const incoming = [
+      session({
+        id: 'tip',
+        profile: 'testbot',
+        _lineage_ids: ['seg1', 'seg2', 'fresh-root', 'tip'],
+        _lineage_root_id: 'fresh-root'
+      })
+    ] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['seg2'])
+
+    expect(merged.map(s => `${s.profile}:${s.id}`)).toEqual(['testbot:tip'])
+  })
+
   it('never regresses last_active behind an optimistic user-send bump', () => {
     const previous = [session({ id: 'old', last_active: 9_000 })]
     const incoming = [session({ id: 'old', last_active: 100, message_count: 4 })]

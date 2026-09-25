@@ -276,13 +276,20 @@ def _spawn_detached_gateway() -> bool:
     file that `run_gateway` writes, so stop/status/restart keep working.
     """
     from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+    from hermes_constants import get_hermes_home
+    from tools.environments.local import served_profile_child_env
     log_dir = _gw().get_hermes_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
+    child_env = served_profile_child_env(
+        target_home=get_hermes_home(), inherit_credentials=True,
+    )
+    child_env.pop("_HERMES_GATEWAY", None)
     try:
         with open(log_dir / "gateway.log", "ab") as out:
             subprocess.Popen(
                 _timestamped_stderr_gateway_command(log_dir / "gateway.error.log"),
                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.DEVNULL,
+                env=child_env,
                 **windows_detach_popen_kwargs(),
             )
     except OSError:

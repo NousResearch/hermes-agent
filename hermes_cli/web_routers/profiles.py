@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -857,7 +858,10 @@ async def open_profile_terminal_endpoint(name: str):
             env.pop("HERMES_PROFILE_NAME", None)
             env.pop("HERMES_PROFILE", None)
             # A root HERMES_HOME still follows active_profile unless default is explicit.
-            argv = ["hermes", "-p", "default", "setup"] if name == "default" else ["hermes", "setup"]
+            # Relocatable Windows installs stage hermes.cmd rather than hermes.exe.
+            # CreateProcess does not apply PATHEXT to a bare executable name.
+            launcher = shutil.which("hermes") or "hermes"
+            argv = [launcher, "-p", "default", "setup"] if name == "default" else [launcher, "setup"]
             subprocess.Popen(argv, env=env, creationflags=subprocess.CREATE_NEW_CONSOLE)
         elif sys.platform == "darwin":
             # osascript receives the name as data. AppleScript's `quoted form of` makes the

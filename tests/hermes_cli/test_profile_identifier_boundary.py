@@ -82,6 +82,19 @@ def test_linux_terminal_launch_passes_profile_as_one_argument(tmp_path):
 
 
 @pytest.mark.windows_only
+def test_absolute_cmd_launcher_runs_without_shell_or_pathexpansion(tmp_path):
+    launcher = tmp_path / "managed bin" / "hermes.cmd"
+    launcher.parent.mkdir()
+    launcher.write_text("@echo off\necho LAUNCHED:%1\n", encoding="ascii")
+
+    result = subprocess.run(
+        [str(launcher), "setup"], capture_output=True, text=True, check=True,
+        creationflags=subprocess.CREATE_NO_WINDOW, timeout=5,
+    )
+    assert result.stdout.strip() == "LAUNCHED:setup"
+
+
+@pytest.mark.windows_only
 def test_open_profile_terminal_scopes_child_home_on_windows(monkeypatch, tmp_path):
     from hermes_cli.web_routers import profiles as routes
 
@@ -93,15 +106,17 @@ def test_open_profile_terminal_scopes_child_home_on_windows(monkeypatch, tmp_pat
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE_NAME", "other")
     monkeypatch.setenv("HERMES_PROFILE", "other")
+    launcher = str(tmp_path / "managed bin" / "hermes.cmd")
+    monkeypatch.setattr(routes.shutil, "which", lambda name: launcher if name == "hermes" else None)
     calls = []
     monkeypatch.setattr(routes.subprocess, "Popen", lambda *args, **kwargs: calls.append((args, kwargs)))
 
     # A→B→A checks that opening a named profile never retargets the dashboard's
     # own environment or a later default launch.
     for name, expected in (
-        ("default", ["hermes", "-p", "default", "setup"]),
-        ("worker", ["hermes", "setup"]),
-        ("default", ["hermes", "-p", "default", "setup"]),
+        ("default", [launcher, "-p", "default", "setup"]),
+        ("worker", [launcher, "setup"]),
+        ("default", [launcher, "-p", "default", "setup"]),
     ):
         result = asyncio.run(routes.open_profile_terminal_endpoint(name))
         assert result["ok"] is True

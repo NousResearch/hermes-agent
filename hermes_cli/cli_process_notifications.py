@@ -19,6 +19,20 @@ class CLIProcessNotificationsMixin:
             resolved_key = event_key
         return str(resolved_key) == current_key
 
+    def _background_notifications_suppressed(self) -> bool:
+        """Whether ``display.background_process_notifications`` is ``off`` for this CLI session.
+
+        The key gates the gateway's completion injection (#9290) but the CLI drain never consulted
+        it, so the documented ``off`` escape hatch silently did nothing here (#123114). Mirrors the
+        gateway semantics: events are still drained, claimed and acknowledged — only the
+        turn-starting injection is suppressed."""
+        try:
+            from cli import CLI_CONFIG
+            mode = str((CLI_CONFIG.get("display") or {}).get("background_process_notifications") or "").strip().lower()
+        except Exception:
+            return False
+        return mode == "off"
+
     def _drain_process_notifications(self, consumer: str) -> None:
         from tools.process_registry import process_registry
         from tools.async_delegation import claim_event_delivery, complete_event_delivery
@@ -34,6 +48,8 @@ class CLIProcessNotificationsMixin:
                 continue
             claimed.append((event, text))
             complete_event_delivery(event, claim)
+        if self._background_notifications_suppressed():
+            return
         for notifications in group_process_notifications(claimed):
             event, text = notifications[0]
             if event.get("type", "completion") == "completion":

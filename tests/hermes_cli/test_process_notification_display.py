@@ -4,6 +4,8 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from cli import HermesCLI
 from tools.process_registry_notifications import (
     PROCESS_COMPLETE_DISPLAY_KIND, format_process_notification, process_completion_display_text)
@@ -17,6 +19,26 @@ def _registry(events):
 def _event(sid, exit_code, command="cd /tmp && bash long-build.sh"):
     return {"type": "completion", "session_id": sid, "session_key": "display-session", "command": command,
             "exit_code": exit_code, "completion_reason": "exited", "output": "web tsc=0\nSECRET_OUTPUT_LINE"}
+
+@pytest.mark.parametrize("mode,expect_injected", [("off", False), ("concise", True), ("all", True)])
+def test_drain_honors_background_process_notifications_off(monkeypatch, mode, expect_injected):
+    """``off`` consumes completion events without injecting a REPL input (no spurious post-Ctrl+C
+    turn, #123114); every other documented mode keeps injecting, and the durable claim/ack chain
+    runs in all modes so an ``off`` session never leaves pending rows to replay on restart."""
+    events = [_event("proc_off", 0)]
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "display-session"
+    cli._pending_input = queue.Queue()
+    monkeypatch.setattr("tools.process_registry.process_registry", _registry(events))
+    acked = []
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: acked.append(a))
+    monkeypatch.setattr("cli.CLI_CONFIG", {"display": {"background_process_notifications": mode}})
+    cli._drain_process_notifications("cli-post-turn")
+    assert acked, "events must still be claimed and acknowledged under every mode"
+    assert cli._pending_input.empty() is (not expect_injected)
+    if expect_injected:
+        assert cli._pending_input.get_nowait() is not None
 
 def test_process_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, capsys, tmp_path):
     events = [_event("proc_1", 0)]

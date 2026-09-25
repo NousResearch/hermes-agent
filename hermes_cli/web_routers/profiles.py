@@ -16,6 +16,7 @@ from hermes_cli.web_read_coalescing import coalesced_read
 import inspect
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -28,6 +29,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from fastapi import APIRouter, HTTPException, Query
 
 from hermes_cli.web_deps import late
+from hermes_platform.resolver import locate_command
 from hermes_cli.config import get_process_hermes_home
 from hermes_cli.profiles import ProfileIdentitySettlementPending
 from hermes_cli.web_server_config import (
@@ -40,6 +42,7 @@ from hermes_cli.web_server_profiles import (
 )
 from hermes_cli.web_server_sessions import _open_session_db_at_path
 from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
+from tools.environments.local import build_subprocess_env
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
@@ -809,7 +812,7 @@ async def get_profile_setup_command(name: str):
     return {"command": _profile_setup_command(name)}
 
 
-# (executable, flag): None = takes one quoted `sh -lc '…'` string after -e; "" = argv follows
+# (executable, flag): None = takes one `sh -lc '…'` string after -e; "" = argv follows
 # the executable directly (kitty).
 _LINUX_TERMINALS = (
     ("x-terminal-emulator", "-e"), ("gnome-terminal", "--"), ("konsole", "-e"),
@@ -817,12 +820,28 @@ _LINUX_TERMINALS = (
     ("tilix", "-e"), ("alacritty", "-e"), ("kitty", ""), ("xterm", "-e"))
 
 
-def _linux_terminal_commands(command: str) -> list:
-    sh = ["sh", "-lc", command]
-    quoted = f"sh -lc '{command}'"
+def _linux_terminal_commands(name: str) -> list:
+    # Some emulators require a single command string. Keep that string fixed and pass the
+    # validated profile name through the child's environment; shell expansion inside double
+    # quotes cannot turn its contents into shell syntax.
+    script = ("exec hermes -p default setup" if name == "default"
+              else 'exec hermes -p "$HERMES_SETUP_PROFILE_NAME" setup')
+    sh = ["sh", "-lc", script]
+    quoted = f"sh -lc '{script}'"
     return [
         (exe, [exe, "-e", quoted] if flag is None else [exe, *([flag] if flag else []), *sh])
         for exe, flag in _LINUX_TERMINALS]
+
+
+def _macos_terminal_argv(name: str) -> list[str]:
+    # The profile is an osascript argument, never AppleScript source. `--` ends
+    # osascript option parsing and is not included in the run handler's argv.
+    script = ('on run argv\n'
+              'tell application "Terminal"\nactivate\n'
+              + ('do script "exec hermes -p default setup"\n' if name == "default" else
+                 'do script "exec hermes -p " & quoted form of (item 1 of argv) & " setup"\n')
+              + 'end tell\nend run')
+    return ["osascript", "-e", script, "--", *([] if name == "default" else [name])]
 
 
 @router.post("/api/profiles/{name}/open-terminal")
@@ -831,16 +850,32 @@ async def open_profile_terminal_endpoint(name: str):
         command = _profile_setup_command(name)
 
         if sys.platform.startswith("win"):
-            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
+            # The CLI trusts a profile-shaped HERMES_HOME before reading the sticky active
+            # profile. Keep the command line constant so the route name is never parsed by
+            # CreateProcess or cmd.exe; only the child gets the selected home.
+            profile_dir = _resolve_profile_dir(name)
+            env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+            env["HERMES_HOME"] = str(profile_dir)
+            env.pop("HERMES_PROFILE_NAME", None)
+            env.pop("HERMES_PROFILE", None)
+            # A root HERMES_HOME still follows active_profile unless default is explicit.
+            # Relocatable Windows installs stage hermes.cmd rather than hermes.exe.
+            # CreateProcess does not apply PATHEXT to a bare executable name.
+            found = locate_command("hermes").command
+            launcher = found[0] if found else "hermes"
+            argv = [launcher, "-p", "default", "setup"] if name == "default" else [launcher, "setup"]
+            subprocess.Popen(argv, env=env, creationflags=subprocess.CREATE_NEW_CONSOLE)
         elif sys.platform == "darwin":
-            escaped = command.replace("\\", "\\\\").replace('"', '\\"')
-            subprocess.Popen(["osascript", "-e",
-                              f'tell application "Terminal"\nactivate\ndo script "{escaped}"\nend tell'])
+            # osascript receives the name as data. AppleScript's `quoted form of` makes the
+            # resulting Terminal command one shell argument even for metacharacters.
+            subprocess.Popen(_macos_terminal_argv(name))
         else:
-            for executable, popen_args in _linux_terminal_commands(command):
+            env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+            env["HERMES_SETUP_PROFILE_NAME"] = name
+            for executable, popen_args in _linux_terminal_commands(name):
                 if subprocess.call(["which", executable], stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL) == 0:
-                    subprocess.Popen(popen_args)
+                    subprocess.Popen(popen_args, env=env)
                     break
             else:
                 raise HTTPException(status_code=400, detail="No supported terminal emulator found")

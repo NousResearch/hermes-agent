@@ -87,10 +87,10 @@ def _stamp_gateway_routing(proc_session, get_session_env) -> None:
 
 
 def _spawn(process_registry, *, env, env_type, command, cwd, effective_task_id, task_id,
-           session_key, effective_pty, persist_on_release: bool = False):
+           session_key, effective_pty, persist_on_release: bool = False, runtime_deadline: float | None = None):
     common = dict(command=command, cwd=cwd, task_id=effective_task_id,
                   owner_task_id=task_id or effective_task_id, session_key=session_key,
-                  persist_on_release=persist_on_release)
+                  persist_on_release=persist_on_release, runtime_deadline=runtime_deadline)
     if env_type == "local":
         return process_registry.spawn_local(
             env_vars=env.env if hasattr(env, 'env') else None, use_pty=effective_pty, **common)
@@ -142,6 +142,7 @@ def _register_completion_watcher(process_registry, proc_session, session_key) ->
 def spawn_background_process(
     *, command: str, env: Any, env_type: str, effective_task_id: str, task_id: Optional[str],
     session_key: str, workdir: Optional[str], cwd: str, effective_pty: bool,
+    runtime_deadline: float | None,
     notify_on_complete: bool, watch_patterns: Optional[List[str]], approval_note: Optional[str],
     completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
@@ -165,7 +166,7 @@ def spawn_background_process(
         proc_session = _spawn(
             process_registry, env=env, env_type=env_type, command=command, cwd=effective_cwd,
             effective_task_id=effective_task_id, task_id=task_id, session_key=session_key,
-            effective_pty=effective_pty, persist_on_release=persist_on_release,
+            effective_pty=effective_pty, persist_on_release=persist_on_release, runtime_deadline=runtime_deadline,
         )
         result_data = {"output": "Background process started", "session_id": proc_session.id,
                        "pid": proc_session.pid, "exit_code": 0, "error": None}

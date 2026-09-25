@@ -531,6 +531,7 @@ class ProcessSession:
     env_ref: Any = None                         # Environment object (sandbox spawns)
     cwd: Optional[str] = None
     started_at: float = 0.0                     # time.time() of spawn
+    runtime_deadline: float = 0.0               # absolute wall-clock hard deadline; 0 = none
     host_start_time: Optional[int] = None       # kernel start ticks (/proc/<pid>/stat f22) — PID-reuse guard
     exited: bool = False
     exited_at: float = 0.0                      # time.time() of the FIRST move to finished (0 = unknown)
@@ -566,6 +567,7 @@ class ProcessSession:
     _heartbeat_last: float = field(default=0.0, repr=False)          # time of the last heartbeat (or spawn)
     _heartbeat_total_at_last: int = field(default=0, repr=False)     # total_output_chars at that moment
     _heartbeat_seq: int = field(default=0, repr=False)
+    _deadline_reported: bool = field(default=False, repr=False)
     _watch_hits: int = field(default=0, repr=False)          # total matches delivered
     _watch_suppressed: int = field(default=0, repr=False)    # matches dropped by rate limit
     _watch_disabled: bool = field(default=False, repr=False) # permanently killed after strike limit
@@ -598,7 +600,7 @@ class ProcessSession:
         """Record an exit. A kill that raced the observer already recorded its own
         exit_code/reason; never overwrite it."""
         self.exited = True
-        if self.completion_reason != "killed":
+        if self.completion_reason not in ("killed", "timed_out"):
             self.exit_code = exit_code
             self.completion_reason = reason
             if source:
@@ -611,7 +613,7 @@ _WATCHER_ROUTE_KEYS = ("platform", "chat_id", "user_id", "user_name", "thread_id
 # ``session_id``; ``command`` is redacted and ``owner_task_id`` defaulted on write).
 _CHECKPOINT_FIELDS = (
     "command", "pid", "pid_scope", "host_start_time", "systemd_unit", "cwd",
-    "started_at", "task_id", "owner_task_id", "session_key",
+    "started_at", "runtime_deadline", "task_id", "owner_task_id", "session_key",
     *(f"watcher_{k}" for k in _WATCHER_ROUTE_KEYS), "watcher_interval",
     "parent_session_id", "notify_on_complete", "completion_output_chars", "watch_patterns",
     "heartbeat_seconds", "persist_on_release")
@@ -667,6 +669,41 @@ class ProcessRegistry(ProcessCheckpointMixin):
         self.on_output = None
         self.on_close = None
         self._heartbeat_thread: Optional[threading.Thread] = None
+        self._deadline_thread: Optional[threading.Thread] = None
+
+    def _ensure_deadline_thread(self) -> None:
+        """One shared watchdog handles all persisted hard deadlines."""
+        with self._lock:
+            if self._deadline_thread is not None and self._deadline_thread.is_alive():
+                return
+            self._deadline_thread = threading.Thread(
+                target=self._deadline_loop, name="process-deadline", daemon=True)
+            self._deadline_thread.start()
+
+    def _deadline_loop(self) -> None:
+        while True:
+            time.sleep(0.05)
+            now = time.time()
+            with self._lock:
+                due = [s for s in self._running.values()
+                       if not s.exited and s.runtime_deadline and now >= s.runtime_deadline]
+            for session in due:
+                result = self.kill_process(
+                    session.id, source="terminal.timeout", consume_output=False)
+                if result.get("status") == "error" and not session._deadline_reported:
+                    session._deadline_reported = True
+                    event = {
+                        **self._watch_event_base(session),
+                        "type": "timeout_error",
+                        "survivors": result.get("survivors", []),
+                        "message": (
+                            f"Runtime deadline reached, but termination of {session.id} could not be "
+                            f"verified. The session remains running; retry with "
+                            f"process(action='kill', session_id='{session.id}')."
+                        ),
+                    }
+                    _redact_process_result(event)
+                    self.completion_queue.put(event)
 
     # ── heartbeat ───────────────────────────────────────────────────────────
     def arm_heartbeat(self, session: ProcessSession, seconds: int) -> int:
@@ -1187,6 +1224,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # ghost entry if the interpreter cannot start another thread.
             reader.start()
             self._running[session.id] = session
+        if session.runtime_deadline:
+            self._ensure_deadline_thread()
         self._write_checkpoint()
 
     def _spawn_local_pty(self, session: ProcessSession, safe_command: str, env_vars: dict) -> ProcessSession:
@@ -1215,7 +1254,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
     def spawn_local(
         self, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
         env_vars: dict = None, use_pty: bool = False, owner_task_id: str = "",
-        persist_on_release: bool = False) -> ProcessSession:
+        persist_on_release: bool = False, runtime_deadline: float | None = None,
+    ) -> ProcessSession:
         """Spawn a background process locally (TERMINAL_ENV=local; other backends use
         spawn_via_env()). ``use_pty`` requests a pseudo-terminal via ptyprocess/pywinpty
         for interactive CLIs, falling back to a plain pipe when unavailable or failing.
@@ -1228,7 +1268,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
         safe_command = _rewrite_bg(command)
         session = self._new_session(command, task_id, owner_task_id, session_key, _resolve_safe_cwd(cwd or os.getcwd()),
-                                    persist_on_release=persist_on_release)
+                                    persist_on_release=persist_on_release, runtime_deadline=runtime_deadline)
         pty_scope_attempted = False
         if use_pty:
             try:
@@ -1315,14 +1355,15 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def spawn_via_env(
         self, env: Any, command: str, cwd: str = None, task_id: str = "", session_key: str = "",
-        timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False) -> ProcessSession:
+        timeout: int = 10, owner_task_id: str = "", persist_on_release: bool = False, runtime_deadline: float | None = None,
+    ) -> ProcessSession:
         """Spawn a background process inside a non-local backend's sandbox.
         The command is wrapped to capture its in-sandbox PID and redirect output to a
         log file that later execute() calls poll. No live pipe or stdin, but it runs in
         the correct sandbox context. ``persist_on_release`` keeps the process out of
         agent-lifecycle kill sweeps (#41225)."""
         session = self._new_session(command, task_id, owner_task_id, session_key, cwd, env_ref=env, pid_scope="sandbox",
-                                    persist_on_release=persist_on_release)
+                                    persist_on_release=persist_on_release, runtime_deadline=runtime_deadline)
         temp_dir = self._env_temp_dir(env)
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
@@ -2190,7 +2231,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     self._completion_consumed.add(session_id)
                 session.exited = True
                 session.exit_code = -15  # SIGTERM
-                session.completion_reason = "killed"
+                session.completion_reason = "timed_out" if source == "terminal.timeout" else "killed"
                 session.termination_source = source
             # The reader thread can finalise the session while the signal path
             # blocks in the SIGKILL grace window: its ``save_completed_result``

@@ -2336,7 +2336,7 @@ def _advance_after_run(job: Dict[str, Any], now: str) -> None:
     if repeat:
         times = repeat.get("times")
         finite = times is not None and times > 0
-        completed = repeat.get("completed", 0)
+        completed = repeat.get("completed") or 0
         # Finite one-shots were pre-claimed by claim_dispatch() (completed already incremented) —
         # do not double-count; recurring jobs and direct callers still get the increment.
         if not (kind == "once" and finite and completed > 0):
@@ -2517,7 +2517,7 @@ def claim_dispatch(job_id: str) -> bool:
         # Recurring jobs use advance_next_run(); no/infinite repeat limit always dispatches.
         if job.get("schedule", {}).get("kind") != "once" or times is None or times <= 0:
             return True
-        completed = repeat.get("completed", 0)
+        completed = repeat.get("completed") or 0
         label = job.get("name", job.get("id", "?"))
         if completed >= times:
             if job.get("last_run_at") is not None:
@@ -3074,7 +3074,7 @@ def _oneshot_dispatch_limit_reached(job: Dict[str, Any], scan: _DueScan) -> bool
     process is still running it (a run outliving the run_claim TTL is slow, not stale)."""
     repeat = job.get("repeat") or {}
     times = repeat.get("times")
-    completed = repeat.get("completed", 0)
+    completed = repeat.get("completed") or 0
     if times is None or times <= 0 or completed < times:
         return False
     name = job.get("name", job.get("id", "?"))

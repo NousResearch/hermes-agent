@@ -20,6 +20,8 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 
 In all modes, the agent can navigate websites, interact with page elements, fill forms, and extract information.
 
+For one-shot JavaScript-rendered extraction without an interactive browser session, the [MrScraper plugin](#mrscraper-rendered-page-extraction) can fetch a page as HTML or Markdown. It also supports Google SERP through `web_search` and offers a separate website crawl tool; see [Web Search & Extract](web-search.md#mrscraper-plugin).
+
 ## Overview
 
 Pages are represented as **accessibility trees** (text-based snapshots), making them ideal for LLM agents. Interactive elements get ref IDs (like `@e1`, `@e2`) that the agent uses for clicking and typing.
@@ -125,6 +127,17 @@ FIRECRAWL_API_URL=http://localhost:3002
 # Session TTL in seconds (default: 300)
 FIRECRAWL_BROWSER_TTL=600
 ```
+
+### MrScraper rendered-page extraction {#mrscraper-rendered-page-extraction}
+
+The [MrScraper plugin](https://github.com/ai-mrscraper/hermes-mrscraper-plugin) provides `mrscraper_fetch_rendered_html` for individual JavaScript-rendered URLs. It can return HTML or Markdown and optionally request a screenshot, proxy country, cookies, a wait selector, or resource blocking. Install the [catalog entry](plugin-catalog.md) and enable the plugin:
+
+```bash
+hermes plugins install mrscraper
+hermes plugins enable mrscraper
+```
+
+The installer prompts for `MRSCRAPER_API_TOKEN`. Each request uses the MrScraper API and may consume account credits. This tool does not create a persistent browser session, so interactive actions such as `browser_click` and `browser_type` still need one of the browser backends above. For structured extraction, crawling, and Google SERP, see [MrScraper in Web Search & Extract](web-search.md#mrscraper-plugin).
 
 ### Hybrid routing: cloud for public URLs, local for LAN/localhost
 

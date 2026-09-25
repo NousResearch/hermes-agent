@@ -111,6 +111,37 @@ export const QUICK_TARGET_CURRENT = 'current'
 export const QUICK_TARGET_NEW = 'new'
 
 /**
+ * localStorage key remembering the user's last-chosen quick-entry target
+ * ('current' | 'new' | a stored session id). Device-local, like the shortcut
+ * preference, but renderer-owned because only the renderer knows the picker's
+ * options.
+ */
+export const QUICK_ENTRY_TARGET_STORAGE_KEY = 'hermes.quick-entry.target'
+
+/**
+ * Read the persisted target choice. Falls back to the current chat when the
+ * value is absent, unreadable, or the environment has no storage — the shipped
+ * default must stay "send to the chat in front of you".
+ */
+export function loadPersistedQuickEntryTarget(): string {
+  try {
+    const raw = window.localStorage?.getItem(QUICK_ENTRY_TARGET_STORAGE_KEY)
+    return raw && raw.trim() ? raw : QUICK_TARGET_CURRENT
+  } catch {
+    return QUICK_TARGET_CURRENT
+  }
+}
+
+/** Remember the picker choice across summons. Non-fatal when storage fails. */
+export function persistQuickEntryTarget(target: string): void {
+  try {
+    window.localStorage?.setItem(QUICK_ENTRY_TARGET_STORAGE_KEY, target)
+  } catch {
+    // Storage unavailable — the picker still works for this window.
+  }
+}
+
+/**
  * The primary renderer's push into the quick window: is the gateway usable, and
  * which recent sessions can be targeted. The quick window has NO gateway of its
  * own, so this pushed copy is its only view of backend truth — it starts
@@ -152,9 +183,9 @@ export interface QuickComposerState {
 
 export type QuickComposerEvent =
   | { type: 'blur' }
-  | { type: 'dismiss' }
+  | { type: 'dismiss'; resetTarget?: string }
   | { type: 'edit'; draft: string }
-  | { type: 'shown' }
+  | { type: 'shown'; resetTarget?: string }
   | { type: 'state'; connected: boolean; sessions: QuickEntrySessionOption[] }
   | { type: 'submit' }
   | { type: 'target'; target: string }
@@ -176,6 +207,14 @@ export const initialQuickComposerState: QuickComposerState = {
   visible: true
 }
 
+/**
+ * The initial state for a freshly created quick window, honoring the user's
+ * persisted target choice (current chat when nothing was stored).
+ */
+export function createInitialQuickComposerState(): QuickComposerState {
+  return { ...initialQuickComposerState, target: loadPersistedQuickEntryTarget() }
+}
+
 export function quickComposerReducer(state: QuickComposerState, event: QuickComposerEvent): QuickComposerTransition {
   switch (event.type) {
     case 'blur':
@@ -184,7 +223,13 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
       // hides — the send already left for the main process.
       return {
         send: null,
-        state: { ...state, draft: '', submitting: false, target: QUICK_TARGET_CURRENT, visible: false }
+        state: {
+          ...state,
+          draft: '',
+          submitting: false,
+          target: 'resetTarget' in event ? (event.resetTarget ?? QUICK_TARGET_CURRENT) : QUICK_TARGET_CURRENT,
+          visible: false
+        }
       }
     }
 
@@ -197,7 +242,13 @@ export function quickComposerReducer(state: QuickComposerState, event: QuickComp
       // a leftover target — but the pushed gateway truth carries over.
       return {
         send: null,
-        state: { ...state, draft: '', submitting: false, target: QUICK_TARGET_CURRENT, visible: true }
+        state: {
+          ...state,
+          draft: '',
+          submitting: false,
+          target: event.resetTarget ?? QUICK_TARGET_CURRENT,
+          visible: true
+        }
       }
     }
 

@@ -82,6 +82,54 @@ class TestPipeStdinSurrogates:
         assert proc._hermes_stdin_errors == []
 
 
+class _PayloadLocalEnvironment(LocalEnvironment):
+    """Exercise BaseEnvironment's payload-mode contract with a real local pipe."""
+
+    _stdin_mode = "payload"
+
+    def __init__(self, cwd: str):
+        self.spawn_commands: list[str] = []
+        super().__init__(cwd=cwd, timeout=15)
+
+    def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+        self.spawn_commands.append(cmd_string)
+        return super()._run_bash(
+            cmd_string, login=login, timeout=timeout, stdin_data=stdin_data
+        )
+
+
+@pytest.mark.platforms("posix")
+def test_payload_mode_write_is_byte_exact_beyond_argv_limit(tmp_path):
+    """Payload-mode stdin stays out of bash argv and preserves arbitrary bytes."""
+    env = _PayloadLocalEnvironment(str(tmp_path))
+    ops = ShellFileOperations(env, cwd=str(tmp_path))
+    raw = (b"A" * (160 * 1024)) + b"\x00\xff\xfeTAIL"
+    content = raw.decode("utf-8", "surrogateescape")
+    target = tmp_path / "large-binary-like.bin"
+
+    result = ops.write_file(str(target), content)
+
+    assert result.error is None and result.verified is True
+    assert result.bytes_written == len(raw)
+    assert target.read_bytes() == raw
+    assert max(len(command.encode("utf-8")) for command in env.spawn_commands) < 128 * 1024
+
+
+@pytest.mark.platforms("posix")
+def test_payload_mode_feeds_compound_reads_and_preserves_status(tmp_path):
+    """Base passes the merged payload stream unchanged to backend-owned stdin transport."""
+    env = _PayloadLocalEnvironment(str(tmp_path))
+
+    result = env.execute(
+        'IFS= read -r first; IFS= read -r second; '
+        'printf "<%s|%s>" "$first" "$second"; exit 7',
+        stdin_data="pw\npayload",
+    )
+
+    assert result["returncode"] == 7
+    assert "<pw|payload>" in result["output"]
+
+
 @pytest.fixture
 def env(tmp_path):
     """A real LocalEnvironment rooted in a temp directory."""

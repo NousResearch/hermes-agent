@@ -347,6 +347,21 @@ class PythonEnvironment:
         """
         if not frozen:
             self.lock(source, timeout=timeout)
+        else:
+            from pm.index_config import has_lock_index_override
+
+            if has_lock_index_override(self.env):
+                self.install_locked_requirements(
+                    source,
+                    extras=extras,
+                    groups=groups,
+                    all_extras=all_extras,
+                    no_default_groups=no_default_groups,
+                    all_packages=True,
+                    check_lock=locked,
+                    timeout=timeout,
+                )
+                locked = False
         # Locking members alone is insufficient: plain sync only installs root deps.
         # uv writes no __pycache__ (pip does): without --compile-bytecode the first import
         # of every module in the foreground of a user request compiles it (#100461).
@@ -373,33 +388,72 @@ class PythonEnvironment:
         if result.returncode:
             raise classify_uv_failure("sync", result.returncode, result.stderr or result.stdout)
 
-    def export_requirements(self, source: Path, out: Path, *, extras: Sequence[str] = (),
-                            all_packages: bool = False, include_hashes: bool = False,
-                            timeout: int = 1800) -> None:
-        command = ["export", "--frozen", "--python", str(self.python), "--no-default-groups",
+    def export_requirements(
+        self,
+        source: Path,
+        out: Path,
+        *,
+        extras: Sequence[str] = (),
+        groups: Sequence[str] = (),
+        all_packages: bool = False,
+        all_extras: bool = False,
+        no_default_groups: bool = True,
+        include_hashes: bool = False,
+        timeout: int = 1800,
+    ) -> None:
+        command = ["export", "--frozen", "--python", str(self.python),
                    "--no-emit-project", "--no-annotate", "--no-header",
                    "--format", "requirements-txt", "--output-file", str(out)]
+        if no_default_groups:
+            command.append("--no-default-groups")
         if all_packages:
             command.append("--all-packages")
         if not include_hashes:
             command.append("--no-hashes")
+        if all_extras:
+            from pm.features import opt_in_extras
+
+            command.append("--all-extras")
+            for extra in opt_in_extras(source):
+                command += ["--no-extra", extra]
         for extra in sorted(set(extras)):
             command += ["--extra", extra]
+        for group in sorted(set(groups)):
+            command += ["--group", group]
         result = self._run(command, cwd=source, timeout=timeout)
         if result.returncode:
             raise classify_uv_failure("export", result.returncode, result.stderr or result.stdout)
 
-    def install_locked_requirements(self, source: Path, *, all_packages: bool = False,
-                                    timeout: int = 1800) -> None:
+    def install_locked_requirements(
+        self,
+        source: Path,
+        *,
+        extras: Sequence[str] = (),
+        groups: Sequence[str] = (),
+        all_packages: bool = False,
+        all_extras: bool = False,
+        no_default_groups: bool = True,
+        check_lock: bool = True,
+        timeout: int = 1800,
+    ) -> None:
         """Install locked hashes through a configured index without rewriting the lock."""
         from pm.index_config import without_lock_index_overrides
 
         locked_environment = replace(self, env=without_lock_index_overrides(self.env))
-        locked_environment.check_lock(source)
+        if check_lock:
+            locked_environment.check_lock(source)
         with tempfile.TemporaryDirectory(prefix="pm-locked-requirements-") as temporary:
             requirements = Path(temporary) / "requirements.txt"
             locked_environment.export_requirements(
-                source, requirements, all_packages=all_packages, include_hashes=True, timeout=timeout,
+                source,
+                requirements,
+                extras=extras,
+                groups=groups,
+                all_packages=all_packages,
+                all_extras=all_extras,
+                no_default_groups=no_default_groups,
+                include_hashes=True,
+                timeout=timeout,
             )
             self._install_requirements_file(
                 requirements, require_hashes=True, compile_bytecode=True, timeout=timeout,

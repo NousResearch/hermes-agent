@@ -182,6 +182,26 @@ def test_runtime_installs_mirror_artifacts_from_locked_hashes(tmp_path, monkeypa
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert hashlib.sha256(lock_path.read_bytes()).digest() == lock_digest
 
+    from pm.environment import PythonEnvironment
+    from pm.runtime import runtime_environment
+
+    environment = PythonEnvironment(
+        uv=Path(uv),
+        python=Path(sys.executable),
+        destination=tmp_path / "synced-runtime",
+        cache=tmp_path / "uv-cache",
+        env=runtime_environment(),
+        no_config=True,
+    )
+    environment.create()
+    environment.sync(project, no_default_groups=True, no_install_project=True)
+    checked_sync = subprocess.run(
+        [str(environment.executable), "-I", "-B", "-c",
+         "import packaging, tomli_w, truststore; from ruamel.yaml import YAML"],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert checked_sync.returncode == 0, checked_sync.stdout + checked_sync.stderr
+
     bad_packages = dict(wheels)
     bad_packages["packaging"] = _wheel(
         "packaging", "26.0", {"packaging/__init__.py": b"__version__ = 'modified'\n"},

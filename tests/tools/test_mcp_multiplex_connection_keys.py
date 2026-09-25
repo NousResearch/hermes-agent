@@ -18,8 +18,10 @@ def _tool():
 
 
 def _server(name, cfg):
+    from tools.mcp_tool_registration import _resolved_identity
     return SimpleNamespace(name=name, session=object(), _config=cfg, _tools=[_tool()], tool_timeout=30,
-                           initialize_result=None, _registered_tool_names=[], _sampling=None)
+                           initialize_result=None, _registered_tool_names=[], _sampling=None,
+                           _resolved_identity=_resolved_identity(name, cfg))
 
 
 @pytest.fixture

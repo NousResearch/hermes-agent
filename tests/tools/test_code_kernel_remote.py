@@ -340,5 +340,22 @@ class TestDispatchIntegration(unittest.TestCase):
         self.assertIn("per-call ran", result["output"])
 
 
+class TestRemoteSpawnPermissions(RemoteKernelBase):
+    def test_spawn_dirs_owner_only_and_token_off_cmdline(self):
+        # Regression for #121932: co-tenants on shared backends must neither
+        # read the kernel tree nor recover the RPC token from `ps`.
+        env = ScriptedEnv(_spawn_ok_handlers([_cell(stdout="hi\n")]))
+        out = _run(env)
+        self.assertEqual(out["status"], "success", out)
+        mkdir_cmds = [c for c in env.commands
+                      if "mkdir -p" in c and "hermes_rkernel_" in c]
+        self.assertTrue(mkdir_cmds, env.commands)
+        self.assertIn("chmod 0700", mkdir_cmds[0])
+        spawns = [c for c in env.commands if "kernel_runner.py" in c]
+        self.assertTrue(spawns, env.commands)
+        self.assertNotIn("HERMES_RPC_TOKEN=", spawns[0])
+        self.assertIn(".token.env", spawns[0])
+
+
 if __name__ == "__main__":
     unittest.main()

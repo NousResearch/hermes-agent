@@ -1566,6 +1566,30 @@ class TestQuickSnapshot:
             f"(expected 1); the extra row 's2' should have been reverted."
         )
 
+    def test_restore_state_db_with_hash_in_home_path(self, tmp_path):
+        """Regression for #122209: a `#` in the home path must not truncate the
+        restore URI (fragment) — the snapshot's rows come back, nothing erased."""
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+        home = tmp_path / "home#saved" / ".hermes"
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text("model:\n  provider: openrouter\n")
+        db_path = home / "state.db"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, data TEXT)")
+        conn.execute("INSERT INTO sessions VALUES ('s1', 'important data')")
+        conn.commit()
+        conn.close()
+
+        snap_id = create_quick_snapshot(hermes_home=home)
+        live_conn = sqlite3.connect(str(db_path))
+        live_conn.execute("INSERT INTO sessions VALUES ('s2', 'new-data')")
+        live_conn.commit()
+
+        assert restore_quick_snapshot(snap_id, hermes_home=home) is True
+        rows = live_conn.execute("SELECT * FROM sessions").fetchall()
+        live_conn.close()
+        assert rows == [("s1", "important data")]
+
 
 
 

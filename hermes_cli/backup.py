@@ -348,7 +348,10 @@ def _query_ro_sqlite(path: Path, fn):
     """Run ``fn(conn)`` on a read-only connection to *path*; return ``(value, None)`` or ``(None, exc)``."""
     conn = None
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=1.0)
+        # as_uri() percent-encodes (same shape as backup_sqlite.py): a raw
+        # f"file:{path}" URI truncates at `#` (fragment) and decodes `%23`,
+        # restoring the WRONG database — or erasing the live one (#122209).
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=1.0)
         return fn(conn), None
     except Exception as exc:
         return None, exc

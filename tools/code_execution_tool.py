@@ -568,11 +568,19 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
     quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
     tool_call_counter, stop_event, rpc_thread = [0], threading.Event(), None
     try:
-        env.execute(f"mkdir -p {quoted_rpc_dir}", cwd="/", timeout=10)
+        # Owner-only sandbox (#121932, same as the kernel path): tool data and
+        # cell output must not be world-readable on shared backends.
+        env.execute(f"mkdir -p {quoted_rpc_dir} && chmod 0700 {quoted_sandbox_dir} {quoted_rpc_dir} || true",
+                    cwd="/", timeout=10)
         rpc_token = secrets.token_urlsafe(32)
         _ship_file_to_remote(env, f"{sandbox_dir}/hermes_tools.py",
                              generate_hermes_tools_module(list(sandbox_tools), transport="file"))
         _ship_file_to_remote(env, f"{sandbox_dir}/script.py", code)
+        # Token via a 0600 file sourced at spawn, never on the ps-visible
+        # command line (urlsafe alphabet needs no quoting in single quotes).
+        _ship_file_to_remote(env, f"{sandbox_dir}/rpc/.token.env",
+                             f"HERMES_RPC_TOKEN='{rpc_token}'\n")
+        env.execute(f"chmod 0600 {quoted_rpc_dir}/.token.env || true", cwd="/", timeout=10)
         # Wrapped so the thread inherits the turn's approval context + callbacks
         # (tools.thread_context) — else sandbox RPC tool calls lose approval routing.
         # See #30882.
@@ -581,13 +589,14 @@ def _run_remote_per_call(env, env_type: str, code: str, effective_task_id: str,
             args=(env, f"{sandbox_dir}/rpc", effective_task_id, [], tool_call_counter,
                   max_tool_calls, sandbox_tools, stop_event, rpc_token))
         rpc_thread.start()
-        env_prefix = (f"HERMES_RPC_DIR={quoted_rpc_dir} HERMES_RPC_TOKEN={shlex.quote(rpc_token)} "
+        env_prefix = (f"HERMES_RPC_DIR={quoted_rpc_dir} "
                       "PYTHONDONTWRITEBYTECODE=1")
         tz = get_timezone_name()  # routed profile's timezone, not the bridged default's
         if tz:
             env_prefix += f" TZ={shlex.quote(tz)}"
         logger.info("Executing code on %s backend (task %s)...", env_type, effective_task_id[:8])
-        script_result = env.execute(f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py",
+        script_result = env.execute(f"cd {quoted_sandbox_dir} && set -a; . ./rpc/.token.env; set +a; "
+                                    f"{env_prefix} python3 script.py",
                                     timeout=timeout)
         stdout_text = script_result.get("output", "") or ""
         exit_code = script_result.get("returncode", -1)

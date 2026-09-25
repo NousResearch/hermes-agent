@@ -913,3 +913,29 @@ def test_managed_gateway_restart_preserves_active_worker_and_single_side_effect(
             parent.wait(timeout=5)
         if worker_pid is not None and _pid_exists(worker_pid):
             os.kill(worker_pid, signal.SIGKILL)
+
+
+def test_worker_env_pins_committed_deps_after_tree(tmp_path, monkeypatch):
+    """Regression for #122222: the worker env pins the committed dependency
+    generation as well as the tree, so the store Python finds third-party deps."""
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+    import pm.environments as pmenv
+
+    deps = tmp_path / "gen3"
+    deps.mkdir()
+    monkeypatch.setattr(pmenv, "committed_venv", lambda root: tmp_path / "gen3")
+    monkeypatch.setattr(pmenv, "site_packages", lambda venv: deps)
+    env = pin_hermes_tree_on_pythonpath({}, tmp_path / "repo")
+    parts = env["PYTHONPATH"].split(os.pathsep)
+    assert parts[0] == str(tmp_path / "repo")
+    assert str(deps) in parts
+
+
+def test_worker_env_survives_missing_pm_record(tmp_path, monkeypatch):
+    """No committed generation yet: the tree pin still applies, nothing else."""
+    from cron.scheduler_worker_env import pin_hermes_tree_on_pythonpath
+    import pm.environments as pmenv
+
+    monkeypatch.setattr(pmenv, "committed_venv", lambda root: None)
+    env = pin_hermes_tree_on_pythonpath({}, tmp_path / "repo")
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path / "repo")

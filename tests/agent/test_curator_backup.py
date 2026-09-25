@@ -456,6 +456,40 @@ def test_rollback_recovers_cleanly_from_a_partial_extract(backup_env, monkeypatc
     assert "current only" in (skills / "beta" / "SKILL.md").read_text(encoding="utf-8")
 
 
+def test_rollback_keeps_staging_when_excluded_carry_fails(backup_env, monkeypatch):
+    """Regression for #122210: a failed nested-.git carry must fail the
+    rollback with staging kept — never delete the only surviving copy."""
+    import shutil as _shutil
+
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+
+    alpha = _write_skill(skills, "alpha", body="snapshot copy")
+    (alpha / ".git").mkdir()
+    (alpha / ".git" / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    assert cb.snapshot_skills(reason="before") is not None
+
+    _write_skill(skills, "alpha", body="current copy")
+
+    real_move = _shutil.move
+
+    def flaky_move(src, dst):
+        if ".git" in str(src):
+            raise OSError(5, "I/O error")
+        return real_move(src, dst)
+
+    monkeypatch.setattr(cb.shutil, "move", flaky_move)
+
+    ok, msg, _ = cb.rollback()
+    assert not ok
+    assert ".git" in msg
+    # The only surviving copy of the nested git metadata is still on disk.
+    survivors = list(backup_env["home"].glob(
+        "skills/.curator_backups/.rollback-staging-*/alpha/.git/HEAD"))
+    assert len(survivors) == 1
+    assert survivors[0].read_text(encoding="utf-8") == "ref: refs/heads/main\n"
+
+
 def test_snapshot_excludes_git_and_curator_backups_and_hub(backup_env):
     """Tar snapshots must exclude .git, .curator_backups, and .hub (top-level and nested)."""
     cb = backup_env["cb"]

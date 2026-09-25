@@ -332,14 +332,17 @@ def _remove_entry(entry: Path) -> None:
         entry.unlink()
 
 
-def _restore_excluded_subtrees(staged: Path, skills: Path) -> None:
+def _restore_excluded_subtrees(staged: Path, skills: Path) -> List[str]:
     """Move excluded entries (nested ``.git``/``.hub``/...) from *staged* back under *skills* after a successful extract.
     Snapshots never contain these, so the staged copy of the live tree is the only source. ``.git`` may be a dir or a file
-    (submodule / worktree ``gitdir:`` pointer) — both are moved. Best-effort and conditional: an entry is carried only when
+    (submodule / worktree ``gitdir:`` pointer) — both are moved. Conditional: an entry is carried only when
     its parent skill dir was restored and nothing sits at the target. If the target snapshot predates the skill, the entry
-    is dropped with the staging dir rather than left orphaned; the safety snapshot excludes these paths too, so not undoable."""
+    is dropped with the staging dir rather than left orphaned; the safety snapshot excludes these paths too, so not undoable.
+    Returns the staged-relative names that could NOT be moved (move failures) — the caller
+    must keep staging for hand recovery instead of deleting the only surviving copy (#122210)."""
     from tools.skill_ledger import TRANSIENT_DIRS
 
+    failed: List[str] = []
     for dirpath, dirnames, filenames in os.walk(staged):
         carried = [Path(dirpath) / n for n in filenames if n in _EXCLUDE_TOP_LEVEL]
         carried += [Path(dirpath) / n for n in dirnames if n in _EXCLUDE_TOP_LEVEL or n in TRANSIENT_DIRS]
@@ -350,7 +353,9 @@ def _restore_excluded_subtrees(staged: Path, skills: Path) -> None:
                     shutil.move(str(src), str(dest))
                 except OSError as e:
                     logger.debug("Could not restore excluded entry %s: %s", src, e)
+                    failed.append(str(src.relative_to(staged)))
         dirnames[:] = [d for d in dirnames if d not in _EXCLUDE_TOP_LEVEL and d not in TRANSIENT_DIRS]
+    return failed
 
 
 def _unstage(moved: List[Tuple[Path, Path]]) -> List[str]:
@@ -446,8 +451,12 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
         return (False, f"snapshot extract failed (state restored): {e}", None)
 
     # Snapshots never contain excluded subtrees (nested ``.git``, ``.hub``, ...), so carry them over from the staged live tree
-    # (top-level ``.git`` is never staged). Then staging is done; the undo handle is the safety snapshot.
-    _restore_excluded_subtrees(staged, skills)
+    # (top-level ``.git`` is never staged). A failed carry keeps staging for hand recovery —
+    # deleting it would destroy the only surviving copy (#122210).
+    unrestored_carry = _restore_excluded_subtrees(staged, skills)
+    if unrestored_carry:
+        return (False, f"snapshot restored but could not carry {', '.join(sorted(unrestored_carry))}; "
+                f"staged copies kept at {staged}", None)
     shutil.rmtree(staged, ignore_errors=True)
 
     # Cron reconciliation failures don't fail the rollback — the skills tree (the main guarantee) is already restored.

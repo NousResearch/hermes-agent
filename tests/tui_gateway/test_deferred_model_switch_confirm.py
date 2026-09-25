@@ -15,6 +15,7 @@ possible. The user's pick silently reverted and the confirm was never offered
 on this path at all.
 """
 
+import logging
 import threading
 import types
 
@@ -148,3 +149,67 @@ class TestGuardFailureIsNotFatal:
 
         assert result["deferred"] is True
         assert running_session["pending_model_switch"]["raw"] == GUARDED_MODEL
+
+LARGE_SESSION = 225_334
+SMALL_SESSION = 40_000
+
+def _live_agent(session, tokens, model="deepseek/deepseek-v4.1-flash"):
+    session["agent"] = types.SimpleNamespace(
+        model=model, context_compressor=types.SimpleNamespace(last_prompt_tokens=tokens))
+
+class TestLargeContextPickAsksBeforeStashing:
+    def test_large_session_is_asked_at_pick_time(self, running_session):
+        _live_agent(running_session, LARGE_SESSION)
+
+        result = _config_set_model(UNGUARDED_MODEL)["result"]
+
+        assert result["confirm_required"] is True, (
+            "the context-cache guard only saw the session size at turn start, where it can no longer "
+            "ask: the pick became an error toast and was dropped"
+        )
+        assert "LARGE CONTEXT MODEL SWITCH" in result["confirm_message"]
+        assert result["deferred"] is False
+        assert "pending_model_switch" not in running_session
+
+    def test_confirming_queues_the_pick(self, running_session):
+        _live_agent(running_session, LARGE_SESSION)
+
+        result = _config_set_model(UNGUARDED_MODEL, confirm_expensive_model=True)["result"]
+
+        assert result["deferred"] is True
+        assert running_session["pending_model_switch"]["confirm_expensive_model"] is True
+
+    def test_small_session_still_defers_without_asking(self, running_session):
+        _live_agent(running_session, SMALL_SESSION)
+
+        result = _config_set_model(UNGUARDED_MODEL)["result"]
+
+        assert result["deferred"] is True
+        assert result["confirm_required"] is False
+
+    def test_reselecting_the_live_model_is_not_a_switch(self, running_session):
+        _live_agent(running_session, LARGE_SESSION, model=UNGUARDED_MODEL)
+
+        result = _config_set_model(UNGUARDED_MODEL)["result"]
+
+        assert result["confirm_required"] is False
+
+class TestDroppedQueuedPickIsLogged:
+    def test_turn_start_drop_leaves_a_server_log_line(self, monkeypatch, caplog):
+        session = _session(pending_model_switch={
+            "raw": UNGUARDED_MODEL, "confirm_expensive_model": False,
+            "display_model": UNGUARDED_MODEL, "display_provider": ""})
+        monkeypatch.setattr(
+            server, "_apply_model_switch",
+            lambda *_a, **_kw: {"confirm_required": True, "confirm_message": "guarded"})
+        emitted = []
+        monkeypatch.setattr(server, "_emit", lambda *a, **_kw: emitted.append(a))
+
+        with caplog.at_level(logging.WARNING):
+            server._apply_pending_model_switch("sid", session)
+
+        assert "dropped" in caplog.text and UNGUARDED_MODEL in caplog.text, (
+            "a dropped pick used to exist only as a client toast, invisible in server logs"
+        )
+        assert emitted and emitted[0][0] == "error"
+        assert "pending_model_switch" not in session

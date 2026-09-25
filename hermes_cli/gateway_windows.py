@@ -609,6 +609,51 @@ def _install_startup_entry(script_path: Path) -> Path:
     return entry
 
 
+def _remove_startup_entries() -> tuple[list[str], list[str]]:
+    """Unlink the Startup-folder entries (``.vbs`` fallback + legacy ``.cmd``); ``(done, warnings)``.
+
+    A failure (file locked, access denied) is reported rather than swallowed so callers warn
+    instead of claiming a single autostart mechanism.
+    """
+    done: list[str] = []
+    warnings: list[str] = []
+    for path in (get_startup_entry_path(), _legacy_startup_entry_path()):
+        try:
+            path.unlink()
+            done.append(f"Removed redundant Windows login item: {path}")
+        except FileNotFoundError:
+            pass
+        except OSError:
+            warnings.append(f"Could not remove redundant Windows login item: {path} (locked or access denied; it still fires at logon)")
+    return done, warnings
+
+
+def redundant_autostart_entries() -> list[Path]:
+    """Startup-folder entries that fire the gateway a second time at logon: every entry beside a
+    registered Scheduled Task, or a legacy ``.cmd`` beside the ``.vbs`` fallback."""
+    entries = [p for p in (get_startup_entry_path(), _legacy_startup_entry_path()) if p.exists()]
+    if is_task_registered():
+        return entries
+    return entries[1:]
+
+
+def reconcile_autostart_launchers() -> tuple[list[str], list[str]]:
+    """Converge gateway logon persistence to ONE mechanism; returns ``(done, warnings)`` messages.
+
+    The Scheduled Task and the Startup-folder entry are alternatives, but a successful task install
+    never removed an earlier fallback and pre-#45610 installs left a ``cmd.exe`` launcher behind, so
+    logon could fire the launcher twice (#80569). Task registered: remove the Startup entries. No
+    task but a legacy ``.cmd``: rewrite it as the console-less ``.vbs`` fallback. File operations
+    only (no schtasks mutation, no elevation), so install, update and doctor can all run it.
+    """
+    if is_task_registered():
+        return _remove_startup_entries()
+    if _legacy_startup_entry_path().exists():
+        entry = _install_startup_entry(_write_task_script())
+        return [f"Migrated legacy Windows login item to: {entry}"], []
+    return [], []
+
+
 def _resolve_detached_python(python_exe: str) -> tuple[str, Path, list[str]]:
     """Return (hidden_console_python, venv_dir, extra_pythonpath) for detached runs. ``extra_pythonpath``
     is always empty now; the tuple shape is kept so every call site stays unchanged.
@@ -823,8 +868,14 @@ def _start_or_report_running(running_pids: list[int] | None = None) -> None:
 def _install_startup_fallback(script_path: Path, start_now: bool, detail: str) -> None:
     """Install the Startup-folder fallback and optionally start once."""
     print(f"↻ Scheduled Task install blocked ({detail.splitlines()[0]}) — using Startup folder fallback")
-    entry = _install_startup_entry(script_path)
-    print(f"✓ Installed Windows login item: {entry}")
+    if is_task_registered():
+        # An earlier task survives (UAC declined, access denied on re-create) and still fires at
+        # logon; adding the fallback beside it would start the gateway twice (#80569).
+        print("⚠ Scheduled Task is still registered — skipped the Startup fallback to avoid a duplicate autostart.")
+        print("  If that task is disabled or broken, run 'hermes gateway uninstall', then install again.")
+    else:
+        entry = _install_startup_entry(script_path)
+        print(f"✓ Installed Windows login item: {entry}")
     print(f"  Task script: {script_path}")
 
     # Re-running install must be safe: the fallback only installs login persistence; starting is
@@ -910,6 +961,12 @@ def install(
         print(f"✓ {detail}")
         print(f"  Task script: {script_path}")
         print("ℹ Gateway auto-start installed for Windows login.")
+        # A Startup-folder entry from an earlier fallback install would fire alongside the task (#80569).
+        done, warnings = _remove_startup_entries()
+        for message in done:
+            print(f"✓ {message}")
+        for message in warnings:
+            print(f"⚠ {message}")
         if start_now:
             _start_or_report_running()
         else:

@@ -131,3 +131,16 @@ def test_tooling_only_pyproject_uses_the_legacy_manifest_declaration(tmp_path):
     assert declaration.pyproject is None
     assert declaration.requirements == ("fixturedep>=1,<2",)
     assert declaration.files == (manifest, project)
+
+
+def test_non_table_project_key_uses_the_legacy_manifest_declaration(tmp_path):
+    """Only TOML's [project] table, not a similarly named scalar, owns packaging."""
+    project = tmp_path / "pyproject.toml"
+    project.write_text('project = "tooling label"\n[tool.ruff]\ntarget-version = "py311"\n', encoding="utf-8")
+    manifest = tmp_path / "plugin.yaml"
+    manifest.write_text("name: tooling-only\npip_dependencies: ['fixturedep>=1,<2']\n", encoding="utf-8")
+
+    declaration = read_python_declaration(tmp_path)
+
+    assert declaration.pyproject is None
+    assert declaration.requirements == ("fixturedep>=1,<2",)

@@ -57,6 +57,23 @@ def _renders_exec_approval_buttons(adapter_cls: type) -> bool:
     return getattr(adapter_cls, "send_exec_approval", None) is not None
 
 
+def _approval_text_limits(adapter: Any, chat_id: str) -> Dict[str, Any]:
+    """``max_len``/``len_fn`` for ``_format_exec_approval_fallback`` from the adapter's per-chat
+    message cap. Only a real BasePlatformAdapter answers: a test double's auto-attributes are not
+    a cap, and without one the preview keeps its full budget."""
+    if not isinstance(adapter, BasePlatformAdapter):
+        return {}
+    try:
+        cap = adapter.max_message_length_for_chat(chat_id)
+        len_fn = adapter.message_len_fn_for_chat(chat_id)
+    except Exception:
+        logger.debug("approval text: no message cap for this chat", exc_info=True)
+        return {}
+    if not isinstance(cap, int) or cap <= 0 or not callable(len_fn):
+        return {}
+    return {"max_len": cap, "len_fn": len_fn}
+
+
 # Rendered on a native clarify card whose wait ended without a click (mirrors the notice the
 # Slack click handler shows on a dead entry).
 _CLARIFY_EXPIRED_NOTICE = "⏳ This prompt expired — please send a new request."
@@ -1536,7 +1553,9 @@ class TurnRunner:
                 logger.warning("Button-based approval failed, falling back to text: %s", e)
         # Plain-text prompt with the adapter's typed prefix (e.g. `!approve`): typed "/" is blocked
         # in Slack threads and reserved by Matrix clients.
-        msg = _format_exec_approval_fallback(cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags)
+        msg = _format_exec_approval_fallback(
+            cmd, desc, getattr(adapter, "typed_command_prefix", "/"), **flags,
+            **_approval_text_limits(adapter, ctx._status_chat_id))
         try:
             # Mark as approval prompt so WeCom routes through the control lane.
             metadata = {**(ctx._status_thread_metadata or {}), "is_approval_prompt": True}

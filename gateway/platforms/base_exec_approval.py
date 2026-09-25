@@ -15,6 +15,22 @@ from __future__ import annotations
 EA_HEADER_TEXT = "Hermes wants to run a command that needs your OK"
 EA_REASON_LABEL_TEXT = "Why it was flagged"
 
+# The plain-text fallback shows this many characters of the command before cutting. It matches
+# the button card's ``BasePlatformAdapter._EA_CMD_BUDGET``: a human approving a command has to be
+# able to read it, and 200 characters (the old cap) hid the end of ordinary multi-line commands.
+EA_FALLBACK_CMD_BUDGET = 3000
+# On an adapter whose message cap cannot hold the full budget the preview shrinks to fit, but
+# never below the old fixed cut.
+EA_FALLBACK_CMD_FLOOR = 200
+
+
+def fit_command_preview(command: str, budget: int = EA_FALLBACK_CMD_BUDGET) -> str:
+    """``command`` whole when it fits ``budget``; otherwise the first ``budget`` characters and a
+    marker that says how much was cut, so the reader knows the prompt is not the whole command."""
+    if len(command) <= budget:
+        return command
+    return f"{command[:budget]}\n... [{len(command) - budget} more characters not shown]"
+
 # Timeout notice posted when nobody answered the prompt (``{window}`` = "5 minutes").
 APPROVAL_TIMED_OUT_NOTICE = (
     "⌛ Approval timed out after {window} — the command was NOT run. "

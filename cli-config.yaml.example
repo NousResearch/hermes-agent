@@ -1601,6 +1601,7 @@ platform_toolsets:
 #     voice: "Kore"
 #     audio_tags: false
 #     persona_prompt_file: ""  # e.g. ~/.hermes/tts/radio-host.md
+#     style: ""  # Gemini 3.8: optional concise speech_metadata.style; overrides persona file
 #   xai:
 #     voice_id: "eve"       # built-in or custom voice ID from xAI Console
 #     language: "en"        # BCP-47 code ("en", "pt-BR") or "auto"
@@ -1678,6 +1679,12 @@ stt:
   #   # by the `stt` surface tag — leave `model` blank to take the first
   #   # live result. Pin only when you need a specific Whisper variant.
   #   model: ""
+  # gemini:
+  #   model: "gemini-3.5-transcribe"  # gemini-3.5-transcribe | gemini-2.5-flash
+  #   mode: "smart"                   # smart (clean formatting/filler removal) | verbatim
+  #   custom_vocabulary:              # optional custom terminology hints (up to 1,000 terms)
+  #     - "Hermes"
+  #     - "QQBot"
 
 # Text-to-speech. Only the deepinfra block is documented here — the
 # remaining providers (edge, openai, xai, minimax, mistral, gemini,

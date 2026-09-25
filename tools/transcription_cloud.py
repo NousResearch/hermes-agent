@@ -443,3 +443,174 @@ def _extract_transcript_text(transcription: Any) -> str:
     text = (value if isinstance(value, str) else str(transcription)).strip()
     match = _ASR_TEXT_RE.match(text)
     return match.group("text").strip() if match else text
+
+
+def _transcribe_gemini(
+    file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Transcribe using Google Gemini STT API.
+
+    Supports:
+    - Gemini dedicated Speech/Transcribe models via Interactions API (e.g. gemini-3.5-transcribe),
+      with custom vocabulary and smart formatting mode.
+    - Multimodal audio models via generateContent API (e.g. gemini-2.5-flash, gemini-2.0-flash).
+    """
+    import base64
+    import mimetypes
+    import requests
+    from hermes_cli.config import get_env_value
+    from tools.transcription_common import (
+        DEFAULT_GEMINI_STT_MODEL, DEFAULT_STT_TIMEOUT, GEMINI_STT_BASE_URL, _config_number,
+    )
+    from tools.transcription_tools import _load_stt_config, _resolve_provider_key, _resolve_stt_language
+
+    api_key = _resolve_provider_key("GEMINI_API_KEY", "gemini") or _resolve_provider_key("GOOGLE_API_KEY", "gemini")
+    if not api_key:
+        return _error_result("GEMINI_API_KEY not set. Get one at https://aistudio.google.com/app/apikey")
+
+    stt_config = _load_stt_config()
+    gemini_config = _get_stt_section(stt_config, "gemini")
+    base_url = str(
+        gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or GEMINI_STT_BASE_URL
+    ).strip().rstrip("/")
+    timeout = _config_number(gemini_config, "timeout", DEFAULT_STT_TIMEOUT)
+    language = language or _resolve_stt_language("gemini", stt_config) or ""
+    proxy_url = str(
+        gemini_config.get("proxy") or gemini_config.get("proxy_url") or get_env_value("GEMINI_PROXY_URL") or ""
+    ).strip()
+    proxies = {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
+    try:
+        audio_bytes = Path(file_path).read_bytes()
+    except Exception as exc:
+        return _error_result(f"Failed to read audio file {file_path}: {exc}")
+
+    if not audio_bytes:
+        return _error_result("Audio file is empty", no_speech=True)
+
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if mime_type == "audio/x-wav":
+        mime_type = "audio/wav"
+    if not mime_type or not mime_type.startswith("audio/"):
+        ext = Path(file_path).suffix.lower()
+        mime_map = {
+            ".wav": "audio/wav",
+            ".mp3": "audio/mp3",
+            ".ogg": "audio/ogg",
+            ".m4a": "audio/m4a",
+            ".aac": "audio/aac",
+            ".flac": "audio/flac",
+            ".opus": "audio/opus",
+            ".amr": "audio/amr",
+            ".silk": "audio/silk",
+        }
+        mime_type = mime_map.get(ext, "audio/wav")
+
+    audio_b64 = base64.b64encode(audio_bytes).decode("ascii")
+    model = model_name or DEFAULT_GEMINI_STT_MODEL
+
+    # Interactions API path for Gemini 3.5 Transcribe
+    if "transcribe" in model.lower():
+        url = f"{base_url}/interactions"
+        headers = {
+            "x-goog-api-key": api_key,
+            "Content-Type": "application/json",
+        }
+        custom_vocab = gemini_config.get("custom_vocabulary") or []
+        if isinstance(custom_vocab, str):
+            custom_vocab = [w.strip() for w in re.split(r"[,;]+", custom_vocab) if w.strip()]
+        elif isinstance(custom_vocab, list):
+            custom_vocab = [str(w).strip() for w in custom_vocab if str(w).strip()]
+        if prompt and isinstance(prompt, str):
+            hints = [w.strip() for w in re.split(r"[,;]+", prompt) if w.strip()]
+            custom_vocab = list(dict.fromkeys(custom_vocab + hints))
+
+        mode = str(gemini_config.get("mode", "smart")).strip()
+        transcription_cfg: Dict[str, Any] = {"mode": mode}
+        if custom_vocab:
+            transcription_cfg["custom_vocabulary"] = custom_vocab[:1000]
+        if language:
+            transcription_cfg["language_codes"] = [language]
+
+        payload = {
+            "model": model,
+            "input": [
+                {
+                    "type": "audio",
+                    "data": audio_b64,
+                    "mime_type": mime_type,
+                }
+            ],
+            "generation_config": {
+                "transcription_config": transcription_cfg,
+            },
+        }
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=timeout, proxies=proxies)
+            if resp.status_code != 200:
+                try:
+                    err_detail = resp.json().get("error", {}).get("message") or resp.text[:300]
+                except Exception:
+                    err_detail = resp.text[:300]
+                return _error_result(f"Gemini STT API error (HTTP {resp.status_code}): {err_detail}")
+            body = resp.json()
+            transcript = (body.get("output_text") or body.get("text") or
+                          body.get("interaction", {}).get("output_text") or "").strip()
+            if not transcript:
+                return _error_result("Gemini STT returned empty transcript", no_speech=True)
+            logger.info("Transcribed %s via Gemini Transcribe (%s, %d chars)",
+                        Path(file_path).name, model, len(transcript))
+            return _ok_result(transcript, "gemini")
+        except Exception as exc:
+            return _cloud_failure(exc, file_path, "Gemini transcription")
+
+    # Multimodal generateContent path for general Gemini models (gemini-2.5-flash etc.)
+    url = f"{base_url}/models/{model}:generateContent"
+    headers = {"Content-Type": "application/json"}
+    system_text = (
+        f"Transcribe the following audio in {language} with accurate punctuation. "
+        if language else
+        "Transcribe the following audio accurately with punctuation. "
+    )
+    if prompt:
+        system_text += f" Context hints and terminology: {prompt}."
+    system_text += " Return only the transcribed text without conversational commentary or preamble."
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [
+                    {"text": system_text},
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": audio_b64,
+                        }
+                    },
+                ],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.0,
+        },
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=payload, params={"key": api_key}, timeout=timeout, proxies=proxies)
+        if resp.status_code != 200:
+            try:
+                err_detail = resp.json().get("error", {}).get("message") or resp.text[:300]
+            except Exception:
+                err_detail = resp.text[:300]
+            return _error_result(f"Gemini STT API error (HTTP {resp.status_code}): {err_detail}")
+        body = resp.json()
+        candidates = body.get("candidates", [])
+        parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
+        transcript = "".join(p.get("text", "") for p in parts).strip()
+        if not transcript:
+            return _error_result("Gemini STT returned empty transcript", no_speech=True)
+        logger.info("Transcribed %s via Gemini multimodal (%s, %d chars)",
+                    Path(file_path).name, model, len(transcript))
+        return _ok_result(transcript, "gemini")
+    except Exception as exc:
+        return _cloud_failure(exc, file_path, "Gemini transcription")

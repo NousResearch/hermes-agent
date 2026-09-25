@@ -257,6 +257,7 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
                     active={activeToolset?.name === toolset.name}
                     busy={bulkBusy}
                     enabled={toolset.enabled}
+                    indent
                     key={toolset.name}
                     meta={
                       calls === null ? (

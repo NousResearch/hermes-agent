@@ -395,6 +395,7 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
                       active={activeOfficial === null && activeSkill?.name === skill.name}
                       busy={bulkBusy}
                       enabled={skill.enabled}
+                      indent
                       key={skill.name}
                       meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
                       onSelect={() => {

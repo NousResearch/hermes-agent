@@ -26,10 +26,8 @@ export function GroupHeaderRow({
   onToggle: (checked: boolean) => void
 }) {
   return (
-    <div className="flex h-7 shrink-0 items-center gap-1.5 pr-1.5 pl-2">
-      <span className="truncate text-[0.62rem] font-medium uppercase tracking-wide text-(--ui-text-quaternary)">
-        {label}
-      </span>
+    <div className="flex h-8 shrink-0 items-center gap-1.5 pr-1.5 pl-2">
+      <span className="truncate text-[0.72rem] font-semibold text-foreground/85">{label}</span>
       <span className="shrink-0 text-[0.62rem] tabular-nums text-(--ui-text-quaternary)">{count}</span>
       <Switch
         aria-label={label}
@@ -37,7 +35,6 @@ export function GroupHeaderRow({
         className="ml-auto shrink-0 cursor-pointer"
         disabled={busy}
         onCheckedChange={onToggle}
-        size="xs"
         title={label}
       />
     </div>

@@ -424,6 +424,8 @@ interface CapRowProps {
   active: boolean
   busy?: boolean
   enabled: boolean
+  /** Extra left inset for rows nested under a section header. */
+  indent?: boolean
   meta?: ReactNode
   onSelect: () => void
   onToggle?: (checked: boolean) => void
@@ -442,6 +444,7 @@ export function CapRow({
   active,
   busy,
   enabled,
+  indent,
   meta,
   onSelect,
   onToggle,
@@ -459,6 +462,7 @@ export function CapRow({
         // exact size and scrollbar geometry never jumps.
         'group/row row-hover flex w-full shrink-0 items-center rounded-md [content-visibility:auto] hover:text-foreground',
         subtitle ? 'h-11' : 'h-8',
+        indent && 'pl-5',
         active ? 'bg-(--ui-row-active-background) text-foreground' : 'text-(--ui-text-secondary)'
       )}
       id={rowId}

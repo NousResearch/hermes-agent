@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 import types
 
-import yaml
-
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tui_gateway import server
 
@@ -19,7 +17,7 @@ from tui_gateway import server
 def _write_home(root, name: str, content: str):
     home = root / name
     home.mkdir()
-    (home / "config.yaml").write_text(yaml.safe_dump({"prefill_messages_file": "prefill.json"}), encoding="utf-8")
+    (home / "config.yaml").write_text("prefill_messages_file: prefill.json\n", encoding="utf-8")
     (home / "prefill.json").write_text(json.dumps([{"role": "user", "content": content}]), encoding="utf-8")
     return home
 

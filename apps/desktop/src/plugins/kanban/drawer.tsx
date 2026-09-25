@@ -27,6 +27,7 @@ import {
   LogView,
   MessageTextContent,
   SegmentedControl,
+  stripAnsi,
   Textarea,
   Tip,
   useI18n,
@@ -790,7 +791,7 @@ function FeedTabs({
       )}
       {tab === 'log' && (
         <ScrollFade deps={log?.content.length} max="12rem">
-          <LogView className="border-0 px-0">{log!.content}</LogView>
+          <LogView className="border-0 px-0">{stripAnsi(log!.content)}</LogView>
         </ScrollFade>
       )}
     </div>

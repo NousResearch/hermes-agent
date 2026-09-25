@@ -31,9 +31,13 @@ import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
+# hermes_yaml lives at the repo root; this script is run as a plain file
+# (python website/scripts/fetch-plugin-stars.py) where sys.path[0] is
+# website/scripts, not the checkout root (skills-index.yml has no PYTHONPATH).
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
 import hermes_yaml as yaml
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT = REPO_ROOT / "website" / "static" / "api" / "plugin-stars.json"
 LIVE_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-stars.json"

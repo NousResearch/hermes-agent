@@ -293,6 +293,43 @@ it('never tolerance-matches a plain repeated prompt without attachment evidence 
   ])
 })
 
+it('never folds a captionless attachment error onto another paste\u2019s reply (#120978)', () => {
+  // A captionless paste strips to the empty caption on both sides, and empty
+  // cannot identify a turn: two markers-only stored rows would compare equal
+  // against ANY captionless local row, so findIndex could fold an error raised
+  // on the first paste onto the first settled reply after the SECOND paste.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', '[Image attached at: /tmp/first.png]', { rowId: 18711 }),
+      row('9-1-assistant', 'assistant', 'first answer', { rowId: 18712 }),
+      row('9-2-user', 'user', '[Image attached at: /tmp/second.png]', { rowId: 18811 }),
+      row('9-3-assistant', 'assistant', 'second answer', { rowId: 18812 })
+    ],
+    [
+      row('9-2-user', 'user', '[Image attached at: /tmp/second.png]', { rowId: 18811 }),
+      row('9-3-assistant', 'assistant', 'second answer', { rowId: 18812 }),
+      row('user-paste-1', 'user', '', {
+        attachmentRefs: ['data:image/png;base64,AAAA']
+      }),
+      row('assistant-stream-x', 'assistant', 'never stored anywhere', { error: 'upstream timeout' })
+    ]
+  )
+
+  // The errored turn cannot be pinned to a durable reply: it must survive
+  // locally instead of stealing the second paste's settled reply.
+  expect(merged.map(message => message.id)).toEqual([
+    '9-0-user',
+    '9-1-assistant',
+    '9-2-user',
+    '9-3-assistant',
+    'user-paste-1',
+    'assistant-stream-x'
+  ])
+  expect(merged.find(message => message.id === '9-1-assistant')?.error).toBeUndefined()
+  expect(merged.find(message => message.id === '9-3-assistant')?.error).toBeUndefined()
+  expect(merged.find(message => message.id === 'assistant-stream-x')?.error).toBe('upstream timeout')
+})
+
 it('splices an older-rowId preserved run in front of the first newer hydrated row (#120978)', () => {
   // The windowed hydrated page starts past the failed turn; the kept pair
   // (user 210 + errored assistant 211) must land ABOVE the newer turn, not

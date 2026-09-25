@@ -15,7 +15,9 @@ import { chatMessageText } from '@/lib/chat-messages/parts'
  * The tolerance is gated on ATTACHMENT EVIDENCE on both sides so a plain
  * repeated prompt — or a second attempt under the same caption — is never
  * swallowed: the stored row must carry rewrite markers AND the local row must
- * carry its own attachment evidence (refs or markers).
+ * carry its own attachment evidence (refs or markers). A captionless paste —
+ * whose tolerant caption is empty on both sides — never matches either: empty
+ * cannot identify a turn, so it takes the conservative preserve path.
  */
 
 // Rewrite markers the backend stamps onto the durable prompt of a pasted
@@ -57,6 +59,7 @@ export const sameAttachmentTurn = (stored: ChatMessage, local: ChatMessage): boo
   }
 
   const storedText = chatMessageText(stored)
+  const localTolerant = attachmentTolerantUserText(chatMessageText(local))
 
   if (!carriesAttachmentRewrite(storedText)) {
     return false
@@ -66,5 +69,16 @@ export const sameAttachmentTurn = (stored: ChatMessage, local: ChatMessage): boo
     return false
   }
 
-  return attachmentTolerantUserText(storedText) === attachmentTolerantUserText(chatMessageText(local))
+  const storedTolerant = attachmentTolerantUserText(storedText)
+
+  // A captionless paste strips to the empty caption on both sides, and empty
+  // cannot identify a turn: every markers-only stored row would compare equal
+  // against any captionless local row, folding one turn's error onto another
+  // paste's reply. Empty matches nothing; such rows take the conservative
+  // preserve path instead.
+  if (!storedTolerant || !localTolerant) {
+    return false
+  }
+
+  return storedTolerant === localTolerant
 }

@@ -172,6 +172,19 @@ class TestControlSocketPath:
             f"{env.control_socket} (+{self._SSH_CONTROLMASTER_SUFFIX} = {total_len})"
         )
 
+    def test_deep_scratch_tmpdir_routes_through_socket_safe_tmpdir(self, monkeypatch):
+        """A deep profile-home scratch TMPDIR must not reach ssh's unix_listener
+        verbatim (#118540 report): the ControlMaster dir follows
+        ``socket_safe_tmpdir``'s length/bindability fallback, not raw ``gettempdir``.
+        Shape from the report: 93-char socket + ssh's 17-char suffix vs the 104-byte
+        limit — every command through the ssh backend died before reaching the remote."""
+        deep = "/home/user/.hermes/profiles/hermes-personal/cache/scratch"  # 58 chars > 50 cap
+        import sys as _sys
+        monkeypatch.setattr(_sys, "platform", "linux")
+        monkeypatch.setattr("tempfile.gettempdir", lambda: deep)
+        env = SSHEnvironment(host="h", user="u", port=22)
+        assert str(env.control_dir).startswith("/tmp/hermes-ssh")
+
     def test_path_is_deterministic_across_instances(self):
         """Same (user, host, port) must yield the same control socket so
         ControlMaster reuse works across reconnects."""

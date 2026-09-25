@@ -570,6 +570,18 @@ def _persist_session_title(session_db, session_id, title, *, source, dedupe=True
         return _set(deduped)
 
 
+def apply_subagent_title(session_db, session_id: str, goal: str) -> Optional[str]:
+    """Title a delegate run ``Subagent: <goal's first line>`` at ``derived`` authority. No model call:
+    runs fan out in bulk, and the prefix alone is what tells them apart from conversations wherever
+    ``sessions.show_subagents`` lists them (#97202). Collisions get ``#N``. Never raises."""
+    try:
+        derived = derive_title(goal) if is_titleable_user_message(goal) else None
+        return _persist_session_title(session_db, session_id, f"Subagent: {derived}", source="derived") if derived else None
+    except Exception:
+        logger.debug("Subagent title failed for %s", session_id, exc_info=True)
+        return None
+
+
 def apply_instant_title(
     session_db, session_id: str, user_message: str, title_callback: Optional[TitleCallback] = None,
     title_preview: str | None = None,

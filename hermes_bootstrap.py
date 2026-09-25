@@ -546,7 +546,10 @@ if not _pm_repair:
                 import subprocess
 
                 raise RelaunchExit(subprocess.call(_command))
-            os.execv(str(_launch_python), _command)
+            # Exec the command itself, not the sync interpreter: a shell-shim
+            # relaunch execs the launcher directly (command[0] is the shim),
+            # while every other shape starts with the sync interpreter.
+            os.execv(_command[0], _command)
     except Exception as exc:
         if isinstance(exc, PermissionError) and (message := install_state_permission_message(_root, exc)):
             print(f"hermes: {message}", file=sys.stderr)

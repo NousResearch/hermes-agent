@@ -1855,9 +1855,11 @@ class TestBuildJobPromptAbsoluteSkillPath:
         (skill_dir / "SKILL.md").write_text("# Alpha\nDo alpha.")
         absolute_path = str(skill_dir)
         seen_names: list[str] = []
+        seen_flags: list[bool] = []
 
         def _skill_view(name: str, **_kwargs) -> str:
             seen_names.append(name)
+            seen_flags.append(bool(_kwargs.get("allow_platform_disabled", False)))
             if name == "alpha-skill":
                 return json.dumps({"success": True, "content": "# Alpha\nDo alpha."})
             return json.dumps({"success": False, "error": f"Skill '{name}' not found."})
@@ -1867,6 +1869,10 @@ class TestBuildJobPromptAbsoluteSkillPath:
             result = _build_job_prompt({"skills": [absolute_path], "prompt": "go"})
 
         assert seen_names == ["alpha-skill"]
+        # The cron call site must ask for the platform_disabled bypass itself: the flag is the
+        # whole point of the fix, and a `**_kwargs` signature quietly absorbs a refactor that
+        # drops it — the job would go back to loading no playbook on a chat-launched manual run.
+        assert seen_flags == [True]
         assert "Do alpha." in result
 
 

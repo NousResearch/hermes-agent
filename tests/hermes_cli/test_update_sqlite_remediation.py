@@ -1,83 +1,45 @@
-"""Post-update reporting for unresolved SQLite WAL-reset risk."""
-
+"""Selected-runtime admission and dashboard completion bookkeeping."""
 from pathlib import Path
 from types import SimpleNamespace
+import sys
 
-from hermes_cli import update_cmd
+import pytest
 
-
-def test_runtime_status_probes_running_venv_outside_checkout(tmp_path, monkeypatch):
-    running_python = tmp_path / "venv312" / "bin" / "python"
-    observed = []
-    vulnerable = SimpleNamespace(wal_reset_vulnerable=True)
-    monkeypatch.setattr("hermes_constants.project_venv_dir", lambda _root: None)
-    monkeypatch.setattr(update_cmd.sys, "executable", str(running_python))
-    monkeypatch.setattr(
-        "hermes_cli.sqlite_runtime.probe_sqlite_runtime",
-        lambda python: observed.append(Path(python)) or vulnerable,
-    )
-
-    safe, info = update_cmd._post_update_sqlite_runtime_status()
-
-    assert observed == [running_python]
-    assert safe is False
-    assert info is vulnerable
+from hermes_cli import update_cmd, update_cmd_maint
 
 
-def test_summary_withholds_success_when_sqlite_remediation_failed(capsys, monkeypatch):
-    monkeypatch.setattr(
-        update_cmd,
-        "_post_update_sqlite_runtime_status",
-        lambda: (False, SimpleNamespace(sqlite_version_string="3.46.1")),
-        raising=False,
-    )
-    monkeypatch.setattr(
-        update_cmd,
-        "_update_complete_message",
-        lambda _version: "✓ Update complete! (v0.20.5)",
-    )
-
-    complete = update_cmd._print_update_summary(
-        node_failures=[],
-        desktop_build_ok=True,
-        pre_update_version="0.20.4",
-    )
-
-    out = capsys.readouterr().out
-    assert complete is False
-    assert "Update complete" not in out
-    assert "SQLite 3.46.1" in out
-    assert "WAL-reset" in out
-    assert "uv-managed Python" in out
-    assert "hermes doctor" in out
+@pytest.mark.parametrize('verdict', ['safe', 'unsafe', 'unavailable'])
+@pytest.mark.parametrize('message', ['✓ Update complete!', '✓ Already up to date!'])
+@pytest.mark.parametrize('action_id', ['a' * 32, 'invalid'])
+def test_selected_sqlite_controls_completion_and_action_receipt(tmp_path, monkeypatch, capsys, verdict, message, action_id):
+    selected = tmp_path / 'selected/python'
+    info = None if verdict == 'unavailable' else SimpleNamespace(
+        wal_reset_vulnerable=verdict == 'unsafe', sqlite_version_string='3.46.1')
+    probes = []
+    monkeypatch.setattr(sys, 'executable', str(selected))
+    monkeypatch.setattr('hermes_constants.project_venv_dir', lambda _: tmp_path / 'obsolete-venv')
+    monkeypatch.setattr('hermes_cli.sqlite_runtime.probe_sqlite_runtime', lambda python: probes.append(python) or info)
+    monkeypatch.setattr(update_cmd, '_branch_head_suffix', lambda: '')
+    monkeypatch.setenv('HERMES_ACTION_ID', action_id)
+    assert update_cmd_maint._print_verified_update_completion(message) is (verdict != 'unsafe')
+    assert probes == [Path(selected)]
+    output = capsys.readouterr().out
+    assert (message in output) is (verdict != 'unsafe')
+    assert ('=== hermes-update completed' in output) is (verdict != 'unsafe' and action_id != 'invalid')
+    if verdict == 'unsafe':
+        for text in ('SQLite (3.46.1)', 'corruption bug', 'run the installer again', 'hermes doctor'):
+            assert text in output
+    elif action_id != 'invalid':
+        assert f'=== hermes-update completed {action_id} ===' in output
 
 
-def test_current_checkout_completion_is_verified_before_success(capsys, monkeypatch):
-    monkeypatch.setattr(
-        update_cmd,
-        "_post_update_sqlite_runtime_status",
-        lambda: (False, SimpleNamespace(sqlite_version_string="3.46.1")),
-    )
-
-    complete = update_cmd._print_verified_update_completion("✓ Already up to date!")
-
-    out = capsys.readouterr().out
-    assert complete is False
-    assert "Already up to date" not in out
-    assert "SQLite 3.46.1" in out
-
-
-def test_current_checkout_repair_returns_verified_completion_result(monkeypatch):
-    monkeypatch.setattr(update_cmd, "_update_node_dependencies", lambda: [])
-    monkeypatch.setattr(update_cmd._m(), "_build_web_ui", lambda _path: None)
-    monkeypatch.setattr(
-        update_cmd,
-        "_rebuild_desktop_after_update",
-        lambda _dir, **_kwargs: True,
-    )
-
-    complete = update_cmd._repair_node_deps_on_current_checkout(
-        lambda _message: False
-    )
-
-    assert complete is False
+@pytest.mark.parametrize('already_restarted_units', [None, {'hermes-serve'}])
+def test_dashboard_refresh_preserves_restart_bookkeeping(already_restarted_units, monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(update_cmd, '_m', lambda: SimpleNamespace(
+        _kill_stale_dashboard_processes=lambda **kwargs: calls.append(kwargs) or {'unrecovered': [1234]}))
+    update_cmd_maint._refresh_dashboard_after_update(already_restarted_units=already_restarted_units)
+    from hermes_constants import get_hermes_home
+    assert calls == [{'restart_managed': True, 'already_restarted_units': already_restarted_units,
+                      'scope_home': str(get_hermes_home())}]
+    assert 'could not be auto-restarted' in capsys.readouterr().out

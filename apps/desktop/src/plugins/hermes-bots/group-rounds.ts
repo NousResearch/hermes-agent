@@ -3,26 +3,34 @@
  * @mention parse, the round-robin driver, the #93129 member holds, the stop
  * path, and the user send that starts it all.
  */
+import { host } from '@hermes/plugin-sdk'
 
-import { botFriendlyNames, botHandle, clearBotAttention, mentionNameForms, noteBotAttention } from './data'
-import { recordGroupActivity } from './group-activity'
+import { botFriendlyNames, botHandle, botMentionTag, mentionNameForms } from './data'
+import { groupFailureReason, recordGroupActivity } from './group-activity'
 import {
   $groupChats,
   $groupNeedsYou,
   appendGroupChatEntry,
-  GROUP_CHAT_HISTORY_LIMIT,
   GROUP_CHAT_MAX_CONTINUATIONS,
   GROUP_CHAT_MAX_MESSAGES,
   GROUP_CHAT_MAX_ROUNDS,
-  groupSpeakerLabel,
+  groupChatRoomKey,
   groupThreadOf,
   mintGroupThreadId,
-  shouldCommitMemberTurn,
   updateGroupChat
 } from './group-chat'
 import type { GroupChatRoom, GroupHoldStamp } from './group-chat'
-import { durableGroupChatMembers, groupMemberKey } from './group-membership'
-import { harvestStrandedGroupReply, isGroupPassText, runGroupChatMemberTurn } from './group-turns'
+import {
+  durableGroupChatMembers,
+  followGroupChat,
+  groupMemberKey,
+  groupSessionKey,
+  hasThreadScopedGroupSession
+} from './group-membership'
+import { runGroupContinuationMembers, runGroupRoundMember } from './group-round-members'
+import { rejectGroupSlashCommand } from './group-slash'
+import { GROUP_TURN_HARD_CAP_MS, harvestStrandedGroupReply } from './group-turns'
+import { botsText } from './i18n'
 import { requestForBot } from './routing'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
@@ -50,10 +58,9 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
 
   for (const member of members) {
     const title = String(member.title || '').trim()
-    // Cross-connection members are also addressable by their @name-device
-    // handle (the roster's disambiguated form) — same-named agents on two
-    // machines resolve to the right one.
-    const handle = String(member.handle || botHandle(member.name, member) || '').trim()
+    // Normalize legacy "default" handles without aliasing device-qualified
+    // defaults to @hermes: that would retarget the primary tag by roster order.
+    const handle = String(botHandle(member.name, member) || '').trim()
 
     const forms = new Set([
       member.name.toLowerCase(),
@@ -73,9 +80,40 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
       }
     }
 
+    // A same-named Connections twin gets `@<name>-<device>` from the registry,
+    // but the room's own-source member keeps its bare name and so loses every
+    // shared form to the twin (Map last-wins). `@<name>-local` is its
+    // always-available unambiguous address.
+    if (!member.remoteSource) {
+      forms.add(`${member.name.toLowerCase()}-local`)
+    }
+
     for (const form of forms) {
       if (form) {
         handles.set(form, groupMemberKey(member))
+      }
+    }
+
+    // Normalized slug/collapsed variants of a live identity, gap-filled only — an exact live name elsewhere always wins, so an old handle can never squat (#110200).
+    for (const raw of [member.name, handle, title, ...botFriendlyNames(member)]) {
+      for (const form of mentionNameForms(raw)) {
+        if (form && !handles.has(form)) {
+          handles.set(form, groupMemberKey(member))
+        }
+      }
+    }
+  }
+
+  // Renamed members answer to previous handles, gap-fill only — every live identity's variants are claimed first, so a live name always wins (#110200).
+  for (const member of members) {
+    const key = groupMemberKey(member)
+    const previous = Array.isArray(member.previous_names) ? member.previous_names : []
+
+    for (const name of previous) {
+      for (const form of mentionNameForms(name)) {
+        if (form && !handles.has(form)) {
+          handles.set(form, key)
+        }
       }
     }
   }
@@ -104,6 +142,29 @@ export function parseGroupChatMentions(text: unknown, members: GroupMember[]) {
     everyone,
     mentioned
   }
+}
+
+/** The `@tag` "Reply to" seeds for one member: its friendly tag when that
+ *  routes to this member alone, else the first owner-qualified form that does
+ *  (`@<name>-<device>` for a Connections twin, `@<name>-local` for the room's
+ *  own-source twin — see #89883). A bare `{ name }` of a member who left the
+ *  room resolves to nothing and keeps its friendly tag. */
+export function groupReplyMentionTag(member: GroupMember, members: GroupMember[]): string {
+  const key = groupMemberKey(member)
+
+  const candidates = [botMentionTag(member), botHandle(member.name, member), `${member.name}-local`]
+    .map(tag => String(tag || '').trim())
+    .filter(Boolean)
+
+  return (
+    candidates.find(tag => {
+      const { mentioned } = parseGroupChatMentions(`@${tag}`, members)
+
+      return mentioned.size === 1 && mentioned.has(key)
+    }) ||
+    candidates[0] ||
+    ''
+  )
 }
 
 /** Members that should take a turn this round: everyone when no member is
@@ -154,82 +215,28 @@ export function rotateGroupSpeakers(members: GroupMember[], round: number) {
   return [...members.slice(shift), ...members.slice(0, shift)]
 }
 
-/** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
- *  `Name (you): …`. */
-export function formatGroupChatLine(entry: GroupMessage, viewerName: string) {
-  // Attachments are staged into each member's session as real payloads; the
-  // transcript line names them so the delta text and the bytes line up.
-  const attached =
-    Array.isArray(entry.images) && entry.images.length
-      ? ` ${entry.images
-          .map(img => {
-            const label = img.kind === 'pdf' ? 'attached PDF' : img.kind === 'file' ? 'attached file' : 'attached image'
-
-            return `[${label}: ${img.name || 'image'}]`
-          })
-          .join(' ')}`
-      : ''
-
-  if (entry.from.kind === 'user') {
-    return `${entry.from.name || 'User'} (user): ${entry.text}${attached}`
-  }
-
-  const suffix = entry.from.name === viewerName ? ' (you)' : ''
-  // Cross-connection speakers carry their device so same-named agents on
-  // two machines stay tellable apart in every member's transcript.
-  const source = entry.from.source ? ` [${entry.from.source}]` : ''
-
-  return `${groupSpeakerLabel(entry.from.name)}${suffix}${source}: ${entry.text}${attached}`
-}
-
-interface GroupChatTurnPromptInput {
-  deltaLines: string[]
-  groupName: string
-  members: GroupMember[]
-  viewer: GroupMember
-}
-
-/** The full per-turn payload for one member: participation rules + the room
- *  delta. Rules travel in the turn payload (not SOUL) so every existing bot
- *  can join a group chat without a profile migration. */
-export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLines }: GroupChatTurnPromptInput) {
-  const viewerKey = groupMemberKey(viewer)
-  const peers = members.filter(m => groupMemberKey(m) !== viewerKey)
-
-  const peerNames = peers
-    .map(m => {
-      const handle = m.title ? `${m.title} (@${botHandle(m.name, m)})` : `@${botHandle(m.name, m)}`
-
-      return m.remoteSource ? `${handle} [on ${m.connectionLabel || m.connectionId}]` : handle
-    })
-    .join(', ')
-
-  return [
-    `[Group chat: "${groupName}"] You are @${botHandle(viewer.name, viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
-    '',
-    'New messages in the room since your last turn (oldest first):',
-    ...deltaLines.map(line => `  ${line}`),
-    '',
-    'Rules for this room:',
-    '- Reply with ONE conversational message ONLY if you have something new worth adding: build on what was just said, claim or hand off work, answer a question aimed at you, or report a real result. Keep chatter short (1-3 sentences) — but when you are delivering a result, an answer the user asked for, or substantive work, give it at full quality and length; never thin out real content to fit the room.',
-    '- If you have nothing new to add, reply with exactly "(pass)". Passing is good — it lets the conversation settle.',
-    '- Mention a teammate as @name to pull them in; mention @user only for a judgment call or a result the user needs. Do not repeat points already made.',
-    '- Never reveal content from your private 1:1 chats. Your reply text goes to the room verbatim — no preamble, no meta-commentary.'
-  ].join('\n')
-}
-
 // --- member-hold helpers (#93129) — pure, unit-tested ---
 
 /** #93129: classify a USER room message's effect on member holds. Only user
  *  sends ever reach this (bot replies are appended by the round loop, never
  *  through sendToGroupChat), so a bot saying "stopped working on it" can
- *  never set a hold. Conservative on purpose: any standalone stop/halt/pause
- *  word next to a mention holds those members — "don't stop @x" therefore
- *  also holds, which errs toward the bot staying quiet until re-addressed
- *  (a wrongly-held bot is one mention away from release; a wrongly-running
- *  one keeps doing work it was told to stop). A non-stop direct mention
- *  releases the mentioned members — the user addressing a bot directly
- *  overrides its hold. */
+ *  never set a hold. Conservative on purpose: a standalone stop/halt/pause
+ *  word NEXT TO a mention (within two words, #103893) holds those members —
+ *  "don't stop @x" therefore also holds, which errs toward the bot staying
+ *  quiet until re-addressed (a wrongly-held bot is one mention away from
+ *  release; a wrongly-running one keeps doing work it was told to stop).
+ *  A stop word far from every mention is ambiguous — "@x go, das ist halt
+ *  ein Test" and "@x mach mal Pause" are prose that addresses the bot, so
+ *  non-English rooms whose everyday vocabulary overlaps the keyword list
+ *  are not silently held — but "@x please just stop now" is a genuine stop,
+ *  so the message is NEUTRAL: it neither holds nor releases. A missed hold
+ *  is one adjacent "stop @x" away from repair; re-dispatching a bot the user
+ *  just told to stop is the one flip this classifier must never make.
+ *  A non-stop direct mention releases the mentioned members — the user
+ *  addressing a bot directly overrides its hold — and
+ *  addressing the whole room (@all / @everyone) without a stop word is the
+ *  same intent for every member (#97740): "@all <task>" wakes a stopped
+ *  room without the user having to know the literal "resume" incantation. */
 export function classifyGroupHoldDirective(
   text: string,
   mentionedKeys: Iterable<string> | null | undefined,
@@ -237,10 +244,9 @@ export function classifyGroupHoldDirective(
 ) {
   const value = String(text || '')
   const mentioned = [...(mentionedKeys || [])]
-  const stop = /\b(stop|halt|pause)\b/i.test(value)
-  const resume = /\b(resume|continue|go|proceed)\b/i.test(value)
+  const stop = stopWordPlacement(value)
 
-  if (stop) {
+  if (stop === 'adjacent') {
     // "@all stop" holds every member — symmetric with "@all resume".
     return {
       hold: mentioned,
@@ -250,21 +256,95 @@ export function classifyGroupHoldDirective(
     }
   }
 
-  if (resume) {
-    return {
-      hold: [],
-      holdAll: false,
-      release: mentioned,
-      releaseAll: Boolean(everyone)
-    }
-  }
-
   return {
     hold: [],
     holdAll: false,
-    release: mentioned,
-    releaseAll: false
+    release: stop === 'distant' ? [] : mentioned,
+    releaseAll: stop === null && Boolean(everyone)
   }
+}
+
+/** #117040: what a fenced block, inline code span, straight-quoted span or
+ *  blockquote line says is content the user quotes or pastes, not a room
+ *  directive — its stop words must not hold a member. Mask each span down to
+ *  the @tokens it contains (mentions resolve from the raw text and must keep
+ *  their place in the proximity window, so an address like "…"@impl"…" still
+ *  releases a held member) or to one neutral filler word when it has none. */
+function maskQuotedAndCodeSpans(value: string): string {
+  const mentionsOnly = (span: string): string => (span.match(/@[\p{L}\p{N}._-]+/gu) || []).join(' ') || 'quoted'
+  const kept: string[] = []
+  let fence = ''
+
+  for (const line of value.split('\n')) {
+    if (fence) {
+      // Closing fence rows carry no content; an unterminated fence (a
+      // cut-short paste) simply swallows the rest of the message.
+      const closing = line.trim().startsWith(fence)
+
+      kept.push(closing ? '' : mentionsOnly(line))
+
+      if (closing) {
+        fence = ''
+      }
+
+      continue
+    }
+
+    const opened = line.match(/^\s*(`{3,}|~{3,})/)
+
+    if (opened) {
+      fence = opened[1]
+
+      continue
+    }
+
+    if (/^\s*>/.test(line)) {
+      kept.push(mentionsOnly(line))
+
+      continue
+    }
+
+    // Typographic quotes too: macOS smart-quote substitution rewrites the
+    // straight ones as the user types into the composer.
+    kept.push(line.replace(/`[^`\n]*`/g, mentionsOnly).replace(/["“”][^"“”\n]*["“”]/g, mentionsOnly))
+  }
+
+  return kept.join('\n')
+}
+
+/** #103893: where the stop/halt/pause tokens sit relative to the @tokens —
+ *  `adjacent` when one is within two words of ANY mention, `distant` when
+ *  the message carries a stop word but none that close, null without one.
+ *  Proximity is measured against the raw @tokens of the DIRECTIVE surface —
+ *  quoted/pasted spans are masked first (#117040) —
+ *  not the resolved member keys the caller passes (those are roster keys
+ *  such as `<connectionId>::<name>`, and a mention resolves through titles
+ *  and friendly names too, so the @token text rarely equals the key). The
+ *  ≤2 window is fitted to observed directive/filler pairs ("@x please
+ *  halt" = 2, "@x go, das ist halt ein Test" = 4); widen only with measured
+ *  cases, never by guessing. */
+function stopWordPlacement(value: string): 'adjacent' | 'distant' | null {
+  const tokens =
+    maskQuotedAndCodeSpans(value)
+      .toLowerCase()
+      .match(/@[\p{L}\p{N}._-]+|[\p{L}\p{N}_-]+/gu) || []
+
+  const mentionAt: number[] = []
+  const stopAt: number[] = []
+
+  tokens.forEach((token, index) => {
+    if (token.startsWith('@')) {
+      mentionAt.push(index)
+    } else if (token === 'stop' || token === 'halt' || token === 'pause') {
+      stopAt.push(index)
+    }
+  })
+
+  if (stopAt.some(stop => mentionAt.some(mention => Math.abs(stop - mention) <= 2))) {
+    return 'adjacent'
+  }
+
+  return stopAt.length ? 'distant' : null
 }
 
 /** What `parseGroupChatMentions` reports for one room message. */
@@ -323,13 +403,6 @@ export function applyGroupHoldDirective(
   }
 
   return next
-}
-
-/** #93129: a held member's skip must consume its delta exactly once —
- *  advance the watermark past the current log so the same entries never
- *  re-trigger the skip. Null = nothing to consume (no write, no spin). */
-export function heldMemberWatermarkAdvance(seen: number | undefined, logLength: number): null | number {
-  return logLength > (seen || 0) ? logLength : null
 }
 
 // --- end member-hold helpers ---
@@ -412,9 +485,10 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
  *
  *  1. Bumps the room epoch — the driving loop bails at its next boundary and
  *     never selects another member (`isCurrent()` in runGroupChatRounds).
- *  2. Sets a #93129 hold for EVERY member — future turns stay skipped until
- *     the user explicitly releases (resume / @all resume / direct mention),
- *     the exact contract user-typed "@all stop" already has.
+ *  2. When hold detection is enabled, sets a #93129 hold for EVERY member —
+ *     future turns stay skipped until the user explicitly releases (resume /
+ *     @all resume / direct mention). Rooms that disable automatic holds still
+ *     stop the active run through the epoch and interrupt legs.
  *  3. Sends session.interrupt to the member currently ON TURN (room.turn,
  *     runtime-only) via its own route, so the in-flight model call actually
  *     dies instead of grinding to completion in the background. Best-effort:
@@ -426,7 +500,8 @@ export function unaddressedGroupMentions(group: string, members: GroupMember[], 
 export async function stopGroupThread(group: string, thread: null | string, members: GroupMember[] | null = null) {
   const room = $groupChats.get()[group] || {}
   const roster = Array.isArray(members) && members.length ? members : room.members || []
-  const turnName = room.turn || null
+  const onTurn = room.turn || null
+  groupChatDrives.get(groupChatRoomKey(group, room))?.pending.clear()
 
   const stamp: GroupHoldStamp = {
     at: Date.now(),
@@ -436,17 +511,15 @@ export async function stopGroupThread(group: string, thread: null | string, memb
 
   updateGroupChat(group, (r: GroupChatRoom) => {
     r.epoch = (r.epoch || 0) + 1
+    r.stoppedEpoch = r.epoch
     r.running = false
     r.turn = null
 
-    // Same hold shape applyGroupHoldDirective mints for "@all stop" — the
-    // held-skip path (watermark consume + 'held' activity note) and every
-    // release gesture apply unchanged. An existing hold keeps its stamp.
-    const holds: Record<string, GroupHoldStamp> = {
-      ...(r.holds || {})
-    }
+    // Same hold shape applyGroupHoldDirective mints for "@all stop" — unless
+    // this room disabled hold detection. An existing hold keeps its stamp.
+    const holds: Record<string, GroupHoldStamp> = r.holdDetection === false ? {} : { ...(r.holds || {}) }
 
-    for (const member of roster) {
+    for (const member of r.holdDetection === false ? [] : roster) {
       const key = groupMemberKey(member)
 
       if (key && !holds[key]) {
@@ -470,10 +543,16 @@ export async function stopGroupThread(group: string, thread: null | string, memb
     thread: thread || null
   })
 
-  // Interrupt the member actually mid-turn. room.turn is runtime-only and
-  // names exactly one member (the loop is serial); a settled room has none.
-  const onTurn = turnName ? roster.find((member: GroupMember) => member?.name === turnName) : null
-  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
+  // The captured descriptor owns routing even if the roster has changed.
+  // Sessions are per thread, so a stop targets the session of the thread it
+  // was issued from; an unmigrated room still answers on its bare pointer.
+  const sessions = room.sessions || {}
+  const onTurnKey = onTurn ? groupMemberKey(onTurn) : ''
+
+  const sessionId = onTurn
+    ? sessions[groupSessionKey(thread || 'legacy', onTurn)] ||
+      (hasThreadScopedGroupSession(sessions, onTurnKey) ? null : sessions[onTurnKey])
+    : null
 
   if (onTurn && sessionId) {
     try {
@@ -488,13 +567,35 @@ export async function stopGroupThread(group: string, thread: null | string, memb
 }
 
 /** Drive one bounded round-robin turn for ONE THREAD. Serial — one member at
- *  a time. A newer user send bumps the room epoch; this loop notices at the
- *  next member boundary, bails, and the newest send's own loop takes over.
+ *  a time. User follow-ups queue behind this drive; Stop invalidates its
+ *  epoch and discards queued continuations.
  *  Watermarks are per thread+member (`${thread}::${memberKey}`), so parallel
  *  topics never eat each other's deltas. */
-export async function runGroupChatRounds(group: string, members: GroupMember[], thread: string) {
+export async function runGroupChatRounds(
+  group: string,
+  members: GroupMember[],
+  thread: string,
+  failedMembers = new Set<string>()
+) {
+  const binding = followGroupChat(group, name => {
+    group = name
+  })
+
   const startEpoch = ($groupChats.get()[group] || {}).epoch || 0
-  const isCurrent = () => (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
+  const isCurrent = () => binding.isLive() && (($groupChats.get()[group] || {}).epoch || 0) === startEpoch
+
+  const context = {
+    get group() {
+      return group
+    },
+    members,
+    thread,
+    startEpoch,
+    failedMembers,
+    binding,
+    isCurrent
+  }
+
   let posted = 0
   let continuations = 0
   // #94478: how this drive ended. 'settled' means quiet consensus (everyone
@@ -519,6 +620,10 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         }
 
         await harvestStrandedGroupReply(group, member)
+
+        if (!binding.isLive()) {
+          return
+        }
       }
 
       const roomLog = (($groupChats.get()[group] || {}).log || []).filter(
@@ -560,175 +665,13 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
           return
         }
 
-        const room = $groupChats.get()[group] || {
-          log: [],
-          watermarks: {}
-        }
+        const result = await runGroupRoundMember(context, member)
 
-        const memberKey = groupMemberKey(member)
-        const markKey = `${thread}::${memberKey}`
-        const seen = room.watermarks[markKey] || 0
-        // Delta: NEW room entries, narrowed to this thread — the member's
-        // turn sees only the conversation it's part of.
-        const delta = room.log.slice(seen).filter((e: GroupMessage) => groupThreadOf(e) === thread)
-
-        if (!delta.length) {
-          continue
-        }
-
-        // #93129: a member the user told to stop is HELD — no turn until an
-        // explicit release (resume / @all resume / a direct non-stop
-        // mention). Consume the delta exactly once (watermark past the
-        // current log) so the same entries never re-trigger this skip, and
-        // surface WHY the bot is silent in the activity feed the first time.
-        const heldEntry = (room.holds || {})[memberKey]
-
-        if (heldEntry) {
-          const advance = heldMemberWatermarkAdvance(seen, room.log.length)
-          updateGroupChat(group, (r: GroupChatRoom) => {
-            if (advance !== null) {
-              r.watermarks[markKey] = advance
-            }
-
-            if (r.holds?.[memberKey] && !r.holds[memberKey].noted) {
-              r.holds = {
-                ...r.holds,
-                [memberKey]: {
-                  ...r.holds[memberKey],
-                  noted: true
-                }
-              }
-            }
-
-            return r
-          })
-
-          if (!heldEntry.noted) {
-            recordGroupActivity(group, {
-              kind: 'held',
-              member: member.name,
-              thread
-            })
-          }
-
-          continue
-        }
-
-        const prompt = buildGroupChatTurnPrompt({
-          groupName: group,
-          members,
-          viewer: member,
-          deltaLines: delta
-            .slice(-GROUP_CHAT_HISTORY_LIMIT)
-            .map((e: GroupMessage) => formatGroupChatLine(e, member.name))
-        })
-
-        // Images riding this delta (user attachments — member entries don't
-        // carry images today, but flatMap keeps this future-proof) get staged
-        // into the member's session so the model sees the pixels, not just
-        // the transcript's [attached image: …] marker.
-        const deltaImages = delta.flatMap((e: GroupMessage) => (Array.isArray(e.images) ? e.images : []))
-
-        // Surface WHO is on turn (runtime-only, like running/epoch) so the
-        // room shows "Radar is thinking…" instead of a generic working line —
-        // long model turns otherwise read as the room being stuck.
-        updateGroupChat(group, (r: GroupChatRoom) => {
-          r.turn = member.name
-
-          return r
-        })
-        let reply: null | string = null
-
-        try {
-          reply = await runGroupChatMemberTurn(group, member, prompt, thread, deltaImages)
-
-          // Needs-attention hook (#93091 item 3): a turn that produced a real
-          // reply (or an explicit pass) is a good turn — clear the badge.
-          // A timed-out turn also returns null but never threw; leaving any
-          // prior badge in place there is the conservative choice.
-          if (reply !== null) {
-            clearBotAttention(groupMemberKey(member))
-          }
-        } catch (error: any) {
-          const reason = String(error?.data?.reason || '').trim()
-          recordGroupActivity(group, {
-            kind: 'failed',
-            member: member.name,
-            thread,
-            ...(reason
-              ? {
-                  reason
-                }
-              : {})
-          })
-          noteBotAttention(groupMemberKey(member), reason || error?.message || error)
-          reply = null // a failed turn is a pass, never a room error
-        }
-
-        // #93127: the turn may have finished AFTER a newer user send bumped
-        // the room epoch. That newer send's loop re-drives this member with
-        // the full delta, so committing this stale result (watermark advance
-        // + append) would double-deliver the same reply. Drop it here —
-        // BEFORE the watermark advance and BEFORE the append. Only a newer
-        // USER entry in THIS thread makes the re-drive premise true: a
-        // cross-thread send bumps the epoch too, but its loop filters this
-        // thread out and would never regenerate the finished reply. The
-        // during-turn tail is anchored by entry id, not index — the history
-        // trim drops entries from the FRONT, so an index slice could
-        // overshoot after a mid-turn trim and silently commit a stale turn.
-        const roomNow = $groupChats.get()[group] || {
-          log: []
-        }
-
-        const epochNow = roomNow.epoch || 0
-        const anchorId = room.log.length ? room.log[room.log.length - 1].id : null
-        const anchorIdx = anchorId === null ? -1 : roomNow.log.findIndex((e: GroupMessage) => e.id === anchorId)
-        // Anchor trimmed away ⇒ every pre-turn entry was dropped, so every
-        // surviving entry is newer — scanning the whole log stays exact.
-        const turnTail = anchorIdx >= 0 ? roomNow.log.slice(anchorIdx + 1) : roomNow.log
-
-        const newerUserEntryInThread = turnTail.some(
-          (e: GroupMessage) => e.from?.kind === 'user' && groupThreadOf(e) === thread
-        )
-
-        if (!shouldCommitMemberTurn(startEpoch, epochNow, newerUserEntryInThread)) {
-          recordGroupActivity(group, {
-            kind: 'cancelled',
-            member: member.name,
-            thread
-          })
-
+        if (!binding.isLive() || result === null) {
           return
         }
 
-        // The member has now seen everything up to the pre-reply log length.
-        updateGroupChat(group, (r: GroupChatRoom) => {
-          r.watermarks[markKey] = r.log.length
-
-          return r
-        })
-
-        if (reply !== null && !isGroupPassText(reply)) {
-          appendGroupChatEntry(
-            group,
-            {
-              kind: 'member',
-              name: member.name,
-              ...(member.remoteSource
-                ? {
-                    source: member.connectionLabel || member.connectionId
-                  }
-                : {})
-            },
-            reply,
-            thread
-          )
-          // Its own message counts as seen too.
-          updateGroupChat(group, (r: GroupChatRoom) => {
-            r.watermarks[markKey] = r.log.length
-
-            return r
-          })
+        if (result) {
           posted += 1
           spokeThisRound += 1
         }
@@ -749,121 +692,14 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         // room's entire budget on back-and-forth handoffs.
         continuations += 1
 
-        if (pendingKeys.length && continuations <= GROUP_CHAT_MAX_CONTINUATIONS) {
-          const citedMembers = members.filter((member: GroupMember) => pendingKeys.includes(groupMemberKey(member)))
+        const continued = await runGroupContinuationMembers(context, pendingKeys, continuations, posted)
 
-          if (citedMembers.length && posted < GROUP_CHAT_MAX_MESSAGES) {
-            const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
-
-            const continuationResponders = citedMembers.filter(
-              (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
-            )
-
-            for (const member of continuationResponders) {
-              if (!isCurrent() || posted >= GROUP_CHAT_MAX_MESSAGES || continuations > GROUP_CHAT_MAX_CONTINUATIONS) {
-                break
-              }
-
-              const room = $groupChats.get()[group] || {
-                log: [],
-                watermarks: {}
-              }
-
-              const memberKey = groupMemberKey(member)
-              const markKey = `${thread}::${memberKey}`
-              const seen = room.watermarks[markKey] || 0
-              const delta = room.log.slice(seen).filter((e: GroupMessage) => groupThreadOf(e) === thread)
-
-              // A cited member always has delta here (the citing reply IS in
-              // its tail); skip defensively anyway so an empty prompt never
-              // fires.
-              if (!delta.length) {
-                continue
-              }
-
-              const heldEntry = (room.holds || {})[memberKey]
-
-              if (heldEntry) {
-                continue // holds still apply to continuation turns (#93129)
-              }
-
-              const prompt = buildGroupChatTurnPrompt({
-                groupName: group,
-                members,
-                viewer: member,
-                // The continuation prompt centers on what the member missed:
-                // everything since its watermark, which includes the reply
-                // that cites it.
-                deltaLines: delta
-                  .slice(-GROUP_CHAT_HISTORY_LIMIT)
-                  .map((e: GroupMessage) => formatGroupChatLine(e, member.name))
-              })
-
-              updateGroupChat(group, (r: GroupChatRoom) => {
-                r.turn = member.name
-
-                return r
-              })
-              let continuationReply: null | string = null
-
-              try {
-                continuationReply = await runGroupChatMemberTurn(group, member, prompt, thread)
-
-                if (continuationReply !== null) {
-                  clearBotAttention(memberKey)
-                }
-              } catch (error: any) {
-                recordGroupActivity(group, {
-                  kind: 'failed',
-                  member: member.name,
-                  thread
-                })
-                noteBotAttention(memberKey, error?.message || error)
-                continuationReply = null
-              }
-
-              if (!isCurrent()) {
-                return
-              }
-
-              updateGroupChat(group, (r: GroupChatRoom) => {
-                r.watermarks[markKey] = r.log.length
-
-                return r
-              })
-
-              if (continuationReply !== null && !isGroupPassText(continuationReply)) {
-                appendGroupChatEntry(
-                  group,
-                  {
-                    kind: 'member',
-                    name: member.name,
-                    ...(member.remoteSource
-                      ? {
-                          source: member.connectionLabel || member.connectionId
-                        }
-                      : {})
-                  },
-                  continuationReply,
-                  thread
-                )
-                updateGroupChat(group, (r: GroupChatRoom) => {
-                  r.watermarks[markKey] = r.log.length
-
-                  return r
-                })
-                posted += 1
-
-                // The continuation's own reply may cite someone else — fall
-                // through to the normal loop so the next round handles it via
-                // the same responder machinery. Reaching here means the loop
-                // continues rather than settling; the outer for-loop's next
-                // iteration re-evaluates everything.
-                spokeThisRound += 1
-              }
-            }
-          }
+        if (!binding.isLive() || continued === null) {
+          return
         }
+
+        posted += continued
+        spokeThisRound += continued
 
         if (spokeThisRound === 0) {
           // Genuinely nothing left to say — including after the continuation
@@ -911,53 +747,72 @@ export async function runGroupChatRounds(group: string, members: GroupMember[], 
         void harvestStrandedUntilSettled(group, members, thread)
       }
     }
+
+    binding.dispose()
   }
 }
 
 /** Bounded background harvest for members whose replies outlived the turn
- *  loop. Polls every 5s for up to 5 minutes; stops early when nothing is
+ *  loop. Watches for a further hard-cap duration plus a minute of grace
+ *  after foreground polling ends; stops early when nothing is
  *  stranded, a new loop takes the room over (it harvests on its own), or the
  *  room record disappears (disband). */
 async function harvestStrandedUntilSettled(group: string, members: GroupMember[], thread: string) {
-  const HARVEST_INTERVAL_MS = 5000
-  const HARVEST_MAX_TRIES = 60
+  const binding = followGroupChat(group, name => {
+    group = name
+  })
 
-  for (let attempt = 0; attempt < HARVEST_MAX_TRIES; attempt++) {
-    await new Promise(resolve => window.setTimeout(resolve, HARVEST_INTERVAL_MS))
-    const room = $groupChats.get()[group]
+  try {
+    const HARVEST_INTERVAL_MS = 5000
+    const HARVEST_MAX_TRIES = Math.ceil((GROUP_TURN_HARD_CAP_MS + 60000) / HARVEST_INTERVAL_MS)
 
-    if (!room || room.running) {
-      return
-    }
+    for (let attempt = 0; attempt < HARVEST_MAX_TRIES; attempt++) {
+      await new Promise(resolve => window.setTimeout(resolve, HARVEST_INTERVAL_MS))
+      const room = $groupChats.get()[group]
 
-    const stranded = room.stranded || {}
+      if (!binding.isLive() || !room || room.running) {
+        return
+      }
 
-    if (!Object.keys(stranded).length) {
-      return
-    }
+      const stranded = room.stranded || {}
 
-    for (const member of members) {
-      if (Object.prototype.hasOwnProperty.call(stranded, groupMemberKey(member))) {
-        try {
-          await harvestStrandedGroupReply(group, member)
-        } catch {
-          // Best-effort: the next tick retries; the bound stops runaways.
+      if (!Object.keys(stranded).length) {
+        return
+      }
+
+      for (const member of members) {
+        if (!binding.isLive()) {
+          return
+        }
+
+        if (Object.prototype.hasOwnProperty.call(stranded, groupMemberKey(member))) {
+          try {
+            await harvestStrandedGroupReply(group, member)
+          } catch {
+            // Best-effort: the next tick retries; the bound stops runaways.
+          }
         }
       }
     }
-  }
 
-  recordGroupActivity(group, {
-    kind: 'failed',
-    member: null,
-    thread
-  })
+    if (!binding.isLive()) {
+      return
+    }
+
+    recordGroupActivity(group, {
+      kind: 'failed',
+      member: null,
+      thread
+    })
+  } finally {
+    binding.dispose()
+  }
 }
 
 /** User send into a group room. `thread` continues that thread (its reply
  *  box); omitted/null mints a NEW thread — the main composer's Slack shape.
- *  Appends, bumps the room epoch (supersedes any running loop at its next
- *  member boundary), and starts the turn drive for the target thread.
+ *  Appends and queues the target thread behind the active room drive,
+ *  without redirecting a member whose inference is still in flight.
  *  Returns the thread id the message landed in. */
 export function sendToGroupChat(
   group: string,
@@ -967,9 +822,27 @@ export function sendToGroupChat(
   images?: Attachment[]
 ): null | string {
   const trimmed = String(text || '').trim()
+
+  if (rejectGroupSlashCommand(trimmed)) {
+    return null
+  }
+
   const attached = Array.isArray(images) ? images.filter((img: Attachment) => img && img.data) : []
 
-  if ((!trimmed && !attached.length) || !members.length) {
+  if (!trimmed && !attached.length) {
+    return null
+  }
+
+  // An empty member seat (roster hydration race, meta clobber, legacy room
+  // record without member descriptors) used to swallow the send: a fully
+  // typed message vanished with no thread and no error. Surface it — the
+  // caller keeps the draft, so nothing is lost.
+  if (!members.length) {
+    host.notify({
+      kind: 'error',
+      message: botsText().group.noMembersToSend(group)
+    })
+
     return null
   }
 
@@ -998,25 +871,25 @@ export function sendToGroupChat(
     attached
   )
 
-  const wasRunning = ($groupChats.get()[group] || {}).running === true
   updateGroupChat(group, (room: GroupChatRoom) => {
-    room.epoch = (room.epoch || 0) + 1
-    room.running = true
     // #93129: user text is the ONLY input that changes member holds. An
     // explicit "stop @member" sets a sticky hold; "@member resume" (or
     // @all resume, or any direct non-stop mention of the held member)
     // releases it. Bot replies never flow through this function.
-    room.holds = applyGroupHoldDirective(
-      room.holds,
-      parseGroupChatMentions(trimmed, members),
-      trimmed,
-      {
-        at: sent?.at,
-        byMessageId: sent?.id,
-        thread: target
-      },
-      members.map((member: GroupMember) => groupMemberKey(member))
-    )
+    room.holds =
+      room.holdDetection === false
+        ? {}
+        : applyGroupHoldDirective(
+            room.holds,
+            parseGroupChatMentions(trimmed, members),
+            trimmed,
+            {
+              at: sent?.at,
+              byMessageId: sent?.id,
+              thread: target
+            },
+            members.map((member: GroupMember) => groupMemberKey(member))
+          )
 
     return room
   })
@@ -1026,27 +899,74 @@ export function sendToGroupChat(
     thread: target
   })
 
-  if (!wasRunning) {
-    void runGroupChatRounds(group, members, target).catch(() => {
-      updateGroupChat(group, (r: GroupChatRoom) => {
-        r.running = false
-
-        return r
-      })
-    })
-  } else {
-    // A loop is live; it bails at its next boundary. Chain the fresh loop
-    // after a short settle so exactly one drive owns the room.
-    setTimeout(() => {
-      void runGroupChatRounds(group, members, target).catch(() => {
-        updateGroupChat(group, (r: GroupChatRoom) => {
-          r.running = false
-
-          return r
-        })
-      })
-    }, 250)
-  }
+  queueGroupChatDrive(group, members, target)
 
   return target
+}
+
+interface GroupChatDrive {
+  failedMembers: Set<string>
+  pending: Map<string, GroupMember[]>
+  binding: ReturnType<typeof followGroupChat>
+}
+
+// Keep the owner until its awaited member releases, even after Stop. A
+// rename follows the room identity; disband retires the binding permanently.
+const groupChatDrives = new Map<string, GroupChatDrive>()
+
+function queueGroupChatDrive(group: string, members: GroupMember[], thread: string) {
+  let key = groupChatRoomKey(group, $groupChats.get()[group])
+  const active = groupChatDrives.get(key)
+
+  if (active?.binding.isLive()) {
+    // Only a new user action AFTER failure authorizes another attempt.
+    active.failedMembers.clear()
+    active.pending.set(thread, members)
+
+    return
+  }
+
+  const binding = followGroupChat(group, name => {
+    groupChatDrives.delete(key)
+    group = name
+    key = groupChatRoomKey(group, $groupChats.get()[group])
+    groupChatDrives.set(key, drive)
+  })
+
+  const drive: GroupChatDrive = { pending: new Map([[thread, members]]), failedMembers: new Set(), binding }
+  groupChatDrives.set(key, drive)
+  // Queued threads share the activity epoch, so draining one cannot hide
+  // unresolved failures from the preceding thread. Stop still invalidates it.
+  updateGroupChat(group, room => ({ ...room, epoch: (room.epoch || 0) + 1 }))
+
+  void (async () => {
+    let currentThread = thread
+
+    try {
+      while (binding.isLive() && drive.pending.size) {
+        const [nextThread, nextMembers] = drive.pending.entries().next().value!
+        currentThread = nextThread
+        drive.pending.delete(nextThread)
+        updateGroupChat(group, room => ({ ...room, running: true }))
+        await runGroupChatRounds(group, nextMembers, nextThread, drive.failedMembers)
+      }
+    } catch (error) {
+      if (binding.isLive()) {
+        const reason = groupFailureReason(error)
+        recordGroupActivity(group, {
+          kind: 'failed',
+          member: null,
+          thread: currentThread,
+          ...(reason ? { reason } : {})
+        })
+        updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
+      }
+    } finally {
+      binding.dispose()
+
+      if (groupChatDrives.get(key) === drive) {
+        groupChatDrives.delete(key)
+      }
+    }
+  })()
 }

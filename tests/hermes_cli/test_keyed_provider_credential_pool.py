@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-import yaml
+import hermes_yaml as yaml
 
 
 POOL_KEY = "sk-real-b-ai-pool-key-12345"
@@ -152,7 +152,7 @@ def test_prune_keeps_active_legacy_pool_for_keyed_provider(tmp_path, monkeypatch
         encoding="utf-8",
     )
 
-    from hermes_cli.model_setup_flows import (
+    from hermes_cli.model_setup_flows_common import (
         _prune_replaced_custom_model_config_credentials,
     )
 

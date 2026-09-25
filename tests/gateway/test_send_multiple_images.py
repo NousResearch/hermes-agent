@@ -72,12 +72,13 @@ class _StubAdapter(BasePlatformAdapter):
 
 
 class TestBaseDefaultLoop:
-    def test_loops_per_image_by_default(self):
+    def test_loops_per_image_by_default(self, tmp_path):
+        local = tmp_path / "foo.png"
         a = _StubAdapter()
         images = [
             ("https://x.com/a.png", "alt 1"),
             ("https://x.com/b.png", "alt 2"),
-            ("file:///tmp/foo.png", "local"),
+            (local.as_uri(), "local"),
             ("https://x.com/c.gif", ""),
         ]
         _run(a.send_multiple_images("chat1", images))
@@ -85,7 +86,7 @@ class TestBaseDefaultLoop:
         assert len(a.sent_images) == 2
         assert len(a.sent_animations) == 1
         assert len(a.sent_files) == 1
-        assert a.sent_files[0][1] == "/tmp/foo.png"
+        assert a.sent_files[0][1] == str(local)
 
 
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402

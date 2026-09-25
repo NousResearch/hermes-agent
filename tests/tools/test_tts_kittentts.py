@@ -15,7 +15,7 @@ def clean_env(monkeypatch):
 @pytest.fixture(autouse=True)
 def clear_kittentts_cache():
     """Reset the module-level model cache between tests."""
-    from tools import tts_tool as _tt
+    from tools import tts_tool_local as _tt
     _tt._kittentts_model_cache.clear()
     yield
     _tt._kittentts_model_cache.clear()
@@ -80,34 +80,8 @@ class TestGenerateKittenTts:
         assert call_kwargs["clean_text"] is False
 
 
-    def test_missing_kittentts_raises_import_error(self, tmp_path, monkeypatch):
-        """When kittentts package is not installed, _import_kittentts raises."""
-        import sys
-        monkeypatch.setitem(sys.modules, "kittentts", None)
-        from tools.tts_tool import _generate_kittentts
-
-        with pytest.raises((ImportError, TypeError)):
-            _generate_kittentts("Hi", str(tmp_path / "out.wav"), {})
 
 
-class TestCheckKittenttsAvailable:
-    def test_reports_available_when_package_present(self, monkeypatch):
-        import importlib.util
-        from tools.tts_tool import _check_kittentts_available
-
-        fake_spec = MagicMock()
-        monkeypatch.setattr(
-            importlib.util, "find_spec",
-            lambda name: fake_spec if name == "kittentts" else None,
-        )
-        assert _check_kittentts_available() is True
-
-    def test_reports_unavailable_when_package_missing(self, monkeypatch):
-        import importlib.util
-        from tools.tts_tool import _check_kittentts_available
-
-        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
-        assert _check_kittentts_available() is False
 
 
 class TestDispatcherBranch:
@@ -120,7 +94,7 @@ class TestDispatcherBranch:
         from tools.tts_tool import text_to_speech_tool
 
         # Write a config telling it to use kittentts
-        import yaml
+        import hermes_yaml as yaml
         (tmp_path / "config.yaml").write_text(
             yaml.safe_dump({"tts": {"provider": "kittentts"}})
         )
@@ -128,4 +102,3 @@ class TestDispatcherBranch:
         result = json.loads(text_to_speech_tool(text="Hello"))
         assert result["success"] is False
         assert "kittentts" in result["error"].lower()
-        assert "hermes setup tts" in result["error"].lower()

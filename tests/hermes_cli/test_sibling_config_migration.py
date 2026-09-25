@@ -10,10 +10,11 @@ These tests use REAL config files on disk and the REAL migration pipeline —
 only the profile-root location is pointed at tmp_path.
 """
 
-import yaml
+import hermes_yaml as yaml
 from pathlib import Path
 
 import hermes_cli.update_cmd as update_cmd
+import hermes_cli.update_cmd_config as update_cmd_config
 
 
 def _write_profile(root: Path, name: str, version: int) -> Path:
@@ -41,9 +42,6 @@ def _setup(monkeypatch, tmp_path, active_home: Path):
     monkeypatch.setattr(
         hermes_constants, "get_process_hermes_home", lambda: active_home
     )
-    monkeypatch.setattr(
-        update_cmd, "_reload_config_modules", lambda: None
-    )  # module reload is orthogonal here; the real one re-imports from disk
 
 
 def test_sibling_behind_is_migrated_on_disk(monkeypatch, tmp_path):

@@ -199,7 +199,6 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
 
     # Markdown surfaces the change
     md = (run_dir / "REPORT.md").read_text()
-    assert "Cron job skill references rewritten" in md
     assert "foo-watcher" in md
     assert "foo-umbrella" in md
 

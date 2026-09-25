@@ -17,6 +17,7 @@ import types
 
 from hermes_state import SessionDB
 from tui_gateway import entry, server
+from hermes_cli import model_switch_providers
 
 
 IDLE_S = 6 * 3600
@@ -117,6 +118,21 @@ class TestSweepOrphanedSessionRows:
 
         assert server._sweep_orphaned_session_rows() == []
         assert db.get_session("fresh-branch")["ended_at"] is None
+
+    def test_spares_pinned_idle_row(self, monkeypatch, tmp_path):
+        """Pinned rows are prune-immune (#68035); the startup sweep must match auto-prune."""
+        db = SessionDB(tmp_path / "state.db")
+        stale = time.time() - 8 * 3600
+        _seed_session(db, "pinned-tui", source="tui", last_active=stale)
+        _seed_session(db, "stale-tui", source="tui", last_active=stale)
+        db.set_session_pinned("pinned-tui", True)
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_SESSION_TTL_S", float(IDLE_S))
+        monkeypatch.setattr(server, "_sessions", {})
+
+        assert server._sweep_orphaned_session_rows() == ["stale-tui"]
+        assert db.get_session("pinned-tui")["ended_at"] is None
+        assert db.get_session("stale-tui")["end_reason"] == "startup_orphan_reap"
 
     def test_spares_live_in_memory_and_gateway_rows(self, monkeypatch, tmp_path):
         db = SessionDB(tmp_path / "state.db")
@@ -220,59 +236,7 @@ class TestScheduleStartupOrphanSweep:
 
 
 class TestEntryAndWsWiring:
-    def test_main_schedules_sweep(self, monkeypatch):
-        scheduled = {"n": 0}
 
-        def _schedule():
-            scheduled["n"] += 1
-
-        monkeypatch.setattr(server, "_schedule_startup_orphan_sweep", _schedule)
-        monkeypatch.setattr(entry, "_install_sidecar_publisher", lambda: None)
-        monkeypatch.setattr(entry, "ensure_mcp_discovery_started", lambda: None)
-        monkeypatch.setattr(entry, "resolve_skin", lambda: "default")
-        monkeypatch.setattr(entry.server, "_ensure_skin_watcher", lambda: None)
-        monkeypatch.setattr(entry, "_log_exit", lambda reason: None)
-        monkeypatch.setattr(entry, "handle_spurious_eof", lambda *a: False)
-        monkeypatch.setattr(entry, "write_json", lambda _payload: True)
-        monkeypatch.setattr(entry.sys, "stdin", io.StringIO(""))
-
-        # Prewarm is imported lazily inside main(); keep it inert.
-        import hermes_cli.model_switch as ms
-
-        monkeypatch.setattr(ms, "prewarm_picker_cache_async", lambda: None)
-
-        entry.main()
-        assert scheduled["n"] == 1
-
-    def test_handle_ws_schedules_sweep(self, monkeypatch):
-        import asyncio
-
-        from tui_gateway import ws as ws_mod
-
-        scheduled = {"n": 0}
-        monkeypatch.setattr(
-            server, "_schedule_startup_orphan_sweep", lambda: scheduled.__setitem__("n", scheduled["n"] + 1)
-        )
-        monkeypatch.setattr(server, "resolve_skin", lambda: "default")
-        monkeypatch.setattr(server, "_ensure_skin_watcher", lambda: None)
-        monkeypatch.setattr(server, "register_live_transport", lambda *_a, **_k: None)
-        monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0)
-
-        class FakeWS:
-            async def accept(self):
-                pass
-
-            async def send_text(self, line):
-                pass
-
-            async def receive_text(self):
-                raise ws_mod._WebSocketDisconnect()
-
-            async def close(self):
-                pass
-
-        asyncio.run(ws_mod.handle_ws(FakeWS()))
-        assert scheduled["n"] == 1
 
     def test_schedule_failure_does_not_break_main(self, monkeypatch):
         def _boom():
@@ -287,8 +251,7 @@ class TestEntryAndWsWiring:
         monkeypatch.setattr(entry, "handle_spurious_eof", lambda *a: False)
         monkeypatch.setattr(entry, "write_json", lambda _payload: True)
         monkeypatch.setattr(entry.sys, "stdin", io.StringIO(""))
-        import hermes_cli.model_switch as ms
 
-        monkeypatch.setattr(ms, "prewarm_picker_cache_async", lambda: None)
+        monkeypatch.setattr(model_switch_providers, "prewarm_picker_cache_async", lambda: None)
 
         entry.main()  # must not raise

@@ -9,6 +9,7 @@
  * The two are persisted independently. Shift+X toggles light/dark.
  */
 
+import { ensureContrast, mix, parseColor } from '@hermes/shared/color'
 import { useStore } from '@nanostores/react'
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
@@ -16,11 +17,13 @@ import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $connection } from '@/store/session'
 import { setAppearance } from '@/store/translucency'
 
 import { $accentOverride } from './accent-override'
-import { $backendThemes, $pendingSkinApply } from './backend-sync'
-import { ensureContrast, harmonize, hexToRgb, mix, readableOn } from './color'
+import { $backendThemes, $pendingSkinApply, localDisplaySkinName, localDisplaySkinProfile } from './backend-sync'
+import { $chatFontFamily, resolveChatFontFamily } from './chat-font'
+import { harmonize, readableInk } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import { retintTheme } from './retint'
 import type { DesktopTheme, DesktopThemeColors } from './types'
@@ -68,31 +71,46 @@ const normalizeMode = (value: string | null): ThemeMode =>
 // it *is* the legacy global slot, so it reads/writes the global directly. Named
 // profiles get their own entry and fall back to that global until assigned, so
 // unassigned profiles and pre-per-profile installs stay on the global value.
-const profilePref = <T extends string>(record: string, legacy: string, normalize: (v: string | null) => T) => ({
-  resolve: (profile: string): T => normalize(storedStringRecord(record)[profile] ?? storedString(legacy)),
-  assign: (profile: string, value: T): void => {
-    if (profile === 'default') {
-      persistString(legacy, value)
-    } else {
-      persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
+const profilePref = <T extends string>(record: string, legacy: string, normalize: (v: string | null) => T) => {
+  const stored = (profile: string): string | null => storedStringRecord(record)[profile] ?? storedString(legacy)
+
+  return {
+    /** The pick as written, un-normalized. */
+    stored,
+    resolve: (profile: string): T => normalize(stored(profile)),
+    assign: (profile: string, value: T): void => {
+      if (profile === 'default') {
+        persistString(legacy, value)
+      } else {
+        persistStringRecord(record, { ...storedStringRecord(record), [profile]: value })
+      }
     }
   }
-})
+}
 
 export const skinPref = profilePref(PROFILE_SKINS_KEY, SKIN_KEY, normalizeSkin)
 export const modePref = profilePref(PROFILE_MODES_KEY, MODE_KEY, normalizeMode)
 
+// The bridge's local skin is only a fallback for the profile this window booted
+// into. A desktop-side pick remains the source of truth, and switching to a
+// different profile cannot borrow a skin from this machine's initial profile.
+const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_KEY))
+const BOOT_PROFILE_KEY = typeof window === 'undefined' ? 'default' : localDisplaySkinProfile ?? readBootProfileKey()
+
+// Provider state keeps the raw pick so a name nothing resolves YET (a backend
+// skin the gateway hasn't seeded on this launch) isn't flattened to the default
+// for the rest of the session — it paints as soon as the registry can resolve it.
+const storedSkin = (profile: string): string =>
+  skinPref.stored(profile) ?? (profile === BOOT_PROFILE_KEY ? localDisplaySkinName ?? DEFAULT_SKIN_NAME : DEFAULT_SKIN_NAME)
+
 /** Everything a peer window could change that this one has to repaint for. */
 const APPEARANCE_KEYS = new Set([SKIN_KEY, PROFILE_SKINS_KEY, MODE_KEY, PROFILE_MODES_KEY])
 
-// Last active profile — lets the boot paint pick its appearance before the
-// gateway reports which profile actually launched.
-const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_KEY))
 const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
 
 // ─── Color math (for synthesised light variants of dark-only skins) ────────
-// hexToRgb / mix / readableOn live in ./color so the VS Code converter shares
-// the exact same math.
+// mix / ensureContrast live in @hermes/shared/color (shared with the TUI);
+// readableInk in ./color pins the desktop's near-black ink.
 
 function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
   const accent = seed.colors.ring || seed.colors.primary
@@ -111,7 +129,7 @@ function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
     popover: '#ffffff',
     popoverForeground: '#161616',
     primary: accent,
-    primaryForeground: readableOn(accent),
+    primaryForeground: readableInk(accent),
     secondary: soft,
     secondaryForeground: mix('#2a2a2a', accent, 0.34),
     accent: soft,
@@ -120,7 +138,7 @@ function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
     input: mix('#e2e2e6', accent, 0.18),
     ring: accent,
     midground,
-    midgroundForeground: readableOn(midground),
+    midgroundForeground: readableInk(midground),
     destructive: '#b94a3a',
     destructiveForeground: '#ffffff',
     sidebarBackground: mix('#fafafa', accent, 0.05),
@@ -159,7 +177,7 @@ function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
  * the actual background luminance.
  */
 function renderedModeFor(colors: DesktopThemeColors, mode: 'light' | 'dark'): 'light' | 'dark' {
-  const rgb = hexToRgb(colors.background)
+  const rgb = parseColor(colors.background)
 
   if (!rgb) {
     return mode
@@ -194,7 +212,7 @@ const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-bubble': isDark ? '46%' : '0%'
 })
 
-function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
+function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', chatFontFamily = $chatFontFamily.get()) {
   if (typeof document === 'undefined') {
     return
   }
@@ -242,7 +260,7 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     '--dt-input': c.input,
     '--dt-ring': c.ring,
     '--dt-muted': c.muted,
-    '--dt-midground-foreground': c.midgroundForeground ?? readableOn(midground),
+    '--dt-midground-foreground': c.midgroundForeground ?? readableInk(midground),
     // A LOUD fill of the brand colour, for the rare surface that has to read as
     // the app speaking rather than as chrome. `primary` alone can't do that job:
     // a pale accent (imported VS Code themes love a pastel pink) is a perfectly
@@ -263,7 +281,7 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     // `harmonize`); a blue one turns the sidebar's finished dots teal rather
     // than leaving eight emerald spots fighting the theme.
     '--ui-success': harmonize('#10b981', midground, 0.25),
-    '--dt-font-sans': typo.fontSans,
+    '--dt-font-sans': resolveChatFontFamily(chatFontFamily, typo.fontSans),
     '--dt-font-mono': typo.fontMono,
     '--noise-opacity-mul': isDark ? 'calc(0.04 / 0.21)' : 'calc(0.34 / 0.21)'
   }
@@ -311,10 +329,10 @@ const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') =>
 // active profile's appearance so a non-default profile relaunch paints its own
 // skin + light/dark mode.
 if (typeof window !== 'undefined') {
-  const profile = readBootProfileKey()
+  const profile = BOOT_PROFILE_KEY
   const pref = modePref.resolve(profile)
   const resolved = resolveMode(pref)
-  const theme = deriveTheme(skinPref.resolve(profile), resolved)
+  const theme = deriveTheme(normalizeSkin(storedSkin(profile)), resolved)
   applyTheme(theme, resolved)
   syncNativeTheme(pref, renderedModeFor(theme.colors, resolved))
 }
@@ -365,7 +383,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Skin + mode are assigned per profile; the active profile drives which
   // appearance shows. Single-profile users only ever see "default", so their
   // behavior is unchanged.
-  const profileKey = normalizeProfileKey(useStore($activeGatewayProfile))
+  const activeGatewayProfile = useStore($activeGatewayProfile)
+  const connection = useStore($connection)
+  // Before a gateway descriptor exists, the bridge is the only authoritative
+  // profile for this window. Once one arrives, follow the live route as usual.
+  const profileKey = normalizeProfileKey(connection?.profile ?? (connection ? activeGatewayProfile : BOOT_PROFILE_KEY))
 
   // Built-ins + user-installed + registry-contributed themes. Reactive so an
   // import or a plugin registration shows up live in the palette, settings
@@ -387,18 +409,18 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   )
 
   const [themeName, setThemeNameState] = useState(() =>
-    typeof window === 'undefined' ? DEFAULT_SKIN_NAME : skinPref.resolve(readBootProfileKey())
+    typeof window === 'undefined' ? DEFAULT_SKIN_NAME : storedSkin(BOOT_PROFILE_KEY)
   )
 
   const [mode, setModeState] = useState<ThemeMode>(() =>
-    typeof window === 'undefined' ? 'system' : modePref.resolve(readBootProfileKey())
+    typeof window === 'undefined' ? 'system' : modePref.resolve(BOOT_PROFILE_KEY)
   )
 
   // Follow profile switches: paint the profile's assigned skin + mode and
   // remember it for the next boot's first paint.
   useEffect(() => {
     rememberActiveProfileKey(profileKey)
-    setThemeNameState(skinPref.resolve(profileKey))
+    setThemeNameState(storedSkin(profileKey))
     setModeState(modePref.resolve(profileKey))
   }, [profileKey])
 
@@ -414,7 +436,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
       const live = normalizeProfileKey($activeGatewayProfile.get())
 
-      setThemeNameState(skinPref.resolve(live))
+      setThemeNameState(storedSkin(live))
       setModeState(modePref.resolve(live))
     }
 
@@ -431,7 +453,16 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // committed appearance.
   const [preview, setPreview] = useState<{ name: string; mode: 'light' | 'dark' } | null>(null)
 
-  const paintedName = preview ? preview.name : themeName
+  // The committed skin, resolved against the CURRENT registry — so a stored
+  // backend skin that failed to resolve at boot paints once the gateway seeds it.
+  const committedName = useMemo(
+    () => normalizeSkin(themeName),
+    // normalizeSkin resolves through the merged registry; the stores are its reactivity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [themeName, userThemes, backendThemes, registryVersion]
+  )
+
+  const paintedName = preview ? preview.name : committedName
   const paintedMode = preview ? preview.mode : resolvedMode
 
   const activeTheme = useMemo(
@@ -456,7 +487,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // What actually gets painted (matches the `.dark` class applyTheme toggles).
   const renderedMode = useMemo(() => renderedModeFor(paintedTheme.colors, paintedMode), [paintedTheme, paintedMode])
 
-  useEffect(() => applyTheme(paintedTheme, paintedMode), [paintedTheme, paintedMode])
+  // The chat face rides on the theme paint: the config-backed family is layered
+  // in front of the theme's own stack, so an empty value is exactly the theme.
+  const chatFontFamily = useStore($chatFontFamily)
+
+  useEffect(() => applyTheme(paintedTheme, paintedMode, chatFontFamily), [paintedTheme, paintedMode, chatFontFamily])
 
   // Keep the native window appearance pinned to the app theme (vibrancy
   // material, titlebar, new-window pre-paint background).
@@ -503,7 +538,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const value = useMemo<ThemeContextValue>(
     () => ({
       theme: paintedTheme,
-      themeName,
+      themeName: committedName,
       mode,
       resolvedMode,
       renderedMode,
@@ -515,7 +550,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     }),
     [
       paintedTheme,
-      themeName,
+      committedName,
       mode,
       resolvedMode,
       renderedMode,

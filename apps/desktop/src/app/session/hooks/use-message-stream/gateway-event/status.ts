@@ -1,10 +1,14 @@
-import { translateNow } from '@/i18n'
+import { isSessionNotOwnedError } from '@/app/session/hooks/use-prompt-actions/utils'
+import { translateNow, TRANSLATIONS } from '@/i18n'
+import { getRuntimeI18nLocale } from '@/i18n/runtime'
 import { textPart } from '@/lib/chat-messages'
 import { coerceGatewayText } from '@/lib/chat-runtime'
+import type { ErrorSurface } from '@/lib/error-surface'
+import { errorCardText } from '@/lib/error-surface-copy'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { type AgentNoticePayload, clearAgentNotice, nativeNoticeInput, showAgentNotice } from '@/store/agent-notices'
 import { clearClarifyRequest } from '@/store/clarify'
-import { reconcileSessionCompacting, setSessionCompacting } from '@/store/compaction'
+import { reconcileSessionCompacting, setSessionCompacting, takeCompressDeferred } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { applyGoalStatusText } from '@/store/goals'
 import { dispatchNativeNotification } from '@/store/native-notifications'
@@ -33,22 +37,73 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
   } = deps
 
   if (event.type === 'status.update') {
-    if (sessionId && payload?.kind === 'compacting') {
+    // `compacting`/`compacted` is auto-compaction's pair. Manual /compress
+    // pins `compressing` and always clears it with `ready` (the `finally` in
+    // methods_session._compress_live). Both spellings drive the same phase —
+    // the TUI has matched the pair since createGatewayEventHandler.ts:904;
+    // without `compressing` the desktop showed no progress for /compress.
+    if (sessionId && (payload?.kind === 'compacting' || payload?.kind === 'compressing')) {
       setSessionCompacting(sessionId, true)
       compactedTurnRef.current.add(sessionId)
-    } else if (sessionId && payload?.kind === 'compacted') {
+    } else if (sessionId && (payload?.kind === 'compacted' || payload?.kind === 'ready')) {
       reconcileSessionCompacting(sessionId, 'terminal')
       compactedTurnRef.current.delete(sessionId)
+
+      // That same `pending` reply returned before the compress handler could
+      // render the summary or flip its "still running in the background"
+      // toast, so this edge is the only completion the client ever sees.
+      // Without announcing it a deferred /compress finishes in silence: the
+      // corner toast merely expires and the transcript changes underneath the
+      // user with no acknowledgement it ever ran.
+      const deferredCompress = takeCompressDeferred(sessionId)
+
+      const completionText =
+        coerceGatewayText(payload?.text).trim() || translateNow('notifications.compressDeferredDone')
+
+      if (deferredCompress) {
+        // Reuse the id the compress handler notified under, so this replaces
+        // the pending toast in place instead of stacking a second one.
+        notify({
+          durationMs: 5_000,
+          id: `session-compress:${sessionId}`,
+          kind: 'success',
+          message: completionText
+        })
+      }
+
+      const announceDeferredCompress = () => {
+        if (!deferredCompress) {
+          return
+        }
+
+        flushQueuedDeltas(sessionId)
+        updateSessionState(sessionId, state => ({
+          ...state,
+          messages: [
+            ...state.messages,
+            {
+              id: `compress-complete-${occurredAt ?? Date.now()}`,
+              role: 'system',
+              parts: [textPart(completionText, occurredAt)],
+              timestamp: occurredAt
+            }
+          ]
+        }))
+      }
 
       // A compress that finished with no live turn (manual /compress whose
       // RPC answered `pending` because the compute host outlived the wait,
       // #97948) has no turn-end hydrate to refresh the transcript — the
       // summarized bubbles would stay on screen forever. Mid-turn compaction
-      // still defers to the turn's own settle path.
+      // still defers to the turn's own settle path. The notice is appended
+      // only after that hydrate resolves: it replaces the transcript wholesale
+      // and would otherwise drop the line we just added.
       const state = sessionStateByRuntimeIdRef.current.get(sessionId)
 
       if (isActiveEvent && state && !state.busy && !state.awaitingResponse && !state.streamId) {
-        void hydrateFromStoredSession(3, state.storedSessionId, sessionId)
+        void hydrateFromStoredSession(3, state.storedSessionId, sessionId).then(announceDeferredCompress)
+      } else {
+        announceDeferredCompress()
       }
     } else if (sessionId && payload?.kind === 'process') {
       // The gateway's notification poller announces background process
@@ -170,6 +225,27 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     const errorMessage = payload?.message || 'Hermes reported an error'
     const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
 
+    // The gateway's `error` event carries no error_surface (prompt_turn.py
+    // emits it for pre-turn refusals). Recover the two codes it CAN mean from
+    // the text so the card and toast get the same plain copy + button gating
+    // as a classified turn: a live-owner refusal (SESSION_NOT_OWNED, #106217)
+    // is deterministic — Retry hits the same wall, only a new chat helps —
+    // and disk-full is a machine problem, not a provider one.
+    const surface: ErrorSurface | null = isSessionNotOwnedError(new Error(errorMessage))
+      ? { code: 'SESSION_NOT_OWNED', layer: 'gateway', retryable: false }
+      : isDiskFullErrorMessage(errorMessage)
+        ? { code: 'disk_full', layer: 'disk', retryable: false }
+        : null
+
+    // When a code was recovered, the glossed card sentence explains it better
+    // than the raw refusal. When none was, the server's own text IS the plain
+    // copy (tui_gateway/user_messages.py writes actionable sentences for
+    // pre-turn failures — agent init, resume, cancelled-before-ready), and
+    // burying it under a generic "couldn't finish" gloss would hide the one
+    // instruction the user needs.
+    const card = surface ? errorCardText(TRANSLATIONS[getRuntimeI18nLocale()].assistant.thread, surface) : null
+    const toastMessage = card ? `${card.title}. ${card.body}` : errorMessage
+
     // A turn that errors out has also ended — drop any open blocking prompt
     // for this session so an approval/sudo/secret overlay can't linger past
     // the failed turn (same intent as the message.complete clear).
@@ -187,7 +263,7 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
     }
 
     dispatchNativeNotification({
-      body: errorMessage,
+      body: toastMessage,
       kind: 'turnError',
       sessionId,
       title: translateNow('notifications.native.turnErrorTitle')
@@ -195,24 +271,30 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
 
     if (looksLikeProviderSetup) {
       requestDesktopOnboarding(errorMessage)
-    } else if (isDiskFullErrorMessage(errorMessage)) {
+    } else if (surface?.code === 'disk_full') {
       notifyError(new Error(errorMessage), translateNow('notifications.errors.diskFull'))
     } else {
       // Toast globally, not just when the failing thread is focused: a
       // turn-ending error (e.g. out of funds) blocks every thread, so the
       // inline error alone is too easy to miss. The stable id collapses the
-      // same error from multiple blocked threads into one toast.
+      // same error from multiple blocked threads into one toast. For a
+      // recovered code the message is the card's glossed sentence with the raw
+      // gateway text as the dimmed detail; otherwise the server copy is the
+      // message and there is no separate detail to repeat.
+      // No Retry action: assistant-ui's reload is per-thread, and for the
+      // codes recovered above a retry would fail identically anyway.
       notify({
+        detail: surface ? errorMessage : undefined,
         id: `gateway-error:${errorMessage}`,
         kind: 'error',
-        title: 'Hermes error',
-        message: errorMessage
+        message: toastMessage,
+        title: translateNow('assistant.thread.errorToastTitle')
       })
     }
 
     if (sessionId) {
       flushQueuedDeltas(sessionId)
-      failAssistantMessage(sessionId, errorMessage, occurredAt)
+      failAssistantMessage(sessionId, errorMessage, occurredAt, surface)
     }
 
     if (isActiveEvent) {

@@ -107,7 +107,7 @@ These are the most commonly missed scopes.
 | Scope | Purpose |
 |-------|---------|
 | `groups:read` | List and get info about private channels |
-| `assistant:write` | Render the working-state status line ("is thinking…") next to the bot name while it processes a message. Without this scope the `assistant.threads.setStatus` call fails silently and Slack shows its own rotating generic placeholders instead ("Finding answers…", "Reviewing findings…", …) — Hermes never controls the text. Required for `typing_status_text` to have any visible effect. |
+| `assistant:write` | Render the working-state status line ("is thinking…") next to the bot name while it processes a message. Without this scope the status call (`agents.sessions.setStatus` on slack-sdk 3.44+, `assistant.threads.setStatus` on older SDKs) fails silently and Slack shows its own rotating generic placeholders instead ("Finding answers…", "Reviewing findings…", …) — Hermes never controls the text. Required for `typing_status_text` to have any visible effect. |
 
 ---
 
@@ -348,9 +348,12 @@ tool), Slack renders it as **Block Kit buttons** — one tap per option, plus an
 "✏️ Other…" button that switches to free-text mode (your next typed message
 becomes the answer). After a tap, the message updates in place to show who
 answered and what was chosen; further clicks on the same prompt are ignored.
-Button clicks honor the same user authorization as messages, and expired
-prompts (gateway restart, timeout) tell you to re-ask instead of silently
-eating the click. Open-ended clarify questions render as a plain question and
+Button clicks honor the same user authorization as messages. When the prompt
+times out (`agent.clarify_timeout`), the session is reset, or you reply with
+free text instead of tapping a button, the card is rewritten in place without
+its buttons ("⏳ This prompt expired…" or "↩️ Clarification cancelled…"); a
+click on a card orphaned by a gateway restart still tells you to re-ask
+instead of silently eating the click. Open-ended clarify questions render as a plain question and
 accept your next typed reply. No configuration needed — this works regardless
 of the `rich_blocks` setting.
 
@@ -360,7 +363,7 @@ If you maintain your Slack manifest by hand and just want the slash
 command list:
 
 ```bash
-hermes slack manifest --slashes-only > /tmp/slashes.json
+hermes slack manifest --slashes-only > ~/.hermes/cache/scratch/slashes.json
 ```
 
 Paste that array into the `features.slash_commands` key of your
@@ -429,10 +432,12 @@ platforms:
       # Requires rich_blocks: true. Default: false.
       feedback_buttons: false
 
-      # Render live tool calls as Slack-native plan/task cards. This explicit
-      # opt-in activates native progress even when text tool_progress is off.
-      # If Slack rejects the native stream, Hermes keeps one editable text
-      # fallback current for the rest of the turn.
+      # Render live tool calls as Slack-native plan/task cards. Works with
+      # Slack's built-in tool_progress: off default; a tool_progress: off you
+      # write yourself disables cards too. Cards need a thread: an un-threaded
+      # chat shows no tool progress (text progress if you wrote new/all).
+      # Recoverable native API failures keep one
+      # editable text fallback current for the rest of the turn.
       native_task_cards: false
 
       # Suggested prompts pinned at the top of Agent view's Messages tab.
@@ -466,9 +471,9 @@ platforms:
 | `platforms.slack.extra.reply_broadcast` | `false` | When `true`, thread replies are also posted to the main channel. Only the first chunk is broadcast. |
 | `platforms.slack.extra.unfurl_links` | Slack default | Set to `false` to suppress automatic previews for linked web pages while preserving clickable links. When either unfurl key is set, media captions are posted as a separate message *before* the file (Slack's upload API cannot carry unfurl controls), and native draft streaming falls back to edit-based delivery. |
 | `platforms.slack.extra.unfurl_media` | Slack default | Set to `false` to suppress automatic media previews while preserving clickable links. Same caption-ordering and streaming notes as `unfurl_links`. |
-| `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
+| `platforms.slack.extra.rich_blocks` | `false` | When `true`, agent messages are rendered as [Block Kit](https://docs.slack.dev/block-kit/) blocks (headers, dividers, true nested lists, and native tables). Markdown `[label](url)` links and Slack `<url\|label>` autolinks both become clickable links inside lists, quotes and table cells; mentions (`<@U…>`, `<#C…>`, `<!here>`) are left as-is. A plain-text fallback is always sent. Tables over Slack's limits fall back to aligned monospace. No app reinstall required — it's a send-side change only. |
 | `platforms.slack.extra.feedback_buttons` | `false` | When `true` with `rich_blocks`, appends Slack-native feedback controls to final replies. |
-| `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. This is an explicit progress opt-in independent of Slack's default `tool_progress: off`; native API failures fall back to one continuously edited text update. |
+| `platforms.slack.extra.native_task_cards` | `false` | When `true`, renders live tool calls as Slack-native plan/task cards. Cards work with Slack's built-in default `tool_progress: off`; an explicitly configured `display.tool_progress: off` (global or `display.platforms.slack`; `/verbose` writes the same key) disables cards too. Cards need a thread: when the card lane is active and the chat has no thread to anchor on (a top-level DM with `reply_in_thread: false`), Hermes shows no tool progress instead of text bubbles, unless you explicitly set `tool_progress: new`/`all`, which falls back to editable text progress there. Recoverable native API failures fall back to one continuously edited text update. |
 | `platforms.slack.extra.suggested_prompts` | `[]` | Up to four `{title, message}` prompts for Agent/Assistant DM entry points; accepts either a list or `{title, prompts}`. |
 | `platforms.slack.extra.assistant_thread_titles` | `true` | When `true`, names Agent/Assistant DM threads from the first user message. |
 | `platforms.slack.extra.allow_bots` | `"none"` | Controls messages from other Slack bots: `"none"` ignores them, `"mentions"` accepts a bot message only when **that message itself** @mentions Hermes, and `"all"` accepts all of them. Use `"mentions"` for the safest bot-to-bot collaboration mode. See [Accepting messages from other bots](#accepting-messages-from-other-bots-allow_bots). |
@@ -476,7 +481,8 @@ platforms:
 | `platforms.slack.extra.cron_continuable_surface` | `"thread"` | Delivery surface for [continuable cron jobs](../features/cron.md#flat-in-channel-continuation-slack). `"thread"` opens a dedicated thread per delivery (default); `"in_channel"` delivers flat into the channel timeline. Pair `in_channel` with `reply_in_thread: false` (and `require_mention: false`) so a plain channel reply continues the job. |
 
 The equivalent environment variable is `SLACK_ALLOW_BOTS=none|mentions|all`.
-When both are set, `platforms.slack.extra.allow_bots` takes precedence. Avoid
+When both are set, the explicit environment variable takes precedence (the same
+env-over-YAML rule as every other setting). Avoid
 `all` when peer bots can answer each other without an explicit mention, because
 their own reply policies can still create loops.
 
@@ -498,7 +504,7 @@ platforms:
 | `platforms.slack.typing_status_text` | `"is thinking..."` | Text of the working-state status line shown while the agent processes a message. Requires the `assistant:write` scope — without it the status call fails silently and Slack renders its own generic placeholder, whatever this is set to. Set `typing_indicator: false` to disable the status line entirely. |
 
 :::note Where the status renders
-The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — `assistant.threads.setStatus` does not control those, and both can appear at the same time.
+The custom status appears in the **footer beneath the reply composer** ("*BotName* is thinking…"), not inline in the message list. The inline "Generating response…" / "Finding answers…" lines Slack shows in the message area while an AI app works are **Slack's own rotating indicators** — the status API (`agents.sessions.setStatus` / `assistant.threads.setStatus`) does not control those, and both can appear at the same time.
 :::
 
 The same key customizes Google Chat's visible working-state marker message
@@ -573,12 +579,29 @@ platforms:
       native_task_cards: true
 ```
 
-- This is an explicit progress opt-in — it works even though Slack's default
-  is `tool_progress: off` (text bubbles spam channels; native cards don't).
+- Cards are the Slack rendering of tool progress. They work with Slack's
+  built-in default `tool_progress: off`. Writing `tool_progress: off` yourself
+  (globally, under `display.platforms.slack`, or by cycling `/verbose` to off)
+  turns cards off as well; `new` or `all` keeps them. A `null` value inherits
+  and is not an "off". Null also allows the existing environment bridge to
+  supply the mode when no YAML layer sets a non-null value. Changes apply
+  when the next turn resolves its display settings.
+- Cards need a thread. With the card lane active, a chat that has no thread to
+  anchor on (a top-level DM under `reply_in_thread: false`) shows no tool
+  progress rather than text bubbles under Slack's default `tool_progress: off`;
+  if you wrote `new` or `all`, that chat gets the editable text progress you
+  asked for. Replies inside an existing thread still get cards.
 - Concurrent calls to the same tool are correlated by real tool-call ID, so
   parallel `web_search` calls each get their own row with the right status.
-- If the native stream can't start or update, Hermes falls back to a single
-  continuously edited text message so progress stays live for the turn.
+- Hermes checks thread eligibility before attempting publication, so a
+  disconnect or timeout cannot turn an unthreaded destination into text fallback.
+- On a supported threaded destination, if the native stream fails for a
+  recoverable reason (API error, rate limit), Hermes falls back to a single continuously edited text message so
+  progress stays live for the turn. A relay egress refusal of the destination
+  is not recoverable and suppresses progress for the turn.
+- If Slack closes a stream during a long turn, Hermes opens a fresh card in
+  the same thread with the current task list and keeps updating there. The
+  previous card remains visible.
 - The card stream is stopped exactly once when the turn finalizes, including
   on interrupt/disconnect, so no dangling live indicator is left behind.
 
@@ -793,7 +816,7 @@ slack:
 After gateway config changes, deploys, or restarts, run this synthetic smoke target:
 
 ```bash
-uv run --frozen pytest -q tests/gateway/test_slack_peer_agent_smoke.py -o addopts=''
+scripts/run_tests.sh tests/gateway/test_slack_peer_agent_smoke.py -q
 ```
 
 This target uses in-process synthetic Slack events only. It does not send live Slack messages and does not require real bot tokens by default.
@@ -1024,7 +1047,7 @@ slack:
 
 Notes:
 - The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding.
-- The skill is loaded only at session start (new session or after auto-reset). If you change the binding, run `/new` or wait for the session to auto-reset for it to take effect.
+- The skill is loaded only at session start (new session). If you change the binding, run `/new` for it to take effect.
 - Combine with `channel_prompts` for per-channel tone/constraints on top of the skill's instructions.
 
 ## Troubleshooting

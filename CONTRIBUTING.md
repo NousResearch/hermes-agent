@@ -69,7 +69,7 @@ If your skill is specialized, community-contributed, or niche, it's better suite
 
 ## Memory Providers: Ship as a Standalone Plugin
 
-**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (honcho, mem0, supermemory, byterover, hindsight, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).
+**We are no longer accepting new memory providers into this repo.** The set of built-in providers under `plugins/memory/` (honcho, mem0, supermemory, byterover, holographic, openviking, retaindb) is closed. If you want to add a new memory backend, publish it as a **standalone plugin repo** that users install into `~/.hermes/plugins/` (or via a pip entry point).
 
 Standalone memory plugins:
 
@@ -109,106 +109,114 @@ A well-built third-party-product plugin can clear automated review and still be 
 | Requirement | Notes |
 |-------------|-------|
 | **Git** | With the `git-lfs` extension installed |
-| **Python 3.11–3.13** | uv will install it if missing |
-| **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
-| **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
+| **Python 3.14** | The project requires `>=3.14,<3.15`; PM provides the pinned interpreter |
+| **Node.js** | Use the PM pin, or a version accepted by root `package.json`: `^22.22.0`, `^24.11.0`, or `>=26.0.0` |
 
-### Install with the standard installer
+### PM developer environment
 
-For most contributors, the best development bootstrap is the same path users
-take: run the standard installer, then work inside the repository it cloned.
-The installer creates the Hermes venv, wires the `hermes` command, stamps the
-install method for `hermes update`, and clones the full git project into
-`$HERMES_HOME/hermes-agent` (usually `~/.hermes/hermes-agent`). That keeps your
-development environment on the same layout the CLI, updater, lazy dependency
-installer, gateway, and docs assume.
+Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) for preparation, activation, everyday commands,
+dependency changes, and test environments. Select your development
+home before setup so experimental code does not migrate production data.
 
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-cd "${HERMES_HOME:-$HOME/.hermes}/hermes-agent"
+Activate from the repository root in each new shell. Activation runs setup's
+runtime-only path, so it provisions a fresh checkout and syncs stale dependencies.
 
-# Add dev/test extras on top of the standard install.
-uv pip install -e ".[all,dev]"
-
-# Optional: docs site + workspace dependencies.
-npm install
-```
-
-After that, create branches and run tests from that checkout:
+Bash:
 
 ```bash
-git checkout -b fix/description
-scripts/run_tests.sh
+source ./activate
+hermes --version
 ```
 
-### Manual clone fallback
+PowerShell:
 
-Use this only if you intentionally do not want Hermes' managed install layout
-(for example, a throwaway clone inside a container or CI job). If you install
-this way, make sure you run the `hermes` entrypoint from this venv; running the
-system `python3 -m hermes_cli.main` can pick up unrelated system Python
-packages.
+```powershell
+. .\activate.ps1
+hermes --version
+```
 
-Create the venv **outside** the cloned source tree. A venv that lives inside
-the directory the agent operates from can be wiped by a relative-path command
-the agent runs against its own checkout (`rm -rf venv`, `uv venv venv`, etc.),
-which silently destroys the running runtime mid-session. Keeping it outside the
-tree means no relative path from the workspace resolves to it.
+Run `hermes` for this checkout. Activation defines it as a function for this
+worktree, so it hides a global `hermes` command or MSIX alias and refuses
+outside the worktree. PM activation
+syncs tools and Python dependencies before adding them to the shell. It does not
+install JS workspaces or rewrite launchers and shell configuration. `deactivate`
+restores the prior shell environment and removes the function.
+
+### Manual development and test environment
+
+Use the [PM developer workflow](website/docs/reference/package-management.md#developer-workflow) to prepare Python 3.14 (`>=3.14,<3.15`) first.
+Run these commands from that checkout with its prepared Python. Keep the same
+development `HERMES_HOME`. PM must be able to start before it can build another
+environment. On Windows, initialize the native C++ build environment for your
+architecture before building source dependencies.
+
+Build an independent interpreter for tests and editor tools:
 
 ```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-
-# Create venv with Python 3.11, OUTSIDE the source tree
-uv venv ~/.hermes/venvs/hermes-dev --python 3.11
-export VIRTUAL_ENV="$HOME/.hermes/venvs/hermes-dev"
-export PATH="$VIRTUAL_ENV/bin:$PATH"
-
-# Install with all extras (messaging, cron, CLI menus, dev tools)
-uv pip install -e ".[all,dev]"
-
-# Optional: workspace / docs dependencies
-npm install
+python -m pm.build_env --source . --out .venv --group dev --group test
 ```
 
-### Configure for development
+PM builds from the committed lock and checks dependency consistency before
+returning the new interpreter. The `test` group includes native launcher test
+dependencies and does not enter the application runtime. If tests require
+another declared feature, add its `--extra`.
+
+The output must not exist, even as an empty directory or symlink. To regenerate
+it after a dependency change, stop its processes and intentionally remove only
+that disposable environment first. PM does not delete an existing destination.
+Do not run raw pip or uv commands to change a PM-built environment.
+
+To keep the test environment outside the checkout, replace `.venv` with a fresh absolute
+path. Set `HERMES_PYTHON` to that environment's interpreter:
+
+- POSIX: `export HERMES_PYTHON="/absolute/path/to/hermes-dev/bin/python"`
+- PowerShell: `$env:HERMES_PYTHON = 'C:\absolute\path\to\hermes-dev\Scripts\python.exe'`
+
+The canonical runner discovers repository `.venv` automatically. It clears
+`PYTHONPATH`, so pytest must be installed in the interpreter's own environment.
+This test environment does not replace PM's application selection or tool
+store. Do not point a bundled app at it or install into an MSIX payload.
+
+For an isolated development instance, select a disposable `HERMES_HOME` before
+starting the source command. Use `hermes setup` to configure it rather
+than copying production credentials into the checkout.
+
+### JavaScript workspaces and website
+
+From the repository root, run `npm ci` for the desktop, TUI, dashboard, and
+shared JS workspaces. The website is separate:
 
 ```bash
-mkdir -p ~/.hermes/{cron,sessions,logs,memories,skills}
-cp cli-config.yaml.example ~/.hermes/config.yaml
-touch ~/.hermes/.env
-
-# Add at minimum an LLM provider key:
-echo "OPENROUTER_API_KEY=***" >> ~/.hermes/.env
+npm ci --prefix website
+npm run build:fast --prefix website
 ```
 
-### Run
+Use a Node/npm version accepted by the corresponding `package.json` engines.
+Native desktop dependencies can also require the platform build toolchain.
 
-```bash
-# The standard installer already put `hermes` on PATH.
-hermes doctor
-hermes chat -q "Hello"
-```
-
-If you used the manual clone fallback, run `./hermes` from the checkout or
-symlink this clone's venv explicitly:
-
-```bash
-mkdir -p ~/.local/bin
-ln -sf "$(pwd)/venv/bin/hermes" ~/.local/bin/hermes
-```
+Logos and icons are generated from `assets/nous-girl-*.svg` and
+`assets/backgrounds/`. `node scripts/generate-icons.mjs` renders them with the
+Hermes runtime Python (`HERMES_PYTHON`, else `python` on PATH): Pillow and
+resvg-py are core dependencies. Generated outputs are committed and CI fails if
+they are stale; rerun the generator and commit after changing any source SVG.
 
 ### Run tests
 
-```bash
-# Preferred — matches CI (hermetic `env -i`, per-file subprocess isolation
-# via run_tests_parallel.py, worker count auto-scaled); see AGENTS.md
-scripts/run_tests.sh
+Use the canonical runner on every host:
 
-# Alternative (activate the venv first). The wrapper is still recommended
-# for parity with GitHub Actions before you open a PR:
-pytest tests/ -v
+```bash
+scripts/run_tests.sh
+scripts/run_tests.sh tests/agent/ -v
 ```
+
+On Windows, run the script through Bash. When no local `.venv` or `venv`
+contains pytest, the runner accepts the explicit `HERMES_PYTHON` above. It
+clears credentials, isolates `HERMES_HOME`, and runs each test file in a separate
+subprocess through `scripts/run_tests_parallel.py`. It does not use xdist.
+
+Run the relevant JS workspace checks for JS changes. Native install/update
+E2E runs on disposable CI hosts, never against the developer's live app.
+See [Package management](website/docs/reference/package-management.md) for PM commands and runtime ownership.
 
 ---
 
@@ -216,14 +224,17 @@ pytest tests/ -v
 
 ```
 hermes-agent/
-├── run_agent.py              # AIAgent class — core conversation loop, tool dispatch, session persistence
-├── cli.py                    # HermesCLI class — interactive TUI, prompt_toolkit integration
+├── run_agent.py              # AIAgent facade (~1.5k LOC) — the turn loop lives in agent/conversation_loop.py + agent/turn_*.py
+├── cli.py                    # HermesCLI class — interactive CLI orchestrator (~4.6k LOC + hermes_cli/cli_*_mixin.py)
 ├── model_tools.py            # Tool orchestration (thin layer over tools/registry.py)
 ├── toolsets.py               # Tool groupings and presets (hermes-cli, hermes-telegram, etc.)
-├── hermes_state.py           # SQLite session database with FTS5 full-text search, session titles
+├── hermes_state.py           # SessionDB facade (~1.4k LOC); implementation in hermes_state_*.py (21 siblings) — FTS5 search, session titles
 ├── batch_runner.py           # Parallel batch processing for trajectory generation
 │
 ├── agent/                    # Agent internals (extracted modules)
+│   ├── conversation_loop.py      # run_conversation() — the agent turn loop (phases in turn_*.py)
+│   ├── tool_executor.py          # Tool dispatch (inline agent-level tools, delegate, registry)
+│   ├── session_persistence.py    # Session/trajectory saving
 │   ├── prompt_builder.py         # System prompt assembly (identity, skills, context files, memory)
 │   ├── context_compressor.py     # Auto-summarization when approaching context limits
 │   ├── auxiliary_client.py       # Resolves auxiliary OpenAI clients (summarization, vision)
@@ -233,16 +244,19 @@ hermes-agent/
 │
 ├── hermes_cli/               # CLI command implementations
 │   ├── main.py                   # Entry point, argument parsing, command dispatch
+│   ├── cli_*_mixin.py            # HermesCLI mixins (slash commands, display, session, ...)
 │   ├── config.py                 # Config management, migration, env var definitions
 │   ├── setup.py                  # Interactive setup wizard
-│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal
+│   ├── auth.py                   # Provider resolution, OAuth, Nous Portal (facade + auth_*.py siblings)
 │   ├── models.py                 # OpenRouter model selection lists
 │   ├── banner.py                 # Welcome banner, ASCII art
 │   ├── commands.py               # Central slash command registry (CommandDef), autocomplete, gateway helpers
 │   ├── callbacks.py              # Interactive callbacks (clarify, sudo, approval)
 │   ├── doctor.py                 # Diagnostics
 │   ├── skills_hub.py             # Skills Hub CLI + /skills slash command
-│   └── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
+│   ├── skin_engine.py            # Skin/theme engine — data-driven CLI visual customization
+│   ├── web_server.py             # Dashboard server (facade + web_server_*.py siblings)
+│   └── web_routers/              # Dashboard FastAPI routers (one file per surface)
 │
 ├── tools/                    # Tool implementations (self-registering)
 │   ├── registry.py               # Central tool registry (schemas, handlers, dispatch)
@@ -252,7 +266,9 @@ hermes-agent/
 │   ├── web_tools.py              # web_search, web_extract (Parallel/Firecrawl + Gemini summarization)
 │   ├── vision_tools.py           # Image analysis via multimodal models
 │   ├── delegate_tool.py          # Subagent spawning and parallel task execution
-│   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access
+│   ├── code_execution_tool.py    # Sandboxed Python with RPC tool access (env allowlists in code_execution_env.py)
+│   ├── mcp_tool.py               # MCP client (facade + mcp_tool_*.py siblings: config, discovery, transport, ...)
+│   ├── browser_tool.py           # Browser automation (facade + browser_tool_*.py siblings)
 │   ├── session_search_tool.py    # Search past conversations with FTS5 + anchored windows
 │   ├── cronjob_tools.py          # Scheduled task management
 │   ├── skill_tools.py            # Skill search, load, manage
@@ -261,9 +277,10 @@ hermes-agent/
 │       ├── local.py, docker.py, ssh.py, singularity.py, modal.py, daytona.py
 │
 ├── gateway/                  # Messaging gateway
-│   ├── run.py                    # GatewayRunner — platform lifecycle, message routing, cron
+│   ├── run.py                    # GatewayRunner facade (~5.5k LOC); phases in run_*.py (startup, inbound, turn, busy, ...)
+│   ├── slash_commands_*.py       # Gateway slash command handler mixins
 │   ├── config.py                 # Platform configuration resolution
-│   ├── session.py                # Session store, context prompts, reset policies
+│   ├── session.py                # Session store, context prompts, explicit resets (+ session_*.py siblings)
 │   └── platforms/                # Platform adapters
 │       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
 │
@@ -291,7 +308,7 @@ hermes-agent/
 | `~/.hermes/skills/` | All active skills (bundled + hub-installed + agent-created) |
 | `~/.hermes/memories/` | Persistent memory (MEMORY.md, USER.md) |
 | `~/.hermes/state.db` | SQLite session database |
-| `~/.hermes/sessions/` | Gateway routing index (`sessions.json`), request-dump breadcrumbs, gateway `*.jsonl` transcripts, and (optionally) per-session JSON snapshots when `sessions.write_json_snapshots: true` is set. The per-session snapshots are off by default; state.db is canonical. |
+| `~/.hermes/sessions/` | Gateway routing index (`sessions.json`), request-dump breadcrumbs, gateway `*.jsonl` transcripts, and explicit `/save` exports. Automatic per-session JSON snapshots are no longer written; state.db is canonical. |
 | `~/.hermes/cron/` | Scheduled job data |
 | `~/.hermes/whatsapp/session/` | WhatsApp bridge credentials |
 
@@ -320,7 +337,7 @@ User message → AIAgent._run_agent_loop()
 
 - **Self-registering tools**: Each tool file calls `registry.register()` at import time. `model_tools.py` triggers discovery by importing all tool modules.
 - **Toolset grouping**: Tools are grouped into toolsets (`web`, `terminal`, `file`, `browser`, etc.) that can be enabled/disabled per platform.
-- **Session persistence**: All conversations are stored in SQLite (`hermes_state.py`) with full-text search and unique session titles. Per-session JSON snapshots in `~/.hermes/sessions/` were superseded by the SQLite store and are off by default; opt back in with `sessions.write_json_snapshots: true` if you have external tooling that consumes the JSON files directly.
+- **Session persistence**: All conversations are stored in SQLite (`hermes_state.py`) with full-text search and unique session titles. Automatic per-session JSON snapshots have been removed. Existing files are left untouched; use `/save json` or `hermes sessions export` for an explicit export.
 - **Ephemeral injection**: System prompts and prefill messages are injected at API call time, never persisted to the database or logs.
 - **Provider abstraction**: The agent works with any OpenAI-compatible API. Provider resolution happens at init time (Nous Portal OAuth, OpenRouter API key, or custom endpoint).
 - **Provider routing**: When using OpenRouter, `provider_routing` in config.yaml controls provider selection (sort by throughput/latency/price, allow/ignore specific providers, data retention policies). These are injected as `extra_body.provider` in API requests.
@@ -332,7 +349,12 @@ User message → AIAgent._run_agent_loop()
 - **PEP 8** with practical exceptions (we don't enforce strict line length)
 - **Comments**: Only when explaining non-obvious intent, trade-offs, or API quirks. Don't narrate what the code does — `# increment counter` adds nothing
 - **Error handling**: Catch specific exceptions. Log with `logger.warning()`/`logger.error()` — use `exc_info=True` for unexpected errors so stack traces appear in logs
+- **Error messages**: every user-facing error message names the actual cause and the remediation step — never the proximate symptom. A missing API key is "no OpenRouter API key configured — set `OPENROUTER_API_KEY`", never "payment/credit error"; a failed request logs the exception class and message (secret-redacted) rather than an empty reason; a timed-out long job reports the timeout and where the job went, not a fallback-routing noise string. If you know the cause, say it; if you don't, say what you do know plus what to check — never a placeholder that points somewhere else.
 - **Cross-platform**: Never assume Unix. See [Cross-Platform Compatibility](#cross-platform-compatibility)
+
+### Fail loud at integration boundaries
+
+**Fail loud at integration boundaries.** When a configuration value, credential, or user-supplied input is unusable — a placeholder token, an empty required field, an out-of-range number like `TERMINAL_TIMEOUT=0` — reject it where it is read and name the problem: a clear error at startup or at the write path, never a silent no-op that turns the confusion into a debugging session later. Each boundary validates its own values in place; there is intentionally no shared `fail_loud` helper, because one call-site shape does not fit all — the rule is about the behavior the user sees, not the function you call. A silent default is acceptable only where the default is a deliberate product choice documented in the config reference; everything else should tell the user what broke, where, and what to set.
 
 ---
 
@@ -593,7 +615,7 @@ Every new or modernized skill — bundled, optional, or contributed — must mee
 
    If the skill depends on an MCP server, name the MCP server and document its setup in `## Prerequisites`. Third-party CLIs (e.g. `ffmpeg`, `gh`, a specific SDK) are fine to invoke from inside script files, but the prose should frame the interaction as "invoke through the `terminal` tool", not as a manual shell session.
 
-3. **`platforms:` gating audited against actual script imports.** Skills that use POSIX-only primitives (`fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)` for liveness, `/proc`, hardcoded `/tmp` paths, `signal.SIGKILL`, bash heredocs, `osascript`, `apt`, `systemctl`) must declare their supported platforms via the `platforms:` frontmatter. Default posture is to fix it cross-platform first — `tempfile.gettempdir()`, `pathlib.Path`, `psutil.pid_exists()`, Python-level filtering instead of `grep`. Gate to a narrower set only when the dependency is genuinely platform-bound (e.g. `osascript` is macOS-only, `/proc` is Linux-only).
+3. **`platforms:` gating audited against actual script imports.** Skills that use POSIX-only primitives (`fcntl`, `termios`, `os.setsid`, `os.kill(pid, 0)` for liveness, `/proc`, hardcoded `/tmp` paths, `signal.SIGKILL`, bash heredocs, `osascript`, `apt`, `systemctl`) must declare their supported platforms via the `platforms:` frontmatter. Default posture is to fix it cross-platform first — `tempfile.gettempdir()`, `pathlib.Path`, `psutil.pid_exists()`, Python-level filtering instead of `grep`. Gate to a narrower set only when the dependency is genuinely platform-bound (e.g. `osascript` is macOS-only, `/proc` is Linux-only). <!-- no-tmp: ok — names the POSIX-only anti-pattern reviewers look for -->
 
 4. **`author` credits the human contributor first.** For external contributions, the contributor's real name + GitHub handle goes first (`Jane Doe (jane-doe)`); "Hermes Agent" is the secondary collaborator. If the contributor's commit shows "Hermes Agent" as author because they used Hermes to draft the skill, replace it with their actual name — credit the human, not the tool.
 
@@ -704,7 +726,7 @@ that touches the OS, assume *any* platform can hit your code path.
    ```
 
    If you specifically need the hermes wrapper (it has a stdlib fallback
-   for scaffold-phase imports before pip install finishes), use
+   for scaffold-phase imports before PM finishes dependency preparation), use
    `gateway.status._pid_exists(pid)`. It calls `psutil.pid_exists` first
    and falls back to a hand-rolled `OpenProcess + WaitForSingleObject`
    dance on Windows only when psutil is somehow missing.
@@ -833,15 +855,19 @@ that touches the OS, assume *any* platform can hit your code path.
 
 ### Testing cross-platform
 
-Tests that excercise behavior on specific platforms must run on their target platforms.
+Tests of host-specific behavior must run on that host. Apply one `platforms`
+marker to each test, rather than changing `sys.platform`:
 
 ```python
-@pytest.mark.linux_only
-@pytest.mark.macos_only
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows", arch="arm64")
+def test_native_windows_arm64_behavior():
+    ...
 ```
-Avoid monkeypatching `sys.platform` unless absolutely needed, but if you do, also patch `platform.system()` / `platform.release()` / `platform.mac_ver()`.
-Symlinks, 0o600 permissions, SIGALRM, os.setsid/fork are all unix-only.
+
+For several supported hosts, use one marker with multiple arguments, such as
+`@pytest.mark.platforms("linux", "macos")`. Do not stack host markers.
+Tests of pure functions that accept a platform as data need no host marker.
+See [AGENTS.md](AGENTS.md#dont-fake-the-host-os) for the complete contract.
 
 ---
 
@@ -928,7 +954,7 @@ refactor/description   # Code restructuring
 
 ### Before submitting
 
-1. **Run tests**: `scripts/run_tests.sh` (recommended; same as CI) or `pytest tests/ -v` with the project venv activated
+1. **Run tests**: use `scripts/run_tests.sh` for the same environment and per-file isolation as CI.
 2. **Test manually**: Run `hermes` and exercise the code path you changed
 3. **Check cross-platform impact**: If you touch file I/O, process management, or terminal handling, consider macOS, Linux, and WSL2
 4. **Keep PRs focused**: One logical change per PR. Don't mix a bug fix with a refactor with a new feature.

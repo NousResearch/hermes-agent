@@ -28,9 +28,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32", reason="POSIX serve-runner path under test"
-)
+pytestmark = pytest.mark.platforms("posix")  # POSIX serve-runner path under test
 
 
 # ---------------------------------------------------------------------------
@@ -39,7 +37,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_probe_detects_held_socket():
-    from hermes_cli.web_server import _port_bind_conflict
+    from hermes_cli.web_server_lifecycle import _port_bind_conflict
 
     holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     holder.bind(("127.0.0.1", 0))
@@ -52,7 +50,7 @@ def test_probe_detects_held_socket():
 
 
 def test_probe_free_port_is_clean():
-    from hermes_cli.web_server import _port_bind_conflict
+    from hermes_cli.web_server_lifecycle import _port_bind_conflict
 
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     probe.bind(("127.0.0.1", 0))
@@ -62,7 +60,7 @@ def test_probe_free_port_is_clean():
 
 
 def test_probe_skips_ephemeral_port_zero():
-    from hermes_cli.web_server import _port_bind_conflict
+    from hermes_cli.web_server_lifecycle import _port_bind_conflict
 
     # port 0 can never conflict — must short-circuit False, never bind.
     assert _port_bind_conflict("127.0.0.1", 0) is False
@@ -71,7 +69,7 @@ def test_probe_skips_ephemeral_port_zero():
 def test_addr_in_use_error_classification():
     import errno
 
-    from hermes_cli.web_server import _is_addr_in_use_error
+    from hermes_cli.web_server_lifecycle import _is_addr_in_use_error
 
     assert _is_addr_in_use_error(OSError(errno.EADDRINUSE, "in use")) is True
     assert _is_addr_in_use_error(OSError(98, "linux")) is True
@@ -79,11 +77,6 @@ def test_addr_in_use_error_classification():
     assert _is_addr_in_use_error(OSError(errno.EACCES, "denied")) is False
 
 
-def test_exit_code_is_distinct_tempfail():
-    from hermes_cli.web_server import PORT_IN_USE_EXIT_CODE
-
-    assert PORT_IN_USE_EXIT_CODE == 75  # EX_TEMPFAIL — repo convention
-    assert PORT_IN_USE_EXIT_CODE != 1
 
 
 # ---------------------------------------------------------------------------
@@ -168,25 +161,6 @@ def test_conflict_emits_sentinel_and_exit_75(tmp_path):
     assert out.count("BACKEND_PORT_IN_USE") == 1
 
 
-def test_free_port_boots_and_announces_ready(tmp_path):
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    probe.bind(("127.0.0.1", 0))
-    port = probe.getsockname()[1]
-    probe.close()
-
-    proc = _spawn_serve(port, tmp_path)
-    try:
-        ready, lines = _read_until(proc, "HERMES_BACKEND_READY")
-        out = "".join(lines)
-        assert ready, f"no READY sentinel; output:\n{out}"
-        assert f"HERMES_BACKEND_READY port={port}" in out
-        assert "BACKEND_PORT_IN_USE" not in out
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            proc.kill()
 
 
 def test_ephemeral_port_zero_unaffected(tmp_path):

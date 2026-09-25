@@ -1,50 +1,43 @@
 #!/usr/bin/env python3
 """The `desktop_preview` tool — the preview pane beside the chat, as ONE tool.
 
-Consolidation (#95681, maintainer-directed): open_preview, close_preview,
-and read_preview each re-taught "the preview pane beside the chat" world;
-one action enum states it once (576 -> ~210 tok). The read action keeps
-its agent-callback dispatch (agent_runtime_helpers routes action=read
-through agent.read_preview_callback, same as read_preview did).
-
+open/close/read used to be three tools that each re-taught "the preview pane" world;
+one action enum states it once (~576 -> ~210 schema tokens). action=read keeps its
+agent-level callback dispatch (agent_runtime_helpers -> agent.read_preview_callback).
 Lives in the ``desktop_ui`` toolset — desktop-app sessions only.
 """
-
-import json
 
 from tools import desktop_ui
 from tools.open_preview_tool import _normalize_target, open_preview_tool
 from tools.registry import registry, tool_error
 
 
-def preview_open(url: str, label: str = "") -> str:
-    return open_preview_tool(url=url, label=label)
-
-
 def preview_close(url: str = "") -> str:
     target = _normalize_target(url or "")
-    try:
-        ok = desktop_ui.emit("preview.close", {"url": target})
-    except Exception as exc:  # noqa: BLE001
-        return tool_error(f"Failed to close the preview: {exc}")
-    if not ok:
-        return tool_error("The preview pane is only available in the Hermes desktop app.")
-    return json.dumps({"success": True, "closed": target or "all"}, ensure_ascii=False)
+    return desktop_ui.emit_or_error(
+        "preview.close",
+        {"url": target},
+        "Failed to close the preview: ",
+        "The preview pane is only available in the Hermes desktop app.",
+        {"success": True, "closed": target or "all"},
+    )
+
+
+_ACTIONS = {
+    "open": lambda args: open_preview_tool(url=args.get("url", ""), label=args.get("label", "")),
+    "close": lambda args: preview_close(url=args.get("url", "")),
+    # read needs the GUI callback and is dispatched at the agent level.
+    "read": lambda args: tool_error(
+        "preview read must run inside a desktop session (no GUI callback here)."),
+}
 
 
 def _handle_preview(args, **kw):
-    """Non-read actions only: action=read is dispatched at the agent level
-    (needs the GUI callback), mirroring the old read_preview special path."""
-    action = (args.get("action") or "").strip()
-    if action == "open":
-        return preview_open(url=args.get("url", ""), label=args.get("label", ""))
-    if action == "close":
-        return preview_close(url=args.get("url", ""))
-    if action == "read":
-        return tool_error(
-            "preview read must run inside a desktop session (no GUI callback here)."
-        )
-    return tool_error("action must be one of: open, close, read.")
+    """Non-read actions only: action=read is dispatched at the agent level."""
+    fn = _ACTIONS.get((args.get("action") or "").strip())
+    if fn is None:
+        return tool_error("action must be one of: open, close, read.")
+    return fn(args)
 
 
 PREVIEW_SCHEMA = {
@@ -83,3 +76,14 @@ registry.register(
     handler=_handle_preview,
     emoji="🖼️",
 )
+
+
+# ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
+# Names external plugins imported from this module before the Sep 2026 decomposition.
+# Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
+# The whole block is removed by reverting the commit that added it.
+import json  # noqa: F401,E402
+
+def preview_open(url: str, label: str = "") -> str:
+    return open_preview_tool(url=url, label=label)
+# ---- END PLUGIN-COMPAT ----

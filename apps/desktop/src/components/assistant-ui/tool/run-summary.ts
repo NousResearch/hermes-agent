@@ -3,7 +3,7 @@ import { summarizeShellCommand } from '@/lib/summarize-command'
 import { firstStringField } from '@/lib/text'
 import { extractToolErrorMessage } from '@/lib/tool-result-summary'
 
-import { fileEditBasename, isFileEditTool, parseMaybeObject } from './fallback-model'
+import { compactPreview, fileEditBasename, hostnameOf, isFileEditTool, parseMaybeObject } from './fallback-model'
 import { skillActivityTitle } from './skill-activity'
 
 /**
@@ -24,29 +24,27 @@ export function isToolCallPart<T extends { type: string }>(part: T): part is Ext
   return part.type === 'tool-call'
 }
 
-type RunCategory = 'delegate' | 'edit' | 'explore' | 'other' | 'run'
+type RunCategory = 'delegate' | 'edit' | 'explore' | 'other' | 'run' | 'search'
 
 // Clause order is fixed so the same run always reads the same way, whichever
 // category happens to be live.
-const CATEGORY_ORDER: readonly RunCategory[] = ['edit', 'explore', 'run', 'delegate', 'other']
+const CATEGORY_ORDER: readonly RunCategory[] = ['edit', 'explore', 'search', 'run', 'delegate', 'other']
 
 const CATEGORY_COPY: Record<RunCategory, { noun: [string, string]; past: string; present: string }> = {
   delegate: { noun: ['task', 'tasks'], past: 'Delegated', present: 'Delegating' },
   edit: { noun: ['file', 'files'], past: 'Edited', present: 'Editing' },
   explore: { noun: ['file', 'files'], past: 'Explored', present: 'Exploring' },
   other: { noun: ['tool', 'tools'], past: 'Used', present: 'Using' },
-  run: { noun: ['command', 'commands'], past: 'Ran', present: 'Running' }
+  run: { noun: ['command', 'commands'], past: 'Ran', present: 'Running' },
+  search: { noun: ['query', 'queries'], past: 'Searched', present: 'Searching' }
 }
 
-const EXPLORE_TOOLS = new Set([
-  'list_files',
-  'read_file',
-  'search_files',
-  'session_search_recall',
-  'vision_analyze',
-  'web_extract',
-  'web_search'
-])
+const EXPLORE_TOOLS = new Set(['list_files', 'read_file', 'search_files', 'session_search_recall', 'vision_analyze'])
+
+// The web tools act on queries and pages, not files. Counted in the explore
+// bucket they read as "Explored 2 files" while their own rows say Searched —
+// so they carry a clause of their own.
+const SEARCH_TOOLS = new Set(['web_extract', 'web_search'])
 
 function toolCategory(toolName: string): RunCategory {
   if (isFileEditTool(toolName)) {
@@ -59,6 +57,10 @@ function toolCategory(toolName: string): RunCategory {
 
   if (toolName === 'delegate_task') {
     return 'delegate'
+  }
+
+  if (SEARCH_TOOLS.has(toolName)) {
+    return 'search'
   }
 
   if (EXPLORE_TOOLS.has(toolName) || toolName.startsWith('browser_')) {
@@ -88,9 +90,23 @@ export function toolPresentVerb(toolName: string): string {
 /** The thing a tool acted on, as the header should name it. */
 function toolTarget(tool: ToolCallLike): string {
   const args = parseMaybeObject(tool.args)
+  const category = toolCategory(tool.toolName)
 
-  if (toolCategory(tool.toolName) === 'run') {
+  if (category === 'run') {
     return summarizeShellCommand(firstStringField(args, ['command', 'code']))
+  }
+
+  // A search names what its own row names — the quoted query for web_search,
+  // the hostname for web_extract — so the summary and the rows underneath it
+  // read as the same work.
+  if (category === 'search') {
+    const query = firstStringField(args, ['search_term', 'query'])
+
+    if (query) {
+      return `“${compactPreview(query, 48)}”`
+    }
+
+    return hostnameOf(firstStringField(args, ['url']) ?? '')
   }
 
   const path = firstStringField(args, ['path', 'file', 'filepath'])

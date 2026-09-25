@@ -374,21 +374,28 @@ _in_tree_catalog_time: Optional[float] = -1.0  # -1 = not resolved yet; None = n
 
 def in_tree_catalog_time() -> Optional[float]:
     """Commit time (epoch) of the last change to this checkout's ``plugin-catalog/``, or ``None`` when
-    the install is not a git checkout (a release/pip install cannot be newer than the published doc).
-    Resolved once per process."""
+    the install is not a git checkout (a release/pip install cannot be newer than the published doc)
+    or its history is not local. Resolved once per process.
+
+    A path-limited log needs every walked commit's root tree. In a treeless (``--filter=tree:0``)
+    install clone a lazy-fetching probe downloaded them one promisor fetch per commit, each running
+    ``maintenance --auto``, and the timeout killed only the launcher, so the walk ran on orphaned.
+    ``bounded_git_probe`` never lazy-fetches and tree-kills: without the trees it fails fast and the
+    entries are compared by version instead (:func:`_prefer_in_tree_entry`)."""
     global _in_tree_catalog_time
     if _in_tree_catalog_time != -1.0:
         return _in_tree_catalog_time
     root = get_catalog_dir().parent
     resolved: Optional[float] = None
     if (root / ".git").exists():
+        from hermes_cli._subprocess_compat import bounded_git_probe
+
+        out = bounded_git_probe(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
+                                timeout=10)
         try:
-            import subprocess
-            out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
-                                 capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
-            resolved = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
-        except Exception as exc:
-            logger.debug("Plugin catalog: could not date the in-tree catalog: %s", exc)
+            resolved = float(out) if out else None
+        except ValueError:
+            logger.debug("Plugin catalog: could not date the in-tree catalog: %r", out)
     _in_tree_catalog_time = resolved
     return resolved
 

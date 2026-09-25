@@ -456,6 +456,50 @@ def test_reinstall_after_manual_directory_removal_retains_pin(monkeypatch, tmp_p
     assert _metadata(home)["demo"]["pinned"] is True
 
 
+def test_no_deps_reinstall_after_manual_directory_removal_is_not_vetoed(
+    monkeypatch, tmp_path
+):
+    """A selection entry whose tree was manually removed is a ghost, not an active
+    plugin: with nothing left to replace, the --no-deps gate must not veto the
+    reinstall (#122135)."""
+    from hermes_cli.plugins_cmd import _install_plugin_core
+    from utils import rmtree_readonly
+
+    repo, old_sha, _new_sha = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    target, _manifest, _name = _install_plugin_core(repo.as_uri(), force=False)
+    # The enabled selection outlives a manual `rm -rf` of the plugin tree.
+    (home / "config.yaml").write_text(
+        "plugins:\n  enabled: [demo]\n  disabled: []\n", encoding="utf-8"
+    )
+    rmtree_readonly(target)
+
+    target, _manifest, _name = _install_plugin_core(
+        repo.as_uri(), force=False, python_deps=False
+    )
+
+    assert (target / "plugin.yaml").exists()
+    assert _metadata(home)["demo"]["source"] == repo.as_uri()
+
+
+def test_no_deps_still_refuses_replacing_a_present_active_tree(monkeypatch, tmp_path):
+    """The ghost carve-out must not disarm the gate: a live tree selected in the
+    home's enabled list is still refused, force or not."""
+    from hermes_cli.plugins_cmd import PluginOperationError, _install_plugin_core
+
+    repo, old_sha, _new_sha = _plugin_repo(tmp_path)
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _install_plugin_core(repo.as_uri(), force=False)
+    (home / "config.yaml").write_text(
+        "plugins:\n  enabled: [demo]\n  disabled: []\n", encoding="utf-8"
+    )
+
+    with pytest.raises(PluginOperationError, match="cannot replace an active plugin"):
+        _install_plugin_core(repo.as_uri(), force=True, python_deps=False)
+
+
 def test_annotated_tag_pin_installs_at_its_commit(monkeypatch, tmp_path):
     """A pin recorded from an annotated tag — the TAG object's sha, which is 40
     hex but not a commit — must install at the commit that tag points to.

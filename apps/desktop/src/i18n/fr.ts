@@ -4804,6 +4804,7 @@ export const frOverrides = {
     replaceCurrent: 'Remplacer la valeur actuelle',
     pasteApiKey: 'Collez votre clé API',
     localApiKeyPlaceholder: 'Clé API (facultatif — uniquement si votre point de terminaison en requiert une)',
+    localModelNamePlaceholder: 'Nom du modèle (ex. command-a-plus-05-2026)',
     couldNotSave: "Impossible d'enregistrer l'identifiant.",
     connecting: 'Connexion',
     update: 'Mettre à jour',

@@ -4783,6 +4783,7 @@ export const esOverrides = {
     replaceCurrent: 'Reemplazar valor actual',
     pasteApiKey: 'Pegar clave API',
     localApiKeyPlaceholder: 'Clave API (opcional; solo si tu endpoint la requiere)',
+    localModelNamePlaceholder: 'Nombre del modelo (p. ej. command-a-plus-05-2026)',
     couldNotSave: 'No se pudo guardar la credencial.',
     connecting: 'Conectando',
     update: 'Actualizar',

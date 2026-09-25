@@ -4397,6 +4397,7 @@ export const en: Translations = {
     replaceCurrent: 'Replace current value',
     pasteApiKey: 'Paste API key',
     localApiKeyPlaceholder: 'API key (optional — only if your endpoint requires one)',
+    localModelNamePlaceholder: 'Model name (e.g. command-a-plus-05-2026)',
     couldNotSave: 'Could not save credential.',
     connecting: 'Connecting',
     update: 'Update',

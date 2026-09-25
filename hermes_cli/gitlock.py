@@ -134,7 +134,7 @@ def is_ancestor_of_head(repo_root: Path, rev: str) -> bool:
         result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", rev, "HEAD"],
             cwd=str(repo_root),
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         return result.returncode == 0
     except Exception:
@@ -148,7 +148,7 @@ def _git_stdout_lines(repo_root: Path, args: List[str]) -> List[str]:
     try:
         result = subprocess.run(
             ["git", *args], cwd=str(repo_root),
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         if result.returncode != 0:
             return []

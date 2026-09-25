@@ -503,6 +503,8 @@ def _seed_hygiene_system_prompt(agent: Any, session_row: Optional[Dict[str, Any]
             stored_prompt = raw_prompt
 
     agent._cached_system_prompt = stored_prompt
+    # Compaction otherwise rebuilds the prompt at the commit boundary from this agent's reduced toolset.
+    agent._retain_seeded_system_prompt = True
     return bool(stored_prompt)
 
 

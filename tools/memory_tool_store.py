@@ -226,7 +226,7 @@ class MemoryStore:
                     if not mentions_target:
                         continue
                     delivered = (
-                        current in payload
+                        self._bounded_freshness_block(target, filename, current) in payload
                         if current
                         else f"{filename} is now empty." in payload
                     )

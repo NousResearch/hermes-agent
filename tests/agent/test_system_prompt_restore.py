@@ -118,6 +118,37 @@ class TestNativeMemoryRestoreFreshness:
 
         assert "MEMORY.md is now empty." in resumed.consume_freshness_context()
 
+    def test_bounded_refresh_is_not_repeated_after_agent_reconstruction(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        stored_prompt = self._stored_prompt("")
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored_prompt}
+        history = [{"role": "user", "content": "earlier turn"}]
+        MemoryStore._write_file(tmp_path / "MEMORY.md", ["x" * 600])
+
+        first_store = MemoryStore(memory_char_limit=100)
+        first_store.load_from_disk()
+        first_agent = _make_agent(session_db=db)
+        first_agent._memory_store = first_store
+        _restore_or_build_system_prompt(first_agent, None, history)
+        note = first_store.consume_freshness_context()
+        assert "[TRUNCATED: MEMORY.md exceeds its configured character limit.]" in note
+
+        reconstructed_store = MemoryStore(memory_char_limit=100)
+        reconstructed_store.load_from_disk()
+        reconstructed_agent = _make_agent(session_db=db)
+        reconstructed_agent._memory_store = reconstructed_store
+        replay = history + [
+            {"role": "user", "content": "resume", "api_content": f"resume\n\n{note}"},
+            {"role": "assistant", "content": "continued"},
+        ]
+
+        _restore_or_build_system_prompt(reconstructed_agent, None, replay)
+
+        assert reconstructed_store.consume_freshness_context() == ""
+
 
 # ---------------------------------------------------------------------------
 # Surface switch (#104414)

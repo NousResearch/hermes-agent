@@ -8,8 +8,10 @@ import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  MAX_AUTO_DRAIN_ATTEMPTS,
   parkQueuedPrompts
 } from '@/store/composer-queue'
+import { $notifications, clearNotifications } from '@/store/notifications'
 import { $sessions, setSessions, setSessionsLoading } from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
@@ -79,6 +81,7 @@ describe('useBackgroundQueueDrain', () => {
     $parkedQueueSessions.set({})
     $sessions.set([])
     setSessionsLoading(true)
+    clearNotifications()
     clearAllSessionStates()
   })
 
@@ -277,5 +280,102 @@ describe('useBackgroundQueueDrain', () => {
     })
 
     await waitFor(() => expect(getQueuedPrompts('stored-session-a')).toHaveLength(0))
+  })
+
+  it('drops a gone session\'s queued prompt quietly at drain exhaustion instead of erroring (#98015)', async () => {
+    vi.useFakeTimers()
+
+    // The session list has settled and no row answers to the queued session:
+    // the conversation is gone from this backend (reaped runtime whose stored
+    // resume refuses — the post-restart shape the issue reports).
+    setSessions([])
+    const runtimeMap = { current: new Map<string, string>() }
+    const submitText = vi.fn(async () => false)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'never sends', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    for (let attempt = 1; attempt < MAX_AUTO_DRAIN_ATTEMPTS; attempt++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750)
+      })
+    }
+
+    expect(submitText).toHaveBeenCalledTimes(MAX_AUTO_DRAIN_ATTEMPTS)
+
+    // The entry is dropped and the notice is a quiet info, not the old
+    // "message not sent" error banner.
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(0)
+    const stuck = $notifications.get().find(n => n.id === 'composer-background-queue-stuck-stored-session-a')
+    expect(stuck?.kind).toBe('info')
+  })
+
+  it('keeps the queued prompt for a session the loaded list still knows, with a quiet notice (#98015)', async () => {
+    vi.useFakeTimers()
+
+    setSessions([lineageSession({ id: 'stored-session-a' })])
+    const runtimeMap = { current: new Map([['stored-session-a', 'rt-session-a']]) }
+    const submitText = vi.fn(async () => false)
+
+    enqueueQueuedPrompt('stored-session-a', { text: 'retry from the panel', attachments: [] })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    for (let attempt = 1; attempt < MAX_AUTO_DRAIN_ATTEMPTS; attempt++) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(750)
+      })
+    }
+
+    // The conversation exists — the entry survives for a manual send, and the
+    // notice is downgraded from the error banner.
+    expect(getQueuedPrompts('stored-session-a')).toHaveLength(1)
+    const stuck = $notifications.get().find(n => n.id === 'composer-background-queue-stuck-stored-session-a')
+    expect(stuck?.kind).toBe('info')
+  })
+
+  it('does not replay the retry ladder for a queue restored after prior exhaustion (#98015)', async () => {
+    vi.useFakeTimers()
+
+    // A queue restored from localStorage with the persisted drain budget
+    // already spent: no attempts, no notice — the every-boot replay of four
+    // rejections plus a banner is the reported symptom.
+    const runtimeMap = { current: new Map<string, string>() }
+    const submitText = vi.fn(async () => true)
+
+    setSessions([lineageSession({ id: 'stored-session-a' })])
+    $queuedPromptsBySession.set({
+      'stored-session-a': [
+        {
+          id: 'queued-restored',
+          text: 'already exhausted in a previous process',
+          attachments: [],
+          queuedAt: 1,
+          drainFailures: MAX_AUTO_DRAIN_ATTEMPTS
+        }
+      ]
+    })
+
+    render(<Harness runtimeMap={runtimeMap} submitText={submitText} />)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(750 * 6)
+    })
+
+    expect(submitText).not.toHaveBeenCalled()
+    expect(getQueuedPrompts('stored-session-a').map(e => e.id)).toEqual(['queued-restored'])
+    expect($notifications.get()).toHaveLength(0)
   })
 })

@@ -9,6 +9,7 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
+  clearQueuedPromptDrainFailures,
   enqueueQueuedPrompt,
   getQueuedPrompts,
   isSteerableEntry,
@@ -287,6 +288,9 @@ export function useComposerQueue({
       // A manual send clears the auto-drain backoff so a stuck entry the user
       // taps gets a fresh attempt (and re-enables auto-retry on success).
       drainFailuresRef.current.delete(id)
+      // Same for the persisted budget the background drain keeps on the
+      // entry (#98015) — a user gesture is fresh intent, not a replay.
+      clearQueuedPromptDrainFailures(activeQueueSessionKey, id)
 
       return runDrain(entries => entries.find(e => e.id === id))
     },

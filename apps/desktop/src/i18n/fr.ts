@@ -4288,6 +4288,9 @@ export const frOverrides = {
     queueStuckTitle: "Message en file d'attente non envoyé",
     queueStuckBody:
       "Un tour en file d'attente a continué à échouer lors de l'envoi. Il est toujours en file d'attente — essayez de l'envoyer à nouveau.",
+    queueDroppedTitle: "Élément en file d'attente abandonné",
+    queueDroppedBody:
+      "Cette entrée d'arrière-plan a été abandonnée car sa session n'a pas pu être reprise après plusieurs tentatives. Le reste de la file d'attente est inchangé.",
     previewUnavailable: 'Aperçu indisponible',
     previewLabel: label => `Aperçu ${label}`,
     couldNotPreview: label => `Impossible d'apercevoir ${label}`,

@@ -3889,6 +3889,9 @@ export const en: Translations = {
     queueResumeTip: 'Paused by Stop — resume sending the queued turns',
     queueStuckTitle: 'Queued message not sent',
     queueStuckBody: 'A queued turn kept failing to send. It is still in the queue — try sending it again.',
+    queueDroppedTitle: 'Queued prompt dropped',
+    queueDroppedBody:
+      'This background queue entry was dropped because its session could not be resumed after repeated attempts. Nothing else in the queue was affected.',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,

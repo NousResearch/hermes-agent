@@ -4268,6 +4268,9 @@ export const esOverrides = {
     queueResumeTip: 'La cola se pausó al detener; reanuda el envío de los turnos en cola',
     queueStuckTitle: 'Mensaje en cola no enviado',
     queueStuckBody: 'Un turno en cola no llegó a enviarse. Sigue en la cola; vuelve a intentarlo.',
+    queueDroppedTitle: 'Entrada en cola descartada',
+    queueDroppedBody:
+      'Se descartó esta entrada en segundo plano porque su sesión no se pudo reanudar tras varios intentos. El resto de la cola no se ha visto afectado.',
     previewUnavailable: 'Vista previa no disponible',
     previewLabel: label => `Vista previa de ${label}`,
     couldNotPreview: label => `No se pudo previsualizar ${label}`,

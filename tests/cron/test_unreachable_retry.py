@@ -75,6 +75,41 @@ def test_unreachable_failure_pulls_next_run_earlier_then_ladder_exhausts(
     assert weekly["id"] not in {due["id"] for due in get_due_jobs()}
 
 
+def test_will_retry_mirrors_plan_retry_yield_and_terminal_paths(tmp_cron_home):
+    """The notice-suppression predictor must mirror what ``plan_retry`` will actually do
+    for THIS failure:
+
+    - a cadence at or under the next ladder rung makes the schedule's own fire the retry
+      (``plan_retry`` yields without consuming an attempt), so no re-run is scheduled and
+      the failure notice must go out — otherwise a fast job holds every failure notice
+      for as long as the outage lasts (the "ladder exhausted" escape is unreachable when
+      every rung yields);
+    - a slow job still gets its silent bounded re-runs (regression guard for the feature).
+    """
+    fast = create_job("fast poll", "every 2m")
+    assert mark_job_run(fast["id"], False, "ConnectError: dns", model_unreachable=True)
+    j = get_job(fast["id"])
+    assert j is not None
+    assert j.get(ur.STATE_KEY) is None, "2m cadence beats the 5m rung: plan_retry yields"
+    assert ur.will_retry(j) is False, "yielded: no re-run is scheduled, notice must go out"
+
+    slow = create_job("nightly report", "every 24h")
+    assert mark_job_run(slow["id"], False, "ConnectError: dns", model_unreachable=True)
+    js = get_job(slow["id"])
+    assert js is not None
+    assert js[ur.STATE_KEY]["attempt"] == 1
+    assert ur.will_retry(js) is True, "5m rung beats the 24h cadence: re-run is scheduled"
+
+    mid = create_job("ten minute sync", "every 10m")
+    assert mark_job_run(mid["id"], False, "ConnectError: dns", model_unreachable=True)
+    jm = get_job(mid["id"])
+    assert jm is not None
+    # 10m cadence beats the 15m and 30m rungs: the ladder can never climb past attempt 1,
+    # so the exhaustion escape is unreachable and the notice must go out immediately.
+    assert jm[ur.STATE_KEY]["attempt"] == 1
+    assert ur.will_retry(jm) is False, "10m cadence beats the 15m rung: yielded, notice goes out"
+
+
 def test_reaching_the_model_resets_ladder_and_oneshots_never_retry(tmp_cron_home):
     """Any run that reached the model clears retry state; one-shots (pre-claimed
     dispatch, at-most-times #38758) never enter the ladder."""

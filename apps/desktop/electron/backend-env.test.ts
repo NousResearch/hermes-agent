@@ -10,8 +10,38 @@ import {
   hermesManagedNodePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
-  POSIX_SANE_PATH_ENTRIES
+  POSIX_SANE_PATH_ENTRIES,
+  restoreWindowsSessionEnv
 } from './backend-env'
+
+test('registry-only Windows launches recover the home and system root for all desktop children', () => {
+  const env: NodeJS.ProcessEnv = { PATH: 'C:\\Windows\\System32' }
+  restoreWindowsSessionEnv(env, {
+    platform: 'win32',
+    homedir: () => 'D:\\Users\\test',
+    readSystemRoot: () => 'C:\\Windows'
+  })
+  assert.equal(env.USERPROFILE, 'D:\\Users\\test')
+  assert.equal(env.LOCALAPPDATA, 'D:\\Users\\test\\AppData\\Local')
+  assert.equal(env.APPDATA, 'D:\\Users\\test\\AppData\\Roaming')
+  assert.equal(env.HOMEDRIVE, 'D:')
+  assert.equal(env.HOMEPATH, '\\Users\\test')
+  assert.equal(env.SystemRoot, 'C:\\Windows')
+  assert.equal(env.PATH, 'C:\\Windows\\System32')
+})
+
+test('explicit Windows session values survive recovery; non-Windows remains unchanged', () => {
+  const env: NodeJS.ProcessEnv = {
+    USERPROFILE: 'E:\\custom', LOCALAPPDATA: 'F:\\local', SystemRoot: 'G:\\Windows'
+  }
+  const readSystemRoot = () => { throw new Error('should not read the registry') }
+  restoreWindowsSessionEnv(env, { platform: 'win32', homedir: () => 'D:\\other', readSystemRoot })
+  assert.equal(env.USERPROFILE, 'E:\\custom')
+  assert.equal(env.LOCALAPPDATA, 'F:\\local')
+  assert.equal(env.SystemRoot, 'G:\\Windows')
+  restoreWindowsSessionEnv(env, { platform: 'darwin', homedir: () => { throw new Error('not Windows') } })
+  assert.equal(env.HOMEPATH, '\\custom')
+})
 
 test('desktop backend PATH adds Hermes-managed bins and missing POSIX sane entries', () => {
   const result = buildDesktopBackendPath({

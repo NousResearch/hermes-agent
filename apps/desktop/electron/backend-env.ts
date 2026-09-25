@@ -1,5 +1,41 @@
+import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
+
+/** Restore session-computed variables absent from registry-only Windows launches. */
+function restoreWindowsSessionEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  { platform = process.platform, homedir = os.homedir, readSystemRoot = () => {
+    try {
+      const output = execFileSync('reg.exe', [
+        'query', 'HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion', '/v', 'SystemRoot'
+      ], { encoding: 'utf8', windowsHide: true, timeout: 5000 })
+      return output.match(/^\s*SystemRoot\s+REG_\w+\s+(.+?)\s*$/im)?.[1] || ''
+    } catch {
+      return ''
+    }
+  } }: {
+    platform?: NodeJS.Platform
+    homedir?: () => string
+    readSystemRoot?: () => string
+  } = {}
+): void {
+  if (platform !== 'win32') return
+
+  const profile = env.USERPROFILE || homedir()
+  if (path.win32.isAbsolute(profile)) {
+    env.USERPROFILE ||= profile
+    env.LOCALAPPDATA ||= path.win32.join(profile, 'AppData', 'Local')
+    env.APPDATA ||= path.win32.join(profile, 'AppData', 'Roaming')
+    env.HOMEDRIVE ||= path.win32.parse(profile).root.slice(0, 2)
+    env.HOMEPATH ||= profile.slice(2)
+  }
+
+  if (!env.SystemRoot) {
+    const root = env.WINDIR || readSystemRoot()
+    if (path.win32.isAbsolute(root)) env.SystemRoot = root
+  }
+}
 
 // Match the POSIX fallback surface used by the Python terminal environment.
 // macOS apps launched from Finder/Dock often inherit only /usr/bin:/bin:/usr/sbin:/sbin,
@@ -169,5 +205,6 @@ export {
   hermesManagedNodePathEntries,
   normalizeHermesHomeRoot,
   pathEnvKey,
-  POSIX_SANE_PATH_ENTRIES
+  POSIX_SANE_PATH_ENTRIES,
+  restoreWindowsSessionEnv
 }

@@ -3,12 +3,14 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import { registry } from '@/contrib/registry'
+import { $paneStates, setPaneWidthOverride } from '@/store/panes'
 import { stubResizeObserver } from '@/test/jsdom'
 
-import { group, split } from '../model'
+import { findGroupOfPane, group, split } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport, declareDefaultTree } from '../store'
 
 import { NarrowOverlays } from './narrow-overlays'
+import { fixedTrackSize } from './track-model'
 
 // Ground truth for "the Bots tab is still visible when the sessions sidebar
 // collapses on a narrow window". A collapsible pane DOCKED into the sessions
@@ -90,5 +92,35 @@ describe('narrow overlay of a stacked zone', () => {
 
     expect(getByTestId('sessions-body')).toBeTruthy()
     expect(overlayTab('sessions')).toBeNull()
+  })
+
+  it('honors the user drag width, not the declared width, when the zone collapsed', () => {
+    // The sash writes a widthOverride per shown pane of the zone; the overlay
+    // must size from the same resolution the docked zone uses (fixedTrackSize
+    // = declared max() refined by overrides), not from data.width alone.
+    // (The inline style itself is asserted via resolveCssPx: jsdom's CSSOM
+    // silently drops min() values, so style.width reads '' in this env.)
+    setPaneWidthOverride('sessions', 170)
+    setPaneWidthOverride('bots', 170)
+
+    const { container } = render(<NarrowOverlays />)
+
+    revealPane('bots')
+
+    const overlay = container.querySelector<HTMLElement>('[data-narrow-overlay]')
+    expect(overlay).toBeTruthy()
+
+    const zone = findGroupOfPane($layoutTree.get()!, 'bots')!
+    const track = fixedTrackSize(
+      zone,
+      'row',
+      {
+        paneFor: id => registry.getArea('panes').find(p => p.id === id),
+        paneGone: () => false,
+        overrides: $paneStates.get()
+      }
+    )
+    expect(track).toBe('170px')
+    expect(track).not.toBe('260px')
   })
 })

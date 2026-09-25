@@ -133,6 +133,19 @@ def get_delegation_execution_policy() -> Dict[str, Any]:
     }
 
 
+def _model_background_value(args: dict, parent_agent=None) -> bool:
+    """Shared background policy for live and fallback model-facing dispatch.
+
+    The hidden model ``background`` argument is ignored. Top-level calls detach by
+    default, but the effective profile can select the existing parallel inline join.
+    Nested orchestrators always join so they can consume worker results in-turn.
+    Direct Python callers bypass this helper and keep explicit background control.
+    """
+    if getattr(parent_agent, "_delegate_depth", 0) > 0:
+        return False
+    return get_delegation_execution_policy()["model_tasks"] == "asynchronous"
+
+
 def _get_worktree_isolation() -> bool:
     """delegation.worktree_isolation (bool, default False): each child gets its own
     git worktree off the parent's HEAD so parallel children never contend for one

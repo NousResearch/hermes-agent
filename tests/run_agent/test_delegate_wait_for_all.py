@@ -87,7 +87,12 @@ def test_model_dispatch_policy_follows_active_profile_and_defaults_disabled(
         _write_delegation_config(tmp_path / "default-profile", monkeypatch)
         AIAgent._dispatch_delegate_task(parent, {"tasks": [{"goal": "async"}]})
 
-    assert captured == [False, True]
+        _write_delegation_config(
+            tmp_path / "joined-profile", monkeypatch, wait_for_all=True
+        )
+        AIAgent._dispatch_delegate_task(parent, {"tasks": [{"goal": "joined again"}]})
+
+    assert captured == [False, True, False]
 
 
 @pytest.mark.parametrize(

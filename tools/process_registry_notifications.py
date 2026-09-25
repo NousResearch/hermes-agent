@@ -123,16 +123,6 @@ def _delegation_model_not_found_notice(results) -> "list[str] | None":
     return lines
 
 
-# Async notices must defer to the parent's wait policy, not authorize partial work.
-_DELEGATION_WAIT_POLICY = (
-    "Follow the parent's wait policy. When waiting for all reports, retain this result and end your turn immediately "
-    "if any expected outcome is outstanding. Do not analyze or act on it, re-dispatch work, poll, or otherwise "
-    "advance the task until every expected outcome has returned. Then verify and integrate the results together. "
-    "Failed, cancelled, or timed-out outcomes count as returned outcomes, not successful results. "
-    "Respect the user's latest instructions, including Stop or cancellation."
-)
-
-
 _TRUNCATED_SUMMARY_NOTE = (
     "[TRUNCATED — subagent hit its iteration cap; the summary below "
     "may be incomplete. Verify before relying on it, or re-dispatch "
@@ -176,7 +166,7 @@ def _format_task_failure_notice(evt: dict, deleg_id: str) -> str:
         f"[ASYNC DELEGATION TASK FAILED — {deleg_id}, task {idx + 1}/{n}]",
         "One subagent in a background fan-out you dispatched has failed while its siblings are still running. "
         "The batch's consolidated results will still arrive when the last sibling finishes; this is an early "
-        "status notice, not whole-batch completion. " + _DELEGATION_WAIT_POLICY,
+        "warning so you can re-dispatch or investigate now instead of then.",
         f"Task: {goal}" if goal else "",
         f"Status: {r.get('status', '?')}   Duration: {r.get('duration_seconds', '?')}s" + (f"\nError: {err}" if err else ""),
     ]
@@ -213,8 +203,9 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         evt,
         f"[ASYNC DELEGATION BATCH COMPLETE — {deleg_id}]",
         f"A background fan-out unit you dispatched earlier — {unit} — has finished; its consolidated results are "
-        "below. Other units from the same delegate_task call may report separately; this notice covers this unit, "
-        "not necessarily the whole call. " + _DELEGATION_WAIT_POLICY,
+        "below. Any other units from the same delegate_task call report separately as they finish. You may have "
+        "moved on since dispatching — act on these or re-dispatch if things have changed. If you are still waiting "
+        "on siblings, end your turn after acting on this one.",
         completed_at, with_goal=False)
     lines[-1] += f"   Total duration: {evt.get('total_duration_seconds', evt.get('duration_seconds', '?'))}s"
     lines += _recovery_lines(evt)
@@ -284,8 +275,9 @@ def _format_async_delegation(evt: dict) -> str:
     lines = _preamble(
         evt,
         f"[ASYNC DELEGATION COMPLETE — {deleg_id}]",
-        "A background subagent you dispatched earlier has finished; its full task source is below. "
-        + _DELEGATION_WAIT_POLICY,
+        "A background subagent you dispatched earlier has finished. You may "
+        "have moved on since dispatching it; the full task source is below so "
+        "you can act on the result or re-dispatch if things have changed.",
         completed_at, with_goal=True)
     lines += _notice_lines([evt]) + [
         f"Status: {status}   API calls: {evt.get('api_calls', 0)}   Duration: {evt.get('duration_seconds', '?')}s"

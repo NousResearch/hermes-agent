@@ -31,7 +31,7 @@ from tools.delegate_tool_child_run import (  # noqa: F401
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
     _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback,
-    _get_wait_for_all, _get_worktree_isolation, get_delegation_execution_policy,
+    _get_wait_for_all, _get_worktree_isolation, _model_background_value, get_delegation_execution_policy,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
@@ -740,18 +740,6 @@ DELEGATE_TASK_SCHEMA = {
 
 # --- Registry ---
 from tools.registry import registry, tool_error
-
-def _model_background_value(args: dict, parent_agent=None) -> bool:
-    """Shared background policy for live and fallback MODEL-facing dispatch.
-
-    The hidden model ``background`` argument is ignored. Top-level calls detach by
-    default, but the effective profile can select the existing parallel inline join.
-    Nested orchestrators always join so they can consume worker results in-turn.
-    Direct Python callers bypass this helper and keep explicit background control.
-    """
-    if getattr(parent_agent, "_delegate_depth", 0) > 0:
-        return False
-    return get_delegation_execution_policy()["model_tasks"] == "asynchronous"
 
 _MODEL_HIDDEN_TASK_FIELDS = {"acp_command", "acp_args"}
 

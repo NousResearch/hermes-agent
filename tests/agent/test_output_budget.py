@@ -63,11 +63,11 @@ def test_retry_never_exceeds_catalog_ceiling(catalog):
     assert boosted_output_cap(a, 256000, 1) == 128000
 
 
-@pytest.mark.parametrize("explicit,expected", [(2048, 2048), (256000, 128000)])
-def test_explicit_budget_is_preserved_within_ceiling(catalog, explicit, expected):
+@pytest.mark.parametrize("explicit,expected,retry", [(2048, 2048, 4096), (256000, 128000, 128000)])
+def test_explicit_budget_sets_initial_request_and_can_grow(catalog, explicit, expected, retry):
     a = agent(max_tokens=explicit)
     assert apply_output_budget(a, {"max_tokens": explicit})["max_tokens"] == expected
-    assert boosted_output_cap(a, explicit, 1) == expected
+    assert boosted_output_cap(a, explicit, 1) == retry
     assert a.max_tokens == explicit
 
 
@@ -84,6 +84,32 @@ def test_gemini_transport_thinking_headroom_is_preserved(catalog, enabled, expec
     )
     assert apply_output_budget(a, kwargs)["max_tokens"] == expected
 
+
+@pytest.mark.parametrize("configured", [None, 4096])
+def test_each_retry_doubles_the_previous_budget_once(catalog, configured):
+    a = agent(max_tokens=configured)
+    cap = 4096
+    budgets = [cap]
+    for n in range(1, 7):
+        cap = boosted_output_cap(a, cap, n)
+        budgets.append(cap)
+    assert budgets == [4096, 8192, 16384, 32768, 65536, 128000, 128000]
+
+
+def test_explicit_cap_stays_fixed_if_the_model_ceiling_is_unknown(catalog):
+    a = agent(model="vendor/unknown", max_tokens=4096)
+    assert boosted_output_cap(a, None, 1) == 4096
+    assert boosted_output_cap(a, 4096, 2) == 4096
+
+
+def test_recovery_cap_still_respects_remaining_context(catalog):
+    a = agent(max_tokens=4096, context_compressor=SimpleNamespace(context_length=12000))
+    kwargs = apply_output_budget(a, {
+        "messages": [{"role": "user", "content": "x" * 20000}],
+        "max_tokens": 4096, "extra_body": {"max_tokens": 4096},
+    }, recovery_cap=8192)
+    assert 4096 < kwargs["max_tokens"] < 8192
+    assert kwargs["extra_body"]["max_tokens"] == kwargs["max_tokens"]
 
 def test_switching_models_does_not_reuse_previous_ceiling(catalog):
     a = agent()
@@ -196,7 +222,8 @@ def test_codex_backend_never_probes_or_sends_an_unsupported_cap(monkeypatch, pro
     lookup.assert_not_called()
 
 
-def test_catalog_budget_reaches_serialized_sdk_requests_and_retries(catalog):
+@pytest.mark.parametrize("initial,expected", [(None, [128000] * 3), (4096, [4096, 8192, 16384])])
+def test_catalog_budget_reaches_serialized_sdk_requests_and_retries(catalog, initial, expected):
     from agent.transports.chat_completions import ChatCompletionsTransport
 
     bodies = []
@@ -206,16 +233,16 @@ def test_catalog_budget_reaches_serialized_sdk_requests_and_retries(catalog):
         return httpx.Response(200, json={"id": "test", "object": "chat.completion", "created": 0,
                                        "model": "vendor/large", "choices": []})
 
-    a = agent()
+    a = agent(max_tokens=initial)
     transport = ChatCompletionsTransport()
     with OpenAI(api_key="test", base_url=a.base_url,
                 http_client=httpx.Client(transport=httpx.MockTransport(receive))) as client:
         cap = None
         for n in range(3):
             kwargs = transport.build_kwargs(model=a.model, messages=[{"role": "user", "content": "hello"}],
-                ephemeral_max_output_tokens=cap, max_tokens_param_fn=a._max_tokens_param)
-            kwargs = apply_output_budget(a, kwargs)
+                max_tokens=initial, ephemeral_max_output_tokens=cap, max_tokens_param_fn=a._max_tokens_param)
+            kwargs = apply_output_budget(a, kwargs, recovery_cap=cap)
             client.chat.completions.create(**kwargs)
             cap = boosted_output_cap(a, kwargs["max_tokens"], n + 1)
-    assert [body["max_tokens"] for body in bodies] == [128000] * 3
+    assert [body["max_tokens"] for body in bodies] == expected
     assert all(body["model"] == a.model for body in bodies)

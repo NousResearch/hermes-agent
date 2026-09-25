@@ -1547,7 +1547,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     from agent.opencode_affinity import merge_session_affinity_headers
     from agent.output_budget import apply_output_budget
 
-    kwargs = apply_output_budget(agent, _build_api_kwargs_for_mode(agent, api_messages, tools_for_api))
+    recovery_cap = getattr(agent, "_ephemeral_max_output_tokens", None)
+    kwargs = apply_output_budget(agent, _build_api_kwargs_for_mode(agent, api_messages, tools_for_api), recovery_cap=recovery_cap)
     return merge_session_affinity_headers(
         kwargs,
         getattr(agent, "provider", None),

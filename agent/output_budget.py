@@ -53,42 +53,62 @@ def model_output_limit(agent: Any) -> Optional[int]:
 
 def boosted_output_cap(agent: Any, requested_cap: Optional[int], n: int,
                        base: Optional[int] = None) -> Optional[int]:
-    """Grow only within a known ceiling, preserving explicit caller budgets and unknowns."""
+    """Double the failed request within a known ceiling; never guess an unknown limit."""
     limit = model_output_limit(agent)
     configured = _positive_int(getattr(agent, "max_tokens", None))
     requested_cap = _positive_int(requested_cap)
-    if configured is not None:
-        return min(configured, limit) if limit is not None else configured
+    anchor = requested_cap or _positive_int(base) or configured
     if limit is None:
-        return requested_cap  # an omitted provider-owned budget is not a 4K budget
-    anchor = requested_cap or limit
-    return min(max((_positive_int(base) or anchor) * (2 ** n), anchor), limit)
+        return anchor  # an omitted provider-owned budget is not a 4K budget
+    if anchor is None:
+        return limit
+    # The previous request already includes earlier boosts: double it once, not
+    # by 2**n again. Callers without a captured request use the initial budget.
+    return min(anchor * (2 if requested_cap is not None else 2 ** n), limit)
 
 
-def apply_output_budget(agent: Any, kwargs: dict) -> dict:
-    """Fill or clamp OpenAI-compatible output caps after transport-specific construction.
+def apply_output_budget(agent: Any, kwargs: dict, *, recovery_cap: Optional[int] = None) -> dict:
+    """Bound initial and one-shot recovery budgets after transport construction.
 
-    Native adapters keep their protocol-specific budgets (e.g. Anthropic thinking
-    minimums). ChatGPT's OAuth Responses backend does not accept output caps.
+    An explicit cap sets the initial budget. Recovery can replace it for one
+    request, within the catalog ceiling and available context. Native adapters
+    and Codex backends retain their protocol-specific handling.
     """
     mode = getattr(agent, "api_mode", None)
     if not _uses_catalog_output_budget(agent):
         return kwargs
     limit = model_output_limit(agent)
-    if limit is None:
-        return kwargs
-    configured = _positive_int(getattr(agent, "max_tokens", None))
-    if configured is not None and mode == "chat_completions":
+    recovery_cap = _positive_int(recovery_cap)
+    if recovery_cap is not None and mode == "chat_completions":
         from agent.transports.chat_completions import _raise_gemini_thinking_max_tokens
 
-        # The transport reserves output headroom for Gemini thinking. Preserve
-        # that existing exception before bounding it by the published ceiling.
-        configured = _raise_gemini_thinking_max_tokens(
-            agent.model, getattr(agent, "reasoning_config", None), configured,
+        # Keep the transport's existing reasoning-headroom exception on recovery.
+        recovery_cap = _raise_gemini_thinking_max_tokens(
+            agent.model, getattr(agent, "reasoning_config", None), recovery_cap,
         )
-    cap = min(limit, configured or limit)
-    # extra_body is merged by the SDK after ordinary fields; account for both so a
-    # retry cannot override a smaller request-level cap through a different spelling.
+    cap = recovery_cap if recovery_cap is not None else limit
+    if cap is None:
+        return kwargs
+    if limit is not None:
+        cap = min(cap, limit)
+    # Some transports share extra_body with saved request overrides. Budget
+    # adjustment belongs to this request and must not rewrite the saved cap.
+    kwargs = dict(kwargs)
+    if isinstance(kwargs.get("extra_body"), dict):
+        kwargs["extra_body"] = dict(kwargs["extra_body"])
+    if recovery_cap is None:
+        overrides = getattr(agent, "request_overrides", None)
+        if isinstance(overrides, dict):
+            # The Responses transport may overwrite a top-level request cap
+            # with its default. Retain the explicit initial budget here too.
+            for body in (overrides, overrides.get("extra_body")):
+                if isinstance(body, dict):
+                    for name in ("max_tokens", "max_completion_tokens", "max_output_tokens"):
+                        value = _positive_int(body.get(name))
+                        if value is not None:
+                            cap = min(cap, value)
+    # extra_body is merged by the SDK last. Replace every spelling during
+    # recovery so a configured initial cap cannot undo the one-shot budget.
     fields = []
     for body in (kwargs, kwargs.get("extra_body")):
         if isinstance(body, dict):
@@ -96,7 +116,10 @@ def apply_output_budget(agent: Any, kwargs: dict) -> dict:
                 value = _positive_int(body.get(name))
                 if value is not None:
                     fields.append((body, name))
-                    cap = min(cap, value)
+                    if recovery_cap is None:
+                        cap = min(cap, value)
+    if not fields and recovery_cap is None:
+        cap = min(cap, _positive_int(getattr(agent, "max_tokens", None)) or cap)
     context = _positive_int(getattr(getattr(agent, "context_compressor", None), "context_length", None))
     if context is not None:
         from agent.chat_completion_helpers import estimate_request_context_tokens

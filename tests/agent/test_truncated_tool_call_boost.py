@@ -66,8 +66,14 @@ def test_boost_clamped_to_known_model_output_limit(site):
     assert at_limit == [64000] * 4
 
 
-def test_explicit_output_budget_is_not_silently_increased():
+def test_explicit_output_budget_stays_fixed_without_a_known_ceiling():
     assert _tool_call_budgets(_agent(4096, None)) == [4096] * 4
+
+
+@pytest.mark.parametrize("site", SITES)
+def test_explicit_output_budget_can_grow_within_a_known_ceiling(site):
+    a = _agent(4096, None, api_mode="anthropic_messages", model="claude-sonnet-4-5")
+    assert site(a) == [8192, 16384, 32768, 64000]
 
 
 @pytest.mark.parametrize("site", SITES)

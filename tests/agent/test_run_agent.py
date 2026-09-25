@@ -112,6 +112,43 @@ def test_first_request_and_retry_use_catalog_output_ceiling(agent, monkeypatch):
     assert agent.max_tokens is None
 
 
+@pytest.mark.parametrize("mode", ["chat_completions", "codex_responses"])
+@pytest.mark.parametrize("setting", ["agent", "request", "extra_body"])
+def test_explicit_cap_doubles_on_retries_then_resets(agent, monkeypatch, mode, setting):
+    from agent import model_metadata
+    from agent.output_budget import boosted_output_cap
+
+    monkeypatch.setattr(model_metadata, "fetch_model_metadata", lambda: {
+        "vendor/catalog-model": {"max_completion_tokens": 128000},
+    })
+    agent.provider = "openrouter"
+    agent.model = "vendor/catalog-model"
+    agent.api_mode = mode
+    agent.context_compressor.context_length = 200000
+    agent.max_tokens = 4096 if setting == "agent" else None
+    field = "max_tokens" if mode == "chat_completions" else "max_output_tokens"
+    overrides = ({field: 4096} if setting == "request" else
+                 {"extra_body": {field: 4096}} if setting == "extra_body" else {})
+    from copy import deepcopy
+
+    original_overrides = deepcopy(overrides)
+    agent.request_overrides = overrides
+    messages = [{"role": "user", "content": "hello"}]
+    request = agent._build_api_kwargs(messages)
+    budgets = [agent._requested_output_cap_from_api_kwargs(request)]
+    for n in range(1, 7):
+        agent._ephemeral_max_output_tokens = boosted_output_cap(agent, budgets[-1], n)
+        request = agent._build_api_kwargs(messages)
+        budgets.append(agent._requested_output_cap_from_api_kwargs(request))
+        if setting == "extra_body":
+            assert request["extra_body"][field] == budgets[-1]
+    assert budgets == [4096, 8192, 16384, 32768, 65536, 128000, 128000]
+    assert agent._ephemeral_max_output_tokens is None
+    assert agent._requested_output_cap_from_api_kwargs(agent._build_api_kwargs(messages)) == 4096
+    assert agent.max_tokens == (4096 if setting == "agent" else None)
+    assert agent.request_overrides == original_overrides
+
+
 def test_catalog_output_cap_keeps_responses_recovery_budget(agent, monkeypatch):
     from agent import model_metadata
 

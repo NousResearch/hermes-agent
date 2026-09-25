@@ -135,7 +135,8 @@ model:
   #
   # OpenAI-compatible requests use the active route's catalog output ceiling,
   # bounded by the available context. Missing metadata keeps the provider default.
-  # Internal/request-level lower budgets are preserved, including during retries.
+  # Internal/request-level caps set the initial budget; truncation retries may
+  # double it within the known model ceiling and remaining context.
   # Native protocols retain their adapter-specific output limits.
 
   # ── Custom request headers (optional) ─────────────────────────────────────

@@ -1339,13 +1339,46 @@ class CuratedFallbackModels(list[str]):
     treats it as a placeholder, never as the account's real catalog (#107391)."""
 
 
+# Internal routing slugs the /models catalog lists but no client offers for direct selection:
+# background retrieval/compaction/execution endpoints, not chat models (verified against the
+# education-quota catalog, Sep 2026).
+_COPILOT_INTERNAL_MODEL_IDS = frozenset({
+    "copilot-search-a", "copilot-search-b", "copilot-search-c",
+    "exec-agent-a", "exec-agent-b", "exec-agent-c", "trajectory-compaction"})
+
+
+def _policy_available_copilot_models(catalog: list[dict[str, Any]]) -> list[str]:
+    """Chat model ids THIS account can actually select, in catalog order.
+
+    ``policy.state: disabled`` is GitHub's per-account enablement signal (VS Code renders it as
+    an "Enable access" prompt): pinning such a model returns HTTP 400 ``model_not_supported``.
+    A missing policy block means allowed — legacy/utility rows (gpt-4o, gpt-4.1) carry none and
+    remain servable. Internal routing slugs are dropped. The picker_enabled flag is ignored on
+    purpose: some accounts (Free/Student quotas) observe ``model_picker_enabled: false`` for
+    EVERY row, including servable ones — it is a display hint, not an availability contract
+    (same reasoning as ``_copilot_catalog_item_is_text_model``).
+    """
+    models: list[str] = []
+    for item in _copilot_text_models(catalog, ignore_picker_flag=True):
+        model_id = str(item.get("id") or "").strip()
+        if not model_id or model_id in _COPILOT_INTERNAL_MODEL_IDS:
+            continue
+        policy_state = str((item.get("policy") or {}).get("state") or "enabled").strip().lower()
+        if policy_state != "enabled":
+            continue
+        models.append(model_id)
+    return models
+
+
 def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
     if normalized == "copilot-acp" and (live := _copilot_acp_session_models(force_refresh)):
         return live
     try:
-        live = _fetch_github_models(_resolve_copilot_catalog_api_key())
-        if live:
-            return live
+        catalog = fetch_github_model_catalog(api_key=_resolve_copilot_catalog_api_key())
+        if catalog:
+            # An empty result is honest (the account enables nothing) — never fall back to the
+            # curated list here, which lists models the account cannot use (#plan-gated catalogs).
+            return _policy_available_copilot_models(catalog)
     except Exception:
         pass
     return CuratedFallbackModels(_PROVIDER_MODELS.get("copilot", []))

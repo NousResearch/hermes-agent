@@ -86,6 +86,18 @@ OLLAMA_CLOUD_OVERRIDES: dict[str, str] = {"xhigh": "max"}
 #: Meta Model API (Muse): rejects ``none``.
 META_AI_EFFORTS: tuple[str, ...] = ("minimal", "low", "medium", "high", "xhigh")
 
+#: Groq's OpenAI-compatible wire globally accepts only top-level reasoning_effort
+#: "none"/"default" (#75089) — EXCEPT its two GPT-OSS models, which have their own
+#: graded low/medium/high knob per Groq's own docs (console.groq.com/docs/reasoning)
+#: and 400 on "default" itself. Model-specific, not host-specific: #119xxx.
+GROQ_GPT_OSS_EFFORTS: tuple[str, ...] = ("low", "medium", "high")
+GROQ_GPT_OSS_MODEL_SLUGS: frozenset[str] = frozenset({"gpt-oss-20b", "gpt-oss-120b"})
+
+
+def is_groq_gpt_oss_model(model: Optional[str]) -> bool:
+    """``openai/gpt-oss-20b``/``openai/gpt-oss-120b``, with or without the ``openai/`` prefix."""
+    return (model or "").strip().lower().rsplit("/", 1)[-1] in GROQ_GPT_OSS_MODEL_SLUGS
+
 
 def is_astra_model(model: Optional[str]) -> bool:
     """``gpt-6-astra`` or its Hermes-side ``-900k`` picker alias, with or without a ``vendor/`` prefix.

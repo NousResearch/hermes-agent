@@ -274,7 +274,9 @@ class RouterProfile(ProviderProfile):
         _seed_efforts(items)
         return list(dict.fromkeys(str(i["id"]) for i in items if isinstance(i, dict) and i.get("id"))) or None
 
-    def supported_reasoning_efforts(self, model: Optional[str]) -> Optional[tuple[str, ...]]:
+    def supported_reasoning_efforts(
+        self, model: Optional[str], base_url: Optional[str] = None
+    ) -> Optional[tuple[str, ...]]:
         """Catalog-declared effort vocabulary (cache-only; cold cache -> None + warm)."""
         mid = str(model or "").strip()
         if not mid:

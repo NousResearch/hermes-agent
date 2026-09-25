@@ -223,10 +223,18 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     """
     import os
     import sys
+
+    root = Path(project_root).resolve()
+    # Post-build maintenance imports hermes_cli.main while this worker still owns the
+    # completion marker. Re-entering the launch repair here starts another tail before
+    # this one can clear it, recursively rebuilding the products on every pass.
+    if (Path(sys.argv[0]).name == "source_completion.py"
+            and Path(sys.argv[0]).resolve() == root / "hermes_cli" / "source_completion.py"):
+        return None
+
     from hermes_cli._parser import command_argv
     from hermes_cli.steward import read_install_stamp
 
-    root = Path(project_root).resolve()
     if (command_argv(argv)[:1] == ["pm"]
             or _METADATA_FLAGS & set(argv)
             or os.environ.get("HERMES_DISABLE_LAZY_INSTALLS", "").lower() in ("1", "true", "yes")

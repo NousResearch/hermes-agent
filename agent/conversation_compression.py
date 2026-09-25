@@ -2465,9 +2465,9 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
     # walk treats the whole compacted transcript as unpersisted and re-INSERTs it — the live set doubles on
     # every compaction (~58K → ~512K tokens in production).
     from agent.context_compressor import (
-        _INFLIGHT_REPLAY_MERGED_KEY, COMPRESSION_CONTINUATION_USER_CONTENT, _fresh_compaction_message_copy,
+        ContextCompressor, COMPRESSION_CONTINUATION_USER_CONTENT, _fresh_compaction_message_copy,
     )
-    if any(isinstance(message, dict) and message.get(_INFLIGHT_REPLAY_MERGED_KEY) for message in compressed):
+    if any(ContextCompressor._has_merged_inflight_replay(message) for message in compressed):
         # The in-flight request was restated onto the summary carrier (#100818); an anchor would duplicate it.
         return "already_present"
     # One reversed scan over BOTH kinds: scanning steer then user would let an older

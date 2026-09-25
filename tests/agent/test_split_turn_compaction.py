@@ -216,3 +216,47 @@ def test_a_tail_that_fits_the_budget_still_anchors_the_active_request() -> None:
     assert any(
         m.get("content") == _ACTIVE_REQUEST for m in messages[cut:]
     )
+
+
+@pytest.mark.parametrize("reload_from_db", [False, True], ids=["live", "restart"])
+@pytest.mark.parametrize("summary", [None, "Shard checks are continuing."], ids=["fallback", "summary"])
+def test_active_request_survives_repeated_compaction_and_restart(
+    tmp_path, reload_from_db: bool, summary: str | None,
+) -> None:
+    from agent.context_compressor import _INFLIGHT_TASK_REPLAY_HEADER, _SUMMARY_END_MARKER
+    from agent.conversation_compression import _ensure_compressed_has_user_turn
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path=db_path)
+    session_id = "active-turn-restart"
+    db.create_session(session_id, "test")
+    messages = _oversized_active_turn()
+    try:
+        for cycle in range(3):
+            if cycle:
+                for index in range(10 * cycle, 10 * (cycle + 1)):
+                    messages.extend(_tool_group(index))
+            original = messages
+            compressor = _make_compressor()
+            with patch.object(compressor, "_generate_summary", return_value=summary):
+                messages = compressor.compress(original, current_tokens=90_000, force=True)
+            _ensure_compressed_has_user_turn(original, messages)
+            assert len(messages) < len(original)
+            _assert_tool_pairs_are_complete(messages)
+            # Historical summaries may quote the request. Count only actionable
+            # text after their boundary, not those explicitly historical quotes.
+            user_content = "\n".join(
+                str(m.get("content")).rsplit(_SUMMARY_END_MARKER, 1)[-1]
+                for m in messages if m["role"] == "user"
+            )
+            assert user_content.count(_ACTIVE_REQUEST) == 1
+            assert user_content.count(_INFLIGHT_TASK_REPLAY_HEADER) == 1
+            assert user_content.rfind(_ACTIVE_REQUEST) > user_content.rfind(_SUMMARY_END_MARKER)
+            db.archive_and_compact(session_id, messages)
+            if reload_from_db:
+                db.close()
+                db = SessionDB(db_path=db_path)
+                messages = db.get_messages_as_conversation(session_id)
+    finally:
+        db.close()

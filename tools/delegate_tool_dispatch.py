@@ -359,7 +359,8 @@ def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
     payload["result_delivery"] = batch.result_delivery
     if batch.result_delivery == "inject":
         payload["note"] = (
-            "Subagents run asynchronously; each ungrouped task reports alone and grouped tasks finish together. "
+            f"{n} subagent(s) run asynchronously as {len(units)} completion unit(s); "
+            "each unit reports once after all of its tasks finish. "
             "Keep working: ready units may ride a new tool-result boundary in this turn. "
             "Missed boundaries use normal after-turn delivery. Never wait or poll."
         )

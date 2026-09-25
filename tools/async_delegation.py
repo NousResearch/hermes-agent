@@ -549,6 +549,9 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Claim one pending completion across competing consumers/processes."""
     now = time.time()
     with _DB_LOCK, _transaction() as conn:
+        # Serialize receipt reconciliation and token takeover with the transcript
+        # writer. A pre-lock SELECT could miss a just-committed tool carrier.
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT delivery_state, event_json FROM async_delegations WHERE delegation_id=?", (delegation_id,)).fetchone()
         if row is None:

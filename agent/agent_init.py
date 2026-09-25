@@ -990,7 +990,15 @@ def _build_client(agent, api_key, base_url, fallback_model):
     # responses.stream()). One provider/model timeout up front so every path applies it.
     agent._anthropic_client = None
     agent._is_anthropic_oauth = False
-    _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
+
+    # Resolve per-provider / per-model request timeout once up front so
+    # every client construction path below (Anthropic native, OpenAI-wire,
+    # router-based implicit auth) can apply it consistently.  Bedrock
+    # Claude uses its own timeout path and is not covered here.
+    _provider_timeout = get_provider_request_timeout(
+        agent.provider, agent.model, base_url=getattr(agent, "base_url", None)
+    )
+
     if agent.api_mode == "anthropic_messages":
         _init_anthropic_client(agent, api_key, base_url, _provider_timeout)
     elif agent.provider == "moa":

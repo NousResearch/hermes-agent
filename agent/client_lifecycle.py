@@ -66,7 +66,7 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
 
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
-    timeout = get_provider_request_timeout(fb_provider, fb_model)
+    timeout = get_provider_request_timeout(fb_provider, fb_model, base_url=fb_base_url)
     if fb_provider == "bedrock" and fb_api_mode in ("anthropic_messages", "bedrock_converse"):
         # Non-Mantle Bedrock: boto3-chain auth, no OpenAI/Anthropic SDK client to carry over.
         from agent.bedrock_adapter import bind_bedrock_runtime
@@ -484,13 +484,13 @@ class ClientLifecycleMixin:
             return ("bedrock", getattr(self, "_bedrock_region", "us-east-1") or "us-east-1")
         return (
             "direct", self._anthropic_api_key, getattr(self, "_anthropic_base_url", None),
-            get_provider_request_timeout(self.provider, self.model), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
+            get_provider_request_timeout(self.provider, self.model, base_url=getattr(self, "base_url", None)), bool(getattr(self, "_oauth_1m_beta_disabled", False)),
         )
 
     def _build_direct_anthropic_client(self, token: str, base_url: Any) -> Any:
         """Native Anthropic client for ``token``/``base_url`` with the provider/model request timeout."""
         from agent.anthropic_adapter import build_anthropic_client
-        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
+        return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model, base_url=base_url))
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
         """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""

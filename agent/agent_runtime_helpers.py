@@ -1012,7 +1012,7 @@ def _build_anthropic_client_from_runtime(agent, rt: Dict[str, Any]) -> None:
     agent._anthropic_base_url = rt["anthropic_base_url"]
     agent._anthropic_client = build_anthropic_client(
         rt["anthropic_api_key"], rt["anthropic_base_url"],
-        timeout=get_provider_request_timeout(agent.provider, agent.model),
+        timeout=get_provider_request_timeout(agent.provider, agent.model, base_url=getattr(agent, "base_url", None)),
     )
     agent._is_anthropic_oauth = rt["is_anthropic_oauth"]
     agent.client = None
@@ -2076,7 +2076,7 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         agent._anthropic_base_url = base_url or getattr(agent, "_anthropic_base_url", None)
         agent._anthropic_client = build_anthropic_client(
             effective_key, agent._anthropic_base_url,
-            timeout=get_provider_request_timeout(agent.provider, agent.model),
+            timeout=get_provider_request_timeout(agent.provider, agent.model, base_url=getattr(agent, "base_url", None)),
         )
         agent._is_anthropic_oauth = anthropic_route_is_oauth(agent._anthropic_base_url, effective_key, provider=new_provider)
         agent.client = None
@@ -2100,7 +2100,7 @@ def _build_switched_client(agent, new_provider, api_key, base_url, api_mode, new
         )
     except Exception:
         logger.debug("custom-provider TLS resolution skipped on switch_model", exc_info=True)
-    timeout = get_provider_request_timeout(agent.provider, agent.model)
+    timeout = get_provider_request_timeout(agent.provider, agent.model, base_url=getattr(agent, "base_url", None))
     if timeout is not None:
         agent._client_kwargs["timeout"] = timeout
     # Reapply provider headers (OpenRouter HTTP-Referer/X-Title) lost when _client_kwargs was

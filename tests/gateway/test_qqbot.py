@@ -159,6 +159,78 @@ class TestVoiceAttachmentTempCleanup:
         assert not os.path.exists(seen["wav_path"])
 
 
+class TestVoiceAttachmentForceSTTAndFallback:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    def _setup_download_mocks(self, adapter, content=b"RIFFmock-wav-audio-data"):
+        response = mock.Mock()
+        response.content = content
+        response.headers = {"content-type": "audio/wav"}
+        response.raise_for_status = mock.Mock()
+
+        adapter._http_client = mock.AsyncMock()
+        adapter._http_client.get = mock.AsyncMock(return_value=response)
+
+    def test_default_uses_asr_refer_text_immediately(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._http_client = mock.AsyncMock()
+        transcript = asyncio.run(
+            adapter._stt_voice_attachment(
+                "https://cdn.qq.com/voice.silk",
+                "audio/silk",
+                "voice.silk",
+                asr_refer_text="QQ default text",
+            )
+        )
+        assert transcript == "QQ default text"
+        adapter._http_client.get.assert_not_called()
+
+    def test_force_stt_invokes_external_stt(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b", force_stt=True)
+        self._setup_download_mocks(adapter)
+
+        with mock.patch("tools.url_safety.is_safe_url", return_value=True):
+            adapter._call_stt = mock.AsyncMock(return_value="High precision Gemini transcript")
+            transcript = asyncio.run(
+                adapter._stt_voice_attachment(
+                    "https://cdn.qq.com/voice.silk",
+                    "audio/silk",
+                    "voice.silk",
+                    voice_wav_url="https://cdn.qq.com/voice.wav",
+                    asr_refer_text="QQ default text",
+                )
+            )
+        assert transcript == "High precision Gemini transcript"
+
+    def test_force_stt_falls_back_to_qq_asr_on_stt_failure(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b", force_stt=True)
+        self._setup_download_mocks(adapter)
+
+        with mock.patch("tools.url_safety.is_safe_url", return_value=True):
+            adapter._call_stt = mock.AsyncMock(return_value=None)
+            transcript = asyncio.run(
+                adapter._stt_voice_attachment(
+                    "https://cdn.qq.com/voice.silk",
+                    "audio/silk",
+                    "voice.silk",
+                    voice_wav_url="https://cdn.qq.com/voice.wav",
+                    asr_refer_text="QQ fallback text",
+                )
+            )
+        assert transcript == "QQ fallback text"
+
+    def test_call_stt_bridges_to_central_transcribe_audio(self, tmp_path):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        fake_wav = tmp_path / "test.wav"
+        fake_wav.write_bytes(b"RIFFfake")
+
+        with mock.patch("tools.transcription_tools.transcribe_audio", return_value={"success": True, "transcript": "Central STT Result"}):
+            transcript = asyncio.run(adapter._call_stt(str(fake_wav)))
+        assert transcript == "Central STT Result"
+
+
 # ---------------------------------------------------------------------------
 # WebSocket proxy handling
 # ---------------------------------------------------------------------------

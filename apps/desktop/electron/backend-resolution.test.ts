@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  type BackendResolutionInput,
   isIgnoreExisting,
   postBootstrapResolveOptions,
-  type BackendResolutionInput,
   selectBackendRung
 } from './backend-resolution'
 

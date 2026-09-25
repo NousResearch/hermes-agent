@@ -5,6 +5,7 @@ import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
+import { STATIC_BUSY_GLYPH, useReducedMotion } from '../lib/motion.js'
 import {
   buildSubagentTree,
   fmtTokens,
@@ -159,18 +160,23 @@ export function Spinner({ color, variant = 'think' }: { color: string; variant?:
   }, [variant])
 
   const [frame, setFrame] = useState(0)
+  const reducedMotion = useReducedMotion()
 
   useEffect(() => {
     setFrame(0)
   }, [spin])
 
   useEffect(() => {
+    if (reducedMotion) {
+      return
+    }
+
     const id = setInterval(() => setFrame(f => (f + 1) % spin.frames.length), spin.interval)
 
     return () => clearInterval(id)
-  }, [spin])
+  }, [reducedMotion, spin])
 
-  return <Text color={color}>{spin.frames[frame]}</Text>
+  return <Text color={color}>{reducedMotion ? STATIC_BUSY_GLYPH : spin.frames[frame]}</Text>
 }
 
 interface DetailRow {
@@ -203,9 +209,10 @@ function StreamCursor({
   visible?: boolean
 }) {
   const [on, setOn] = useState(true)
+  const reducedMotion = useReducedMotion()
 
   useEffect(() => {
-    if (!visible || !streaming) {
+    if (!visible || !streaming || reducedMotion) {
       setOn(true)
 
       return
@@ -214,7 +221,7 @@ function StreamCursor({
     const id = setInterval(() => setOn(v => !v), 420)
 
     return () => clearInterval(id)
-  }, [streaming, visible])
+  }, [reducedMotion, streaming, visible])
 
   if (!visible) {
     return null

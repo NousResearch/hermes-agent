@@ -877,6 +877,10 @@ DEFAULT_CONFIG = {
         "language": "en",
         # TUI busy indicator: kaomoji | emoji | unicode (braille) | ascii. `/indicator <style>`.
         "tui_status_indicator": "kaomoji",
+        # Freeze spinners, blinking cursors and rotating verbs in the CLI and TUI (screen readers
+        # re-announce every repaint, #26689). Unset = auto: on while a screen reader is active.
+        # HERMES_REDUCED_MOTION=1|0 overrides for one launch.
+        "reduced_motion": None,
         # Seconds between idle prompt_toolkit redraws in the classic CLI; keeps wall-clock
         # status-bar read-outs ticking and the bottom chrome from going stale. 0 disables it if it
         # fights terminal auto-scroll in non-fullscreen mode.

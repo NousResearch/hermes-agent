@@ -102,6 +102,9 @@ export interface ConfigDisplayConfig {
   tui_agents_nudge?: boolean
   tui_auto_resume_recent?: boolean
   tui_compact?: boolean
+  /** Freeze spinners, cursor blink and rotating verbs (screen readers re-announce every
+   *  repaint). null/absent = launcher decides from its screen-reader probe. */
+  reduced_motion?: boolean | null
   /** Legacy alias for display.mouse_tracking. */
   tui_mouse?: boolean | null | number | string
   // Forward-compat: backend may send styles this client doesn't know yet —

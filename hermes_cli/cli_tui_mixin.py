@@ -419,6 +419,10 @@ class CLITuiMixin:
         return [item for item in ordered if item is not None]
 
     def _tui_spinner_loop(self):
+        from hermes_cli.accessibility import reduced_motion_enabled
+
+        # Reduced motion: the elapsed read-out still updates, once a second instead of ten times.
+        busy_repaint = 1.0 if reduced_motion_enabled() else 0.1
         while not self._should_exit:
             if not self._app:
                 time.sleep(0.1)
@@ -427,8 +431,8 @@ class CLITuiMixin:
             if monitor is not None:
                 monitor.tick()
             if self._command_running:
-                self._invalidate(min_interval=0.1)
-                time.sleep(0.1)
+                self._invalidate(min_interval=busy_repaint)
+                time.sleep(busy_repaint)
             else:
                 # Never repaint the idle prompt on a timer: in non-full-screen mode background
                 # redraws fight tmux/Ghostty/cmux viewport restoration after focus changes and

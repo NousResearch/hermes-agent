@@ -2,6 +2,7 @@ import { useStdout } from '@hermes/ink'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { PetGrid } from '../components/petSprite.js'
+import { isReducedMotion } from '../lib/motion.js'
 import { createPetSingleFlight, requestPetUpdate } from '../lib/petPolling.js'
 
 import { useGateway } from './gatewayContext.js'
@@ -343,6 +344,11 @@ export function usePet(): PetRender {
     }
 
     tick()
+
+    if (isReducedMotion()) {
+      return // one frame per state change; no idle animation loop
+    }
+
     const interval = setInterval(tick, FRAME_MS)
 
     return () => clearInterval(interval)

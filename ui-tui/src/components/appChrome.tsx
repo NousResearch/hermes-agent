@@ -14,6 +14,7 @@ import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
+import { STATIC_BUSY_GLYPH, useReducedMotion } from '../lib/motion.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
@@ -135,6 +136,7 @@ function FaceTicker({
   const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
   const [now, setNow] = useState(() => Date.now())
   const isOccluded = useStore($isStatusRuleOccluded)
+  const reducedMotion = useReducedMotion()
 
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
@@ -159,25 +161,33 @@ function FaceTicker({
 
     setNow(Date.now())
 
-    const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
-    const clock = setInterval(() => setNow(Date.now()), 1000)
+    // Reduced motion: no glyph frames, no verb rotation, and the elapsed clock
+    // advances every 10 s instead of every second (each repaint is an
+    // announcement for a screen reader).
+    const glyph = reducedMotion ? null : setInterval(() => setTick(n => n + 1), intervalMs)
+    const clock = setInterval(() => setNow(Date.now()), reducedMotion ? 10_000 : 1000)
+
     // Verb timer is gated on `displayVerb` — `unicode` style hides the verb
     // entirely, so cycling `verbTick` would be an avoidable re-render. A
     // frozen override does not rotate.
-    const verb = displayVerb && !freezeVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
+    const verb =
+      displayVerb && !freezeVerb && !reducedMotion ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
 
     return () => {
-      clearInterval(glyph)
+      if (glyph !== null) {
+        clearInterval(glyph)
+      }
+
       clearInterval(clock)
 
       if (verb !== null) {
         clearInterval(verb)
       }
     }
-  }, [displayVerb, freezeVerb, intervalMs, isOccluded])
+  }, [displayVerb, freezeVerb, intervalMs, isOccluded, reducedMotion])
 
-  const { frame } = renderIndicator(style, tick)
-  const verb = verbOverride ?? VERBS[verbTick % VERBS.length] ?? ''
+  const frame = reducedMotion ? STATIC_BUSY_GLYPH : renderIndicator(style, tick).frame
+  const verb = verbOverride ?? (reducedMotion ? 'working' : (VERBS[verbTick % VERBS.length] ?? ''))
   const verbSegment = displayVerb ? ` ${padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb

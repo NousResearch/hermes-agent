@@ -188,6 +188,17 @@ display:
 
 Or in-session: `/indicator emoji` (etc.). Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.
 
+## Reduced motion (screen readers)
+
+Screen readers re-announce a line every time it repaints, so a braille spinner, a blinking stream cursor or a verb that rotates every few seconds becomes a stream of noise. `display.reduced_motion` freezes every animated glyph in the TUI **and** the classic CLI: busy indicators render one static `•`, the stream cursor stops blinking, skeleton shimmers and the pet hold a single frame, and the elapsed-time read-out advances every 10 seconds instead of every second.
+
+```yaml
+display:
+  reduced_motion: true    # true | false | unset (auto)
+```
+
+Left unset, Hermes probes once at launch for an active screen reader (VoiceOver on macOS, the `SPI_GETSCREENREADER` flag on Windows, the AT-SPI `ScreenReaderEnabled` property on Linux) and switches reduced motion on when it finds one. The probe is bounded at 450 ms and silently assumes "no reader" when the platform cannot answer. An explicit `true`/`false` always wins over the probe; `HERMES_REDUCED_MOTION=1|0` overrides both for a single launch, and `HERMES_SCREEN_READER=1|0` replaces the probe's answer.
+
 ## Auto-resume
 
 By default, `hermes --tui` starts a fresh session each launch. To re-attach to the most recent TUI session automatically (useful when your terminal or SSH connection drops unexpectedly), opt in:

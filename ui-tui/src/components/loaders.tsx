@@ -2,6 +2,8 @@ import { Box, Text } from '@hermes/ink'
 import { mix } from '@hermes/shared/color'
 import { useEffect, useState } from 'react'
 
+import { useReducedMotion } from '../lib/motion.js'
+
 /**
  * Animated ASCII loaders — THE loading-state primitives (session panel
  * skeleton, widget apps via the SDK). A highlight band sweeps across block
@@ -100,8 +102,13 @@ export function subscribeShimmerClock(fn: (phase: number) => void): () => void {
  *  renders) after `animateMs`. */
 export function useShimmerPhase(animateMs = SHIMMER_ANIMATE_MS): number {
   const [phase, setPhase] = useState(clockPhase)
+  const reducedMotion = useReducedMotion()
 
   useEffect(() => {
+    if (reducedMotion) {
+      return // skeleton stays put: a shimmer is a repaint every 90 ms
+    }
+
     const startedAt = Date.now()
 
     let unsubscribe: (() => void) | null = subscribeShimmerClock(next => {
@@ -119,7 +126,7 @@ export function useShimmerPhase(animateMs = SHIMMER_ANIMATE_MS): number {
       unsubscribe?.()
       unsubscribe = null
     }
-  }, [animateMs])
+  }, [animateMs, reducedMotion])
 
   return phase
 }

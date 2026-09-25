@@ -886,11 +886,14 @@ class KawaiiSpinner:
 
     def _animate(self):
         tty = self._is_tty
-        # Non-TTY (Docker, systemd, pipe): log once instead of spamming frames.
-        if not tty:
+        from hermes_cli.accessibility import reduced_motion_enabled
+
+        # Non-TTY (Docker, systemd, pipe) and reduced motion (screen reader): log once, no frames.
+        static = not tty or reduced_motion_enabled()
+        if static:
             self._write(f"  [tool] {self.message}", flush=True)
         # Under patch_stdout the \r animation would overdraw the TUI status bar.
-        if not tty or self._is_patch_stdout_proxy():
+        if static or self._is_patch_stdout_proxy():
             while self.running:
                 time.sleep(0.5 if not tty else 0.1)
             return

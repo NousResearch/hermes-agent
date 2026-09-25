@@ -548,8 +548,12 @@ class CLIStreamMixin:
         return "Processing command..."
 
     def _command_spinner_frame(self) -> str:
-        """Return the current spinner frame for slow slash commands."""
+        """Return the current spinner frame for slow slash commands (static under reduced motion)."""
         from cli import _COMMAND_SPINNER_FRAMES
+        from hermes_cli.accessibility import reduced_motion_enabled
+
+        if reduced_motion_enabled():
+            return "•"
         return _COMMAND_SPINNER_FRAMES[int(time.monotonic() * 10) % len(_COMMAND_SPINNER_FRAMES)]
 
     @contextmanager

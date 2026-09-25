@@ -345,6 +345,8 @@ export interface UiState {
   notice: Notice | null
   pasteCollapseLines: number
   pasteCollapseChars: number
+  // `display.reduced_motion` — static busy glyphs, no cursor blink, no verb rotation.
+  reducedMotion: boolean
 
   sections: SectionVisibility
   sessionTitle: string

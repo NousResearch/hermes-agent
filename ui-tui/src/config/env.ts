@@ -54,6 +54,11 @@ export const MOUSE_TRACKING: MouseTrackingMode = resolvedBootMouseEnabled ? 'all
 
 export const NO_CONFIRM_DESTRUCTIVE = truthy(process.env.HERMES_TUI_NO_CONFIRM)
 
+// Reduced motion at boot: the Python launcher sets HERMES_REDUCED_MOTION=1 when it
+// detects a screen reader (or the user exported it). `display.reduced_motion`
+// in config.yaml, once synced, wins over this default in either direction.
+export const REDUCED_MOTION = truthy(process.env.HERMES_REDUCED_MOTION)
+
 // Set by the dashboard PTY launcher. This is intentionally narrower than
 // INLINE_MODE: users can opt into inline terminal rendering locally, but the
 // browser-embedded TUI has no healthy restart path after an idle exit.

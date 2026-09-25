@@ -373,6 +373,15 @@ def _launch_tui(
     os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
     env.setdefault("NODE_ENV", "development" if tui_dev else "production")
+    # The Ink TUI reads display.reduced_motion itself; the env carries the screen-reader probe
+    # result (and any HERMES_REDUCED_MOTION override) so an unset key still freezes its spinners.
+    try:
+        from hermes_cli.accessibility import reduced_motion_enabled
+
+        if reduced_motion_enabled():
+            env["HERMES_REDUCED_MOTION"] = "1"
+    except Exception:
+        logger.debug("reduced-motion probe failed; TUI keeps animations", exc_info=True)
 
     wt_info = None
     if worktree:

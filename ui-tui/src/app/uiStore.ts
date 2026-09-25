@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { MOUSE_TRACKING } from '../config/env.js'
+import { MOUSE_TRACKING, REDUCED_MOTION } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
 import { bootTheme } from '../lib/themeBoot.js'
 import { DEFAULT_THEME } from '../theme.js'
@@ -27,6 +27,7 @@ const buildUiState = (): UiState => ({
   notice: null,
   pasteCollapseLines: 5,
   pasteCollapseChars: 2000,
+  reducedMotion: REDUCED_MOTION,
   sections: {},
   sessionTitle: '',
   showReasoning: false,

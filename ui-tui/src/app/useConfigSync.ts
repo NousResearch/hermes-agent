@@ -1,6 +1,7 @@
 import type { MouseTrackingMode } from '@hermes/ink'
 import { useEffect, useRef } from 'react'
 
+import { REDUCED_MOTION } from '../config/env.js'
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ConfigFullResponse, ConfigMtimeResponse, ReloadMcpResponse } from '../gatewayTypes.js'
@@ -304,6 +305,8 @@ export const applyDisplay = (
     mouseTracking: normalizeMouseTracking(d),
     pasteCollapseLines: _pasteCollapseLinesFromConfig(cfg),
     pasteCollapseChars: _pasteCollapseCharsFromConfig(cfg),
+    // Explicit YAML boolean wins; unset keeps the launcher's screen-reader verdict.
+    reducedMotion: typeof d.reduced_motion === 'boolean' ? d.reduced_motion : REDUCED_MOTION,
     sections: resolveSections(d.sections),
     showReasoning: !!d.show_reasoning,
     statusBar: normalizeStatusBar(d.tui_statusbar),

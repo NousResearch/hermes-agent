@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from collections import Counter
 
 logger = logging.getLogger(__name__)
@@ -176,6 +177,16 @@ def _line_repetition_dominated(text: str, n: int) -> bool:
 # once seeded (1143 rows across 4 sessions in the corpus scan; the litter rule fires on ~93%
 # of them and on none of the healthy rows — analysis sessions that QUOTE degenerate excerpts
 # peak at a 1.4% unmatched-opener rate and a 0.27 dense-bin fraction, under the thresholds).
+#
+# A third shape is word-level, not character-level: one short word (nearly always the English
+# article) swells until it fills the channel — "the move: the the the crossing: the the ..." —
+# sometimes into pure runs of thousands ("the " x 65k in the corpus). Runs of one character
+# never form, so the char rules and the quote-litter rule all stay silent. The word rule
+# below trips only when ONE word both repeats and dominates the message; on a 149k-message
+# scan that combination fired on 284 degenerate rows across 4 chronic sessions and on ZERO
+# healthy rows — and stayed silent on the shapes that must never trip: ``xx xx`` hex dumps,
+# ``Down Down Down`` command sequences, ``[False, False]`` code arrays, code discussions
+# around repeated variable names (``pc``), and HTML ``div`` listings.
 THINKING_LOOP_TRUNCATED = "[thinking truncated: repetition loop detected]"
 
 _BRACKET_RUN_CHARS = frozenset("「」『』")
@@ -193,19 +204,51 @@ _LITTER_BIN_QUOTES = 5
 _LITTER_START_NET = 10
 _RUN_EXCLUDED = frozenset("-=*_|+#~` \t\r\n")
 
+# Word-level loop thresholds (shape 3). Two gates together, because either alone is noisy:
+# a repeat signal (run length / adjacent-pair count) and a dominance signal (the word's share
+# of all words in the message). Cue words (articles and fillers — what a degenerating model
+# actually swallows) get the lower run bar; other words must run away far longer, which keeps
+# command-style repetition (``Down Down`` x12) and code identifiers safe.
+_WORD_RUN_MIN = 10
+_WORD_RUN_MIN_ANY = 25
+_WORD_FRAC_MIN = 0.30
+_WORD_MIN_TOKENS = 50
+_WORD_PAIRS_MIN = 8
+_WORD_FRAC_MIN_B = 0.40
+_WORD_MIN_TOKENS_B = 60
+_WORD_CUE_TOKENS = frozenset({"the", "a", "an", "hmm"})
+_WORD_EXCLUDED = frozenset({"true", "false", "none", "null"})
+_WORD_TAIL_CAP = 64
+_WORD_STRIP = ".,;:!?()[]{}<>\"'`*_-—…「」『』+=#~^|/\\"
+_WORD_RE = re.compile(r"\S+")
+
+
+def _word_token(raw: str):
+    """Normalized loop-unit for one whitespace token, or None when it cannot be one."""
+    word = raw.strip(_WORD_STRIP).lower()
+    if len(word) < 2 or not any(c.isalpha() for c in word):
+        return None
+    if word in _WORD_EXCLUDED or word == "x" * len(word):
+        return None
+    return word
+
 
 class ReasoningLoopGuard:
     """Incremental degeneration detector for a streamed reasoning channel.
 
-    Feed each reasoning delta in order (stop once ``tripped`` is True). ``trip_index`` is
-    the offset — in the concatenation of everything fed — where the degenerate region starts;
-    callers cut accumulators there so display, storage and reasoning echo all stop replaying
-    the loop. O(chars), no rescans.
+    Detects three shapes as deltas arrive: repeated character runs (「「「…), quote litter
+    (openers wedged between tokens), and word-level loops ("the the the …"). Feed each
+    reasoning delta in order (stop once ``tripped`` is True). ``trip_index`` is the offset —
+    in the concatenation of everything fed — where the degenerate region starts; callers cut
+    accumulators there so display, storage and reasoning echo all stop replaying the loop.
+    O(chars + words), no rescans.
     """
 
     __slots__ = (
         "tripped", "trip_index", "_seen", "_run_char", "_run_len", "_run_start",
         "_opens", "_closes", "_litter_start", "_bins", "_dense_bins", "_bin_quotes",
+        "_word_tail", "_word_last", "_word_run", "_word_run_start", "_word_pairs",
+        "_word_count", "_word_max", "_word_counts",
     )
 
     def __init__(self) -> None:
@@ -221,10 +264,19 @@ class ReasoningLoopGuard:
         self._bins = 0
         self._dense_bins = 0
         self._bin_quotes = 0
+        self._word_tail = ""
+        self._word_last = ""
+        self._word_run = 0
+        self._word_run_start = 0
+        self._word_pairs = 0
+        self._word_count = 0
+        self._word_max = 0
+        self._word_counts = {}
 
     def feed(self, text: str) -> bool:
         if self.tripped or not isinstance(text, str) or not text:
             return self.tripped
+        old_seen = self._seen
         run_char, run_len, run_start = self._run_char, self._run_len, self._run_start
         i = self._seen
         for ch in text:
@@ -253,9 +305,64 @@ class ReasoningLoopGuard:
                 self._bin_quotes = 0
         self._seen = i
         self._run_char, self._run_len, self._run_start = run_char, run_len, run_start
+        if self._word_feed(old_seen, text):
+            return True
         if self._litter_trips(i):
             return True
         return self.tripped
+
+    def _word_feed(self, old_seen: int, text: str) -> bool:
+        """Shape 3: word-level loops ("the the the ..." / "hmm hmm ...").
+
+        Whitespace-split words, with a short pending tail carried across deltas so runs stay
+        continuous across chunk boundaries. Trips when one word both dominates the message
+        (>= _WORD_FRAC_MIN of all words, on >= _WORD_MIN_TOKENS words seen) and repeats —
+        a >= _WORD_RUN_MIN run of an article/filler cue word (>= _WORD_RUN_MIN_ANY for any
+        other word), or >= _WORD_PAIRS_MIN adjacent pairs of a cue word at the stricter bar.
+        """
+        data = self._word_tail + text
+        base = old_seen - len(self._word_tail)
+        tokens = [(m.start(), m.group()) for m in _WORD_RE.finditer(data)]
+        self._word_tail = ""
+        if tokens and not data[-1:].isspace():
+            last_start = tokens[-1][0]
+            if len(data) - last_start <= _WORD_TAIL_CAP:
+                self._word_tail = data[last_start:]
+                tokens = tokens[:-1]
+        for start, raw in tokens:
+            word = _word_token(raw)
+            if word is None:
+                self._word_last, self._word_run = "", 0
+                continue
+            self._word_count += 1
+            seen = self._word_counts.get(word, 0) + 1
+            self._word_counts[word] = seen
+            if seen > self._word_max:
+                self._word_max = seen
+            if word == self._word_last:
+                self._word_run += 1
+                self._word_pairs += 1
+            else:
+                self._word_last = word
+                self._word_run = 1
+                self._word_run_start = base + start
+            run_min = _WORD_RUN_MIN if word in _WORD_CUE_TOKENS else _WORD_RUN_MIN_ANY
+            if (
+                self._word_run >= run_min
+                and self._word_count >= _WORD_MIN_TOKENS
+                and self._word_max >= _WORD_FRAC_MIN * self._word_count
+            ):
+                self._trip(self._word_run_start, word, self._word_run)
+                return True
+            if (
+                self._word_pairs >= _WORD_PAIRS_MIN
+                and self._word_count >= _WORD_MIN_TOKENS_B
+                and self._word_last in _WORD_CUE_TOKENS
+                and self._word_max >= _WORD_FRAC_MIN_B * self._word_count
+            ):
+                self._trip(self._word_run_start, word, self._word_pairs)
+                return True
+        return False
 
     def _litter_trips(self, length: int) -> bool:
         """Shape 2: net-unclosed quote litter dense across a majority of 200-char bins."""
@@ -278,7 +385,7 @@ class ReasoningLoopGuard:
 def sanitize_degenerate_reasoning(text, *, marker: str = THINKING_LOOP_TRUNCATED):
     """Full-text pass for non-streaming intakes / storage boundaries.
 
-    Returns ``text`` unchanged (same object) unless a degenerate shape (loop or litter) is
+    Returns ``text`` unchanged (same object) unless a degenerate shape (char loop, litter or word loop) is
     found; then the
     degenerate tail is dropped and ``marker`` appended. Fail-open for non-strings.
     """

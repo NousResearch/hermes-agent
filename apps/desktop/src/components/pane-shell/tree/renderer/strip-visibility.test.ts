@@ -44,11 +44,16 @@ describe('no dead zone', () => {
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel()] })).toBe(true)
   })
 
+  it('keeps the strip for a lone workspace even when the zone says never', () => {
+    // Workspace cannot leave the tree, but Close still empties it to a draft
+    // and + still opens a tab. Chromeless is a dead zone for those handles.
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(true)
+  })
+
   it('still hides a zone that cannot strand anything', () => {
-    // The workspace is uncloseable, a stack is reachable by tab cycling, and
-    // hide-only chrome (sessions / Bots) keeps its panes + ⌘⌥T — the invariant
-    // protects handles, it does not veto hiding as such.
-    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(false)
+    // A stack is reachable by tab cycling, and hide-only chrome (sessions /
+    // Bots) keeps its panes + ⌘⌥T — the invariant protects handles, it does
+    // not veto hiding as such.
     expect(resolveTabStripVisible({ mode: 'never', shown: [toolPanel(), toolPanel()] })).toBe(false)
     expect(resolveTabStripVisible({ mode: 'never', shown: [sideChrome()] })).toBe(false)
     expect(resolveTabStripVisible({ mode: 'never', shown: [sideChrome(), sideChrome()] })).toBe(false)
@@ -86,15 +91,13 @@ describe('a full-page view', () => {
 })
 
 // Every launch and client update lands on a lone workspace. Chromeless, that
-// layout had no session switcher and no "+" until the app-wide default was
-// flipped to always — the "tab header disappeared" reports (#89350).
+// layout had no session switcher, no Close and no "+" (#89350).
 describe('a lone workspace', () => {
-  it('keeps its strip on auto, and only on auto', () => {
+  it('keeps its strip whatever the zone says', () => {
     expect(resolveTabStripVisible({ shown: [workspace()] })).toBe(true)
+    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(true)
     // Standing side chrome never joins the tabbed workflow.
     expect(resolveTabStripVisible({ shown: [sideChrome()] })).toBe(false)
-    // Hide tabs (menu row / ⌘⌥T) still wins — the workspace strands nothing.
-    expect(resolveTabStripVisible({ mode: 'never', shown: [workspace()] })).toBe(false)
   })
 })
 
@@ -127,7 +130,7 @@ describe('tabStripVisibleForZone', () => {
 
   it('reads placement, uncloseable and collapse off the contributions', () => {
     expect(visible(['workspace'])).toBe(true)
-    expect(visible(['workspace'], 'never')).toBe(false)
+    expect(visible(['workspace'], 'never')).toBe(true)
     expect(visible(['tile:a'], 'never')).toBe(true)
     expect(visible(['terminal'], 'never')).toBe(true)
   })
@@ -137,15 +140,15 @@ describe('tabStripVisibleForZone', () => {
     expect(visible(['workspace'])).toBe(true)
 
     setTabStripDefault('never')
-    expect(visible(['workspace'])).toBe(false)
+    expect(visible(['workspace'])).toBe(true)
     expect(visible(['workspace', 'terminal'])).toBe(false)
   })
 
   it("lets a zone's own choice beat the app default", () => {
     setTabStripDefault('never')
-    expect(visible(['workspace'], 'always')).toBe(true)
+    expect(visible(['workspace', 'terminal'], 'always')).toBe(true)
 
     setTabStripDefault('always')
-    expect(visible(['workspace'], 'never')).toBe(false)
+    expect(visible(['workspace', 'terminal'], 'never')).toBe(false)
   })
 })

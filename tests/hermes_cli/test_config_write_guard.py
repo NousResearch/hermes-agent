@@ -93,3 +93,52 @@ class TestSaveConfigPreservesUserData:
         snapshot = {k: dict(v) for k, v in incoming.items()}
         save_config(incoming)
         assert incoming == snapshot
+
+
+class TestLastServerRemoval:
+    """G1 guard must not resurrect mcp_servers when the last server is removed."""
+
+    def test_remove_last_server_pops_section_from_disk(self, seeded_home):
+        from hermes_cli.mcp_config import _remove_mcp_server
+
+        assert _remove_mcp_server("github") is True
+        assert _remove_mcp_server("chrome-devtools") is True
+        raw = read_raw_config()
+        assert "mcp_servers" not in raw
+        # Other user-data keys survive.
+        assert "custom_providers" in raw
+
+    def test_remove_second_server_keeps_section(self, seeded_home):
+        from hermes_cli.mcp_config import _remove_mcp_server
+
+        assert _remove_mcp_server("github") is True
+        raw = read_raw_config()
+        # chrome-devtools is still there.
+        assert "mcp_servers" in raw
+        assert set(raw["mcp_servers"]) == {"chrome-devtools"}
+
+
+class TestMigrationGuardIsHard:
+    """_persist_migration must stay hard: an undeclared user-data drop triggers the guard."""
+
+    def test_undeclared_drop_on_migration_path_is_represerved(self, seeded_home, caplog):
+        from hermes_cli.config import _persist_migration
+
+        # Simulate a migration step that accidentally omits mcp_servers (the on-disk raw dict
+        # has it, but the migrated config doesn't, and removed_keys is not declared).
+        migrated = {"custom_providers": SEED_CONFIG["custom_providers"]}
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            _persist_migration(migrated)
+        raw = read_raw_config()
+        assert "mcp_servers" in raw
+        assert any("mcp_servers" in record.message for record in caplog.records)
+
+    def test_declared_drop_on_migration_path_is_silent(self, seeded_home, caplog):
+        from hermes_cli.config import _persist_migration
+
+        migrated = {"custom_providers": SEED_CONFIG["custom_providers"]}
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+            _persist_migration(migrated, removed_keys={"mcp_servers"})
+        raw = read_raw_config()
+        assert "mcp_servers" not in raw
+        assert not [r for r in caplog.records if "mcp_servers" in r.message]

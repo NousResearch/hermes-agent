@@ -274,7 +274,11 @@ def _remove_mcp_server(name: str) -> bool:
     del servers[name]
     if not servers:
         config.pop("mcp_servers", None)
-    save_config(config)
+        # G1 guard: popping the whole section is the intentional removal; declare it so the
+        # re-preserve guard doesn't resurrect the now-empty mcp_servers map.
+        save_config(config, removed_keys={"mcp_servers"})
+    else:
+        save_config(config)
     return True
 
 

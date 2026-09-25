@@ -53,7 +53,9 @@ from hermes_cli.config_read_errors import (
     _yaml_error_location)
 
 logger = logging.getLogger(__name__)
-log = logging.getLogger(__name__)
+# ``log`` is the save_config G1 guard rail's logger (re-preserve warnings); aliased to the
+# same module logger so callers can filter on either name.
+log = logger
 
 
 def is_uv_tool_install() -> bool:
@@ -1312,18 +1314,17 @@ def warn_deprecated_cwd_env_vars() -> None:
         sys.stderr.write("\n".join(lines) + "\n\n")
 
 
-def _persist_migration(config: Dict[str, Any]) -> None:
+def _persist_migration(config: Dict[str, Any], removed_keys: Optional[Set[str]] = None) -> None:
     """Persist a migrated config under THE migration write invariant: a migration may only
     persist values that DIFFER from the schema default, plus explicit removals/renames of user
     data. Every migration step MUST write through here (``save_config`` with default-stripping
     ON, no ``merge_existing``) so the invariant cannot regress one migration at a time.
 
-    Migrations are full rewrites: any top-level user-data key present on disk but absent from
-    the migrated config was removed/renamed on purpose, so it is declared via ``removed_keys``
-    rather than triggering the accidental-omission guard."""
-    prior = read_raw_config()
-    removed = {k for k in prior if k not in config}
-    save_config(config, removed_keys=removed)
+    ``removed_keys`` declares the top-level user-data keys this step intentionally pops
+    (e.g. a rename like custom_providers → providers). Any top-level user-data key present on
+    disk but absent from the migrated config AND absent from ``removed_keys`` triggers the G1
+    guard: it is re-preserved with a WARNING, so an accidental drop cannot go silently."""
+    save_config(config, removed_keys=removed_keys)
 
 
 def _prompt_and_save_env(name: str, info: Dict[str, Any], prompt: str, results: Dict[str, Any]) -> bool:

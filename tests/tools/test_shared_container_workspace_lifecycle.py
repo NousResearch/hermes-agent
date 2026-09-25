@@ -140,3 +140,99 @@ class TestSharedContainerAdoptsTheSessionWorkspace:
         assert env is not stale
         assert used == []
         assert _which(env) == "workspace-a"
+
+
+@pytest.fixture
+def cross_process_docker(tmp_path, monkeypatch):
+    """Persistent docker with cross-process reuse ON — the ``_attach_existing_container``
+    surface, which the other fixture pins off. Profile label is unique per test so a
+    leftover container from another test can never answer for this one."""
+    image = os.environ.get("HERMES_TEST_DOCKER_IMAGE")
+    if not image:
+        pytest.skip("set HERMES_TEST_DOCKER_IMAGE to a locally available image")
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("TERMINAL_ENV", "docker")
+    monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "true")
+    monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
+    monkeypatch.setenv("TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true")
+    label = f"xproc-{uuid.uuid4().hex[:8]}"
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    yield image, label
+    ids = subprocess.run(
+        ["docker", "ps", "-aq", "--filter", f"label=hermes-profile={label}*"],
+        capture_output=True, text=True, timeout=60,
+    ).stdout.split()
+    if ids:
+        subprocess.run(["docker", "rm", "-f", *ids], capture_output=True, timeout=120)
+
+
+def _open_env(image: str, workspace: str, task_label: str, key: str):
+    """A fresh ``DockerEnvironment`` — standing in for a NEW process, since cross-process
+    reuse is only reachable through the constructor's attach path.
+
+    ``key`` drives the profile label, so each test gets a container namespace of its own;
+    without it every test would share ``default`` and a leftover container from the
+    previous test could answer for this one."""
+    from tools.environments.docker import DockerEnvironment
+
+    return DockerEnvironment(
+        image=image, timeout=60, task_id=task_label, cwd=workspace,
+        host_cwd=workspace, auto_mount_cwd=True, persist_across_processes=True,
+        shared_container_key=key,
+    )
+
+
+def _workspace_source(container_id: str) -> str | None:
+    out = subprocess.run(
+        ["docker", "inspect", "--format",
+         '{{range .Mounts}}{{if eq .Destination "/workspace"}}{{.Source}}{{end}}{{end}}',
+         container_id],
+        capture_output=True, text=True, timeout=60,
+    ).stdout.strip()
+    return out or None
+
+
+def _same_container(a: str, b: str) -> bool:
+    """Whether two container references name the same container. The attach path stores the
+    abbreviated id while ``_docker_run`` stores the full one, so prefix-compare."""
+    return bool(a) and bool(b) and (a.startswith(b) or b.startswith(a))
+
+
+class TestCrossProcessReuseRespectsTheWorkspace:
+    """The second reuse site the reviewer named: ``_attach_existing_container`` adopts a
+    labeled container from a PRIOR process without ever looking at where its ``/workspace``
+    points. Run args are immutable at creation, so adopting a foreign bind can never be
+    repaired later — it has to be refused at attach time."""
+
+    def test_attach_refuses_a_container_bound_to_another_workspace(
+        self, cross_process_docker, tmp_path,
+    ):
+        image, label = cross_process_docker
+        ws_a = _make_workspace(tmp_path, "workspace-a")
+        ws_b = _make_workspace(tmp_path, "workspace-b")
+
+        env_a = _open_env(image, ws_a, "xproc-task", label)
+        assert _workspace_source(env_a._container_id) == ws_a
+
+        env_b = _open_env(image, ws_b, "xproc-task", label)
+        assert _workspace_source(env_b._container_id) == ws_b, (
+            "attach adopted a container still mounted on the other workspace"
+        )
+        assert not _same_container(env_b._container_id, env_a._container_id)
+
+    def test_attach_reuses_a_container_bound_to_the_same_workspace(
+        self, cross_process_docker, tmp_path,
+    ):
+        """Control: an agreeing container must still be adopted, or every process
+        would rebuild the sandbox and lose in-container state."""
+        image, label = cross_process_docker
+        ws = _make_workspace(tmp_path, "workspace-a")
+
+        env_a = _open_env(image, ws, "xproc-task", label)
+        env_b = _open_env(image, ws, "xproc-task", label)
+        assert _same_container(env_b._container_id, env_a._container_id), (
+            "an agreeing container must be reused, not recreated"
+        )

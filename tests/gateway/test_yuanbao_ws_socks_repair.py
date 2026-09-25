@@ -22,6 +22,8 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import pytest
+from websockets.uri import get_proxy, parse_uri
+
 from gateway.platforms.yuanbao import (
     ConnectionManager,
     YuanbaoAdapter,
@@ -97,6 +99,52 @@ class TestResolveWsProxyOverride:
             _runtime(False),
         ):
             assert _resolve_ws_proxy_override(_WS_URL) == (False, None)
+
+    _PARITY_PROXY_DICTS = [
+        {},  # nothing selected
+        {"https": "http://127.0.0.1:7890"},  # plain https entry
+        {"wss": "http://127.0.0.1:7890"},  # ws-specific entry outranks the rest
+        {"http": "http://127.0.0.1:7890"},  # ignored for a secure URI
+        {"https": "socks5h://127.0.0.1:1080"},  # SOCKS spelled under the https key
+        {"socks": "http://127.0.0.1:1080"},  # http spelling under the socks key
+        {"socks": "socks5h://127.0.0.1:1080", "https": "http://127.0.0.1:7890"},  # #122708
+        {"socks": "socks://127.0.0.1:1080", "https": "http://127.0.0.1:7890"},  # bare socks://
+    ]
+
+    @pytest.mark.parametrize("proxies", _PARITY_PROXY_DICTS)
+    @pytest.mark.parametrize("ws_url", [_WS_URL, "ws://bot-ws.example.test/wss/connection"])
+    @pytest.mark.parametrize("runtime", [True, False])
+    def test_parity_with_websockets_proxy_selection(self, ws_url, proxies, runtime):
+        """The mirror must track websockets' own selection, not just today's pin of it.
+
+        ``websockets==15.0.1`` is pinned now, but a pin bump that changes
+        ``websockets.uri.get_proxy`` would otherwise drift silently. Under the same
+        ``getproxies()`` / ``proxy_bypass()`` view, whatever websockets itself selects
+        decides the expected outcome: a non-SOCKS (or absent) selection must leave the
+        default behaviour untouched, and a SOCKS selection websockets cannot dial must
+        be repaired.
+        """
+        with _proxies(proxies), _bypass(), _runtime(runtime):
+            selected = get_proxy(parse_uri(ws_url))
+            override, proxy_url = _resolve_ws_proxy_override(ws_url)
+        socks_selected = selected is not None and selected.lower().startswith("socks")
+        if not socks_selected:
+            assert (override, proxy_url) == (False, None)
+        elif runtime and not selected.startswith("socks://"):
+            # socks5h/socks5/socks4a/socks4 spellings parse fine — websockets dials them itself.
+            assert (override, proxy_url) == (False, None)
+        else:
+            # python-socks missing, or the bare socks:// spelling parse_proxy() rejects: repair.
+            expected = next(
+                (
+                    proxies[scheme]
+                    for scheme in ("https", "http")
+                    if proxies.get(scheme)
+                    and not proxies[scheme].lower().split("://", 1)[0].startswith("socks")
+                ),
+                None,
+            )
+            assert (override, proxy_url) == (True, expected)
 
 
 class TestProxyLogMode:

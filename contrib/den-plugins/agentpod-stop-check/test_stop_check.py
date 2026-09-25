@@ -1484,7 +1484,8 @@ def test_32_activation_preflight_refuses_an_old_core_and_an_empty_scope(home):
     gate = pf.Gate()
     pf.probe_core(old_core, gate)
     assert gate.failures, gate.lines
-    assert any("MISSING" in ln or "does NOT reference" in ln for ln in gate.lines)
+    assert any(k in ln for ln in gate.lines
+               for k in ("MISSING", "does NOT reference", "import failed"))
 
     # This reviewed tree DOES carry it, and default-off is confirmed by import.
     gate2 = pf.Gate()

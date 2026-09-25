@@ -54,6 +54,25 @@ def test_served_profile_projects_the_default_listener_mirrors_with_their_url(ser
     assert "ingress_url" not in profile_platforms_from_multiplexer(live.runtime, "default").get("api_server", {})
 
 
+def test_default_profile_keeps_its_flat_adapters_when_rekeyed(served_root):
+    """The default's own adapters are the record's FLAT keys (only secondaries get the
+    ``<profile>:`` prefix), so re-keying the multiplexer record for ``default`` must keep them:
+    ``/api/status`` used to report ``gateway_platforms: {}`` for the default profile under
+    ``gateway.multiplex_profiles`` while its adapters were connected and delivering (#123088)."""
+    from gateway.status import profile_platforms_from_multiplexer, resolve_gateway_liveness
+    alpha = served_root / "profiles" / "alpha"
+    live = resolve_gateway_liveness(profile_dir=alpha, health_probe=None, use_cache=False)
+    plats = profile_platforms_from_multiplexer(live.runtime, "default")
+    # The default's un-prefixed entries survive the re-key, exactly as a standalone gateway for
+    # "default" would have written them — a live api_server and its own fatal webhook.
+    assert plats["api_server"]["state"] == "connected"
+    assert "listener_base" in plats["api_server"]  # the listener's own entry, never a mirror
+    assert plats["webhook"]["state"] == "fatal"
+    # Nothing is mirrored onto the default and no secondary's entry leaks in.
+    assert all("ingress_url" not in entry for entry in plats.values() if isinstance(entry, dict))
+    assert "telegram" not in plats  # that entry belongs to alpha
+
+
 def test_messaging_card_for_a_served_profile_reads_connected_not_restart_needed(served_root, monkeypatch):
     from hermes_cli.web_routers import messaging
     monkeypatch.setattr(messaging, "_platform_enablement", lambda *a, **k: (True, True, None))

@@ -330,6 +330,18 @@ class MCPServerTransportMixin:
             command=command, args=args, env=safe_env or None, cwd=stdio_cwd,
             # Windows pipes can split non-UTF-8 bytes at chunk boundaries; substitute, don't raise.
             encoding_error_handler="replace")
+        # Windows has no POSIX parent-death supervisor / killpg safety net (#61059): when this
+        # process dies ungracefully (crash, force-quit), the stdio child trees — npx.cmd →
+        # node.exe — survive as orphans with ParentId=null and pile up across restarts. Attaching
+        # THIS process to a KILL_ON_JOB_CLOSE job before the spawn makes every child (and
+        # grandchild) created after it die with the parent at the kernel level, so no orphan can
+        # outlive us. Idempotent; BREAKAWAY_OK keeps deliberate breakaway children escaping.
+        # Self-guards: a cheap no-op returning False on non-Windows.
+        try:
+            from hermes_cli.process_identity import attach_self_to_kill_on_close_job
+            attach_self_to_kill_on_close_job()
+        except Exception:
+            logger.debug("job-object self-attach failed before stdio spawn", exc_info=True)
         # Reap orphans of prior attempts first (else retries pile up zombie pairs); unscoped on purpose;
         # off-loop because the reaper blocks up to 2s.
         await asyncio.to_thread(_lifecycle._kill_orphaned_mcp_children)

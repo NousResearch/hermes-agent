@@ -447,6 +447,11 @@ def _venv_abi_matches(venv_dir: Path) -> bool:
         return True
 
 
+def _order_venv_candidates(candidates: list[Path]) -> list[Path]:
+    """ABI-matching venvs first; the rest stay behind as fallback."""
+    return sorted(candidates, key=lambda v: not _venv_abi_matches(v))
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -456,21 +461,30 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
     project_root = Path(__file__).resolve().parent.parent
     candidates: list[Path] = []
-    # PM-managed installs: the committed venv matches the running interpreter.
+    # PM-managed installs run on the committed generation: the pre-PM venv
+    # left on disk belongs to another Python, so it must never shadow the
+    # committed tree (mirrors cron/scheduler_script.py selection, #122183).
     try:
-        from pm.environments import committed_venv
+        from hermes_cli._launchers import resolve_store_python
+        from pm.environments import running_from_selected_environment, selected_venv
 
-        committed = committed_venv(project_root)
+        pm_managed = resolve_store_python(project_root) is not None
     except Exception:
-        committed = None
-    if committed is not None:
-        candidates.append(Path(committed))
-    if os.environ.get("VIRTUAL_ENV"):
-        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
-    candidates.append(project_root / "venv")
+        pm_managed = False
+    if pm_managed:
+        try:
+            if running_from_selected_environment(project_root):
+                return
+            candidates.append(selected_venv(project_root))
+        except Exception:
+            pass
+    if not candidates:
+        if os.environ.get("VIRTUAL_ENV"):
+            candidates.append(Path(os.environ["VIRTUAL_ENV"]))
+        candidates.append(project_root / "venv")
     # An ABI-mismatched venv shadows the right one and breaks binary
     # extensions, so matching candidates go first; the rest stay as fallback.
-    candidates.sort(key=lambda v: not _venv_abi_matches(v))
+    candidates = _order_venv_candidates(candidates)
 
     seen: set[str] = set()
     for venv_dir in candidates:

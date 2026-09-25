@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tools.transcription_tools import transcribe_audio
-from tools.transcription_cloud import _transcribe_gemini
+from tools.transcription_cloud import _normalize_gemini_bcp47, _transcribe_gemini
 
 
 @pytest.fixture
@@ -180,3 +180,84 @@ class TestGeminiSTT:
         assert res["success"] is True
         assert res["transcript"] == "Dispatched transcription."
         assert res["provider"] == "gemini"
+
+    @pytest.mark.parametrize(
+        "raw_lang,expected",
+        [
+            ("en", "en-US"),
+            ("en-us", "en-US"),
+            ("en_us", "en-US"),
+            ("en-gb", "en-GB"),
+            ("zh", "cmn-Hans-CN"),
+            ("zh-cn", "cmn-Hans-CN"),
+            ("zh_hans", "cmn-Hans-CN"),
+            ("cmn-Hans-CN", "cmn-Hans-CN"),
+            ("yue", "yue-Hant-HK"),
+            ("cantonese", "yue-Hant-HK"),
+            ("ja", "ja-JP"),
+            ("ko", "ko-KR"),
+            ("fr", "fr-FR"),
+            ("de", "de-DE"),
+            ("es", "es-US"),
+            ("es-419", "es-419"),
+            ("ru", "ru-RU"),
+            ("it", "it-IT"),
+            ("pt", "pt-BR"),
+            ("custom-locale", "custom-locale"),
+            ("auto", None),
+            ("detect", None),
+            ("none", None),
+            ("", None),
+            (None, None),
+        ],
+    )
+    def test_normalize_gemini_bcp47(self, raw_lang, expected):
+        assert _normalize_gemini_bcp47(raw_lang) == expected
+
+    def test_interactions_api_short_language_normalized_to_bcp47(self, fake_wav, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {"output_text": "Language test transcript."}
+
+        stt_cfg = {
+            "gemini": {
+                "language": "en",
+            }
+        }
+        with patch("tools.transcription_tools._load_stt_config", return_value=stt_cfg), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            res = _transcribe_gemini(fake_wav, "gemini-3.5-transcribe")
+
+        assert res["success"] is True
+        assert mock_post.called
+        payload = mock_post.call_args.kwargs["json"]
+        t_cfg = payload["generation_config"]["transcription_config"]
+        assert t_cfg.get("language_codes") == ["en-US"]
+
+    def test_interactions_api_chinese_short_code_normalized(self, fake_wav, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {"output_text": "Chinese transcript."}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            res = _transcribe_gemini(fake_wav, "gemini-3.5-transcribe", language="zh")
+
+        assert res["success"] is True
+        payload = mock_post.call_args.kwargs["json"]
+        t_cfg = payload["generation_config"]["transcription_config"]
+        assert t_cfg.get("language_codes") == ["cmn-Hans-CN"]
+
+    def test_interactions_api_auto_or_empty_language_omitted(self, fake_wav, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {"output_text": "Auto detect transcript."}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            res = _transcribe_gemini(fake_wav, "gemini-3.5-transcribe", language="auto")
+
+        assert res["success"] is True
+        payload = mock_post.call_args.kwargs["json"]
+        t_cfg = payload["generation_config"]["transcription_config"]
+        assert "language_codes" not in t_cfg

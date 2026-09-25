@@ -445,6 +445,211 @@ def _extract_transcript_text(transcription: Any) -> str:
     return match.group("text").strip() if match else text
 
 
+# Gemini 3.5 Transcribe supported BCP-47 locale codes & common alias mappings.
+# Reference: https://ai.google.dev/gemini-api/docs/transcribe#supported-languages
+_GEMINI_TRANSCRIBE_BCP47_MAP: Dict[str, str] = {
+    # Chinese variants
+    "zh": "cmn-Hans-CN",
+    "zh-cn": "cmn-Hans-CN",
+    "zh_cn": "cmn-Hans-CN",
+    "zh-hans": "cmn-Hans-CN",
+    "zh_hans": "cmn-Hans-CN",
+    "cmn": "cmn-Hans-CN",
+    "mandarin": "cmn-Hans-CN",
+    "chinese": "cmn-Hans-CN",
+    "zh-tw": "cmn-Hans-CN",
+    "zh_tw": "cmn-Hans-CN",
+    "zh-hant": "cmn-Hans-CN",
+    "zh-hk": "yue-Hant-HK",
+    "zh_hk": "yue-Hant-HK",
+    "yue": "yue-Hant-HK",
+    "cantonese": "yue-Hant-HK",
+    # English variants
+    "en": "en-US",
+    "en-us": "en-US",
+    "en_us": "en-US",
+    "en-gb": "en-GB",
+    "en_gb": "en-GB",
+    "en-in": "en-IN",
+    "en_in": "en-IN",
+    # Japanese / Korean
+    "ja": "ja-JP",
+    "ja-jp": "ja-JP",
+    "japanese": "ja-JP",
+    "ko": "ko-KR",
+    "ko-kr": "ko-KR",
+    "korean": "ko-KR",
+    # European / other languages
+    "fr": "fr-FR",
+    "fr-fr": "fr-FR",
+    "french": "fr-FR",
+    "de": "de-DE",
+    "de-de": "de-DE",
+    "german": "de-DE",
+    "es": "es-US",
+    "es-es": "es-419",
+    "es-419": "es-419",
+    "es-us": "es-US",
+    "spanish": "es-US",
+    "ru": "ru-RU",
+    "ru-ru": "ru-RU",
+    "russian": "ru-RU",
+    "it": "it-IT",
+    "it-it": "it-IT",
+    "italian": "it-IT",
+    "pt": "pt-BR",
+    "pt-br": "pt-BR",
+    "pt-pt": "pt-PT",
+    "portuguese": "pt-BR",
+    "nl": "nl-NL",
+    "dutch": "nl-NL",
+    "pl": "pl-PL",
+    "polish": "pl-PL",
+    "tr": "tr-TR",
+    "turkish": "tr-TR",
+    "ar": "ar-EG",
+    "arabic": "ar-EG",
+    "hi": "hi-IN",
+    "hindi": "hi-IN",
+    "vi": "vi-VN",
+    "vietnamese": "vi-VN",
+    "th": "th-TH",
+    "thai": "th-TH",
+    "id": "id-ID",
+    "indonesian": "id-ID",
+    "uk": "uk-UA",
+    "ukrainian": "uk-UA",
+    "sv": "sv-SE",
+    "swedish": "sv-SE",
+    "cs": "cs-CZ",
+    "czech": "cs-CZ",
+    "el": "el-GR",
+    "greek": "el-GR",
+    "da": "da-DK",
+    "danish": "da-DK",
+    "fi": "fi-FI",
+    "finnish": "fi-FI",
+    "no": "nb-NO",
+    "nb": "nb-NO",
+    "norwegian": "nb-NO",
+    "he": "he-IL",
+    "hebrew": "he-IL",
+    "ro": "ro-RO",
+    "romanian": "ro-RO",
+    "hu": "hu-HU",
+    "hungarian": "hu-HU",
+    "bn": "bn-BD",
+    "bengali": "bn-BD",
+    "ms": "ms-MY",
+    "malay": "ms-MY",
+}
+
+_OFFICIAL_GEMINI_BCP47_CODES: Dict[str, str] = {
+    "af-za": "af-ZA",
+    "am-et": "am-ET",
+    "ar-eg": "ar-EG",
+    "hy-am": "hy-AM",
+    "as-in": "as-IN",
+    "az-az": "az-AZ",
+    "be-by": "be-BY",
+    "bn-bd": "bn-BD",
+    "bn-in": "bn-IN",
+    "bs-ba": "bs-BA",
+    "bg-bg": "bg-BG",
+    "rup-bg": "rup-BG",
+    "my-mm": "my-MM",
+    "yue-hant-hk": "yue-Hant-HK",
+    "ca-es": "ca-ES",
+    "ceb": "ceb",
+    "km-kh": "km-KH",
+    "hr-hr": "hr-HR",
+    "cs-cz": "cs-CZ",
+    "da-dk": "da-DK",
+    "nl-nl": "nl-NL",
+    "en-gb": "en-GB",
+    "en-in": "en-IN",
+    "en-us": "en-US",
+    "et-ee": "et-EE",
+    "fa-ir": "fa-IR",
+    "fil-ph": "fil-PH",
+    "fi-fi": "fi-FI",
+    "fr-fr": "fr-FR",
+    "gl-es": "gl-ES",
+    "ka-ge": "ka-GE",
+    "de-de": "de-DE",
+    "el-gr": "el-GR",
+    "gu-in": "gu-IN",
+    "ha-ng": "ha-NG",
+    "he-il": "he-IL",
+    "hi-in": "hi-IN",
+    "hu-hu": "hu-HU",
+    "is-is": "is-IS",
+    "id-id": "id-ID",
+    "it-it": "it-IT",
+    "ja-jp": "ja-JP",
+    "jv-id": "jv-ID",
+    "kea-cv": "kea-CV",
+    "kn-in": "kn-IN",
+    "kk-kz": "kk-KZ",
+    "ko-kr": "ko-KR",
+    "ky-kg": "ky-KG",
+    "lv-lv": "lv-LV",
+    "ln-cd": "ln-CD",
+    "lt-lt": "lt-LT",
+    "mk-mk": "mk-MK",
+    "ms-my": "ms-MY",
+    "ml-in": "ml-IN",
+    "mt-mt": "mt-MT",
+    "cmn-hans-cn": "cmn-Hans-CN",
+    "mr-in": "mr-IN",
+    "mn-mn": "mn-MN",
+    "ne-np": "ne-NP",
+    "nb-no": "nb-NO",
+    "or-in": "or-IN",
+    "pl-pl": "pl-PL",
+    "pt-br": "pt-BR",
+    "pt-pt": "pt-PT",
+    "pa-in": "pa-IN",
+    "pa-guru-in": "pa-Guru-IN",
+    "ro-ro": "ro-RO",
+    "ru-ru": "ru-RU",
+    "sr-rs": "sr-RS",
+    "sd-arab-in": "sd-Arab-IN",
+    "sk-sk": "sk-SK",
+    "sl-si": "sl-SI",
+    "es-419": "es-419",
+    "es-us": "es-US",
+    "sw-ke": "sw-KE",
+    "sv-se": "sv-SE",
+    "tg-tj": "tg-TJ",
+    "te-in": "te-IN",
+    "th-th": "th-TH",
+    "tr-tr": "tr-TR",
+    "uk-ua": "uk-UA",
+    "uz-uz": "uz-UZ",
+    "vi-vn": "vi-VN",
+}
+
+
+def _normalize_gemini_bcp47(lang: Optional[str]) -> Optional[str]:
+    """Normalize language hints into Gemini-supported BCP-47 locale tags.
+
+    Official reference: https://ai.google.dev/gemini-api/docs/transcribe#supported-languages
+    Omitted / empty / auto returns None to let Gemini auto-detect language.
+    """
+    if not lang:
+        return None
+    raw = str(lang).strip()
+    if not raw or raw.lower() in ("auto", "none", "detect", "default"):
+        return None
+    key = raw.lower().replace("_", "-")
+    if key in _GEMINI_TRANSCRIBE_BCP47_MAP:
+        return _GEMINI_TRANSCRIBE_BCP47_MAP[key]
+    if key in _OFFICIAL_GEMINI_BCP47_CODES:
+        return _OFFICIAL_GEMINI_BCP47_CODES[key]
+    return raw
+
+
 def _transcribe_gemini(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -529,8 +734,9 @@ def _transcribe_gemini(
         transcription_cfg: Dict[str, Any] = {"mode": mode}
         if custom_vocab:
             transcription_cfg["custom_vocabulary"] = custom_vocab[:1000]
-        if language:
-            transcription_cfg["language_codes"] = [language]
+        norm_lang = _normalize_gemini_bcp47(language)
+        if norm_lang:
+            transcription_cfg["language_codes"] = [norm_lang]
 
         payload = {
             "model": model,

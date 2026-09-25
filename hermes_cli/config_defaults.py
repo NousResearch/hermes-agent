@@ -1190,7 +1190,7 @@ DEFAULT_CONFIG = {
             "model": "gemini-3.5-transcribe",  # gemini-3.5-transcribe, gemini-2.5-flash
             "mode": "smart",  # smart, verbatim
             "custom_vocabulary": [],  # custom terminology hints
-            "language": "",  # auto-detect; set "en", "zh", ... to force
+            "language": "",  # auto-detect; accepts "en", "zh", or BCP-47 tags like "en-US", "cmn-Hans-CN"
             "timeout": 60,
         },
     },

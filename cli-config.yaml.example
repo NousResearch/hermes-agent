@@ -1682,6 +1682,7 @@ stt:
   # gemini:
   #   model: "gemini-3.5-transcribe"  # gemini-3.5-transcribe | gemini-2.5-flash
   #   mode: "smart"                   # smart (clean formatting/filler removal) | verbatim
+  #   language: ""                    # auto-detect; accepts "en", "zh", or BCP-47 tags like "en-US", "cmn-Hans-CN"
   #   custom_vocabulary:              # optional custom terminology hints (up to 1,000 terms)
   #     - "Hermes"
   #     - "QQBot"

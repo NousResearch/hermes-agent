@@ -520,6 +520,26 @@ def _forget_run(self, run_id: str, *tables) -> None:
     self._release_run_owner_if_forgotten(run_id)
 
 
+def _persist_adapter_active_work(adapter) -> None:
+    """Best-effort active_agents refresh after a /v1/runs task register or completion
+    (#122813). Guarded for test doubles that lack the helper; failures never propagate."""
+    persist = getattr(adapter, "_persist_active_work", None)
+    if callable(persist):
+        try:
+            persist()
+        except Exception:
+            logger.debug("active-work persist after run task change failed", exc_info=True)
+
+
+def _notify_run_task_done(adapter):
+    """Done-callback factory: refresh active_agents when a /v1/runs task leaves the count."""
+
+    def _on_done(_task) -> None:
+        _persist_adapter_active_work(adapter)
+
+    return _on_done
+
+
 def _retire_live_run(self, run_id: str) -> None:
     """Retire agent/task/approval control state once the executor-backed task is done."""
     _forget_run(self, run_id, self._active_run_agents, self._active_run_tasks, self._run_approval_sessions,
@@ -749,9 +769,11 @@ async def _handle_runs(self, request: "web.Request", *, _api_server) -> "web.Res
             _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
     else:
         task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
+    _persist_adapter_active_work(self)
     with suppress(TypeError):
         self._background_tasks.add(task)  # tracked for shutdown drain
     if hasattr(task, "add_done_callback"):
+        task.add_done_callback(_notify_run_task_done(self))
         task.add_done_callback(self._background_tasks.discard)
     return _accepted_response(run_id, "started", gateway_session_key, replayed=False)
 

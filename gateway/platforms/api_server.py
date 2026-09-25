@@ -982,6 +982,9 @@ def _release_pending_api_work(adapter, reservation: dict[str, bool]) -> None:
     if reservation["active"]:
         reservation["active"] = False
         adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
+        persist = getattr(adapter, "_persist_active_work", None)
+        if callable(persist):
+            persist()
 
 
 def _require_auth(handler):
@@ -1001,6 +1004,9 @@ def _reserve_pending_api_work(adapter):
     the reservation to a task whose done callback then owns release."""
     reservation = {"active": True, "detached": False}
     adapter._pending_agent_requests += 1
+    persist = getattr(adapter, "_persist_active_work", None)
+    if callable(persist):
+        persist()
     try:
         yield reservation
     finally:
@@ -1269,6 +1275,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     + sum(not task.done() for task in self._active_run_tasks.values()))
         except Exception:
             return 0
+
+    def _persist_active_work(self) -> None:
+        """Refresh ``gateway_state.json`` after an adapter work-count change (#122813).
+
+        Adapter-owned work (pending reservations, in-flight turns, /v1/runs tasks) is part of
+        the gateway's ``active_agents`` aggregate but previously never triggered a persist, so
+        the file went stale between inbound turns. Delegates to the gateway runner's full
+        aggregate persist; a no-op when no gateway runner is wired (standalone adapter tests).
+        Best-effort: a failed write must never break a request path.
+        """
+        persist = getattr(getattr(self, "gateway_runner", None), "_persist_active_agents", None)
+        if not callable(persist):
+            return
+        try:
+            persist()
+        except Exception:
+            logger.debug("active-work persist after api count change failed", exc_info=True)
 
     def interrupt_active_runs(self, reason: str) -> int:
         """Interrupt every adapter-owned agent during shutdown (they are not in
@@ -4284,6 +4307,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         self._inflight_agent_runs += 1
         started_at = time.perf_counter()
         usage: Optional[Dict[str, Any]] = None
+        self._persist_active_work()
         try:
 # Worker-scoped count rides along so the shutdown close gate still sees the thread
             # after this handler task is cancelled (#116535); released in the worker's finally.
@@ -4293,6 +4317,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             self._inflight_agent_runs -= 1
             if usage is not None:
                 self._record_api_metrics(usage, time.perf_counter() - started_at)
+            self._persist_active_work()
 
     # -- /v1/runs, room grants, room dispatch: thin delegators (real methods: tests assert
     # __dict__ membership and patch the module-level implementations) ---------------------

@@ -158,6 +158,83 @@ def test_get_version_info_derives_identity_from_reachable_release_tag(tmp_path, 
     assert info.source == "git"
 
 
+def test_source_version_uses_reachable_canary_core_without_stable_tag(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args], cwd=repo, text=True, capture_output=True, check=True,
+            env={"HOME": str(tmp_path), "PATH": __import__("os").environ["PATH"]},
+        )
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("config", "core.autocrlf", "false")
+    git("config", "user.name", "Hermes Test")
+    git("config", "user.email", "hermes@example.invalid")
+    (repo / "tracked").write_text("canary\n", encoding="utf-8")
+    git("add", "tracked")
+    git("commit", "-qm", "canary")
+    git("tag", "v0.21.4+canary.20260925T065930Z")
+    (repo / "tracked").write_text("main\n", encoding="utf-8")
+    git("commit", "-qam", "main")
+
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+
+    info = get_version_info()
+    assert info.base_version == "0.21.4"
+    assert info.distance == 1
+    assert info.derived_version == f"0.21.4+1.g{git('rev-parse', '--short=7', 'HEAD')}"
+    assert info.commit == git("rev-parse", "HEAD")
+    from hermes_cli.source_stamp import write_source_stamp
+
+    stamp = write_source_stamp(repo)
+    assert (stamp["baseVersion"], stamp["displayVersion"], stamp["commit"]) == (
+        info.base_version, info.derived_version, info.commit,
+    )
+
+
+def test_source_version_prefers_calver_release_over_newer_canary_tag(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args], cwd=repo, text=True, capture_output=True, check=True,
+            env={"HOME": str(tmp_path), "PATH": __import__("os").environ["PATH"]},
+        )
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("config", "core.autocrlf", "false")
+    git("config", "user.name", "Hermes Test")
+    git("config", "user.email", "hermes@example.invalid")
+    # The release manifest contains UTF-8 punctuation that GBK cannot decode.
+    # Reading `git show` through the Windows locale used to drop this version.
+    (repo / "pyproject.toml").write_text(
+        '[project]\nversion = "0.21.5"\ndescription = "Hermes — agent"\n', encoding="utf-8"
+    )
+    git("add", "pyproject.toml")
+    git("commit", "-qm", "release")
+    git("tag", "v2026.9.24")
+    (repo / "tracked").write_text("canary\n", encoding="utf-8")
+    git("add", "tracked")
+    git("commit", "-qm", "canary")
+    git("tag", "v0.21.4+canary.20260925T065930Z")
+    (repo / "tracked").write_text("main\n", encoding="utf-8")
+    git("commit", "-qam", "main")
+
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: None)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+
+    info = get_version_info()
+    assert info.base_version == "0.21.5"
+    assert info.distance == 2
+    assert info.commit == git("rev-parse", "HEAD")
+
+
 def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_path, monkeypatch):
     """Releases tagged only vYYYY.M.D resolve to their pyproject version, not "unknown"."""
     repo = tmp_path / "repo"

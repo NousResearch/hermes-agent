@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from hermes_cli.steward import UPDATE_MECHANISMS
-from hermes_cli.update_channel import STABLE_TAG_RE
+from hermes_cli.update_channel import STABLE_TAG_RE, is_canary_tag
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,8 @@ def _derived_version(
 def _run_git(repo_dir: Path, *args: str) -> str | None:
     try:
         result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, timeout=3, cwd=str(repo_dir)
+            ["git", *args], capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=3, cwd=str(repo_dir)
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -110,6 +111,23 @@ def _calver_release_version(repo_dir: Path) -> tuple[str, int] | None:
     if distance is None or not isinstance(version, str) or not STABLE_TAG_RE.fullmatch(f"v{version}"):
         return None
     return version, distance
+
+
+def _canary_source_version(repo_dir: Path) -> tuple[str, int] | None:
+    """Use the nearest reachable canary's numeric core when main has no stable tag.
+
+    A source update can fetch a canonical canary tag while no final SemVer tag
+    exists. The checkout still has an exact version anchor and commit distance;
+    reporting ``unknown`` discards both and makes the desktop look unversioned.
+    """
+    described = _run_git(repo_dir, "describe", "--tags", "--long", "--match", "v*+canary.*", "HEAD")
+    if not described:
+        return None
+    tag, count, _ = described.rsplit("-", 2)
+    distance = _parse_nonnegative(count)
+    if distance is None or not is_canary_tag(tag):
+        return None
+    return tag[1:].split("+", 1)[0], distance
 
 
 # --- Install stamp reader ---------------------------------------------------
@@ -221,6 +239,8 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
             status_command,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=3,
             cwd=str(repo_dir),
         )
@@ -242,7 +262,11 @@ def _git_version_info(repo_dir: Path, *, include_untracked: bool = False) -> Ver
         _run_git(repo_dir, "rev-list", "--count", f"v{base_version}..HEAD")
     ) if releases else None
     if not releases:
-        base_version, distance = _calver_release_version(repo_dir) or ("unknown", None)
+        base_version, distance = (
+            _calver_release_version(repo_dir)
+            or _canary_source_version(repo_dir)
+            or ("unknown", None)
+        )
     short_commit = _run_git(repo_dir, "rev-parse", "--short=7", "HEAD")
     if base_version == "unknown" and short_commit:
         display_version = f"git.{short_commit}{'.dirty' if dirty else ''}"

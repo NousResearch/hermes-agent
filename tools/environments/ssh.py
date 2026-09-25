@@ -191,9 +191,12 @@ class SSHEnvironment(BaseEnvironment):
                     rel_remote = os.path.relpath(remote_path, base)
                 except ValueError as exc:
                     raise RuntimeError(f"remote path {remote_path!r} is not under sync base {base!r}") from exc
+                # Remote is always POSIX (#121664): on a Windows host relpath
+                # yields backslashes which would corrupt the tar stream.
+                rel_remote = rel_remote.replace("\\", "/")
                 if rel_remote == "." or rel_remote.startswith("../"):
                     raise RuntimeError(f"remote path {remote_path!r} escapes sync base {base!r}")
-                staged = os.path.join(staging, rel_remote)
+                staged = os.path.join(staging, *rel_remote.split("/"))
                 os.makedirs(os.path.dirname(staged), exist_ok=True)
                 try:
                     os.symlink(os.path.abspath(host_path), staged)

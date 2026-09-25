@@ -4187,6 +4187,16 @@ class GatewayTurnMixin:
                 if _long_running_mode == "generic"
                 else f"⏳ Working — {_elapsed_mins} min{_status_detail}"
             )
+            # Prefix the session title when available, so multi-route surfaces (webhooks, bots)
+            # show WHICH task is still working, not just that something is (#name-sessions).
+            with suppress(Exception):
+                _sess_id = getattr(turn_ctx, "session_id", None)
+                if _sess_id and "Working —" in _heartbeat_text:
+                    from hermes_state import SessionDB
+                    _row = SessionDB().get_session(_sess_id)
+                    _title = ((_row or {}).get("title") or "").strip()
+                    if _title and _title not in _heartbeat_text:
+                        _heartbeat_text = f"⏳ {_title} — {_elapsed_mins} min{_status_detail}"
             try:
                 _notify_res = None
                 if _heartbeat_msg_id:

@@ -32,6 +32,8 @@ import {
 } from '@/components/pane-shell/tree/store'
 import { resolveRememberedActivePane, workspaceScopeKey } from '@/components/pane-shell/workspace-scope'
 import type { WorkspaceMode } from '@/contrib/types'
+import type { ChatMessage } from '@/lib/chat-messages'
+import type { ErrorSurface } from '@/lib/error-surface'
 import { stableArray } from '@/lib/stable-array'
 import { readJson, writeJson } from '@/lib/storage'
 import type { SessionInfo } from '@/types/hermes'
@@ -357,6 +359,110 @@ export function setSessionStalled(storedSessionId: string | null | undefined, st
 // suspect. Eight minutes was the other failure — longer than a user is willing
 // to sit and wonder, so the hint arrived after they had already given up on it.
 export const SESSION_WATCHDOG_TIMEOUT_MS = 5 * 60 * 1000
+// A live turn that stops producing events — including after a partial payload —
+// must not wait out the presentation hint above. The clock resets on every
+// session event and on a live-status poll that still reports the turn working,
+// so a quiet tool call is left alone. The window outlasts the 30s live-status
+// backstop: a dead backend stops both events and polls, and this settles it
+// instead of leaving the spinner up. Not keyed on a model name or an error string.
+export const LIVE_TURN_EVENT_SILENCE_MS = 45_000
+const sessionEventSilenceTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+function clearEventSilence(runtimeId: string) {
+  const timer = sessionEventSilenceTimers.get(runtimeId)
+
+  if (timer) {
+    clearTimeout(timer)
+    sessionEventSilenceTimers.delete(runtimeId)
+  }
+}
+
+function isLiveTurnAwaitingEvents(state: ClientSessionState | undefined): boolean {
+  return Boolean(state && (state.busy || state.awaitingResponse || state.turnLive) && !state.needsInput)
+}
+
+const SILENT_TURN_RETRY: ErrorSurface = { code: 'stream_drop', layer: 'streaming', retryable: true }
+
+function withSilentTurnRetry(messages: ChatMessage[], streamId: string | null): ChatMessage[] {
+  const occurredAt = Date.now() / 1000
+  const error = 'The connection dropped before the reply finished.'
+  const targetId =
+    (streamId && messages.some(message => message.id === streamId) ? streamId : null) ??
+    [...messages].reverse().find(message => message.role === 'assistant' && message.pending)?.id ??
+    null
+
+  const unpended = messages
+    .filter(message => !(message.pending && message.parts.length === 0 && message.id !== targetId))
+    .map(message =>
+      message.pending || message.id === targetId ? { ...message, completedAt: occurredAt, pending: false } : message
+    )
+
+  if (targetId && unpended.some(message => message.id === targetId)) {
+    return unpended.map(message =>
+      message.id === targetId ? { ...message, error, errorSurface: SILENT_TURN_RETRY, pending: false } : message
+    )
+  }
+
+  return [
+    ...unpended,
+    {
+      completedAt: occurredAt,
+      error,
+      errorSurface: SILENT_TURN_RETRY,
+      id: `assistant-interrupted-${Date.now()}`,
+      parts: [],
+      pending: false,
+      role: 'assistant',
+      timestamp: occurredAt
+    }
+  ]
+}
+
+function settleSilentLiveTurn(runtimeId: string) {
+  const current = $sessionStates.get()[runtimeId]
+
+  if (!current || !isLiveTurnAwaitingEvents(current)) {
+    return
+  }
+
+  publishSessionState(runtimeId, {
+    ...current,
+    awaitingResponse: false,
+    busy: false,
+    interrupted: true,
+    messages: withSilentTurnRetry(current.messages, current.streamId),
+    pendingBranchGroup: null,
+    streamId: null,
+    turnLive: false,
+    turnStartedAt: null
+  })
+}
+
+/** Record that this session just produced an event. A live turn that then goes
+ *  silent is force-settled; a turn still receiving events, or waiting on the
+ *  user, is not. */
+export function noteSessionEvent(runtimeId: string) {
+  if (!runtimeId) {
+    return
+  }
+
+  const current = $sessionStates.get()[runtimeId]
+
+  clearEventSilence(runtimeId)
+
+  if (!isLiveTurnAwaitingEvents(current)) {
+    return
+  }
+
+  sessionEventSilenceTimers.set(
+    runtimeId,
+    setTimeout(() => {
+      sessionEventSilenceTimers.delete(runtimeId)
+      settleSilentLiveTurn(runtimeId)
+    }, LIVE_TURN_EVENT_SILENCE_MS)
+  )
+}
+
 const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function armWatchdog(runtimeId: string) {
@@ -490,6 +596,11 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     armWatchdog(runtimeId)
   } else {
     clearWatchdog(runtimeId)
+
+    if (!isLiveTurnAwaitingEvents(next)) {
+      clearEventSilence(runtimeId)
+    }
+
     setSessionStalled(next.storedSessionId, false)
     setSessionStalled(previous?.storedSessionId, false)
   }
@@ -525,17 +636,17 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // producer and a turn that ended while the socket was down would never
     // earn its dot.
     if (deferringReconcileUnread) {
-      unconfirmedReconnectSettles.add(storedId)
+      unconfirmedReconnectSettles.set(storedId, runtimeId)
 
       return
     }
 
-    lightUnreadCompletion(storedId)
+    lightUnreadCompletion(storedId, runtimeId)
   }
 }
 
 /** Mark a completed turn unread unless the user is already looking at it. */
-function lightUnreadCompletion(storedId: string) {
+function lightUnreadCompletion(storedId: string, runtimeId?: string) {
   // FOCUSED, not selected: a session finishing in the tile the user is
   // watching is already seen, and a tile is never the primary selection.
   if (storedId === $focusedStoredSessionId.get()) {
@@ -550,17 +661,27 @@ function lightUnreadCompletion(storedId: string) {
 
   if (Date.now() > lastReadAt) {
     // Flags the transient atom AND persists a marker, so the green dot
-    // survives an app restart (see session-unread.ts).
-    markSessionUnreadFinished(storedId)
+    // survives an app restart (see session-unread.ts). The marker's profile
+    // bucket comes from the loaded row when there is one; with no row, the
+    // socket-proven owner profile keeps a background profile's finish out of
+    // the ACTIVE profile's bucket — the per-profile rail unread (#91710)
+    // would otherwise light the wrong square.
+    const owner = runtimeId ? runtimeSessionOwner(runtimeId) : undefined
+
+    const profileHint =
+      typeof owner === 'string' ? owner : typeof owner?.profile === 'string' && owner.profile.trim() ? owner.profile : undefined
+
+    markSessionUnreadFinished(storedId, profileHint)
   }
 }
 
 /** Stored ids whose busy claim a PRIMARY reconnect reconcile retired without
- *  any proof the turn ended. The authoritative post-reconnect snapshot settles
- *  each one: `confirmReconnectSettlesExcept` when the runtime is idle or gone,
- *  a busy re-assert (stream event or `working` row) when the turn is still
- *  live. */
-const unconfirmedReconnectSettles = new Set<string>()
+ *  any proof the turn ended — mapped to their runtime id so a later confirm
+ *  can still consult the socket-proven owner (the unread marker's profile
+ *  bucket). The authoritative post-reconnect snapshot settles each one:
+ *  `confirmReconnectSettlesExcept` when the runtime is idle or gone, a busy
+ *  re-assert (stream event or `working` row) when the turn is still live. */
+const unconfirmedReconnectSettles = new Map<string, string>()
 let deferringReconcileUnread = false
 
 /** A fresh authoritative snapshot arrived: every parked completion whose
@@ -571,10 +692,10 @@ let deferringReconcileUnread = false
  *  parked completion with no confirm producer must fall back to lighting
  *  rather than never lighting. No-op when nothing is parked. */
 export function confirmReconnectSettlesExcept(workingStoredIds: ReadonlySet<string>) {
-  for (const storedId of unconfirmedReconnectSettles) {
+  for (const [storedId, runtimeId] of unconfirmedReconnectSettles) {
     if (!workingStoredIds.has(storedId)) {
       unconfirmedReconnectSettles.delete(storedId)
-      lightUnreadCompletion(storedId)
+      lightUnreadCompletion(storedId, runtimeId)
     }
   }
 }
@@ -671,6 +792,7 @@ export function dropSessionState(runtimeId: string) {
   // a just-finished session's row survives merge eviction even if its tile or
   // cached runtime is dropped in the meantime.
   clearWatchdog(runtimeId)
+  clearEventSilence(runtimeId)
   clearSessionProviderWait(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
   sessionOwnerByRuntimeId.delete(runtimeId)
@@ -697,6 +819,11 @@ export function clearAllSessionStates() {
   }
 
   sessionWatchdogTimers.clear()
+  for (const timer of sessionEventSilenceTimers.values()) {
+    clearTimeout(timer)
+  }
+
+  sessionEventSilenceTimers.clear()
   settledExpiry.clear()
   unconfirmedReconnectSettles.clear()
   clearAllProviderWaits()

@@ -4,6 +4,7 @@ OpenAI-style internals. Auth: API keys (``sk-ant-api*``) -> x-api-key; OAuth set
 payload conversion and credentials live in ``agent/anthropic_{endpoints,message_convert,
 credentials}.py``; import them from there."""
 
+from pm import install_hint
 import logging
 import math
 import os
@@ -27,7 +28,7 @@ from agent.anthropic_message_convert import (
 )
 from agent.errors import EmptyStreamError
 
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 
 
 # ``import anthropic`` is deliberately NOT at module top: the SDK costs ~220 ms of imports and
@@ -39,9 +40,14 @@ def _get_anthropic_sdk():
     """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
     global _anthropic_sdk
     if _anthropic_sdk is ...:
-        with suppress(Exception):  # ImportError or FeatureUnavailable — fall through to the import below
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("provider.anthropic", prompt=False)
+        try:
+            from pm import ensure_import
+            ensure_import("anthropic")
+        except ImportError:
+            pass
+        except Exception:
+            # InstallError — fall through to ImportError handling below
+            pass
         try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk
@@ -54,7 +60,8 @@ def _require_sdk(purpose: str, verb: str = "Install it with"):
     """``_get_anthropic_sdk()`` or ImportError naming the feature that needs it."""
     sdk = _get_anthropic_sdk()
     if sdk is None:
-        raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: pip install 'anthropic>=0.39.0'")
+        raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: "
+                          f"{install_hint('anthropic')}")
     return sdk
 
 
@@ -334,7 +341,7 @@ def _attribution_headers() -> Dict[str, str]:
     """Same client-attribution set sent to OpenRouter / Vercel AI Gateway / Fireworks."""
     return {
         "HTTP-Referer": "https://hermes-agent.nousresearch.com", "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+        "User-Agent": f"HermesAgent/{get_version_info().base_version}",
     }
 
 
@@ -487,7 +494,7 @@ def build_anthropic_bedrock_client(region: str):
     from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
-        raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
+        raise ImportError("anthropic.AnthropicBedrock not available. Run: hermes pm repair")
     # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
     # launch profile's process env); unscoped passes nothing and keeps the default chain.
     scoped = scoped_aws_session_kwargs()

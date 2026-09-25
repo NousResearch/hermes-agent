@@ -208,7 +208,7 @@ def test_shared_popen_boundary_accepts_empty_base_env(monkeypatch, tmp_path):
     assert not set(_BLOCKED) & set(calls[0][1]["env"])
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_mixed_case_credential_names_are_denied_for_windows_semantics(
     monkeypatch, tmp_path
 ):

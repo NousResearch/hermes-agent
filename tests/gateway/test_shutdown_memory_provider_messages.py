@@ -22,13 +22,11 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 
-
 def _make_runner():
     from gateway.run import GatewayRunner
 
     runner = object.__new__(GatewayRunner)
     return runner
-
 
 # A lightweight stand-in for AIAgent so ``isinstance(..., list)`` correctly
 # discriminates between "attribute set to a list" and "attribute absent /
@@ -43,7 +41,6 @@ class _FakeAgent:
         if has_shutdown:
             self.shutdown_memory_provider = MagicMock()
         self.close = MagicMock()
-
 
 class TestCleanupAgentResourcesPassesMessages:
     """_cleanup_agent_resources forwards the agent's session messages."""
@@ -63,6 +60,3 @@ class TestCleanupAgentResourcesPassesMessages:
         # The fix must call shutdown_memory_provider with the exact list
         # identity — providers iterate it to extract facts.
         agent.shutdown_memory_provider.assert_called_once_with(transcript)
-
-
-

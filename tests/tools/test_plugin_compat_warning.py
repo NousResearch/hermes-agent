@@ -44,3 +44,26 @@ def test_importing_the_facade_itself_does_not_warn():
         warnings.simplefilter("always")
         importlib.import_module("tools.web_tools")
     assert not [w for w in rec if issubclass(w.category, HermesPluginCompatWarning)]
+
+
+def test_skills_hub_compat_hook_is_idempotent_across_reload_and_reinstall():
+    import tools.skills_hub as hub
+
+    hub = importlib.reload(hub)
+    assert hub.__getattr__ is not hub._plugin_compat_prev_getattr
+
+    hook = hub.__getattr__
+    previous = hub._plugin_compat_prev_getattr
+    hub._install_plugin_compat_getattr()
+    hub._install_plugin_compat_getattr()
+
+    assert hub.__getattr__ is hook
+    assert hub._plugin_compat_prev_getattr is previous
+    assert hub.HERMES_HOME.is_dir()
+    with pytest.raises(AttributeError):
+        getattr(hub, "not_a_real_hub_attribute")
+
+    name, (target_module, target_name) = next(iter(hub._PLUGIN_COMPAT_LAZY.items()))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert getattr(hub, name) is getattr(importlib.import_module(target_module), target_name)

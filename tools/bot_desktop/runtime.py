@@ -151,7 +151,7 @@ class DesktopStatus:
 
 def _read(path: Path) -> Optional[str]:
     try:
-        return path.read_text(encoding="utf-8").strip() or None
+        return path.read_text(encoding="utf-8-sig").strip() or None
     except OSError:
         return None
 
@@ -202,7 +202,7 @@ _X_UNIX_TABLE = Path("/proc/net/unix")  # the kernel's list of bound Unix socket
 
 def _x_lock_pid(num: int) -> Optional[int]:
     try:
-        return int((_X_LOCK_DIR / f".X{num}-lock").read_text(encoding="utf-8").strip())
+        return int((_X_LOCK_DIR / f".X{num}-lock").read_text(encoding="utf-8-sig").strip())
     except (OSError, ValueError):
         return None
 
@@ -212,7 +212,7 @@ def _x_socket_bound(num: int) -> bool:
     kernel drops it only when the process exits. A /tmp reaper can remove the lock file under a live Xvnc,
     and only this binding then still says the number is taken (a new server on it dies 'already running')."""
     try:
-        lines = _X_UNIX_TABLE.read_text(encoding="utf-8").splitlines()
+        lines = _X_UNIX_TABLE.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return False
     # no-tmp: ok — detects the X server's display socket at the path the X11 protocol fixes

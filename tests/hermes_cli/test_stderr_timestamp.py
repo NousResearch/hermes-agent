@@ -248,7 +248,7 @@ def test_main_maps_gateway_ex_config_to_clean_stop(tmp_path):
 
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signals")
+@pytest.mark.platforms("posix")  # POSIX signals
 def test_wrapper_forwards_sigusr1_restart_request_to_child(tmp_path):
     """Regression for #101426: launchd owns the wrapper's PID, so ``hermes update`` sends its
     drain-aware SIGUSR1 to the wrapper. It must reach the gateway child and the wrapper must

@@ -13,6 +13,7 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { replayPendingApproval } from '@/store/prompts'
 import { setSessionProviderWait } from '@/store/provider-wait'
 import { isSessionGone } from '@/store/session-gone-latch'
+import { noteSessionEvent } from '@/store/session-states'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
 
 import { handleDesktopBridgeEvent } from './desktop-bridge'
@@ -231,9 +232,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         scheduleConfigRefresh
       }
 
-      for (const handler of HANDLERS) {
-        if (handler(ctx)) {
-          return
+      try {
+        for (const handler of HANDLERS) {
+          if (handler(ctx)) {
+            return
+          }
+        }
+      } finally {
+        // Any attributed event — including a heartbeat that does not change
+        // state — proves this session is still producing. Silence after the
+        // last one force-settles a dead turn, partial payload included.
+        if (sessionId) {
+          noteSessionEvent(sessionId)
         }
       }
     },

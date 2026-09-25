@@ -225,7 +225,7 @@ def test_profile_scope_resolves_root_moa_preset(tmp_path):
     """A preset authored in the root config must resolve inside a
     profile-scoped load (the kanban-worker shape: HERMES_HOME points at
     profiles/<name>, whose config.yaml has no ``moa:`` block)."""
-    import yaml
+    import json
 
     import hermes_cli.config as config_mod
     from hermes_cli.moa_config import resolve_moa_preset
@@ -239,13 +239,13 @@ def test_profile_scope_resolves_root_moa_preset(tmp_path):
         "aggregator": {"provider": "opencode-go", "model": "deepseek-v4-flash"},
     }
     (root_home / "config.yaml").write_text(
-        yaml.safe_dump({"moa": {"presets": {"Speed Quality": preset}}}),
+        json.dumps({"moa": {"presets": {"Speed Quality": preset}}}),
         encoding="utf-8",
     )
     profile_home = root_home / "profiles" / "reviewer"
     profile_home.mkdir(parents=True)
     (profile_home / "config.yaml").write_text(
-        yaml.safe_dump({"model": {"default": "Speed Quality", "provider": "moa"}}),
+        json.dumps({"model": {"default": "Speed Quality", "provider": "moa"}}),
         encoding="utf-8",
     )
 

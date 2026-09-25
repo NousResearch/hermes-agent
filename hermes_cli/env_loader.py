@@ -701,7 +701,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
 
     # Neither early return marks the home applied: a malformed config.yaml would otherwise permanently
     # disable secret loading for this process, and an unmarked home picks up a config change on the next
-    # load (the re-parse is a cheap fast_safe_load).
+    # load (the signature-cached read is cheap).
     try:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
@@ -820,7 +820,7 @@ def _load_secrets_config(home_path: Path, *, strict: bool = False) -> dict:
     config_path = home_path / "config.yaml"
     if strict:
         try:
-            with config_path.open("r", encoding="utf-8") as handle:
+            with config_path.open("r", encoding="utf-8-sig") as handle:
                 data = fast_safe_load(handle)
         except FileNotFoundError:
             return {}

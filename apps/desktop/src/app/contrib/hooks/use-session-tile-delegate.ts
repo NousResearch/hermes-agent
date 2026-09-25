@@ -9,6 +9,7 @@ import {
 import { translateNow } from '@/i18n/runtime'
 import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import { markReasoningEffortPending } from '@/lib/chat-runtime'
+import { profileScopeForSessionOwner, refreshIfTranscriptStale } from '@/lib/stale-transcript-guard'
 import { notify } from '@/store/notifications'
 import {
   isReadOnlyRuntimeId,
@@ -435,6 +436,36 @@ export function useSessionTileDelegate({
         }
 
         const storedSessionId = storedSessionIdForRuntime(runtimeId)
+
+        if (storedSessionId) {
+          const cached = sessionStateByRuntimeIdRef.current.get(runtimeId)
+          const owner = await ownerForStoredSession(storedSessionId)
+
+          const refreshed = await refreshIfTranscriptStale(storedSessionId, cached?.messages ?? [], {
+            profile: profileScopeForSessionOwner(owner)
+          })
+
+          if (refreshed) {
+            updateSessionState(
+              runtimeId,
+              state => ({
+                ...state,
+                awaitingResponse: false,
+                busy: false,
+                messages: refreshed,
+                pendingBranchGroup: null
+              }),
+              storedSessionId
+            )
+            notify({
+              kind: 'warning',
+              message: translateNow('desktop.staleSessionBody'),
+              title: translateNow('desktop.staleSessionTitle')
+            })
+
+            return
+          }
+        }
 
         const routedRequest = storedSessionId
           ? <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) =>

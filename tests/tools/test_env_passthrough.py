@@ -2,7 +2,7 @@
 
 import os
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from agent import secret_scope as ss
 import tools.env_passthrough as _ep_mod
@@ -38,7 +38,7 @@ class TestConfigPassthrough:
     def test_reads_from_config(self, tmp_path, monkeypatch):
         config = {"terminal": {"env_passthrough": ["MY_CUSTOM_KEY", "ANOTHER_TOKEN"]}}
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config), encoding="utf-8")
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         assert is_env_passthrough("MY_CUSTOM_KEY")
@@ -49,7 +49,7 @@ class TestConfigPassthrough:
     def test_union_of_skill_and_config(self, tmp_path, monkeypatch):
         config = {"terminal": {"env_passthrough": ["CONFIG_KEY"]}}
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config), encoding="utf-8")
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         register_env_passthrough(["SKILL_KEY"])
@@ -325,7 +325,7 @@ class TestTerminalIntegration:
         case variants of provider credentials on the same filter."""
         config = {"terminal": {"env_passthrough": ["openai_api_key", "MY_OWN_KEY"]}}
         config_path = tmp_path / "config.yaml"
-        config_path.write_text(yaml.dump(config), encoding="utf-8")
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         _ep_mod._config_passthrough.clear()
 

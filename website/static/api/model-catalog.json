@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-23T07:20:37Z",
+  "updated_at": "2026-09-25T09:33:49Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -206,6 +206,14 @@
           "description": ""
         },
         {
+          "id": "upstage/solar-mini4",
+          "description": ""
+        },
+        {
+          "id": "upstage/solar-pro4",
+          "description": ""
+        },
+        {
           "id": "meta/muse-spark-1.2-contributor",
           "description": ""
         },
@@ -408,6 +416,12 @@
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b"
+        },
+        {
+          "id": "upstage/solar-mini4"
+        },
+        {
+          "id": "upstage/solar-pro4"
         },
         {
           "id": "sakana/fugu-ultra"

@@ -11,7 +11,8 @@ import {
   resolveRememberedActivePane,
   setWorkspaceOwnerLabel,
   setWorkspaceScope,
-  workspaceOwnerTitle
+  workspaceOwnerTitle,
+  workspaceSessionTitle
 } from './workspace-scope'
 
 afterEach(() => {
@@ -66,6 +67,18 @@ describe('workspace owner title', () => {
     expect(workspaceOwnerTitle('Bot Chat', { workspaceMode: 'sessions' })).toBe('Bot Chat')
     // No label yet (roster not loaded): the stored title stands.
     expect(workspaceOwnerTitle('Bot Chat', { ...botChat, workspaceOwnerKey: 'bot:beta' })).toBe('Bot Chat')
+  })
+
+  it('uses the Bot Chat identity when its hidden row is absent from the visible session list', () => {
+    setWorkspaceOwnerLabel('bot:hermes', 'Hermes')
+    const botChat = {
+      workspaceMode: 'bots' as const,
+      workspaceOwnerKey: 'bot:hermes',
+      workspaceTabTitle: 'Bot Chat'
+    }
+
+    expect(workspaceSessionTitle(null, 'New session', botChat)).toBe('Hermes')
+    expect(workspaceSessionTitle(null, 'New session', undefined)).toBe('New session')
   })
 })
 

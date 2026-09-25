@@ -73,6 +73,21 @@ export function workspaceOwnerTitle(
   return $workspaceOwnerLabels.get()[scope.workspaceOwnerKey] ?? title
 }
 
+/** Resolve the main workspace caption when its selected session is not present
+ * in the visible session list. Canonical Bot Chats are deliberately hidden
+ * from that list, but their owner scope still carries the canonical title that
+ * identifies them. Use it before applying the owner label; a genuinely fresh
+ * draft has no scope and keeps the ordinary fallback. */
+export function workspaceSessionTitle(
+  storedTitle: string | null | undefined,
+  fallbackTitle: string,
+  scope: { workspaceMode?: WorkspaceMode; workspaceOwnerKey?: string; workspaceTabTitle?: string } | undefined
+): string {
+  const title = storedTitle?.trim() || scope?.workspaceTabTitle?.trim() || fallbackTitle
+
+  return workspaceOwnerTitle(title, scope)
+}
+
 /** One key for window-local active-pane memory. Owner keys stay opaque. */
 export function workspaceScopeKey(mode: WorkspaceMode, ownerKey: string | null): string {
   return mode === 'sessions' ? 'sessions' : `bots:${ownerKey ?? ''}`

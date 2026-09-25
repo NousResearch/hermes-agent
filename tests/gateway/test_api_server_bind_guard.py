@@ -157,7 +157,7 @@ class TestBindMechanics:
             await adapter.disconnect()
 
     @pytest.mark.asyncio
-    async def test_port_conflict_sets_non_retryable_fatal_error(self):
+    async def test_port_conflict_sets_non_retryable_fatal_error(self, monkeypatch):
         """A real port conflict (EADDRINUSE) must set a non-retryable fatal
         error so the reconnect watcher drops the platform from the retry
         queue instead of looping indefinitely.
@@ -171,6 +171,9 @@ class TestBindMechanics:
         first = self._make_adapter(port)
         assert await first.connect() is True
         second = self._make_adapter(port)
+        # The bind retry budget is wall-clock (~30s) so a restart race can self-heal; this conflict
+        # is permanent, so shrink the budget rather than make CI wait it out.
+        monkeypatch.setattr("gateway.platforms.api_server._BIND_RETRY_BUDGET_SECONDS", 0.3)
         try:
             result = await second.connect()
             assert result is False

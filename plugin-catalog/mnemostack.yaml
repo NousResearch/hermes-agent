@@ -1,0 +1,26 @@
+name: mnemostack
+repo: https://github.com/udjin-labs/hermes-mnemostack
+sha: 0cca8c4ff3b9d81babb74ba182a29363834aa7e6
+subdir: src/hermes_mnemostack/plugin
+description: Persistent agent memory over a mnemostack service or a local Qdrant — hybrid
+  recall (vector + lexical + graph), verbatim capture with self-echo suppression, and
+  soft retraction. Multi-tenant when pointed at a shared authenticated service; the
+  tenant is resolved server-side from the service key. Disclosure — the pinned directory
+  is a discovery shim; the provider code installs from PyPI at the version pinned in
+  plugin.yaml pip_dependencies (hermes-mnemostack==1.0.2) into the Hermes venv.
+  Configured via MNEMOSTACK_* env vars; no key is required for a purely local
+  Qdrant setup.
+maintainer: udjin-labs
+tier: community
+category: memory
+requires_hermes: '>=0.19'
+docs_url: https://github.com/udjin-labs/hermes-mnemostack/blob/0cca8c4ff3b9d81babb74ba182a29363834aa7e6/README.md
+version: '1.0.2'
+capabilities:
+  provides_tools:
+    - mnemostack_search
+    - mnemostack_remember
+    - mnemostack_forget
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

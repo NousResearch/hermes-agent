@@ -366,7 +366,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       const live = getUiState()
 
-      if (!live.sid) { return sys('session not ready — draft kept; reconnect or choose a session') }
+      // No session yet (boot, or the socket is down): the input joins the local queue and the
+      // sid/connected drain effect sends it once the session is bound. On an attached gateway
+      // the first session.create lands seconds after the composer accepts input, so an Enter
+      // in that window must not be refused.
+      const unbound = !live.sid || live.gatewayConnected === false
 
       // The composer is the only copy of a draft until the pending-input
       // journal holds it, so it is cleared after that first durable write and
@@ -385,7 +389,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         }
       }
 
-      if (live.gatewayConnected === false) {
+      if (unbound) {
         composerActions.pushHistory(toHistory)
         journaled(() => {
           const retained = composerActions.enqueue(submission.text, submission.display, destination)

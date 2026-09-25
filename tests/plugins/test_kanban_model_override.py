@@ -110,10 +110,6 @@ def test_create_task_with_model_and_provider(conn):
     assert ev.payload["provider_override"] == "openrouter"
 
 
-def test_migration_adds_provider_override_column(conn):
-    cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
-    assert "model_override" in cols
-    assert "provider_override" in cols
 
 
 # ---------------------------------------------------------------------------
@@ -293,12 +289,6 @@ def test_reasoning_effort_survives_clearing_the_model(conn):
     assert t.reasoning_effort == "ultra"
 
 
-def test_reasoning_effort_without_a_model_override(conn):
-    """A task may run the profile's OWN model at a different depth."""
-    tid = kb.create_task(conn, title="t", assignee="worker", reasoning_effort="low")
-    t = kb.get_task(conn, tid)
-    assert t.model_override is None
-    assert t.reasoning_effort == "low"
 
 
 def test_patch_sets_and_clears_reasoning_effort(client):

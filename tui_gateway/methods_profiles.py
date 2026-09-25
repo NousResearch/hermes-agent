@@ -217,30 +217,48 @@ def _profile_session_fields(row, profile_path):
     """Attach last_session / worker_session / canonical_session to a roster row. The DB is a
     read-only attach (a writable ``SessionDB()`` waits up to 20s for the write lock + runs DDL
     and stalled the 5s roster poll); no/unreadable DB -> every field None (the readers swallow)."""
-    db_path = Path(profile_path) / "state.db"
-    db = None
-    if _try(db_path.exists, False):
-        db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
-    try:
-        row["last_session"], row["worker_session"] = _latest_profile_session_rows(db)
-        # Resolved server-side on every listing so no client carries a session pointer.
-        row["canonical_session"] = _canonical_session_row(db, profile_path)
-    finally:
-        if db is not None:
-            _best_effort(db.close)
+    def _read() -> dict:
+        db_path = Path(profile_path) / "state.db"
+        db = None
+        if _try(db_path.exists, False):
+            db = _try(lambda: _lazy("hermes_state", "SessionDB")(db_path=db_path, read_only=True), None)
+        try:
+            last, worker = _latest_profile_session_rows(db)
+            # Resolved server-side on every listing so no client carries a session pointer.
+            return {"last_session": last, "worker_session": worker,
+                    "canonical_session": _canonical_session_row(db, profile_path)}
+        finally:
+            if db is not None:
+                _best_effort(db.close)
+
+    # These three are a pure function of the profile's session store, and the roster re-asks every
+    # 5s per connection — so they are reused while that store has not moved (#117257).
+    from tui_gateway.profile_roster_cache import cached_session_fields
+
+    row.update(cached_session_fields(profile_path, _read))
 
 
 def _profile_ui_meta_fields(row: dict, profile_dir) -> None:
     """Attach ``ui_meta`` / ``ui_meta_revisions`` / ``has_avatar`` from profile.yaml + assets.
     ``ui_meta_revisions`` is always present: it feature-detects gateway-owned CAS for a new profile."""
-    raw_meta = _read_profile_yaml(profile_dir)
-    ui_meta, revisions = raw_meta.get("ui_meta"), raw_meta.get("_ui_meta_revisions")
-    # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
-    row["ui_meta_revisions"] = _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}
-    if isinstance(ui_meta, dict) and ui_meta:
-        # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
-        # coerce YAML-only scalars to their ISO string at the boundary (#92506).
-        row["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json))
+    def _read() -> dict:
+        raw_meta = _read_profile_yaml(profile_dir)
+        ui_meta, revisions = raw_meta.get("ui_meta"), raw_meta.get("_ui_meta_revisions")
+        # Key order is wire-visible: ui_meta_revisions precedes ui_meta.
+        fields = {"ui_meta_revisions":
+                  _try(lambda: _clean_revisions(revisions), {}) if isinstance(revisions, dict) else {}}
+        if isinstance(ui_meta, dict) and ui_meta:
+            # YAML promotes unquoted timestamps to datetime/date; the handler's contract is JSON, so
+            # coerce YAML-only scalars to their ISO string at the boundary (#92506).
+            fields["ui_meta"] = json.loads(json.dumps(ui_meta, default=_yaml_scalar_to_json))
+        return fields
+
+    # Second parse of this profile.yaml in the same request (``read_profile_meta`` already read it
+    # for the row's description/display name) — reused while the file has not moved (#117383). The
+    # ui_meta CAS writer below keeps reading it raw and uncached: it writes the document back.
+    from tui_gateway.profile_roster_cache import cached_ui_meta_fields
+
+    row.update(cached_ui_meta_fields(profile_dir, _read))
     # Cheap existence flag so rosters skip a get_asset probe per paint.
     row["has_avatar"] = _try(lambda: any((profile_dir / "assets" / f"avatar.{e}").is_file() for e in _ASSET_EXTS), False)
 
@@ -252,10 +270,12 @@ def _(rid, params: dict) -> dict:
     from hermes_cli.profiles import list_profiles
     include_sessions = is_truthy_value(params.get("include_sessions", True))
     out = []
-    for p in list_profiles():
+    # Roster polls this every 5s: ``skill_count`` is the last known value, refreshed off-request.
+    for p in list_profiles(lazy_skill_count=True):
         row = {"name": p.name, "path": str(p.path), "is_default": bool(p.is_default), "model": p.model,
                "provider": p.provider, "description": p.description or "",
-               "display_name": p.display_name or "", "skill_count": p.skill_count or 0}
+               "display_name": p.display_name or "", "skill_count": p.skill_count or 0,
+               "previous_names": list(p.previous_names or []), "role": p.role}
         if include_sessions:
             _profile_session_fields(row, p.path)
         _profile_ui_meta_fields(row, Path(str(p.path)))
@@ -334,11 +354,11 @@ def _inherit_launch_model(path) -> bool:
 
 def _mirror_launch_credentials(path, params: dict) -> dict:
     """Copy launch .env / auth.json / voice sections into a new profile (best-effort per item).
-    ``mirror_credentials`` false skips everything. ``model_inherited`` is filled in by the caller.
-
-    ``share_auth`` is accepted from older clients and ignored: a profile never reads the launch
-    profile's auth.json (#111724), so "shared" auth would leave it with no provider at all."""
-    mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
+    ``share_auth`` reports ``auth: "shared"`` and skips the auth copy; ``mirror_credentials``
+    false skips everything. ``model_inherited`` is filled in by the caller."""
+    share_auth = is_truthy_value(params.get("share_auth", False))
+    mirrored = {"env": False, "auth": "shared" if share_auth else False, "model_inherited": False,
+                "voice": False}
     if not is_truthy_value(params.get("mirror_credentials", True)):
         return mirrored
     launch_home = get_hermes_home()
@@ -349,12 +369,13 @@ def _mirror_launch_credentials(path, params: dict) -> dict:
         # Provider/tool keys are what "mirror credentials" means; the launch profile's bot tokens
         # and allowlists would make the new bot collide with it over one Telegram/Discord bot.
         _best_effort(lambda: _lazy("hermes_cli.profile_channels", "strip_channel_env_file")(path / ".env"))
-    mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
-                                                   lambda src, dst: not dst.exists()), False)
-    if mirrored["auth"]:
-        # Drop single-use OAuth grants (a copy forks token state: the first refresh in either store
-        # strands the other); the new profile signs into those providers itself. API keys stay.
-        _best_effort(lambda: _lazy("hermes_cli.auth", "strip_cloned_single_use_oauth_grants")(path))
+    if not share_auth:  # a copy forks token state: the first refresh in either store strands the other
+        mirrored["auth"] = _try(lambda: _mirror_secret(path, launch_home, "auth.json",
+                                                       lambda src, dst: not dst.exists()), False)
+        if mirrored["auth"]:
+            # Drop single-use OAuth grants (first refresh strands every sibling); they read from the
+            # root grant via the pool fallback. API keys stay.
+            _best_effort(lambda: _lazy("hermes_cli.auth", "strip_cloned_single_use_oauth_grants")(path))
     mirrored["voice"] = _mirror_voice_sections(path)
     return mirrored
 
@@ -364,9 +385,8 @@ def _(rid, params: dict) -> dict:
     """Create a profile (ws twin of POST /api/profiles). Params: ``name``, ``description``,
     ``clone_from`` (omitted = fresh + bundled skills), ``clone_all``, ``clone_channels`` (opt-in: keep the
     source's bot tokens/allowlists — default strips them so two profiles never hold one bot), ``no_skills``, ``soul``,
-    ``model`` + ``provider``, ``no_alias``, ``mirror_credentials`` (default true: a bare
-    ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless);
-    ``share_auth`` is accepted from older clients and ignored."""
+    ``model`` + ``provider``, ``share_auth``, ``no_alias``, ``mirror_credentials`` (default true: a bare
+    ``create_profile()`` seeds a comment-only .env and no auth.json = NO provider headless)."""
     name = str(params.get("name") or "").strip()
     if not name:
         return _err(rid, 4061, "name required")
@@ -407,9 +427,10 @@ def _describe_toolsets(cfg):
     """``(toolsets, pinned_set)`` as the `hermes tools` checklist presents them (the raw registry
     leaks platform composites and reports everything enabled without a pin)."""
     from hermes_cli.tools_config import (
-        _get_effective_configurable_toolsets, _get_platform_tools, _toolset_allowed_for_platform)
+        _coerce_platform_toolsets_value, _get_effective_configurable_toolsets, _get_platform_tools,
+        _toolset_allowed_for_platform)
     from toolsets import resolve_toolset
-    pinned = (cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}).get("enabled_toolsets")
+    pinned = _coerce_platform_toolsets_value((cfg.get("platform_toolsets") or {}).get("cli"), "cli")
     pinned_set = _clean_names(pinned) if isinstance(pinned, list) else None
     platform_enabled = _try(lambda: set(_get_platform_tools(cfg, "cli", include_default_mcp_servers=False)), set())
     default_off = _try(lambda: _lazy("hermes_cli.tools_config", "_DEFAULT_OFF_TOOLSETS"), set())
@@ -434,6 +455,7 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     with _hermes_home_scope(profile_dir):
+        from agent.skill_utils import iter_skill_index_files
         from hermes_cli.config import load_config
         from hermes_cli.skills_config import get_disabled_skills
         cfg = load_config() or {}
@@ -441,13 +463,13 @@ def _(rid, params: dict) -> dict:
         skills_root = profile_dir / "skills"
         installed = [
             {"name": md.parent.name, "enabled": md.parent.name.lower() not in disabled}
-            for md in (sorted(skills_root.rglob("SKILL.md")) if skills_root.is_dir() else ())]
+            for md in (iter_skill_index_files(skills_root, "SKILL.md") if skills_root.is_dir() else ())]
         toolsets_out, pinned_set = _describe_toolsets(cfg)
         soul_path = profile_dir / "SOUL.md"
         soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")
         mcp_cfg = cfg.get("mcp_servers")
         mcp_out = _try(lambda: [
-            {"name": str(srv_name), "enabled": not is_truthy_value(entry.get("disabled", False)),
+            {"name": str(srv_name), "enabled": _mcp_entry_enabled(entry),
              "transport": str(entry.get("transport") or "http") if entry.get("url") else "stdio"}
             for srv_name in sorted(mcp_cfg.keys()) for entry in (mcp_cfg[srv_name],)
             if isinstance(entry, dict)
@@ -535,27 +557,38 @@ def _clean_names(values) -> set:
 
 
 def _save_toolset_pin(cfg, enabled, save_config) -> None:
-    wanted = sorted(_clean_names(enabled))
-    tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+    """Pin ``platform_toolsets.cli``: the key ``_load_enabled_toolsets`` reads and ``hermes tools`` writes.
+    An empty selection clears the pin so the platform default applies again."""
+    from hermes_cli.tools_config import _save_platform_tools
+
+    wanted = _clean_names(enabled)
     if wanted:
-        tools_cfg["enabled_toolsets"] = wanted
-    else:
-        tools_cfg.pop("enabled_toolsets", None)
-    cfg["tools"] = tools_cfg
+        _save_platform_tools(cfg, "cli", wanted)
+    elif isinstance(cfg.get("platform_toolsets"), dict):
+        cfg["platform_toolsets"].pop("cli", None)
     save_config(cfg)
 
 
+def _mcp_entry_enabled(entry: dict) -> bool:
+    """The runtime's ``enabled`` reader; a legacy ``disabled: true`` (what older editors wrote,
+    migrated by config v46) still reads as off."""
+    from hermes_cli.tools_config import _parse_enabled_flag
+    from tools.mcp_tool_common import mcp_server_enabled
+    return mcp_server_enabled(entry) and not _parse_enabled_flag(entry.get("disabled", False), default=False)
+
+
 def _save_mcp_toggles(cfg, enabled, launch_mcp, save_config) -> None:
+    """Write the ``enabled`` flag every runtime resolver reads (``enabled_mcp_server_names``,
+    coding_context, oneshot); the legacy ``disabled`` key is dropped so old configs migrate."""
     wanted = _clean_names(enabled)
     mcp_cfg = cfg.get("mcp_servers") if isinstance(cfg.get("mcp_servers"), dict) else {}
     for srv in wanted:
         if not isinstance(mcp_cfg.get(srv), dict) and isinstance(launch_mcp.get(srv), dict):
             mcp_cfg[srv] = dict(launch_mcp[srv])
-        if isinstance(mcp_cfg.get(srv), dict):
-            mcp_cfg[srv].pop("disabled", None)
     for srv, entry in mcp_cfg.items():
-        if srv not in wanted and isinstance(entry, dict):
-            entry["disabled"] = True
+        if isinstance(entry, dict):
+            entry["enabled"] = srv in wanted
+            entry.pop("disabled", None)
     if mcp_cfg:
         cfg["mcp_servers"] = mcp_cfg
     save_config(cfg)

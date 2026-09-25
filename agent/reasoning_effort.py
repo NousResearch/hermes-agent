@@ -28,13 +28,15 @@ EFFORT_LADDER: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "x
 OPENAI_COMPAT_WIRE_EFFORTS: tuple[str, ...] = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 #: OpenAI/Codex Responses per model generation (live-verified): ``minimal`` is rejected by
-#: both (clamps to low); ``max`` is gpt-5.6-only.
+#: both (clamps to low); ``max`` is gpt-5.6 / gpt-6-tier only (legacy = 5.5 and older).
 CODEX_GPT56_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh", "max")
 CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh")
 # GPT-6 Astra is account-gated and its Responses API accepts no disable/minimal
 # wire level; callers normalize those requests to ``low`` at the transport boundary.
 CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 ASTRA_MODEL_IDS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6-astra-900k"})
+#: GPT-6 Sol/Terra/Luna (the 5.6 successors; ``-pro``/``-900k``/dated snapshots share the prefix).
+GPT6_TIER_PREFIXES: tuple[str, ...] = ("gpt-6-sol", "gpt-6-luna")
 DAYBREAK_MODEL_IDS: frozenset[str] = frozenset(
     {"gpt-daybreak-blue-latest", "gpt-daybreak-blue-latest-900k"}
 )
@@ -99,7 +101,7 @@ def codex_supported_efforts(model: Optional[str]) -> tuple[str, ...]:
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
     return (
         CODEX_GPT56_EFFORTS
-        if "gpt-5.6" in bare or bare in DAYBREAK_MODEL_IDS
+        if "gpt-5.6" in bare or bare.startswith(GPT6_TIER_PREFIXES) or bare in DAYBREAK_MODEL_IDS
         else CODEX_LEGACY_EFFORTS
     )
 
@@ -146,6 +148,24 @@ def clamp_effort(
     requested_idx = EFFORT_LADDER.index(requested)
     below = [level for level in candidates if EFFORT_LADDER.index(level) < requested_idx]
     return max(below, key=EFFORT_LADDER.index) if below else min(candidates, key=EFFORT_LADDER.index)
+
+
+def route_supported_efforts(provider: Optional[str], model: Optional[str]) -> tuple[str, ...]:
+    """Levels the (provider, model) route's ENTRY clamp accepts: the Codex/OpenAI Responses set per
+    model generation, else the widest OpenAI-compatible vocabulary (narrower providers clamp again
+    downstream, never upward)."""
+    if (provider or "").strip().lower() == "openai-codex":
+        return codex_supported_efforts(model)
+    return OPENAI_COMPAT_WIRE_EFFORTS
+
+
+def effort_display_label(effort: Optional[str], provider: Optional[str] = None, model: Optional[str] = None) -> str:
+    """Picker / ``/reasoning`` status label for a ladder level: the level itself when the route sends
+    it verbatim, else ``"<level> (sends <clamped> on this route)"`` so a Hermes-internal step such as
+    ``ultra`` (#61634) is never presented as a distinct wire level the route does not have."""
+    requested = str(effort or "").strip().lower()
+    clamped = clamp_effort(requested, route_supported_efforts(provider, model))
+    return requested if not requested or clamped == requested else f"{requested} (sends {clamped} on this route)"
 
 
 def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:
@@ -197,8 +217,8 @@ def thinking_toggle_extras(
 
 
 def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[str]) -> tuple[dict, dict]:
-    """Ox Alpha (``x-preview-f-free``) ``reasoning_effort`` translation, shared by the
-    opencode-zen and opencode-free profiles (low/high/max only; anything else 400s)."""
+    """Ox Alpha (``x-preview-f-free``) ``reasoning_effort`` translation for the
+    opencode-zen profile (low/high/max only; anything else 400s)."""
     if (model or "").strip().rsplit("/", 1)[-1].lower() != "x-preview-f-free":
         return {}, {}
     effort = requested_effort(reasoning_config)

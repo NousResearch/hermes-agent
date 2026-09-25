@@ -59,5 +59,7 @@ def test_branch_route_and_frozen_policy_survive_owner_restart(tmp_path):
             assert policies[0]['principal_id'] == policies[1]['principal_id']
             assert policies[0]['route'] != policies[1]['route']
             assert db.execute('SELECT parent_session_id FROM sessions WHERE id=?', (child,)).fetchone()[0] == sid
+            # An untitled branch is its own titled sidebar row (next name in the parent's lineage).
+            assert db.execute('SELECT title FROM sessions WHERE id=?', (child,)).fetchone()[0]
     with daemon(tmp_path) as (home, descriptor):
         assert asyncio.run(branch_round(home, descriptor, previous)) == previous

@@ -48,7 +48,7 @@ async def probe(peer, target, kind):
     try:
         a = await connect()
         for payload in ({'source': 'telegram'}, {'source': 'cron'}, {'internal': True},
-                        {'profile': 'foreign'}, {'cwd': 'relative'}, {'yolo': True}):
+                        {'profile': 'foreign'}, {'cwd': 'relative'}, {'checkpoints': True}):
             denied = await rpc(a, 'session.create', **payload)
             assert 'error' in denied, denied
         before_sessions = set(authority.sessions)

@@ -319,9 +319,10 @@ class GatewayTurnHygieneMixin:
     async def _hmwa_hygiene_notify(self, source, meta, message, what):
         """Best-effort user notice on the hygiene thread; failure is logged, never raised."""
         try:
-            _adapter = self._adapter_for_source(source)
+            _adapter = self._delivery_adapter_for(source)
             if _adapter and source.chat_id:
-                await _adapter.send(source.chat_id, message, metadata=meta)
+                await _adapter.emit_warning(source.chat_id, message, metadata=meta,
+                                            logical_platform=source.platform)
         except Exception as _werr:
             logger.warning("Failed to deliver %s to user: %s", what, _werr)
 
@@ -505,6 +506,7 @@ class GatewayTurnHygieneMixin:
         old rows and rewrite_transcript() would DELETE them; neither rotation nor in-place signals
         FAILURE and an unconditional rewrite would leave only the summary. Write-before-repoint:
         a repoint-then-failed-rewrite would point the live entry at an empty session."""
+        from gateway.run_turn import hygiene_no_commit_reason
         from agent.model_metadata import estimate_messages_tokens_rough
         _hyg_agent = attempt.agent
         # _compress_context rotates to a NEW session_id so the old transcript stays intact/searchable.
@@ -566,9 +568,9 @@ class GatewayTurnHygieneMixin:
             _new_count = plan.msg_count
             _new_tokens = plan.approx_tokens
             logger.warning(
-                "Gateway hygiene compression for session %s did not rotate or compact in place (no "
-                "session_db on the hygiene agent) — preserving the original transcript instead "
-                "of overwriting it with the summary (#21301).", session_entry.session_id,
+                "Gateway hygiene compression for session %s did not rotate or compact in place (%s) — "
+                "preserving the original transcript instead of overwriting it with the summary (#21301).",
+                session_entry.session_id, hygiene_no_commit_reason(_hyg_agent),
             )
 
         logger.info(
@@ -731,8 +733,10 @@ class GatewayTurnHygieneMixin:
                 # fails closed (UnscopedSecretError) and every hygiene compaction silently degrades to a
                 # lossy truncation (#100849 bundle).
                 copy_context().run,
+                # task_id = the live turn's dedup bucket (session row id), never "" (= reset every task).
                 lambda: _hyg_agent._compress_context(
                     _hyg_msgs, "", approx_tokens=plan.approx_tokens, commit_fence=_hyg_commit_fence,
+                    task_id=session_entry.session_id or "default",
                 ),
             )
             attempt.wait_started = time.monotonic()

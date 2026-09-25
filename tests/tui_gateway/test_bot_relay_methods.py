@@ -68,6 +68,32 @@ def test_outbox_drain_replays_canonical_envelope_until_reply_acknowledged(home):
     assert _result(srv._methods["bot_relay.outbox.drain"](4, {}))["envelopes"] == []
 
 
+def test_outbox_drain_settles_a_claimed_envelope_nobody_answered_with_a_typed_timeout(home):
+    """A Desktop that disconnects between ``outbox.drain`` and ``bot_relay.deliver`` leaves the envelope in
+    ``claimed/`` with no reply (#111021, #111207). It is replayed on every drain — same id, so the target
+    authority admits one turn — until the waiter's ``REPLY_WAIT_SECONDS`` run out; then the drain writes a
+    ``delivery_timeout`` reply so the sender learns, and never hands the envelope out again."""
+    import time
+
+    target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
+              "connection_label": "", "title": "", "description": ""}
+    lost = bot_relay.enqueue_envelope(home, target=target, message="lost", sender_profile="w", sender_handle="w")
+    done = bot_relay.enqueue_envelope(home, target=target, message="done", sender_profile="w", sender_handle="w")
+    drain = srv._methods["bot_relay.outbox.drain"]
+    assert sorted(e["id"] for e in _result(drain(1, {}))["envelopes"]) == sorted([lost["id"], done["id"]])
+    bot_relay.write_reply(home, done["id"], reply="answered")
+    # An answered envelope is never re-offered; the unanswered one rides every drain.
+    assert [e["id"] for e in _result(drain(2, {}))["envelopes"]] == [lost["id"]]
+    lost_path = bot_relay.relay_root(home) / bot_relay.CLAIMED_DIR / f"{lost['id']}.json"
+    stale = json.loads(lost_path.read_text(encoding="utf-8"))
+    stale["created_at"] = int(time.time()) - bot_relay.REPLY_WAIT_SECONDS - 1
+    lost_path.write_text(json.dumps(stale), encoding="utf-8")
+    assert _result(drain(3, {}))["envelopes"] == []
+    reply = json.loads((bot_relay.relay_root(home) / bot_relay.REPLIES_DIR / f"{lost['id']}.json").read_text(encoding="utf-8"))
+    assert reply["reason"] == "delivery_timeout" and reply["error"]
+    assert _result(drain(4, {}))["envelopes"] == []
+
+
 def test_deliver_forwards_stable_id_to_target_profile_authority(home, monkeypatch):
     """The relay door is a transport bridge: it resolves the target profile's
     own home and forwards the envelope id + message to THAT authority. It
@@ -175,12 +201,16 @@ SENDER = {"from_profile": "scout", "from_handle": "scout", "from_connection": "c
 SENDER_AUTHOR = {"id": "bot:cloud-1/scout", "name": "scout", "is_bot": True}
 
 
-@pytest.mark.parametrize("identity, refused", [
-    (None, False),
-    ({"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER}, False),
-    ({"user_id": "alice", "provider": "google"}, True),
-])
-def test_relay_sender_attribution_obeys_transport_identity(home, monkeypatch, bound_client, identity, refused):
+@pytest.mark.parametrize("identity", [
+    None,
+    {"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER},
+], ids=["no identity", "server-internal identity"])
+def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, monkeypatch, bound_client, identity):
+    """A caller with no identity, or one holding the ``?internal=`` credential, keeps its sender fields.
+
+    NOT the Desktop: it mints a ws-ticket carrying the signed-in ``{user_id, provider}`` on every
+    gateway that requires sign-in (``hermes_cli/dashboard_auth/routes.py``), so it is a login
+    identity and takes the principal-author branch below."""
     from tools import bot_live_delivery as live
     forwarded = []
     monkeypatch.setattr(live, "authority_delivery",
@@ -188,13 +218,65 @@ def test_relay_sender_attribution_obeys_transport_identity(home, monkeypatch, bo
     bound_client.auth_identity = identity
     result = srv._methods["bot_relay.deliver"](1, {
         "id": "f" * 32, "profile": "ops", "message": "ping", **SENDER})
-    if refused:
-        assert result["error"]["code"] == 4095
-        assert not forwarded
-    else:
-        assert _result(result)["status"] == "queued"
-        assert forwarded[0]["author"] == SENDER_AUTHOR
-        assert not any(key in forwarded[0] for key in SENDER)
+    assert _result(result)["status"] == "queued"
+    assert forwarded[0]["author"] == SENDER_AUTHOR
+    assert not any(key in forwarded[0] for key in SENDER)
+
+
+def test_deliver_from_a_logged_in_client_is_attributed_to_its_principal_never_to_the_claimed_sender(
+        home, monkeypatch, bound_client):
+    """A logged-in client's sender fields are not trusted — but the dm is neither refused nor left unattributed.
+
+    Refusing the CALL took cross-machine relay offline for every auth-gated gateway, because the Desktop is
+    itself a logged-in client there. Dropping the AUTHOR would make the turn the human's to the recipient's
+    memory. So the author is derived from the caller's minted identity: stable, unspoofable, and still a bot —
+    whether or not the client named a sender — and the authority receives it with the sender fields stripped."""
+    from tools import bot_live_delivery as live
+    forwarded = []
+    monkeypatch.setattr(live, "authority_delivery",
+                        lambda home, params: forwarded.append(params) or {"status": "queued"})
+    bound_client.auth_identity = {"user_id": "alice", "provider": "google"}
+
+    shapes = ({"from_profile": "scout"}, {"from_connection": "cloud-1"}, SENDER, {})
+    for rid, sender in enumerate(shapes):
+        _result(srv._methods["bot_relay.deliver"](rid, {"id": "f" * 32, "profile": "ops", "message": "ping", **sender}))
+
+    assert len(forwarded) == len(shapes), "every relayed dm from a logged-in client must still be admitted"
+    authors = [p["author"] for p in forwarded]
+    assert all(a["is_bot"] is True for a in authors), "a relayed dm stays bot-authored for the recipient's memory"
+    assert all(a["id"].startswith("bot:principal:dashboard:") and a["id"].endswith("/relay") for a in authors)
+    assert all(a["name"] == "relayed teammate" for a in authors)
+    assert SENDER_AUTHOR not in authors, "the claimed sender must not become the author"
+    assert len({a["id"] for a in authors}) == 1, "one signed-in principal, one author — with or without sender fields"
+    assert not any(key in p for p in forwarded for key in SENDER)
+
+    bound_client.auth_identity = {"user_id": "bob", "provider": "google"}
+    _result(srv._methods["bot_relay.deliver"](9, {"id": "f" * 32, "profile": "ops", "message": "ping", **SENDER}))
+    assert forwarded[-1]["author"]["id"] != authors[0]["id"], "a different principal is a different author"
+
+
+def test_deliver_restamps_relayed_sender_with_a_reply_safe_handle(home, monkeypatch):
+    """#103731: the sender signs with its bare @handle, which for another machine's ``default`` is
+    ``@hermes`` — the recipient's OWN default. The text forwarded to the target authority names the
+    sender by the form this gateway resolves back to it: its title slug when the local relay roster
+    carries it, else ``handle@connection``. A stamp that is not the relay's is left alone."""
+    from tools import bot_live_delivery as live
+    seen = []
+    monkeypatch.setattr(live, "authority_delivery",
+                        lambda home, params: seen.append(params["message"]) or {"status": "queued"})
+    bot_relay.write_remote_roster(home, [
+        {"profile": "default", "handle": "hermes", "connection_id": "vps-1", "title": "CoS Bot"},
+    ])
+    stamp = "Message from 🤖 CoS Bot (@hermes): are we done?"
+    sender = {"from_profile": "default", "from_handle": "hermes", "from_connection": "vps-1"}
+    _result(srv._methods["bot_relay.deliver"](1, {"id": "a" * 32, "profile": "ops", "message": stamp, **sender}))
+    _result(srv._methods["bot_relay.deliver"](2, {"id": "b" * 32, "profile": "ops", "message": stamp, **sender,
+                                                 "from_connection": "lan-2"}))
+    _result(srv._methods["bot_relay.deliver"](3, {"id": "c" * 32, "profile": "ops", "message": "plain text (@hermes): x",
+                                                 **sender}))
+    assert seen == ["Message from 🤖 CoS Bot (@cos-bot): are we done?",
+                    "Message from 🤖 CoS Bot (@hermes@lan-2): are we done?",
+                    "plain text (@hermes): x"]
 
 
 @pytest.mark.parametrize("subdir", ["profiles/ops", "dev"])

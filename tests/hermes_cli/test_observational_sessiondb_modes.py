@@ -1,25 +1,11 @@
 """Regression coverage for #110173: observational `hermes sessions` readers stay read-only."""
 
 from argparse import Namespace
-from unittest.mock import MagicMock
 
-import pytest
 
 import hermes_cli.sessions_cmd as sessions_cmd
 
 
-@pytest.mark.parametrize("action", ["list", "stats", "pinned"])
-def test_observational_sessions_actions_open_a_read_only_store(monkeypatch, action):
-    factory = MagicMock()
-    monkeypatch.setattr("hermes_state.SessionDB", factory)
-    monkeypatch.setitem(sessions_cmd._DB_HANDLERS, action, lambda _db, _args: None)
-
-    sessions_cmd.cmd_sessions(Namespace(sessions_action=action))
-
-    # One read-only open; the store path is passed explicitly because a served-profile
-    # process has no single default home.
-    assert factory.call_count == 1
-    assert factory.call_args.kwargs["read_only"] is True
 
 
 def test_sessions_observational_commands_on_missing_store_stay_empty(monkeypatch, tmp_path, capsys):

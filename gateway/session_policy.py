@@ -8,7 +8,7 @@ from hermes_state_runtime import RuntimeStoreError
 
 CREATE_FIELDS = frozenset({'request_id', 'source', 'cwd', 'model', 'toolsets',
                            'provider', 'base_url', 'reasoning', 'max_turns', 'ignore_rules', 'api_key', 'editor',
-                           'safe_mode', 'ignore_user_config'})
+                           'yolo', 'safe_mode', 'ignore_user_config'})
 BYPASS_FIELDS = ('safe_mode', 'ignore_user_config')
 SURFACES = {'cli': 'cli', 'tui': 'tui', 'gui': 'desktop', 'acp': 'acp'}
 
@@ -57,6 +57,12 @@ class LocalSessionPolicy:
     @property
     def ignore_rules(self):
         return self.safe_mode or json.loads(self.request_json).get('ignore_rules', False)
+
+    @property
+    def yolo(self):
+        """`hermes chat --yolo`: this session's dangerous-command approvals are bypassed, exactly the
+        scope `/yolo` gives a messaging chat; never the process-wide HERMES_YOLO_MODE."""
+        return json.loads(self.request_json).get('yolo', False)
 
     @property
     def max_turns(self):
@@ -111,8 +117,9 @@ def build_policy(params, config, *, private_secrets=None, profile_terminal=True)
                         or url.username or url.password or url.query or url.fragment):
                     raise RuntimeStoreError('invalid_params')
             config.setdefault('model', {})[key] = value
-    if 'ignore_rules' in params and type(params['ignore_rules']) is not bool:
-        raise RuntimeStoreError('invalid_params')
+    for flag in ('ignore_rules', 'yolo'):
+        if flag in params and type(params[flag]) is not bool:
+            raise RuntimeStoreError('invalid_params')
     if 'max_turns' in params:
         value = params['max_turns']
         if type(value) is not int or value <= 0:

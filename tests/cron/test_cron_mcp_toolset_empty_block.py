@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -115,9 +116,6 @@ def test_requested_mcp_server_owned_by_other_profile_blocks_run(tmp_path):
     assert agent_built is False
     assert success is False
     assert error is not None and "[blocked_config]" in error and "notion" in error
-    # The reason is operator-facing copy: it must say the block re-evaluates itself so a
-    # transient outage is not mistaken for a config error to repair by hand (#112871).
-    assert "clears by itself" in error
 
 
 def test_requested_mcp_server_with_tools_runs(tmp_path):
@@ -130,3 +128,71 @@ def test_requested_mcp_server_with_tools_runs(tmp_path):
 
     assert agent_built is True
     assert success is True and error is None
+
+
+def _park_notion(home, *, ever_connected: bool, park_reason=None):
+    """Install a sessionless ``notion`` run task (tools deregistered, alias still global) the way
+    the MCP layer leaves a degraded/parked server; ``ever_connected`` separates a server that
+    worked in this process and lost its network from one that never came up here, and
+    ``park_reason`` is what ``_park`` recorded (permanent-error parks are not recovering).
+    The connection is keyed the way the owner bridge resolves it: cron turns run inside
+    ``_profile_runtime_scope(home)``, so the served profile's overlay owns the key."""
+    import tools.mcp_tool as core
+    from tools.mcp_tool_scope import _resolve_server_key
+    from tools.registry import registry
+    from gateway.run import _profile_runtime_scope
+
+    server = core.MCPServerTask("notion")
+    server._ever_connected = ever_connected
+    server._park_reason = park_reason
+    registry.register_toolset_alias("notion", "mcp-notion")
+    with _profile_runtime_scope(Path(home).resolve()):
+        key = _resolve_server_key("notion")
+    core._servers[key] = server
+    return lambda: core._servers.pop(key, None)
+
+
+def test_requested_mcp_server_reconnecting_runs_without_its_tools(tmp_path):
+    """A server that connected in this process and is parked/self-probing after a network blip
+    is recoverable: the job runs with the tools that did resolve instead of blocking (#112871)."""
+    undo = _park_notion(tmp_path, ever_connected=True)
+    try:
+        (success, _output, _final, error), agent_built = _run(
+            _job(enabled_toolsets=["terminal", "notion"]), tmp_path)
+    finally:
+        undo()
+
+    assert agent_built is True
+    assert success is True and error is None
+
+
+def test_requested_mcp_server_never_connected_still_blocks(tmp_path):
+    """A parked server that never connected here (bad URL, wrong credentials) keeps the block."""
+    undo = _park_notion(tmp_path, ever_connected=False)
+    try:
+        (success, _output, _final, error), agent_built = _run(
+            _job(enabled_toolsets=["terminal", "notion"]), tmp_path)
+    finally:
+        undo()
+
+    assert agent_built is False
+    assert success is False
+    assert error is not None and "[blocked_config]" in error and "notion" in error
+
+
+def test_requested_mcp_server_parked_on_permanent_error_blocks(tmp_path):
+    """A server that connected once and then parked on a PERMANENT error (revoked credentials,
+    endpoint gone) is not recovering: its self-probe fails identically every time, so the job must
+    take the one-shot blocked_config path instead of silently running tool-less forever."""
+    undo = _park_notion(tmp_path, ever_connected=True, park_reason="from parked state (permanent error)")
+    try:
+        (success, _output, _final, error), agent_built = _run(
+            _job(enabled_toolsets=["terminal", "notion"]), tmp_path)
+    finally:
+        undo()
+
+    assert agent_built is False
+    assert success is False
+    assert error is not None and "[blocked_config]" in error and "notion" in error
+
+

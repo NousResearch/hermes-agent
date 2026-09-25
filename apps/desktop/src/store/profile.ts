@@ -16,7 +16,6 @@ import {
 } from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
-import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -438,7 +437,6 @@ $activeGatewayProfile.subscribe(value => {
   setApiRequestProfile(key)
 
   if (_lastRoutedProfile !== null && _lastRoutedProfile !== key) {
-    invalidateCronModelImpactScopeState()
     // Profile-scoped settings + the unified session list are now stale.
     // Narrowed so account/marketplace/onboarding caches don't refetch on
     // every profile switch.
@@ -592,7 +590,7 @@ export async function ensureGatewayProfile(
   // renderer-side $activeGatewayProfile mirror is not proof of the socket:
   // applyActive can decline an epoch-losing publication while call sites
   // publish the atom anyway, leaving "atom says X, socket serves Y" (the
-  // #89206 split-brain — observed live as atom 'default' over a hermes-setup
+  // #89206 split-brain — observed live as atom 'default' over a setup-profile
   // socket during the guided-onboarding handoff). Verify the leg we're about
   // to rely on; on disagreement fall through to the full ensure path, which
   // re-activates the socket and leaves the atom and route agreeing. The one

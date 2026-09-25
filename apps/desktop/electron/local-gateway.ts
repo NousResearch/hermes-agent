@@ -3,9 +3,11 @@ import crypto from 'node:crypto'
 
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
-export function runGatewayEnsure(backend, cwd: string, home: string): Promise<{ code: number; stdout: string; stderr: string }> {
+export function runGatewayEnsure(
+  backend, cwd: string, home: string, parentEnv: NodeJS.ProcessEnv = process.env
+): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(backend.command, backend.args, hiddenWindowsChildOptions({ cwd, env: { ...process.env, HERMES_HOME: home, ...backend.env }, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] }))
+    const child = spawn(backend.command, backend.args, hiddenWindowsChildOptions({ cwd, env: { ...parentEnv, HERMES_HOME: home, ...backend.env }, shell: backend.shell, stdio: ['ignore', 'pipe', 'pipe'] }))
     let stdout = ''
     let stderr = ''
     // Only the bounded ensure client is ours. Never retain/kill its detached owner.
@@ -107,6 +109,16 @@ export async function redialLocalGateway<TEndpoint, TResult>(deps: {
   }
 }
 
+function dialNonce(url: string): string | null {
+  try {
+    const parsed = new URL(url)
+
+    return parsed.pathname === '/api/ws' ? parsed.searchParams.get('native_dial') : null
+  } catch {
+    return null
+  }
+}
+
 // A one-use ticket crosses private IPC, then leaves the URL before dialing.
 // Public descriptors and persisted connection state never contain credentials.
 export function createLocalGatewayDials() {
@@ -117,16 +129,20 @@ export function createLocalGatewayDials() {
       for (const [key, value] of pending) {if (value.expires <= Date.now()) {pending.delete(key)}}
 
       if (pending.size >= 100) {throw new Error('Too many pending gateway dials')}
-      const url = `${origin.replace(/^http/, 'ws')}/api/ws?native_dial=${crypto.randomUUID()}`
-      pending.set(url, { ticket, webContentsId, expires: Date.now() + 25_000 })
+      // Keyed by the one-use nonce, not the full URL: a loopback proxy the app dials
+      // through (tests, tunnels) rewrites host:port but carries the query through.
+      const nonce = crypto.randomUUID()
+      const url = `${origin.replace(/^http/, 'ws')}/api/ws?native_dial=${nonce}`
+      pending.set(nonce, { ticket, webContentsId, expires: Date.now() + 25_000 })
 
       return `${url}&ticket=${encodeURIComponent(ticket)}`
     },
     headers(details: { url: string; webContentsId?: number; resourceType: string; requestHeaders?: Record<string, string> }) {
-      const grant = pending.get(details.url)
+      const nonce = dialNonce(details.url)
+      const grant = nonce ? pending.get(nonce) : undefined
 
-      if (!grant || grant.webContentsId !== details.webContentsId || details.resourceType !== 'webSocket') {return null}
-      pending.delete(details.url)
+      if (!nonce || !grant || grant.webContentsId !== details.webContentsId || details.resourceType !== 'webSocket') {return null}
+      pending.delete(nonce)
 
       if (grant.expires <= Date.now()) {return null}
       const headers = { ...details.requestHeaders }
@@ -145,12 +161,31 @@ async function privateNode(file: string, kind: 'directory' | 'socket' | 'file') 
   if (!valid || node.uid !== process.getuid?.() || (node.mode & 0o077)) {throw new Error('Unsafe gateway control path')}
 }
 
-export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: GatewayEndpoint; baseUrl: string }, url: string) {
+/** The endpoint a `?profile=<name>` request is scoped to on a shared host descriptor: the same
+ *  daemon, ticket minted for the sibling profile's home (`profiles/<name>` under the launch root).
+ *  The gateway refuses a ticket whose profile it does not serve, so a bad name fails closed. */
+export function routedGatewayEndpoint(endpoint: GatewayEndpoint, urlOrProfile: string, launchHome: string): GatewayEndpoint {
+  const profile = (/^[a-z]+:\/\//.test(urlOrProfile) ? new URL(urlOrProfile).searchParams.get('profile') : urlOrProfile)?.trim()
+
+  if (!profile || profile === 'current') {return endpoint}
+  const own = path.basename(endpoint.profile_id)
+  const ownName = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? own : 'default'
+
+  if (profile === ownName) {return endpoint}
+
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(profile)) {throw new Error('Invalid profile route')}
+  const root = path.basename(path.dirname(endpoint.profile_id)) === 'profiles' ? path.dirname(path.dirname(endpoint.profile_id)) : launchHome
+  const home = profile === 'default' ? root : path.join(root, 'profiles', profile)
+
+  return { ...endpoint, profile_id: home, control_home: endpoint.control_home || endpoint.profile_id }
+}
+
+export async function nativeGatewayHttpHeaders(descriptor: { gatewayEndpoint: GatewayEndpoint; baseUrl: string }, url: string, launchHome = descriptor.gatewayEndpoint.profile_id) {
   if (new URL(url).origin !== descriptor.gatewayEndpoint.api_origin || descriptor.baseUrl !== descriptor.gatewayEndpoint.api_origin) {
     throw new Error('Native gateway HTTP origin mismatch')
   }
 
-  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(descriptor.gatewayEndpoint, 'native-http') }
+  return { 'X-Hermes-Gateway-Ticket': await mintLocalGatewayTicket(routedGatewayEndpoint(descriptor.gatewayEndpoint, url, launchHome), 'native-http') }
 }
 
 let windowsTicketClient: ((endpoint: GatewayEndpoint, purpose: 'interactive' | 'native-http') => Promise<string>) | undefined

@@ -668,7 +668,7 @@ def test_repeated_heartbeat_errors_cancel_after_bounded_grace(monkeypatch):
         raise OSError("store unavailable")
 
     def run_body(_job, **kwargs):
-        assert kwargs["fire_claim_lost"].wait(timeout=0.5)
+        assert kwargs["claim_lost"].wait(timeout=0.5)
         cancellation_after.append(time.monotonic() - last_confirmed_at[0])
         return True
 

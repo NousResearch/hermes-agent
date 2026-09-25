@@ -27,7 +27,9 @@ def prospective_room_session(authority, dispatch):
     """Derive the canonical identity and reject conflicts without binding it."""
     sid = hosted_session_id(dispatch)
     title = 'Group: ' + dispatch.room_id
-    source = SessionSource(platform=Platform.API_SERVER, chat_id=sid, user_id='api', chat_type='dm')
+    source = SessionSource(platform=Platform.API_SERVER, chat_id=sid, user_id='api',
+                           chat_type='dm', profile=_served_profile(authority))
+    _pin_api_identity(authority.runner, source)
     route = authority.runner.session_store._generate_session_key(source)
     with authority.db._read_ctx() as conn:
         _epoch(conn, authority.epoch)
@@ -54,6 +56,24 @@ def prospective_room_session(authority, dispatch):
     return sid
 
 
+def _served_profile(authority):
+    """Name of the profile *authority* serves; None for the launch profile (and for bare runners
+    without a registry), which is what ``SessionSource.profile`` means on the wire."""
+    registry = getattr(authority.runner, 'session_authorities', None)
+    return registry.profile_name(authority) if registry is not None else None
+
+
+def _pin_api_identity(runner, source, *, transport_profile=None):
+    """Pin the shared-listener identity on an API source: transport = the launch profile whose
+    listener received ``/p/<name>/``, runtime = ``source.profile``. Returns the transport profile to
+    persist; None outside multiplexing, where the launch adapter is the only one by construction."""
+    from gateway.session_identity import restore_identity
+    if transport_profile is None:
+        transport_profile = getattr(runner, '_primary_profile_name', None) or 'default'
+    identity = restore_identity(source, runner=runner, transport_profile=transport_profile)
+    return identity.transport_profile if identity is not None else None
+
+
 def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_key=None):
     """Only the authenticated API edge may reserve an API source; never public RPC."""
     authority._require_admission_open()
@@ -72,12 +92,19 @@ def bind_api_session(authority, session_id, *, hosted_dispatch=None, declared_ke
         if (authority.sessions[session_id].source.platform != Platform.API_SERVER
                 or authority.db.get_session(session_id)['source'] != storage_source):
             raise RuntimeStoreError('permission_denied')
+    # An API session is the shared-listener row of the transport matrix: the launch profile's
+    # ``api_server`` adapter receives ``/p/<name>/`` and answers it, while the turn RUNS under the
+    # authority's own profile. Both ride the persisted source — ``source.profile`` places the runtime
+    # (unset = launch profile, so a secondary's session would otherwise execute under the default's
+    # scope) and ``transport_profile`` names the delivering bot after a restart.
     source = SessionSource(platform=Platform.API_SERVER, chat_id=session_id,
-                           user_id='api', chat_type='dm')
+                           user_id='api', chat_type='dm', profile=_served_profile(authority))
+    transport_profile = _pin_api_identity(authority.runner, source)
     route = authority.runner.session_store._generate_session_key(source)
     from gateway.session_lifecycle import _now
     now = _now()
-    entry = SessionEntry(route, session_id, now, now, origin=source, platform=Platform.API_SERVER)
+    entry = SessionEntry(route, session_id, now, now, origin=source, platform=Platform.API_SERVER,
+                         transport_profile=transport_profile)
     receipt = {'profile_id': authority.profile_id, 'session_id': session_id,
                'route': route, 'entry': entry.to_dict()}
     if declared_key:
@@ -154,6 +181,7 @@ def restore_api_session(authority, session_id):
         raise RuntimeStoreError('profile_mismatch')
     entry = SessionEntry.from_dict(receipt['entry'])
     source = entry.origin
+    _pin_api_identity(authority.runner, source, transport_profile=entry.transport_profile)
     row = authority.db.get_session(session_id)
     if (receipt['session_id'] != session_id or entry.session_id != session_id
             or source.platform != Platform.API_SERVER or source.chat_id != session_id

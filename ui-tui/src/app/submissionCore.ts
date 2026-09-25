@@ -202,10 +202,13 @@ export function submitPrompt(
         }
       })
       .catch(async (e: Error & { code?: number }) => {
-        // 4094 is a pre-admission refusal, not an ambiguous write. Special
-        // compute modes still support legacy submit; retry only this refusal,
+        // 4094 is a pre-admission refusal, not an ambiguous write; so is 4000 when the
+        // legacy `hermes serve` contract refuses `submission_id` as an unknown key. Special
+        // compute modes still support legacy submit; retry only these refusals,
         // keeping the prepared payload, destination and queue mode unchanged.
-        if (item && e.code === 4094 && !deps.gw.isCanonical && !item.attachments?.length) {
+        const preAdmissionRefusal = e.code === 4094 || (e.code === 4000 && /submission_id/.test(e.message ?? ''))
+
+        if (item && preAdmissionRefusal && !deps.gw.isCanonical && !item.attachments?.length) {
           if (focused()) {deps.sys('durable admission unavailable for this session — using legacy delivery')}
 
           try {

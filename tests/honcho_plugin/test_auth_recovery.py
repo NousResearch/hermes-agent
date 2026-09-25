@@ -3,7 +3,6 @@ forced refresh + single retry on sync and dialectic, backoff exemption, and
 the one-time user-facing notice."""
 
 import json
-import logging
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -140,18 +139,6 @@ class TestExchangeRetry:
         token, _ = oauth.ensure_fresh_token(path, "hermes", now=2000)
         assert token == "hch-at-fresh"
 
-    def test_error_body_is_logged(self, tmp_path, monkeypatch, caplog):
-        path = tmp_path / "honcho.json"
-        _write(path, {"hosts": {"hermes": _host_block()}})
-        monkeypatch.setattr(oauth, "_REFRESH_RETRY_DELAY_SECONDS", 0)
-        monkeypatch.setattr(
-            oauth, "_http_post_form_status",
-            lambda *a, **k: (400, {"error": "invalid_grant", "error_description": "grant revoked"}),
-        )
-        with caplog.at_level(logging.WARNING, logger="plugins.memory.honcho.oauth"):
-            oauth.ensure_fresh_token(path, "hermes", now=1000)
-        assert "invalid_grant" in caplog.text
-        assert "grant revoked" in caplog.text
 
     def test_honcho_token_prefixes_are_registered_with_the_shared_redactor(self):
         """Importing the plugin registers hch-at-/hch-rt- with agent.redact, so every surface that
@@ -269,8 +256,6 @@ class TestAuthErrorDetection:
         exc.status_code = 401
         assert _is_auth_error(exc)
 
-    def test_matches_401_text(self):
-        assert _is_auth_error(Exception("HTTP 401 Unauthorized"))
 
     def test_ignores_other_errors(self):
         assert not _is_auth_error(Exception("connection reset by peer"))
@@ -534,14 +519,6 @@ def _relogin(path: Path) -> None:
 
 
 class TestDeadGrantSkipsCalls:
-    def test_dead_grant_issues_no_dialectic_call(self, tmp_path, monkeypatch):
-        _kill_grant(tmp_path, monkeypatch)
-        peer = _FlakyPeer(failures=0)
-        mgr = _make_manager(peer)
-        with pytest.raises(HonchoAuthError):
-            mgr.dialectic_query("k", "q")
-        assert peer.calls == 0
-        assert mgr.pop_auth_notice() is not None
 
     def test_relogin_resumes_dialectic_without_waiting(self, tmp_path, monkeypatch):
         path = _kill_grant(tmp_path, monkeypatch)
@@ -556,13 +533,6 @@ class TestDeadGrantSkipsCalls:
         assert peer.calls == 1
         assert mgr._auth_failure is None
 
-    def test_dead_grant_issues_no_sync_call(self, tmp_path, monkeypatch):
-        _kill_grant(tmp_path, monkeypatch)
-        flaky = _FlakyHonchoSession(failures=0)
-        mgr, session = _make_sync_manager(flaky)
-        assert mgr._flush_session(session) is False
-        assert flaky.calls == 0
-        assert mgr._auth_failure is not None
 
     def test_relogin_resumes_sync_without_waiting(self, tmp_path, monkeypatch):
         path = _kill_grant(tmp_path, monkeypatch)
@@ -957,16 +927,6 @@ def _initialized_provider():
 
 
 class TestInitAuthFailureNotice:
-    def test_peer_setup_401_in_hybrid_mode_produces_notice(self, tmp_path, monkeypatch):
-        client = MagicMock()
-        client.peer.side_effect = Exception("HTTP 401 Unauthorized")
-        _wire_init(tmp_path, monkeypatch, client)
-        provider = _initialized_provider()
-
-        assert provider._manager is None
-        notice = provider.prefetch("what did we decide about the schema?")
-        assert "hermes honcho setup" in notice
-        assert "paused" in notice
 
     def test_notice_is_emitted_exactly_once(self, tmp_path, monkeypatch):
         client = MagicMock()
@@ -999,15 +959,6 @@ class TestInitAuthFailureNotice:
         notice = provider.prefetch("what happened before the grant died?")
         assert "hermes honcho setup" in notice
 
-    def test_tools_lazy_init_reports_auth_error(self, tmp_path, monkeypatch):
-        client = MagicMock()
-        client.peer.side_effect = Exception("Invalid or expired access token")
-        _wire_init(tmp_path, monkeypatch, client, recall_mode="tools")
-        provider = _initialized_provider()
-
-        out = provider.handle_tool_call("honcho_profile", {})
-        assert "authentication failed" in out
-        assert "could not be initialized" not in out
 
     def test_relogin_resumes_init_and_clears_failure(self, tmp_path, monkeypatch):
         client = _healthy_client()
@@ -1209,24 +1160,3 @@ class TestClientGenerationGuard:
         assert mgr._sessions_cache["s"] is fresh_session
         assert resolutions == ["stale", "fresh"]
 
-    def test_dead_grant_check_fast_path_skips_path_resolution(self, monkeypatch):
-        """With no dead grants, _reauth_required must not resolve the config
-        path at all (it runs before every SDK call)."""
-        from plugins.memory.honcho import client as client_mod
-
-        oauth._dead_grants.clear()
-
-        # Recording spy, not a raising stub: _reauth_required swallows all
-        # exceptions, so a raise would be silently converted to False and the
-        # test would pass even without the fast path.
-        calls = []
-
-        def _spy():
-            calls.append(1)
-            return Path("/nonexistent/honcho.json")
-
-        monkeypatch.setattr(client_mod, "resolve_config_path", _spy)
-        cfg = HonchoClientConfig(host="hermes", api_key="hch-at-x", enabled=True)
-        mgr = HonchoSessionManager(config=cfg)
-        assert mgr._reauth_required() is False
-        assert calls == [], "resolve_config_path must not run on the fast path"

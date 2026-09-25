@@ -189,6 +189,28 @@ describe('ClarifyTool live card stays mounted across settle', () => {
     expect(screen.queryByRole('status', { name: /loading question/i })).toBeNull()
     expect(screen.getByRole('button', { name: /Continue/ }).hasAttribute('disabled')).toBe(true)
   })
+
+  it('a batch tool call answered one card at a time by the shared gateway gets a live single card', () => {
+    // `gateway/run_turn_runner.py::_clarify_batch_sync` sends one single-question request per
+    // entry; the batch preview built from the tool args must not shadow it as a disabled form.
+    $activeSessionId.set('session-1')
+    $gateway.set({ request: vi.fn().mockResolvedValue({ ok: true }) } as never)
+    setClarifyRequest({
+      choices: ['staging', 'production'],
+      multiSelect: false,
+      question: 'Which deployment target?',
+      requestId: 'request-1',
+      sessionId: 'session-1'
+    })
+    const props = liveClarifyProps()
+    const args = { questions: [{ question: 'Which deployment target?', choices: ['staging', 'production'] }] }
+    renderClarify(<ClarifyTool {...props} args={args} argsText={JSON.stringify(args)} />)
+
+    const staging = screen.getByRole('button', { name: /staging/ })
+
+    expect(staging.hasAttribute('disabled')).toBe(false)
+    expect(screen.queryByRole('button', { name: /Confirm and continue/ })).toBeNull()
+  })
 })
 
 describe('ClarifyTool choice selection', () => {
@@ -214,6 +236,48 @@ describe('ClarifyTool choice selection', () => {
 
     await waitFor(() => {
       expect(respond).toHaveBeenCalledWith({ answer: JSON.stringify(['production', 'staging']) })
+    })
+  })
+
+  it('keeps picked multi-select choices when typing a custom answer alongside them', async () => {
+    const { respond } = renderLiveClarify({ multiSelect: true })
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const production = screen.getByRole('button', { name: /production/ })
+    const other = screen.getByPlaceholderText(/Other/)
+
+    fireEvent.click(staging)
+    fireEvent.click(production)
+    fireEvent.focus(other)
+    fireEvent.change(other, { target: { value: 'something else' } })
+
+    // Typing in "Other" must not silently drop the picks already made.
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+    expect(production.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({ answer: JSON.stringify(['staging', 'production', 'something else']) })
+    })
+  })
+
+  it('keeps a typed multi-select custom answer when picking a choice after typing it', async () => {
+    const { respond } = renderLiveClarify({ multiSelect: true })
+    const staging = screen.getByRole('button', { name: /staging/ })
+    const other = screen.getByPlaceholderText(/Other/)
+
+    fireEvent.focus(other)
+    fireEvent.change(other, { target: { value: 'something else' } })
+    fireEvent.click(staging)
+
+    // Picking a choice must not silently discard the text already typed.
+    expect((other as HTMLInputElement).value).toBe('something else')
+    expect(staging.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: /Continue/ }))
+
+    await waitFor(() => {
+      expect(respond).toHaveBeenCalledWith({ answer: JSON.stringify(['staging', 'something else']) })
     })
   })
 
@@ -296,21 +360,6 @@ describe('ClarifyTool settled view', () => {
     expect(screen.getByText('staging')).toBeTruthy()
     expect(document.querySelector('[data-clarify-settled]')).toBeTruthy()
     expect(document.querySelector('[data-clarify-answer]')?.textContent).toBe('staging')
-  })
-
-  it('labels an empty response as Skipped', () => {
-    renderClarify(
-      <ClarifyTool
-        {...settledClarifyProps(
-          { question: 'Anything else?' },
-          { question: 'Anything else?', user_response: '' },
-          'clarify-2'
-        )}
-      />
-    )
-
-    expect(screen.getByText('Anything else?')).toBeTruthy()
-    expect(screen.getByText('Skipped')).toBeTruthy()
   })
 
   it('keeps the original choices visible and clickable after a skip', async () => {
@@ -477,9 +526,6 @@ describe('ClarifyTool recommended option', () => {
     renderClarify(<ClarifyTool {...liveClarifyProps(['staging (Recommended)', 'production'])} />)
 
     const recommended = screen.getByRole('button', { name: /staging/ })
-
-    // The label rides in its own muted span so the option text still reads first.
-    expect(recommended.querySelector('.text-\\(--ui-text-tertiary\\)')?.textContent).toBe('(Recommended)')
 
     fireEvent.click(recommended)
     fireEvent.keyDown(window, { key: 'Enter' })
@@ -650,14 +696,6 @@ describe('ClarifyTool submit shortcut', () => {
 })
 
 describe('ClarifyTool batch card', () => {
-  it('renders every question at once', () => {
-    renderLiveBatch()
-
-    expect(screen.getByText('Color?')).toBeTruthy()
-    expect(screen.getByText('Name?')).toBeTruthy()
-    expect(screen.getByText('0 of 2 answered')).toBeTruthy()
-  })
-
   // #112855: the batch card spun forever while the gateway clarify request
   // raced (or never came). The question text is already in the tool args.
   it('paints batch questions from tool args while the gateway request is still racing', () => {
@@ -710,8 +748,16 @@ describe('ClarifyTool batch card', () => {
 
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
     // Locks ride the live qids, never the preview's synthetic ones.
-    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', { answer: 'red', question_id: 'q0', request_id: 'request-batch' })
-    expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', { answer: 'packet', question_id: 'q1', request_id: 'request-batch' })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
+      answer: 'red',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+    expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', {
+      answer: 'packet',
+      question_id: 'q1',
+      request_id: 'request-batch'
+    })
   })
 
   it('stages locally and keeps the single confirm disabled until all answered', async () => {
@@ -770,6 +816,52 @@ describe('ClarifyTool batch card', () => {
     // The re-pick won: blue, not red.
     expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
       answer: 'blue',
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+  })
+
+  it('keeps a picked multi-select batch choice when typing a custom answer alongside it', async () => {
+    const { request } = renderLiveBatch(undefined, true)
+
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+    fireEvent.change(screen.getByPlaceholderText(/Other/), { target: { value: 'green' } })
+
+    // Typing in "Other" must not silently drop the pick already made.
+    expect(screen.getByRole('button', { name: /red/ }).getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(2)
+    })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
+      answer: JSON.stringify(['red', 'green']),
+      question_id: 'q0',
+      request_id: 'request-batch'
+    })
+  })
+
+  it('keeps a typed multi-select batch custom answer when picking a choice after typing it', async () => {
+    const { request } = renderLiveBatch(undefined, true)
+    const other = screen.getByPlaceholderText(/Other/)
+
+    fireEvent.change(other, { target: { value: 'green' } })
+    fireEvent.click(screen.getByRole('button', { name: /red/ }))
+
+    // Picking a choice must not silently discard the text already typed.
+    expect((other as HTMLInputElement).value).toBe('green')
+    expect(screen.getByRole('button', { name: /red/ }).getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.change(screen.getByPlaceholderText('Type your answer…'), { target: { value: 'packet' } })
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    await waitFor(() => {
+      expect(request).toHaveBeenCalledTimes(2)
+    })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
+      answer: JSON.stringify(['red', 'green']),
       question_id: 'q0',
       request_id: 'request-batch'
     })

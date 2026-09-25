@@ -154,8 +154,8 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
         with _owner_execution(fake_db, fired, kwargs.get("execution_id")):
             return run_job(fired, **kwargs)
 
-    sched._parallel_pool = None
-    sched._parallel_pool_max_workers = None
+    sched._parallel_pools.clear()
+    sched._parallel_pool_max_workers.clear()
     sched._running_job_ids.clear()
 
     try:
@@ -187,5 +187,5 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
             assert mock_agent.run_conversation.call_count == 2
     finally:
         release.set()
-        sched._running_job_ids.discard("cleanup-guard-hang")
+        sched._running_job_ids.discard(sched._inflight_key("cleanup-guard-hang"))
         sched._shutdown_parallel_pool()

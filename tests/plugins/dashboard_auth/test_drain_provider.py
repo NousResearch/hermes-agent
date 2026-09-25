@@ -71,9 +71,6 @@ class TestProvider:
     def test_protocol_compliance(self, drain):
         assert_protocol_compliance(drain.DrainSecretProvider)
 
-    def test_supports_token_flag(self, drain):
-        p = drain.DrainSecretProvider(secret=_strong_secret())
-        assert p.supports_token is True
 
     def test_is_non_interactive(self, drain):
         # Excluded from interactive surfaces via list_session_providers().

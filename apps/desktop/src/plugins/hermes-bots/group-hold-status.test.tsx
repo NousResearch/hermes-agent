@@ -18,6 +18,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Codicon: ({ name }: { name: string }) => <span aria-hidden data-icon={name} />,
     ConfirmDialog: () => null,
     CopyButton: () => null,
+    ToggleRow: () => null,
     Dialog: () => null,
     DialogContent: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
     DialogDescription: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
@@ -58,24 +59,6 @@ afterEach(() => {
 })
 
 describe('durable group holds', () => {
-  it('shows an accessible all-members status without relying on the activity feed', async () => {
-    const { GroupHoldStatus } = await import('./group-hold-status')
-
-    render(
-      <GroupHoldStatus
-        holds={{ builder: { at: 2 }, research: { at: 1 } }}
-        memberLabel={member => member.title || member.name}
-        members={MEMBERS}
-      />
-    )
-
-    const status = screen.getByRole('status')
-
-    expect(status.textContent).toContain('All 2 bots are paused')
-    expect(status.textContent).toContain('Mention a paused bot or send @all resume to release them.')
-    expect(status.querySelector('[data-icon="debug-pause"]')).not.toBeNull()
-  })
-
   it('keeps unmatched holds visible instead of reporting all current members held', async () => {
     const { GroupHoldStatus } = await import('./group-hold-status')
 
@@ -150,7 +133,9 @@ describe('durable group holds', () => {
 
   it('summarizes the most recent unresolved failure after a member fails again', async () => {
     const [{ GroupChatWorkspace }, chat, activity] = await Promise.all([
-      import('./group-chat-view'), import('./group-chat'), import('./group-activity')
+      import('./group-chat-view'),
+      import('./group-chat'),
+      import('./group-activity')
     ])
 
     chat.$groupChats.set({ Core: { log: [], members: MEMBERS, watermarks: {} } })

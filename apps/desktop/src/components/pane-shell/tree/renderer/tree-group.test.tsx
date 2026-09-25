@@ -3,6 +3,8 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { $tabStripDefault, setTabStripDefault } from '@/store/tabstrip-prefs'
+import { stubResizeObserver } from '@/test/jsdom'
 
 import type { GroupNode } from '../model'
 import { $treeDragging, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
@@ -67,11 +69,11 @@ describe('TreeGroup', () => {
   describe('top-edge window drag handle', () => {
     const paneIds = ['terminal', 'terminal-2', 'terminal-3', 'terminal-4', 'terminal-5']
 
-    function mountCrowdedStrip(titlebarWidth: number) {
+    function mountCrowdedStrip(titlebarWidth: number, placement = 'main') {
       const disposers = paneIds.map(id =>
         registry.register({
           area: 'panes',
-          data: { placement: 'main' },
+          data: { placement },
           id,
           render: () => <div>{id}</div>,
           title: id
@@ -118,22 +120,107 @@ describe('TreeGroup', () => {
       }
     }
 
+    it.each(['zone', 'default'] as const)('preserves the saved %s hide-tabs preference', source => {
+      mountCrowdedStrip(800, 'left')
+      const originalDefault = $tabStripDefault.get()
+
+      const node: GroupNode = {
+        ...terminalGroup(false),
+        panes: paneIds,
+        tabStrip: source === 'zone' ? 'never' : undefined
+      }
+
+      try {
+        if (source === 'default') {
+          act(() => setTabStripDefault('never'))
+        }
+
+        const savedDefault = localStorage.getItem('hermes.desktop.tabStripDefault')
+        render(<TreeGroup leftEdge node={node} rightEdge topEdge />)
+        expect(container!.querySelector('[data-zone-tabstrip]')).toBeNull()
+        expect(node.tabStrip).toBe(source === 'zone' ? 'never' : undefined)
+        expect(localStorage.getItem('hermes.desktop.tabStripDefault')).toBe(savedDefault)
+      } finally {
+        act(() => setTabStripDefault(originalDefault))
+      }
+    })
+
+    it('renders page controls inside their own panel in the normal tab space', () => {
+      mountCrowdedStrip(800)
+      act(() => {
+        registry.register({
+          area: 'panes',
+          id: 'terminal',
+          title: 'Kanban',
+          data: {
+            placement: 'main',
+            headerVeto: true,
+            headerContent: () => <button type="button">Board picker</button>
+          },
+          render: () => <div>Board content</div>
+        })
+      })
+      const header = container!.querySelector<HTMLElement>('[data-panel-page-header]')!
+      expect(header.textContent).toBe('Board picker')
+      expect(header.closest('[data-tree-group]')?.getAttribute('data-tree-group')).toBe('terminal-zone')
+      expect(header.querySelector('[data-slot="pane-tab"]')).not.toBeNull()
+      expect(container!.querySelector('[data-zone-tabstrip]')).toBeNull()
+    })
+
     it('keeps a fixed drag handle outside the tablist when tabs share the titlebar', () => {
-      const { handles, strip } = mountCrowdedStrip(800)
+      const { handles } = mountCrowdedStrip(800)
       const fixed = handles.filter(handle => !handle.closest('[role="tablist"]') && handle.style.width !== '')
 
       expect(fixed.length).toBeGreaterThan(0)
-      expect(fixed[0]!.className).toContain('shrink-0')
-      // The strip itself still spans the band, so the handle is ADDITIONAL to it.
-      expect(strip.className).toContain('flex-1')
+    })
+  })
+
+  it('hides a keep-alive pane through hide/restore while a plain pane still parks', () => {
+    const disposeBrowser = registry.register({
+      area: 'panes',
+      data: { lifecycleKeepAlive: true },
+      id: 'terminal',
+      title: 'Browser',
+      render: () => <input data-live-page defaultValue="original" />
     })
 
-    it('leaves the whole free band draggable when tabs drop below the controls', () => {
-      const { handles, strip } = mountCrowdedStrip(300)
-
-      expect(strip.className).toContain('bottom-0')
-      expect(handles.some(handle => handle.className.includes('flex-1') && handle.style.width === '')).toBe(true)
+    const disposePlain = registry.register({
+      area: 'panes',
+      id: 'plain',
+      title: 'Plain',
+      render: () => <input data-plain-page defaultValue="original" />
     })
+
+    disposePane = () => {
+      disposeBrowser()
+      disposePlain()
+    }
+
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    stubResizeObserver()
+
+    const both: GroupNode = { ...terminalGroup(false), panes: ['terminal', 'plain'] }
+
+    render(<TreeGroup node={both} parentAxis="row" />)
+    // Activate the plain tab once so it enters the hot-hidden cache too.
+    render(<TreeGroup node={{ ...both, active: 'plain' }} parentAxis="row" />)
+    render(<TreeGroup node={both} parentAxis="row" />)
+    const page = container!.querySelector<HTMLInputElement>('[data-live-page]')!
+    page.value = 'unsaved page state'
+    expect(container!.querySelector('[data-plain-page]')).not.toBeNull()
+    expect(toggle('Hide')).not.toBeNull()
+
+    render(<TreeGroup node={{ ...both, minimized: true }} parentAxis="row" />)
+    // The guest stays mounted (same node, same state) but hidden and inert;
+    // the ordinary pane parks exactly as before.
+    expect(container!.querySelector('[data-live-page]')).toBe(page)
+    expect(page.closest('[data-pane-hidden]')?.hasAttribute('inert')).toBe(true)
+    expect(container!.querySelector('[data-plain-page]')).toBeNull()
+
+    render(<TreeGroup node={both} parentAxis="row" />)
+    expect(container!.querySelector('[data-live-page]')).toBe(page)
+    expect(page.value).toBe('unsaved page state')
+    expect(page.closest('[data-pane-hidden]')).toBeNull()
   })
 
   it('keeps a top-edge strip inside its panel and yields native drag while moving a pane', () => {
@@ -164,26 +251,6 @@ describe('TreeGroup', () => {
     expect(strip.style).toHaveProperty('WebkitAppRegion', 'no-drag')
     act(() => $treeDragging.set(null))
     expect(strip.style).toHaveProperty('WebkitAppRegion', '')
-  })
-
-  it('points the docked-zone chevron in the collapse or restore action direction', () => {
-    disposePane = registry.register({
-      area: 'panes',
-      data: { height: '12rem' },
-      id: 'terminal',
-      render: () => <div>Terminal</div>,
-      title: 'Terminal'
-    })
-    // jsdom does not implement CSS.escape, which the real tab-strip effect uses.
-    vi.stubGlobal('CSS', { escape: (value: string) => value })
-
-    render(<TreeGroup node={terminalGroup(false)} parentAxis="column" />)
-
-    expect(toggle('Minimize').querySelector('i')!.className).toContain('codicon-chevron-down')
-
-    render(<TreeGroup node={terminalGroup(true)} parentAxis="column" />)
-
-    expect(toggle('Restore').querySelector('i')!.className).toContain('codicon-chevron-up')
   })
 
   // The invariant behind the shared eligibility predicate

@@ -133,6 +133,8 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     class FakeProc:
         pid = 4243
 
+    # Standalone = no systemd unit at all (CI runners inherit INVOCATION_ID).
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
     monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: captured_cmd.extend(cmd) or FakeProc())
     monkeypatch.setattr("tools.process_registry._is_supervised_gateway_process", lambda: False)
     monkeypatch.setattr(
@@ -142,6 +144,52 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
 
     assert kbd._default_spawn(task, str(workspace)) == 4243
     assert captured_cmd == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+
+
+@pytest.mark.linux_only
+def test_oneshot_unit_dispatcher_scope_wraps_or_warns_never_dooms_silently(
+    worker_setup: tuple[Path, kb.Task], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A dispatcher under any systemd unit that is NOT the supervised gateway (a
+    ``Type=oneshot`` dispatch timer, #113612) loses its cgroup at unit exit. With a
+    user bus the worker gets its own ``hermes-worker-*`` scope; without one the
+    spawn still happens (the unit's ``KillMode``/lifetime is unknowable, a
+    long-lived sequencer keeps working) but the operator is told exactly why the
+    workers may die. A cron caller under the same unit is unchanged."""
+    from tools import process_registry
+
+    workspace, task = worker_setup
+    spawned: list[list[str]] = []
+
+    class FakeProc:
+        pid = 4243
+
+    monkeypatch.setattr(subprocess, "Popen", lambda cmd, **kwargs: spawned.append(list(cmd)) or FakeProc())
+    monkeypatch.setenv("INVOCATION_ID", "oneshot-dispatch-timer")
+    monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: False)
+    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: True)
+    monkeypatch.setattr(
+        process_registry, "_build_systemd_scope_argv",
+        lambda cmd, unit_suffix: ["systemd-run", "--user", "--scope", "--unit", f"hermes-worker-{unit_suffix}", *cmd],
+    )
+
+    kbd._default_spawn(task, str(workspace))
+    assert spawned[-1][:3] == ["systemd-run", "--user", "--scope"]
+    assert f"hermes-worker-kanban-{task.id}-run-{task.current_run_id}" in spawned[-1]
+
+    monkeypatch.setattr(process_registry, "_systemd_run_user_scope_available", lambda: False)
+    monkeypatch.setattr(process_registry, "_scope_degraded_warned", False)
+    with caplog.at_level("WARNING", logger=process_registry.logger.name):
+        kbd._default_spawn(task, str(workspace))
+    # Unwrapped: the bare worker argv (the profile owner executes; this client waits for its receipt).
+    assert spawned[-1] == [sys.executable, "-m", "hermes_cli.kanban_worker_client"]
+    warned = [r.getMessage() for r in caplog.records if "KILLED when the unit exits" in r.getMessage()]
+    assert len(warned) == 1 and "KillMode=process" in warned[0]
+
+    cron = process_registry.restart_safe_gateway_child_argv(
+        ["hermes", "cron"], unit_suffix="cron-job-1", require_restart_safe_scope=True,
+    )
+    assert cron.mode == "in_process"
 
 
 @pytest.mark.linux_only
@@ -162,7 +210,8 @@ def test_real_user_systemd_scope_preserves_worker_context(
     receipt = workspace / "worker-receipt.json"
     script = (
         "import json, os, pathlib, sys, time; "
-        "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+        "p = pathlib.Path(sys.argv[1]); t = p.with_suffix('.tmp'); "
+        "t.write_text(json.dumps({"
         "'pid': os.getpid(), 'cwd': os.getcwd(), "
         "'task': os.environ.get('HERMES_KANBAN_TASK'), "
         "'run': os.environ.get('HERMES_KANBAN_RUN_ID'), "
@@ -172,7 +221,7 @@ def test_real_user_systemd_scope_preserves_worker_context(
         "'profile': os.environ.get('HERMES_PROFILE'), "
         "'source': os.environ.get('HERMES_SESSION_SOURCE'), "
         "'terminal_cwd': os.environ.get('TERMINAL_CWD'), "
-        "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); time.sleep(0.5)"
+        "'cgroup': pathlib.Path('/proc/self/cgroup').read_text()})); os.replace(t, p); time.sleep(0.5)"
     )
     # Replace only the worker payload; keep real scope creation and env handoff.
     monkeypatch.setattr(
@@ -184,7 +233,7 @@ def test_real_user_systemd_scope_preserves_worker_context(
 
     pid = kbd._default_spawn(task, str(workspace))
     try:
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + 15
         while not receipt.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
 

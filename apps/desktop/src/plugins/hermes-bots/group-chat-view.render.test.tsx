@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
@@ -37,6 +37,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
         {text}
       </span>
     ),
+    ToggleRow: () => null,
     Tip: ({ children }: { children: ReactNode }) => children,
     relativeTime: () => 'now',
     useI18n: () => ({ t: { common: { cancel: 'Cancel', save: 'Save' } } }),
@@ -84,4 +85,38 @@ it('renders member replies through the shell message renderer, resolving media o
     ['MEDIA:/tmp/local.png', 'true'],
     ['MEDIA:/tmp/remote.png', 'false']
   ])
+})
+
+it('removes Stop controls from historical working rows after the room settles', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+
+  const [{ $groupChats }, activity, { GroupChatWorkspace }] = await Promise.all([
+    import('./group-chat'),
+    import('./group-activity'),
+    import('./group-chat-view')
+  ])
+
+  $groupChats.set({
+    Settled: {
+      epoch: 1,
+      log: [],
+      members: [{ name: 'builder' }],
+      running: false,
+      sessions: {},
+      watermarks: {}
+    }
+  })
+  activity.recordGroupActivity('Settled', { kind: 'working', member: 'builder' })
+  activity.recordGroupActivity('Settled', { kind: 'replied', member: 'builder' })
+  activity.recordGroupActivity('Settled', { kind: 'settled', member: null })
+
+  render(<GroupChatWorkspace group="Settled" members={[{ name: 'builder' }]} />)
+  // The room paints once the async group-driver gate resolves to the legacy workspace.
+  await waitFor(() => expect(screen.getByRole('button', { name: /^Activity/ })).toBeTruthy())
+  fireEvent.click(screen.getByRole('button', { name: /^Activity/ }))
+
+  expect(screen.getByText('builder is working…')).toBeTruthy()
+  expect(screen.getByText('builder replied')).toBeTruthy()
+  expect(screen.getByText('turn settled')).toBeTruthy()
+  expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
 })

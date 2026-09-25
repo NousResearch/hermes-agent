@@ -170,18 +170,29 @@ def _catalog_plugin_commands(cat: _Catalog, module_loader) -> None:
         cat.commands[key] = {"argument_mode": mode, "desktop": None}
 
 
-def _catalog_skills(cat: _Catalog, skills: dict[str, dict], module_loader) -> None:
-    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them)."""
+def _catalog_skills(cat: _Catalog, skills: dict[str, dict], module_loader) -> str:
+    """Append skill pairs and fill ``skills`` = ``{key: {usage, origin}}`` (every consumer ranks by them).
+    Returns the one-line notice for skills whose name is a built-in command (no ``/<name>`` entry;
+    ``agent.skill_commands`` guard), ``""`` when none."""
     usage, origin_of = _skill_usage_lookup()
-    for k, info in sorted(module_loader("agent.skill_commands").scan_skill_commands().items()):
+    sc = module_loader("agent.skill_commands")
+    for k, info in sorted(sc.scan_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
+    collision_note = getattr(sc, "skill_command_collision_note", None)
+    if collision_note is None:
+        return ""
+    names = sorted(s["name"] for s in module_loader("tools.skills_tool")._find_all_skills())
+    return "; ".join(filter(None, map(collision_note, names)))
 
 
-def command_catalog(load_cfg=None, module_loader=import_module) -> dict:
+def command_catalog(load_cfg=None, module_loader=import_module, scope=None) -> dict:
     """Registry-backed slash metadata, categorized, no aliases. Discovery failures land in ``warning``
-    (skills' message wins, then quick commands', then plugins')."""
+    (skills' message wins, then quick commands', then plugins'); only with no failure does it carry
+    the built-in-name collision notice for skills that have no ``/<name>`` (empty when none). ``scope``
+    is a context manager binding the calling session's profile home and workspace around skill
+    discovery so project-local skills register for the repo the session is actually in (#114359)."""
     if load_cfg is None:
         from hermes_cli.config import load_config_readonly
         load_cfg = load_config_readonly
@@ -198,7 +209,9 @@ def command_catalog(load_cfg=None, module_loader=import_module) -> dict:
         warning = warning or f"plugin command discovery unavailable: {e}"
     skills: dict[str, dict] = {}
     try:
-        _catalog_skills(cat, skills, module_loader)
+        with scope if scope is not None else contextlib.nullcontext():
+            collision_note = _catalog_skills(cat, skills, module_loader)  # always runs: skills must list even when a loader failed
+        warning = warning or collision_note
     except Exception as e:
         warning = f"skill discovery unavailable: {e}"
     return {
@@ -209,7 +222,10 @@ def command_catalog(load_cfg=None, module_loader=import_module) -> dict:
         "skills": skills, "skill_count": len(skills), "warning": warning}
 
 
-def slash_completions(text: str = "") -> dict:
+def slash_completions(text: str = "", scope=None) -> dict:
+    """``scope`` binds the calling session's profile and workspace around the skill/bundle lookups
+    (home- and cwd-keyed) so the popup offers the project-local skills ``command.dispatch`` accepts
+    for that session (#114359)."""
     if not text.startswith("/"):
         return {"items": []}
     from hermes_cli.commands_completion import SlashCommandCompleter
@@ -217,11 +233,13 @@ def slash_completions(text: str = "") -> dict:
     from prompt_toolkit.formatted_text import to_plain_text
     from agent.skill_commands import get_skill_commands
     from agent.skill_bundles import get_skill_bundles
+    with scope if scope is not None else contextlib.nullcontext():
+        skill_commands, skill_bundles = dict(get_skill_commands()), dict(get_skill_bundles())
     completer = SlashCommandCompleter(
-        skill_commands_provider=lambda: get_skill_commands(), skill_bundles_provider=lambda: get_skill_bundles())
+        skill_commands_provider=lambda: skill_commands, skill_bundles_provider=lambda: skill_bundles)
     # `kind` reaches the TUI as data (from the providers, not sniffed from ⚡/▣ glyphs):
     # skills/bundles are the only completions for an inline `/skill` typed mid-message.
-    skill_names = {key.lstrip("/").lower() for key in (*get_skill_commands(), *get_skill_bundles())}
+    skill_names = {key.lstrip("/").lower() for key in (*skill_commands, *skill_bundles)}
 
     def to_items(doc: Document) -> list[dict]:
         # display/display_meta are FormattedText; the TUI contract is a plain string

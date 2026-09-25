@@ -1,7 +1,14 @@
-// Persistent gateways own their work independently of Desktop. Renderer reports
-// do not identify connections or client-dependent activity, so a busy report
-// still needs a scoped confirmation, not a claim that quitting loses all work.
-// The decision + copy live here so main.ts only owns the IPC and dialog call.
+// Quitting with a turn in flight kills the backend mid-tool-call: the work is
+// lost, and anything the agent had half-written to disk stays half-written.
+// Renderers publish what they're running; the main process asks before it lets
+// that go. The decision + copy live here (pure, testable) so main.ts only owns
+// the IPC and the dialog call.
+//
+// That's only true for a backend the app owns: an SSH-managed server the app
+// starts and stops. The local profile gateway is attached, not owned (`hermes
+// gateway ensure`): it keeps cron, messaging adapters and the in-flight turn
+// running after the app quits, exactly like a remote URL or Hermes Cloud
+// backend, so those prompts say so instead of warning about lost work (#79579).
 
 const MAX_LISTED = 4
 
@@ -53,8 +60,30 @@ export function mergeActiveWork(reports: Iterable<ActiveWork>): ActiveWork {
 }
 
 export interface QuitPrompt {
+  /** [cancel, confirm]: index 0 keeps the app open, index 1 quits. */
+  buttons: readonly [string, string]
   detail: string
   message: string
+}
+
+export interface BackendOwnershipInput {
+  /**
+   * Backends this app stops when it quits: spawned local children plus
+   * SSH-managed servers, across the primary and every pooled profile.
+   */
+  ownedBackendCount: number
+  /** What the primary profile resolves to; null means the local profile gateway (attached, not owned). */
+  primaryRouteKind: 'cloud' | 'remote' | 'ssh' | null
+}
+
+/**
+ * Whether quitting takes the agent down with the app. Only SSH backends are
+ * started and stopped by the app. The local gateway, a remote URL and a cloud
+ * backend all outlive it; but any server the app itself manages (another
+ * window's SSH connection) might be where the turn is running, so it counts.
+ */
+export function backendOwnedByApp({ ownedBackendCount, primaryRouteKind }: BackendOwnershipInput): boolean {
+  return primaryRouteKind === 'ssh' || ownedBackendCount > 0
 }
 
 /**
@@ -63,8 +92,15 @@ export interface QuitPrompt {
  * `quittingForHandoff` covers the update / swap / uninstall relaunches: those
  * are the app replacing itself, not the user walking away, and a modal there
  * would strand the detached script waiting on a PID that never exits.
+ *
+ * `backendOwned` (see backendOwnedByApp) picks the copy: an owned backend dies
+ * with the app, a remote/cloud one keeps working after it closes.
  */
-export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): null | QuitPrompt {
+export function quitPromptFor(
+  work: ActiveWork,
+  quittingForHandoff: boolean,
+  backendOwned: boolean = true
+): null | QuitPrompt {
   if (quittingForHandoff || work.count < 1) {
     return null
   }
@@ -78,11 +114,13 @@ export function quitPromptFor(work: ActiveWork, quittingForHandoff: boolean): nu
   }
 
   return {
+    buttons: backendOwned ? ['Keep Running', 'Quit Anyway'] : ['Cancel', 'Quit'],
     detail: [
       lines.join('\n'),
       lines.length > 0 ? '' : null,
-      'Running and queued work on a persistent gateway continues after Desktop quits. ' +
-        'Activity that depends on this app or an older connection may be interrupted.'
+      backendOwned
+        ? 'Quitting stops the agent mid-turn. Any work it has not finished writing is lost.'
+        : 'The agent keeps running on the gateway. Quitting only closes Hermes on this computer; reconnect later to see the results.'
     ]
       .filter(line => line !== null)
       .join('\n')

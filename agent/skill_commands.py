@@ -17,7 +17,8 @@ logger = logging.getLogger(__name__)
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
 _skill_commands_home: Optional[str] = None
-# Guards the (map, platform-tag, home-tag) triple so publication and the
+_skill_commands_project: Optional[str] = None
+# Guards the (map, platform-tag, home-tag, project-tag) tuple so publication and the
 # freshness lookup always see a consistent snapshot. Scanning stays outside.
 _publish_lock = threading.Lock()
 # ``\w`` keeps Unicode letters (CJK, Cyrillic) so a ``name: 小说拆条`` skill registers ``/小说拆条``
@@ -150,6 +151,15 @@ def _resolve_skill_commands_home() -> str:
     """
     from hermes_constants import get_hermes_home
     return str(get_hermes_home())
+
+
+def _resolve_skill_commands_project() -> Optional[str]:
+    """The project root the scan's project skills resolve from (None outside a repo). One multi-session
+    host serves sessions in different repos; without this tag the first session's project skills stayed
+    published for every other session's ``get_skill_commands`` lookup (#114359)."""
+    from agent.skill_utils import find_project_root
+    root = find_project_root()
+    return str(root) if root is not None else None
 
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
@@ -330,14 +340,29 @@ def _scaffold_header(
 _SCAN_SKIP_PARTS = {'.git', '.github', '.hub', '.archive', '.locks'}
 
 
-def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]], resolve_command) -> None:
+def skill_command_collision_note(name: str) -> Optional[str]:
+    """User-facing note when *name*'s slash slug is a core command (name or alias), else None.
+
+    The single source of the collision predicate: ``scan_skill_commands`` uses it to skip
+    auto-registration (the shadowing guard from 370ebf2d3 — the skill map is consulted before
+    built-in handlers), and the ``/skills`` listing plus the command palette render the note so
+    the skipped skill is explained where the user looks, not only in the log.
+    """
+    from hermes_cli.commands import resolve_command
+    cmd_name = slugify_skill_name(name)
+    if not cmd_name or resolve_command(cmd_name) is None:
+        return None
+    return f"slash command /{cmd_name} unavailable — name taken by built-in; use /skill {name}"
+
+
+def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dict[str, Dict[str, Any]]) -> None:
     """Register one SKILL.md in *commands* (no-op when filtered or colliding)."""
-    from tools.skills_tool import _parse_frontmatter, skill_matches_platform, skill_matches_environment
+    from tools.skills_tool import _parse_frontmatter, skill_matches_apps, skill_matches_platform, skill_matches_environment
     if any(part in _SCAN_SKIP_PARTS for part in skill_md.parts):
         return
     frontmatter, body = _parse_frontmatter(skill_md.read_text(encoding='utf-8'))
     # OS gate is hard; environment gate (kanban/docker/s6) is offer-time only.
-    if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
+    if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter) or not skill_matches_apps(frontmatter):
         return
     name = frontmatter.get('name', skill_md.parent.name)
     if name in seen_names or name in disabled:
@@ -350,9 +375,9 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
     cmd_name = slugify_skill_name(name)
     if not cmd_name:
         return
-    # A collision with a core command (name or alias, via resolve_command) skips
-    # auto-registration; the skill stays loadable via /skill <name>.
-    if resolve_command(cmd_name) is not None:
+    # A collision with a core command (name or alias) skips auto-registration; the skill stays
+    # loadable via /skill <name>. The same predicate feeds the /skills + palette notes.
+    if skill_command_collision_note(name) is not None:
         logger.warning("Skill %r generates slash command '/%s' which collides with a core Hermes command; "
                        "skipping auto-registration. Use '/skill %s' instead.", name, cmd_name, name)
         return
@@ -376,9 +401,10 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
     if safe_worker_enabled():
         return {}
-    global _skill_commands, _skill_commands_platform, _skill_commands_home
+    global _skill_commands, _skill_commands_platform, _skill_commands_home, _skill_commands_project
     platform = _resolve_skill_commands_platform()
     home = _resolve_skill_commands_home()
+    project = _resolve_skill_commands_project()
     # Build into a local map and publish once, at the end. Writing straight into the global made a scan's
     # partial results visible to everything else in the process: a second, overlapping scan deduped against
     # its own (empty) ``seen_names`` but collided against the first scan's already- published slugs, logging
@@ -390,7 +416,6 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         from agent.skill_utils import (
             get_external_skills_dirs, get_project_skills_dirs, iter_project_skill_files, iter_skill_index_files,
         )
-        from hermes_cli.commands import resolve_command
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
         # Precedence: project (through the quarantine chokepoint) > local > external.
@@ -404,7 +429,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         for _iter in iters:
             for skill_md in _iter:
                 try:
-                    _scan_skill_md(skill_md, disabled, seen_names, commands, resolve_command)
+                    _scan_skill_md(skill_md, disabled, seen_names, commands)
                 except Exception:
                     continue
     except Exception:
@@ -421,26 +446,26 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         _skill_commands = commands
         _skill_commands_platform = platform
         _skill_commands_home = home
+        _skill_commands_project = project
     return commands
 
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     """Return the current skill commands mapping (scan first if empty). Rescans
     when the platform scope (one gateway serving Telegram and Discord) or the
-    active profile's home (Desktop profile switch) changes, so each sees its
-    own ``platform_disabled`` / ``external_dirs`` view.
+    active profile's home (Desktop profile switch) or the session's project root (two sessions in two
+    repos) changes, so each sees its own ``platform_disabled`` / ``external_dirs`` / project-skill view.
 
-    See #14536, #88023.
+    See #14536, #88023, #114359.
     """
     from agent.safe_worker_policy import safe_worker_enabled
 
     if safe_worker_enabled():
         return {}
-    current_platform = _resolve_skill_commands_platform()
-    current_home = _resolve_skill_commands_home()
+    current = (_resolve_skill_commands_platform(), _resolve_skill_commands_home(), _resolve_skill_commands_project())
     with _publish_lock:
         commands = _skill_commands
-        is_fresh = bool(commands) and (_skill_commands_platform, _skill_commands_home) == (current_platform, current_home)
+        is_fresh = bool(commands) and (_skill_commands_platform, _skill_commands_home, _skill_commands_project) == current
     # Scan outside the lock — file I/O and deferred imports; concurrent scans
     # are safe since each builds its own map.
     return commands if is_fresh else scan_skill_commands()

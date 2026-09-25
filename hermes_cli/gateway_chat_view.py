@@ -73,9 +73,19 @@ class GatewayChatView:
             self.changed.set()
 
     def _tool_start(self, admission, payload):
+        # Deltas before a tool call are interim commentary the final reply does not repeat;
+        # close that segment so `_complete` measures only the final's own stream.
+        if self.streams.pop(admission, None) and not self.quiet:
+            print(flush=True)
         if self.emitter is not None:
             self.emitter.on_tool_progress("tool.started", payload.get("tool_name"), None, payload.get("args"),
                                           tool_call_id=payload.get("tool_call_id") or None)
+        elif not self.quiet:
+            # Same line shape the in-process CLI prints: the tool's emoji and its primary argument.
+            from agent.display import build_tool_preview, get_tool_emoji
+            name = payload.get("tool_name") or payload.get("name") or "tool"
+            preview = build_tool_preview(name, payload.get("args") or {}, max_len=0)
+            print(f"{get_tool_emoji(name)} {name}{f': {preview}' if preview else ''}", flush=True)
 
     def _tool_complete(self, admission, payload):
         if self.emitter is not None:
@@ -91,16 +101,24 @@ class GatewayChatView:
             self.emitter.on_text_delta(text)
         elif not self.quiet:
             self.streams[admission] = self.streams.get(admission, "") + text
-            print(text, end="", flush=True)
+            # No flush: under the live composer, patch_stdout line-buffers this so a redraw
+            # (a resize mid-stream) never interleaves with a half-written line. Complete lines
+            # still appear as they stream; the last one lands with `_complete`.
+            print(text, end="")
 
     def _complete(self, admission, payload):
         text = payload.get("text") or payload.get("content") or ""
         streamed = self.streams.pop(admission, "")
         if not self.quiet:
+            # The final's deltas carry the agent's segment break (leading blank lines after a
+            # tool call) that the settled text has trimmed; a match modulo that edge whitespace
+            # is the same reply already on screen.
             if not streamed:
                 print(text, flush=True)
             elif text.startswith(streamed):
                 print(text[len(streamed):], flush=True)
+            elif text.strip() == streamed.strip():
+                print(flush=True)
             else:
                 print("\n" + text, flush=True)
         self.completions[admission] = payload
@@ -211,20 +229,31 @@ class GatewayChatView:
                          "failed": outcome not in ("completed", "cancelled"), "interrupted": outcome == "cancelled"},
                         session_id=self.session_id, exit_code=130 if outcome == "cancelled" else 0)
                 print(terminal.get("text") or terminal.get("content") or "", flush=True)
+                # Same stderr exit contract as the legacy -Q path: automation wrappers read the
+                # durable id from this line, and it names the physical row (a compaction may have
+                # advanced it past the row printed at start).
+                print(f"\nsession_id: {self.session_id}", file=sys.stderr, flush=True)
                 return 0 if outcome == "completed" else 1
             from prompt_toolkit import PromptSession
             from prompt_toolkit.patch_stdout import patch_stdout
-            prompt = PromptSession()
+            from hermes_cli.skin_engine import get_active_prompt_symbol, get_active_skin
+            welcome = "Welcome to Hermes Agent! Type your message or /help for commands."
+            print(get_active_skin().get_branding("welcome", welcome), flush=True)
+            prompt = PromptSession(erase_when_done=True)
+            prompt_symbol = get_active_prompt_symbol("❯ ")
             with patch_stdout():
                 while not self.failure:
                     try:
-                        text = (await prompt.prompt_async("You> ")).strip()
+                        text = (await prompt.prompt_async(prompt_symbol)).strip()
                         if not text:
                             continue
                         if text.startswith("/"):
                             if not await self.command(text):
                                 return 0
                         else:
+                            # Same scrollback shape as the in-process CLI: the typed prompt line is
+                            # erased on submit and the message lands as a `●` preview row.
+                            print(f"\n{'─' * 40}\n● {text}", flush=True)
                             await self.submit(text)
                     except KeyboardInterrupt:
                         print("Use /stop to interrupt execution, /quit to detach.")

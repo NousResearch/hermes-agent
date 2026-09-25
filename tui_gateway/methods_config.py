@@ -158,6 +158,10 @@ def _cfg_get_reasoning(params):
         effort = str(reasoning_config.get("effort") or "medium") if enabled else "none"
     else:
         raw_effort = (cfg.get("agent") or {}).get("reasoning_effort", "")
+        if isinstance(raw_effort, dict):  # {enabled, effort} form: render the tier, never str(dict)
+            from hermes_constants import parse_reasoning_effort
+            parsed = parse_reasoning_effort(raw_effort) or {}
+            raw_effort = False if parsed.get("enabled") is False else parsed.get("effort")
         # YAML `reasoning_effort: false` means thinking disabled, not "unset".
         effort = "none" if raw_effort is False else str(raw_effort or "medium")
     display = "show" if (cfg.get("display") or {}).get("show_reasoning", True) else "hide"
@@ -270,7 +274,10 @@ def _(rid, params: dict) -> dict:
 
     For the launch profile the answer is the boot bootstrap's record (``free_tier_bootstrap``):
     the call blocks up to ``SETUP_READY_WAIT_SECONDS`` for it, so a client's first poll lands after
-    the free-tier identity exists (or has been refused) rather than racing the mint. If the record
+    the free-tier identity exists (or has been refused) rather than racing the mint. A record that
+    says ``False`` is reconciled with the config files first (``reconcile_record``): a provider
+    added after boot — the Models page, a picker key, ``hermes setup`` from a shell — flips it
+    without a restart. If the record
     is still missing after the wait, or a named profile is asked about, today's live probe answers.
     The record's fields ride along additively (``ready``, ``free_tier``, ``other_providers``)."""
     try:
@@ -280,7 +287,13 @@ def _(rid, params: dict) -> dict:
         def probe(profile, scoped):
             record = None if profile else wait_for_record()
             if record is None:
+                # ``ready`` = this process's boot bootstrap has settled (a named profile has no
+                # record of its own; the launch record says whether the free tier is minted).
+                # Since one host backend serves every profile (#118246), the desktop's
+                # setup-profile probe lands here, and its kickoff requires ``ready``.
+                launch = wait_for_record() if profile else None
                 return {"provider_configured": bool(_has_any_provider_configured(strict_profile_scope=bool(profile))),
+                        **({"ready": True, "free_tier": launch.free_tier} if launch is not None else {}),
                         **scoped}
             # ``failure_fields`` rides along only when the free-tier mint did not happen: the code,
             # the sentence, and whether / when a retry can succeed (``free_tier.provision``).

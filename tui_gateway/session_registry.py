@@ -358,7 +358,8 @@ def _lazy_resume_info(cwd: str, *, model: str = "", provider: str = "", profile:
     """session.info for a not-yet-built session (session.create's shape); tools/skills land with the deferred build."""
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd),
-        "model": model or _resolve_model(), "tools": {}, "skills": {}, "lazy": True,
+        "model": model or _session_default_model({"profile_home": _profile_home(profile)}),
+        "tools": {}, "skills": {}, "lazy": True,
         "desktop_contract": DESKTOP_BACKEND_CONTRACT, "profile_name": _response_profile_name(profile),
         **({"provider": provider} if provider else {}),
     }
@@ -620,7 +621,7 @@ def _fallback_session_info(session: dict) -> dict:
     cwd = _session_cwd(session)
     return {
         "cwd": cwd, "branch": git_probe.branch(cwd), "project": _project_info_for_cwd(cwd), "lazy": True,
-        "model": _resolve_model(), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+        "model": _session_default_model(session), "skills": {}, "tools": {}, "desktop_contract": DESKTOP_BACKEND_CONTRACT,
     }
 
 
@@ -685,7 +686,7 @@ def _live_session_payload(
             history = _live_visible_history(session, db, in_memory_history)
     # message_count follows _resume_response: the stored size when messages are omitted, else the wire count
     # (a hidden seed row is in ``history`` but never on the wire).
-    messages = [] if omit_messages else _history_to_messages(history)
+    messages = [] if omit_messages else _history_to_messages(history, profile_home=session.get("profile_home"))
     payload = {
         "info": _fallback_session_info(session), "message_count": len(history) if omit_messages else len(messages),
         "messages": messages,

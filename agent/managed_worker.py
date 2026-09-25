@@ -237,6 +237,10 @@ def execute(frame, channel):
             result = run_worker_turns(agent, frame, history)
             retire_agent(agent)
             agent = None
+            # The auto-title thread bills through this store from a daemon thread; a title landing
+            # after execution.finish is a stale_generation write that fails the close-time flush.
+            from agent.title_generator import wait_for_title_upgrades
+            wait_for_title_upgrades()
             store.flush_token_counts()
             if result.get('final_response') is None and (result.get('interrupted') or result.get('failed')):
                 result['final_response'] = ''

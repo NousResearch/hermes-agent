@@ -941,12 +941,14 @@ def test_grant_refresh_rejects_catalog_or_policy_drift(
     )
     base = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
+            target_profile="reviewer",
             installation_id="install-peer",
             persistent_process=True,
             execution_policy=base_policy,
         )
     )
     refreshed = catalog_mapping(
+            target_profile="reviewer",
         installation_id="install-peer",
         persistent_process=True,
         attachments=capability_changed,
@@ -986,6 +988,7 @@ def test_grant_refresh_preserves_unchanged_catalog_and_policy():
     from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 
     raw_catalog = catalog_mapping(
+            target_profile="default",
         installation_id="install-peer",
         persistent_process=True,
     )
@@ -1015,6 +1018,7 @@ def test_grant_refresh_retries_old_grant_after_response_loss():
     from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 
     raw_catalog = catalog_mapping(
+            target_profile="default",
         installation_id="install-peer",
         persistent_process=True,
     )

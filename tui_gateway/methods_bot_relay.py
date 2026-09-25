@@ -6,11 +6,7 @@ Chat delivery on the TARGET gateway, returns the reply), ``reply`` (write the re
 the SENDER gateway for its waiter). Plumbing: ``tools/bot_relay.py``; handlers are rebound onto
 server.py's globals (method_ctx.py) and reference ``_ok``/``_err`` bare."""
 
-import os
 from pathlib import Path
-
-# Defined beside the sender-side waiter budget so the two Python sides cannot drift (#93911).
-from tools.bot_relay import TURN_ATTEMPT_TIMEOUT_SECONDS
 
 from .method_ctx import HandlerRegistry
 
@@ -65,13 +61,23 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
             raise ValueError('invalid profile')
     except ValueError:
         return _err(rid, 4090, 'invalid_params', data={'reason': 'invalid_params'})
-    from tools.bot_relay import delivery_turn_author
-    from tui_gateway.methods_browser_control import _is_authenticated_identity
+    from tools.bot_relay import delivery_turn_author, relaying_principal_author
+    from tui_gateway.methods_browser_control import _is_authenticated_identity, _principal_digest
     sender_fields = ("from_profile", "from_handle", "from_connection")
-    if (any(params.get(key) for key in sender_fields)
-            and _is_authenticated_identity(getattr(current_transport(), "auth_identity", None))):
-        return _err(rid, 4095, "a logged-in client cannot name the sender of a relayed dm")
-    author = delivery_turn_author(*(params.get(key) for key in sender_fields))
+    identity = getattr(current_transport(), "auth_identity", None)
+    if _is_authenticated_identity(identity):
+        # A logged-in client's sender fields are NOT trusted — but the delivery is not refused
+        # either: the Desktop is itself a logged-in client on every gateway that requires sign-in
+        # (it mints a ws-ticket carrying the signed-in {user_id, provider} —
+        # hermes_cli/dashboard_auth/routes.py), so refusing took cross-connection relay offline
+        # for exactly the auth-gated gateways it serves; only ``?internal=`` callers are
+        # identity-exempt and the Desktop cannot present one. Nor is the author dropped: an
+        # unattributed turn is the HUMAN's to the recipient's memory, so a bot DM must stay
+        # bot-authored. The author is derived from the caller's minted identity instead — stable,
+        # unspoofable, and ``is_bot`` — whether or not the client named a sender.
+        author = relaying_principal_author(_principal_digest(identity))
+    else:
+        author = delivery_turn_author(*(params.get(key) for key in sender_fields))
     forwarded = {key: value for key, value in params.items() if key not in sender_fields}
     if author:
         forwarded["author"] = author
@@ -83,6 +89,14 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
     home = dict(_roster(root)).get(resolved)
     if home is None:
         return _err(rid, 4092, f"no profile '{profile}' on this gateway", data={'reason': 'unknown_profile'})
+    if isinstance(forwarded.get("message"), str):
+        # The sender stamped itself with its bare @handle; a relayed "@hermes" is ANOTHER machine's
+        # default, so re-stamp it with the form this gateway can reply to (#103731).
+        from tools.bot_mode_probe import local_taken_forms
+        from tools.bot_relay import qualify_sender_stamp, read_remote_roster
+        forwarded["message"] = qualify_sender_stamp(
+            forwarded["message"], params.get("from_handle"), params.get("from_connection"),
+            read_remote_roster(root), local_taken_forms(root))
     try:
         return _ok(rid, authority_delivery(home, {**forwarded, 'profile': resolved}))
     except Exception as exc:

@@ -135,5 +135,69 @@ export const CANONICAL_GROUP_LOCALES = {
     attachFiles: 'Прикрепить файлы',
     removeAttachment: 'Удалить вложение',
     uploadFailed: 'Не удалось загрузить файл'
+  },
+  fr: {
+    refreshGroups: 'Actualiser les groupes de la passerelle',
+    loadingGroup: 'Chargement du groupe…',
+    loadingGroups: 'Chargement des groupes de la passerelle…',
+    emptyGroups: 'Aucun groupe de passerelle trouvé.',
+    driverUnavailable:
+      'Pilote de groupe indisponible. Mettez à jour ou reconnectez la passerelle propriétaire.',
+    invalidLogCursor: 'Curseur de journal de salon invalide',
+    allowOnce: 'Autoriser une fois',
+    deny: 'Refuser',
+    discardUnknown: 'Abandonner le travail au résultat inconnu',
+    discardWarning: 'Des effets de bord ont peut-être déjà eu lieu. Abandonner ne les annule pas.',
+    confirmDiscard: "Confirmer l'abandon",
+    unconfirmedSend:
+      "L'envoi précédent n'est pas confirmé. Réessayez son texte d'origine avant d'envoyer un autre message.",
+    restoredPendingSend: 'Un envoi non confirmé a été restauré. Réessayez-le avant d\'envoyer un autre message.',
+    groupMessage: 'Message de groupe',
+    attachFiles: 'Joindre des fichiers',
+    removeAttachment: 'Retirer la pièce jointe',
+    uploadFailed: 'Échec du téléversement'
+  },
+  de: {
+    refreshGroups: 'Gateway-Gruppen aktualisieren',
+    loadingGroup: 'Gruppe wird geladen…',
+    loadingGroups: 'Gateway-Gruppen werden geladen…',
+    emptyGroups: 'Keine Gateway-Gruppen gefunden.',
+    driverUnavailable:
+      'Gruppentreiber nicht verfügbar. Aktualisieren Sie das zuständige Gateway oder verbinden Sie es neu.',
+    invalidLogCursor: 'Ungültiger Raumprotokoll-Cursor',
+    allowOnce: 'Einmal erlauben',
+    deny: 'Ablehnen',
+    discardUnknown: 'Arbeit mit unbekanntem Ergebnis verwerfen',
+    discardWarning: 'Nebenwirkungen können bereits eingetreten sein. Verwerfen macht sie nicht rückgängig.',
+    confirmDiscard: 'Verwerfen bestätigen',
+    unconfirmedSend:
+      'Der vorherige Versand ist unbestätigt. Wiederholen Sie seinen ursprünglichen Text, bevor Sie eine weitere Nachricht senden.',
+    restoredPendingSend:
+      'Ein unbestätigter Versand wurde wiederhergestellt. Wiederholen Sie ihn, bevor Sie eine weitere Nachricht senden.',
+    groupMessage: 'Gruppennachricht',
+    attachFiles: 'Dateien anhängen',
+    removeAttachment: 'Anhang entfernen',
+    uploadFailed: 'Hochladen fehlgeschlagen'
+  },
+  es: {
+    refreshGroups: 'Actualizar grupos de la pasarela',
+    loadingGroup: 'Cargando grupo…',
+    loadingGroups: 'Cargando grupos de la pasarela…',
+    emptyGroups: 'No se encontraron grupos de la pasarela.',
+    driverUnavailable:
+      'Controlador de grupo no disponible. Actualiza o vuelve a conectar la pasarela propietaria.',
+    invalidLogCursor: 'Cursor de registro de sala no válido',
+    allowOnce: 'Permitir una vez',
+    deny: 'Denegar',
+    discardUnknown: 'Descartar trabajo con resultado desconocido',
+    discardWarning: 'Puede que ya se hayan producido efectos secundarios. Descartar no los deshace.',
+    confirmDiscard: 'Confirmar descarte',
+    unconfirmedSend:
+      'El envío anterior no está confirmado. Reintenta su texto original antes de enviar otro mensaje.',
+    restoredPendingSend: 'Se restauró un envío sin confirmar. Reintántalo antes de enviar otro mensaje.',
+    groupMessage: 'Mensaje de grupo',
+    attachFiles: 'Adjuntar archivos',
+    removeAttachment: 'Quitar adjunto',
+    uploadFailed: 'Error al subir'
   }
 } satisfies Record<string, CanonicalGroupMessages>

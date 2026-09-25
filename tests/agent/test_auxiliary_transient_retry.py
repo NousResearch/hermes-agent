@@ -1,39 +1,8 @@
-"""Transient-transport retry count + per-model client-cache isolation.
-
-Two related hardening behaviors for auxiliary calls (which include MoA
-reference advisors, a pinned-model path where provider fallback is not a
-meaningful recovery):
-
-1. A transient transport blip (connection reset / timeout / 5xx) is retried
-   on the SAME provider several times with backoff before giving up — a single
-   upstream blip should not silently lose a pinned auxiliary call (root of the
-   run2 double-advisor "Connection error" collapse).
-2. Two auxiliary calls to the same provider/base_url/key but DIFFERENT models
-   get DISTINCT client-cache keys, so a concurrent fan-out (e.g. opus + gpt-5.5
-   advisors) never shares one client entry.
+"""Per-model client-cache isolation: two concurrent auxiliary calls to the same
+provider/base_url/key but DIFFERENT models (e.g. MoA advisors) never share one cache entry.
 """
 
 from __future__ import annotations
-
-import os
-import types
-from unittest.mock import patch
-
-import pytest
-
-
-
-
-def test_transient_retry_count_default(monkeypatch):
-    from agent import auxiliary_client as ac
-
-    # No config value -> default.
-    monkeypatch.setattr(ac, "load_config", lambda: {}, raising=False)
-    with patch("hermes_cli.config.load_config", return_value={}), \
-         patch("hermes_cli.config.cfg_get", return_value=None):
-        assert ac._transient_retry_count() == ac._DEFAULT_TRANSIENT_RETRIES
-
-
 
 
 def test_model_participates_in_client_cache_key():

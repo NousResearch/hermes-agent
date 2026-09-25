@@ -120,7 +120,7 @@ export function ComposerControls({
   )
 
   return (
-    <div className="ml-auto flex min-w-0 shrink items-center gap-(--composer-control-gap)">
+    <div className="flex min-w-0 shrink items-center gap-(--composer-control-gap)">
       {minimal ? null : (
         <>
           {hideModelPill ? null : (

@@ -34,6 +34,10 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 # Log-record parity with the origin module.
 logger = logging.getLogger("gateway.run")
 
+# Consecutive turns a session's persisted transcript may lag its live cached history before
+# _load_turn_history escalates the lag line from WARNING to ERROR (#114266: 11 days of WARNING).
+_TRANSCRIPT_LAG_ESCALATION_TURNS = 3
+
 # Exact refusals retained for older adapters/connectors without destination preflight.
 # Substring matching would also silence transient thread-resolution errors.
 _CARD_DESTINATION_REFUSALS = {
@@ -113,6 +117,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
 
     def _setup_stream_consumer(self, platform_key):
         ctx = self._ctx
+        if ctx.mute_notification_reply:
+            return None, None, None, False
         stream_consumer = None
         # The streaming-TTS consumer is created on the outer loop thread before run_sync launches;
         # run_sync only reads it via the holder for delta-callback wiring.
@@ -123,17 +129,24 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             scfg = StreamingConfig()
         # display.platforms.<plat>.streaming may disable streaming per platform; None = follow global.
         plat_streaming = ctx.resolve_display_setting(ctx.user_config, platform_key, "streaming")
-        want_stream_deltas = not ctx.scheduled_heartbeat and (
-            scfg.enabled and scfg.transport != "off" if plat_streaming is None else bool(plat_streaming)
-        )
+        want_stream_deltas = not ctx.scheduled_heartbeat and scfg.enabled_for(plat_streaming)
         want_interim_messages = bool(ctx.interim_assistant_messages_enabled) and not ctx.scheduled_heartbeat
         if want_stream_deltas or want_interim_messages:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer
-                adapter = self._runner._adapter_for_source(ctx.source)
+                adapter = self._runner._delivery_adapter_for(ctx.source)
                 if adapter:
+                    supports_incremental_stream = (
+                        getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
+                        or bool(getattr(adapter, "SUPPORTS_NATIVE_STREAMING", False))
+                    )
+                    consumer_stream_deltas = want_stream_deltas and supports_incremental_stream
                     consumer_cfg, pause_typing_before_finalize = self._runner._build_stream_consumer_config(
-                        ctx.source, scfg, adapter, on_missing_cursor="raise",
+                        ctx.source, scfg, adapter,
+                        # A complete commentary message needs no edit cursor.  Keeping it on the
+                        # consumer records what reached non-editable platforms, so an interim
+                        # callback carrying the final answer participates in final-send dedup.
+                        on_missing_cursor="fallback" if want_interim_messages else "raise",
                     )
                     stream_consumer = GatewayStreamConsumer(
                         adapter=adapter, chat_id=ctx.source.chat_id, config=consumer_cfg,
@@ -148,11 +161,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
                     # #105341: a consumer created only for interim commentary (text streaming off)
                     # is never fed the final reply's deltas — mark it so the duplicate-risk
                     # diagnostic in ``_run_agent_mark_streamed_delivery`` stays silent.
-                    stream_consumer.stream_deltas_enabled = want_stream_deltas
+                    stream_consumer.stream_deltas_enabled = consumer_stream_deltas
             except Exception as err:
                 logger.debug("Could not set up stream consumer: %s", err)
         # Deltas tee to the stream consumer (when text streaming is on) and to streaming TTS.
-        delta_sinks = [sc for sc in ((stream_consumer if want_stream_deltas else None), stts) if sc is not None]
+        delta_sinks = [
+            sc for sc in (
+                stream_consumer if stream_consumer and stream_consumer.stream_deltas_enabled else None,
+                stts,
+            ) if sc is not None
+        ]
         stream_delta_cb = None
         if delta_sinks or self._approval_owner is not None:
             def stream_delta_cb(text: Optional[str]) -> None:
@@ -185,15 +203,20 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """Credits / out-of-band notices (usage bands, depletion, restored) fire from the agent's
         sync worker thread; hop onto the gateway loop. Fired-once latch lives on the cached agent."""
         from gateway.run import render_notice_line
-        if not self._status_live():
+        from gateway.warning_notifications import is_diagnostic_notice, render_notification
+        if self._ctx.mute_notification_reply or not self._status_live():
             return
-        try:
-            line = render_notice_line(notice)
-        except Exception:
-            logger.debug("render_notice_line failed", exc_info=True)
-            return
-        if line:
-            self._schedule(self._runner._deliver_platform_notice(self._ctx.source, line), "notice_callback delivery scheduling error")
+        diagnostic = is_diagnostic_notice(notice)
+        def present():
+            try:
+                line = render_notice_line(notice)
+            except Exception:
+                logger.debug("render_notice_line failed", exc_info=True)
+                return
+            if line:
+                self._schedule(self._runner._deliver_platform_notice(self._ctx.source, line), "notice_callback delivery scheduling error")
+        render_notification(present, platform=self._ctx.source.platform,
+                            user_config=self._ctx.user_config, diagnostic=diagnostic)
 
     def _make_bg_review_callbacks(self):
         """(send, release): background-review messages ("💾 Memory updated") are held until the
@@ -252,6 +275,8 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         baked into the cached agent."""
         ctx = self._ctx
         runner = self._runner
+        agent._notification_config = ctx.user_config
+        agent._notification_platform = ctx.source.platform
         # ALWAYS attached (never gated to None): its body gates each event class, and subagent-
         # failure notices must fire even with tool_progress/thinking off.
         agent.tool_progress_callback = ctx.progress_callback
@@ -299,6 +324,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
+        if ctx.mute_notification_reply:
+            # Controls and operational event/step callbacks remain wired. These
+            # presentation callbacks are rebound on every next turn.
+            agent.tool_progress_callback = None
+            agent.tool_start_callback = None
+            agent.tool_complete_callback = None
+            # Keep diagnostic observers installed; concrete sinks veto display.
+            agent.stream_delta_callback = None
+            agent.interim_assistant_callback = None
+            agent.thinking_progress = False
         ctx.agent_holder[0] = agent  # interrupt support
         if self._approval_owner is not None:
             authority, owner_id, generation = self._approval_owner
@@ -387,15 +422,27 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         """One card: register, send, wait, then retire it (no answer) or re-arm (answer).
         Returns ``(response, answered)``; the caller decides what "no answer" means — a sentinel
         for a single question, the batch's ``timed_out`` flag."""
-        from gateway.run import _clarify_send_then_wait
+        from gateway.run_turn_runner_clarify_delivery import (
+            UNDELIVERED_NO_SURFACE, _clarify_send_then_wait, text_fallback_coro)
         from tools import clarify_gateway as clarify_mod
         import uuid
         ctx = self._ctx
         if not ctx._status_adapter:
-            return "", False
+            # Nothing can render the question: say so, or the batch's blank answers read as
+            # user inactivity (#112684).
+            return UNDELIVERED_NO_SURFACE, False
         session_key = ctx.session_key or ""
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
+        send_kwargs = dict(
+            chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
+            session_key=session_key, metadata=ctx._status_thread_metadata,
+        )
+
+        def _text_fallback():
+            """Schedule the plain-text prompt when the native card cannot render; None = no such path."""
+            coro = text_fallback_coro(ctx._status_adapter, **send_kwargs)
+            return None if coro is None else self._schedule(coro, "Clarify text fallback failed to schedule")
         entry = clarify_mod.register(
             clarify_id=clarify_id, session_key=session_key, question=question, choices=choices,
             multi_select=bool(multi_select),
@@ -417,17 +464,16 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         except Exception:
             logger.debug("Stream-consumer flush before clarify prompt failed", exc_info=True)
         fut = self._schedule(
-            self._send_shared_clarify(entry,
-                chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
-                session_key=session_key, metadata=ctx._status_thread_metadata,
-            ),
+            self._send_shared_clarify(entry, **send_kwargs),
             "Clarify send failed to schedule",
         )
         # Boundary rule (see _approval_send_outcome): a send timeout is AMBIGUOUS — the card may
         # have posted with a late ack. Only a definitive failure tears down the registration;
-        # ambiguous falls through to the bounded wait so a late reply resolves.
+        # ambiguous falls through to the bounded wait so a late reply resolves. A definitive
+        # failure — immediate or late — retries once as plain text before giving up.
         response, answered = _clarify_send_then_wait(
-            fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod)
+            fut, clarify_id=clarify_id, session_key=session_key, clarify_mod=clarify_mod,
+            fallback=_text_fallback)
         if self._approval_owner is not None:
             authority, session_id, generation = self._approval_owner
             authority.sessions[session_id].controls.snapshot(session_id, generation)
@@ -591,16 +637,27 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # #50502.
         if reused_cached_agent and getattr(agent, "session_id", None) == ctx.session_id:
             selected = _select_cached_agent_history(agent_history, getattr(agent, "_session_messages", None))
+            # Consecutive lagging turns per session (cleared on /new): one lag is a blip, a streak
+            # is the #114266 write outage and must escalate past a repeating WARNING.
+            streaks = getattr(self._runner, "_transcript_lag_streaks", None)
+            if streaks is None:  # tests may build bare runners
+                streaks = self._runner._transcript_lag_streaks = {}
             if selected is not agent_history:
-                logger.warning(
+                streak = streaks[ctx.session_key] = streaks.get(ctx.session_key, 0) + 1
+                log = logger.error if streak >= _TRANSCRIPT_LAG_ESCALATION_TURNS else logger.warning
+                log(
                     "Persisted transcript lagged live cached history for "
-                    "session %s (disk=%d, memory=%d); preserving live "
-                    "conversation context (possible FTS write corruption)",
-                    ctx.session_key, len(agent_history), len(selected),
+                    "session %s (disk=%d, memory=%d, consecutive_turns=%d); preserving live "
+                    "conversation context (possible FTS write corruption)%s",
+                    ctx.session_key, len(agent_history), len(selected), streak,
+                    "; state.db is not receiving this session's writes and needs operator attention"
+                    if streak >= _TRANSCRIPT_LAG_ESCALATION_TURNS else "",
                 )
                 # The live history bypassed _build_gateway_agent_history's cleanup — re-apply
                 # the full canonicalization so no replay transform can slip through.
                 agent_history = canonicalize_replay_history(selected)
+            else:
+                streaks.pop(ctx.session_key, None)
         # MEDIA paths already in history are excluded from this turn's extraction (compression-safe).
         return agent_history, observed_group_context, _collect_history_media_paths(agent_history)
 
@@ -616,7 +673,7 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
     def _resume_note_interactive(self) -> bool:
         """Interactive platforms report the restore and ask what next; event platforms (webhook,
         API server) continue the work — nobody is present to answer."""
-        return bool(getattr(self._runner._adapter_for_source(self._ctx.source), "interactive_resume", True))
+        return bool(getattr(self._runner._delivery_adapter_for(self._ctx.source), "interactive_resume", True))
 
     def _prepare_turn_message(self, agent_history):
         """Prepend recovery/notice guidance to ``ctx.message``.
@@ -734,11 +791,13 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             # turn so a restart-interrupted turn is recorded WITH its id for drain-window dedup.
             if ctx.inbound_message_id is not None:
                 kwargs["persist_user_platform_id"] = str(ctx.inbound_message_id)
+            from agent.notification_presentation import notification_turn
             from gateway.session_results import execution_result
             captured = execution_result.get()
             before = (getattr(agent, 'session_prompt_tokens', 0) or 0,
                       getattr(agent, 'session_completion_tokens', 0) or 0)
-            result = agent.run_conversation(api_message, **kwargs)
+            with notification_turn(agent, muted=ctx.mute_notification_reply, session_id=ctx.session_id or ""):
+                result = agent.run_conversation(api_message, **kwargs)
             if captured is not None:
                 incoming = max(0, (getattr(agent, 'session_prompt_tokens', 0) or 0) - before[0])
                 outgoing = max(0, (getattr(agent, 'session_completion_tokens', 0) or 0) - before[1])
@@ -944,6 +1003,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         # removing this in-process gateway write does not affect any of them.
         from gateway.session_policy import policy_for_source
         policy = policy_for_source(runner, ctx.source)
+        if policy and policy.yolo and ctx.session_key:
+            from tools.approval import enable_session_yolo
+            enable_session_yolo(ctx.session_key)
         platform_key = policy.platform if policy else ("cli" if ctx.source.platform == Platform.LOCAL else ctx.source.platform.value)
         combined_ephemeral = self._combined_ephemeral_prompt()
         max_iterations = policy.max_turns if policy else _current_max_iterations()
@@ -956,6 +1018,10 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             model, runtime_kwargs = runner._resolve_session_agent_runtime(
                 source=ctx.source, session_key=ctx.session_key, user_config=ctx.user_config,
             )
+            # Stashed by _resolve_session_agent_runtime when the primary's credentials failed and a
+            # fallback was resolved before any agent exists (#74349); one-shot per turn.
+            pending_fallback_notice = getattr(runner, "_pre_agent_fallback_notice", None)
+            runner._pre_agent_fallback_notice = None
             from gateway.session_api_turn import prepare_api_runtime
             model, runtime_kwargs = prepare_api_runtime(model, runtime_kwargs)
             if policy and policy.model:
@@ -966,21 +1032,37 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
             )
         except Exception as exc:
             # Model/credential resolution failed before the turn began; the raw text (URLs, status
-            # codes) belongs in the log, and the chat gets the commands that fix it.
+            # codes) belongs in the log, and the chat gets the commands that fix it. The result is
+            # a FAILED turn: a one-shot client exits non-zero, transcript persistence closes the
+            # turn, and an API receipt reports failure, never a completed turn with an apology.
             logger.warning("Model resolution failed for session %s: %s", ctx.session_key or "", exc)
             from hermes_state_runtime import RuntimeStoreError
+            from agent.turn_failure_copy import stamp_failure
+
+            def _unresolved(text: str) -> dict:
+                return stamp_failure({"final_response": text, "messages": [], "api_calls": 0, "tools": [],
+                                      "failed": True, "completed": False, "error": str(exc)},
+                                     "auth_permanent", False)
             if isinstance(exc, RuntimeStoreError):
                 # Session-policy refusals carry a stable reason code (e.g. a CLI launch key
                 # revoked by daemon restart): keep it in the reply so clients can act on it, and
                 # do not suggest /login — the profile's own credentials were never in play.
-                text = (f"⚠️ This session's launch credentials are no longer available "
-                        f"({exc.reason}), so this message wasn't processed. Start a new "
-                        "session from the CLI to bind them again.")
-            else:
-                text = ("⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
-                        "Use /login to sign in again, or /model to pick a different model. If it keeps "
-                        "failing, run `hermes doctor` on the host.")
-            return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
+                return _unresolved(f"⚠️ This session's launch credentials are no longer available "
+                                   f"({exc.reason}), so this message wasn't processed. Start a new "
+                                   "session from the CLI to bind them again.")
+            from hermes_cli.auth import is_rate_limited_auth_error
+            if is_rate_limited_auth_error(exc.__cause__):
+                # Quota cap with valid credentials: /login cannot help; name the reset window (#89401).
+                from gateway.run import _gateway_provider_error_reply
+                return _unresolved(_gateway_provider_error_reply(str(exc)))
+            if ctx.source.platform == Platform.LOCAL:
+                # The local operator reads the terminal: the resolver's own sentence ("provider
+                # 'custom' resolved without credentials ...") is the diagnosis; /login is not.
+                return _unresolved(f"⚠️ {exc}")
+            return _unresolved(
+                "⚠️ I couldn't connect to the AI model service, so this message wasn't processed. "
+                "Use /login to sign in again, or /model to pick a different model. If it keeps "
+                "failing, run `hermes doctor` on the host.")
         pr = runner._provider_routing
         reasoning_config = (policy.reasoning_config if policy else
             runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model))
@@ -1001,6 +1083,9 @@ class TurnRunner(GatewayTurnProgressMixin, GatewaySessionAgentMixin):
         agent, reused_cached_agent = self._resolve_turn_agent(
             turn_route, platform_key, combined_ephemeral, max_iterations, reasoning_config, pr,
         )
+        if pending_fallback_notice:
+            # Reuse the in-agent one-shot notice so the pre-agent provider switch is user-visible too.
+            agent._pending_fallback_notice = pending_fallback_notice
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)

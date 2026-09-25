@@ -64,9 +64,11 @@ async def test_upload_is_authorized_private_staging_not_legacy_execution(tmp_pat
             assert denied['error']['message'] == 'invalid_params', denied
         assert sorted((home / 'cache/images').iterdir()) == before
         assert not (tmp_path / 'wrong-home/cache/images').exists()
+        # The legacy image verbs do not exist on the authority: JSON-RPC's own verdict, never
+        # a stealth alias onto the staging path.
         for method in ('image.attach', 'clipboard.paste'):
             denied = await owner.dispatch({'id': 2, 'method': method, 'params': params})
-            assert denied['error']['message'] == 'invalid_params'
+            assert denied['error']['code'] == -32601, denied
         await owner.close()
 
 

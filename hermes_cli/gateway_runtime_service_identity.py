@@ -33,9 +33,25 @@ def _absolute(value: str) -> Path:
     return Path(value).resolve()
 
 
+class ForeignRoot(ValueError):
+    """The service serves another install root (a different HOME), not another profile of ours."""
+
+
+def _install_root(home: Path) -> Path:
+    # <root>/.hermes or <root>/.hermes/profiles/<name>: the root is the HOME that anchors it.
+    parts = home.parts
+    if len(parts) >= 3 and parts[-3] == ".hermes" and parts[-2] == "profiles":
+        return home.parents[2]
+    return home.parent
+
+
 def verify_home(home: Path, configured: str) -> None:
-    if os.path.normcase(str(_absolute(configured))) != os.path.normcase(str(home.resolve())):
-        raise ValueError("profile_mismatch")
+    ours, theirs = home.resolve(), _absolute(configured)
+    if os.path.normcase(str(theirs)) == os.path.normcase(str(ours)):
+        return
+    if os.path.normcase(str(_install_root(theirs))) != os.path.normcase(str(_install_root(ours))):
+        raise ForeignRoot("foreign_root")
+    raise ValueError("profile_mismatch")
 
 
 def verify_gateway_argv(argv: list[str], home: Path) -> None:

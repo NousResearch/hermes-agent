@@ -163,6 +163,14 @@ platform_hints:
   unmodified default, so a bad config value can never break prompt
   assembly or leak across platforms.
 
+Cron jobs run as platform `cron`, but their final response lands on the
+job's `deliver` channel, so a cron agent's prompt also carries that
+channel's hint (built-in text plus its `platform_hints.<channel>`
+override) under a `Delivery destination (<channel>):` line. A
+`platform_hints.slack.append` therefore reaches Slack-delivered scheduled
+jobs as well as live Slack chats; `platform_hints.cron` still governs the
+cron paragraph itself.
+
 The override is resolved when the system prompt is built (session start,
 and again on compaction since that rebuilds the prompt). It produces a
 byte-stable hint for a fixed config, so it lives in the **stable** tier

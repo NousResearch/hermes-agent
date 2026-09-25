@@ -1474,7 +1474,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `NamedTuple` | import | `typing` |
 | `PROVIDER_GROUPS` | moved-lazy | `hermes_cli.models_catalog_static` |
 | `ProviderEntry` | moved-lazy | `hermes_cli.models_catalog_static` |
-| `_OPENCODE_KEYLESS_EXTRA_SLUGS` | restored-helper | `(deleted; restored as a dependency of is_opencode_zen_free_model)` |
 | `atomic_json_write` | moved-lazy | `utils` |
 | `base_url_host_matches` | moved-lazy | `utils` |
 | `compute_sale_discount` | moved-lazy | `hermes_cli.models_pricing` |
@@ -1489,7 +1488,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `group_providers` | moved-lazy | `hermes_cli.models_catalog_static` |
 | `http` | import | `http.client` |
 | `is_nous_free_tier` | restored-def | `(deleted; BASE body restored)` |
-| `is_opencode_zen_free_model` | restored-def | `(deleted; BASE body restored)` |
 | `lmstudio_model_reasoning_options` | moved-lazy | `hermes_cli.models_local` |
 | `nous_catalog_url` | moved-lazy | `hermes_cli.models_reasoning_caps` |
 | `nous_model_reasoning_capabilities` | moved-lazy | `hermes_cli.models_reasoning_caps` |
@@ -1883,7 +1881,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `auth_mcp_server` | moved-lazy | `hermes_cli.web_routers.mcp` |
 | `base64` | import | `base64` |
 | `binascii` | import | `binascii` |
-| `build_cron_model_impact` | moved-lazy | `hermes_cli.config` |
 | `bulk_delete_sessions_endpoint` | moved-lazy | `hermes_cli.web_routers.sessions` |
 | `cancel_oauth_session` | moved-lazy | `hermes_cli.web_routers.oauth` |
 | `cancel_telegram_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
@@ -2087,7 +2084,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `replace_mcp_servers` | moved-lazy | `hermes_cli.web_routers.mcp` |
 | `rescan_dashboard_plugins` | moved-lazy | `hermes_cli.web_routers.dashboard_ui` |
 | `reset_memory` | moved-lazy | `hermes_cli.web_routers.ops` |
-| `resolve_cron_model_drift_defaults` | moved-lazy | `hermes_cli.config` |
 | `resolve_gateway_liveness` | moved-lazy | `gateway.status` |
 | `restart_gateway` | moved-lazy | `hermes_cli.web_routers.actions` |
 | `resume_cron_job` | moved-lazy | `hermes_cli.web_routers.cron` |
@@ -2427,13 +2423,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `normalize_reference_images` | moved-lazy | `agent.image_gen_provider` |
 | `save_b64_image` | moved-lazy | `agent.image_gen_provider` |
 | `save_url_image` | moved-lazy | `agent.image_gen_provider` |
-
-### `plugins.memory.hindsight`
-
-| name | kind | new location |
-|---|---|---|
-| `dataclass` | import | `dataclasses` |
-| `importlib` | import | `importlib` |
 
 ### `plugins.memory.honcho`
 

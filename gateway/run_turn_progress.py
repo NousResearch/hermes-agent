@@ -29,6 +29,19 @@ if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
 logger = logging.getLogger("gateway.run")
 
 
+def _tool_lifecycle_payload(call_id, tool_name, args) -> dict:
+    """The ``ToolStartPayload`` contract every client reads (``tool_id``/``name``/``context``),
+    plus the ``tool_call_id``/``tool_name`` the gateway's own consumers were built on."""
+    from agent.display import build_tool_preview, tool_labels_for_call
+    name = str(tool_name or "tool")
+    args = args if isinstance(args, dict) else {}
+    payload = {"tool_id": str(call_id or ""), "name": name, "context": build_tool_preview(name, args, max_len=80) or "",
+               "tool_call_id": str(call_id or ""), "tool_name": name, "args": args}
+    if labels := [label.as_payload() for label in tool_labels_for_call(name, args)]:
+        payload["labels"] = labels
+    return payload
+
+
 class GatewayTurnProgressMixin:
     # ── shared thread→loop plumbing ─────────────────────────────────────────────────────────
 
@@ -130,6 +143,7 @@ class GatewayTurnProgressMixin:
     def _progress_subagent_notice(self, preview, kwargs: dict) -> None:
         """Only terminal failure statuses render (same notice rail as credit warnings)."""
         ctx = self._ctx
+        from gateway.warning_notifications import render_notification
         status = kwargs.get("status")
         try:
             from tools.delegate_tool import SUBAGENT_FAILURE_STATUSES, format_subagent_failure_line
@@ -138,7 +152,9 @@ class GatewayTurnProgressMixin:
                     kwargs.get("goal"), status, error=kwargs.get("summary") or preview,
                     duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
                 )
-                self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error")
+                render_notification(
+                    lambda: self._schedule(self._runner._deliver_platform_notice(ctx.source, line), "subagent failure notice scheduling error"),
+                    platform=ctx.source.platform, user_config=ctx.user_config)
         except Exception:
             logger.debug("subagent failure notice failed", exc_info=True)
 
@@ -212,7 +228,7 @@ class GatewayTurnProgressMixin:
         from agent.display import get_tool_emoji
         emoji = get_tool_emoji(tool_name, default="⚙️")
         try:
-            adapter = self._runner._adapter_for_source(ctx.source)
+            adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
@@ -653,7 +669,7 @@ class GatewayTurnProgressMixin:
 
     async def send_progress_messages(self):
         ctx = self._ctx
-        adapter = self._runner._adapter_for_source(ctx.source) if ctx.progress_queue else None
+        adapter = self._runner._delivery_adapter_for(ctx.source) if ctx.progress_queue else None
         if not adapter:
             return
         if ctx._native_slack_task_cards and hasattr(adapter, "send_native_task_card_progress"):
@@ -761,9 +777,7 @@ class GatewayTurnProgressMixin:
 
     def combined_tool_start_callback(self, call_id, tool_name, args):
         """Compose the voice ack + native task-card start consumers."""
-        self._publish_execution("tool.start", {
-            "tool_call_id": str(call_id or ""), "tool_name": str(tool_name or "tool"),
-            "args": args if isinstance(args, dict) else {}})
+        self._publish_execution("tool.start", _tool_lifecycle_payload(call_id, tool_name, args))
         self._publish_api_tool("tool.start", call_id, tool_name, args)
         if self._ctx._voice_ack_guild[0] is not None:
             self.voice_ack_callback(call_id, tool_name, args)
@@ -774,8 +788,7 @@ class GatewayTurnProgressMixin:
         from agent.display import _detect_tool_failure
         is_error, _ = _detect_tool_failure(tool_name, result)
         self._publish_execution("tool.complete", {
-            "tool_call_id": str(call_id or ""), "tool_name": str(tool_name or "tool"),
-            "is_error": bool(is_error), "args": args if isinstance(args, dict) else {},
+            **_tool_lifecycle_payload(call_id, tool_name, args), "is_error": bool(is_error),
             "result": result if isinstance(result, str) else str(result)})
         self._publish_api_tool("tool.complete", call_id, tool_name, args, result)
         if self._ctx._native_slack_task_cards:
@@ -850,8 +863,9 @@ class GatewayTurnProgressMixin:
 
     def _status_callback_sync(self, event_type: str, message: str) -> None:
         from gateway.run import _prepare_gateway_status_message, _redact_gateway_user_facing_secrets, _send_or_update_status_coro
+        from gateway.warning_notifications import is_warning_status, render_notification
         ctx = self._ctx
-        if not self._status_live():
+        if ctx.mute_notification_reply or not self._status_live():
             return
         prepared = _prepare_gateway_status_message(ctx.source.platform, event_type, message)
         if prepared is None:
@@ -861,9 +875,12 @@ class GatewayTurnProgressMixin:
                 _redact_gateway_user_facing_secrets(str(message or ""))[:160],
             )
             return
-        fut = self._schedule(
-            _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
-            f"status_callback ({event_type}) scheduling error",
-        )
-        if fut is not None and ctx._cleanup_progress:
-            fut.add_done_callback(self._track_future_cleanup_id)
+        def present():
+            fut = self._schedule(
+                _send_or_update_status_coro(ctx._status_adapter, ctx._status_chat_id, event_type, prepared, ctx._status_thread_metadata),
+                f"status_callback ({event_type}) scheduling error",
+            )
+            if fut is not None and ctx._cleanup_progress:
+                fut.add_done_callback(self._track_future_cleanup_id)
+        render_notification(present, platform=ctx.source.platform, user_config=ctx.user_config,
+                            diagnostic=is_warning_status(event_type, message))

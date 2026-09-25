@@ -15,13 +15,13 @@ from hermes_cli.gateway_client import GatewayClientError, connect_gateway
 # the authority. Reject them, rather than mutate process-wide gateway settings.
 _UNSUPPORTED = (
     "image", "skills", "worktree", "w", "checkpoints", "pass_session_id",
-    "yolo", "accept_hooks",
+    "accept_hooks",
     "no_restore_cwd", "usage_file",
     "run_budget", "verbose", "compact",
     "list_tools", "list_toolsets",
 )
 _POLICY = ("model", "provider", "reasoning", "toolsets", "max_turns", "base_url", "ignore_rules", "api_key",
-           "safe_mode", "ignore_user_config")
+           "yolo", "safe_mode", "ignore_user_config")
 # Where each refused option lives now; the refusal names it so the user is not left guessing.
 _RELOCATED = {
     "image": "attach the image in `hermes --tui` or the Desktop app",
@@ -30,7 +30,6 @@ _RELOCATED = {
     "w": "`hermes --tui -w`",
     "checkpoints": "`checkpoints.enabled: true` in config.yaml, or `hermes --tui --checkpoints`",
     "pass_session_id": "`hermes --tui --pass-session-id`",
-    "yolo": "`approvals.mode: off` in config.yaml, or `/yolo` inside the session",
     "accept_hooks": "`hooks_auto_accept: true` in config.yaml, or `hermes --tui --accept-hooks`",
     "no_restore_cwd": "`--in <dir>` (the gateway keeps the session's frozen cwd)",
     "usage_file": "`hermes sessions stats` / `hermes insights` after the run",

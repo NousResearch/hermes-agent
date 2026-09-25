@@ -92,7 +92,7 @@ def _exists(path: Path) -> bool:
 def _systemd(home: Path, deadline: float) -> ExistingService | None:
     from hermes_cli import gateway as gw
     from hermes_cli.service_manager import _s6_running
-    from hermes_cli.gateway_runtime_service_identity import SYSTEMD_IDENTITY_PROPERTIES, verify_systemd
+    from hermes_cli.gateway_runtime_service_identity import ForeignRoot, SYSTEMD_IDENTITY_PROPERTIES, verify_systemd
     if _s6_running():
         raise RuntimeStartError("external_supervisor")
     suffix = service_suffix(home)
@@ -100,9 +100,11 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
     paths = (Path.home() / ".config/systemd/user" / unit, Path("/etc/systemd/system") / unit)
     # On non-systemd hosts there is no manager to own transient units. Installed
     # definitions still count: a broken manager is not permission to bypass one.
-    manager_paths = (Path("/run/systemd/system"),
-                     Path(f"/run/user/{os.getuid()}/systemd/private"))  # windows-footgun: ok — native systemd only
-    if not any(_exists(p) for p in (*paths, *manager_paths)):
+    # Every Hermes entrypoint ensures the gateway, so a host with no installed unit must not
+    # touch the service manager at all (a headless runner has no user bus to answer it).
+    # With a unit installed anywhere, both scopes are asked: two claiming the name is a conflict.
+    installed = (*paths, Path("/usr/lib/systemd/system") / unit, Path("/lib/systemd/system") / unit)
+    if not any(_exists(p) for p in installed):
         return None
     found = []
     for system in (False, True):
@@ -110,7 +112,9 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
         result = _run([*command, "show", unit, "--no-pager", "--all",
                        "--property=LoadState,ActiveState,SubState,UnitFileState," + ",".join(SYSTEMD_IDENTITY_PROPERTIES)], deadline)
         props = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
-        if props.get("LoadState") == "not-found" and not _exists(paths[int(system)]):
+        if not _exists(paths[int(system)]) and (result.returncode or props.get("LoadState") == "not-found"):
+            # Nothing installed in this scope: an unreachable or empty manager there has no
+            # unit that could serve or block this home.
             continue
         if result.returncode or props.get("LoadState") != "loaded":
             raise RuntimeStartError("service_manager_unavailable")
@@ -128,6 +132,11 @@ def _systemd(home: Path, deadline: float) -> ExistingService | None:
             raise RuntimeStartError("service_identity_unverified")
         try:
             verify_systemd(props, environment.stdout, home, system=system)
+        except ForeignRoot:
+            # A unit named like ours but pinned to another HOME root belongs to a
+            # different install (a sandbox HOME beside a real one); it neither serves
+            # nor blocks this home.
+            continue
         except ValueError as exc:
             reason = str(exc)
             raise RuntimeStartError(reason if reason in {

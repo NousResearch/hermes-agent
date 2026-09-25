@@ -14,57 +14,8 @@ You can also point Hermes at **external skill directories** — additional folde
 
 See also:
 
-- [Bundled Skills Catalog](/reference/skills-catalog)
-- [Official Optional Skills Catalog](/reference/optional-skills-catalog)
-
-## Browse and install in Desktop
-
-Open **Capabilities → Skills** and switch between **Installed** and **Browse**.
-Search stays at the top; the tab switch and actions share one row.
-**Installed** reads the selected profile's actual skills and enabled state;
-it is not inferred from the public catalog. **Browse** is a native catalog UI,
-not an embedded website or a second, smaller catalog. Cards are the default;
-the list and card icons at the right of the filters switch layouts without
-clearing search or filters. The choice is remembered across Skills and Plugins.
-Click a card for details or use its Install button directly.
-
-Desktop and the public [Skills Hub](/skills) read the same published CDN
-snapshot: [`/docs/api/skills.json`](https://hermes-agent.nousresearch.com/docs/api/skills.json).
-The public docs alias serves the same snapshot as Desktop's fetch URL,
-`https://nousresearch.github.io/hermes-agent/docs/api/skills.json`. The docs
-build generates it from bundled `skills/`, `optional-skills/`, and the
-centralized skills index. Browsing does not crawl GitHub or query upstream
-marketplaces live; installation still retrieves the selected skill through
-its source's installer.
-
-### Install from the website
-
-The Skills Hub has an **Install in Hermes** button on each installable card. It opens the
-installed Hermes Desktop app with a URL-encoded, source-qualified skill target:
-for example, `official/...` for optional skills or `clawhub/...` for ClawHub.
-Bundled skills use an explicit repository path rather than an ambiguous bare
-name. When an older snapshot lacks that explicit bundled target, the website
-omits its install link and native Browse disables installation rather than
-resolving an ambiguous name. The next docs publish supplies those targets.
-The same target is used by native Browse and the card's CLI fallback:
-
-```text
-hermes://skill/install?identifier=official%2Fsecurity%2F1password
-```
-
-Hermes shows **Install “skill-name”?** with separate **Source** and **Install to**
-rows. Cancel makes no changes. After confirmation, the same dialog shows
-**Installing…**, then **Installed** and a completion notification. Errors stay
-in the dialog so you can read them and retry. Installation uses the existing
-Skills Hub pipeline, including security scanning, action logs, and installed-list
-refresh. If you switch profile or connection while the confirmation is open,
-reopen the link for the new destination. Changes apply to
-new sessions; a link cannot bypass scanning or select a different profile.
-
-The public links use `hermes://`, not the development-only `hermes-dev://`
-scheme. The `skill/install` route requires an updated Desktop build. If the
-app is missing or the link is not recognized, update Desktop or expand the
-card to copy its CLI install command instead.
+- [Bundled Skills Catalog](../../reference/skills-catalog.md)
+- [Official Optional Skills Catalog](../../reference/optional-skills-catalog.md)
 
 ## Starting with a blank slate
 
@@ -125,7 +76,7 @@ Parsing stops at the first token that isn't an installed skill, so arguments
 that happen to start with `/` (like file paths) are never swallowed:
 
 ```bash
-/ocr-and-documents /tmp/scan.pdf extract the tables   # loads one skill; /tmp/scan.pdf is the argument
+/ocr-and-documents ~/.hermes/cache/scratch/scan.pdf extract the tables   # loads one skill; ~/.hermes/cache/scratch/scan.pdf is the argument
 ```
 
 For combinations you use repeatedly, prefer a [skill bundle](#skill-bundles) —
@@ -328,7 +279,7 @@ required_environment_variables:
 
 When a missing value is encountered, Hermes asks for it securely only when the skill is actually loaded in the local CLI. You can skip setup and keep using the skill. Messaging surfaces never ask for secrets in chat — they tell you to use `hermes setup` or `~/.hermes/.env` locally instead.
 
-Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](/user-guide/security#environment-variable-passthrough) for details.
+Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](../security.md#environment-variable-passthrough) for details.
 
 ### Skill Config Settings
 
@@ -346,7 +297,7 @@ metadata:
 
 Settings are stored under `skills.config` in your config.yaml. `hermes config migrate` prompts for unconfigured settings, and `hermes config show` displays them. When a skill loads, its resolved config values are injected into the context so the agent knows the configured values automatically.
 
-See [Skill Settings](/user-guide/configuration#skill-settings) and [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml) for details.
+See [Skill Settings](../configuration.md#skill-settings) and [Creating Skills — Config Settings](../../developer-guide/creating-skills.md#config-settings-configyaml) for details.
 
 ## Skill Directory Structure
 
@@ -437,7 +388,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
+- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch` (targeted or full rewrite), `write_file`, `remove_file`, or `delete`.
 - **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
@@ -522,6 +473,8 @@ Trust is a repo-level decision, but a repo's skill content changes with every `g
 ### Non-interactive surfaces (cron, API, ACP)
 
 Cron jobs and other non-interactive surfaces inherit your interactive trust decision — they never prompt and never auto-trust. The project root resolves from the surface's working directory (a cron job's `workdir`, via the same mechanism the terminal tool uses). A cron job whose `workdir` is inside a repo you previously trusted loads that repo's project skills; a job in an untrusted or undecided repo loads none.
+
+In the TUI and Desktop the project root follows each **session's workspace** (the directory shown in the sidebar / set with the workspace picker), so starting `hermes --tui` inside a trusted repo registers its project skills as slash commands even when `terminal.cwd` is left at the default placeholder `.`; two sessions open in two repos each see their own.
 
 ## Skill Bundles
 
@@ -641,10 +594,12 @@ holds a small set of files named by topic (a decision table, a recipe, provider 
 extended in place rather than accumulated one file per session. Skills also do not
 restate what is already loaded every turn (the repo's `AGENTS.md`, tool schemas).
 
-`skill_manage` runs an advisory linter on `create` and on `references/` writes and
-returns its findings in the tool result. Two rules exist specifically for this shape:
-`incident-log-shape` (a body dense in PR/issue numbers) and `references-sprawl` (more
-than 60 reference files). They warn; they never block a write.
+`skill_manage` runs an advisory linter on `create`, on `SKILL.md` patches, and on `references/`
+writes and returns its findings in the tool result. Three rules exist specifically for this shape:
+`incident-log-shape` (a body dense in PR/issue numbers), `references-sprawl` (more
+than 60 reference files), and `oversized-body` (a `SKILL.md` body past ~24k chars — `skill_view`
+loads the whole file and it stays in context for the rest of the session). They warn; they never
+block a write.
 
 ### Actions
 
@@ -652,19 +607,26 @@ than 60 reference files). They warn; they never block a write.
 |--------|---------|------------|
 | `create` | New skill from scratch | `name`, `content` (full SKILL.md), optional `category` |
 | `patch` | Targeted fixes (preferred) | `name`, `old_string`, `new_string` |
-| `edit` | Major structural rewrites | `name`, `content` (full SKILL.md replacement) |
+| `patch` with `content` | Major structural rewrites (replaces the whole SKILL.md; `edit` is the legacy alias) | `name`, `content` |
 | `delete` | Remove a skill entirely | `name` |
 | `write_file` | Add/update supporting files | `name`, `file_path`, `file_content` |
 | `remove_file` | Remove a supporting file | `name`, `file_path` |
 
+Each action is advertised as its own shape: the text slot belongs to one action only
+(`content` → create / full rewrite, `new_string` → targeted patch, `file_content` →
+write_file). An op that carries another action's slot — e.g. `file_content` on a
+`create` — is invalid against the tool schema (grammar-constrained local backends never
+emit it) and, if it arrives anyway, is rejected **before any op in the batch is
+applied**, with an error naming the key the text sits in and where to move it.
+
 :::tip
-The `patch` action is preferred for updates — it's more token-efficient than `edit` because only the changed text appears in the tool call.
+The targeted `patch` is preferred for updates — it's more token-efficient than a full rewrite because only the changed text appears in the tool call.
 :::
 
 ### Gating agent skill writes (`skills.write_approval`)
 
 By default the agent writes skills freely — including from the [background
-self-improvement review](/user-guide/features/memory#controlling-memory-writes-write_approval)
+self-improvement review](./memory.md#controlling-memory-writes-write_approval)
 that runs after a turn. If you'd rather approve every skill write first
 (small models that misjudge what they learned, secure environments, or just
 wanting eyes on the self-improvement loop), turn on the write-approval gate:
@@ -692,11 +654,11 @@ reviewed with the same familiar approve/deny flow as dangerous commands:
 The review surface works in the interactive CLI and on messaging platforms
 (diff output is truncated for chat bubbles — read the full diff on the CLI or
 in the pending JSON file). Memory writes have the same gate under
-`memory.write_approval` — see [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+`memory.write_approval` — see [Controlling memory writes](./memory.md#controlling-memory-writes-write_approval).
 
 > The separate `skills.guard_agent_created` setting is a content scanner
 > (dangerous-pattern heuristics), not an approval gate — the two are
-> independent. See [Guard on agent-created skill writes](/user-guide/configuration#guard-on-agent-created-skill-writes).
+> independent. See [Guard on agent-created skill writes](../configuration.md#guard-on-agent-created-skill-writes).
 
 ## Skills Hub
 

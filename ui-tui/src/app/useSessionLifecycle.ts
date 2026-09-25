@@ -7,6 +7,7 @@ import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/ga
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
 import { localCreationOptions } from '../canonicalGateway.js'
+import { STARTUP_WORKSPACE_CWD } from '../config/env.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
@@ -23,6 +24,7 @@ import { migratePendingInputs } from '../lib/pendingInputs.js'
 import { asRpcResult } from '../lib/rpc.js'
 import type { Msg, PanelSection, SessionInfo } from '../types.js'
 
+import { applyConnectionRequest, clearConnectionOperation } from './connectionOperationStore.js'
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { scheduleResumeScrollToBottom } from './sessionResumeView.js'
@@ -64,12 +66,14 @@ export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg
   const user = String(inflight?.user ?? '').trim()
 
   return user
-    ? toTranscriptMessages([{
-        role: 'user',
-        text: user,
-        ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
-        ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
-      }])
+    ? toTranscriptMessages([
+        {
+          role: 'user',
+          text: user,
+          ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
+          ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
+        }
+      ])
     : []
 }
 
@@ -298,8 +302,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           if (flight !== attachmentFlight.current) {return null}
         }
 
+        // HERMES_TUI_CWD is the dashboard-picked workspace: an explicit cwd on
+        // session.create on both transports, so /new stays in that workspace.
+        const workspaceCwd = STARTUP_WORKSPACE_CWD ? { cwd: STARTUP_WORKSPACE_CWD } : {}
+
         const r = await rpc<SessionCreateResponse>('session.create', gw.isCanonical
-          ? { request_id: randomUUID(), ...localCreationOptions() } : { cols: colsRef.current })
+          ? { request_id: randomUUID(), ...localCreationOptions(), ...workspaceCwd }
+          : { cols: colsRef.current, ...workspaceCwd })
 
         if (flight !== attachmentFlight.current) {
           discardStaleAttachment(r)
@@ -406,6 +415,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       const previousSubscription = previousSid ? canonicalSubscriptions.current.get(previousSid) : undefined
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
+      // The card belongs to the session being left; the activated one answers with its own.
+      clearConnectionOperation()
 
       const pendingDetach = canonicalDetachFlights.current.get(id)
 
@@ -454,6 +465,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
           // still-pending approval/clarify prompts are the only way they come back.
           gw.hydrateSharedPrompts?.(r)
           hydrateLiveSessionInflight(r.inflight)
+
+          if (r.pending_connection) {
+            applyConnectionRequest(r.pending_connection)
+          }
+
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
           adoptAttachment(r, previousSid, previousSubscription)
@@ -541,6 +557,13 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             })
             gw.hydrateSharedPrompts?.(r)
             hydrateLiveSessionInflight(r.inflight)
+
+            if (r.pending_connection) {
+              applyConnectionRequest(r.pending_connection)
+            } else {
+              clearConnectionOperation()
+            }
+
             cancelResumeScrollRef.current?.()
             cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
 

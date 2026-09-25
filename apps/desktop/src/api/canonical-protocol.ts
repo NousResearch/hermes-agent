@@ -38,7 +38,12 @@ function mutationSummary(operation: string, value: Record<string, unknown>): str
 }
 
 // Explicit desktop methods that travel as canonical `session.mutate`.
-const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.branch', 'session.compress'])
+// `session.branch_stored` / `session.branch_whole` are legacy whole-history branches keyed by a
+// stored parent id; the authority has ONE branch, a `branch` mutation on the parent, whose child
+// is a local route the authority can restore (a legacy-minted child has no local policy and every
+// resume on it answers not_found).
+const BRANCH_METHODS = new Set(['session.branch', 'session.branch_stored', 'session.branch_whole'])
+const MUTATION_METHODS = new Set(['session.title', 'session.archive', 'session.compress', ...BRANCH_METHODS])
 
 export class CanonicalDesktopProtocol {
   private creates = new Map<string, string>()
@@ -65,6 +70,10 @@ export class CanonicalDesktopProtocol {
   // everything else keeps its name.
   wire(method: string, prepared: Record<string, unknown> = {}): string {
     if (MUTATION_METHODS.has(method)) { return 'session.mutate' }
+
+    // The warm-cache re-attach: canonical attach is `session.resume`, which
+    // rebinds the live event transport and returns the same snapshot shape.
+    if (method === 'session.activate') { return 'session.resume' }
 
     return method === 'slash.exec' && typeof prepared.operation === 'string' ? 'session.mutate' : method
   }
@@ -102,6 +111,14 @@ export class CanonicalDesktopProtocol {
 
     if (fenced) { return this.retainedMutation(params.session_id, fenced.operation, fenced.payload, true) }
 
+    if (method === 'session.branch_stored' || method === 'session.branch_whole') {
+      // The stored-parent form names the parent as `parent_session_id`; the live form as `session_id`.
+      const parent = params.parent_session_id ?? params.session_id
+      const payload = typeof params.title === 'string' && params.title ? { title: params.title } : {}
+
+      return this.retainedMutation(parent, 'branch', payload, true)
+    }
+
     if (method === 'slash.exec') {
       const directive = slashMutation(String(params.command ?? ''))
 
@@ -109,16 +126,24 @@ export class CanonicalDesktopProtocol {
     }
 
     if (method === 'session.create') {
-      const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols'])
+      const allowed = new Set(['request_id', 'source', 'cwd', 'model', 'toolsets', 'profile', 'cols', 'title', 'hidden', 'follow_profile_config'])
       const unsupported = Object.keys(params).filter(key => !allowed.has(key) && !(key === 'fast' && params[key] === false))
 
       if (unsupported.length) { throw new Error(`Canonical gateway does not support explicit session options: ${unsupported.join(', ')}`) }
-      const result = Object.fromEntries(Object.entries(params).filter(([key]) => ['request_id', 'cwd', 'model', 'toolsets'].includes(key)))
+
+      // The socket is bound to a profile already; only a sibling the host multiplexes rides as `profile`.
+      const result = Object.fromEntries(Object.entries(params).filter(([key, value]) =>
+        ['request_id', 'cwd', 'model', 'toolsets', 'title', 'hidden'].includes(key) || (key === 'profile' && value && value !== 'default')))
+
       const key = JSON.stringify(result)
       const requestId = params.request_id ?? this.creates.get(key) ?? crypto.randomUUID()
       this.creates.set(key, String(requestId))
 
       return { ...result, request_id: requestId, source: 'gui' }
+    }
+
+    if (method === 'session.activate') {
+      return { session_id: params.session_id, source: 'desktop', ...(params.profile ? { profile: params.profile } : {}) }
     }
 
     if (method === 'session.interrupt' || method === 'session.redirect' || method === 'session.steer') {
@@ -207,7 +232,7 @@ export class CanonicalDesktopProtocol {
 
       for (const [key, mutation] of this.mutations) { if (mutation.request_id === params.request_id) { this.mutations.delete(key) } }
 
-      if (method === 'session.branch') {
+      if (BRANCH_METHODS.has(method)) {
         return { ...value, session_id: value.branched_session_id, stored_session_id: value.branched_session_id, parent_session_id: params.session_id, message_count: value.copied_messages }
       }
 
@@ -238,7 +263,7 @@ export class CanonicalDesktopProtocol {
       return { ...value, session_id: value.ref.session_id }
     }
 
-    if (method === 'session.resume' || method === 'session.create') {
+    if (method === 'session.resume' || method === 'session.create' || method === 'session.activate') {
       const sid = value.session_id
       this.event({ type: 'session.info', session_id: sid, payload: value })
 

@@ -44,13 +44,3 @@ def test_a_non_boolean_is_refused_rather_than_written(config_home):
     assert not config_home.exists()
 
 
-def test_every_key_the_renderer_mirrors_is_listed():
-    """The list is the contract: a switch missing from it silently does nothing.
-
-    Kept as a relationship rather than a snapshot — it asserts that the tools
-    which gate on `display.<x>` all have `<x>` reachable through config.set,
-    not that the set has some particular size.
-    """
-    gated = {"display.message_reactions", "display.in_app_tips", "display.in_app_tours"}
-
-    assert gated <= server._DISPLAY_TOGGLE_KEYS

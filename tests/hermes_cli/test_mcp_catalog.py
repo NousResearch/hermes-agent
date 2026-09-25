@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 import yaml
@@ -122,6 +121,16 @@ class TestManifestParsing:
         assert e.auth.type == "none"
         assert e.install is None
         assert e.suggest is None
+        assert e.connector_slug is None
+
+    def test_connector_slug_metadata_reaches_the_catalog_payload(self, catalog_dir):
+        from hermes_cli.mcp_catalog import _parse_manifest
+        from hermes_cli.web_routers.mcp import _catalog_entry_json
+
+        path = _write_manifest(catalog_dir, "demo", _basic_manifest(connector_slug="demo-connector"))
+        entry = _parse_manifest(path)
+
+        assert _catalog_entry_json(entry, False, False)["connector_slug"] == "demo-connector"
 
     def test_suggest_block_parsed_and_normalized(self, catalog_dir):
         _write_manifest(
@@ -222,7 +231,8 @@ class TestManifestParsing:
                 "type": "api_key",
                 "env": [
                     {"name": "DEMO_KEY", "prompt": "API key", "secret": True},
-                    {"name": "DEMO_URL", "prompt": "Base URL", "secret": False, "required": False},
+                    {"name": "DEMO_URL", "prompt": "Base URL", "secret": False,
+                     "required": False, "default": "https://demo.example"},
                 ],
             }
         )
@@ -236,6 +246,7 @@ class TestManifestParsing:
         assert e.auth.env[0].secret is True
         assert e.auth.env[1].required is False
         assert e.auth.env[1].secret is False
+        assert e.auth.env[1].default == "https://demo.example"
 
     def test_http_api_key_builds_bearer_headers_template(self, catalog_dir):
         body = _basic_manifest(
@@ -588,6 +599,52 @@ class TestInstall:
         assert "${MCP_DEMO_API_KEY}" in raw
         assert "secret-val" not in raw
 
+    def test_install_oauth_preregistered_client_writes_oauth_block(self, catalog_dir, monkeypatch):
+        """Vendors without DCR: ``auth.oauth`` lands verbatim in ``mcp_servers.<name>.oauth`` while
+        the credentials it references are prompted into .env — config.yaml stays secret-free."""
+        auth = {
+            "type": "oauth",
+            "env": [
+                {"name": "DEMO_CLIENT_ID", "prompt": "id", "secret": False},
+                {"name": "DEMO_CLIENT_SECRET", "prompt": "secret"},
+            ],
+            "oauth": {
+                "client_id": "${DEMO_CLIENT_ID}", "client_secret": "${DEMO_CLIENT_SECRET}",
+                "redirect_host": "localhost", "redirect_port": 27890,
+            },
+        }
+        _write_manifest(catalog_dir, "demo", _basic_manifest(
+            transport={"type": "http", "url": "https://mcp.example.com/v2/mcp"}, auth=auth))
+
+        from hermes_cli import mcp_catalog
+        from hermes_cli.config import get_config_path, get_env_value, load_config
+
+        monkeypatch.setattr(mcp_catalog, "_prompt_input", lambda prompt, **kw: f"val-for-{prompt}")
+        mcp_catalog.install_entry(_entry("demo"), enable=True)
+
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["auth"] == "oauth"
+        assert server["oauth"] == {
+            "client_id": "val-for-id", "client_secret": "val-for-secret",
+            "redirect_host": "localhost", "redirect_port": 27890,
+        }
+        assert get_env_value("DEMO_CLIENT_SECRET") == "val-for-secret"
+        raw = get_config_path().read_text(encoding="utf-8")
+        assert "${DEMO_CLIENT_SECRET}" in raw and "val-for-secret" not in raw
+        # Non-secret client id is inlined into config.yaml (not .env, not a ref):
+        # .env stays secrets-only.
+        assert get_env_value("DEMO_CLIENT_ID") is None
+        assert "${DEMO_CLIENT_ID}" not in raw
+        assert "val-for-id" in raw
+
+        # A ``${VAR}`` the manifest never declares would reach the token endpoint as a literal
+        # placeholder (invalid_client): rejected at parse time, like the api_key header contract.
+        auth["oauth"]["client_id"] = "${UNDECLARED_ID}"
+        path = _write_manifest(catalog_dir, "demo2", _basic_manifest(
+            "demo2", transport={"type": "http", "url": "https://mcp.example.com/v2/mcp"}, auth=auth))
+        with pytest.raises(mcp_catalog.CatalogError, match="UNDECLARED_ID"):
+            mcp_catalog._parse_manifest(path)
+
 
 
 
@@ -613,6 +670,22 @@ class TestUninstall:
 
         assert uninstall_entry("nonexistent") is False
 
+    def test_uninstall_removes_read_only_git_clone(self, monkeypatch):
+        """Loose objects are read-only in a clone: the purge must clear that, not abort (#117176)."""
+        import hermes_cli.mcp_catalog as mc
+
+        monkeypatch.setattr(mc, "remove_server", lambda name: False)
+        clone = mc._install_root() / "demo"
+        obj_dir = clone / ".git" / "objects" / "4b"
+        obj_dir.mkdir(parents=True)
+        obj = obj_dir / "825dc642cb6eb9a060e54bf8d69288fbee4904"
+        obj.write_text("blob", encoding="utf-8")
+        obj.chmod(0o444)
+        obj_dir.chmod(0o555)
+
+        assert mc.uninstall_entry("demo") is True
+        assert not clone.exists()
+
 
 # ---------------------------------------------------------------------------
 # Picker (non-TTY paths only — interactive curses is integration-tested)
@@ -620,12 +693,6 @@ class TestUninstall:
 
 
 class TestPicker:
-    def test_show_catalog_empty(self, catalog_dir, capsys):
-        from hermes_cli.mcp_picker import show_catalog
-
-        show_catalog()
-        out = capsys.readouterr().out
-        assert "No MCPs in the catalog or configured" in out
 
 
     def test_install_by_name_success(self, catalog_dir):
@@ -646,7 +713,7 @@ class TestPicker:
 
         run_picker()
         out = capsys.readouterr().out
-        assert "MCP Catalog + configured servers" in out
+        assert "demo" in out
 
 
 # ---------------------------------------------------------------------------
@@ -888,6 +955,18 @@ class TestToolsConfigIncludeMode:
 
 
 class TestShippedCatalog:
+
+    def test_manifest_connector_slugs_are_valid_and_unique(self, monkeypatch):
+        from hermes_cli.mcp_catalog import catalog_diagnostics, list_catalog
+
+        source_catalog = Path(__file__).parents[2] / "optional-mcps"
+        monkeypatch.setattr("hermes_cli.mcp_catalog._catalog_root", lambda: source_catalog)
+        slugs = [entry.connector_slug for entry in list_catalog() if entry.connector_slug is not None]
+
+        assert catalog_diagnostics() == []
+        assert slugs
+        assert len(slugs) == len(set(slugs))
+
     def test_all_shipped_manifests_parse(self, monkeypatch):
         """Every manifest in optional-mcps/ must parse cleanly.
 

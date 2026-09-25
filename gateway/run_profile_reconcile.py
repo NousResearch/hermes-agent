@@ -48,6 +48,7 @@ class GatewayProfileReconcileMixin:
     _served_profile_homes: Optional[Dict[str, "Path"]] = None
     _served_profile_signatures: Optional[Dict[str, tuple]] = None
     _profile_reconcile_lock: Optional[asyncio.Lock] = None
+    _profile_own_gateway_warned: Optional[set[str]] = None
 
     # ── state helpers ─────────────────────────────────────────────────────────────────────────────
 
@@ -109,8 +110,22 @@ class GatewayProfileReconcileMixin:
             active = getattr(self, "_primary_profile_name", None) or "default"
             live = {str(name): Path(home) for name, home in profiles_to_serve(multiplex=True)}
             known = dict(self._served_profile_homes or {})
+            from gateway.status import live_gateway_pid_for_home
+
+            blocked = set()
+            warned = self._profile_own_gateway_warned or set()
+            for name in list(live):
+                if name == active or name in known:
+                    continue
+                if live_gateway_pid_for_home(live[name]) is not None:
+                    blocked.add(name)
+                    if name not in warned:
+                        logger.warning("[MULTIPLEX] Profile '%s' still runs its own gateway; "
+                                       "stop it before the host can serve this profile", name)
+                    del live[name]
+            self._profile_own_gateway_warned = blocked
             sigs = self._served_profile_signatures or {}
-            from gateway.run_runtime import park_profile, unpark_profile
+            from gateway.run_runtime import unpark_profile
             for name in [n for n in self._parked_profile_names() if n not in live]:
                 unpark_profile(self, name)
             parked = self._parked_profile_names()
@@ -120,55 +135,88 @@ class GatewayProfileReconcileMixin:
             removed = [n for n in known if n not in live and n != active]
             changed = [n for n in live if n in known and n != active and n not in added
                        and profile_serve_signature(live[n]) != sigs.get(n)]
-            if not (added or removed or changed):
-                return {**result, "served_profiles": self.served_profile_names()}
-            for name in removed:
-                await self._unserve_profile(name, known[name])
-                result["removed"].append(name)
             current = {n: h for n, h in live.items() if n in known or n == active}
-            for name in list(added):
-                reason = await self._serve_profile_runtime(name, live[name])
-                if reason is not None:
-                    added.remove(name)
-                    park_profile(self, name, reason)
-                    result["parked"].append(name)
-                    continue
-                unpark_profile(self, name)
-                current[name] = live[name]
-            claimed = self._live_resource_claims(active)
-            for name in added + changed:
-                # Only acknowledge the configuration observed before connecting;
-                # a setup save during an awaited handshake needs another scan.
-                scan_signature = profile_serve_signature(current[name])
-                try:
-                    connected = await self._start_one_profile_adapters(name, current[name], claimed)
-                except MultiplexConfigError as exc:
-                    # Boot refuses to run with such a profile; at runtime we park just this profile.
-                    logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
-                    connected = 0
-                except Exception:
-                    logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
-                    connected = 0
+            return await self._apply_profile_changes(
+                current, added, removed, changed, reason=reason, live=live, result=result)
+
+    async def _apply_profile_changes(self, current, added, removed, changed, *, reason,
+                                     live=None, result=None):
+        """Apply a selected diff under the reconcile lock, shared by the watcher and the
+        serve/unserve control verbs. New profiles first get a runtime (reservation + store); one
+        whose home another gateway owns or whose store is unusable is parked, not served."""
+        from gateway.run import MultiplexConfigError
+        from gateway.run_runtime import park_profile, unpark_profile
+        from hermes_cli.profiles import profiles_to_serve
+        active = getattr(self, "_primary_profile_name", None) or "default"
+        result = dict(result or {"added": [], "removed": [], "rescanned": [], "parked": [], "reason": reason})
+        result.setdefault("parked", [])
+        live = live if live is not None else dict(current)
+        known = dict(self._served_profile_homes or {})
+        sigs = self._served_profile_signatures or {}
+        if not (added or removed or changed):
+            return {**result, "served_profiles": self.served_profile_names()}
+        for name in removed:
+            await self._unserve_profile(name, known[name])
+            result["removed"].append(name)
+        for name in list(added):
+            reason_ = await self._serve_profile_runtime(name, live[name])
+            if reason_ is not None:
+                added.remove(name)
+                park_profile(self, name, reason_)
+                result["parked"].append(name)
+                continue
+            unpark_profile(self, name)
+            current[name] = live[name]
+        claimed = self._live_resource_claims(active)
+        transient_failed = set()
+        for name in added + changed:
+            # Only acknowledge the configuration observed before connecting;
+            # a setup save during an awaited handshake needs another scan.
+            scan_signature = profile_serve_signature(current[name])
+            try:
+                connected = await self._start_one_profile_adapters(name, current[name], claimed)
+            except MultiplexConfigError as exc:
+                # Boot refuses to run with such a profile; at runtime we park just this profile.
+                logger.error("[MULTIPLEX] Profile '%s' not served: %s", name, exc)
+                connected = 0
                 sigs[name] = scan_signature
-                if name in added:
-                    logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
-                    result["added"].append(name)
-                else:
-                    logger.info("[MULTIPLEX] Re-scanned profile '%s' after config/.env change (%s adapter(s) connected)", name, connected)
-                    result["rescanned"].append(name)
-            self._served_profile_signatures = sigs
-            # A profile deleted while an adapter above was still connecting must not be recorded back
-            # (the deleter's signal timed out against this lock and rmtree already ran).
-            live_now = {str(name) for name, _home in profiles_to_serve(multiplex=True)}
-            for name in [n for n in current if n not in live_now and n != active]:
-                await self._unserve_profile(name, current.pop(name))
-                result["removed"].append(name)
-                added = [n for n in added if n != name]
-            self._record_served_profiles(active, list(current.items()))
-            if added:
-                await self._after_profiles_added([(n, current[n]) for n in added])
-            result["served_profiles"] = self.served_profile_names()
-            return result
+            except Exception:
+                logger.error("[MULTIPLEX] Failed to start adapters for profile '%s'", name, exc_info=True)
+                connected = 0
+                # A transient failure is not the deliberate park above: leave the signature
+                # unacknowledged so the next reconcile retries the connect.
+                transient_failed.add(name)
+            else:
+                sigs[name] = scan_signature
+            if name in added:
+                logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)
+                result["added"].append(name)
+            else:
+                logger.info("[MULTIPLEX] Re-scanned profile '%s' after config/.env change (%s adapter(s) connected)", name, connected)
+                result["rescanned"].append(name)
+        self._served_profile_signatures = sigs
+        # A profile deleted while an adapter above was still connecting must not be recorded back
+        # (the deleter's signal timed out against this lock and rmtree already ran).
+        live_now = {str(name) for name, _home in profiles_to_serve(multiplex=True)}
+        for name in [n for n in current if n not in live_now and n != active]:
+            await self._unserve_profile(name, current.pop(name))
+            result["removed"].append(name)
+            added = [n for n in added if n != name]
+        self._record_served_profiles(active, list(current.items()))
+        # ``_note_served_profiles`` fills a missing signature with the current one; that refill
+        # would park a transiently-failed profile exactly like the config-error case above.
+        for name in transient_failed:
+            if isinstance(self._served_profile_signatures, dict):
+                self._served_profile_signatures.pop(name, None)
+            # A cached config with no live adapters is owed a home-channel notice nothing can
+            # deliver, and the planned-restart marker then never clears.
+            configs = getattr(self, "_profile_configs", None)
+            if isinstance(configs, dict):
+                configs.pop(name, None)
+        if added:
+            await self._after_profiles_added([(n, current[n]) for n in added])
+        result["served_profiles"] = self.served_profile_names()
+        return result
 
     def _parked_profile_names(self) -> list:
         """Profiles that exist but could not be served (unusable store, home owned elsewhere); boot's
@@ -229,48 +277,112 @@ class GatewayProfileReconcileMixin:
                 logger.warning("MCP tool discovery failed for profile '%s'", profile_name, exc_info=True)
 
     async def _unserve_profile(self, name: str, home: "Path") -> None:
-        """Stop and unroute one deleted profile: cancel its reconnects, tear down its adapters, drop its
-        bookkeeping and release this process's handles into its home so the deleter's rmtree succeeds."""
-        from gateway.run import _write_runtime_status_quiet
+        """Stop and unroute one profile: cancel its reconnects, tear down its adapters, drop its
+        bookkeeping and release this process's handles into its home so the deleter's rmtree succeeds.
+
+        The whole teardown runs inside the removed profile's own runtime scope: adapter disconnect
+        hooks, the agent-cache eviction (provider/memory shutdown) and the state/memory handle
+        release all read config and credentials at call time, and this coroutine runs on the
+        reconcile task with no profile bound — unscoped they resolved against the LAUNCH home, so a
+        teardown hook needing this profile's credential failed closed (or, worse, borrowed the launch
+        profile's). Secrets are not re-hydrated: teardown must not block the loop on a source fetch.
+        """
+        from gateway.run import _profile_runtime_scope, _write_runtime_status_quiet
         pending = (getattr(self, "_profile_failed_platforms", None) or {}).pop(name, None) or {}
         tasks = [t for t in pending.values() if isinstance(t, asyncio.Task) and not t.done()]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.wait(tasks, timeout=self._adapter_disconnect_timeout_secs())
-        adapters = (getattr(self, "_profile_adapters", None) or {}).pop(name, None) or {}
-        for platform, adapter in list(adapters.items()):
-            await self._bounded_adapter_teardown(adapter, platform, profile=name)
-        # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
-        _write_runtime_status_quiet(drop_profile_platforms=name)
-        for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile"):
-            store = getattr(self, attr, None)
-            if isinstance(store, dict):
-                store.pop(name, None)
-        if isinstance(self._served_profile_homes, dict):
-            self._served_profile_homes.pop(name, None)
-        if isinstance(self._served_profile_signatures, dict):
-            self._served_profile_signatures.pop(name, None)
-        from gateway.session import _session_key_namespace
-        prefix = _session_key_namespace(name) + ":"
-        cache = getattr(self, "_agent_cache", None)
-        for key in [k for k in list(cache or {}) if str(k).startswith(prefix)]:
-            with _log_suppressed(logging.DEBUG, "agent eviction failed for %s", key, exc_info=True):
-                self._evict_cached_agent(key)
-        # Its session authority and reservation go before the store handles: the authority owns the
-        # state.db writer, and the next restart must not try to reserve a home that no longer exists.
-        from gateway.run_runtime import release_profile_home, unserve_profile_runtime
-        if getattr(self, "session_authorities", None) is not None:
-            with _log_suppressed(logging.WARNING, "session authority retirement failed for %s", name, exc_info=True):
-                await unserve_profile_runtime(self, home)
-        release_profile_home(self, home)
-        with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
-            from hermes_state_registry import close_all_under
-            close_all_under(home)
-        with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
-            from plugins.memory.holographic.store import MemoryStore
-            MemoryStore.release_all_under(home)
-        logger.info("[MULTIPLEX] Profile '%s' deleted — %d adapter(s) stopped and unrouted", name, len(adapters))
+        with _profile_runtime_scope(Path(home), hydrate_secrets=False):
+            adapters = (getattr(self, "_profile_adapters", None) or {}).pop(name, None) or {}
+            for platform, adapter in list(adapters.items()):
+                await self._bounded_adapter_teardown(adapter, platform, profile=name)
+            # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
+            _write_runtime_status_quiet(drop_profile_platforms=name)
+            for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
+                         "_busy_text_timing_by_profile", "_human_delay_by_profile", "_profile_configs"):
+                store = getattr(self, attr, None)
+                if isinstance(store, dict):
+                    store.pop(name, None)
+            if isinstance(self._served_profile_homes, dict):
+                self._served_profile_homes.pop(name, None)
+            if isinstance(self._served_profile_signatures, dict):
+                self._served_profile_signatures.pop(name, None)
+            from gateway.session import _session_key_namespace
+            prefix = _session_key_namespace(name) + ":"
+            cache = getattr(self, "_agent_cache", None)
+            for key in [k for k in list(cache or {}) if str(k).startswith(prefix)]:
+                with _log_suppressed(logging.DEBUG, "agent eviction failed for %s", key, exc_info=True):
+                    self._evict_cached_agent(key)
+            # Its session authority and reservation go before the store handles: the authority owns the
+            # state.db writer, and the next restart must not try to reserve a home that no longer exists.
+            from gateway.run_runtime import release_profile_home, unserve_profile_runtime
+            if getattr(self, "session_authorities", None) is not None:
+                with _log_suppressed(logging.WARNING, "session authority retirement failed for %s", name, exc_info=True):
+                    await unserve_profile_runtime(self, home)
+            release_profile_home(self, home)
+            with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
+                from hermes_state_registry import close_all_under
+                close_all_under(home)
+            with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
+                from plugins.memory.holographic.store import MemoryStore
+                MemoryStore.release_all_under(home)
+            logger.info("[MULTIPLEX] Profile '%s' unserved — %d adapter(s) stopped and unrouted", name, len(adapters))
+
+
+def _profile_lifecycle_verb(runner, *, serve: bool):
+    """Build on the owning loop; socket handlers themselves run on executor threads."""
+    loop = asyncio.get_running_loop()
+
+    async def apply(name):
+        from hermes_cli.profiles import profiles_to_serve, profile_is_parked
+        if not runner._multiplex_on() or not runner._running or runner._served_profile_homes is None:
+            return {"error": "host multiplexer is not ready"}
+        async with runner._reconcile_lock():
+            active = getattr(runner, "_primary_profile_name", None) or "default"
+            if not isinstance(name, str) or not name or name == active:
+                return {"error": "a non-launch profile name is required"}
+            known = dict(runner._served_profile_homes)
+            if not serve:
+                if name not in known:
+                    return {"error": f"profile '{name}' is not served"}
+                await runner._unserve_profile(name, known.pop(name))
+                runner._record_served_profiles(active, list(known.items()))
+                return {"unserved": name, "served_profiles": runner.served_profile_names()}
+            installed = dict(profiles_to_serve(True, include_parked=True))
+            if name not in installed:
+                return {"error": f"unknown profile '{name}'"}
+            if name != "default" and profile_is_parked(installed[name]):
+                return {"error": f"profile '{name}' is parked (gateway.parked)"}
+            if name in known:
+                return {"error": f"profile '{name}' is already served"}
+            known[name] = installed[name]
+            result = await runner._apply_profile_changes(known, [name], [], [], reason="control-socket")
+            if name not in result["served_profiles"]:
+                return {"error": f"profile '{name}' was removed or parked during startup"}
+            return {"served": name, "served_profiles": result["served_profiles"]}
+
+    def handler(params):
+        future = asyncio.run_coroutine_threadsafe(apply(params.get("name")), loop)
+        try:
+            return future.result(timeout=5.0)
+        except TimeoutError:
+            # Keep running: the client must not interpret an incomplete teardown as stopped.
+            return {"pending": True, "served_profiles": runner.served_profile_names()}
+        except Exception as exc:
+            logger.warning("Profile lifecycle request failed", exc_info=True)
+            return {"error": f"{type(exc).__name__}: {exc}"}
+
+    return handler
+
+
+def unserve_profile_verb(runner):
+    return _profile_lifecycle_verb(runner, serve=False)
+
+
+def serve_profile_verb(runner):
+    return _profile_lifecycle_verb(runner, serve=True)
 
 
 def _mcp_config_reconciler(runner=None):
@@ -298,17 +410,43 @@ def _mcp_config_reconciler(runner=None):
             logger.info("MCP servers reconciled with config (%s): removed=%s added=%s",
                         label, result["removed"], result["added"])
 
-    def _tick() -> None:
-        from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
-        config = getattr(runner, "config", None)
-        if not getattr(config, "multiplex_profiles", False):
-            _reconcile_current("default")
-            return
-        for profile_name, profile_home in _multiplex_profile_homes(config):
-            with _profile_runtime_scope(Path(profile_home)):
-                _reconcile_current(str(profile_name))
+    return lambda: _for_each_served_profile(runner, _reconcile_current)
 
-    return _tick
+
+def _for_each_served_profile(runner, body) -> None:
+    """Run ``body(profile_label)`` once per served profile, inside that profile's runtime scope.
+
+    Housekeeping runs on a bare thread with no turn on the stack, so nothing binds a profile for it:
+    ``get_hermes_home()`` and ``get_secret()`` see the LAUNCH profile's values, and under
+    ``gateway.multiplex_profiles`` a fail-closed credential read logs ``no profile secret scope on a
+    multiplexed call`` on every tick (the skills-sync pulls resolved Nous credentials this way, four
+    WARNINGs per hourly tick per chore). A single-profile gateway runs ``body`` once, unscoped:
+    there the process env IS the profile's own value — unless a hosted room already flipped the
+    process-wide guard (#112878), in which case the launch profile's OWN scope is bound, as
+    ``run_turn.py::_standalone_launch_scope`` does for turns."""
+    from gateway.run import _multiplex_profile_homes, _profile_runtime_scope
+    config = getattr(runner, "config", None)
+    if not getattr(config, "multiplex_profiles", False):
+        from gateway.run_turn import GatewayTurnMixin
+        with GatewayTurnMixin._standalone_launch_scope():
+            body("default")
+        return
+    for profile_name, profile_home in _multiplex_profile_homes(config):
+        # One boundary per profile: callers (``_housekeeping_chore``) catch only at the tick level,
+        # so one profile's unreadable store or broken .env abandoned every profile after it, on
+        # every tick. The launch store failing is reachable (``_init_session_db`` tolerates it and
+        # keeps running), and serve defers every served profile's sweep to this loop.
+        try:
+            with _profile_runtime_scope(Path(profile_home)):
+                body(str(profile_name))
+        except Exception as exc:
+            logger.debug("Housekeeping for profile %s skipped: %s", profile_name, exc)
+
+
+def profile_scoped_chore(runner, chore):
+    """Wrap a zero-arg housekeeping chore that reads the profile's home, config or credentials so it
+    runs once per served profile under that profile's scope (see ``_for_each_served_profile``)."""
+    return lambda: _for_each_served_profile(runner, lambda _label: chore())
 
 
 def migrate_profile_identity_verb(runner):

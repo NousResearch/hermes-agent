@@ -7,6 +7,7 @@ from hermes_state_local import POLICY_PREFIX
 from hermes_state_local_lineage import validate_local_lineage
 from hermes_state_mutation_guards import require_idle
 from hermes_state_runtime import RuntimeStoreError, _json
+from hermes_state_titles import lineage_title_on_conn
 
 
 def branch_in_transaction(db, conn, session_id, payload):
@@ -41,6 +42,11 @@ def branch_in_transaction(db, conn, session_id, payload):
     conn.execute('UPDATE sessions SET message_count=?,tool_call_count=? WHERE id=?', (len(ids), tools, child))
     if payload.get('title'):
         db._set_session_title_in_transaction(conn, child, payload['title'], source=db.TITLE_SOURCE_USER)
+    else:
+        # Untitled branch: the next name in the parent's lineage ("my session" → "my session #2"),
+        # same rule as the legacy TUI /branch, so the child is its own titled sidebar row.
+        db._set_session_title_in_transaction(conn, child, lineage_title_on_conn(conn, parent['title'] or 'branch'),
+                                             source=db.TITLE_SOURCE_DERIVED)
     receipt = dict(profile_id=saved['profile_id'], principal_id=saved['principal_id'],
                    request_id=request_id, session_id=child, route=route, entry=entry.to_dict(), policy=policy)
     conn.execute("INSERT INTO gateway_routing(scope,session_key,entry_json,updated_at) VALUES('',?,?,?)",

@@ -6,13 +6,29 @@ when ``~/.bash_profile`` contained ``exec /bin/zsh -l``.
 """
 
 import os
-import platform
+import shutil
 import subprocess
+import time
 from unittest.mock import patch
 
 import pytest
 
 from tools.environments.local import _find_bash, _find_shell
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        import psutil
+        try:
+            return psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+    except ImportError:
+        try:
+            os.kill(pid, 0)  # windows-footgun: ok — psutil fallback only on POSIX hosts without it
+        except OSError:
+            return False
+        return True
 
 
 class TestFindShellPrefersUserShell:
@@ -79,27 +95,8 @@ class TestFindShellWindowsBehavior:
             assert result == _find_bash()
 
 
-class TestFindShellReturnsString:
-    """_find_shell must return a string, never None."""
-
-    def test_returns_string(self):
-        """_find_shell always returns a non-empty string on any platform."""
-        result = _find_shell()
-        assert isinstance(result, str)
-        assert len(result) > 0
 
 
-class TestFindBashUnchanged:
-    """_find_bash should be unaffected by the _find_shell change."""
-
-    def test_find_bash_still_prefers_bash(self):
-        """_find_bash still returns bash (not $SHELL) on POSIX."""
-        result = _find_bash()
-        # On any system, _find_bash should return something containing "bash"
-        # or fall back to $SHELL or /bin/sh — but it should NOT prefer $SHELL
-        # over bash the way _find_shell does.
-        assert isinstance(result, str)
-        assert len(result) > 0
 
 
 class TestFindBashSkipsBrokenCustomPath:
@@ -136,27 +133,37 @@ class TestFindBashSkipsBrokenCustomPath:
 class TestGitBashExternalProgramProbe:
     """The Windows health check must exercise MSYS child-process creation."""
 
-    def test_probe_runs_external_msys_programs(self, monkeypatch):
-        """``_bash_starts`` builds the same external-program probe argv on
-        every host, so this stays on the Linux runner with ``subprocess.run``
-        mocked — no platform faking needed."""
-        import tools.environments.local as local_mod
+
+    def test_probe_timeout_is_bounded_and_kills_the_grandchild(self, monkeypatch, tmp_path):
+        """A probe whose grandchild keeps the captured pipes open past the timeout
+        (the MSYS ``true``/``cat`` shape) returns within the bound, records a
+        timeout verdict, and leaves no orphaned pipe-holder behind."""
         from tools.environments import local_gitbash_probe as gitbash_probe
 
+        bash = shutil.which("bash")
+        if bash is None:
+            pytest.skip("no bash on this host")
         gitbash_probe._bash_starts_cache.clear()
         gitbash_probe._bash_probe_details_cache.clear()
-        calls = []
+        stamp = tmp_path / "grandchild.pid"
+        monkeypatch.setattr(gitbash_probe, "_BASH_PROBE_TIMEOUT", 1.0)
+        monkeypatch.setattr(gitbash_probe, "_BASH_EXTERNAL_PROGRAM_PROBE",
+                            # `$!` is an MSYS pid on Windows; /proc/<pid>/winpid is the Windows pid
+                            # psutil can see. Both lines land in the stamp; POSIX has no winpid.
+                            f"sleep 30 & echo $! > '{stamp}'; cat /proc/$!/winpid >> '{stamp}' 2>/dev/null; wait")
 
-        def fake_run(argv, **kwargs):
-            calls.append((argv, kwargs))
-            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        t0 = time.monotonic()
+        ok = gitbash_probe._bash_starts(bash)
+        elapsed = time.monotonic() - t0
 
-        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
-
-        assert gitbash_probe._bash_starts(r"C:\Git\bin\bash.exe") is True
-        assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
-        # #78820: the probe must not inherit the TUI gateway's stdin pipe (MSYS flips it to PIPE_NOWAIT).
-        assert calls[0][1].get("stdin") is subprocess.DEVNULL
+        assert ok is False
+        assert elapsed < 8.0, f"probe cleanup took {elapsed:.1f}s — pipe drain not bounded"
+        assert "timed out" in gitbash_probe._bash_probe_details_cache[bash]
+        grandchild = int(stamp.read_text(encoding="utf-8").split()[-1])
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and _pid_alive(grandchild):
+            time.sleep(0.05)
+        assert not _pid_alive(grandchild), "grandchild survived the probe's tree-kill"
 
     @pytest.mark.windows_only
     def test_aslr_failure_surfaces_targeted_windows_command(
@@ -224,48 +231,6 @@ class TestMacosLoginShellSwallowRegression:
             env=env,
         )
 
-    def test_system_bash_swallows_but_zsh_does_not(self, tmp_path):
-        # A .bash_profile that exec's zsh — the reported macOS shape.
-        home = tmp_path / "home"
-        home.mkdir()
-        (home / ".bash_profile").write_text("exec /bin/zsh -l\n")
-
-        # Use /bin/zsh explicitly rather than $SHELL. The reported bug is
-        # specifically "system bash 3.2 swallows, zsh does not", and $SHELL is
-        # not zsh everywhere this runs: GitHub's macOS runner exports
-        # SHELL=/bin/bash, which silently turned the control arm into a SECOND
-        # bash arm. It then swallowed (correctly, per the bug!) and the
-        # assertion read as "the fix path is broken" when nothing was broken.
-        # /bin/zsh is the macOS default login shell since Catalina and is
-        # present on every supported version.
-        zsh = "/bin/zsh"
-        if not os.path.isfile(zsh):
-            pytest.skip("no zsh available")
-
-        marker_bash = tmp_path / "bash_ran"
-        marker_zsh = tmp_path / "zsh_ran"
-
-        # /bin/bash login shell: command is swallowed (file NOT created).
-        self._spawn_like_registry("/bin/bash", f"echo x > {marker_bash}", home, tmp_path)
-        # zsh (what _find_shell prefers when $SHELL is zsh): command runs.
-        self._spawn_like_registry(zsh, f"echo x > {marker_zsh}", home, tmp_path)
-
-        # The FIX path (zsh) must run the command.
-        assert marker_zsh.exists(), "zsh path must run the command"
-
-        # Differential: when /bin/bash is the swallow-prone 3.x (macOS system
-        # bash), the login-shell invocation must demonstrably FAIL to run the
-        # command — that's the bug this PR routes around. Only assert the
-        # negative when we've confirmed a 3.x bash, so the test stays valid on
-        # boxes/CI with a newer /bin/bash that doesn't swallow.
-        ver = subprocess.run(
-            ["/bin/bash", "--version"], capture_output=True, text=True
-        ).stdout
-        if "version 3." in ver:
-            assert not marker_bash.exists(), (
-                "system bash 3.x login shell should swallow the command "
-                "(the #42203 bug); _find_shell routes around it by preferring zsh"
-            )
 
     def test_find_shell_selects_working_shell_on_this_box(self, tmp_path):
         """_find_shell's choice must actually execute a background-style

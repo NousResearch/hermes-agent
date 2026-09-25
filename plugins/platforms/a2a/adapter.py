@@ -827,10 +827,18 @@ class A2AAdapter(BasePlatformAdapter):
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Resolve the task future when processing ends without a reply send (failures,
-        cancellations, empty runs) so the HTTP thread returns promptly."""
+        cancellations, empty runs, or a reply the gateway already streamed to the user) so the
+        HTTP thread returns promptly."""
         task_id = str(getattr(event, "message_id", "") or "")
         if task_id:
+            # A streamed turn never calls send() with notify=True (the gateway suppresses the
+            # normal final send once streaming delivered the body), so the SUCCESS default must
+            # not resolve with "" — that strands every A2A streaming reply as an empty completed
+            # task (#116944). _streamed_final_response is the same stash _final_text_for_post_turn_hooks
+            # reads for /goal and /loop.
+            _streamed = getattr(event, "_streamed_final_response", "")
+            default = (protocol.STATE_COMPLETED, _streamed if isinstance(_streamed, str) else "")
             self._resolve_task(task_id, *{
                 ProcessingOutcome.FAILURE: (protocol.STATE_FAILED, "[agent processing failed]"),
                 ProcessingOutcome.CANCELLED: (protocol.STATE_CANCELED, ""),
-            }.get(outcome, (protocol.STATE_COMPLETED, "")))
+            }.get(outcome, default))

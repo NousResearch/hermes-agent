@@ -344,28 +344,15 @@ def _migrate_remote_run_schema(conn: sqlite3.Connection) -> None:
 # Draft builds before the actor contract carried no identity. Preserve their inert replay rows explicitly
 # as legacy system events rather than guessing a user or Bot author.
 _LEGACY_ACTOR_JSON = _system_actor_json("legacy").replace("'", "''")
-# (table, column, ddl) applied in this exact order; each table's PRAGMA is read on first use.
-_LEGACY_COLUMN_DDL = (
-    ("hosted_rooms", "authority_gateway_id",
-     "ALTER TABLE hosted_rooms ADD COLUMN authority_gateway_id TEXT NOT NULL DEFAULT 'legacy'"),
-    ("hosted_rooms", "authority_epoch",
-     "ALTER TABLE hosted_rooms ADD COLUMN authority_epoch INTEGER NOT NULL DEFAULT 1"),
-    ("hosted_rooms", "event_bytes", "ALTER TABLE hosted_rooms ADD COLUMN event_bytes INTEGER NOT NULL DEFAULT 0"),
-    ("hosted_room_events", "actor_json",
-     "ALTER TABLE hosted_room_events " f"ADD COLUMN actor_json TEXT NOT NULL DEFAULT '{_LEGACY_ACTOR_JSON}'"),
-    ("hosted_room_events", "authority_epoch", "ALTER TABLE hosted_room_events ADD COLUMN authority_epoch INTEGER"))
-
-
-def _migrate_legacy_columns(conn: sqlite3.Connection) -> None:
-    """Add columns draft schemas lacked; backfill event_bytes when first introduced."""
-    columns: dict[str, frozenset[str]] = {}
-    for table, column, ddl in _LEGACY_COLUMN_DDL:
-        if table not in columns:
-            columns[table] = table_columns(conn, table)
-        if column not in columns[table]:
-            conn.execute(ddl)
-    if "event_bytes" not in columns["hosted_rooms"]:
-        conn.execute("""UPDATE hosted_rooms
+# (table, column, declaration, default literal) applied in this exact order; each table's PRAGMA is read on
+# first use. The default is also what the pre-isolation import selects for a source that predates the column.
+_LEGACY_COLUMNS = (
+    ("hosted_rooms", "authority_gateway_id", "TEXT NOT NULL", "'legacy'"),
+    ("hosted_rooms", "authority_epoch", "INTEGER NOT NULL", "1"),
+    ("hosted_rooms", "event_bytes", "INTEGER NOT NULL", "0"),
+    ("hosted_room_events", "actor_json", "TEXT NOT NULL", f"'{_LEGACY_ACTOR_JSON}'"),
+    ("hosted_room_events", "authority_epoch", "INTEGER", None))
+_EVENT_BYTES_BACKFILL = """UPDATE hosted_rooms
                   SET event_bytes=COALESCE((
                       SELECT SUM(
                           length(CAST(event_id AS BLOB)) +
@@ -375,7 +362,20 @@ def _migrate_legacy_columns(conn: sqlite3.Connection) -> None:
                       )
                       FROM hosted_room_events
                       WHERE hosted_room_events.room_id=hosted_rooms.room_id
-                  ), 0)""")
+                  ), 0) WHERE {where}"""
+
+
+def _migrate_legacy_columns(conn: sqlite3.Connection) -> None:
+    """Add columns draft schemas lacked; backfill event_bytes when first introduced."""
+    columns: dict[str, frozenset[str]] = {}
+    for table, column, declaration, default in _LEGACY_COLUMNS:
+        if table not in columns:
+            columns[table] = table_columns(conn, table)
+        if column not in columns[table]:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+                         + (f" DEFAULT {default}" if default is not None else ""))
+    if "event_bytes" not in columns["hosted_rooms"]:
+        conn.execute(_EVENT_BYTES_BACKFILL.format(where="1"))
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
@@ -440,9 +440,27 @@ def local_authority_gateway_id() -> str:
     return _actor_id(f"install:{install_id}", "authority_gateway_id")
 
 
-_connect = partial(
-    connect, db_label="shared-state.db (hosted_rooms)", ready=_schema_is_current,
-    initialize=lambda conn: _initialize_schema(conn), lock_retries=_JOURNAL_MODE_LOCK_RETRIES)
+def _store_ready(conn: sqlite3.Connection, db_path: Path) -> bool:
+    """The store can serve rooms once its schema is current and the pre-isolation import has run."""
+    from gateway.hosted_rooms_legacy_import import settled
+
+    return _schema_is_current(conn) and settled(conn, db_path)
+
+
+def _initialize_store(conn: sqlite3.Connection, db_path: Path) -> None:
+    """Create or migrate the schema, then copy the pre-isolation rows in (#109775)."""
+    from gateway.hosted_rooms_legacy_import import import_legacy_rooms
+
+    _initialize_schema(conn)
+    import_legacy_rooms(conn, db_path)
+
+
+def _connect(db_path: DbPath) -> sqlite3.Connection:
+    """Open the shared room store; ``initialize`` carries the path so the one-shot import can find it."""
+    path = Path(db_path)
+    return connect(
+        path, db_label="shared-state.db (hosted_rooms)", ready=partial(_store_ready, db_path=path),
+        initialize=partial(_initialize_store, db_path=path), lock_retries=_JOURNAL_MODE_LOCK_RETRIES)
 
 
 def _read_connection(db_path: DbPath) -> sqlite3.Connection:
@@ -451,7 +469,7 @@ def _read_connection(db_path: DbPath) -> sqlite3.Connection:
     if not path.is_file():
         _connect(path).close()
     conn = open_sqlite(path)
-    if not _schema_is_current(conn):
+    if not _store_ready(conn, path):
         conn.close()
         _connect(path).close()
         conn = open_sqlite(path)

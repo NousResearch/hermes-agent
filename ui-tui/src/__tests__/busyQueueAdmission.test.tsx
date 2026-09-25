@@ -156,13 +156,13 @@ it('retains disconnected input durably on its old destination without dispatchin
   } finally { h.cleanup() }
 })
 
-it('refuses unbound Enter without clearing the draft or claiming a queued input', () => {
+it('queues an unbound Enter locally without claiming a gateway admission', () => {
   const h = mount()
 
   try {
     patchUiState({ sid: null })
     h.submission.dispatchSubmission('unbound draft')
-    expect(h.queue.queueRef.current).toEqual([])
+    expect(h.queue.queueRef.current.map(item => item.text)).toEqual(['unbound draft'])
     expect(h.calls).toEqual([])
   } finally { h.cleanup() }
 })

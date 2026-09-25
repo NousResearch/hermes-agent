@@ -74,6 +74,18 @@ test('pending resume and live updates share the existing queue projection', () =
   expect(cleared.payload).toHaveProperty('pending_submissions', [])
 })
 
+test('a stored-parent branch travels as the canonical branch mutation on the parent', () => {
+  // A legacy `session.branch_stored` mints a child the authority cannot restore (no local
+  // policy), so every resume on it answers not_found and the first submit never leaves.
+  const protocol = new CanonicalDesktopProtocol()
+  protocol.result('session.resume', { session_id: 'p' }, { session_id: 'p', revision: 3, execution_generation: 1 })
+  const prepared = protocol.prepare('session.branch_stored', { cols: 96, source: 'desktop', parent_session_id: 'p', profile: 'default' })
+  expect(protocol.wire('session.branch_stored', prepared)).toBe('session.mutate')
+  expect(prepared).toMatchObject({ session_id: 'p', operation: 'branch', payload: {}, expected_revision: 3, expected_generation: 1 })
+  const child = protocol.result('session.branch_stored', prepared, { session_id: 'p', revision: 4, operation: 'branch', branched_session_id: 'c', copied_messages: 4 })
+  expect(child).toMatchObject({ session_id: 'c', stored_session_id: 'c', parent_session_id: 'p', message_count: 4 })
+})
+
 test('composer branch and model switch become canonical prepared mutations with identity retained', () => {
   const protocol = new CanonicalDesktopProtocol()
   protocol.result('session.resume', { session_id: 's' }, { session_id: 's', revision: 4, execution_generation: 9 })

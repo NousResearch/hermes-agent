@@ -4,7 +4,7 @@ from __future__ import annotations
 class GatewayRuntimeInitMixin:
     def _init_runtime_settings(self) -> None:
         """Load ephemeral per-call config (prefill, reasoning, busy modes, timeouts, routing)."""
-        from gateway.run import (Dict)
+        from gateway.run import (Dict, Optional, _load_gateway_config)
         self._prefill_messages = self._load_prefill_messages()
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
@@ -14,13 +14,21 @@ class GatewayRuntimeInitMixin:
         # Secondary-profile busy modes snapshotted at multiplex startup; handlers never reread config.
         self._busy_input_modes_by_profile: Dict[str, str] = {}
         self._busy_text_modes_by_profile: Dict[str, str] = {}
+        self._busy_text_timing = self._busy_text_timing_from_config(_load_gateway_config())
+        self._busy_text_timing_by_profile: Dict[str, tuple[float, float]] = {}
+        self._human_delay = self._human_delay_from_config(_load_gateway_config())
+        self._human_delay_by_profile: Dict[str, Optional[tuple[int, int]]] = {}
         self._restart_drain_timeout = self._load_restart_drain_timeout()
+        # Live launchd ``ExitTimeOut`` for this job (None when not launchd-owned). Read once at
+        # boot — launchd fixes it at load — and applied only to signal-driven stops, which are the
+        # only stops launchd times. See _load_launchd_exit_timeout().
+        self._stop_requested_by_signal = False
+        self._launchd_exit_timeout_s = self._load_launchd_exit_timeout(self._restart_drain_timeout)
         self._restart_after_turn_timeout = self._load_restart_after_turn_timeout()
         self._cron_drain_timeout = self._load_cron_drain_timeout()
         self._signal_interrupt_grace_timeout = self._load_signal_interrupt_grace_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
-
 
     def _init_session_store(self) -> None:
         """Build the SessionStore (with process-registry reset guard), its async facade and the router."""
@@ -33,7 +41,6 @@ class GatewayRuntimeInitMixin:
         # Loop-side boundary: sync helpers use ``session_store`` directly; async handlers await this facade.
         self._async_session_store = AsyncSessionStore(self.session_store)
         self.delivery_router = DeliveryRouter(self.config)
-
 
     def _init_lifecycle_state(self) -> None:
         """Initialise run/exit/restart flags, per-session state, and completion-delivery bookkeeping."""
@@ -62,6 +69,8 @@ class GatewayRuntimeInitMixin:
         self._restart_task: Optional[asyncio.Task] = None
         self._executor_lock = threading.Lock()
         self._executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
+        # Best-effort session housekeeping runs on its OWN pool; see _run_housekeeping_in_executor.
+        self._housekeeping_executor: Optional[concurrent.futures.ThreadPoolExecutor] = None
         # Set on gateway stop so the recreate-on-shutdown path can't resurrect the pool.
         self._executor_closing = False
         # ALL per-session state lives here (gateway/session_state.py); use _session_state / _peek_session_state.
@@ -89,6 +98,9 @@ class GatewayRuntimeInitMixin:
         # paths, busy-ack debounce timestamps and the monotonic run-generation counter (#28686, NEVER reset)
         # live on SessionState too. See gateway.session_stall.
         self._session_stall_notified: Dict[str, bool] = {}
+        # Consecutive "persisted transcript lagged live cached history" turns per session key; see
+        # run_turn_runner._load_turn_history (#114266). Cleared on /new.
+        self._transcript_lag_streaks: Dict[str, int] = {}
         # Startup restore gate: while restart-interrupted sessions auto-resume, real inbound messages
         # queue instead of competing with the synthetic resume turns; drained after all resume tasks end.
         self._startup_restore_in_progress = False
@@ -116,7 +128,6 @@ class GatewayRuntimeInitMixin:
         self._completion_notification_batch_window = 0.1
         self._completion_notification_batches_stopping = False
 
-
     def _init_runtime_caches(self) -> None:
         """Agent cache, profile identity, Teams runtime, failed-platform tracking, slash-confirm counter."""
         from gateway.run import (Any, Dict, Optional, OrderedDict, Platform, threading)
@@ -138,7 +149,6 @@ class GatewayRuntimeInitMixin:
         # without a runner backref; local counter keeps confirm_ids compact (64-byte callback_data caps).
         import itertools
         self._slash_confirm_counter = itertools.count(1)
-
 
     def _init_startup_checks(self) -> None:
         """Ensure tirith is installed and warn when manual approvals have no automated assessor."""
@@ -173,10 +183,9 @@ class GatewayRuntimeInitMixin:
         except Exception:
             logger.debug("approvals.mode startup check skipped", exc_info=True)
 
-
     def _init_session_db(self) -> None:
         """Open the session DB for the active scope and run opportunistic state.db / checkpoint maintenance."""
-        from gateway.run import (Any, Dict, Path, _SESSION_DB_UNPINNED, logger, threading)
+        from gateway.run import (Any, Dict, Path, _SESSION_DB_UNPINNED, _housekeeping_chore, _housekeeping_state_db_maintenance, _launch_sessions_dir, logger, threading)
         # Session DB is a property caching one AsyncSessionDB per path (a handle bound here would pin the
         # root home under multiplex); priming here keeps startup diagnostics at init.
         # Initialize session database for session_search tool support. Same frozen-handle class of bug as
@@ -202,31 +211,21 @@ class GatewayRuntimeInitMixin:
         # state.db corruption or NFS/SMB lock failures silently degrade the entire gateway — messages may
         # flow but nothing is persisted, and the user has no indication until they try /resume and find
         # nothing (#88235).
-        if self._session_db is not None:
-            try:
-                from hermes_cli.config import load_config as _load_full_config
-                _sess_cfg = (_load_full_config().get("sessions") or {})
-                if _sess_cfg.get("auto_archive", False):
-                    self._session_db._db.maybe_auto_archive(
-                        idle_days=float(_sess_cfg.get("auto_archive_days", 3)),
-                        min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)))
-                if _sess_cfg.get("auto_prune", False):
-                    # Construction-time, before the loop serves traffic; sync DB is fine.
-                    self._session_db._db.maybe_auto_prune_and_vacuum(
-                        retention_days=int(_sess_cfg.get("retention_days", 90)),
-                        min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
-                        min_vacuum_interval_days=int(
-                            _sess_cfg.get("min_vacuum_interval_days", 30)),
-                        vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
-                        sessions_dir=self.config.sessions_dir)
-            except Exception as exc:
-                logger.debug("state.db auto-maintenance skipped: %s", exc)
-
+        # Once per SERVED profile, each under its own scope: both the store and the ``sessions:``
+        # config that governs it must be the profile's own. Bound to ``self._session_db`` this ran
+        # against the construction-time launch home only, so a multiplexed secondary profile's
+        # state.db was never pruned or vacuumed by anybody, and the launch profile's
+        # retention_days/auto_prune decided whether it happened at all.
+        from gateway.run_profile_reconcile import _for_each_served_profile
+        _launch_sessions = _launch_sessions_dir(self.config)  # resolved OUTSIDE any profile scope
+        _housekeeping_chore(
+            "state.db startup maintenance",
+            lambda: _for_each_served_profile(
+                self, lambda _label: _housekeeping_state_db_maintenance(_launch_sessions)))
         # Checkpoint store pruning is a housekeeping chore (``_housekeeping_checkpoint_prune``), not a
         # constructor step: its ``git gc`` repacks the whole store (tens of seconds on a GB store) and
         # here it ran before the control socket, adapters and the code_sha stamp — so the first
         # restart of the day (the ``hermes update`` one) looked hung and failed fleet verification.
-
 
     def _init_registries_and_clocks(self) -> None:
         """Pairing stores, hook registry, voice modes, background-task set, liveness and idle clocks."""
@@ -258,5 +257,4 @@ class GatewayRuntimeInitMixin:
         # the clock; and a one-shot latch so the "platform owns the suspend" notice logs once.
         self._scale_to_zero_cooldown_until: float = 0.0
         self._scale_to_zero_no_suspend_logged: bool = False
-
-
+        self._scale_to_zero_direct_platform_logged: bool = False

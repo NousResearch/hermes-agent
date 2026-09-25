@@ -267,6 +267,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       deps.failAssistantMessage,
       deps.finalizeInterimAssistantMessage,
       deps.flushQueuedDeltas,
+      deps.dropQueuedDeltas,
       deps.hydrateFromStoredSession,
       deps.lastCwdInfoSessionRef,
       deps.nativeSubagentSessionsRef,

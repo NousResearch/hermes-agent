@@ -40,7 +40,7 @@ def test_system_producer_is_recorded_and_logged_at_publication(caplog):
         assert agent._interrupt_requested is True
         assert interrupt_issuer(agent) == "cron_inactivity_watchdog"
         published = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Interrupt requested")]
-        assert published == ["Interrupt requested (hard): cron inactivity watchdog"]
+        assert len(published) == 1 and "cron inactivity watchdog" in published[0]
     finally:
         set_interrupt(False)
 

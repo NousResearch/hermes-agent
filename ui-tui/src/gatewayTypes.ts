@@ -1,5 +1,6 @@
 import type { UsageModelData } from '@hermes/shared/billing'
 import type {
+  ConnectionRequestPayload,
   GatewayEvent,
   GatewayEventMap,
   InflightTurn,
@@ -252,6 +253,7 @@ export interface SessionActivateResponse {
   info?: SessionInfo
   message_count?: number
   messages: TranscriptMessage[]
+  pending_connection?: ConnectionRequestPayload | null
   running?: boolean
   session_id: string
   session_key?: string

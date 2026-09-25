@@ -119,7 +119,7 @@ def _busy(adapter: _ConfirmAdapter):
     from gateway.run_busy import GatewayBusySessionMixin
 
     busy = object.__new__(GatewayBusySessionMixin)
-    busy._adapter_for_source = lambda _s: adapter
+    busy._delivery_adapter_for = lambda _s: adapter
     busy._thread_metadata_for_source = lambda _s, _a: {}
     busy._reply_anchor_for_event = lambda _e: None
     busy._session_key_for_source = lambda _s: "sk1"

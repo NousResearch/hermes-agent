@@ -18,8 +18,8 @@ from hermes_cli.session_schema_history import SCHEMA_HISTORY, reachable_physical
 
 from hermes_state_ids import SESSION_ID_PATTERN  # timestamp prefix: strongest sentinel for schema-less rows
 from hermes_cli.session_recovery import (
-    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _count_rows, _immediate_transaction,
-    _placeholder_titles, _quoted_columns, _table_columns,
+    _AUXILIARY_TABLE_SCHEMAS, _AUXILIARY_TABLES, _CANONICAL_TABLES, _DANGLING_TOOL_PIN, _count_rows,
+    _immediate_transaction, _placeholder_titles, _quoted_columns, _table_columns,
 )
 
 logger = logging.getLogger(__name__)
@@ -869,6 +869,7 @@ def stub_missing_parent_sessions(dest: sqlite3.Connection) -> dict[str, Any]:
             "UPDATE sessions SET system_prompt_hash = NULL WHERE system_prompt_hash IS NOT NULL AND NOT EXISTS "
             "(SELECT 1 FROM system_prompts WHERE system_prompts.hash = sessions.system_prompt_hash)"
         )
+        dest.execute(f"UPDATE sessions SET tool_names = NULL WHERE {_DANGLING_TOOL_PIN}")
     return result
 
 

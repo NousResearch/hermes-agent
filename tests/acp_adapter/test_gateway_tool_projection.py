@@ -68,6 +68,10 @@ def test_gateway_publishes_tool_arguments_and_result_for_live_viewers():
     runner.combined_tool_start_callback('call_1', 'read_file', ARGS)
     runner.combined_tool_complete_callback('call_1', 'read_file', ARGS, RESULT)
     start, complete = published
-    assert start == ('tool.start', {'tool_call_id': 'call_1', 'tool_name': 'read_file', 'args': ARGS})
+    assert start[0] == 'tool.start'
+    # Legacy keys the ACP projection reads, plus the ToolStartPayload contract every canonical client reads.
+    assert {k: start[1][k] for k in ('tool_call_id', 'tool_name', 'args')} == {
+        'tool_call_id': 'call_1', 'tool_name': 'read_file', 'args': ARGS}
+    assert start[1]['tool_id'] == 'call_1' and start[1]['name'] == 'read_file'
     assert complete[0] == 'tool.complete'
     assert complete[1]['args'] == ARGS and complete[1]['result'] == RESULT

@@ -49,6 +49,7 @@ def run_canonical_job(job, *, extra_prompt=None, cancel_event=None, execution_id
                 await call('cancel', receipt)
             state = await call('status', receipt)
             if state['status'] == 'terminal':
+                job.update(state.get('job_flags') or {})
                 return tuple(state['result'])
             if state['status'] == 'unknown':
                 raise CronExecutionUnknown('unknown_execution: cron admission was not replayed')

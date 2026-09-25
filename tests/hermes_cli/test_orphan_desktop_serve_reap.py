@@ -78,7 +78,6 @@ def test_reap_only_kills_ppid1_local_serves():
             side_effect=lambda pid: ppids.get(pid),
         ),
         patch("os.kill", side_effect=fake_kill),
-        patch("sys.platform", "darwin"),
     ):
         os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
         result = _reap_orphaned_desktop_local_serves(
@@ -101,7 +100,6 @@ def test_reap_passes_child_pid_exclude_to_scan():
             "hermes_cli.dashboard_procs._scan_dashboard_processes",
             return_value=[],
         ) as scan,
-        patch("sys.platform", "darwin"),
         patch.dict(os.environ, {"HERMES_DESKTOP_CHILD_PID": "999,111"}, clear=False),
     ):
         result = _reap_orphaned_desktop_local_serves(sleep_fn=lambda _s: None)
@@ -250,7 +248,6 @@ def test_reap_spare_lock_owned_ssh_remote_backend_of_foreign_client():
             side_effect=lambda pid: ppids.get(pid),
         ),
         patch("os.kill", side_effect=fake_kill),
-        patch("sys.platform", "darwin"),
     ):
         os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
         result = _reap_orphaned_desktop_local_serves(
@@ -287,7 +284,6 @@ def test_reap_spares_young_backend_until_desktop_can_write_lock():
         ),
         patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
         patch("os.kill", side_effect=fake_kill),
-        patch("sys.platform", "darwin"),
     ):
         result = _reap_orphaned_desktop_local_serves(
             sleep_fn=lambda _s: None,
@@ -315,7 +311,6 @@ def test_reap_spares_backend_when_process_age_is_unknown():
         ),
         patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
         patch("os.kill", side_effect=lambda pid, sig: terms.append(pid) if sig == 15 else None),
-        patch("sys.platform", "darwin"),
     ):
         result = _reap_orphaned_desktop_local_serves(
             sleep_fn=lambda _s: None,
@@ -355,7 +350,6 @@ def test_reap_age_boundary_makes_180_second_orphan_eligible():
         ),
         patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
         patch("os.kill", side_effect=fake_kill),
-        patch("sys.platform", "darwin"),
     ):
         result = _reap_orphaned_desktop_local_serves(
             sleep_fn=lambda _s: None,
@@ -399,7 +393,6 @@ def test_reap_spare_lock_owned_backend_even_without_exclude_match(tmp_path):
             return_value=1,
         ),
         patch("os.kill", side_effect=fake_kill),
-        patch("sys.platform", "darwin"),
     ):
         os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
         result = _reap_orphaned_desktop_local_serves(
@@ -411,3 +404,40 @@ def test_reap_spare_lock_owned_backend_even_without_exclude_match(tmp_path):
 
     assert terms == []
     assert result["matched"] == []
+
+
+def test_reap_kills_descendants_of_killed_roots_but_spares_a_failed_roots_subtree():
+    """#112631: a SIGKILLed backend never ran PTY_REGISTRY.close_all(), so the reaper sweeps its
+    surviving hosted-TUI children — but only for roots it actually killed. A root whose own kill
+    raised (EPERM: not ours) keeps its subtree intact instead of being orphaned half-way."""
+    scanned = [
+        (111, "hermes serve --host 127.0.0.1 --port 0"),  # ours: killed, child 1111 swept
+        (444, "hermes serve --host 127.0.0.1 --port 0"),  # not ours: EPERM, child 4444 spared
+    ]
+    descendants = {1111: (111, 5.0), 4444: (444, 6.0)}
+    start_times = {1111: 5.0, 4444: 6.0}
+    sent: list[tuple[int, int]] = []
+
+    def fake_kill(pid, sig):
+        if pid == 444:
+            raise PermissionError("Operation not permitted")
+        sent.append((pid, sig))
+
+    with (
+        patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=scanned),
+        patch("hermes_cli.dashboard_procs._process_ppid", return_value=1),
+        patch("hermes_cli.dashboard_procs._posix_descendants", return_value=descendants) as snap,
+        patch("gateway.status.get_process_start_time", side_effect=start_times.get),
+        patch("psutil.pid_exists", return_value=True),
+        patch("os.kill", side_effect=fake_kill),
+    ):
+        os.environ.pop("HERMES_DESKTOP_CHILD_PID", None)
+        result = _reap_orphaned_desktop_local_serves(
+            sleep_fn=lambda _s: None, signal_term=15, signal_kill=9,
+            process_age_seconds_fn=lambda _pid: 600.0,
+        )
+
+    snap.assert_called_once_with([111, 444])  # snapshotted before the kill reparents them
+    assert result["killed"] == [111] and result["failed"] == [444]
+    assert (1111, 9) in sent, "surviving child of the killed backend was not swept"
+    assert not any(pid == 4444 for pid, _ in sent), "child of a root we could not kill was swept"

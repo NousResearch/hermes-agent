@@ -610,8 +610,8 @@ install_uv() {
     # `curl | sh` masks curl failures (sh exits 0 on empty stdin)
     # and conflates network errors with installer errors.
     local _uv_install_log _uv_installer
-    _uv_install_log="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-install.$$.log")"
-    _uv_installer="$(mktemp 2>/dev/null || echo "/tmp/hermes-uv-installer.$$.sh")"
+    _uv_install_log="$(mktemp 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-install.$$.log")"
+    _uv_installer="$(mktemp 2>/dev/null || echo "${TMPDIR:-$HERMES_HOME}/hermes-uv-installer.$$.sh")"
     if ! curl -LsSf https://astral.sh/uv/install.sh -o "$_uv_installer" 2>"$_uv_install_log"; then
         log_error "Failed to download uv installer from https://astral.sh/uv/install.sh"
         log_info "curl output:"
@@ -1324,6 +1324,10 @@ check_network_prerequisites() {
 }
 
 install_system_packages() {
+    # setup_path persists this directory later, but dependency probes must also
+    # see commands that were pre-staged there during a fresh install.
+    local PATH="$(get_command_link_dir):$PATH"
+
     # Detect what's missing
     HAS_RIPGREP=false
     HAS_FFMPEG=false
@@ -1574,6 +1578,21 @@ clone_repo() {
             # fetched remote so bootstrap/install can recover.
             if ! git pull --ff-only origin "$BRANCH"; then
                 log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
+                # Park commits the reset drops behind a rescue ref, same namespace
+                # as ``hermes update`` (which also prunes these refs).
+                local dropped rescue_kind rescue_ref
+                dropped="$(git rev-list --count "origin/$BRANCH..HEAD" 2>/dev/null || echo 0)"
+                if [ "${dropped:-0}" -gt 0 ]; then
+                    rescue_kind="diverged"
+                    git merge-base HEAD "origin/$BRANCH" >/dev/null 2>&1 || rescue_kind="orphan"
+                    rescue_ref="refs/hermes-update-backups/$rescue_kind-$BRANCH-$(date -u +%Y%m%d-%H%M%S)-$(git rev-parse --short=12 HEAD)"
+                    if git update-ref "$rescue_ref" HEAD; then
+                        log_warn "$dropped commit(s) not on origin/$BRANCH backed up to $rescue_ref"
+                        log_warn "List them with: git -C \"$INSTALL_DIR\" log origin/$BRANCH..$rescue_ref"
+                    else
+                        log_warn "Could not back up local commits (HEAD was $(git rev-parse HEAD))"
+                    fi
+                fi
                 git reset --hard "origin/$BRANCH"
             fi
 
@@ -3566,11 +3585,11 @@ install_desktop() {
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
     local _deps_start _deps_remaining
     _deps_start=$(date +%s)
-    if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" bash -c 'cd "$1" && npm ci' _ "$INSTALL_DIR"; then
+    if run_with_timeout "$DESKTOP_BUILD_TIMEOUT" bash -c 'cd "$1" && npm ci --include=optional && node apps/desktop/scripts/ensure-rolldown-binding.mjs' _ "$INSTALL_DIR"; then
         log_success "Desktop workspace dependencies installed"
     elif _deps_remaining=$(( DESKTOP_BUILD_TIMEOUT - ($(date +%s) - _deps_start) )); \
          [ "$_deps_remaining" -lt 30 ] && _deps_remaining=30; \
-         run_with_timeout "$_deps_remaining" bash -c 'cd "$1" && npm install' _ "$INSTALL_DIR"; then
+         run_with_timeout "$_deps_remaining" bash -c 'cd "$1" && npm install --include=optional && node apps/desktop/scripts/ensure-rolldown-binding.mjs' _ "$INSTALL_DIR"; then
         log_success "Desktop workspace dependencies installed"
     elif _electron_pkg_staged_missing_dist "$INSTALL_DIR"; then
         log_warn "Desktop dependency install failed with a missing Electron dist; attempting self-heal..."
@@ -3617,7 +3636,7 @@ install_desktop() {
     fi
 
     # (c) GitHub blocked → mirror fallback (#47266).
-    if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ]; then
+    if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ] && ! _electron_dist_ok "$INSTALL_DIR"; then
         log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
         log_warn "Re-downloading Electron via a public mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR), then rebuilding..."
         log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
@@ -3633,9 +3652,11 @@ install_desktop() {
         # the binary download is blocked/throttled (firewall, proxy, region) and
         # the mirror fallback above also couldn't reach a host. Try a mirror you
         # trust and rebuild (@electron/get honors ELECTRON_MIRROR):
-        log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
-        log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"
-        log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
+        if ! _electron_dist_ok "$INSTALL_DIR"; then
+            log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
+            log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"
+            log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
+        fi
         log_info "Otherwise build manually: cd $desktop_dir && npm run pack"
         return 1
     fi

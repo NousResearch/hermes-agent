@@ -23,6 +23,11 @@ from tui_gateway.hosted_room_peer_http import PeerRunsHTTPClient, PeerRunsHTTPEr
 @pytest.fixture
 def setup_owner(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    # Runtime now reads the signed policy from the served target profile, not
+    # the gateway's launch home; provision that profile within this temp home.
+    profile = tmp_path / 'profiles' / 'ops'
+    profile.mkdir(parents=True)
+    (profile / 'config.yaml').write_text('approvals:\n  mode: manual\n')
     monkeypatch.setattr(rooms, 'local_authority_gateway_id', lambda: 'home')
     db = SessionDB(tmp_path / 'state.db')
     authority = SimpleNamespace(db=db, profile_id=str(tmp_path), instance_id='test',

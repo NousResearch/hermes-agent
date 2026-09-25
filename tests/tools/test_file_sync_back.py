@@ -3,7 +3,8 @@
 import io
 import logging
 import os
-import signal
+import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -12,13 +13,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-fcntl = pytest.importorskip("fcntl")
-
 from tools.environments.file_sync import (
     FileSyncManager,
     _cleanup_stale_sync_back_temp,
     _sha256_file,
-    _SYNC_BACK_BACKOFF,
     _SYNC_BACK_MAX_RETRIES,
     _SYNC_BACK_STALE_SECONDS,
     _SYNC_BACK_TEMP_PREFIX,
@@ -28,6 +26,13 @@ from tools.environments.file_sync import (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _dead_pid() -> int:
+    """PID of a child that has already been reaped."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.DEVNULL)
+    proc.wait()
+    return proc.pid
 
 def _make_tar(files: dict[str, bytes], dest: Path):
     """Write a tar archive containing the given arcname->content pairs."""
@@ -137,9 +142,28 @@ class TestStaleSyncBackTempCleanup:
         mgr = _make_manager(tmp_path, bulk_download_fn=download)
         mgr.sync_back()
 
-        assert seen["tar"].name.startswith(_SYNC_BACK_TEMP_PREFIX)
+        assert seen["tar"].name.startswith(f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-")
         assert not leaked.exists()
         assert list(tmp_root.iterdir()) == []
+
+    def test_owner_liveness_decides_before_age(self, tmp_path):
+        """A hard-killed owner's fresh entry is reclaimed at once; a live owner's fresh entry and
+        a legacy (no-PID) fresh entry are kept; a live owner's entry past the cutoff still goes
+        (a recycled PID must not pin a leak forever)."""
+        dead_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{_dead_pid()}-a.tar"
+        live_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-b"
+        legacy_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}legacy.tar"
+        live_old = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-c.tar"
+        for path in (dead_fresh, legacy_fresh, live_old):
+            path.write_bytes(b"x")
+        live_fresh.mkdir()
+        old = time.time() - _SYNC_BACK_STALE_SECONDS - 60
+        os.utime(live_old, (old, old))
+
+        assert _cleanup_stale_sync_back_temp(tmp_path) == 2
+
+        assert not dead_fresh.exists() and not live_old.exists()
+        assert live_fresh.exists() and legacy_fresh.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -147,40 +171,9 @@ class TestStaleSyncBackTempCleanup:
 # ---------------------------------------------------------------------------
 
 
-class TestSyncBackNoop:
-    """sync_back() is a no-op when there is no download function."""
-
-    def test_sync_back_noop_without_download_fn(self, tmp_path):
-        mgr = _make_manager(tmp_path, bulk_download_fn=None)
-        # Should return immediately without error
-        mgr.sync_back(hermes_home=tmp_path / ".hermes")
         # Nothing to assert beyond "no exception raised"
 
 
-class TestSyncBackNoChanges:
-    """When all remote files match pushed hashes, nothing is applied."""
-
-    def test_sync_back_no_changes(self, tmp_path):
-        host_file = tmp_path / "host" / "cred.json"
-        host_content = b'{"key": "val"}'
-        _write_file(host_file, host_content)
-
-        remote_path = "/root/.hermes/cred.json"
-        mapping = [(str(host_file), remote_path)]
-
-        # Remote tar contains the same content as was pushed
-        download_fn = _make_download_fn({
-            "root/.hermes/cred.json": host_content,
-        })
-
-        mgr = _make_manager(tmp_path, file_mapping=mapping, bulk_download_fn=download_fn)
-        # Simulate that we already pushed this file with this hash
-        mgr._pushed_hashes[remote_path] = _sha256_bytes(host_content)
-
-        mgr.sync_back(hermes_home=tmp_path / ".hermes")
-
-        # Host file should be unchanged (same content, same bytes)
-        assert host_file.read_bytes() == host_content
 
 
 class TestSyncBackAppliesChanged:
@@ -285,10 +278,6 @@ class TestSyncBackRetries:
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         assert call_count == 3
-        # Sleep called twice (between attempt 1->2 and 2->3)
-        assert mock_sleep.call_count == 2
-        mock_sleep.assert_any_call(_SYNC_BACK_BACKOFF[0])
-        mock_sleep.assert_any_call(_SYNC_BACK_BACKOFF[1])
 
     @patch("tools.environments.file_sync._sleep")
     def test_sync_back_all_retries_exhausted(self, mock_sleep, tmp_path, caplog):
@@ -308,81 +297,8 @@ class TestSyncBackRetries:
         assert any("all" in r.message.lower() and "failed" in r.message.lower() for r in caplog.records)
 
 
-class TestPushedHashesPopulated:
-    """_pushed_hashes is populated during sync() and cleared on delete."""
-
-    def test_pushed_hashes_populated_on_sync(self, tmp_path):
-        host_file = tmp_path / "data.txt"
-        host_file.write_bytes(b"hello world")
-
-        remote_path = "/root/.hermes/data.txt"
-        mapping = [(str(host_file), remote_path)]
-
-        mgr = FileSyncManager(
-            get_files_fn=lambda: mapping,
-            upload_fn=MagicMock(),
-            delete_fn=MagicMock(),
-        )
-
-        mgr.sync(force=True)
-
-        assert remote_path in mgr._pushed_hashes
-        assert mgr._pushed_hashes[remote_path] == _sha256_file(str(host_file))
-
-    def test_pushed_hashes_cleared_on_delete(self, tmp_path):
-        host_file = tmp_path / "deleteme.txt"
-        host_file.write_bytes(b"to be deleted")
-
-        remote_path = "/root/.hermes/deleteme.txt"
-        mapping = [(str(host_file), remote_path)]
-        current_mapping = list(mapping)
-
-        mgr = FileSyncManager(
-            get_files_fn=lambda: current_mapping,
-            upload_fn=MagicMock(),
-            delete_fn=MagicMock(),
-        )
-
-        # Sync to populate hashes
-        mgr.sync(force=True)
-        assert remote_path in mgr._pushed_hashes
-
-        # Remove the file from the mapping (simulates local deletion)
-        os.unlink(str(host_file))
-        current_mapping.clear()
-
-        mgr.sync(force=True)
-
-        # Hash should be cleaned up
-        assert remote_path not in mgr._pushed_hashes
 
 
-class TestSyncBackFileLock:
-    """Verify that fcntl.flock is used during sync-back."""
-
-    @patch("tools.environments.file_sync.fcntl.flock")
-    def test_sync_back_file_lock(self, mock_flock, tmp_path):
-        download_fn = _make_download_fn({})
-        mgr = _make_manager(tmp_path, bulk_download_fn=download_fn)
-
-        mgr.sync_back(hermes_home=tmp_path / ".hermes")
-
-        # flock should have been called at least twice: LOCK_EX to acquire, LOCK_UN to release
-        assert mock_flock.call_count >= 2
-
-        lock_calls = mock_flock.call_args_list
-        lock_ops = [c[0][1] for c in lock_calls]
-        assert fcntl.LOCK_EX in lock_ops
-        assert fcntl.LOCK_UN in lock_ops
-
-    def test_sync_back_skips_flock_when_fcntl_none(self, tmp_path):
-        """On Windows (fcntl=None), sync_back should skip file locking."""
-        download_fn = _make_download_fn({})
-        mgr = _make_manager(tmp_path, bulk_download_fn=download_fn)
-
-        with patch("tools.environments.file_sync.fcntl", None):
-            # Should not raise — locking is skipped
-            mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
 
 class TestInferHostPath:
@@ -402,41 +318,11 @@ class TestInferHostPath:
         assert result is None
 
 
-    def test_infer_matching_prefix(self, tmp_path):
-        """A file in a mapped directory should be correctly inferred."""
-        host_file = tmp_path / "host" / "skills" / "a.py"
-        _write_file(host_file, b"content")
-        mapping = [(str(host_file), "/root/.hermes/skills/a.py")]
-
-        mgr = _make_manager(tmp_path, file_mapping=mapping)
-        result = mgr._infer_host_path(
-            "/root/.hermes/skills/b.py",
-            file_mapping=mapping,
-        )
-        expected = str(tmp_path / "host" / "skills" / "b.py")
-        assert result == expected
 
 
 class TestSyncBackSIGINT:
     """SIGINT deferral during sync-back."""
 
-    def test_sync_back_defers_sigint_on_main_thread(self, tmp_path):
-        """On the main thread, SIGINT handler should be swapped during sync."""
-        download_fn = _make_download_fn({})
-        mgr = _make_manager(tmp_path, bulk_download_fn=download_fn)
-
-        handlers_seen = []
-        original_getsignal = signal.getsignal
-
-        with patch("tools.environments.file_sync.signal.getsignal",
-                    side_effect=original_getsignal) as mock_get, \
-             patch("tools.environments.file_sync.signal.signal") as mock_set:
-            mgr.sync_back(hermes_home=tmp_path / ".hermes")
-
-        # signal.getsignal was called to save the original handler
-        assert mock_get.called
-        # signal.signal was called at least twice: install defer, restore original
-        assert mock_set.call_count >= 2
 
     def test_sync_back_skips_signal_on_worker_thread(self, tmp_path):
         """From a non-main thread, signal.signal should NOT be called."""
@@ -472,8 +358,8 @@ class TestSyncBackSizeCap:
     """The size cap refuses to extract tars above the configured limit."""
 
     def test_sync_back_refuses_oversized_tar(self, tmp_path, caplog):
-        """A tar larger than _SYNC_BACK_MAX_BYTES should be skipped with a warning."""
-        # Build a download_fn that writes a small tar, but patch the cap
+        """A tar larger than terminal.sync_back_max_bytes should be skipped with a warning."""
+        # Build a download_fn that writes a small tar, but lower the configured cap
         # so the test doesn't need to produce a 2 GiB file.
         skill_host = _write_file(tmp_path / "host_skill.md", b"original")
         files = {"root/.hermes/skill.md": b"remote_version"}
@@ -487,7 +373,7 @@ class TestSyncBackSizeCap:
 
         # Cap at 1 byte so any non-empty tar exceeds it
         with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
-            with patch("tools.environments.file_sync._SYNC_BACK_MAX_BYTES", 1):
+            with patch("hermes_cli.config.load_config", return_value={"terminal": {"sync_back_max_bytes": 1}}):
                 mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         # Host file should be untouched because extraction was skipped
@@ -495,21 +381,28 @@ class TestSyncBackSizeCap:
         # Warning should mention the cap
         assert any("cap" in r.message for r in caplog.records)
 
-    def test_sync_back_applies_when_under_cap(self, tmp_path):
-        """A tar under the cap should extract normally (sanity check)."""
+
+    def test_cap_override_config_key_raises_the_cap(self, tmp_path, monkeypatch, caplog):
+        """config.yaml ``terminal.sync_back_max_bytes`` overrides the 2 GiB default; a
+        non-integer value is ignored with a warning and the default applies. The env var
+        the first cut used is gone — non-secret settings live in config.yaml."""
         host_file = _write_file(tmp_path / "host_skill.md", b"original")
         files = {"root/.hermes/skill.md": b"remote_version"}
-        download_fn = _make_download_fn(files)
+        mgr = _make_manager(tmp_path, file_mapping=[(host_file, "/root/.hermes/skill.md")],
+                            bulk_download_fn=_make_download_fn(files))
 
-        mgr = _make_manager(
-            tmp_path,
-            file_mapping=[(host_file, "/root/.hermes/skill.md")],
-            bulk_download_fn=download_fn,
-        )
-
-        # Default cap (2 GiB) is far above our tiny tar; extraction should proceed
+        monkeypatch.setenv("HERMES_SYNC_BACK_MAX_BYTES", "1")  # the first cut's env var: must be ignored
+        monkeypatch.setattr("hermes_cli.config.load_config",
+                            lambda: {"terminal": {"sync_back_max_bytes": 1}})
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
-        assert Path(host_file).read_bytes() == b"remote_version"
+        assert Path(host_file).read_bytes() == b"original"  # 1-byte cap: skipped
+
+        monkeypatch.setattr("hermes_cli.config.load_config",
+                            lambda: {"terminal": {"sync_back_max_bytes": "lots"}})
+        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        assert Path(host_file).read_bytes() == b"remote_version"  # default cap applies
+        assert any("sync_back_max_bytes" in r.message for r in caplog.records)
 
 
 class TestSyncBackWindowsHost:

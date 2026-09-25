@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  assembleSidebarSessionSlices,
   buildSidebarSessionSliceParams,
   fetchPrimaryProfileSessions,
   fetchRegistrySessionRows,
@@ -42,7 +43,7 @@ test('remote sidebar slices preserve the explicit all-profiles scope', () => {
   )
 })
 
-test('remote sidebar slices fall back to the all-profiles scope and default limits', () => {
+test('remote sidebar slices fall back to the all-profiles scope', () => {
   for (const searchParams of [new URLSearchParams(), new URLSearchParams({ recents_profile: '   ' })]) {
     const slices = buildSidebarSessionSliceParams(searchParams)
 
@@ -50,9 +51,6 @@ test('remote sidebar slices fall back to the all-profiles scope and default limi
       Object.values(slices).map(params => params.get('profile')),
       ['all', 'all', 'all']
     )
-    assert.equal(slices.recents.get('limit'), '20')
-    assert.equal(slices.cron.get('limit'), '50')
-    assert.equal(slices.messaging.get('limit'), '100')
   }
 })
 
@@ -73,12 +71,44 @@ test('primary session reads use the profile-aware request path', async () => {
   assert.equal(result, expected)
 })
 
-test('primary session reads preserve the empty-list fallback', async () => {
-  const result = await fetchPrimaryProfileSessions(new URLSearchParams({ profile: 'all' }), async () => {
+// A failed primary read is an empty page the renderer must NOT treat as the
+// profile's truth: without errors[] it replaced the sidebar with "No sessions"
+// and nothing said why (#67600). Report the failed scope the same way the
+// backend reports a failed profile scan.
+test('primary session reads report a failed read in errors', async () => {
+  const result = await fetchPrimaryProfileSessions(new URLSearchParams({ profile: 'default' }), async () => {
     throw new Error('remote unavailable')
   })
 
-  assert.deepEqual(result, { sessions: [], total: 0, profile_totals: {} })
+  assert.deepEqual(result, {
+    sessions: [],
+    total: 0,
+    profile_totals: {},
+    errors: [{ profile: 'default', error: 'remote unavailable' }]
+  })
+})
+
+test('a failed unified primary read names the whole aggregate', async () => {
+  const result = await fetchPrimaryProfileSessions(new URLSearchParams({ limit: '20' }), async () => {
+    throw new Error('timed out')
+  })
+
+  assert.deepEqual(result.errors, [{ profile: 'all', error: 'timed out' }])
+})
+
+test('reassembled sidebar slices keep each slice errors', () => {
+  const failed = [{ profile: 'default', error: 'timed out' }]
+
+  const result = assembleSidebarSessionSlices(
+    { sessions: [], total: 0, profile_totals: {}, errors: failed },
+    { sessions: [{ id: 'cron-1' }], total: 1 },
+    { sessions: [], total: 0, errors: failed }
+  )
+
+  assert.deepEqual(result.recents.errors, failed)
+  assert.equal(result.cron.errors, undefined)
+  assert.deepEqual(result.messaging.errors, failed)
+  assert.deepEqual(result.cron.sessions, [{ id: 'cron-1' }])
 })
 
 test('remote session reads split oversized sidebar windows into API-safe pages', async () => {

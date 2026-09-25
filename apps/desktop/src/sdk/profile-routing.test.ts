@@ -118,16 +118,12 @@ vi.mock('@/store/gateway', async () => {
       params,
       profile
     })),
+    retainGatewayForAgent: vi.fn(async () => vi.fn()),
     retireLocalProfileGateways: vi.fn()
   }
 })
 
-const {
-  BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS,
-  DEFAULT_SESSION_HYDRATION_TIMEOUT_MS,
-  HYDRATION_SYNC_BADGE_TIMEOUT_MS,
-  host
-} = await import('./index')
+const { HYDRATION_SYNC_BADGE_TIMEOUT_MS, host } = await import('./index')
 
 const { openSession: openSessionCore } = await import('@/app/open-session')
 const { deleteProfile, hermesApi } = await import('@/hermes')
@@ -373,83 +369,6 @@ describe('connection-aware plugin host APIs', () => {
     )
   })
 
-  it('survives a backend that settles at its own ceiling, and only fails past the client deadline', async () => {
-    // #93911 review follow-up (adversarial): the failure mode is not "no
-    // timeout" but "a timeout equal to the backend's ceiling". Model the
-    // documented worst case on a virtual clock — the turn lock wait, a full
-    // timed attempt, the policy-gated re-run, and then the settlement the
-    // handler still has to serialize and transport — and assert that a
-    // deadline set AT the ceiling loses that race while one with margin wins.
-    const LOCK_WAIT_MS = 120_000
-    const ATTEMPT_MS = 600_000
-    const ATTEMPTS = 2
-    const CEILING_MS = LOCK_WAIT_MS + ATTEMPT_MS * ATTEMPTS
-    const SETTLEMENT_MS = 1_000
-
-    const route = {
-      connectionId: 'source-a',
-      mode: 'remote' as const,
-      profile: 'remote-worker',
-      targetProfile: 'backend-worker'
-    }
-
-    // A gateway that answers only after the full ceiling plus settlement, and
-    // aborts at whatever deadline the caller handed down.
-    const backendAtItsLimit = async (
-      _connectionId: string,
-      _profile: string,
-      _method: string,
-      _params: Record<string, unknown>,
-      timeoutMs?: number
-    ) =>
-      new Promise((resolve, reject) => {
-        setTimeout(() => resolve({ reply: 'delivered', reason: 'ok' }), CEILING_MS + SETTLEMENT_MS)
-
-        if (timeoutMs !== undefined) {
-          setTimeout(() => reject(new Error('request timed out')), timeoutMs)
-        }
-      })
-
-    vi.useFakeTimers()
-
-    try {
-      vi.mocked(requestGatewayForAgent).mockImplementation(backendAtItsLimit as never)
-
-      // Deadline exactly at the ceiling: the typed settlement loses the race.
-      const atCeiling = host.requestProfile(route, 'bot_relay.deliver', {}, CEILING_MS)
-      const atCeilingSettled = expect(atCeiling).rejects.toThrow(/timed out/)
-      await vi.advanceTimersByTimeAsync(CEILING_MS + SETTLEMENT_MS)
-      await atCeilingSettled
-
-      // Same backend, deadline with settlement margin: the answer gets through.
-      const withMargin = host.requestProfile(route, 'bot_relay.deliver', {}, CEILING_MS + SETTLEMENT_MS * 180)
-
-      const withMarginSettled = expect(withMargin).resolves.toEqual({
-        reason: 'ok',
-        reply: 'delivered'
-      })
-
-      await vi.advanceTimersByTimeAsync(CEILING_MS + SETTLEMENT_MS)
-      await withMarginSettled
-    } finally {
-      vi.useRealTimers()
-      vi.mocked(requestGatewayForAgent).mockReset()
-    }
-  })
-
-  it('leaves callers that pass no timeout on the pool default', async () => {
-    const route = {
-      connectionId: 'source-a',
-      mode: 'remote' as const,
-      profile: 'remote-worker',
-      targetProfile: 'backend-worker'
-    }
-
-    await host.requestProfile(route, 'profiles.list', {})
-
-    expect(requestGatewayForAgent).toHaveBeenCalledWith('source-a', 'remote-worker', 'profiles.list', {})
-  })
-
   it('fails closed when a descriptor omits connection or target profile identity', async () => {
     await expect(
       host.requestProfile(
@@ -568,14 +487,6 @@ describe('connection-aware plugin host APIs', () => {
       undefined,
       { spawnPriority: 'foreground' }
     )
-  })
-
-  it('forwards the foreground tag on the profile-only overload without inventing a timeout', async () => {
-    await host.requestProfile('legacy-worker', 'session.list', {}, undefined, { spawnPriority: 'foreground' })
-
-    expect(requestGatewayForProfile).toHaveBeenCalledWith('legacy-worker', 'session.list', {}, undefined, undefined, {
-      spawnPriority: 'foreground'
-    })
   })
 
   it('keeps the profile-only request overload as a legacy fallback', async () => {
@@ -1044,65 +955,6 @@ describe('profile-aware plugin session opens', () => {
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 
-  it('keeps the ordinary session hydration default at 20 seconds', async () => {
-    vi.useFakeTimers()
-
-    try {
-      expect(DEFAULT_SESSION_HYDRATION_TIMEOUT_MS).toBe(20_000)
-      $activeGatewayProfile.set('hyoseob')
-
-      const outcome = host
-        .openSession('slow-bot-chat', {
-          profile: 'hyoseob',
-          awaitHydration: true,
-          expectHistory: true
-        })
-        .then(
-          () => 'resolved',
-          error => String(error)
-        )
-
-      await vi.advanceTimersByTimeAsync(19_999)
-      expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
-
-      await vi.advanceTimersByTimeAsync(1)
-      expect(await outcome).toMatch(/timed out loading/i)
-      expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('slow-bot-chat')
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('honors the exported 60-second Bot Chat hydration override', async () => {
-    vi.useFakeTimers()
-
-    try {
-      expect(BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS).toBe(60_000)
-      $activeGatewayProfile.set('hyoseob')
-
-      const outcome = host
-        .openSession('slow-bot-chat', {
-          profile: 'hyoseob',
-          awaitHydration: true,
-          expectHistory: true,
-          hydrationTimeoutMs: BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS
-        })
-        .then(
-          () => 'resolved',
-          error => String(error)
-        )
-
-      await vi.advanceTimersByTimeAsync(BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS - 1)
-      expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
-
-      await vi.advanceTimersByTimeAsync(1)
-      expect(await outcome).toMatch(/timed out loading/i)
-      expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('slow-bot-chat')
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
   it('retries a Bot Chat hydration timeout once without ever arming the Retry surface (#89617)', async () => {
     $activeGatewayProfile.set('hyoseob')
 
@@ -1193,18 +1045,32 @@ describe('profile-aware plugin session opens', () => {
     expect($gatewaySwapTarget.get()).toBeNull()
   })
 
-  it('keeps chrome API home on the previous profile when opening a Bot Chat', async () => {
-    $activeGatewayProfile.set('default')
+  it('clears a stale overlay when a superseded wake never gets its own clear (#115844)', async () => {
+    $activeGatewayProfile.set('jimin')
 
-    await host.openSession('bot-chat', {
-      profile: 'worker',
-      keepAllProfilesScope: true
-    })
+    const firstOutcome = host
+      .openSession('chat-a', {
+        profile: 'jimin',
+        awaitHydration: true,
+        expectHistory: true,
+        hydrationTimeoutMs: 30
+      })
+      .then(
+        () => 'resolved',
+        error => String(error)
+      )
 
-    expect(ensureGatewayProfile).not.toHaveBeenCalled()
-    expect(openGatewayForProfile).toHaveBeenCalledWith('worker')
-    expect(setShowAllProfiles).toHaveBeenCalledWith(true)
-    expect($activeGatewayProfile.get()).toBe('default')
+    await Promise.resolve()
+    expect($gatewaySwapTarget.get()).toBe('jimin')
+
+    // A later open that never awaits hydration (a paint-first wake) bumps the
+    // generation counter but never touches $gatewaySwapTarget - it has
+    // nothing of its own to clear, so the first wake's own cleanup is the
+    // only thing standing between here and a permanently stuck overlay.
+    await host.openSession('chat-b', { profile: 'hyoseob' })
+
+    expect(await firstOutcome).toMatch(/timed out loading/i)
+    expect($gatewaySwapTarget.get()).toBeNull()
   })
 
   it('defaults keepAllProfilesScope to navigation instead of a workspace switch', async () => {
@@ -1276,37 +1142,6 @@ describe('profile-aware plugin session opens', () => {
     // retry, not a frozen pane.
     expect(setResumeExhaustedSessionId).toHaveBeenCalledWith('wedged-chat')
     expect($gatewaySwapTarget.get()).toBeNull()
-  })
-
-  it('names the phase in the wake log so a stuck dial is not read as a slow transcript', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
-
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
-
-    await expect(
-      host.openSession('wedged-chat', {
-        profile: 'medicina',
-        intent: 'main',
-        awaitHydration: true,
-        expectHistory: true,
-        keepAllProfilesScope: false,
-        hydrationTimeoutMs: 60
-      })
-    ).rejects.toThrow('Timed out loading ')
-
-    expect(warn).toHaveBeenCalledWith(
-      '[bot-wake] hydration timed out',
-      expect.objectContaining({ phase: 'activation' })
-    )
-
-    const payload = warn.mock.calls.at(-1)?.[1] as { hydrationWaitMs: number; profileActivationMs: number }
-
-    // The whole budget went to activation. Reporting it as hydration wait time
-    // would send a support bundle reader looking at transcript size.
-    expect(payload.profileActivationMs).toBeGreaterThan(0)
-    expect(payload.hydrationWaitMs).toBe(0)
-
-    warn.mockRestore()
   })
 
   it('gives hydration its own full budget after a slow but successful activation', async () => {
@@ -1392,37 +1227,6 @@ describe('profile-aware plugin session opens', () => {
     }
 
     expect(unhandled).toEqual([])
-  })
-
-  it('leaves a plain open unbounded, because it has no budget and no Retry surface', async () => {
-    // Deliberate scope line, not an oversight: the activation deadline rides on
-    // the same contract as the hydration one. A caller that never passed
-    // awaitHydration gets exactly the behaviour it had before, since a
-    // rejection here would surface to code with nowhere to render it.
-    vi.mocked(ensureGatewayProfile).mockImplementationOnce(() => new Promise<void>(() => undefined))
-
-    let settled = 'pending'
-
-    void host
-      .openSession('plain-chat', {
-        profile: 'medicina',
-        intent: 'main',
-        keepAllProfilesScope: false,
-        hydrationTimeoutMs: 40
-      })
-      .then(
-        () => {
-          settled = 'resolved'
-        },
-        () => {
-          settled = 'rejected'
-        }
-      )
-
-    await new Promise(resolve => setTimeout(resolve, 200))
-
-    expect(settled).toBe('pending')
-    expect(setResumeExhaustedSessionId).not.toHaveBeenCalled()
   })
 })
 

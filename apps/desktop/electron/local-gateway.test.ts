@@ -1,6 +1,20 @@
 import { expect, test } from 'vitest'
 
-import { createLocalGatewayDials, ensureLocalGateway } from './local-gateway'
+import { createLocalGatewayDials, ensureLocalGateway, routedGatewayEndpoint, runGatewayEnsure } from './local-gateway'
+
+test('the ensure client inherits the caller-scrubbed parent env, not the raw Desktop env', async () => {
+  // #68367: a sibling profile's `gateway ensure` must not see the launch profile's dotenv
+  // credentials. The parent env passed in IS the environment; only HERMES_HOME and the
+  // backend's own entries are layered on top.
+  const printEnv = ['-e', 'process.stdout.write(JSON.stringify({ leak: process.env.LEAK ?? null, home: process.env.HERMES_HOME, own: process.env.OWN }))']
+  const result = await runGatewayEnsure(
+    { command: process.execPath, args: printEnv, env: { OWN: '1' }, shell: false },
+    process.cwd(),
+    '/home/x/.hermes',
+    { PATH: process.env.PATH ?? '', OWN: '0' }
+  )
+  expect(JSON.parse(result.stdout)).toEqual({ leak: null, home: '/home/x/.hermes', own: '1' })
+})
 
 test('canonical ensure cannot cross a rejected update or profile lifecycle gate', async () => {
   let ran = false
@@ -111,7 +125,9 @@ test('private dial credential is one-use and bound to the requesting native wind
   expect(url).not.toContain('private-ticket')
   const details = { url, webContentsId: 8, resourceType: 'webSocket', requestHeaders: { Origin: 'http://renderer', 'Sec-WebSocket-Protocol': 'hermes-gateway-v1, hermes-gateway-ticket.private-ticket' } }
   expect(dials.headers(details)).toBeNull()
-  const headers = dials.headers({ ...details, webContentsId: 7 })!
+  // The dial may cross a loopback proxy that rewrites host:port but keeps the nonce.
+  const proxied = url.replace('127.0.0.1:1234', '127.0.0.1:4321')
+  const headers = dials.headers({ ...details, url: proxied, webContentsId: 7 })!
   expect(headers).not.toHaveProperty('Origin')
   expect(headers['Sec-WebSocket-Protocol']).toBe('hermes-gateway-v1, hermes-gateway-ticket.private-ticket')
   expect(dials.headers({ ...details, webContentsId: 7 })).toBeNull()
@@ -237,4 +253,12 @@ test.skipIf(process.platform === 'win32')('a group-accessible control socket is 
     await new Promise<void>(resolve => server.close(() => resolve()))
     await fs.rm(home, { recursive: true, force: true })
   }
+})
+
+test('a ?profile= request on the shared host descriptor mints for the sibling profile home', () => {
+  const endpoint = { profile_id: '/h/.hermes', instance_id: 'i', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1', capabilities: [], supervisor: 'none', control_home: null }
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=p2', '/h/.hermes')).toMatchObject({ profile_id: '/h/.hermes/profiles/p2', control_home: '/h/.hermes' })
+  expect(routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/api/sessions?profile=default', '/h/.hermes')).toBe(endpoint)
+  expect(routedGatewayEndpoint({ ...endpoint, profile_id: '/h/.hermes/profiles/p2', control_home: '/h/.hermes' }, 'http://127.0.0.1:1/x?profile=default', '/h/.hermes')).toMatchObject({ profile_id: '/h/.hermes' })
+  expect(() => routedGatewayEndpoint(endpoint, 'http://127.0.0.1:1/x?profile=../evil', '/h/.hermes')).toThrow('Invalid profile route')
 })

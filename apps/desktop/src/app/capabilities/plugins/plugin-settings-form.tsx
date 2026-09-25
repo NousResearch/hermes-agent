@@ -119,9 +119,9 @@ function EnumControl({ disabled, field, id, onChange, raw }: ControlProps) {
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {(field.choices ?? []).map(choice => (
+        {(field.choices ?? []).map((choice, index) => (
           <SelectItem key={choice} value={choice}>
-            {choice}
+            {field.choice_labels?.[index] ?? choice}
           </SelectItem>
         ))}
       </SelectContent>

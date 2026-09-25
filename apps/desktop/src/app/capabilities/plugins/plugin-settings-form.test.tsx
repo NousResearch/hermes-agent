@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import type { PluginSettingField } from '@/store/agent-plugins'
+import { stubMenuDomApis } from '@/test/jsdom'
 
 import { collectChanges, initialDraft, PluginSettingsForm } from './plugin-settings-form'
 
@@ -38,6 +39,7 @@ const FIELDS: PluginSettingField[] = [
 ]
 
 describe('PluginSettingsForm (#46600, #87934)', () => {
+  beforeAll(stubMenuDomApis)
   afterEach(cleanup)
 
   it('renders one control per schema type from the table, secrets masked with no value echoed', () => {
@@ -73,5 +75,32 @@ describe('PluginSettingsForm (#46600, #87934)', () => {
     // A value the plugin cannot accept never reaches the backend.
     expect(() => collectChanges(FIELDS, { ...initialDraft(FIELDS), mode: 'reckless' })).toThrow(/Mode/)
     expect(() => collectChanges(FIELDS, { ...initialDraft(FIELDS), retries: 'five' })).toThrow(/number/)
+  })
+
+  it('shows choice labels but saves the choice value', async () => {
+    const onSave = vi.fn(async () => true)
+
+    const fields: PluginSettingField[] = [
+      {
+        choice_labels: ['GPT-4o (fast)', 'Claude (careful)'],
+        choices: ['gpt-4o', 'claude'],
+        description: '',
+        key: 'model',
+        label: 'Model',
+        required: false,
+        type: 'enum',
+        value: 'gpt-4o'
+      }
+    ]
+
+    render(<PluginSettingsForm disabled={false} fields={fields} idPrefix="p" onSave={onSave} />)
+
+    const select = screen.getByRole('combobox', { name: 'Model' })
+    expect(select.textContent).toContain('GPT-4o (fast)')
+    fireEvent.click(select)
+    fireEvent.click(await screen.findByRole('option', { name: 'Claude (careful)' }))
+    fireEvent.submit(screen.getByTestId('p-settings-form'))
+
+    await vi.waitFor(() => expect(onSave).toHaveBeenCalledWith({ secrets: {}, values: { model: 'claude' } }))
   })
 })

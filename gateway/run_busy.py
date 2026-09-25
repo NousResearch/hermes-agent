@@ -44,6 +44,29 @@ def _strip_slot(text: str, slot: str) -> Optional[str]:
     return None
 
 
+def _busy_ack_suppressed(event: "MessageEvent") -> bool:
+    """Should this busy acknowledgement be skipped entirely?
+
+    Two ways to say no: the operator's global kill switch (``HERMES_GATEWAY_BUSY_ACK_ENABLED``),
+    and a chat the operator is not in — ``"⚡ Interrupting current task"`` / ``"↪ Redirected
+    current run"`` describe the operator's own turn, so they mean nothing to a contact and must
+    not land in their thread (#107899).
+    """
+    if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
+        return True
+    from gateway.display_config import chat_readers_are_third_party
+    from gateway.run import _load_gateway_config, _platform_config_key
+
+    platform = getattr(getattr(event, "source", None), "platform", None)
+    if platform is None:
+        return False
+    try:
+        return chat_readers_are_third_party(_load_gateway_config(), _platform_config_key(platform))
+    except Exception:  # unreadable config keeps the operator-facing behavior
+        logger.debug("busy-ack suppression check failed for platform %s", platform, exc_info=True)
+        return False
+
+
 def _tail_has_slot(tail: str, slot: str) -> bool:
     """True when ``tail``'s FIRST slot is ``slot`` (``tail`` is ``""`` when the key ends at the
     chat id)."""
@@ -841,7 +864,7 @@ class GatewayBusySessionMixin:
 
         # Disabled ack: still process input. Checked before debounce so an undelivered ack never
         # stamps the "last ack" timestamp.
-        if os.environ.get("HERMES_GATEWAY_BUSY_ACK_ENABLED", "true").lower() != "true":
+        if _busy_ack_suppressed(event):
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
 

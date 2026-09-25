@@ -16,11 +16,11 @@ from gateway.response_filters import (
 )
 
 
-def _source():
+def _source(*, platform=Platform.TELEGRAM, chat_type="group", chat_id="-1001"):
     return SessionSource(
-        platform=Platform.TELEGRAM,
-        chat_id="-1001",
-        chat_type="group",
+        platform=platform,
+        chat_id=chat_id,
+        chat_type=chat_type,
         user_id="12345",
     )
 
@@ -115,6 +115,36 @@ async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypat
     )
 
     assert response and not is_intentional_silence_response(response)
+
+
+@pytest.mark.asyncio
+async def test_third_party_chat_keeps_the_silence_marker_invisible(monkeypatch, tmp_path):
+    """A WhatsApp linked-device DM is a chat with somebody else (#107899): the agent's decision not
+    to reply is delivered as nothing, never as the operator-facing silence fallback."""
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "[SILENT]",
+        "messages": [
+            {"role": "user", "content": "thanks!"},
+            {"role": "assistant", "content": "[SILENT]"},
+        ],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": False,
+    })
+    source = _source(platform=Platform.WHATSAPP, chat_type="dm", chat_id="905551112233")
+
+    response = await runner._handle_message_with_agent(
+        MessageEvent(text="thanks!", source=source, message_id="msg-43"),
+        source,
+        "agent:main:whatsapp:dm:905551112233",
+        1,
+    )
+
+    assert response == ""
+    assert not is_intentional_silence_response(response)
 
 
 @pytest.mark.asyncio

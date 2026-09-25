@@ -640,3 +640,55 @@ class TestProjectVenvDirOutOfTree:
         assert hermes_constants.project_venv_dir(other) is None
         (checkout / ".venv").mkdir()
         assert hermes_constants.project_venv_dir(checkout) == checkout / ".venv"
+
+
+class TestFirstPartyModuleClassification:
+    """Regression tests for #122328: all first-party modules ship in FIRST_PARTY_MODULE_ROOTS."""
+
+    @pytest.mark.parametrize("name", [
+        "acp_adapter",
+        "agent",
+        "batch_runner",
+        "cli",
+        "cron",
+        "gateway",
+        "mcp_serve",
+        "mini_swe_runner",
+        "model_tools",
+        "plugins",
+        "pm",
+        "providers",
+        "registration_lifecycle",
+        "run_agent",
+        "tools",
+        "toolset_distributions",
+        "toolsets",
+        "trajectory_compressor",
+        "tui_gateway",
+        "utils",
+        "hermes_cli",
+        "hermes_bootstrap",
+        "hermes_state",
+    ])
+    def test_first_party_modules_are_classified_correctly(self, name):
+        assert hermes_constants.is_first_party_module(name) is True
+        assert hermes_constants.is_first_party_module(f"{name}.submodule") is True
+
+        hint = hermes_constants.partial_update_hint(ImportError("missing symbol", name=name))
+        assert len(hint) > 0
+        assert "hermes update" in "\n".join(hint)
+
+    @pytest.mark.parametrize("name", [
+        "agentops",
+        "pytest",
+        "requests",
+        "pydantic",
+        "pm_extra",
+        "not_a_module",
+        "",
+        None,
+    ])
+    def test_third_party_and_lookalikes_are_not_first_party(self, name):
+        assert hermes_constants.is_first_party_module(name) is False
+        assert hermes_constants.partial_update_hint(ImportError("missing symbol", name=name)) == []
+

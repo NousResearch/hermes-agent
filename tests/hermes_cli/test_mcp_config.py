@@ -853,6 +853,42 @@ class TestMcpLogin:
 
 
 # ---------------------------------------------------------------------------
+# Tests: exit status of the real `hermes mcp` command line
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("argv, expected", [
+    (["login", "deadoauth"], 1),
+    (["reauth", "--all"], 1),
+    (["login", "ghost"], 3),
+    (["remove", "ghost"], 3),
+    (["add", "bad", "--command", "/nonexistent/hermes-mcp-fixture"], 1),
+])
+def test_mcp_action_that_did_not_happen_exits_nonzero(tmp_path, argv, expected):
+    """The process status is the outcome, like ``hermes mcp test``: a failed sign-in, an unknown
+    server or a server that could not be added is never exit 0. Real parser, dispatcher and probe;
+    the OAuth server is a closed loopback port, so nothing leaves the machine."""
+    import socket
+    import subprocess
+    import sys
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        closed_port = sock.getsockname()[1]
+    _seed_config(tmp_path, {"deadoauth": {
+        "url": f"http://127.0.0.1:{closed_port}/mcp", "auth": "oauth", "connect_timeout": 5}})
+    before = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.main", "mcp", *argv],
+        cwd=Path(__file__).resolve().parents[2], env={**os.environ, "HERMES_HOME": str(tmp_path)},
+        stdin=subprocess.DEVNULL, capture_output=True, text=True, encoding="utf-8", timeout=90,
+    )
+
+    assert result.returncode == expected, result.stdout + result.stderr
+    assert (tmp_path / "config.yaml").read_text(encoding="utf-8") == before
+
+
+# ---------------------------------------------------------------------------
 # Tests: cmd_mcp_reauth (GH#36767)
 # ---------------------------------------------------------------------------
 

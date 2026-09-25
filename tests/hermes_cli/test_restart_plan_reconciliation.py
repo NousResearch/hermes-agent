@@ -342,3 +342,55 @@ def test_mixed_fleet_only_the_missed_one_escalates(capsys):
     assert "ghost" in missed_block
     assert "[default]" not in missed_block
     assert "[work]" not in missed_block
+
+
+def test_unaccounted_rows_carry_a_self_explanatory_hint():
+    """#122228: `unaccounted` alone cannot be told apart from "a replacement
+    came up on its own" by a receipt reader — each tripwire site states which
+    one fired. Settled rows stay hint-free (stable receipt shape)."""
+    desktop_serve = _serve("default", 900)
+    desktop_serve.supervisor = "desktop"
+    desktop_serve.restart_via = _restart_mechanism("desktop", "default")
+
+    def _match(*runtimes, stale_serve_pids=None):
+        return match_runtime_outcomes(
+            _plan(*runtimes), restarted_services=[], relaunched_profiles=[],
+            externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+            stale_serve_pids=stale_serve_pids,
+        )
+
+    # Gateway vocabulary: no restart bookkeeping mentions it.
+    row = _match(_rt("default", 100))[0]
+    assert row["outcome"] == "unaccounted"
+    assert row["hint"] == (
+        "planned for restart but no restart bookkeeping mentions it — restart it manually")
+
+    # Serve the survivor probe saw still alive on pre-update code.
+    row = _match(_serve("default", 900), stale_serve_pids={900})[0]
+    assert row["outcome"] == "unaccounted"
+    assert row["hint"] == (
+        "the pre-update process was still alive when probed and no restart bookkeeping "
+        "mentions it — restart it manually unless a newer one has already taken its place")
+
+    # Serve with no probe result: a replacement may have started on its own.
+    row = _match(_serve("default", 900))[0]
+    assert row["outcome"] == "unaccounted"
+    assert row["hint"] == (
+        "no survivor-probe result and no restart bookkeeping mentions it — a replacement may "
+        "have started on its own; verify before manual action")
+
+    # Desktop-supervised serve with no probe result: the app may already own it.
+    row = _match(desktop_serve)[0]
+    assert row["outcome"] == "unaccounted"
+    assert row["hint"] == (
+        "no survivor-probe result; the Desktop app may already own this serve — "
+        "relaunch/reconnect the Desktop app and re-check before restarting it manually")
+
+    # Settled rows carry no hint.
+    outcomes = match_runtime_outcomes(
+        _plan(_rt("default", 100, supervisor="systemd")),
+        restarted_services=["hermes-gateway"], relaunched_profiles=[],
+        externally_supervised_profiles=[], killed_pids=set(), failed_units=[],
+    )
+    assert outcomes[0]["outcome"] == "restarted"
+    assert "hint" not in outcomes[0]

@@ -3352,7 +3352,15 @@ export const koOverrides = {
       gatewayUnreachable: gateway => `${gateway} · 연결 불가`,
       onGateway: (name, gateway) => `${name} · ${gateway}`,
       switchTo: (name, gateway) => `${gateway}의 ${name}(으)로 전환`,
-      deleteOn: gateway => ` (${gateway})`
+      deleteOn: gateway => ` (${gateway})`,
+      localDevice: '이 기기(로컬 백엔드 — Hermes가 없으면 설치하고, 있으면 새 세션을 엽니다)',
+      switchDeviceTitle: '이 기기로 전환할까요?',
+      switchDeviceDesc: '이 컴퓨터에서 새 세션을 엽니다. 지금 보고 있는 대화는 다른 게이트웨이에 그대로 남습니다.',
+      switchDeviceConfirm: '전환',
+      installDeviceTitle: '이 기기로 전환할까요?',
+      installDeviceDesc: 'Hermes를 이 컴퓨터에 설치한 뒤 새 세션을 엽니다. 확인하기 전에는 아무것도 설치하지 않습니다.',
+      installDeviceConfirm: '로컬에 설치',
+      connectExistingInstead: '기존 연결 사용'
     },
     status: {
       unread: (count: number) => `읽지 않은 세션 ${count}개`,
@@ -3846,6 +3854,7 @@ export const koOverrides = {
       branchFrom: '분기',
       rename: '이름 변경…',
       archive: '보관',
+      unarchive: '보관 해제',
       newWindow: '새 창',
       openInTerminal: '터미널에서 열기',
       hideTabBar: '탭 막대 숨기기',
@@ -4868,7 +4877,8 @@ export const koOverrides = {
         title: '컨텍스트 사용량',
         tokenSummary: (used, max) => `${used} / ${max} 토큰`
       },
-      session: '세션',
+      focusedSince: '활성 후 경과',
+      focusedSinceTitle: '이 대화가 활성화된 뒤 지난 시간 — 턴이 실행된 시간이 아닙니다',
       yoloOn: 'YOLO 켜짐 — 위험한 명령도 자동 승인합니다. Shift+클릭하면 전역으로 전환됩니다.',
       yoloOff: 'YOLO 꺼짐. Shift+클릭하면 전역으로 전환됩니다.',
       modelNone: '없음',
@@ -5633,6 +5643,8 @@ export const koOverrides = {
     deleteFailed: '삭제 실패',
     archived: '보관됨',
     archiveFailed: '보관 실패',
+    restored: '복원됨',
+    unarchiveFailed: '보관 해제 실패',
     cwdChangeFailed: '작업 디렉터리 변경 실패',
     cwdStagedTitle: '작업 디렉터리 변경 예약됨',
     cwdStagedMessage: '진행 중인 이 세션에 cwd 변경을 적용하려면 데스크톱 백엔드를 재시작하세요.',

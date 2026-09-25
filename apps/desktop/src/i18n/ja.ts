@@ -2039,6 +2039,18 @@ export const ja = defineLocale({
     switchToConnection: name => `${name} に切り替え`,
     switchConnectionFailed: name => `${name} に接続できませんでした`,
     manageProfiles: 'プロファイルを管理…',
+    fleet: {
+      localDevice:
+        'このデバイス（ローカルバックエンド — Hermes が無ければインストールし、あれば新しいセッションを開きます）',
+      switchDeviceTitle: 'このデバイスに切り替えますか？',
+      switchDeviceDesc: 'このコンピュータで新しいセッションを開きます。今の会話は別のゲートウェイに残ります。',
+      switchDeviceConfirm: '切り替える',
+      installDeviceTitle: 'このデバイスに切り替えますか？',
+      installDeviceDesc:
+        'Hermes をローカルにインストールしてから、このコンピュータで新しいセッションを開きます。確認するまでインストールは始まりません。',
+      installDeviceConfirm: 'ローカルにインストール',
+      connectExistingInstead: '代わりに既存環境へ接続'
+    },
     remoteOverride: {
       menuItem: 'リモートホストに接続…',
       badge: (host: string) => `${host} で実行中`,
@@ -2512,6 +2524,7 @@ export const ja = defineLocale({
       branchFrom: '分岐',
       rename: '名前を変更…',
       archive: 'アーカイブ',
+      unarchive: 'アーカイブを解除',
       newWindow: '新しいウィンドウ',
       openInTerminal: 'ターミナルで開く',
       copyIdFailed: 'セッション ID をコピーできませんでした',
@@ -3352,7 +3365,8 @@ export const ja = defineLocale({
         title: 'コンテキスト使用状況',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-      session: 'セッション',
+      focusedSince: 'フォーカスしてから',
+      focusedSinceTitle: 'このチャットをフォーカスしてからの時間。ターンの実行時間ではありません',
       yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。Shift+クリックで全体に切り替え。',
       yoloOff: 'YOLO オフ。Shift+クリックで全体に切り替え。',
       modelNone: 'なし',
@@ -3997,6 +4011,8 @@ export const ja = defineLocale({
     deleteFailed: '削除に失敗しました',
     archived: 'アーカイブしました',
     archiveFailed: 'アーカイブに失敗しました',
+    restored: '復元しました',
+    unarchiveFailed: 'アーカイブ解除に失敗しました',
     cwdChangeFailed: '作業ディレクトリの変更に失敗しました',
     cwdStagedTitle: '作業ディレクトリがステージングされました',
     cwdStagedMessage:

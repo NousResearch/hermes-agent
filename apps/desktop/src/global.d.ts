@@ -580,6 +580,8 @@ declare global {
       onBatteryChanged?: (callback: (onBattery: boolean) => void) => () => void
       onBootProgress: (callback: (payload: DesktopBootProgress) => void) => () => void
       getBootstrapState: () => Promise<DesktopBootstrapState>
+      /** Resolve This device without starting an install. Missing on an older preload. */
+      probeLocalBackend?: () => Promise<{ bootstrapNeeded: boolean }>
       continueBootstrapLocal: () => Promise<{ ok: boolean }>
       recycleBackend?: (profile?: null | string) => Promise<{ ok: boolean }>
       resetBootstrap: () => Promise<{ ok: boolean }>

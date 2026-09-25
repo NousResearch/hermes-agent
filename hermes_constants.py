@@ -1307,9 +1307,37 @@ def project_venv_dir(project_root) -> Path | None:
     running = Path(sys.prefix)
     if (Path(__file__).resolve().parent == root.resolve()
             and sys.prefix != sys.base_prefix
-            and venv_python_path(running).is_file()):
+            and venv_python_path(running).is_file()
+            and _venv_installs_checkout(running, root)):
         return running
     return None
+
+
+def _venv_installs_checkout(venv: Path, root: Path) -> bool:
+    """Is *venv*'s own ``hermes-agent`` installed from *root*?
+
+    Where this module was loaded from does not answer that: ``PYTHONPATH=<checkout>
+    <other install>/bin/python`` runs one checkout's code on another install's interpreter,
+    and adopting that venv made a dev checkout's update rewrite the Desktop install's venv
+    into an editable install of the dev tree. Every install of a checkout into a venv
+    (installers, ``uv sync``) records the source tree in ``direct_url.json``.
+    """
+    import json
+    from importlib.metadata import distributions
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    from pm.environments import site_packages
+
+    for dist in distributions(name="hermes-agent", path=[str(site_packages(venv))]):
+        try:
+            raw = dist.read_text("direct_url.json")  # windows-footgun: ok — importlib.metadata API, reads utf-8, no encoding=
+            url = json.loads(raw or "{}").get("url", "")
+        except ValueError:
+            continue
+        if url.startswith("file:") and Path(url2pathname(urlparse(url).path)).resolve() == root.resolve():
+            return True
+    return False
 
 
 def venv_python_path(venv_dir, *, windows: bool | None = None) -> Path:

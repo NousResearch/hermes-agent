@@ -271,6 +271,17 @@ def message_agent_tool(target: str = "", message: str = "", task_id: Optional[st
             return relayed
     # Local teammate — folder id, or a friendly name / Desktop @-slug ('Scribe', 'Dr. Foo').
     resolved = _resolve_local_name(raw_target, roster, root)
+    # A renamed-away profile's old directory can still resolve here: `hermes profile rename`
+    # clears the old dir's tombstone right after a successful move (so a FUTURE profile may
+    # reuse the name) — but a later side effect (cron heartbeat, log write, stray delivery)
+    # regenerating an identity marker there makes the exact match above succeed against a name
+    # nobody uses anymore. Catch it before trusting `resolved` at all, so a stale sender is
+    # taught the current name instead of silently landing on a dead profile (#123133).
+    from tools.bot_mode_probe import renamed_to
+    new_name = renamed_to(raw_target.lower(), root)
+    if new_name is not None and new_name != resolved:
+        return _roster_err(f"'{raw_target}' was renamed to '{new_name}' — use that name instead. "
+                           "Do not retry with the old name.")
     is_local_shape = bool(_LOCAL_TARGET_RE.match(raw_target))
     if resolved is None and not is_local_shape and "@" not in raw_target:
         return _roster_err(f"Invalid target: {raw_target!r}.")

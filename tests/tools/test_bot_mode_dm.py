@@ -187,6 +187,64 @@ def test_unknown_target_lists_roster(tmp_path):
     assert set(result["teammates"]) == {"researcher", "coder"}
 
 
+def test_renamed_away_name_hard_fails_with_pointer(tmp_path):
+    """#123133: a profile renamed via ``hermes profile rename`` records the old name in the
+    NEW profile's ``previous_names``. If the old directory later regenerates enough of an
+    identity marker to pass ``named_profile_is_live`` again (a stray cron/log/delivery write —
+    the rename clears its tombstone so a FUTURE profile may reuse the name), the old name must
+    never resolve to a live, unreadable delivery — it must hard-fail and point at the new name."""
+    home = _managed_home(tmp_path, teammates=("oadp-velero-agent",))
+    (home / "profiles" / "oadp-velero-agent" / "profile.yaml").write_text(
+        textwrap.dedent(
+            """\
+            description: teammate for tests
+            previous_names:
+              - velero-agent
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+            """
+        ),
+        encoding="utf-8",
+    )
+    # The stale directory itself still resolves as "live" (regenerated markers), exactly like
+    # the resurrected stub the bug report described.
+    stale = home / "profiles" / "velero-agent"
+    stale.mkdir(parents=True, exist_ok=True)
+    (stale / "profile.yaml").write_text(
+        "description: stale post-rename stub\n", encoding="utf-8",
+    )
+    agent = _FakeAgent(home, title="Bot Chat")
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="velero-agent", message="hi", agent=agent)
+    )
+    assert "error" in result
+    assert "renamed to 'oadp-velero-agent'" in result["error"]
+
+
+def test_current_name_of_a_renamed_profile_still_works(tmp_path):
+    """The redirect check must never shadow a live profile's OWN current name."""
+    home = _managed_home(tmp_path, teammates=("oadp-velero-agent",))
+    (home / "profiles" / "oadp-velero-agent" / "profile.yaml").write_text(
+        textwrap.dedent(
+            """\
+            description: teammate for tests
+            previous_names:
+              - velero-agent
+            ui_meta:
+              hermes-bots:
+                shape: cloud
+            """
+        ),
+        encoding="utf-8",
+    )
+    agent = _FakeAgent(home, title="Bot Chat")
+    result = json.loads(
+        bot_mode_dm.message_agent_tool(target="oadp-velero-agent", message="hi", agent=agent)
+    )
+    assert "error" not in result
+
+
 def test_cannot_message_self(tmp_path):
     home = _managed_home(tmp_path)
     agent = _FakeAgent(home, title="Bot Chat")  # default profile

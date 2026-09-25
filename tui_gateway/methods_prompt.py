@@ -661,11 +661,9 @@ def _(rid, params: dict) -> dict:
     if err is not None:
         return err
     if turn_isolation:
-        if turn_author:
-            logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
-                         turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
+            turn_author=turn_author)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)

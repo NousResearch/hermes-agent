@@ -317,6 +317,23 @@ def activate_dependencies(project_root: Path) -> None:
             while not held and (current := committed_venv(project_root)) not in (None, environment):
                 release()
                 environment, release = current, lease_generation(current)
+            built = venv_python_version(environment)
+            if built is not None and built != (sys.version_info.major, sys.version_info.minor):
+                # A generation compiled for one interpreter must never land on
+                # another's sys.path: every compiled module in it fails to load,
+                # and the failure surfaces far away from here. A venv interpreter
+                # keeps the packages it booted with (see _require_own_dependencies);
+                # PM's bare store Python owns none and refuses rather than run on
+                # unloadable paths.
+                release()
+                if sys.prefix != sys.base_prefix:
+                    return
+                raise RuntimeError(
+                    "the committed dependency environment was built for Python "
+                    f"{built[0]}.{built[1]} but this process runs "
+                    f"{sys.version_info.major}.{sys.version_info.minor}; "
+                    "run `hermes pm repair` to rebuild it for this interpreter"
+                )
             selected = site_packages(environment)
             if not selected.is_dir() and not runtime_facts_path(project_root).is_file():
                 return

@@ -165,6 +165,7 @@ Foreground (default): returns INSTANTLY when the command finishes, even with a h
 Background: set background=true (returns a session_id) only for commands that must keep running independently after this tool call returns; add notify=true for bounded tasks, leave silent only for servers/daemons that never exit. Do not start sleep, timers, cooldowns, delays, or polling loops with background=true — to wait a fixed time, run the wait as a normal foreground command with a high enough timeout. After starting a server, verify readiness with a health check in a separate call (no blind sleep loops); manage with process(action="poll"/"wait").
 Working directory: use 'workdir' for per-command cwd; when a command changes the session cwd (cd, pushd), trust the result's "cwd" field instead of prefixing every command with 'cd'.
 PTY: pty=true + background=true for interactive CLIs (they hang without a terminal); drive them with process(action="write"/"submit"). Local backend only.
+Persist: background=true, persist_on_release=true keeps the job alive across agent lifecycle cleanup (session end, /new, compression, error recovery, stop-on-max-iterations). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation; the user can still stop it on purpose.
 """
 
 # Environment lifecycle state.
@@ -1260,6 +1261,7 @@ def terminal_tool(
     _host_local: bool = False,
     _completion_output_chars: int = 0,
     heartbeat: int = 0,
+    persist_on_release: bool = False,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1273,6 +1275,10 @@ def terminal_tool(
     use it only for rare one-shot signals on long-lived processes. ``heartbeat`` (seconds,
     background-only, implies notify_on_complete) emits a "still running + output since last
     time" event every N seconds so the agent stays current on a long job without polling.
+    ``persist_on_release`` (background-only) keeps the process alive across agent-lifecycle
+    cleanup — session end, context compression, error recovery, max-iteration stop — all of
+    which kill the task's background processes; the user can still stop it on purpose via
+    process_manage kill (#41225).
     ``_completion_output_chars`` (internal) sizes the completion notification's output for a
     spawner whose output is the payload (a bot DM's reply); 0 keeps the usual tail.
     ``_host_local`` forces the local backend for Hermes-owned control-plane
@@ -1341,6 +1347,7 @@ def terminal_tool(
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
                 completion_output_chars=_completion_output_chars,
                 heartbeat_seconds=heartbeat,
+                persist_on_release=persist_on_release,
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
@@ -1413,6 +1420,11 @@ TERMINAL_SCHEMA = {
                 "type": "integer",
                 "minimum": 60,
                 "description": "With background=true: also notify every N seconds (min 60) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
+            },
+            "persist_on_release": {
+                "type": "boolean",
+                "default": False,
+                "description": "With background=true: keep the process alive across agent lifecycle cleanup (session end, /new, context compression, error recovery, max-iteration stop). Use ONLY for long-running jobs the user explicitly wants to outlive the conversation (overnight batches, watchful daemons); it still dies with the host process, and the user (or a later turn via process kill) can stop it on purpose. Default false."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
@@ -1442,6 +1454,7 @@ def _handle_terminal(args, **kw):
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
     heartbeat = args.get("heartbeat") or 0
+    persist_on_release = bool(args.get("persist_on_release", False))
     if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
         return tool_error("heartbeat must be a whole number of seconds (min 60).")
     if not args.get("background", False):
@@ -1457,6 +1470,12 @@ def _handle_terminal(args, **kw):
                 "with via process(action='write'/'submit'), which needs a "
                 "tracked background process). Retry as terminal(command=..., "
                 "background=true, pty=true)."
+            )
+        if persist_on_release:
+            return tool_error(
+                "persist_on_release only applies to background commands (a foreground "
+                "process is awaited inline and has nothing to persist). Retry as "
+                "terminal(command=..., background=true, persist_on_release=true)."
             )
     if notify is not None:
         if isinstance(notify, bool):
@@ -1483,6 +1502,7 @@ def _handle_terminal(args, **kw):
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
         heartbeat=heartbeat,
+        persist_on_release=persist_on_release,
     )
 
 

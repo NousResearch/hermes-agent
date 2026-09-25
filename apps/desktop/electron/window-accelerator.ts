@@ -1,8 +1,22 @@
-export type WindowAcceleratorAction = 'close-tab' | 'reload' | 'zoom-in' | 'zoom-out' | 'zoom-reset' | 'ignore'
+export type WindowAcceleratorAction =
+  | 'close-tab'
+  | 'reload'
+  | 'zoom-in'
+  | 'zoom-out'
+  | 'zoom-reset'
+  | 'swallow'
+  | 'ignore'
+
+/**
+ * How long after the window gains focus a Close Tab / Reload keyDown is
+ * treated as belonging to the app that just lost focus (#105498).
+ */
+export const FOCUS_GRACE_MS = 200
 
 export interface WindowAcceleratorInput {
   alt?: boolean
   control?: boolean
+  isAutoRepeat?: boolean
   key?: string
   meta?: boolean
   shift?: boolean
@@ -15,8 +29,18 @@ export interface WindowAcceleratorInput {
  * `before-input-event` fires for keydown and keyup. A keyup that arrives after
  * Windows transfers focus (Ctrl+W started in another app) is not a chord this
  * window owns, so only `keyDown` is an accelerator.
+ *
+ * Close Tab and Reload are destructive, so two more keyDowns are claimed but
+ * not acted on ('swallow'): auto-repeats (W held through a browser's own
+ * Ctrl+W keeps repeating once this window is foreground) and anything within
+ * FOCUS_GRACE_MS of focus arriving (a keydown synthesized on activation).
+ * They are still claimed so the renderer's `mod+w` keybind can't act on them.
  */
-export function windowAcceleratorAction(input: WindowAcceleratorInput, isMac: boolean): WindowAcceleratorAction {
+export function windowAcceleratorAction(
+  input: WindowAcceleratorInput,
+  isMac: boolean,
+  msSinceFocus = Number.POSITIVE_INFINITY
+): WindowAcceleratorAction {
   if (input.type !== 'keyDown') {
     return 'ignore'
   }
@@ -29,12 +53,12 @@ export function windowAcceleratorAction(input: WindowAcceleratorInput, isMac: bo
     return 'ignore'
   }
 
-  if (folded === 'w' && !input.shift) {
-    return 'close-tab'
-  }
+  if ((folded === 'w' || folded === 'r') && !input.shift) {
+    if (input.isAutoRepeat || msSinceFocus < FOCUS_GRACE_MS) {
+      return 'swallow'
+    }
 
-  if (folded === 'r' && !input.shift) {
-    return 'reload'
+    return folded === 'w' ? 'close-tab' : 'reload'
   }
 
   if (key === '0') {

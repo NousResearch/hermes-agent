@@ -69,7 +69,7 @@ def test_non_macos_search_has_no_implicit_exclusions(tmp_path):
     assert exclusions == []
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_grep_pruned_search_still_finds_nested_protected_names(tmp_path, monkeypatch):
     """A repo-internal directory literally named 'Downloads' must still be
     searched by the pruned grep path — the exact regression --exclude-dir had."""
@@ -91,7 +91,7 @@ def test_grep_pruned_search_still_finds_nested_protected_names(tmp_path, monkeyp
     assert not any(str(protected / "secret.txt") in p for p in matched_paths)
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_remote_backend_never_prunes(tmp_path, monkeypatch):
     """Non-local environments get no exclusions: platform facts describe the
     controller, not the execution host (macOS controller + Linux SSH backend
@@ -110,7 +110,7 @@ def test_remote_backend_never_prunes(tmp_path, monkeypatch):
     assert result.warning is None
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkeypatch):
     env = RecordingEnvironment("/")
     ops = ShellFileOperations(env)
@@ -151,7 +151,7 @@ def test_rg_multi_root_scopes_protected_globs_and_restores_absolute_paths(monkey
     ]
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monkeypatch):
     env = RecordingEnvironment("/Users/alice")
     ops = ShellFileOperations(env)
@@ -177,7 +177,7 @@ def test_rg_scoped_multi_root_terminates_options_before_dash_prefixed_root(monke
     assert result.error is None
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_real_ripgrep_does_not_descend_into_protected_folder(tmp_path, monkeypatch):
     home = tmp_path / "Users" / "alice"
     safe = home / "safe"

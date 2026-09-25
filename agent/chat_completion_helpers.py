@@ -436,6 +436,19 @@ def openai_codex_stale_timeout_floor(est_tokens: int) -> float:
     return 0.0
 
 
+def _bound_openai_codex_stale_timeout(stale_timeout: float, est_tokens: int) -> float:
+    """Apply the openai-codex stale bounds: raise to ``openai_codex_stale_timeout_floor``
+    so healthy gateway-scale requests aren't aborted mid-prefill, then clamp to the flat
+    HERMES_CODEX_HARD_TIMEOUT_SECONDS ceiling (#64507, default 1500s — above the max
+    floor, a backstop for a request that emits SOME events then wedges; 0 disables).
+    Shared by the worker watchdogs and the inline cron path (#69734)."""
+    floor = openai_codex_stale_timeout_floor(est_tokens)
+    if floor:
+        stale_timeout = max(stale_timeout, floor)
+    hard_timeout = env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
+    return min(stale_timeout, hard_timeout) if hard_timeout > 0 else stale_timeout
+
+
 def _validated_openrouter_provider_sort(raw_sort: Any) -> Optional[str]:
     """Return a normalized OpenRouter provider.sort value or None."""
     if not isinstance(raw_sort, str):
@@ -603,10 +616,17 @@ def _check_stale_giveup(agent) -> None:
         )
 
 
+def _stream_env_stale_base() -> "tuple[float, bool]":
+    """(HERMES_STREAM_STALE_TIMEOUT or the implicit 180s, explicit) — like
+    ``AIAgent._resolved_api_call_stale_timeout_base``; an explicit env value is the
+    user's deadline, so it is never capped to the run budget."""
+    return env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), "HERMES_STREAM_STALE_TIMEOUT" in os.environ
+
+
 def _configured_stale_base(agent) -> float:
     """Per-provider ``stale_timeout_seconds`` config, else HERMES_STREAM_STALE_TIMEOUT (180s)."""
     cfg = get_provider_stale_timeout(agent.provider, agent.model)
-    return cfg if cfg is not None else env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
+    return cfg if cfg is not None else _stream_env_stale_base()[0]
 
 
 def _local_stream_stale_timeout_default() -> float:
@@ -653,6 +673,18 @@ def _derive_stream_stale_timeout(agent, api_kwargs: dict) -> float:
     return _cloud_stale_timeout_for(agent, api_kwargs)
 
 
+def cap_to_run_budget(agent, timeout: float) -> float:
+    """Cap an IMPLICIT stale timeout at half the remaining --run-budget (>= 60s), so one hung
+    call can't outlive the run and the wrap-up notice stays reachable (#97968). Shared by the
+    streaming and non-streaming resolvers; callers skip it for explicit user settings."""
+    run_budget = getattr(agent, "run_budget_seconds", None)
+    started = getattr(agent, "_run_budget_started_at", None)
+    if not run_budget or not started:
+        return timeout
+    remaining = float(run_budget) - (time.time() - float(started))
+    return min(timeout, max(60.0, remaining * 0.5))
+
+
 def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
     """An explicit ``providers.<id>.stale_timeout_seconds`` is the operator's deadline and
     wins over every implicit floor — the context-size tier as well as the reasoning-model
@@ -661,7 +693,9 @@ def _cloud_stale_timeout_for(agent, api_kwargs: dict) -> float:
     explicit = get_provider_stale_timeout(agent.provider, agent.model)
     if explicit is not None:
         return explicit
-    return _cloud_stale_timeout(env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0), api_kwargs)
+    base, explicit_env = _stream_env_stale_base()
+    timeout = _cloud_stale_timeout(base, api_kwargs)
+    return timeout if explicit_env else cap_to_run_budget(agent, timeout)
 
 
 def _bedrock_reasoning_stale_floor(model_id: object) -> "float | None":
@@ -764,13 +798,23 @@ def should_use_direct_api_call(agent) -> bool:
     thread pools that wedge before the socket opens when the request is pushed onto
     yet another daemon worker. Running inline drops the deepest layer; interrupts
     still work because the inline path registers ``agent._active_request_abort``,
-    which ``interrupt()`` invokes cross-thread (#72227). Native/Codex/Bedrock/MoA
-    keep their workers: their cancellation and client ownership differ.
+    which ``interrupt()`` invokes cross-thread (#72227). Cron also inlines Codex
+    Responses (#69734): both Codex paths (non-stream, and streaming via
+    ``_stream_codex_passthrough`` -> ``_interruptible_api_call``) reach
+    ``direct_api_call``, whose client comes from ``make_client`` so the inline stale
+    watchdog can abort it; the stale budget keeps the openai-codex floor/hard cap.
+    Trade-off: the worker-only Codex TTFB/progress/idle watchdogs don't run inline, so
+    a Codex call that never sends a first byte waits the full wall-clock stale budget
+    (600-1200s on large contexts) instead of the ~120s TTFB cutoff. Delegated children
+    and Native/Bedrock/MoA keep their workers: cancellation and client ownership differ.
     """
-    if getattr(agent, "api_mode", None) != "chat_completions" or getattr(agent, "provider", None) == "moa":
+    api_mode = getattr(agent, "api_mode", None)
+    if getattr(agent, "provider", None) == "moa":
         return False
     if getattr(agent, "platform", None) == "cron":
-        return True
+        return api_mode in {"chat_completions", "codex_responses"}
+    if api_mode != "chat_completions":
+        return False
     # Delegated child — via the execution ContextVar set by _run_single_child,
     # with the agent's platform stamp as a fallback for callers that bypass it.
     with contextlib.suppress(Exception):
@@ -796,7 +840,7 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
         from urllib.parse import urlparse
         from hermes_cli.local_runtime.load_progress import get_loading_progress, get_prefill_progress
         from hermes_cli.local_runtime.supervisor import state_path
-        state = json.loads(state_path().read_text(encoding="utf-8"))
+        state = json.loads(state_path().read_text(encoding="utf-8-sig"))
         managed = urlparse(str(state.get("base_url", ""))).netloc.lower()
         if not managed or urlparse(base).netloc.lower() != managed:
             return None
@@ -819,13 +863,17 @@ def _managed_local_load_notice(agent, api_kwargs: dict) -> "Optional[str]":
 
 
 def _resolve_direct_stale_timeout(agent, api_kwargs: dict) -> float:
-    """Stale budget for the inline call via ``agent._compute_non_stream_stale_timeout``.
-    A non-numeric result (stub agent) leaves the watchdog disarmed; a resolver
+    """Stale budget for the inline call via ``agent._compute_non_stream_stale_timeout``,
+    plus the same openai-codex floor/hard cap the worker path applies (inline cron Codex,
+    #69734). A non-numeric result (stub agent) leaves the watchdog disarmed; a resolver
     that *raises* propagates — swallowing into ``inf`` would reinstate the hang."""
     resolver = getattr(agent, "_compute_non_stream_stale_timeout", None)
     value = resolver(api_kwargs) if callable(resolver) else None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return float("inf")
+    base_url = getattr(agent, "base_url", None)
+    if getattr(agent, "api_mode", None) == "codex_responses" and not (base_url and is_local_endpoint(base_url)):
+        return _bound_openai_codex_stale_timeout(float(value), estimate_request_context_tokens(api_kwargs))
     return float(value)
 
 
@@ -932,7 +980,7 @@ class _InlineRequest:
             return newly_stale
 
     def make_client(self, reason: str, kind: str = "openai"):
-        # Only OpenAI-wire requests reach direct_api_call; ``kind`` exists
+        # Only OpenAI-wire / Codex requests reach direct_api_call; ``kind`` exists
         # for signature parity with the dispatch helper.
         client = self.agent._create_request_openai_client(reason=reason, api_kwargs=self.api_kwargs)
         with self.lock:
@@ -1170,16 +1218,8 @@ def _resolve_nonstream_watchdogs(agent, api_kwargs: dict) -> _NonStreamWatchdogs
     base_url = getattr(agent, "base_url", None)
     local = bool(base_url) and is_local_endpoint(base_url)
     if codex and not local:
-        # Raise the stale floor for large payloads so healthy gateway-scale
-        # requests aren't aborted mid-prefill.
         codex_floor = openai_codex_stale_timeout_floor(est_tokens)
-        if codex_floor:
-            stale_timeout = max(stale_timeout, codex_floor)
-        # Flat hard ceiling (#64507) for a request that emits SOME events then wedges.
-        # Default sits ABOVE the max floor (1200s) — a backstop, never tighter. 0 disables.
-        hard_timeout = env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
-        if hard_timeout > 0:
-            stale_timeout = min(stale_timeout, hard_timeout)
+        stale_timeout = _bound_openai_codex_stale_timeout(stale_timeout, est_tokens)
 
     idle_default = max(effort_floor, next(
         (default for threshold, default in ((100_000, 180.0), (50_000, 120.0), (10_000, 60.0)) if est_tokens > threshold),

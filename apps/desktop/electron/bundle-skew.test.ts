@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
@@ -218,6 +218,7 @@ function realGitRun(root: string): RunGit {
     try {
       const stdout = execFileSync('git', args, {
         cwd: options.cwd || root,
+        env: { ...process.env, ...options.env },
         stdio: ['ignore', 'pipe', 'pipe']
       }).toString()
 
@@ -283,6 +284,29 @@ describe('detectBundleSkew against a real git repo', () => {
 
     const result = await detectBundleSkew({ commit: base, source: 'local' }, runGit, repoRoot)
 
+    expect(result).toEqual({ desktopCommitsBehind: null, outOfSync: false })
+  })
+
+  it('never lazy-fetches from origin in a treeless partial clone', async () => {
+    const { base, repoRoot: origin } = makeScratchRepo()
+    const originGit = scratchGit(origin)
+
+    writeFiles(origin, ['apps/desktop/src/app/shell.tsx'])
+    originGit('add', '.')
+    originGit('commit', '-q', '-m', 'renderer change')
+    originGit('config', 'uploadpack.allowFilter', 'true')
+
+    const clone = mkdtempSync(join(tmpdir(), 'bundle-skew-clone-'))
+    scratchRepos.push(clone)
+    execFileSync('git', ['clone', '-q', '--no-checkout', '--filter=tree:0', `file://${origin}`, clone], {
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    const packs = () => readdirSync(join(clone, '.git/objects/pack')).sort()
+    const before = packs()
+
+    const result = await detectBundleSkew({ commit: base, source: 'local' }, realGitRun(clone), clone)
+
+    expect(packs()).toEqual(before)
     expect(result).toEqual({ desktopCommitsBehind: null, outOfSync: false })
   })
 })

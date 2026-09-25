@@ -56,8 +56,18 @@ export interface BundleSkewResult {
 
 export type RunGit = (
   args: string[],
-  options: { cwd: string }
+  options: { cwd: string; env?: Record<string, string> }
 ) => Promise<{ code: number; stderr: string; stdout: string }>
+
+/**
+ * A read-only probe must never lazy-fetch. The update checkout is a treeless
+ * partial clone, so `rev-list -- <paths>` over trees it lacks makes git spawn
+ * `git fetch` from origin; the app launches mid-update and ran two of these
+ * beside `hermes update`'s own fetch, which crashed it inside pack-objects.
+ * With this set git fails on the missing tree instead, which is "unknowable"
+ * and already reported quietly (same rule as hermes_cli's NO_LAZY_FETCH_ENV).
+ */
+const NO_LAZY_FETCH_ENV = { GIT_NO_LAZY_FETCH: '1' }
 
 /**
  * The apps/desktop paths that actually reach the user: renderer sources,
@@ -105,7 +115,8 @@ export async function detectBundleSkew(
     // this a proof that the renderer PREDATES the tree, which is the claim the
     // warning actually makes.
     const ancestry = await runGit(['merge-base', '--is-ancestor', stamp.commit, 'HEAD'], {
-      cwd: repoRoot
+      cwd: repoRoot,
+      env: NO_LAZY_FETCH_ENV
     })
 
     if (ancestry.code !== 0) {
@@ -113,7 +124,8 @@ export async function detectBundleSkew(
     }
 
     const result = await runGit(['rev-list', '--count', `${stamp.commit}..HEAD`, '--', ...RUNTIME_PATHS], {
-      cwd: repoRoot
+      cwd: repoRoot,
+      env: NO_LAZY_FETCH_ENV
     })
 
     if (result.code !== 0) {

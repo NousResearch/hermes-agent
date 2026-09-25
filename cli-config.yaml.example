@@ -1125,9 +1125,10 @@ skills:
 # Agent Behavior
 # =============================================================================
 agent:
-  # Opt-in white-label prompt: omit built-in help/docs, active-profile,
-  # model/provider identity and mid-turn steering sections. Default false.
-  # SOUL.md, platform hints and the skills index are unaffected.
+  # Opt-in white-label prompt: omit branded help/docs and model/provider identity.
+  # Neutral profile-boundary and mid-turn steering safety guidance remains, as
+  # does an opaque runtime fingerprint for resumed-session identity checks.
+  # SOUL.md, platform hints and the skills index are unaffected. Default false.
   # white_label_prompt: false
   # Maximum tool-calling iterations per conversation (default: 500)
   # Higher = more room for complex tasks, but costs more tokens

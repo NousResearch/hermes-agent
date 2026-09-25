@@ -354,6 +354,14 @@ def test_skill_reload_resources_reach_distinct_requests_under_pressure_then_recl
         result = agent.run_conversation(
             "Read the fixture skill and its supporting guide.", conversation_history=history
         )
+        # Check the wire invariant before new bookkeeping APIs, so unfixed main
+        # fails on missing instructions rather than an unavailable helper method.
+        assert result.get("completed") is True, result
+        assert len(requests) == 3
+        assert _contains_decoded(requests[1], MAIN_BODY), "main SKILL.md body missing from the next serialized request"
+        assert not _contains_decoded(requests[1], REFERENCE_BODY), "file_path resource was conflated with the main Skill"
+        assert _contains_decoded(requests[2], REFERENCE_BODY), "file_path body missing from its next serialized request"
+        assert not _contains_decoded(requests[2], MAIN_BODY), "delivered main Skill body was not reclaimed before the next request"
         pending_after_turn = compressor.pending_skill_view_results()
     finally:
         with suppress(Exception):
@@ -371,12 +379,6 @@ def test_skill_reload_resources_reach_distinct_requests_under_pressure_then_recl
             encoding="utf-8",
         )
 
-    assert result.get("completed") is True, result
-    assert len(requests) == 3
-    assert _contains_decoded(requests[1], MAIN_BODY), "main SKILL.md body missing from the next serialized request"
-    assert not _contains_decoded(requests[1], REFERENCE_BODY), "file_path resource was conflated with the main Skill"
-    assert _contains_decoded(requests[2], REFERENCE_BODY), "file_path body missing from its next serialized request"
-    assert not _contains_decoded(requests[2], MAIN_BODY), "delivered main Skill body was not reclaimed before the next request"
     assert not pending_after_turn, f"resource remained pending after a request carried it: {pending_after_turn}"
 
     reclaimed, reclaimed_count = compressor._prune_old_tool_results(

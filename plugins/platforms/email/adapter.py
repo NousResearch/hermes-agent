@@ -42,6 +42,13 @@ _AUTOMATED_HEADERS = {"Auto-Submitted": lambda v: v.lower() != "no",
                       "X-Auto-Response-Suppress": lambda v: bool(v), "List-Unsubscribe": lambda v: bool(v)}
 MAX_MESSAGE_LENGTH = 50_000  # Gmail-safe max length per email body
 SMTP_CONNECT_TIMEOUT = 30
+# IMAP socket timeout. Both call sites below previously hardcoded 30s — too tight for a
+# loaded host: a socket read stalling past 30s (heavy local jobs starving the fetch thread)
+# raised "The read operation timed out", which surfaces as a fatal email_imap_fetch_failed
+# and restarts the adapter even though the link is fine and the very next reconnect
+# succeeds. Ten such fatal errors were observed over nine nights, all clustered on
+# nights with heavy local work.
+_IMAP_READ_TIMEOUT = 180
 _TRUTHY = {"true", "1", "yes"}
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 # Charset labels seen in the wild that Python's codec registry doesn't know: "unknown-8bit"/"x-unknown" are
@@ -386,8 +393,8 @@ class EmailAdapter(BasePlatformAdapter):
     def _connect_imap(self) -> imaplib.IMAP4:
         """Create an IMAP connection using implicit TLS, STARTTLS, or plaintext."""
         if self._imap_security == "tls":
-            return imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30, ssl_context=_tls_context(self._imap_tls_verify, self._imap_host))
-        imap = imaplib.IMAP4(self._imap_host, self._imap_port, timeout=30)
+            return imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=_IMAP_READ_TIMEOUT, ssl_context=_tls_context(self._imap_tls_verify, self._imap_host))
+        imap = imaplib.IMAP4(self._imap_host, self._imap_port, timeout=_IMAP_READ_TIMEOUT)
         if self._imap_security == "starttls":
             try:
                 imap.starttls(ssl_context=_tls_context(self._imap_tls_verify, self._imap_host))

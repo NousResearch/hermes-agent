@@ -194,3 +194,23 @@ def test_recovery_retries_at_standard_speed_before_classification():
     assert (retry, prompt) == (True, "sys")
     assert agent._fast_mode_unavailable_models == {"claude-opus-5"}
     assert any("standard speed" in line for line in printed)
+
+
+def test_codex_fast_mode_follows_configured_base_url(monkeypatch):
+    """openai-codex fast params are allowed on the configured Codex base, not just chatgpt.com (#121486 item 3)."""
+    from hermes_cli.models import resolve_fast_mode_overrides
+
+    gateway = "https://gateway.example.com/codex"
+    monkeypatch.delenv("HERMES_CODEX_BASE_URL", raising=False)
+    assert resolve_fast_mode_overrides("gpt-5.4", provider="openai-codex", base_url=gateway) is None
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", gateway)
+    assert resolve_fast_mode_overrides("gpt-5.4", provider="openai-codex", base_url=gateway) == {
+        "service_tier": "priority"
+    }
+    assert (
+        resolve_fast_mode_overrides("gpt-5.4", provider="openai-codex", base_url="https://proxy.example.com/v1")
+        is None
+    )
+    assert resolve_fast_mode_overrides(
+        "gpt-5.4", provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex"
+    ) == {"service_tier": "priority"}

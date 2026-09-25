@@ -1153,9 +1153,24 @@ def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     return is_anthropic_fast_mode_model(model_id)
 
 
+def _codex_configured_base_host() -> str:
+    """Hostname of the operator-configured Codex base URL ("" when unset).
+
+    Explicit opt-in for fast params off chatgpt.com: only the endpoint the operator pointed
+    ``HERMES_CODEX_BASE_URL`` at may receive them; every other proxy host stays rejected (#121486 item 3).
+    """
+    from urllib.parse import urlparse
+
+    override = (os.getenv("HERMES_CODEX_BASE_URL", "") or "").strip().rstrip("/")
+    return (urlparse(override).hostname or "").lower() if override else ""
+
+
 def _fast_mode_route_supported(
     model_id: Optional[str], provider: Optional[str], base_url: Optional[str]) -> bool:
-    """Only the first-party endpoint that bills for fast mode may receive its params."""
+    """Only the first-party endpoint that bills for fast mode may receive its params.
+
+    ``openai-codex`` additionally honors the configured Codex base URL: capability plus the
+    operator's endpoint, never a bare hostname allow-list (#121486 item 3)."""
     from urllib.parse import urlparse
 
     from agent.model_metadata import is_grok_46_family
@@ -1169,7 +1184,12 @@ def _fast_mode_route_supported(
     if provider and normalize_provider(provider) not in allowed:
         return False
     host = (urlparse(str(base_url or "")).hostname or "").lower()
-    return not host or host in allowed.values()
+    if not host or host in allowed.values():
+        return True
+    return (
+        normalize_provider(provider or "") == "openai-codex"
+        and host == _codex_configured_base_host()
+    )
 
 
 def resolve_fast_mode_overrides(

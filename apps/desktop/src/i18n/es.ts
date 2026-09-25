@@ -4435,7 +4435,7 @@ export const esOverrides = {
       copyFailure: 'No se pudo copiar el criterio al portapapeles',
       continuationFailed: 'No se pudo enviar la continuación del objetivo',
       continuationQueued: 'Objetivo reanudado: la continuación queda en cola hasta que termine el turno actual',
-      continuationBusy: 'Objetivo reanudado: la sesión está ocupada; usa /interrupt en el turno actual para continuar',
+      continuationBusy: 'Objetivo reanudado: la sesión está ocupada; detén primero la respuesta actual (botón Stop o Esc) para continuar',
       controlUnavailable: (msg: string) => `Controles de sesión no disponibles: ${msg}`,
       dismissError: 'Descartar error',
       add: 'Añadir'

@@ -1857,12 +1857,18 @@ async def _async_profile_runtime_scope(profile_home: "Path"):
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner. An UNSET ``multiplex_profiles`` is
     settled first by ``resolve_multiplex_mode`` (the default is on; the boot guard keeps a fleet that
-    still runs per-profile gateways standalone). Multiplexed: reload under the default profile's
-    ``_profile_runtime_scope`` so platform tokens in its ``.env`` resolve via the secret scope;
-    unscoped ``_getenv`` falls to ``os.environ``, which often lacks a token living only under
-    ``profiles/<name>/.env``. Off -> identical to ``load_gateway_config()``.
+    still runs per-profile gateways standalone). Multiplexed: set multiplex-active, then reload
+    under the default root's ``_profile_runtime_scope`` — not ``get_hermes_home()``, which is the
+    named launcher when a profile-scoped process started the host. A scope miss must not fall
+    through to that process's ``os.environ``. Off -> identical to ``load_gateway_config()``.
 
     See #64674.
+
+    The probe load above only decides whether this process is a multiplexer. The primary
+    config is the scoped reload: multiplex must already be active (a scope miss must not
+    fall through to the launching profile's ``os.environ``) and the home must be the
+    default root, not ``get_hermes_home()`` — a named launcher's home is not the owner
+    of the primary adapter map.
     """
     from hermes_cli.gateway_multiplex_mode import log_multiplex_decision, resolve_multiplex_mode
     cfg = load_gateway_config()
@@ -1870,7 +1876,13 @@ def load_gateway_config_for_runner() -> "GatewayConfig":
     if not cfg.multiplex_profiles:
         return cfg
     try:
-        home = get_hermes_home()
+        from agent.secret_scope import set_multiplex_active
+        set_multiplex_active(True)
+    except Exception:
+        logger.debug("could not set multiplex-active before primary config load", exc_info=True)
+    try:
+        from hermes_constants import get_default_hermes_root
+        home = get_default_hermes_root()
     except Exception:
         return cfg
     try:
@@ -3659,8 +3671,14 @@ class GatewayRunner(
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = threading.Lock()
         # Launch-time identity of the profile that owns ``self.adapters``; ``_authorization_adapter``
-        # compares against this rather than the per-turn ``_active_profile_name()``.
-        self._primary_profile_name = self._kanban_notifier_profile = self._active_profile_name()
+        # compares against this rather than the per-turn ``_active_profile_name()``. A multiplex
+        # host's primary map is always the default profile, even when a named profile launched
+        # the process (that launcher is a secondary adapter owner).
+        launch = self._active_profile_name()
+        self._kanban_notifier_profile = launch
+        self._primary_profile_name = (
+            "default" if getattr(self.config, "multiplex_profiles", False) else launch
+        )
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None

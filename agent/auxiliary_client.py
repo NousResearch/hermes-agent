@@ -2296,7 +2296,8 @@ def _warn_paid_lane_once(model: str) -> None:
     )
 
 
-def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
+def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None, model: str = None,
+                    explicit_base_url: Optional[str] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     free_only, cfg_model = _aux_openrouter_settings()
     or_model = model or cfg_model
     if free_only and not _is_free_model(or_model):
@@ -2309,11 +2310,14 @@ def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = 
         return None, None
     if not _is_free_model(or_model):
         _warn_paid_lane_once(or_model)
+    # A caller-supplied endpoint (fallback_providers entry, custom_providers entry) is
+    # authoritative over both the pool row and the canonical host (#121359).
+    override_url = (explicit_base_url or "").strip().rstrip("/")
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if or_key:
-            base_url = _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
+            base_url = override_url or _pool_runtime_base_url(entry, OPENROUTER_BASE_URL) or OPENROUTER_BASE_URL
             logger.debug("Auxiliary client: OpenRouter via pool")
             return _create_openai_client(
                 api_key=or_key, base_url=base_url, default_headers=build_or_headers()
@@ -2327,7 +2331,7 @@ def _try_openrouter(explicit_api_key: Optional[Union[str, Callable[[], str]]] = 
         return None, None
     logger.debug("Auxiliary client: OpenRouter")
     return _create_openai_client(
-        api_key=or_key, base_url=OPENROUTER_BASE_URL, default_headers=build_or_headers()
+        api_key=or_key, base_url=override_url or OPENROUTER_BASE_URL, default_headers=build_or_headers()
     ), or_model
 
 
@@ -3009,7 +3013,8 @@ def _try_azure_foundry(
     return client, final_model
 
 
-def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None) -> Tuple[Optional[Any], Optional[str]]:
+def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = None,
+                   explicit_base_url: Optional[str] = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client
         from agent.anthropic_credentials import resolve_anthropic_token
@@ -3037,6 +3042,21 @@ def _try_anthropic(explicit_api_key: Optional[Union[str, Callable[[], str]]] = N
                 cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
                 if cfg_base_url and _is_anthropic_compatible_host(cfg_base_url):
                     base_url = cfg_base_url
+    # A caller-supplied endpoint (fallback_providers entry, custom_providers entry) wins over
+    # both the pool row and config.yaml, under the same Anthropic-compatible host rule the
+    # primary path applies. A foreign host is REFUSED outright rather than silently demoted to
+    # the canonical host: continuing would send the explicit credential to a target the caller
+    # did not ask for (#121359).
+    override_url = (explicit_base_url or "").strip().rstrip("/")
+    if override_url:
+        if not _is_anthropic_compatible_host(override_url):
+            logger.warning(
+                "Auxiliary client: refusing anthropic explicit base_url %r — not an "
+                "Anthropic-compatible host; no client built and no request sent.",
+                override_url,
+            )
+            return None, None
+        base_url = override_url
     from agent.anthropic_credentials import _is_oauth_token
     is_oauth = _is_oauth_token(token)
     model = _get_aux_model_for_provider("anthropic") or "claude-haiku-4-5-20251001"
@@ -4968,7 +4988,8 @@ def _resolve_auto_branch(req: _ResolveRequest) -> _ResolveResult:
 
 def _resolve_openrouter_branch(req: _ResolveRequest) -> _ResolveResult:
     """OpenRouter."""
-    client, default = _try_openrouter(explicit_api_key=req.explicit_api_key, model=req.model)
+    client, default = _try_openrouter(explicit_api_key=req.explicit_api_key, model=req.model,
+                                      explicit_base_url=req.explicit_base_url)
     if client is None:
         logger.warning("resolve_provider_client: openrouter requested but %s",
                        _describe_openrouter_unavailable(model=req.model))
@@ -5230,7 +5251,8 @@ def _resolve_api_key_branch(req: _ResolveRequest, pconfig: Any, resolve_creds: C
     """PROVIDER_REGISTRY ``api_key`` providers (Anthropic via its own resolver), honouring explicit overrides."""
     provider = req.provider
     if provider == "anthropic":
-        client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key)
+        client, default_model = _try_anthropic(explicit_api_key=req.explicit_api_key,
+                                               explicit_base_url=req.explicit_base_url)
         return _route_or_warn(req, client, default_model,
                               "resolve_provider_client: anthropic requested but no Anthropic credentials found")
     creds = resolve_creds(provider)

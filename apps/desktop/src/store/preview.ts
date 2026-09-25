@@ -4,6 +4,7 @@ import { readJson, readKey, writeKey } from '@/lib/storage'
 import { normalize } from '@/lib/text'
 
 import { $rightRailActiveTabId, type RightRailTabId, selectRightRailTab } from './layout'
+import { clearExplicitPreviewOpen, noteExplicitPreviewOpen } from './preview-explicit'
 import { normalizeProfileKey } from './profile'
 import { canOpenBrowserWindow, openBrowserInNewWindow } from './windows'
 
@@ -544,6 +545,7 @@ export function openPreview(target: PreviewTarget) {
   const tab: PreviewTab = { id, target: withRenderMode(target, current[index]?.target) }
 
   $previewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
+  noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
 }
 
@@ -565,6 +567,7 @@ export function newBrowserTab() {
   const id = mintBrowserTabId()
 
   $previewTabs.set([...$previewTabs.get(), { id, target: blankPage() }])
+  noteExplicitPreviewOpen(id)
   selectRightRailTab(id)
 }
 
@@ -581,7 +584,15 @@ export function closeRightRailTab(tabId: string) {
   $previewTabs.set(next)
 
   if ($rightRailActiveTabId.get() === tabId) {
-    selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? null)
+    const nextId = next[Math.min(index, next.length - 1)]?.id ?? null
+
+    if (nextId) {
+      noteExplicitPreviewOpen(nextId)
+    } else {
+      clearExplicitPreviewOpen()
+    }
+
+    selectRightRailTab(nextId)
   }
 
   if (next.length === 0) {
@@ -631,6 +642,7 @@ export function closeArtifactPreviewTabs() {
 
 /** Close every tab so the rail's panes leave the tree. */
 export function closeRightRail() {
+  clearExplicitPreviewOpen()
   $previewTabs.set([])
   selectRightRailTab(null)
 }

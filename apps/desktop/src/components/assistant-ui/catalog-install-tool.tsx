@@ -39,6 +39,7 @@ const KIND_GLYPH = { plugin: Plug, skill: Book } as const
 function platformName(platform: string): string {
   switch (platform.toLowerCase()) {
     case 'darwin':
+
     case 'macos':
       return 'macOS'
 

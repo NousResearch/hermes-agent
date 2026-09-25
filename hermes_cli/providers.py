@@ -81,6 +81,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
                                           base_url_override="https://api.tokenfactory.nebius.com/v1",
                                           base_url_env_var="NEBIUS_BASE_URL"),
     "ollama-cloud": HermesOverlay(base_url_override="https://ollama.com/v1", base_url_env_var="OLLAMA_BASE_URL"),
+    "token-kiosk": HermesOverlay(transport="openai_chat", is_aggregator=True,
+                                 extra_env_vars=("TOKEN_KIOSK_API_KEY",),
+                                 base_url_override="https://api-token-kiosk.gaib.ai/v1",
+                                 base_url_env_var="TOKEN_KIOSK_BASE_URL"),
     # Azure Foundry serves OpenAI- and Anthropic-style endpoints; transport comes from model.api_mode.
     "azure-foundry": HermesOverlay(base_url_env_var="AZURE_FOUNDRY_BASE_URL"),
     "bedrock": HermesOverlay(transport="bedrock_converse", auth_type="aws_sdk"),
@@ -131,6 +135,7 @@ _ALIAS_GROUPS: Dict[str, Tuple[str, ...]] = {
     "gmi": ("gmi-cloud", "gmicloud"), "fireworks": ("fireworks-ai", "fw"), "upstage": ("solar",),
     "actual": ("actual-computer", "actualcomputer", "aci"),
     "nebius-token-factory": ("nebius", "nebius-tokenfactory", "nebius-tf", "token-factory", "tokenfactory"),
+    "token-kiosk": ("tokenkiosk", "token_kiosk", "tokenrouter"),
     "lmstudio": ("lmstudio", "lm-studio", "lm_studio"), "custom": ("ollama",),
     "local": ("vllm", "llamacpp", "llama.cpp", "llama-cpp"),
 }
@@ -143,7 +148,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "moa": "Mixture of Agents", "nous": "Nous Portal", "openai-codex": "ChatGPT or Codex Subscription",
     "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
-    "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
+    "nebius-token-factory": "Nebius Token Factory", "token-kiosk": "Token Kiosk", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
     "local": "Local endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }

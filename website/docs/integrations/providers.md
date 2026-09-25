@@ -30,6 +30,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
 | **Nebius Token Factory** | `NEBIUS_API_KEY` in `~/.hermes/.env` (provider: `nebius-token-factory`; aliases: `nebius`, `nebius-tf`, `tokenfactory`) |
+| **Token Kiosk** | `TOKEN_KIOSK_API_KEY` in `~/.hermes/.env` (provider: `token-kiosk`; aliases: `tokenkiosk`, `token_kiosk`, `tokenrouter`) |
 | **Actual Computer** | `ACTUAL_API_KEY` in `~/.hermes/.env` for the hosted relay; set `model.base_url` in `config.yaml` for a local daemon (no key needed on loopback). Provider: `actual`; aliases: `actual-computer`, `actualcomputer`, `aci`. |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
@@ -341,6 +342,10 @@ hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Nebius Token Factory
 hermes chat --provider nebius --model deepseek-ai/DeepSeek-V4-Pro
 # Requires: NEBIUS_API_KEY in ~/.hermes/.env
+
+# Token Kiosk
+hermes chat --provider token-kiosk --model claude-3-5-sonnet
+# Requires: TOKEN_KIOSK_API_KEY in ~/.hermes/.env
 ```
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.
@@ -352,7 +357,7 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `META_BASE_URL`, `TOKENHUB_BASE_URL`, or `TOKEN_KIOSK_BASE_URL` environment variables.
 
 :::note Meta contributor tier
 `muse-spark-1.2-contributor` and `muse-spark-1.3-contributor` are Meta's contributor tiers — Meta may train on your prompts and completions, so [interactive model selection asks for confirmation](../user-guide/configuring-models.md) before using either. For current pricing and rate limits, see [Meta Model API pricing and rate limits](https://dev.meta.ai/docs/pricing-rate-limits/). Use the standard `muse-spark-1.2` / `muse-spark-1.3` (no training) for confidential work.

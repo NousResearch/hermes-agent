@@ -65,6 +65,7 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "arcee",
     "ollama-cloud",
     "nebius-token-factory",
+    "token-kiosk",
     "custom",
     "gemini",
     "xai"})

@@ -39,6 +39,24 @@ Rule of thumb: if the recurring prompt needs the conversation's context, use `/h
 
 `/hb` is an alias. Works on the CLI, the TUI / Desktop app, and gateway platforms (on Slack, use `/hermes heartbeat …`).
 
+### From the shell: `hermes heartbeat`
+
+The same persisted state can be inspected and edited from a terminal, without typing into the chat.
+Session ids come from `hermes sessions list` (add `-p <profile>` for a named profile).
+
+| Command | Effect |
+|---|---|
+| `hermes heartbeat list [--all] [--json]` | Every session with a heartbeat row in this profile, with its platform/chat/thread route. `--all` includes cleared ones. |
+| `hermes heartbeat set <session_id> --every 30m --prompt "…"` | Create or replace the heartbeat. `--prompt-file PATH` reads the instruction from a file. |
+| `hermes heartbeat status <session_id> [--json]` | One session's heartbeat, next-due estimate, and how it will be picked up. |
+| `hermes heartbeat pause <session_id>` / `resume` / `clear` | Same semantics as the slash commands. |
+
+Pickup rules (printed by `set`/`status` as the `Pickup:` line):
+
+- A **gateway-routed** session (one that has a gateway routing key — any Telegram/Discord/… chat) is registered by a running gateway on its next poll: the poller rescans persisted heartbeats every tick, so **no restart is needed**. If the gateway is not running, `hermes gateway start` restores it at startup.
+- A **CLI/TUI-only** session has no gateway route; the heartbeat fires only while that session is open in a CLI process. The gateway ignores it.
+- A paused heartbeat is not fired until resumed.
+
 ## Behavior details
 
 - **Idle-only.** A heartbeat never interrupts a running turn. If the agent is busy when the tick comes due, it fires at the next idle poll. In the gateway, an idle watched session wakes proactively; no new inbound message is needed.

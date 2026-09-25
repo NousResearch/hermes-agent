@@ -655,14 +655,62 @@ def _rate_limit_reply(text: str) -> str:
             "Use /retry after that, or /model to switch models.")
 
 
+_GATEWAY_PROVIDER_REASON_NOISE_RE = re.compile(
+    r"("
+    r"request[_ ]?id\s*[:=]\s*\S+"
+    r"|req_[A-Za-z0-9]+"
+    r"|Bearer\s+\S+"
+    r"|sk-[A-Za-z0-9_\-]+"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _gateway_provider_error_reason(text: str) -> str:
+    """One sanitized line of why the provider failed, safe to show in chat.
+
+    The category reply stays. The raw body does not — secrets, request ids,
+    and JSON envelopes are stripped so a 400 like unsupported_api_for_model
+    is visible without dumping the provider payload.
+    """
+    body = str(text or "")
+    msg = ""
+    m = re.search(r"""['"]message['"]\s*:\s*['"](.+?)['"]\s*,""", body)
+    if not m:
+        m = re.search(r"""['"]message['"]\s*:\s*['"]([^'"]+)['"]""", body)
+    if m:
+        msg = m.group(1)
+    else:
+        m = re.search(
+            r"(?:HTTP\s*\d{3}|Error code:\s*\d{3}|API call failed[^:]*):\s*(.+)",
+            body,
+            re.IGNORECASE,
+        )
+        if m:
+            msg = m.group(1)
+    if not msg:
+        msg = body
+    msg = _GATEWAY_PROVIDER_REASON_NOISE_RE.sub("", msg)
+    msg = re.sub(r"\{.*\}", "", msg)
+    msg = re.sub(r"\s+", " ", msg).strip(" \t\r\n:-")
+    if not msg or len(msg) < 8:
+        return ""
+    if len(msg) > 180:
+        msg = msg[:177].rstrip() + "..."
+    return msg
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     for pattern, reply in _PROVIDER_ERROR_REPLIES:
         if pattern.search(text):
             return _rate_limit_reply(text) if pattern is _GATEWAY_RATE_LIMIT_RE else reply
-    return (
+    base = (
         "⚠️ The AI model service kept failing. Use /retry to try again, or /model to switch "
         "models. Details are in the gateway log (`hermes logs`).")
+    # Catch-all: append one sanitized line of the provider's reason (no raw payload).
+    reason = _gateway_provider_error_reason(text)
+    return f"{base}\nReason: {reason}" if reason else base
 
 
 # Provider/API failure envelope preambles (not ordinary assistant prose), anchored at line start.
@@ -5347,6 +5395,37 @@ def _start_gateway_claim_pid_file(force: bool = False) -> bool:
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
+
+    # Same-profile orphan check (#35240 follow-up). The PID-file/lock race
+    # above only proves *this* process won the race to become the recorded
+    # gateway — it says nothing about an already-running process for the
+    # SAME profile that escaped its service supervisor (e.g. reparented to
+    # PID 1 after a launchd/systemd restart raced the old process's exit)
+    # and therefore never held the PID file to begin with. That gateway is
+    # invisible to every check above yet keeps polling the same
+    # Telegram/Discord/etc. sessions and writing to the same kanban DB as a
+    # silent second writer. Best-effort, log-only: this must never block or
+    # kill anything here (cross-profile ownership mistakes here caused the
+    # #f8196717 mutual-kill loop) — it only makes the condition loud so an
+    # operator or the next `hermes gateway restart --replace` sweep can act.
+    try:
+        from hermes_cli.gateway import find_gateway_pids
+
+        _orphan_candidates = [
+            p for p in find_gateway_pids(exclude_pids={os.getpid()}) if p != os.getpid()
+        ]
+        if _orphan_candidates:
+            logger.warning(
+                "Detected %d other gateway process(es) for this profile besides "
+                "our own PID %d: %s. If these are not a supervisor's own "
+                "management commands, one of them is likely an orphan that "
+                "escaped its service supervisor (#35240) — verify with `ps` "
+                "and stop it manually; do not assume it will self-resolve.",
+                len(_orphan_candidates), os.getpid(), _orphan_candidates,
+            )
+    except Exception:
+        logger.debug("Same-profile orphan gateway scan failed", exc_info=True)
+
     _claim_host_gateway_role(force=force)
     return True
 

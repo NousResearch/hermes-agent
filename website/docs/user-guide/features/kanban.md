@@ -1088,7 +1088,7 @@ When you create a task from the gateway with `/kanban create "…"`, the origina
 
 ```
 you> /kanban create "transcribe today's podcast" --assignee transcriber
-bot> Created t_9fc1a3  (ready, assignee=transcriber)
+bot> Created t_9fc1a3  (ready, assignee=transcriber, subscribed=true)
      (subscribed — you'll be notified when t_9fc1a3 completes or blocks)
 
 … ~8 minutes later …

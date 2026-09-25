@@ -29,7 +29,8 @@ from hermes_cli.kanban_output import (
 )
 from hermes_cli.kanban_boards import _dispatch_boards
 from hermes_cli.kanban_ops import (
-    _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
+    _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_reclaim_worktrees, _cmd_repair,
+    _cmd_tail, _cmd_watch,
 )
 from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: hermes_cli.main, run_slash)
 
@@ -206,7 +207,7 @@ def _profile_author() -> str:
 
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
-    "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
+    "claim", "comment", "attach", "attach-rm", "complete", "edit", "set-workspace", "block",
     "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
@@ -310,9 +311,16 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
-        ok = kbd.heartbeat_worker(conn, args.task_id, note=getattr(args, "note", None),
+        hb = kbd.heartbeat_worker(conn, args.task_id, note=getattr(args, "note", None),
                                  expected_run_id=_worker_run_id_for(args.task_id))
-    return _ok_or_err(ok, f"cannot heartbeat {args.task_id} (not running?)",
+    if getattr(hb, "superseded", False):
+        return _err(
+            f"cannot heartbeat {args.task_id}: run superseded — stop and exit. You hold run "
+            f"{hb.expected_run_id if hb.expected_run_id is not None else '(unknown)'}, "
+            f"task is now status={hb.task_status!r} with current_run_id="
+            f"{hb.current_run_id if hb.current_run_id is not None else 'NULL'}. "
+            "A fresh dispatch will pick the card up.", 1)
+    return _ok_or_err(hb, f"cannot heartbeat {args.task_id} (unknown id — no such task)",
                       f"Heartbeat recorded for {args.task_id}")
 
 
@@ -378,10 +386,14 @@ def _cmd_create(args: argparse.Namespace) -> int:
                              if is_dispatcher_owned_worker_context() else None),
         )
         task = kb.get_task(conn, task_id)
+        # Gateway sessions that run `hermes kanban create` (rather than the kanban_create
+        # tool) get the same completion/block notifications; no-op for plain CLI/cron.
+        subscribed = kbn.auto_subscribe_session(conn, task_id)
     if getattr(args, "json", False):
-        _print_json(_task_to_dict(task))
+        _print_json({**_task_to_dict(task), "subscribed": subscribed})
     else:
-        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+        print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'}, "
+              f"subscribed={'true' if subscribed else 'false'})")
         # Warn only for ready+assigned tasks that would sit without a dispatcher (triage/todo idle
         # by design, unassigned can't dispatch); skipped under --json so stdout stays parseable.
         if task.status == "ready" and task.assignee:
@@ -598,6 +610,9 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
 
 
 def _cmd_reclaim(args: argparse.Namespace) -> int:
+    # No task id: reclaim the worktrees of done cards (the disk-guard tick).
+    if not getattr(args, "task_id", None):
+        return _cmd_reclaim_worktrees(args)
     with kbc.connect_closing() as conn:
         ok = kb.reclaim_task(conn, args.task_id, reason=getattr(args, "reason", None))
     return _ok_or_err(ok, f"cannot reclaim {args.task_id} (not running or unknown id)",
@@ -969,6 +984,27 @@ def _cmd_edit(args: argparse.Namespace) -> int:
     )
 
 
+def _cmd_set_workspace(args: argparse.Namespace) -> int:
+    """``hermes kanban set-workspace`` — audited workspace-metadata correction."""
+    with kbc.connect_closing() as conn:
+        try:
+            applied = kbw.set_task_workspace(
+                conn, args.task_id, workspace_kind=args.kind,
+                workspace_path=getattr(args, "path", None), actor=_profile_author(),
+            )
+        except kbw.WorkspaceUpdateRefused as exc:
+            print(f"kanban set-workspace: {exc}", file=sys.stderr)
+            return 1
+    if getattr(args, "json", False):
+        print(json.dumps(applied, ensure_ascii=False))
+    else:
+        old, new = applied["old"], applied["new"]
+        print(f"{args.task_id}: workspace "
+              f"{old['workspace_kind']}:{old['workspace_path'] or '-'} -> "
+              f"{new['workspace_kind']}:{new['workspace_path'] or '-'}")
+    return 0
+
+
 def _commented(conn, reason: Optional[str], author, prefix: str, op):
     """Wrap a per-task ``op`` so a ``reason`` is first recorded as a ``PREFIX: reason`` comment."""
     def run(tid):
@@ -1325,7 +1361,8 @@ _HANDLERS = {
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
-    "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
+    "complete": _cmd_complete, "edit": _cmd_edit, "set-workspace": _cmd_set_workspace,
+    "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,

@@ -196,7 +196,7 @@ def _host_served_profiles() -> set[str]:
     one would skip a profile that really has its own process.
     """
     try:
-        with open(os.path.join(_host_state_dir(), "host-gateway.json"), encoding="utf-8") as handle:
+        with open(os.path.join(_host_state_dir(), "host-gateway.json"), encoding="utf-8-sig") as handle:
             record = json.load(handle)
     except (OSError, UnicodeDecodeError, ValueError):
         return set()

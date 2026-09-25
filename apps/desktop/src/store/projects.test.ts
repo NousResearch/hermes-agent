@@ -7,18 +7,16 @@ import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles 
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 import type { ProjectInfo } from '@/types/hermes'
 
+import { $projectScope, ALL_PROJECTS, exitProjectScope } from './project-scope'
 import {
   $activeProjectId,
   $projects,
-  $projectScope,
   $projectsRpcAvailable,
   $projectTree,
   addProjectFolder,
-  ALL_PROJECTS,
   createProject,
   deleteProject,
   enterProject,
-  exitProjectScope,
   fetchProjectSessions,
   openProjectCreate,
   pickProjectFolder,
@@ -164,6 +162,35 @@ describe('projects RPC profile forwarding', () => {
       profile: 'coder',
       project_id: 'p_123'
     })
+  })
+
+  it('keeps unchanged project nodes by reference across tree refreshes (#77591)', async () => {
+    const payload = () => ({
+      active_id: null,
+      projects: [
+        { id: 'p_a', label: 'a', path: '/a', repos: [], sessionCount: 1, sessionIds: ['s1'] },
+        { id: 'p_b', label: 'b', path: '/b', repos: [], sessionCount: 0, sessionIds: [] }
+      ],
+      scoped_session_ids: ['s1']
+    })
+
+    const next = payload()
+    next.projects[1] = { ...next.projects[1], sessionCount: 1, sessionIds: ['s2'] }
+    const request = vi.fn().mockResolvedValueOnce(payload()).mockResolvedValueOnce(payload()).mockResolvedValueOnce(next)
+    const gateway = { connectionState: 'open', request }
+    activeGateway.mockReturnValue(gateway as never)
+    gatewayAtom.set(gateway as never)
+
+    await refreshProjectTree()
+    const first = $projectTree.get()
+
+    await refreshProjectTree()
+    expect($projectTree.get()).toBe(first)
+
+    await refreshProjectTree()
+    expect($projectTree.get()).not.toBe(first)
+    expect($projectTree.get()[0]).toBe(first[0])
+    expect($projectTree.get()[1].sessionIds).toEqual(['s2'])
   })
 
   it('skips project reads in the all-profiles view rather than forwarding its sentinel', async () => {

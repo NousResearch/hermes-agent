@@ -16,6 +16,7 @@ import textwrap
 import threading
 import time
 from contextlib import contextmanager, suppress
+from agent.think_scrubber import THINK_TAG_NAMES
 from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
 from rich.text import Text as _RichText
@@ -28,7 +29,7 @@ def _cli():
     return cli
 
 
-_REASONING_TAGS = ("REASONING_SCRATCHPAD", "think", "thinking", "reasoning", "thought")
+_REASONING_TAGS = THINK_TAG_NAMES
 
 
 _TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
@@ -59,19 +60,10 @@ def _strip_reasoning_tags(text: str) -> str:
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*<function\b[^>]*\bname\s*=[^>]*>(?:(?:(?!</function>).)*)</function>\s*',
         '', cleaned, flags=re.DOTALL | re.IGNORECASE,
     )
-    cleaned = re.sub(
-        r'</(?:(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls|function))>\s*', '', cleaned,
-        flags=re.IGNORECASE,
-    )
-    # Unterminated opener / stray <arg_key>/<arg_value> markup = stream cut
-    # mid tool-call serialization (#101899); strip to end of text.
-    cleaned = re.sub(
-        r'(?:^|\n)[ \t]*<(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls)\b[^>]*>.*$'
-        r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
-        '',
-        cleaned,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
+    # Stray closers and cut tool-call fragments share storage's compiled patterns (#101899, #102303).
+    from agent.agent_runtime_helpers import _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN
+    cleaned = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', cleaned)
+    cleaned = _UNTERMINATED_TOOL_CALL_PATTERN.sub('', cleaned)
     return cleaned.strip()
 
 
@@ -931,9 +923,9 @@ def _build_compact_banner() -> str:
 
     if os.environ.get("HERMES_FAST_STARTUP_BANNER") == "1":
         from hermes_cli import __release_date__ as _release_date
-        from hermes_cli import __version__ as _version
+        from hermes_cli.version_info import get_version_info
 
-        version_line = f"Hermes Agent v{_version} ({_release_date})"
+        version_line = f"Hermes Agent v{get_version_info().derived_version} ({_release_date})"
     else:
         version_line = format_banner_version_label()
 

@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+from hermes_cli.config import load_config, save_config
 from hermes_cli.plugins import get_plugin_manager
 from tui_gateway import server
 
@@ -32,6 +33,13 @@ def _fake_install_core(identifier, *, force=False, ref=None):
     return target, _read_manifest(target), "late-mcp"
 
 
+def _commit_plugin_selection(enabled, disabled, **_kwargs):
+    """Keep this test on live activation; PM publication is covered by its own integration tests."""
+    cfg = load_config()
+    cfg["plugins"] = {"enabled": sorted(enabled), "disabled": sorted(disabled)}
+    save_config(cfg)
+
+
 def test_plugins_manage_install_rescans_fires_on_plugin_loaded_and_exposes_mcp_servers():
     (Path(os.environ["HERMES_HOME"]) / "plugins").mkdir(exist_ok=True)
     manager = get_plugin_manager()
@@ -39,7 +47,8 @@ def test_plugins_manage_install_rescans_fires_on_plugin_loaded_and_exposes_mcp_s
     events: list = []
     manager.on_plugin_loaded(events.append)
     with patch("hermes_cli.plugins_cmd._install_plugin_core", _fake_install_core), \
-         patch("hermes_cli.plugins_cmd._install_python_dependencies_quietly", return_value=[]), \
+         patch("hermes_cli.plugins_cmd._python_dependency_summary", return_value=[]), \
+         patch("hermes_cli.plugins_admission.admit_plugin_set_change", _commit_plugin_selection), \
          patch("gateway.control_socket.reload_gateway_plugins", return_value=None), \
          patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=[]), \
          patch("tools.connectors.mcp._registered_tool_names", return_value=[]):  # no gateway, no real server

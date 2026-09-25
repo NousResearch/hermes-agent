@@ -68,18 +68,19 @@ def _lint_json_inproc(content: str) -> tuple[bool, str]:
 
 
 def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
-    """In-process YAML syntax check; ``__SKIP__`` when PyYAML is missing. Syntax-only
-    (``yaml.parse``), NOT ``safe_load``: loading rejects valid multi-doc streams and
+    """In-process YAML syntax check; ``__SKIP__`` when ruamel.yaml is missing. Syntax-only
+    (``YAML.parse``), NOT ``safe_load``: loading rejects valid multi-doc streams and
     app tags (``!Sub``, ``!vault``), and this is a fail-closed WRITE gate."""
     try:
-        import yaml as _yaml
+        from ruamel.yaml import YAML
+        from ruamel.yaml.error import YAMLError
     except ImportError:
         return True, "__SKIP__"
     try:
-        for _event in _yaml.parse(content):
+        for _event in YAML(typ="safe").parse(content):
             pass
         return True, ""
-    except _yaml.YAMLError as e:
+    except YAMLError as e:
         return False, f"YAMLError: {e}"
     except Exception as e:  # noqa: BLE001
         return False, f"{type(e).__name__}: {e}"

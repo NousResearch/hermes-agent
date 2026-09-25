@@ -27,16 +27,41 @@ def _installed_purelib() -> Path | None:
         return None
 
 
-def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
-    """Prepend ``repo_root`` to the worker env's own PYTHONPATH (never ``os.environ``'s).
+def _committed_site_packages(repo_root: Path) -> Path | None:
+    """The PM dependency environment's site-packages for this checkout, or None.
 
-    Skipped when ``repo_root`` is the interpreter's ``purelib``: under a wheel / pipx /
-    uv-tool install ``cron/`` lives in site-packages itself, which is already importable,
-    and pinning it would move site-packages ahead of the stdlib on ``sys.path``.
+    The worker entry point (``python -m cron.scheduler``) never runs the launcher
+    bootstrap, so unlike the gateway process it does not get the committed
+    dependency environment on ``sys.path``; combined with the sanitizer stripping
+    the launch PYTHONPATH the worker dies on ``import hermes_yaml`` ->
+    ``ModuleNotFoundError: No module named 'ruamel'`` before its ownership ack.
+    """
+    try:
+        from pm.environments import selected_venv, site_packages
+
+        return site_packages(selected_venv(repo_root))
+    except Exception:
+        return None
+
+
+def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
+    """Prepend ``repo_root`` (and the committed dependency environment's
+    site-packages) to the worker env's own PYTHONPATH (never ``os.environ``'s).
+
+    The repo-root pin is skipped when ``repo_root`` is the interpreter's
+    ``purelib``: under a wheel / pipx / uv-tool install ``cron/`` lives in
+    site-packages itself, which is already importable, and pinning it would move
+    site-packages ahead of the stdlib on ``sys.path``.
     """
     root = str(repo_root)
-    if _installed_purelib() == Path(root).resolve():
+    entries = []
+    if _installed_purelib() != Path(root).resolve():
+        entries.append(root)
+    dep_site = _committed_site_packages(repo_root)
+    if dep_site is not None:
+        entries.append(str(dep_site))
+    if not entries:
         return worker_env
     existing = [e for e in worker_env.get("PYTHONPATH", "").split(os.pathsep) if e]
-    worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([root, *existing]))
+    worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([*entries, *existing]))
     return worker_env

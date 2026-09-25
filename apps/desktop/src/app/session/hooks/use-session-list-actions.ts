@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
-import { listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
+import { getApiRequestConnection, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
@@ -28,8 +28,10 @@ import {
   keepFailedProfileMeta,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
+  messagingListServerForFetch,
   setCorruptSessionStores,
   setCronSessions,
+  setMessagingListServer,
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
@@ -37,7 +39,8 @@ import {
   setSessionProfilesUsage,
   setSessions,
   setSessionsLoadError,
-  setSessionsLoading
+  setSessionsLoading,
+  stampMessagingRowsWithListServer
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
 import { $sessionTiles, $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
@@ -70,6 +73,13 @@ function dropTombstoned(sessions: SessionInfo[]): SessionInfo[] {
   return tombstones.size
     ? sessions.filter(s => !tombstones.has(s.id) && !(s._lineage_root_id && tombstones.has(s._lineage_root_id)))
     : sessions
+}
+
+function publishMessagingRows(rows: SessionInfo[], scopeProfile: string): SessionInfo[] {
+  const server = messagingListServerForFetch(scopeProfile, getApiRequestConnection())
+  setMessagingListServer(server)
+
+  return stampMessagingRowsWithListServer(rows, server)
 }
 
 // Rows a session refresh must preserve even if the aggregator omits them:
@@ -163,7 +173,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
-      const rows = dropTombstoned(result.sessions.filter(s => isMessagingSource(s.source)))
+      const rows = publishMessagingRows(
+        dropTombstoned(result.sessions.filter(s => isMessagingSource(s.source))),
+        sessionProfile
+      )
 
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
@@ -221,7 +234,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         return
       }
 
-      const incoming = dropTombstoned(result.sessions.filter(inPlatform))
+      const incoming = publishMessagingRows(dropTombstoned(result.sessions.filter(inPlatform)), sessionProfile)
 
       setMessagingSessions(prev => [
         ...prev.filter(s => !inPlatform(s)),
@@ -392,17 +405,19 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // didn't catch (custom sources stay in local recents), then split per
           // platform in the UI.
           const messagingErrors = result.messaging.errors ?? result.errors
-          setMessagingSessions(prev => {
-            const messagingRows = dropTombstoned(
+
+          const messagingRows = publishMessagingRows(
+            dropTombstoned(
               carryForwardFailedProfileSessions(
-                prev,
+                $messagingSessions.get(),
                 (result.messaging.sessions ?? []).filter(s => isMessagingSource(s.source)),
                 messagingErrors
               )
-            )
+            ),
+            sessionProfile
+          )
 
-            return sameCronSignature(prev, messagingRows) ? prev : messagingRows
-          })
+          setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
           // Hit the cap → at least one platform may have more on disk than loaded.
           setMessagingTruncated(prev =>
             messagingErrors?.length ? prev : result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT

@@ -12,9 +12,9 @@ import threading
 import types
 
 import pytest
-import yaml
 
 from agent.onboarding import PROFILE_BUILD_FLAG, profile_build_directive
+from hermes_yaml import safe_dump, safe_load
 from tui_gateway import server
 
 
@@ -31,7 +31,7 @@ def _session(agent, history=None):
 def onboarding_home(monkeypatch, tmp_path):
     """A HERMES_HOME whose config.yaml offers profile builds (the default mode)."""
     (tmp_path / "config.yaml").write_text(
-        yaml.safe_dump({"onboarding": {"profile_build": "ask"}})
+        safe_dump({"onboarding": {"profile_build": "ask"}})
     )
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     return tmp_path
@@ -50,7 +50,7 @@ def test_stages_profile_build_directive_on_first_contact(monkeypatch, onboarding
     _stage(_session(agent), agent, history_empty=True)
 
     assert agent._gateway_turn_context_notes == profile_build_directive().strip()
-    loaded = yaml.safe_load((onboarding_home / "config.yaml").read_text())
+    loaded = safe_load((onboarding_home / "config.yaml").read_text())
     assert loaded["onboarding"]["seen"][PROFILE_BUILD_FLAG] is True
 
 
@@ -63,7 +63,7 @@ def test_skips_first_contact_when_prior_sessions_exist(monkeypatch, onboarding_h
     _stage(_session(agent), agent, history_empty=True)
 
     assert getattr(agent, "_gateway_turn_context_notes", "") == ""
-    loaded = yaml.safe_load((onboarding_home / "config.yaml").read_text())
+    loaded = safe_load((onboarding_home / "config.yaml").read_text())
     assert "seen" not in loaded.get("onboarding", {})
 
 
@@ -85,7 +85,7 @@ def test_skips_when_offer_already_latched(monkeypatch, onboarding_home):
     """``onboarding.seen.profile_build_offered`` set: the plain intro rides
     instead of the directive, exactly as the gateway path behaves."""
     (onboarding_home / "config.yaml").write_text(
-        yaml.safe_dump(
+        safe_dump(
             {"onboarding": {"profile_build": "ask", "seen": {PROFILE_BUILD_FLAG: True}}}
         )
     )

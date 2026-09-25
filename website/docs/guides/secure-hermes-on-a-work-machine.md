@@ -8,7 +8,7 @@ description: "A security-posture walkthrough for running Hermes Agent on the mac
 
 You're about to run an agent on the machine you live on — a personal laptop or an employer-managed workstation. What's the safe posture?
 
-Short answer: the defaults already do most of the work. Hermes ships secure-by-default, with a defense-in-depth model covering command approval, file-write safety, and credential handling. This page walks through what's on out of the box, which knobs to tighten for a shared or work machine, and how to undo mistakes when they happen. Every control here is covered in depth in the [Security](/user-guide/security) guide.
+Short answer: the defaults already do most of the work. Hermes ships secure-by-default, with a defense-in-depth model covering command approval, file-write safety, and credential handling. This page walks through what's on out of the box, which knobs to tighten for a shared or work machine, and how to undo mistakes when they happen. Every control here is covered in depth in the [Security](../user-guide/security.md) guide.
 
 ## What the Defaults Already Protect
 
@@ -24,10 +24,10 @@ Fresh install, no configuration — these protections are active:
 
 **Secrets are redacted from output.** `security.redact_secrets` is on by default: patterns that look like API keys, tokens, and passwords in tool output are redacted before they enter the conversation context and logs.
 
-**Your data goes only where you point it.** API calls go **only to the LLM provider you configure**. Hermes Agent does not collect telemetry, usage data, or analytics. Your conversations, memory, and skills are stored locally in `~/.hermes/`. See the [FAQ](/reference/faq#is-my-data-sent-anywhere).
+**Your data goes only where you point it.** API calls go **only to the LLM provider you configure**. Hermes Agent does not collect telemetry, usage data, or analytics. Your conversations, memory, and skills are stored locally in `~/.hermes/`. See the [FAQ](../reference/faq.md#is-my-data-sent-anywhere).
 
 :::info
-There's more below the surface — SSRF protection on all URL-capable tools, filtered environments for MCP subprocesses, prompt-injection scanning of context files. The [Security](/user-guide/security) page documents every layer.
+There's more below the surface — SSRF protection on all URL-capable tools, filtered environments for MCP subprocesses, prompt-injection scanning of context files. The [Security](../user-guide/security.md) page documents every layer.
 :::
 
 ## Tightening for a Shared or Work Machine
@@ -57,7 +57,7 @@ approvals:
     - "dd if=* of=/dev/*"
 ```
 
-Patterns are case-insensitive [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs matched against the whole command text, and matching runs over the same normalized/deobfuscated variants the dangerous-pattern detector uses, so simple quoting tricks don't slip past a rule. Always quote patterns — a bare leading `*` is a YAML parse error. Changes take effect immediately, no restart needed. Details: [User-Defined Deny Rules](/user-guide/security#user-defined-deny-rules-approvalsdeny).
+Patterns are case-insensitive [fnmatch](https://docs.python.org/3/library/fnmatch.html) globs matched against the whole command text, and matching runs over the same normalized/deobfuscated variants the dangerous-pattern detector uses, so simple quoting tricks don't slip past a rule. Always quote patterns — a bare leading `*` is a YAML parse error. Changes take effect immediately, no restart needed. Details: [User-Defined Deny Rules](../user-guide/security.md#user-defined-deny-rules-approvalsdeny).
 
 ### Sandbox file writes
 
@@ -75,7 +75,7 @@ Don't add this to `~/.hermes/.env` casually. If you set it to a project director
 
 ### Move command execution off the host
 
-The strongest isolation is not running commands on your machine at all. The terminal tool supports multiple [backends](/user-guide/features/tools#terminal-backends):
+The strongest isolation is not running commands on your machine at all. The terminal tool supports multiple [backends](../user-guide/features/tools.md#terminal-backends):
 
 | Backend | Isolation |
 |---------|-----------|
@@ -92,11 +92,11 @@ terminal:
 
 Every Docker container runs with hardened settings — all Linux capabilities dropped (with a minimal add-back set), `no-new-privileges`, a process-count limit, and size-limited tmpfs mounts. With a container backend, destructive commands inside the container can't harm the host, which is why dangerous-command checks are skipped there.
 
-For `ssh`, set `terminal.backend: ssh` in `config.yaml` and provide host details via `TERMINAL_SSH_HOST`, `TERMINAL_SSH_USER`, and `TERMINAL_SSH_KEY` in `~/.hermes/.env`. See [Network Isolation](/user-guide/security#network-isolation).
+For `ssh`, set `terminal.backend: ssh` in `config.yaml` and provide host details via `TERMINAL_SSH_HOST`, `TERMINAL_SSH_USER`, and `TERMINAL_SSH_KEY` in `~/.hermes/.env`. See [Network Isolation](../user-guide/security.md#network-isolation).
 
 ### If messaging is on: allowlists and pairing
 
-Running the [gateway](/user-guide/security#user-authorization-gateway) on this machine? The default is already deny: if no allowlists are configured and `GATEWAY_ALLOW_ALL_USERS` is not set, **all users are denied**. Keep it explicit:
+Running the [gateway](../user-guide/security.md#user-authorization-gateway) on this machine? The default is already deny: if no allowlists are configured and `GATEWAY_ALLOW_ALL_USERS` is not set, **all users are denied**. Keep it explicit:
 
 ```bash
 # ~/.hermes/.env
@@ -108,7 +108,7 @@ Or use DM pairing instead of hardcoding IDs: unknown users receive a one-time pa
 
 ## The Undo Layer: Checkpoints and `/rollback`
 
-Approval gates prevent damage; [checkpoints](/user-guide/checkpoints-and-rollback) reverse it. When enabled, Hermes automatically snapshots your project before destructive operations — `write_file`, `patch`, and destructive terminal commands like `rm`, `mv`, `sed -i`, and `git reset` — into a shadow git store under `~/.hermes/checkpoints/store/`. Your real project `.git` is never touched.
+Approval gates prevent damage; [checkpoints](../user-guide/checkpoints-and-rollback.md) reverse it. When enabled, Hermes automatically snapshots your project before destructive operations — `write_file`, `patch`, and destructive terminal commands like `rm`, `mv`, `sed -i`, and `git reset` — into a shadow git store under `~/.hermes/checkpoints/store/`. Your real project `.git` is never touched.
 
 Checkpoints are opt-in. Enable per-session:
 
@@ -138,7 +138,7 @@ Preview with `/rollback diff <N>` before restoring, and combine checkpoints with
 
 ## What This Threat Model Is — and Isn't
 
-Be clear-eyed about what these controls defend against. As the [Security](/user-guide/security#user-defined-deny-rules-approvalsdeny) guide puts it:
+Be clear-eyed about what these controls defend against. As the [Security](../user-guide/security.md#user-defined-deny-rules-approvalsdeny) guide puts it:
 
 > Deny rules are a guardrail against an honest-but-wrong agent, the same threat model as the dangerous-pattern detector. They are not a sandbox against a deliberately adversarial process — for that, use an isolated backend (Docker, Modal) or an egress-restricted environment.
 
@@ -176,7 +176,7 @@ HERMES_WRITE_SAFE_ROOT=/path/to/project:/home/you/.hermes
 
 ## See Also
 
-- **[Security](/user-guide/security)** — the full defense-in-depth reference: every approval pattern, container hardening flags, gateway authorization, MCP credential filtering
-- **[Checkpoints & Rollback](/user-guide/checkpoints-and-rollback)** — configuration, store maintenance, and restore workflows
-- **[Tools & Toolsets](/user-guide/features/tools)** — all terminal backends and their configuration
-- **[Configuration](/user-guide/configuration)** — the complete `config.yaml` reference
+- **[Security](../user-guide/security.md)** — the full defense-in-depth reference: every approval pattern, container hardening flags, gateway authorization, MCP credential filtering
+- **[Checkpoints & Rollback](../user-guide/checkpoints-and-rollback.md)** — configuration, store maintenance, and restore workflows
+- **[Tools & Toolsets](../user-guide/features/tools.md)** — all terminal backends and their configuration
+- **[Configuration](../user-guide/configuration.md)** — the complete `config.yaml` reference

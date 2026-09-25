@@ -4,14 +4,14 @@ The ``RelayAdapter`` delegates all wire I/O to a ``RelayTransport``. The gateway
 dials OUT to the connector, so production is a WebSocket client (``ws_transport.py``)
 and tests use an in-memory stub (``tests/gateway/relay/stub_connector.py``). This
 module defines the protocol surface only. May change without a deprecation cycle
-until >=2 Class-1 platforms validate it. See docs/relay-connector-contract.md.
+until >=2 Class-1 platforms validate it. See website/docs/developer-guide/relay-connector-contract.md.
 """
 
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable, Dict, Optional, Protocol, runtime_checkable
 
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.event import MessageEvent
 from gateway.relay.descriptor import CapabilityDescriptor
 
 # Callback the transport invokes for each inbound normalized event.

@@ -14,7 +14,6 @@ from __future__ import annotations
 import difflib
 import json
 import logging
-import os
 import re
 import time
 import uuid
@@ -24,6 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_constants import get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +82,7 @@ def stage_write(subsystem: str, payload: Dict[str, Any], *, summary: str, origin
         "created_at": time.time(), "payload": payload,
     }
     try:
-        path = _pending_path(subsystem, pid)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(tmp, path)
+        atomic_json_write(_pending_path(subsystem, pid), record)
     except Exception as e:  # pragma: no cover - disk failure path
         logger.error("Failed to stage pending %s write: %s", subsystem, e, exc_info=True)
     return record
@@ -97,7 +93,10 @@ def list_pending(subsystem: str) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     for p in _pending_files(subsystem):
         try:
-            records.append(json.loads(p.read_text(encoding="utf-8")))
+            record = json.loads(p.read_text(encoding="utf-8-sig"))
+            if not isinstance(record, dict):
+                raise ValueError(f"expected a JSON object, got {type(record).__name__}")
+            records.append(record)
         except Exception:
             logger.warning("Skipping unreadable pending record: %s", p)
     records.sort(key=lambda r: r.get("created_at", 0))
@@ -109,9 +108,11 @@ def get_pending(subsystem: str, pending_id: str) -> Optional[Dict[str, Any]]:
     path = _pending_path(subsystem, pending_id)
     if not path.exists():
         return None
-    with suppress(Exception):
-        return json.loads(path.read_text(encoding="utf-8"))
-    return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
 
 
 def discard_pending(subsystem: str, pending_id: str) -> bool:
@@ -203,7 +204,9 @@ def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
         return None
     header = summary.strip() or "Save to memory?"
     try:
-        choice = callback(detail.strip() or header, f"Save to memory: {header}", allow_permanent=False)
+        from tools.approval_prompt import callback_accepts
+        extra = {"title": "Save to memory?"} if callback_accepts(callback, "title") else {}
+        choice = callback(detail.strip() or header, f"Save to memory: {header}", allow_permanent=False, **extra)
     except Exception as e:
         logger.error("Inline memory approval prompt failed: %s", e)
         return None
@@ -269,7 +272,7 @@ def skill_pending_diff(record: Dict[str, Any]) -> str:
             target_label = payload.get("file_path") or "SKILL.md"
         with suppress(Exception):
             p = skill_dir / target_label
-            current = p.read_text(encoding="utf-8") if p.exists() else ""
+            current = p.read_text(encoding="utf-8-sig") if p.exists() else ""
 
     if action == "patch":
         old_s, new_s = payload.get("old_string") or "", payload.get("new_string") or ""

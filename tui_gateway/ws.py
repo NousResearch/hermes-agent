@@ -17,6 +17,7 @@ from typing import Any
 from tui_gateway import server
 from agent.message_sanitization import _sanitize_surrogates
 from tui_gateway.event_replay import replay_epoch
+from tui_gateway.transport import serialize_frame
 
 _log = logging.getLogger(__name__)
 
@@ -58,6 +59,13 @@ def _sanitize_ws_text(text: str) -> str:
 # Max seconds a pool-dispatched handler blocks waiting for the loop to flush a WS frame before we
 # give up waiting (the transport is NOT marked dead).
 _WS_WRITE_TIMEOUT_S = 10.0
+# Max seconds one send_text may await the socket once it is actually running on the loop. A healthy
+# socket returns from send_text without waiting (the frame lands in the transport buffer); only kernel
+# backpressure parks it, so a GIL/loop stall cannot start this clock. Deliberately 3x the worker wait
+# above and under the client's 45s heartbeat deadline (apps/shared json-rpc-gateway): a peer that
+# cannot drain ~48 KiB in 30s is gone, and closing here starts its reconnect instead of leaving every
+# later frame and RPC reply parked behind the writer lock (#106369).
+_WS_SEND_DEADLINE_S = 30.0
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
 # Per-token streaming frames are coalesced: buffered and flushed as a batch on a short timer instead
@@ -85,8 +93,9 @@ class WSTransport:
         self._ws = ws
         self._loop = loop
         self._peer = peer
-        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server._ws_auth_reason``; None
-        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers.
+        #: Server-verified identity from the WS-upgrade credential, stamped by ``web_server_chat._ws_auth_reason``; None
+        #: for legacy-token/stdio. RPC params can never populate it: sole identity authority for browser controllers
+        #: and for the ``user_id`` the agent is built with (``server._session_auth_user_id``).
         self.auth_identity = auth_identity
         self._closed = False
         # Token-coalescing buffer. The lock guards the buffer + "armed" flag against worker threads
@@ -101,7 +110,7 @@ class WSTransport:
     def write(self, obj: dict) -> bool:
         if self._closed:
             return False
-        line = json.dumps(obj, ensure_ascii=False)
+        line = serialize_frame(obj, self._peer, _log)
         try:
             on_loop = asyncio.get_running_loop() is self._loop
         except RuntimeError:
@@ -169,7 +178,7 @@ class WSTransport:
             return False
         with self._token_lock:
             batch, self._pending_tokens = self._pending_tokens, []
-            batch.append(json.dumps(obj, ensure_ascii=False))
+            batch.append(serialize_frame(obj, self._peer, _log))
         await self._safe_send_many(batch)
         return not self._closed
 
@@ -183,7 +192,17 @@ class WSTransport:
                     return
                 payload = _sanitize_ws_text(line)
                 try:
-                    await self._ws.send_text(payload)
+                    await asyncio.wait_for(self._ws.send_text(payload), timeout=_WS_SEND_DEADLINE_S)
+                except asyncio.TimeoutError:
+                    # The loop is responsive (the timer fired) but the socket never drained: unlike the
+                    # loop-stall wait in write(), this is a dead peer. Latch under the writer lock so queued
+                    # batches bail, and close the socket so handle_ws's read loop ends and its teardown
+                    # (session detach/reap, client reconnect) runs. See #106369.
+                    self._closed = True
+                    _log.warning("ws send deadline exceeded (socket stalled, loop responsive) peer=%s deadline=%ss — closing",
+                                 self._peer, _WS_SEND_DEADLINE_S)
+                    self._loop.create_task(self._close_stalled_socket())
+                    return
                 except UnicodeEncodeError as exc:
                     # A single illegal UTF-8 frame (lone surrogate) must not tear down the socket.
                     _log.warning("ws send skipped invalid utf-8 frame peer=%s error=%s", self._peer, exc)
@@ -199,6 +218,14 @@ class WSTransport:
         if self._token_flush_handle is not None:
             self._token_flush_handle.cancel()
             self._token_flush_handle = None
+
+    async def _close_stalled_socket(self) -> None:
+        """Close the peer socket after a send deadline so ``handle_ws``'s ``receive_text`` unblocks and its
+        disconnect teardown runs. The server library bounds this (websockets ``close_timeout`` → abort)."""
+        try:
+            await self._ws.close(code=1011)
+        except Exception as exc:  # noqa: BLE001 - the peer is already gone; teardown is what matters
+            _log.debug("ws close after send deadline failed peer=%s error=%s", self._peer, exc)
 
 
 def _ws_peer_label(ws: Any) -> str:
@@ -279,6 +306,7 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None, subprotocol: 
             # Live-apply skins Hermes activates mid-conversation, and track this peer for session-less
             # global broadcasts write_json can't route.
             server._ensure_skin_watcher()
+            server._ensure_lease_watcher()  # cross-process lease moves → display.lease
             server.register_live_transport(transport)
         # Cross-backend liveness: a heartbeat row lets the startup orphan sweep tell "live but idle
         # backend" from "truly orphaned". Idempotent and once-per-process, like the orphan sweep (the

@@ -71,13 +71,18 @@ class TestCodexAuxiliaryTimeoutFdOwnership:
         shutdown(); the real close() must land on the owning thread in the
         adapter's ``finally``."""
 
+        interrupted = threading.Event()
         def _stalled():
-            deadline = time.monotonic() + 30.0
-            while time.monotonic() < deadline:
-                time.sleep(0.02)
-                yield SimpleNamespace(type="response.in_progress")
+            assert interrupted.wait(10), "watchdog did not interrupt the stalled transport"
+            yield SimpleNamespace(type="response.in_progress")
 
         adapter, events = _adapter_with_recording_client(_stalled())
+        socket = adapter._client._client._transport._pool._connections[0].get_extra_info("socket")
+        original_shutdown = socket.shutdown
+        def shutdown(how):
+            original_shutdown(how)
+            interrupted.set()
+        socket.shutdown = shutdown
         owner_tid = threading.get_ident()
 
         def _consume(stream, *, model, on_event):

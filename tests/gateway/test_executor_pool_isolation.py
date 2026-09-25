@@ -22,7 +22,11 @@ import time
 
 import pytest
 
-from gateway.run import _TURN_MAX_WORKERS, GatewayRunner
+from gateway.run import GatewayRunner
+
+# The turn pool used to be a 10-thread ThreadPoolExecutor; abandon at least that many so the
+# regression would have filled it outright.
+_OLD_TURN_POOL_SIZE = 10
 
 
 def _runner(cleanup=None, *, cleanup_timeout=0.5):
@@ -63,7 +67,7 @@ def test_abandoned_housekeeping_cannot_delay_a_turn_body():
 
     runner = _runner(wedged_cleanup)
     # Enough to fill the turn pool outright if housekeeping still lands on it.
-    abandoned = _TURN_MAX_WORKERS
+    abandoned = _OLD_TURN_POOL_SIZE
 
     async def exercise():
         await _abandon_housekeeping(runner, abandoned, runner._CLEANUP_TIMEOUT_S)

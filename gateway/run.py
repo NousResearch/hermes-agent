@@ -57,10 +57,63 @@ _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 # offline update queue, #46621).
 _TELEGRAM_INITIAL_CONNECT_TIMEOUT_SECS_DEFAULT = 45.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
-# Size of the pool that runs turn bodies (blocking agent work).
-_TURN_MAX_WORKERS = 10
+# Size of the pool that runs turn bodies (blocking agent work). ``None`` = unbounded: a turn body
+# holds its thread for the whole turn (every tool call blocks), so a finite pool silently queues
+# turns that were already accepted behind whichever bodies are running, with nothing in the logs.
+# Concurrency is bounded where turns are ADMITTED (``max_concurrent_sessions``), not here.
+_TURN_MAX_WORKERS = None
 # Size of the separate pool for best-effort session HOUSEKEEPING; why it is separate: _run_housekeeping_in_executor.
 _HOUSEKEEPING_MAX_WORKERS = 4
+
+
+class _UnboundedThreadExecutor(concurrent.futures.Executor):
+    """One thread per submitted work item; no queue, no cap.
+
+    ``ThreadPoolExecutor(max_workers=None)`` is NOT unbounded (it is ``min(32, cpu_count + 4)``),
+    which is the same silent queue at a larger number. Exposes ``_threads`` and ``_shutdown`` like
+    ``ThreadPoolExecutor`` so ``_stop_pool`` / ``_shutdown_executor`` join and count its workers.
+    """
+
+    def __init__(self, thread_name_prefix: str = ""):
+        self._prefix = thread_name_prefix
+        self._threads: set = set()
+        self._shutdown = False
+        self._lock = threading.Lock()
+        self._n = 0
+
+    def submit(self, fn, /, *args, **kwargs):
+        with self._lock:
+            if self._shutdown:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            self._n += 1
+            n = self._n
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+
+        def _run():
+            try:
+                if not fut.set_running_or_notify_cancel():
+                    return
+                try:
+                    fut.set_result(fn(*args, **kwargs))
+                except BaseException as exc:  # noqa: BLE001 - mirror ThreadPoolExecutor
+                    fut.set_exception(exc)
+            finally:
+                with self._lock:
+                    self._threads.discard(threading.current_thread())
+
+        t = threading.Thread(target=_run, name=f"{self._prefix}_{n}", daemon=True)
+        with self._lock:
+            self._threads.add(t)
+        t.start()
+        return fut
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False):
+        with self._lock:
+            self._shutdown = True
+            threads = list(self._threads)
+        if wait:
+            for t in threads:
+                t.join()
 
 # End reasons meaning the USER deliberately closed this thread. Shared by _classify_completion_target and
 # _resolve_async_delegation_session so they never disagree (else a "delivered" reason is acked, then lost).
@@ -4312,7 +4365,7 @@ class GatewayRunner(
         return await loop.run_in_executor(
             self._get_housekeeping_executor(), copy_context().run, func, *args)
 
-    def _get_or_create_pool(self, attr: str, max_workers: int, prefix: str) -> concurrent.futures.ThreadPoolExecutor:
+    def _get_or_create_pool(self, attr: str, max_workers: Optional[int], prefix: str) -> concurrent.futures.Executor:
         """Return (creating under ``_executor_lock``) the pool at ``attr``; one lock + closing flag fences both."""
         lock = getattr(self, "_executor_lock", None)
         if lock is None:
@@ -4323,11 +4376,14 @@ class GatewayRunner(
                 raise RuntimeError("Gateway is shutting down; executor unavailable")
             executor = getattr(self, attr, None)
             if executor is None or getattr(executor, "_shutdown", False):
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=prefix)
+                if max_workers is None:
+                    executor = _UnboundedThreadExecutor(thread_name_prefix=prefix)
+                else:
+                    executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=prefix)
                 setattr(self, attr, executor)
             return executor
 
-    def _get_executor(self) -> concurrent.futures.ThreadPoolExecutor:
+    def _get_executor(self) -> concurrent.futures.Executor:
         """Return the gateway-owned executor for blocking agent work."""
         return GatewayRunner._get_or_create_pool(self, "_executor", _TURN_MAX_WORKERS, "hermes-gateway")
 

@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import _ensure_acp_launcher
+from hermes_cli.update_cmd import _ensure_acp_launcher
 
 
 @pytest.fixture
@@ -31,6 +31,7 @@ def fake_home(tmp_path, monkeypatch):
 
 
 
+@pytest.mark.require_symlinks
 def test_does_not_follow_symlink_into_venv(fake_home, tmp_path):
     """#21454 failure mode: never write through a symlinked hermes-acp."""
     (fake_home / "hermes").write_text("#!/bin/sh\n", encoding="utf-8")
@@ -52,6 +53,13 @@ def test_does_not_follow_symlink_into_venv(fake_home, tmp_path):
 
 def test_unwritable_bin_dir_is_skipped(fake_home):
     (fake_home / "hermes").write_text("#!/bin/sh\n", encoding="utf-8")
+    if not hasattr(os, "geteuid"):
+        # Windows: no geteuid, and chmod can't make a directory unwritable
+        # anyway. _ensure_acp_launcher is an explicit no-op there, so the
+        # assertion below still holds — vacuously.
+        _ensure_acp_launcher()
+        assert not (fake_home / "hermes-acp").exists()
+        return
     if os.geteuid() == 0:
         pytest.skip("root ignores directory write permissions")
     fake_home.chmod(0o555)

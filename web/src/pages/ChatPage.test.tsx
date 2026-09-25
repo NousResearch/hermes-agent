@@ -4,7 +4,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { PTY_TICKET_TIMEOUT_MS } from "@/lib/pty-reconnect";
+import {
+  PTY_RECONNECT_MAX_ATTEMPTS,
+  PTY_RECONNECT_MAX_MS,
+  PTY_TICKET_TIMEOUT_MS,
+} from "@/lib/pty-reconnect";
 
 class FakeFitAddon {
   fit() {}
@@ -38,6 +42,8 @@ class FakeTerminal {
   }
 
   clearSelection() {}
+
+  clearTextureAtlas() {}
 
   dispose() {}
 
@@ -81,6 +87,14 @@ class FakeTerminal {
 const maybeReloadForLoopbackWsAuthFailure = vi.fn(() => false);
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => "ws://localhost/api/pty?channel=chat-1"),
+}));
+const uploadChatImage = vi.hoisted(() =>
+  vi.fn(async () => ({ path: "/tmp/pasted.png" })),
+);
+
+vi.mock("@/lib/chatImagePaste", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/chatImagePaste")>()),
+  uploadChatImage,
 }));
 
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: FakeFitAddon }));
@@ -146,7 +160,7 @@ class FakeWebSocket {
     this.readyState = 3;
   }
 
-  send() {}
+  send = vi.fn();
 }
 
 type CloseEventLike = {
@@ -157,6 +171,30 @@ type CloseEventLike = {
 
 let container: HTMLDivElement;
 let root: Root;
+
+// jsdom runs without an origin here (per-file @vitest-environment jsdom on a
+// node-default config), so localStorage is undefined. Stub it so components
+// that persist UI state (side panel collapse) can be exercised.
+const localStorageMock = (() => {
+  let store: Record<string, string> = {};
+  return {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => {
+      store[key] = String(value);
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+  };
+})();
+
+// React only routes updates through act() when this flag is set; without it
+// the isActive re-renders in the keyboard-inset gate test warn.
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+  true;
 
 async function render(ui: ReactNode) {
   container = document.createElement("div");
@@ -220,6 +258,8 @@ beforeEach(() => {
     },
   });
   sessionStorage.clear();
+  vi.stubGlobal("localStorage", localStorageMock);
+  localStorageMock.clear();
 });
 
 afterEach(async () => {
@@ -229,6 +269,115 @@ afterEach(async () => {
 });
 
 describe("ChatPage", () => {
+  it("sends a PTY keepalive frame every 20 seconds while the socket is open", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(FakeWebSocket.instances).toHaveLength(1);
+
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => socket.onopen?.());
+      socket.send.mockClear();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+
+      expect(socket.send).toHaveBeenCalledWith("\x1b[RESIZE:80;24]");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("defers a reconnect while the chat tab is inactive", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      const socket = FakeWebSocket.instances[0];
+      await act(async () => {
+        socket.onclose?.({ code: 1001, reason: "", wasClean: true });
+        root.render(
+          <MemoryRouter initialEntries={["/chat"]}>
+            <ChatPage isActive={false} />
+          </MemoryRouter>,
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+
+      expect(FakeWebSocket.instances).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reconnects on tab return after a hidden-tab close even when a stale upload banner is showing", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = FakeWebSocket.instances[0];
+    await act(async () => socket.onopen?.());
+
+    // A failed image paste leaves a non-rejection banner behind.
+    uploadChatImage.mockRejectedValueOnce(new Error("disk full"));
+    const host = container.querySelector(".hermes-chat-xterm-host");
+    expect(host).not.toBeNull();
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
+    Object.defineProperty(paste, "clipboardData", {
+      value: {
+        files: [file],
+        items: [{ getAsFile: () => file, kind: "file", type: "image/png" }],
+      },
+    });
+    await act(async () => {
+      host!.dispatchEvent(paste);
+    });
+    await vi.waitFor(() =>
+      expect(container.textContent).toContain("Image upload failed"),
+    );
+
+    // The socket dies while the tab is hidden: the reconnect is deferred.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    await act(async () => {
+      socket.onclose?.({ code: 1001, reason: "", wasClean: true });
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    // Coming back must start the deferred reconnect despite the old banner.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(2));
+  });
+
   it("treats loopback 4401 closes as stale-token reload candidates", async () => {
     const { default: ChatPage } = await import("./ChatPage");
 
@@ -248,6 +397,183 @@ describe("ChatPage", () => {
 
     expect(maybeReloadForLoopbackWsAuthFailure).toHaveBeenCalledWith(4401);
   });
+
+  it("offers a Reload button for an expired login when auto-reload is spent", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 4401, reason: "auth: bad-token", wasClean: true });
+    });
+
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Reload page");
+  });
+
+  it("renders Start new session after the server could not start the chat (1011)", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 1011, reason: "", wasClean: true });
+    });
+
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Start new session");
+  });
+
+  it("offers Start new session and Open logs when the agent process ended", async () => {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    await act(async () => {
+      FakeWebSocket.instances[0].onclose?.({ code: 4410, reason: "", wasClean: true });
+    });
+
+    const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+    expect(labels).toContain("Start new session");
+    expect(labels).toContain("Open logs");
+  });
+
+  it("stops retrying after the ladder is spent and offers Check server status", async () => {
+    vi.useFakeTimers();
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+      // Drop the socket abnormally; walk every scheduled retry to failure.
+      for (let attempt = 0; attempt <= PTY_RECONNECT_MAX_ATTEMPTS; attempt += 1) {
+        const sockets = FakeWebSocket.instances.length;
+        await act(async () => {
+          FakeWebSocket.instances[sockets - 1].onclose?.({ code: 1006, reason: "", wasClean: false });
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(PTY_RECONNECT_MAX_MS + 100);
+        });
+      }
+
+      const labels = Array.from(container.querySelectorAll("button")).map((b) => b.textContent?.trim());
+      expect(labels).toContain("Reconnect now");
+      expect(labels).toContain("Check server status");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("attaches visualViewport keyboard-inset listeners only while the chat tab is active", async () => {
+    // NS-434 follow-up: ChatPage stays mounted (hidden) on every dashboard
+    // route. The keyboard-inset/scroll-pin listeners must only be live while
+    // /chat is the active tab, or the scroll pin fires when a soft keyboard
+    // opens on Settings etc.
+    const addEventListener = vi.fn();
+    const removeEventListener = vi.fn();
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: { addEventListener, removeEventListener, width: 1280 },
+    });
+
+    const { default: ChatPage } = await import("./ChatPage");
+
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive={false} />
+      </MemoryRouter>,
+    );
+    expect(addEventListener).not.toHaveBeenCalled();
+
+    await act(async () =>
+      root.render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      ),
+    );
+    expect(addEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
+      "resize",
+      "scroll",
+    ]);
+    expect(removeEventListener).not.toHaveBeenCalled();
+
+    await act(async () =>
+      root.render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive={false} />
+        </MemoryRouter>,
+      ),
+    );
+    expect(removeEventListener.mock.calls.map((c) => c[0]).sort()).toEqual([
+      "resize",
+      "scroll",
+    ]);
+  });
+});
+
+describe("ChatPage side panel collapse", () => {
+  async function renderChat() {
+    const { default: ChatPage } = await import("./ChatPage");
+    await render(
+      <MemoryRouter initialEntries={["/chat"]}>
+        <ChatPage isActive />
+      </MemoryRouter>,
+    );
+  }
+
+  it("collapses the desktop side panel and persists the choice", async () => {
+    localStorage.clear();
+    await renderChat();
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+
+    const collapseButton = container.querySelector(
+      '[aria-label="Collapse chat side panel"]',
+    );
+    expect(collapseButton).not.toBeNull();
+
+    await act(async () => {
+      collapseButton!.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("1");
+    expect(
+      container.querySelector('[aria-label="Collapse chat side panel"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[aria-label="Show chat side panel"]'),
+    ).not.toBeNull();
+
+    // Reopening restores the panel and clears the persisted flag.
+    await act(async () => {
+      container
+        .querySelector('[aria-label="Show chat side panel"]')!
+        .dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(localStorage.getItem("hermes-chat-panel-collapsed")).toBe("0");
+    expect(
+      container.querySelector('[aria-label="Collapse chat side panel"]'),
+    ).not.toBeNull();
+  });
 });
 
 // The gated-mode ticket request runs before any socket exists, so a rejection
@@ -255,6 +581,46 @@ describe("ChatPage", () => {
 // (that timer is set after `new WebSocket`). Without its own deadline the tab
 // strands on "connecting" with no retry. Mirrors the ChatSidebar events-feed
 // coverage in src/components/ChatSidebar.test.tsx.
+describe("ChatPage bundled font swap-in", () => {
+  it("redraws the terminal with the bundled font once it finishes loading", async () => {
+    let releaseFont!: () => void;
+    const fontGate = new Promise<void>((resolve) => {
+      releaseFont = resolve;
+    });
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: {
+        check: () => false,
+        load: async () => {
+          await fontGate;
+          return [{}];
+        },
+      },
+    });
+    const clearAtlas = vi.spyOn(FakeTerminal.prototype, "clearTextureAtlas");
+    try {
+      const { default: ChatPage } = await import("./ChatPage");
+      await render(
+        <MemoryRouter initialEntries={["/chat"]}>
+          <ChatPage isActive />
+        </MemoryRouter>,
+      );
+      expect(clearAtlas).not.toHaveBeenCalled();
+
+      await act(async () => {
+        releaseFont();
+        await fontGate;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(clearAtlas).toHaveBeenCalledTimes(1);
+    } finally {
+      clearAtlas.mockRestore();
+      delete (document as { fonts?: unknown }).fonts;
+    }
+  });
+});
+
 describe("ChatPage PTY ticket connect deadline", () => {
   beforeEach(() => {
     vi.useFakeTimers();

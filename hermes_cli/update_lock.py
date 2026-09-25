@@ -1,160 +1,204 @@
 """Cross-process mutual exclusion for in-flight Hermes updates.
 
-Three different surfaces can start an update of the same install tree:
-
-* ``hermes update`` from a terminal,
-* the dashboard's Update button (``POST /api/hermes/update`` →
-  ``_spawn_hermes_action(["update"])``, detached),
-* the desktop's Update button, which hands off to the Tauri
-  ``hermes-setup --update`` and, on its failure screen, to install-mode
-  bootstrap (``install.ps1`` / ``install.sh``).
-
-Until now only the Tauri updater published an "update in progress" marker
-(``UpdateMarkerGuard`` in ``apps/bootstrap-installer/src-tauri/src/update.rs``),
-and only the Electron desktop consumed it (``electron/update-marker.ts``, to
-gate local backend startup). Nothing stopped two *updaters* from running at
-once — so a dashboard-spawned ``hermes update`` and an installer-driven
-``git checkout`` could mutate the same checkout concurrently, rewriting source
-under a live interpreter and leaving the tree half-updated.
-
-This module makes that same marker the single lock for **all** update
-entrypoints instead of adding a fourth mechanism. Format and location are
-unchanged and remain byte-compatible with the Rust and Electron readers:
-
-    <HERMES_HOME>/.hermes-update-in-progress   body: "<pid>\\n<started_at_unix>"
-
-A marker only counts as a live update when its pid is alive AND it is younger
-than :data:`UPDATE_MARKER_MAX_AGE_MS` — mirroring ``readLiveUpdateMarker`` so a
-crashed updater self-heals instead of wedging every future update. A stale
-marker is removed on read by whoever notices it first.
-
-One layering wrinkle: the Tauri updater holds this marker for its WHOLE run and
-then spawns ``hermes update`` as a child stage. Without a handoff the child
-sees its own parent's live marker and refuses — the GUI update deadlocks
-against itself on every attempt ("Hermes is still running", retry forever).
-Two mechanisms recognize the orchestrating parent, and either suffices:
-
-* The updater exports :data:`HANDOFF_PID_ENV` naming its own pid, and
-  ``acquire`` treats a live holder matching that pid as the lock we are
-  already running under. The env var alone grants nothing: the pid must also
-  be the live marker owner, so a stale or forged value cannot bypass the lock.
-* A live holder that is a *process ancestor* of ours is likewise our own
-  orchestrator. This is the load-bearing path for the fleet: the staged
-  ``hermes-setup`` binary under ``~/.hermes`` is only refreshed by a full
-  installer run (``copy_self_to_hermes_home`` deliberately no-ops during
-  ``--update``), so every desktop whose staged updater predates the
-  HANDOFF_PID_ENV export runs an old parent against a new child. Without the
-  ancestry check those users get exit 2 ("Hermes is still running") on every
-  GUI update forever, with no Hermes process actually running.
+The marker file the Tauri updater writes (``UpdateMarkerGuard`` in
+``apps/bootstrap-installer/src-tauri/src/update.rs``) and the Electron desktop reads
+(``electron/update-marker.ts``) is the single lock for **all** update entrypoints.
+Format and location are byte-compatible with both readers.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import subprocess
+import sys
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Keep in sync with UPDATE_MARKER_MAX_AGE_MS in
-# apps/desktop/electron/update-marker.ts — the same marker is read by both, and
-# a shorter ceiling here would let Python steal a lock Electron still considers
-# live. A full update (git pull + uv sync + desktop rebuild) is minutes.
+# Keep in sync with UPDATE_MARKER_MAX_AGE_MS in apps/desktop/electron/update-marker.ts:
+# a shorter ceiling here would let Python steal a lock Electron still considers live.
+# A full update (git pull + uv sync + desktop rebuild) is minutes.
 UPDATE_MARKER_MAX_AGE_SECONDS = 20 * 60
 
 MARKER_NAME = ".hermes-update-in-progress"
 
-# Set by an orchestrating updater (the Tauri `hermes-setup --update` flow) to
-# its own pid before spawning `hermes update` as a child stage. The parent
-# holds the marker for its whole run, so without this the child refuses its
-# own parent's lock and the GUI update can never complete. See update_child_env
-# in apps/bootstrap-installer/src-tauri/src/update.rs — keep the name in sync.
+# Set by an orchestrating updater (Tauri `hermes-setup --update`) to its own pid before
+# spawning `hermes update` as a child stage; the parent holds the marker for its whole run,
+# so without this the child would refuse its own parent's lock. Keep in sync with
+# update_child_env in apps/bootstrap-installer/src-tauri/src/update.rs.
 HANDOFF_PID_ENV = "HERMES_UPDATE_HANDOFF_PID"
 
-# Exit code meaning "another updater/instance owns this install right now".
-# Already the de-facto contract: the Windows shim + venv-holder guards in
-# _cmd_update_impl exit 2, and the Tauri updater matches on it
-# (UPDATE_EXIT_CONCURRENT in apps/bootstrap-installer/src-tauri/src/update.rs)
-# to show "Hermes is still running" instead of a generic failure. Naming it
-# here keeps the concurrent-update refusal on that same understood contract.
+# Exit code meaning "another updater/instance owns this install right now" — the same
+# contract as the Windows shim / venv-holder guards in _cmd_update_impl, matched by the
+# Tauri updater (UPDATE_EXIT_CONCURRENT in update.rs) to show "Hermes is still running".
 UPDATE_EXIT_CONCURRENT = 2
 
 
 def update_marker_path() -> Path:
     """Path of the shared update marker.
 
-    Uses the *process* Hermes home (never the context-local profile override):
-    the Rust updater resolves ``$HERMES_HOME`` or the platform default, and the
-    desktop pins that same value into the updater's env. A profile-scoped path
-    here would put the lock somewhere the other two owners never look.
+    Uses the *process* Hermes home (never the context-local profile override): the Rust
+    updater resolves ``$HERMES_HOME`` or the platform default and the desktop pins that same
+    value into the updater's env, so a profile-scoped path would be one the other owners never look at.
     """
     from hermes_constants import get_process_hermes_home
-
     return get_process_hermes_home() / MARKER_NAME
 
 
 def _pid_alive(pid: int) -> bool:
-    """True when a process with ``pid`` currently exists.
-
-    Delegates to :func:`gateway.status._pid_exists`, the project's existing
-    no-kill probe. Do NOT hand-roll this with ``os.kill(pid, 0)``: on Windows
-    that is not a no-op — CPython routes ``sig=0`` to
-    ``GenerateConsoleCtrlEvent``, which Ctrl+C's the target's whole console
-    process group (bpo-14484). A liveness check that killed the updater it was
-    asking about would be a spectacular way to fix a concurrency bug.
-
-    Any pid we cannot evaluate counts as dead: a corrupt marker must not wedge
-    the lock forever.
-    """
+    """Use the dependency-free, Windows-safe probe before PM is available."""
     if pid <= 0:
         return False
     try:
-        from gateway.status import _pid_exists
-
-        return bool(_pid_exists(pid))
+        from hermes_cli._early_recovery import _pid_is_running
+        return _pid_is_running(pid)
     except Exception as exc:
-        # Import failure or an unusable pid (e.g. larger than the platform's
-        # pid_t). Treat the marker as stale rather than blocking updates.
         logger.debug("Could not probe pid %s: %s", pid, exc)
         return False
 
 
 def _handoff_pid() -> int | None:
-    """Pid of the orchestrating updater that spawned us, if any.
-
-    Read from :data:`HANDOFF_PID_ENV`. Malformed values count as absent —
-    a broken handoff must fall back to the normal refusal, never crash.
-    """
-    raw = os.environ.get(HANDOFF_PID_ENV, "").strip()
-    if not raw:
-        return None
+    """Pid of the orchestrating updater that spawned us (:data:`HANDOFF_PID_ENV`); malformed
+    values count as absent so a broken handoff falls back to the normal refusal."""
     try:
-        pid = int(raw)
+        pid = int(os.environ.get(HANDOFF_PID_ENV, "").strip())
     except ValueError:
         return None
     return pid if pid > 0 else None
 
 
+def _windows_parent_pid(pid: int) -> int | None:
+    """The parent of ``pid`` from a Toolhelp32 process snapshot (stdlib ctypes).
+
+    Windows keeps a dead parent's pid in the snapshot and reuses pids, so, like
+    psutil, a "parent" created after the child is a recycled pid, not our parent.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", ctypes.c_long),
+            ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    for walk in (kernel32.Process32FirstW, kernel32.Process32NextW):
+        walk.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        walk.restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    def created(target: int) -> int | None:
+        handle = kernel32.OpenProcess(0x1000, False, target)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return None
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            if not kernel32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+                return None
+            return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        finally:
+            kernel32.CloseHandle(handle)
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+        return None
+    parent = None
+    try:
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        found = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while found:
+            if entry.th32ProcessID == pid:
+                parent = int(entry.th32ParentProcessID)
+                break
+            found = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    if not parent:
+        return None
+    parent_created, child_created = created(parent), created(pid)
+    if parent_created is not None and child_created is not None and parent_created > child_created:
+        return None
+    return parent
+
+
+def _stdlib_parent_pid(pid: int) -> int | None:
+    """The parent of ``pid`` without psutil, or ``None`` when unresolvable.
+
+    The update-takeover child is spawned ``-I -S -B`` (hermes_cli/_old_updater.py) so
+    psutil cannot import there — and that grandchild is exactly the process that most
+    needs the two-hop ancestry walk to adopt the orchestrator's marker. /proc serves
+    Linux; macOS keeps /proc absent, so shell out to ps once per hop; Windows has
+    neither, so ask the Toolhelp32 snapshot.
+    """
+    if sys.platform == "win32":
+        try:
+            return _windows_parent_pid(pid)
+        except (OSError, AttributeError, ValueError):
+            return None
+    try:
+        if os.path.isdir("/proc"):
+            with open(f"/proc/{pid}/stat", "rb") as fh:
+                stat = fh.read()
+        else:
+            out = subprocess.run(
+                ["ps", "-o", "ppid=", "-p", str(pid)],
+                capture_output=True, text=True, check=True, timeout=5,
+            ).stdout
+            value = int(out.strip() or -1)
+            return value if value > 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    # Field 4 (1-indexed) is ppid, but comm may contain spaces/parens: split
+    # after the closing paren of comm instead of on whitespace.
+    try:
+        return int(stat[stat.rindex(b")") + 2:].split()[1])
+    except (ValueError, IndexError):
+        return None
+
+
 def _is_ancestor_pid(pid: int) -> bool:
-    """True when ``pid`` is a live ancestor (parent chain) of this process.
+    """True when ``pid`` is a live ancestor of this process.
 
-    The orchestrating updater spawns ``hermes update`` as a (grand)child, so a
-    live marker owned by one of our ancestors can only be the claim we are
-    already running under — an unrelated concurrent updater is never in our
-    parent chain. This heals the fleet of staged ``hermes-setup`` binaries
-    that predate the HANDOFF_PID_ENV export and can never send it.
-
-    Never includes our own pid, and any failure counts as "not an ancestor":
-    an unprovable ancestry must fall back to the normal refusal.
+    The orchestrating updater spawns ``hermes update`` as a (grand)child, so a live marker
+    owned by an ancestor can only be the claim we already run under — an unrelated concurrent
+    updater is never in our parent chain. Never our own pid; any failure is "not an ancestor".
     """
     if pid <= 0:
         return False
+    if pid == os.getppid():
+        return True
     try:
         import psutil
-
         return any(parent.pid == pid for parent in psutil.Process().parents())
+    except ImportError:
+        # -I -S -B takeover child: walk the same chain with stdlib probes.
+        child = os.getpid()
+        for _ in range(32):
+            parent = _stdlib_parent_pid(child)
+            if parent is None:
+                return False
+            if parent == pid:
+                return True
+            if parent == child:  # pid 1 re-parenting or a kernel loop guard
+                return False
+            child = parent
+        return False
     except Exception as exc:
         logger.debug("Could not walk process ancestry for pid %s: %s", pid, exc)
         return False
@@ -171,18 +215,15 @@ class UpdateHolder:
 def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
     """Return the live update holding the lock, or ``None``.
 
-    Mirrors ``readLiveUpdateMarker`` in ``electron/update-marker.ts``: absent,
-    unreadable, malformed, dead-pid, and past-the-ceiling all mean "no live
-    update", and a stale marker file is deleted so it can't strand future runs.
-    Never raises.
+    Mirrors ``readLiveUpdateMarker`` in ``electron/update-marker.ts``: absent, unreadable,
+    malformed, dead-pid, and past-the-ceiling all mean "no live update", and a stale marker
+    file is deleted so it can't strand future runs. Never raises.
     """
     marker = path or update_marker_path()
     try:
-        raw = marker.read_text(encoding="utf-8")
+        lines = marker.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
-        return None  # absent or unreadable => no live update
-
-    lines = raw.splitlines()
+        return None
     try:
         pid = int(lines[0].strip())
     except (IndexError, ValueError):
@@ -194,37 +235,33 @@ def read_live_update(*, path: Path | None = None) -> UpdateHolder | None:
 
     age = time.time() - started_at
     if not _pid_alive(pid) or age > UPDATE_MARKER_MAX_AGE_SECONDS:
-        try:
+        with suppress(OSError):
             marker.unlink()
-        except OSError:
-            pass
         return None
-
     return UpdateHolder(pid=pid, age_seconds=age)
 
 
-def describe_holder(holder: UpdateHolder) -> str:
+def describe_holder(holder: UpdateHolder | None) -> str:
     """One-line, user-facing explanation of who holds the update lock."""
-    minutes, seconds = divmod(int(max(holder.age_seconds, 0)), 60)
+    minutes, seconds = divmod(int(max(0 if holder is None else holder.age_seconds, 0)), 60)
     elapsed = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+    who = f", process {holder.pid}" if holder else ""
     return (
-        f"✗ Another Hermes update is already running (PID {holder.pid}, "
-        f"started {elapsed} ago).\n"
+        f"✗ Another Hermes update is already running (started {elapsed} ago{who}).\n"
         "\n"
-        "  Two updates mutating the same checkout corrupt it: one rewrites\n"
-        "  source while the other is mid-install. Wait for it to finish, or\n"
-        "  close the window/dashboard tab that started it, then retry."
+        "  Running two at once would corrupt the install. Wait for it to finish\n"
+        "  (watch `hermes logs`), or close the Desktop/dashboard window that\n"
+        "  started it, then run `hermes update` again."
     )
 
 
 class UpdateLock:
     """Context manager owning the shared update marker for this process.
 
-    ``acquired`` is False when another live update already holds it — callers
-    decide whether that's a hard refusal (CLI/dashboard) or a wait. Releasing
-    only removes the marker when *we* still own it, so a marker rewritten by a
-    handoff partner (the Tauri updater overwrites it with its own pid) is never
-    deleted out from under its new owner.
+    ``acquired`` is False when another live update holds it; callers decide between hard
+    refusal (CLI/dashboard) and waiting. Release only removes the marker when *we* still own
+    it, so a marker rewritten by a handoff partner (the Tauri updater writes its own pid) is
+    never deleted from under its new owner.
     """
 
     def __init__(self, *, path: Path | None = None) -> None:
@@ -235,28 +272,27 @@ class UpdateLock:
     def acquire(self) -> bool:
         """Claim the lock. Returns False (and sets ``holder``) if it's taken.
 
-        A live holder whose pid matches :data:`HANDOFF_PID_ENV` — or is a
-        process ancestor of ours — is our own orchestrating parent (the Tauri
-        updater spawning `hermes update` as a stage): we run under ITS claim
-        rather than refusing or re-writing the marker, and ``release`` leaves
-        the parent's marker untouched. The ancestry path exists because staged
-        updaters older than the HANDOFF_PID_ENV export never send the env var.
+        A live holder whose pid matches :data:`HANDOFF_PID_ENV` — or is an ancestor of ours —
+        is our own orchestrating parent: run under ITS claim and leave its marker untouched on
+        release. The ancestry path covers staged updaters older than the env-var export.
         """
         existing = read_live_update(path=self.path)
-        if existing is not None:
+        # A live claim naming our own pid is a killed update's marker whose pid this retry
+        # inherited (containers restart pid numbering): no other live process has our pid, and
+        # nothing pre-writes a marker for `hermes update` (it always runs under a parent's claim).
+        # It is a new attempt, so it is claimed fresh like a dead holder's. Keeping the old
+        # started_at would let the ceiling expire mid-run and admit a second updater.
+        if existing is not None and existing.pid != os.getpid():
             if existing.pid == _handoff_pid() or _is_ancestor_pid(existing.pid):
                 return True
             self.holder = existing
             return False
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
-                f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8"
-            )
+            self.path.write_text(f"{os.getpid()}\n{int(time.time())}\n", encoding="utf-8")
         except OSError as exc:
-            # Best-effort, exactly like the Rust guard: an unwritable marker
-            # must not block the update itself (that would be a worse failure
-            # than the race it prevents). Degrade to the pre-lock behavior.
+            # Best-effort, like the Rust guard: an unwritable marker must not block the
+            # update itself (worse than the race it prevents). Degrade to pre-lock behavior.
             logger.debug("Could not write update marker %s: %s", self.path, exc)
             return True
         self.acquired = True
@@ -268,18 +304,13 @@ class UpdateLock:
             return
         self.acquired = False
         try:
-            raw = self.path.read_text(encoding="utf-8")
-            owner = int(raw.splitlines()[0].strip())
+            owner = int(self.path.read_text(encoding="utf-8-sig").splitlines()[0].strip())
         except (OSError, IndexError, ValueError):
             return
         if owner != os.getpid():
-            # A handoff partner took ownership (e.g. the Tauri updater wrote
-            # its own pid). Leave it alone — it's still a live update.
-            return
-        try:
+            return  # a handoff partner took ownership — still a live update
+        with suppress(OSError):
             self.path.unlink()
-        except OSError:
-            pass
 
     def __enter__(self) -> "UpdateLock":
         self.acquire()

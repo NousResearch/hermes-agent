@@ -8,6 +8,7 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Codicon } from '@/components/ui/codicon'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import {
   Dialog,
   DialogContent,
@@ -76,12 +77,15 @@ import { BlueprintSlotControl, blueprintSlotHelp, cleanBlueprintFieldError, init
 import { mutateAndRefreshCronJobs, refreshCronJobs, triggerAndRefreshCronJobs } from './cron-actions'
 import {
   cronEditorUpdates,
+  cronModelChoiceValue,
   jobIsScriptOnly,
+  lastErrorSummary,
   parseCronDeliveryTargets,
+  parseCronModelChoiceValue,
   toggleCronDeliveryTarget,
   validateCronEditor
 } from './cron-job-model'
-import { jobState, jobTitle, STATE_DOT } from './job-state'
+import { jobState, jobTitle, nextRunOverdueMs, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
 
@@ -343,7 +347,6 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
   const [editor, setEditor] = useState<EditorState>({ mode: 'closed' })
   const [pendingDelete, setPendingDelete] = useState<CronJob | null>(null)
-  const [deleting, setDeleting] = useState(false)
 
   // Jobs live per-profile on disk and the list endpoint aggregates 'all' by
   // default — scope the fetch to the sidebar's profile scope so this overlay
@@ -533,38 +536,32 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     }
   }
 
+  // Throws on failure — ConfirmDialog reports it inline and stays open.
   async function handleConfirmDelete() {
     if (!pendingDelete) {
       return
     }
 
-    setDeleting(true)
+    const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () => deleteCronJob(pendingDelete.id))
 
-    try {
-      const { refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
-        deleteCronJob(pendingDelete.id)
-      )
-
-      if (stale) {
-        return
-      }
-
-      if (refreshError) {
-        notifyError(refreshError, c.failedLoad)
-      }
-
-      notify({ kind: 'success', title: c.deleted, message: truncate(jobTitle(pendingDelete), 60) })
-      setPendingDelete(null)
-    } catch (err) {
-      notifyError(err, c.failedDelete)
-    } finally {
-      setDeleting(false)
+    if (stale) {
+      return
     }
+
+    if (refreshError) {
+      notifyError(refreshError, c.failedLoad)
+    }
+
+    notify({ kind: 'success', title: c.deleted, message: truncate(jobTitle(pendingDelete), 60) })
   }
 
   async function handleEditorSave(values: EditorValues) {
     if (editor.mode === 'create') {
-      const { value: created, refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
+      const {
+        value: created,
+        refreshError,
+        stale
+      } = await mutateAndRefreshCronJobs(profile, () =>
         createCronJob({
           prompt: values.prompt,
           schedule: values.schedule,
@@ -586,7 +583,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     } else if (editor.mode === 'edit') {
       const scriptOnlyJob = jobIsScriptOnly(editor.job)
 
-      const { value: updated, refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
+      const {
+        value: updated,
+        refreshError,
+        stale
+      } = await mutateAndRefreshCronJobs(profile, () =>
         updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }))
       )
 
@@ -612,7 +613,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   async function handleBlueprintCreate(blueprint: AutomationBlueprint, values: Record<string, string>) {
     const writableProfile = profileScope === ALL_PROFILES ? 'default' : profileScope
 
-    const { value: job, refreshError, stale } = await mutateAndRefreshCronJobs(profile, () =>
+    const {
+      value: job,
+      refreshError,
+      stale
+    } = await mutateAndRefreshCronJobs(profile, () =>
       instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, writableProfile)
     )
 
@@ -672,7 +677,9 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               />
             ))}
             {visibleJobs.length === 0 && (
-              <p className="px-2 py-4 text-center text-xs text-muted-foreground">{c.emptyTitleSearch}</p>
+              <p className="px-2 py-4 text-center text-xs text-muted-foreground">
+                {query.trim() ? c.emptyTitleSearch : c.emptyTitleNew}
+              </p>
             )}
             <PanelAddButton label={c.newCron} onClick={() => setEditor({ mode: 'create' })} />
             {visibleBlueprints.length > 0 && (
@@ -697,12 +704,22 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               busy={busyJobTokens.has(selectedJob.id) || triggeringJobKeys.has(`${profile}:${selectedJob.id}`)}
               c={c}
               job={selectedJob}
+              onEdit={() => setEditor({ mode: 'edit', job: selectedJob })}
               onOpenSession={onOpenSession}
               onPauseResume={() => void handlePauseResume(selectedJob)}
               onTrigger={() => void handleTrigger(selectedJob)}
             />
-          ) : (
+          ) : query.trim() ? (
+            // A search with no selected job: search-flavored copy is right.
             <PanelEmpty description={c.emptyDescSearch} icon="search" />
+          ) : (
+            // No selection and no search — "Try a broader search query" here
+            // just confused people staring at an empty panel with zero jobs.
+            <PanelEmpty
+              description={c.emptyDescNew}
+              icon="watch"
+              title={jobs.length === 0 ? c.emptyTitleNew : undefined}
+            />
           )}
         </PanelBody>
       )}
@@ -714,30 +731,24 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         onSave={handleEditorSave}
       />
 
-      <Dialog onOpenChange={open => !open && !deleting && setPendingDelete(null)} open={pendingDelete !== null}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>{c.deleteTitle}</DialogTitle>
-            <DialogDescription>
-              {pendingDelete ? (
-                <>
-                  {c.deleteDescPrefix}
-                  <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span>
-                  {c.deleteDescSuffix}
-                </>
-              ) : null}
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button disabled={deleting} onClick={() => setPendingDelete(null)} variant="outline">
-              {t.common.cancel}
-            </Button>
-            <Button disabled={deleting} onClick={() => void handleConfirmDelete()} variant="destructive">
-              {deleting ? c.deleting : t.common.delete}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        busyLabel={c.deleting}
+        confirmLabel={t.common.delete}
+        description={
+          pendingDelete ? (
+            <>
+              {c.deleteDescPrefix}
+              <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span>
+              {c.deleteDescSuffix}
+            </>
+          ) : null
+        }
+        destructive
+        onClose={() => setPendingDelete(null)}
+        onConfirm={handleConfirmDelete}
+        open={pendingDelete !== null}
+        title={c.deleteTitle}
+      />
     </Panel>
   )
 }
@@ -770,21 +781,17 @@ function CronJobListRow({
   )
 }
 
-function CronJobDetail({
-  busy,
-  c,
-  job,
-  onOpenSession,
-  onPauseResume,
-  onTrigger
-}: {
+interface CronJobDetailProps {
   busy: boolean
   c: Translations['cron']
   job: CronJob
+  onEdit: () => void
   onOpenSession?: (sessionId: string) => void
   onPauseResume: () => void
   onTrigger: () => void
-}) {
+}
+
+function CronJobDetail({ busy, c, job, onEdit, onOpenSession, onPauseResume, onTrigger }: CronJobDetailProps) {
   const state = jobState(job)
   const isPaused = state === 'paused'
   const deliver = jobDeliver(job)
@@ -813,16 +820,31 @@ function CronJobDetail({
           rows={[
             { label: c.frequencyLabel, value: jobScheduleDisplay(job) },
             { label: c.last.replace(/:$/, ''), value: formatTime(job.last_run_at) },
-            { label: c.next.replace(/:$/, ''), value: formatTime(job.next_run_at) },
+            {
+              label: (nextRunOverdueMs(job) === null ? c.next : c.overdueSince).replace(/:$/, ''),
+              value: formatTime(job.next_run_at)
+            },
             { label: c.deliverLabel, value: c.deliveryLabels[deliver] ?? deliver },
             ...(modelOverride ? [{ label: c.modelLabel, value: modelOverride }] : [])
           ]}
         />
 
         {job.last_error ? (
-          <div className="flex items-start gap-1.5 rounded bg-destructive/10 p-2 text-[0.7rem] text-destructive">
-            <AlertTriangle className="mt-px size-3 shrink-0" />
-            <span className="min-w-0 break-words">{job.last_error}</span>
+          <div className="space-y-1.5 rounded bg-destructive/10 p-2 text-[0.7rem] text-destructive">
+            <div className="flex items-start gap-1.5">
+              <AlertTriangle className="mt-px size-3 shrink-0" />
+              <span className="min-w-0 break-words" title={job.last_error}>
+                {c.lastRunFailed} {lastErrorSummary(job.last_error)}
+              </span>
+            </div>
+            <div className="flex items-center gap-0.5 pl-4">
+              <PanelAction disabled={busy} icon="edit" onClick={onEdit}>
+                {c.editJob}
+              </PanelAction>
+              <PanelAction disabled={busy} icon="zap" onClick={onTrigger}>
+                {c.runAgain}
+              </PanelAction>
+            </div>
           </div>
         ) : null}
       </header>
@@ -1030,8 +1052,8 @@ function CronEditorDialog({
   const [schedule, setSchedule] = useState('')
   const [schedulePreset, setSchedulePreset] = useState('daily')
   const [deliver, setDeliver] = useState(DEFAULT_DELIVER)
-  // Per-job model override, encoded as `${providerSlug}:${model}` (split on the
-  // first ':' when saving). MODEL_DEFAULT_VALUE = follow the global default.
+  // Per-job model override encoded as an opaque provider/model pair.
+  // MODEL_DEFAULT_VALUE = follow the global default.
   const [modelChoice, setModelChoice] = useState(MODEL_DEFAULT_VALUE)
   // Blueprint fills typed slots (time/enum/weekdays/text) instead of the raw
   // cron fields; the backend renders the prompt + schedule from them.
@@ -1086,7 +1108,9 @@ function CronEditorDialog({
     setSchedule(initial ? jobScheduleExpr(initial) : (SCHEDULE_OPTIONS[0].expr ?? ''))
     setSchedulePreset(initial ? scheduleOptionForExpr(jobScheduleExpr(initial)).value : 'daily')
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
-    setModelChoice(initial && jobModel(initial) ? `${jobProvider(initial)}:${jobModel(initial)}` : MODEL_DEFAULT_VALUE)
+    setModelChoice(
+      initial && jobModel(initial) ? cronModelChoiceValue(jobProvider(initial), jobModel(initial)) : MODEL_DEFAULT_VALUE
+    )
     setSlotValues({})
     setTemplateChoice(editor.mode === 'create' ? (editor.blueprintKey ?? CUSTOM_TEMPLATE) : CUSTOM_TEMPLATE)
     setError(null)
@@ -1129,7 +1153,9 @@ function CronEditorDialog({
   // stored pin visible and re-selectable rather than silently dropping it.
   const modelChoiceKnown =
     modelChoice === MODEL_DEFAULT_VALUE ||
-    modelProviders.some(provider => (provider.models ?? []).some(model => `${provider.slug}:${model}` === modelChoice))
+    modelProviders.some(provider =>
+      (provider.models ?? []).some(model => cronModelChoiceValue(provider.slug, model) === modelChoice)
+    )
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -1152,11 +1178,7 @@ function CronEditorDialog({
       return
     }
 
-    // Decode `${providerSlug}:${model}` — the model half may itself contain
-    // ':' (e.g. openrouter 'anthropic/claude-sonnet-4:beta'), so split once.
-    const overrideIndex = modelChoice === MODEL_DEFAULT_VALUE ? -1 : modelChoice.indexOf(':')
-    const overrideProvider = overrideIndex >= 0 ? modelChoice.slice(0, overrideIndex) : ''
-    const overrideModel = overrideIndex >= 0 ? modelChoice.slice(overrideIndex + 1) : ''
+    const override = parseCronModelChoiceValue(modelChoice)
 
     setSaving(true)
     setError(null)
@@ -1164,10 +1186,10 @@ function CronEditorDialog({
     try {
       await onSave({
         deliver,
-        model: overrideModel,
+        model: override?.model ?? '',
         name: name.trim(),
         prompt: prompt.trim(),
-        provider: overrideProvider,
+        provider: override?.provider ?? '',
         schedule: schedule.trim()
       })
     } catch (err) {
@@ -1337,21 +1359,21 @@ function CronEditorDialog({
                     <SelectItem value={MODEL_DEFAULT_VALUE}>{c.modelDefault}</SelectItem>
                     {!modelChoiceKnown && (
                       <SelectItem className="font-mono" value={modelChoice}>
-                        {modelChoice.slice(modelChoice.indexOf(':') + 1)}
+                        {parseCronModelChoiceValue(modelChoice)?.model ?? modelChoice}
                       </SelectItem>
                     )}
                     {modelProviders.map(provider => (
                       <SelectGroup key={provider.slug}>
                         <SelectLabel>{provider.name}</SelectLabel>
-                        {(provider.models ?? []).map(model => (
-                          <SelectItem
-                            className="font-mono"
-                            key={`${provider.slug}:${model}`}
-                            value={`${provider.slug}:${model}`}
-                          >
-                            {model}
-                          </SelectItem>
-                        ))}
+                        {(provider.models ?? []).map(model => {
+                          const value = cronModelChoiceValue(provider.slug, model)
+
+                          return (
+                            <SelectItem className="font-mono" key={value} value={value}>
+                              {model}
+                            </SelectItem>
+                          )
+                        })}
                       </SelectGroup>
                     ))}
                   </SelectContent>

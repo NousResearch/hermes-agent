@@ -2,13 +2,17 @@
   "name": "hermes",
   "productName": "Hermes",
   "private": true,
-  "version": "0.17.0",
+  "version": "0.0.0",
   "description": "Native desktop shell for Hermes Agent.",
   "author": "Nous Research",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NousResearch/hermes-agent.git"
+  },
   "type": "module",
   "main": "dist/electron-main.mjs",
   "engines": {
-    "node": ">=22.22.0"
+    "node": "^22.22.0 || ^24.11.0 || >=26.0.0"
   },
   "scripts": {
     "clean": "npm run clean:e2e && npm run clean:renderer && npm run clean:electron",
@@ -17,25 +21,25 @@
     "clean:electron": "tsc --build tsconfig.electron.json --clean",
     "dev": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "dev:fake-boot": "cross-env HERMES_DESKTOP_BOOT_FAKE=1 HERMES_DESKTOP_BOOT_FAKE_STEP_MS=650 npm run dev",
-    "dev:mock": "node scripts/dev-mock.mjs",
+    "dev:mock": "node ../../tests-js/scripts/mock-server.ts",
     "dev:renderer": "node scripts/assert-root-install.mjs && npm run clean:renderer && vite --host 127.0.0.1 --port 5174",
     "dev:electron": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
     "profile:main": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron --inspect=9229 .",
     "profile:main:cpu": "tsc --build tsconfig.electron.json && wait-on http://127.0.0.1:5174 && node scripts/bundle-electron-main.mjs --dev && cross-env XCURSOR_SIZE=24 NODE_OPTIONS=--cpu-prof HERMES_DESKTOP_DEV_SERVER=http://127.0.0.1:5174 electron .",
     "start": "npm run build && electron .",
-    "prebuild": "npm run clean",
-    "build": "node scripts/assert-root-install.mjs && node scripts/write-build-stamp.mjs && vite build && node scripts/bundle-electron-main.mjs && node scripts/stage-native-deps.mjs",
+    "build": "node scripts/build.mjs",
     "postbuild": "node scripts/assert-dist-built.mjs",
     "prebuilder": "node scripts/patch-electron-builder-mac-binary.mjs",
     "builder": "cross-env NODE_OPTIONS=--max-old-space-size=16384 node scripts/run-electron-builder.mjs",
-    "pack": "npm run build && npm run builder -- --dir",
+    "pack": "npm run build && npm run builder -- --dir --publish never",
     "dist": "npm run build && npm run builder",
+    "payload": "node ../../scripts/build/python.mjs ../../scripts/bundles/stage.py --out build/agent-payload",
+    "dist:bundled": "npm run payload && cross-env HERMES_DESKTOP_VARIANT=bundled npm run dist",
     "dist:mac": "npm run build && npm run builder -- --mac",
     "dist:mac:dmg": "npm run build && npm run builder -- --mac dmg",
     "dist:mac:zip": "npm run build && npm run builder -- --mac zip",
-    "dist:win": "npm run build && npm run builder -- --win",
-    "dist:win:msi": "npm run build && npm run builder -- --win msi",
-    "dist:win:nsis": "npm run build && npm run builder -- --win nsis",
+    "dist:win": "npm run build && npm run builder -- --win msix",
+    "dist:win:msix": "npm run build && npm run builder -- --win msix",
     "dist:linux": "npm run build && npm run builder -- --linux AppImage deb rpm",
     "perf": "node scripts/perf/run.mjs",
     "update:shim": "bash ../../scripts/desktop-update/repro.sh shim",
@@ -49,30 +53,29 @@
     "test:desktop": "node scripts/test-desktop.mjs",
     "test:desktop:all": "node scripts/test-desktop.mjs all",
     "test:desktop:dmg": "node scripts/test-desktop.mjs dmg",
-    "test:desktop:nsis": "node scripts/test-desktop.mjs nsis",
+    "test:desktop:msix": "node scripts/test-desktop.mjs msix",
     "test:desktop:existing": "node scripts/test-desktop.mjs existing",
     "test:desktop:fresh": "node scripts/test-desktop.mjs fresh",
-    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
+    "test:desktop:lifecycle": "node scripts/test-desktop.mjs lifecycle",
+    "typecheck": "tsc -p . --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.e2e.json --noEmit && tsc --ignoreConfig --allowJs --checkJs --noEmit --skipLibCheck --module nodenext --moduleResolution nodenext --target es2022 electron-builder.config.cjs",
     "lint": "eslint src/ electron/",
     "lint:fix": "eslint src/ electron/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'electron/**/*.ts' 'vite.config.ts'",
     "fix": "npm run lint:fix && npm run fmt",
     "test:ui": "vitest run --project ui",
     "test:desktop:platforms": "vitest run --project electron",
+    "test:find-in-page-native": "electron electron/find-in-page-native-fixture",
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
+    "check:test:ui": "npm run test:ui",
     "check:test:desktop:platforms": "npm run test:desktop:platforms",
-    "check:test:ui:shard-1of3": "node scripts/run-ui-shard.mjs",
-    "check:test:ui:shard-2of3": "node scripts/run-ui-shard.mjs",
-    "check:test:ui:shard-3of3": "node scripts/run-ui-shard.mjs",
     "check:test:desktop:all": "npm run test:desktop:all",
     "check:lint": "npm run typecheck && npm run lint",
     "check": "npm run check:lint && npm run test:ui && npm run test:desktop:platforms && npm run test:desktop:all",
     "test:e2e": "npm run build && playwright test e2e/",
     "test:e2e:visual": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list",
     "test:e2e:update-snapshots": "npm run build && WLR_BACKENDS=headless WLR_NO_HARDWARE_CURSORS=1 cage -- npx playwright test e2e/ --reporter=list --update-snapshots",
-    "repro:short-session-hang": "node scripts/run-short-session-hang-repro.mjs",
-    "repro:short-session-hang:test": "node --test scripts/run-short-session-hang-repro.test.mjs"
+    "repro:short-session-hang": "node scripts/run-short-session-hang-repro.mjs"
   },
   "dependencies": {
     "@assistant-ui/core": "0.2.23",
@@ -92,6 +95,7 @@
     "@icons-pack/react-simple-icons": "13.11.1",
     "@lezer/highlight": "1.2.3",
     "@nanostores/react": "1.1.0",
+    "@novnc/novnc": "1.7.0",
     "@nous-research/ui": "0.18.2",
     "@streamdown/code": "1.1.1",
     "@streamdown/math": "1.0.2",
@@ -107,23 +111,30 @@
     "@xterm/addon-web-links": "0.12.0",
     "@xterm/addon-webgl": "0.19.0",
     "@xterm/xterm": "6.0.0",
+    "blobatar": "2.0.0",
     "class-variance-authority": "0.7.1",
     "clsx": "2.1.1",
     "cmdk": "1.1.1",
     "d3-force": "3.0.0",
+    "dbus-native": "0.15.2",
     "dnd-core": "14.0.1",
     "dompurify": "3.4.13",
+    "driver.js": "1.8.0",
+    "electron-updater": "6.8.9",
     "emojibase-data": "16.0.3",
     "fflate": "0.8.3",
     "frimousse": "0.3.0",
     "hast-util-from-html-isomorphic": "2.0.0",
     "hast-util-to-text": "4.0.2",
+    "https-proxy-agent": "7.0.6",
     "ignore": "7.0.6",
     "katex": "0.16.47",
     "mermaid": "11.16.1",
     "motion": "12.42.2",
-    "nanostores": "1.4.0",
+    "nanostores": "1.4.2",
     "node-pty": "1.1.0",
+    "proxy-from-env": "2.1.0",
+    "qrcode": "1.5.4",
     "radix-ui": "1.6.7",
     "react": "19.2.7",
     "react-arborist": "3.13.2",
@@ -144,27 +155,35 @@
     "unist-util-visit-parents": "6.0.2",
     "use-stick-to-bottom": "1.1.6",
     "vfile": "6.0.3",
-    "web-haptics": "0.0.6"
+    "web-haptics": "0.0.6",
+    "yaml": "2.8.1"
   },
   "optionalDependencies": {
     "get-windows": "9.3.0"
   },
   "devDependencies": {
+    "@babel/core": "8.0.1",
     "@electron/rebuild": "4.2.0",
-    "@playwright/test": "1.58.2",
+    "@playwright/test": "1.62.1",
+    "@rolldown/plugin-babel": "0.2.3",
     "@testing-library/dom": "10.4.1",
     "@testing-library/react": "16.3.2",
+    "@types/babel__core": "7.20.5",
     "@types/d3-force": "3.0.10",
     "@types/hast": "3.0.5",
+    "@types/js-yaml": "4.0.9",
     "@types/node": "22.20.1",
+    "@types/proxy-from-env": "1.0.4",
+    "@types/qrcode": "1.5.6",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",
+    "babel-plugin-react-compiler": "1.0.0",
     "bippy": "0.5.43",
     "concurrently": "10.0.4",
     "cross-env": "10.1.0",
     "electron": "40.10.2",
-    "electron-builder": "26.15.3",
+    "electron-builder": "27.0.0-alpha.6",
     "esbuild": "0.28.1",
     "jsdom": "29.1.1",
     "prettier": "3.9.5",
@@ -174,117 +193,5 @@
     "vite": "8.2.0",
     "vitest": "4.1.10",
     "wait-on": "9.0.10"
-  },
-  "build": {
-    "electronVersion": "40.10.2",
-    "appId": "com.nousresearch.hermes",
-    "productName": "Hermes",
-    "executableName": "Hermes",
-    "protocols": [
-      {
-        "name": "Hermes Protocol",
-        "schemes": [
-          "hermes"
-        ]
-      }
-    ],
-    "artifactName": "Hermes-${version}-${os}-${arch}.${ext}",
-    "icon": "assets/icon",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**",
-      "assets/**",
-      "public/**",
-      "package.json"
-    ],
-    "beforeBuild": "scripts/before-build.mjs",
-    "beforePack": "scripts/before-pack.mjs",
-    "afterPack": "scripts/after-pack.mjs",
-    "extraResources": [
-      {
-        "from": "build/install-stamp.json",
-        "to": "install-stamp.json"
-      },
-      {
-        "from": "assets/icon.ico",
-        "to": "icon.ico"
-      }
-    ],
-    "asar": true,
-    "afterSign": "scripts/notarize.mjs",
-    "asarUnpack": [
-      "**/*.node",
-      "**/prebuilds/**",
-      "dist/**"
-    ],
-    "mac": {
-      "category": "public.app-category.developer-tools",
-      "entitlements": "electron/entitlements.mac.plist",
-      "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
-      "extendInfo": {
-        "CFBundleDisplayName": "Hermes",
-        "CFBundleExecutable": "Hermes",
-        "CFBundleName": "Hermes",
-        "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
-        "NSCameraUsageDescription": "Hermes uses the camera when a plugin or feature you enable requests it.",
-        "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
-      },
-      "gatekeeperAssess": false,
-      "hardenedRuntime": true,
-      "target": [
-        "dmg",
-        "zip"
-      ]
-    },
-    "dmg": {
-      "title": "Install Hermes",
-      "backgroundColor": "#f5f5f7",
-      "iconSize": 96,
-      "window": {
-        "width": 560,
-        "height": 360
-      },
-      "contents": [
-        {
-          "x": 160,
-          "y": 170,
-          "type": "file"
-        },
-        {
-          "x": 400,
-          "y": 170,
-          "type": "link",
-          "path": "/Applications"
-        }
-      ]
-    },
-    "win": {
-      "legalTrademarks": "Hermes",
-      "target": [
-        "nsis",
-        "msi"
-      ],
-      "signAndEditExecutable": false
-    },
-    "linux": {
-      "category": "Development",
-      "maintainer": "Nous Research <support@nousresearch.com>",
-      "synopsis": "Native desktop shell for Hermes Agent.",
-      "target": [
-        "AppImage",
-        "deb",
-        "rpm"
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
-      "warningsAsErrors": false
-    }
   }
 }

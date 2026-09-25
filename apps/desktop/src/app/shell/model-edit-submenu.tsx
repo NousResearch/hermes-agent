@@ -1,3 +1,5 @@
+import { REASONING_EFFORTS } from '@hermes/shared'
+
 import {
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -10,7 +12,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
-import { isThinkingEnabled, REASONING_EFFORTS, resolveReasoningEffort } from '@/lib/reasoning-effort'
+import { isThinkingEnabled, reasoningEffortClamp, resolveReasoningEffort } from '@/lib/reasoning-effort'
 
 // Hermes' real reasoning levels live in lib/reasoning-effort; `none` is owned
 // by the Thinking toggle, not the radio.
@@ -59,12 +61,19 @@ export function resolveFastControl(
 }
 
 interface ModelEditSubmenuProps {
+  /** Whether this model can turn thinking off. False on reasoning-mandatory
+   *  routes, whose upstream rejects a disable — the toggle is hidden rather
+   *  than offered as a control that silently does nothing. */
+  canDisableReasoning?: boolean
   /** The profile's configured default effort — what an unset row inherits.
    *  Passed in (not read from a store) so this submenu stays pure. */
   defaultEffort: string
   /** This row's effective reasoning effort (live for the active model, else its
    *  preset) — the submenu shows and edits from this, never the raw session. */
   effort: string
+  /** Gateway-reported level the route actually sends for `effort` (active row
+   *  only; '' = unknown). A clamped pick is spelled out on its radio row. */
+  effortWire?: string
   /** How fast mode is offered for this model (param toggle vs. variant swap). */
   fastControl: FastControl
   /** Whether this row's model is the active one. */
@@ -92,14 +101,18 @@ export function ModelEditSubmenu(props: ModelEditSubmenuProps) {
   // row made opening the menu itself lag on large catalogs.
   return (
     <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
-      <ModelEditSubmenuBody {...props} />
+      <ModelOptionsContent {...props} />
     </DropdownMenuSubContent>
   )
 }
 
-function ModelEditSubmenuBody({
+/** The options rows themselves, container-free: the catalog mounts them in a
+ *  per-row submenu, the composer's reasoning pill in its own top-level menu. */
+export function ModelOptionsContent({
+  canDisableReasoning,
   defaultEffort,
   effort,
+  effortWire,
   fastControl,
   isActive,
   onSelectModel,
@@ -110,7 +123,9 @@ function ModelEditSubmenuBody({
   const copy = t.shell.modelOptions
 
   const effortValue = resolveReasoningEffort(effort, defaultEffort)
+  const clamp = reasoningEffortClamp(effortValue, effortWire)
   const thinkingOn = isThinkingEnabled(effort, defaultEffort)
+  const showThinkingToggle = reasoning && canDisableReasoning !== false
 
   const setFast = (enabled: boolean) => {
     if (fastControl.kind === 'variant') {
@@ -139,7 +154,7 @@ function ModelEditSubmenuBody({
   ) : (
     <>
       <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
-      {reasoning ? (
+      {showThinkingToggle ? (
         <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
           {copy.thinking}
           <Switch
@@ -168,7 +183,7 @@ function ModelEditSubmenuBody({
                 onSelect={event => event.preventDefault()}
                 value={value}
               >
-                {copy[value]}
+                {clamp?.effort === value ? `${copy[value]} (${copy.sendsOnRoute(copy[clamp.wire])})` : copy[value]}
               </DropdownMenuRadioItem>
             ))}
           </DropdownMenuRadioGroup>

@@ -1,12 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import {
-  $cronJobs,
-  beginCronJobsRequest,
-  commitCronJobsRequest,
-  setCronJobs,
-  updateCronJobs
-} from './cron'
+import { $cronJobs, beginCronJobsRequest, commitCronJobsRequest, setCronJobs, updateCronJobs } from './cron'
 
 const oldJob = { id: 'old' } as never
 const newJob = { id: 'new' } as never

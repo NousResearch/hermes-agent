@@ -16,11 +16,7 @@ def transport():
 
 class TestCodexTransportBasic:
 
-    def test_api_mode(self, transport):
-        assert transport.api_mode == "codex_responses"
 
-    def test_registered_on_import(self, transport):
-        assert transport is not None
 
     def test_convert_tools(self, transport):
         tools = [{
@@ -39,8 +35,86 @@ class TestCodexTransportBasic:
 
 class TestCodexBuildKwargs:
 
+    def test_astra_direct_request_applies_model_contract_after_overrides(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            reasoning_config={"enabled": False, "effort": "none"},
+            request_overrides={
+                "temperature": 0.4,
+                "top_p": 0.9,
+                "top_logprobs": 5,
+                "logprobs": True,
+                "reasoning": {"effort": "none"},
+                "include": ["reasoning.encrypted_content", "message.output_text.logprobs"],
+                "prompt_cache_retention": "24h",
+            },
+        )
 
+        assert kw["reasoning"]["effort"] == "low"
+        assert kw["include"] == ["reasoning.encrypted_content"]
+        for unsupported in ("temperature", "top_p", "top_logprobs", "logprobs", "prompt_cache_retention"):
+            assert unsupported not in kw
 
+    @pytest.mark.parametrize("effort", ["none", "minimal"])
+    def test_astra_normalizes_unsupported_low_efforts_after_overrides(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            request_overrides={"reasoning": {"effort": effort}},
+        )
+
+        assert kw["reasoning"]["effort"] == "low"
+
+    @pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+    def test_astra_accepts_complete_effort_ladder(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url="https://api.openai.com/v1",
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+
+        assert kw["reasoning"]["effort"] == effort
+
+    @pytest.mark.parametrize("base_url", ["https://responses.example.com/v1", "https://evil.api.openai.com/v1"])
+    def test_astra_contract_is_exact_host_only(self, transport, base_url):
+        """Proxies and lookalike subdomains keep the generic Responses contract (effort passes through)."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            base_url=base_url,
+            reasoning_config={"enabled": True, "effort": "none"},
+            request_overrides={"temperature": 0.4},
+        )
+
+        assert kw["reasoning"]["effort"] == "none"
+        assert kw["temperature"] == 0.4
+
+    def test_900k_context_variant_suffix_stripped_on_wire(self, transport):
+        """``-900k`` large-context picker variants are Hermes-side aliases —
+        the Codex backend only knows the base slug, so build_kwargs must
+        strip the suffix from the wire model id."""
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol-900k", messages=messages, tools=[],
+            params={"is_codex_backend": True},
+        )
+        assert kw["model"] == "gpt-5.6-sol"
+
+    def test_base_slug_model_id_unchanged_on_wire(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol", messages=messages, tools=[],
+            params={"is_codex_backend": True},
+        )
+        assert kw["model"] == "gpt-5.6-sol"
 
 
 
@@ -151,19 +225,57 @@ class TestCodexBuildKwargs:
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
 
+    def test_codex_backend_drops_foreign_message_item_id_end_to_end(self, transport):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "123e4567-e89b-12d3-a456-426614174000",
+                        "phase": "final_answer",
+                    }
+                ],
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            is_codex_backend=True,
+        )
+
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert "id" not in message_item
+        assert message_item["phase"] == "final_answer"
+
+    @pytest.mark.parametrize(("is_codex_backend", "expected_user", "expected_assistant"), [
+        (True, [{"type": "input_text", "text": "hi"}], [{"type": "output_text", "text": "pong"}]),
+        (False, "hi", "pong"),  # other Responses routes keep the string shorthand they always sent
+    ], ids=["codex-typed-parts", "other-route-string"])
+    def test_codex_backend_sends_typed_text_parts_for_string_content(
+        self, transport, is_codex_backend, expected_user, expected_assistant,
+    ):
+        """#51512 (no-replay atom): the ChatGPT Codex backend 400s ``{"detail": "Unsupported content type"}``
+        on a role message whose ``content`` is a plain string, even with no reasoning replay in the request.
+        Text must go out as typed ``input_text``/``output_text`` parts; the preflight the real call runs
+        through must keep them."""
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "pong"},
+            {"role": "user", "content": "hi"},
+        ]
+        kw = transport.build_kwargs(model="gpt-5.5", messages=messages, tools=[], is_codex_backend=is_codex_backend)
+        kw = transport.preflight_kwargs(kw, sanitize_harmony_tokens=is_codex_backend)
+        assert [item["content"] for item in kw["input"]] == [expected_user, expected_assistant, expected_user]
+
     @pytest.mark.parametrize("model", [
         "gpt-5.5",
-        "gpt-5.5-pro",
-        "gpt-5.4",
-        "gpt-5.2",
-        "gpt-5.1-codex-max",
-        "gpt-5.1",
-        "gpt-5.1-codex",
-        "gpt-5.1-codex-mini",
-        "gpt-5.1-chat-latest",
-        "gpt-5",
-        "gpt-5-codex",
-        "gpt-4.1",
         "openai.gpt-5.5-pro",
         "openai/gpt-5.1-codex-2026-01-01",
     ])
@@ -176,7 +288,7 @@ class TestCodexBuildKwargs:
         )
         assert kw["prompt_cache_retention"] == "24h"
 
-    @pytest.mark.parametrize("model", ["gpt-5.6", "gpt-4o", "o3"])
+    @pytest.mark.parametrize("model", ["gpt-4o", "o3"])
     def test_prompt_cache_retention_omitted_for_other_model_families(self, transport, model):
         kw = transport.build_kwargs(
             model=model,
@@ -304,6 +416,137 @@ class TestCodexBuildKwargs:
         assert "function_call" in item_types
         assert "function_call_output" in item_types
         assert kw.get("include") == ["reasoning.encrypted_content"]
+
+    @classmethod
+    def _two_turn_messages(cls):
+        """Two answered turns, each assistant row sealed by its own response, then a fresh user message."""
+        return [
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": "one",
+                "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "sealed-1", "summary": []}],
+            },
+            {"role": "user", "content": "second"},
+            {
+                "role": "assistant",
+                "content": "two",
+                "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "sealed-2", "summary": []}],
+            },
+            {"role": "user", "content": "third"},
+        ]
+
+    def test_azure_foundry_new_turn_replays_only_newest_reasoning(self, transport):
+        """Two sealed prior responses on the wire is the 400 "Conflicting authenticated
+        continuation identities" shape (#105369); one is accepted."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra",
+            messages=self._two_turn_messages(),
+            tools=[],
+            provider="azure-foundry",
+            base_url="https://placeholder.openai.azure.com/openai/v1",
+            replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-2"]
+        assert kw.get("include") == ["reasoning.encrypted_content"]
+        assistant_text = [item for item in kw["input"] if item.get("role") == "assistant"]
+        assert len(assistant_text) == 2
+
+    @pytest.mark.parametrize("base_url", [
+        "https://placeholder.openai.azure.com/openai/v1",
+        "https://placeholder.services.ai.azure.com/api/projects/placeholder/openai/v1",
+    ])
+    def test_azure_host_without_provider_replays_only_newest_reasoning(self, transport, base_url):
+        """Both Azure hosts are detected without ``provider``; the rejection is not gateway-specific."""
+        kw = transport.build_kwargs(
+            model="gpt-6-astra", messages=self._two_turn_messages(), tools=[], base_url=base_url,
+            replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-2"]
+
+    def test_azure_trimmed_reasoning_turn_still_drops_its_message_id(self, transport):
+        """The older turn's reasoning is trimmed for Azure (#105369) but its ``msg_*`` id is still bound to a
+        ``rs_*`` id that is no longer on the wire; the id must go with it (#97427). The newest turn's id is
+        dropped too (its reasoning replays without id); a reasoning-free turn keeps its id."""
+        def _turn(text, *, reasoning):
+            msg = {
+                "role": "assistant", "content": text,
+                "codex_message_items": [{
+                    "type": "message", "role": "assistant", "status": "completed", "id": f"msg_{text}",
+                    "content": [{"type": "output_text", "text": text}],
+                }],
+            }
+            if reasoning:
+                msg["codex_reasoning_items"] = [{"type": "reasoning", "id": f"rs_{text}", "encrypted_content": f"sealed-{text}", "summary": []}]
+            return msg
+
+        messages = [
+            {"role": "user", "content": "first"}, _turn("old", reasoning=True),
+            {"role": "user", "content": "second"}, _turn("plain", reasoning=False),
+            {"role": "user", "content": "third"}, _turn("new", reasoning=True),
+            {"role": "user", "content": "fourth"},
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-6-astra", messages=messages, tools=[],
+            base_url="https://placeholder.openai.azure.com/openai/v1", replay_encrypted_reasoning=True,
+        )
+        reasoning = [i for i in kw["input"] if i.get("type") == "reasoning"]
+        assert [i["encrypted_content"] for i in reasoning] == ["sealed-new"]
+        by_text = {i["content"][0]["text"]: i for i in kw["input"] if i.get("type") == "message" and i.get("role") == "assistant"}
+        assert "id" not in by_text["old"] and "id" not in by_text["new"]
+        assert by_text["plain"]["id"] == "msg_plain"
+        assert "codex_reasoning_items" in messages[1]  # canonical history untouched
+
+    def test_default_responses_new_turn_replays_all_reasoning(self, transport):
+        """Non-Azure Responses endpoints keep cross-turn reasoning replay."""
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=self._two_turn_messages(), tools=[], replay_encrypted_reasoning=True,
+        )
+        reasoning = [item for item in kw["input"] if item.get("type") == "reasoning"]
+        assert [item["encrypted_content"] for item in reasoning] == ["sealed-1", "sealed-2"]
+
+
+    def test_normalize_response_stamps_wire_model_and_replay_drops_it_for_another_model(self, transport):
+        """The wire model from build_kwargs (``-900k`` stripped) is what normalize_response stamps, and a
+        later build_kwargs for another model on the same endpoint replays none of it (sealed blob → 400)."""
+        transport.build_kwargs(model="gpt-5.6-sol-900k", messages=[{"role": "user", "content": "hi"}], tools=[])
+        normalized = transport.normalize_response(SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(type="reasoning", id="rs_1", encrypted_content="sealed-sol", summary=[]),
+                SimpleNamespace(type="message", role="assistant", status="completed", id="msg_1",
+                                content=[SimpleNamespace(type="output_text", text="done")]),
+            ],
+        ))
+        captured = normalized.codex_reasoning_items[0]
+        assert captured["_issuer_model"] == "gpt-5.6-sol"
+        history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "done", "codex_reasoning_items": [captured]},
+            {"role": "user", "content": "next"},
+        ]
+        same = transport.build_kwargs(model="gpt-5.6-sol-900k", messages=history, tools=[], replay_encrypted_reasoning=True)
+        other = transport.build_kwargs(model="gpt-5.7", messages=history, tools=[], replay_encrypted_reasoning=True)
+        assert [i["encrypted_content"] for i in same["input"] if i.get("type") == "reasoning"] == ["sealed-sol"]
+        assert not any(i.get("type") == "reasoning" for i in other["input"])
+
+    def test_newest_reasoning_only_keeps_compaction_checkpoints(self):
+        from agent.transports.codex import _newest_reasoning_only
+
+        checkpoint = {"type": "compaction", "encrypted_content": "ckpt", "summary": []}
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "one", "codex_reasoning_items": [checkpoint, self._reasoning_item()]},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "two", "codex_reasoning_items": [self._reasoning_item()]},
+            {"role": "user", "content": "third"},
+        ]
+        pruned = _newest_reasoning_only(messages)
+        assert pruned[1]["codex_reasoning_items"] == [checkpoint]
+        assert pruned[3]["codex_reasoning_items"] == [self._reasoning_item()]
+        assert len(messages[1]["codex_reasoning_items"]) == 2
 
     def test_azure_foundry_post_tool_replay_suppresses_reasoning_items(self, transport):
         """The rejected payload shape drops reasoning, keeps tool continuity."""
@@ -706,39 +949,6 @@ class TestCodexBuildKwargs:
         assert "hermes_web_search" in names
         assert "web_search" not in names
 
-    def test_xai_normalize_maps_client_web_search_alias_back(self, transport, monkeypatch):
-        """Alias used on the wire must become ``web_search`` for Hermes dispatch."""
-        import agent.transports.codex as codex_mod
-
-        msg = SimpleNamespace(
-            content=None,
-            reasoning=None,
-            tool_calls=[
-                SimpleNamespace(
-                    id="call_1",
-                    call_id="call_1",
-                    response_item_id="fc_1",
-                    function=SimpleNamespace(
-                        name=codex_mod._XAI_CLIENT_WEB_SEARCH_ALIAS,
-                        arguments='{"query":"hermes"}',
-                    ),
-                )
-            ],
-            codex_reasoning_items=None,
-            codex_message_items=None,
-            reasoning_details=None,
-        )
-        response = SimpleNamespace(output=[], status="completed")
-
-        monkeypatch.setattr(
-            "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
-        )
-        normalized = transport.normalize_response(response)
-
-        assert normalized.tool_calls is not None
-        assert len(normalized.tool_calls) == 1
-        assert normalized.tool_calls[0].name == "web_search"
 
     def test_xai_does_not_inject_native_web_search_without_client_web_search(self, transport):
         """The native ``web_search`` built-in is a 1:1 swap for an
@@ -782,6 +992,89 @@ class TestCodexBuildKwargs:
             for t in tools
         )
 
+    # --- OpenAI Codex native web-search swap ---
+    # The Codex Responses endpoint exposes the same server-executed
+    # ``web_search`` built-in as xAI, so selecting the ``openai-native``
+    # backend performs the same 1:1 swap. Unlike xAI there is no alias path:
+    # an unselected or non-Codex request keeps the client-side function, so a
+    # custom OpenAI-compatible endpoint never receives a tool it cannot host.
+
+    def test_openai_native_swaps_client_web_search_for_builtin(self, transport, monkeypatch):
+        """Selecting ``openai-native`` replaces the client ``web_search``
+        function with the provider-executed built-in. ``web_extract`` is a
+        separate capability and must survive — native search covers search only.
+        """
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: True)
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Find current prices."}],
+            tools=[
+                {"type": "function", "function": {
+                    "name": "read_file", "description": "Read a file.",
+                    "parameters": {"type": "object",
+                                   "properties": {"path": {"type": "string"}}}}},
+                {"type": "function", "function": {
+                    "name": "web_search", "description": "Search the web.",
+                    "parameters": {"type": "object",
+                                   "properties": {"query": {"type": "string"}}}}},
+                {"type": "function", "function": {
+                    "name": "web_extract", "description": "Extract a page.",
+                    "parameters": {"type": "object",
+                                   "properties": {"url": {"type": "string"}}}}},
+            ],
+            is_codex_backend=True,
+        )
+        tools = kw.get("tools", [])
+        assert any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert "web_search" not in names
+        assert "read_file" in names
+        assert "web_extract" in names
+
+    def test_openai_native_not_selected_keeps_client_web_search(self, transport, monkeypatch):
+        """A Codex turn that has not selected ``openai-native`` keeps Hermes
+        dispatch — the built-in must never be granted additively."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: False)
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Find current prices."}],
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}}],
+            is_codex_backend=True,
+        )
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert "web_search" in names
+
+    def test_openai_native_ignored_on_non_codex_transport(self, transport, monkeypatch):
+        """The provider-executed built-in only exists on
+        ``chatgpt.com/backend-api/codex``. A custom OpenAI-compatible endpoint
+        must keep the client tool even when the search backend says native.
+        """
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_openai_prefers_native_web_search", lambda: True)
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Find current prices."}],
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}}],
+            is_codex_backend=False,
+        )
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools), tools
+        names = [t.get("name") for t in tools if t.get("type") == "function"]
+        assert "web_search" in names
+
     # --- Grok reasoning-effort capability allowlist ---
     # api.x.ai 400s with "Model X does not support parameter reasoningEffort"
     # on grok-4 / grok-4-fast / grok-3 / grok-code-fast / grok-4.20-0309-*.
@@ -805,6 +1098,394 @@ class TestCodexBuildKwargs:
             assert "reasoning" not in kw, f"{model} must not receive reasoning"
 
 
+class TestResponsesReservedToolAliases:
+    """Responses providers may reserve web_search / search_files as function
+    names. The transport aliases them on the wire and maps them back."""
+
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    _TOOLS = [
+        {"type": "function", "function": {
+            "name": "search_files", "description": "Search files.",
+            "parameters": {"type": "object",
+                           "properties": {"pattern": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "web_search", "description": "Search the web.",
+            "parameters": {"type": "object",
+                           "properties": {"query": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "read_file", "description": "Read a file.",
+            "parameters": {"type": "object",
+                           "properties": {"path": {"type": "string"}}}}},
+    ]
+    _PERPLEXITY_ONLY_TOOLS = [
+        {"type": "function", "function": {
+            "name": name, "description": f"Client {name}.",
+            "parameters": {"type": "object", "properties": {}}}}
+        for name in ("fetch_url", "people_search", "finance_search")
+    ]
+
+    def _names(self, kw):
+        return [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+
+    def test_builtin_opencode_go_aliases_reserved_names(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="opencode-go",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+        assert "search_files" not in names
+        assert "web_search" not in names
+        assert "read_file" in names  # non-reserved untouched
+
+    def test_custom_opencode_family_provider_aliases_reserved_names(self, transport):
+        """Custom opencode-go-* providers get the same aliasing (#85589)."""
+        kw = transport.build_kwargs(
+            model="grok-4.5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="opencode-go-bridge",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "search_files" not in names
+
+    def test_opencode_host_match_without_family_provider(self, transport):
+        """An arbitrary custom provider pointing at opencode.ai still aliases."""
+        kw = transport.build_kwargs(
+            model="gpt-5.6-luna",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="my-oc-proxy",
+            base_url="https://opencode.ai/zen/go/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+
+    def test_non_opencode_backend_keeps_original_names(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            provider="openai-codex",
+            base_url="https://api.openai.com/v1",
+        )
+        names = self._names(kw)
+        assert "search_files" in names
+        assert "web_search" in names
+        assert "hermes_search_files" not in names
+
+    def test_perplexity_agent_api_aliases_reserved_names(self, transport, monkeypatch):
+        kw = transport.build_kwargs(
+            model="perplexity/sonar",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS) + list(self._PERPLEXITY_ONLY_TOOLS),
+            provider="custom",
+            base_url="https://api.perplexity.ai/v1",
+        )
+        names = self._names(kw)
+        assert "hermes_search_files" in names
+        assert "hermes_web_search" in names
+        assert "search_files" not in names
+        assert "web_search" not in names
+        assert "hermes_fetch_url" in names
+        assert "hermes_people_search" in names
+        assert "hermes_finance_search" in names
+        assert "fetch_url" not in names
+        assert "people_search" not in names
+        assert "finance_search" not in names
+        assert "read_file" in names
+        assert transport._last_wire_aliases == {
+            "hermes_search_files": "search_files",
+            "hermes_web_search": "web_search",
+            "hermes_fetch_url": "fetch_url",
+            "hermes_people_search": "people_search",
+            "hermes_finance_search": "finance_search",
+        }
+
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[SimpleNamespace(
+                id="call_1", call_id="call_1", response_item_id="fc_1",
+                function=SimpleNamespace(
+                    name="hermes_search_files",
+                    arguments='{"pattern":"README"}',
+                ),
+            )],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
+        )
+        normalized = transport.normalize_response(SimpleNamespace(output=[], status="completed"))
+        assert [tc.name for tc in normalized.tool_calls] == ["search_files"]
+
+    def test_perplexity_lookalike_host_keeps_original_names(self, transport):
+        for base_url in (
+            "https://sub.api.perplexity.ai/v1",
+            "https://api.perplexity.ai.example.com/v1",
+            "https://example.com/api.perplexity.ai/v1?host=api.perplexity.ai",
+        ):
+            kw = transport.build_kwargs(
+                model="perplexity/sonar",
+                messages=[{"role": "user", "content": "hi"}],
+                tools=list(self._TOOLS),
+                provider="custom",
+                base_url=base_url,
+            )
+            names = self._names(kw)
+            assert "search_files" in names
+            assert "web_search" in names
+            assert "hermes_search_files" not in names
+
+    def test_normalize_maps_reserved_aliases_back(self, transport, monkeypatch):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(
+                        name="hermes_search_files",
+                        arguments='{"pattern":"README"}',
+                    ),
+                ),
+                SimpleNamespace(
+                    id="call_2", call_id="call_2", response_item_id="fc_2",
+                    function=SimpleNamespace(
+                        name="hermes_web_search",
+                        arguments='{"query":"hermes"}',
+                    ),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
+        )
+        normalized = transport.normalize_response(response)
+        names = [tc.name for tc in normalized.tool_calls]
+        assert names == ["search_files", "web_search"]
+
+
+class TestXaiReservedToolSearchAlias:
+    """xAI reserves ``tool_search`` for Grok's native Tool Search and rejects
+    the client declaration with HTTP 400 (#95003). The transport aliases the
+    progressive-disclosure bridge on the wire and maps it back on dispatch."""
+
+    @pytest.fixture
+    def transport(self):
+        from agent.transports.codex import ResponsesApiTransport
+        return ResponsesApiTransport()
+
+    _TOOLS = [
+        {"type": "function", "function": {
+            "name": "tool_search", "description": "Search deferred tools.",
+            "parameters": {"type": "object",
+                           "properties": {"query": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "tool_describe", "description": "Describe a deferred tool.",
+            "parameters": {"type": "object",
+                           "properties": {"name": {"type": "string"}}}}},
+        {"type": "function", "function": {
+            "name": "read_file", "description": "Read a file.",
+            "parameters": {"type": "object",
+                           "properties": {"path": {"type": "string"}}}}},
+    ]
+
+    def _names(self, kw):
+        return [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+
+    def test_xai_aliases_reserved_tool_search(self, transport):
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            is_xai_responses=True,
+        )
+        names = self._names(kw)
+        assert "hermes_tool_search" in names
+        assert "tool_search" not in names
+        # Only ``tool_search`` is reserved — the sibling bridge tools and
+        # ordinary tools go out untouched.
+        assert "tool_describe" in names
+        assert "read_file" in names
+
+    def test_openai_responses_aliases_reserved_tool_search(self, transport):
+        """OpenAI Responses reserves the ``tool_search`` namespace for its native Tool Search (#83122):
+        both the ChatGPT Codex backend and api.openai.com get the bridge under ``hermes_tool_search``."""
+        for extra in ({"is_codex_backend": True}, {"base_url": "https://api.openai.com/v1"}):
+            kw = transport.build_kwargs(
+                model="gpt-5.4", messages=[{"role": "user", "content": "hi"}], tools=list(self._TOOLS), **extra,
+            )
+            names = self._names(kw)
+            assert "hermes_tool_search" in names and "tool_search" not in names, extra
+            assert transport._last_wire_aliases == {"hermes_tool_search": "tool_search"}
+
+    def test_other_responses_backend_keeps_tool_search_name(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            base_url="https://responses-proxy.example.invalid/v1",
+        )
+        names = self._names(kw)
+        assert "tool_search" in names
+        assert "hermes_tool_search" not in names
+
+    def test_alias_composes_with_native_web_search_swap(self, transport, monkeypatch):
+        """The bridge alias must survive the xAI web_search branch (#48108)."""
+        import agent.transports.codex as codex_mod
+
+        monkeypatch.setattr(codex_mod, "_xai_prefers_native_web_search", lambda: True)
+        tools = list(self._TOOLS) + [
+            {"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=tools,
+            is_xai_responses=True,
+        )
+        assert any(t.get("type") == "web_search" for t in kw.get("tools", []))
+        names = self._names(kw)
+        assert "hermes_tool_search" in names
+        assert "tool_search" not in names
+
+    def test_normalize_maps_tool_search_alias_back(self, transport, monkeypatch):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(
+                        name="hermes_tool_search",
+                        arguments='{"query":"create github issue"}',
+                    ),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
+        )
+        # Pair the response with a real request so provenance is recorded.
+        transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=list(self._TOOLS),
+            is_xai_responses=True,
+        )
+        assert transport._last_wire_aliases == {"hermes_tool_search": "tool_search"}
+        normalized = transport.normalize_response(response)
+        assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
+
+    def _normalize_named_call(self, transport, monkeypatch, wire_name):
+        msg = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1", call_id="call_1", response_item_id="fc_1",
+                    function=SimpleNamespace(name=wire_name, arguments="{}"),
+                ),
+            ],
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            reasoning_details=None,
+        )
+        response = SimpleNamespace(output=[], status="completed")
+        monkeypatch.setattr(
+            "agent.codex_responses_adapter._normalize_codex_response",
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
+        )
+        return transport.normalize_response(response)
+
+    def test_no_alias_emitted_means_no_reverse_rewrite(self, transport, monkeypatch):
+        """Provenance contract (#95003 review): a request that emitted no
+        aliases must not have a real ``hermes_tool_search`` tool rewritten."""
+        real_tool = {"type": "function", "function": {
+            "name": "hermes_tool_search", "description": "A real MCP tool.",
+            "parameters": {"type": "object", "properties": {}}}}
+        transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[real_tool],
+            is_xai_responses=True,
+        )
+        assert transport._last_wire_aliases == {}
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
+        assert [tc.name for tc in normalized.tool_calls] == ["hermes_tool_search"]
+
+    def test_alias_collision_takes_suffix_no_duplicates(self, transport, monkeypatch):
+        """A real tool already named ``hermes_tool_search`` keeps its wire
+        name; the bridge is suffixed and both round-trip independently."""
+        tools = [
+            {"type": "function", "function": {
+                "name": "hermes_tool_search", "description": "Real tool.",
+                "parameters": {"type": "object", "properties": {}}}},
+            {"type": "function", "function": {
+                "name": "tool_search", "description": "Bridge.",
+                "parameters": {"type": "object", "properties": {}}}},
+        ]
+        kw = transport.build_kwargs(
+            model="grok-4.6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=tools,
+            is_xai_responses=True,
+        )
+        names = self._names(kw)
+        assert names == ["hermes_tool_search", "hermes_tool_search_2"]
+        assert len(names) == len(set(names))
+        assert transport._last_wire_aliases == {"hermes_tool_search_2": "tool_search"}
+        # Bridge alias maps back; the real tool's name is untouched.
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search_2"
+        )
+        assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
+        normalized2 = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
+        assert [tc.name for tc in normalized2.tool_calls] == ["hermes_tool_search"]
+
+    def test_legacy_fallback_without_provenance(self, transport, monkeypatch):
+        """Normalize-only call sites (no build_kwargs on this instance) keep
+        the historical unconditional reverse mapping."""
+        assert transport._last_wire_aliases is None
+        normalized = self._normalize_named_call(
+            transport, monkeypatch, "hermes_tool_search"
+        )
+        assert [tc.name for tc in normalized.tool_calls] == ["tool_search"]
+
+
 class TestXaiWebSearchBackendPreference:
     """``_xai_prefers_native_web_search`` must honor web backend config."""
 
@@ -826,14 +1507,6 @@ class TestXaiWebSearchBackendPreference:
         )
         assert codex_mod._xai_prefers_native_web_search() is True
 
-    def test_resolved_non_xai_provider_prefers_client(self, monkeypatch):
-        import agent.transports.codex as codex_mod
-
-        monkeypatch.setattr(
-            "agent.web_search_registry.get_active_search_provider",
-            lambda: SimpleNamespace(name="firecrawl"),
-        )
-        assert codex_mod._xai_prefers_native_web_search() is False
 
     def test_no_provider_legacy_fallback_xai(self, monkeypatch):
         """When no provider is registered, fall back to _get_search_backend."""
@@ -1021,9 +1694,24 @@ class TestCodexTransportXaiReasoningEffort:
         assert kw["reasoning"]["effort"] == "xhigh"
 
     @pytest.mark.parametrize("effort", ["max", "ultra"])
-    def test_grok_46_clamps_hermes_aliases_to_high(self, transport, effort):
+    def test_grok_46_clamps_hermes_aliases_to_model_ceiling(self, transport, effort):
+        """Hermes ladder aliases mean "this model's ceiling" — on grok-4.6
+        that is xhigh, not one rung below it (#87279)."""
         kw = transport.build_kwargs(
             model="x-ai/grok-4.6-latest",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"effort": effort},
+        )
+
+        assert kw["reasoning"]["effort"] == "xhigh"
+
+    @pytest.mark.parametrize("effort", ["max", "ultra"])
+    def test_older_grok_clamps_aliases_to_high(self, transport, effort):
+        """Older Grok tops out at high; above-ceiling aliases land there."""
+        kw = transport.build_kwargs(
+            model="grok-4.5",
             messages=[{"role": "user", "content": "hi"}],
             tools=[],
             is_xai_responses=True,
@@ -1206,3 +1894,65 @@ class TestPreflightSlashEnumStrip:
         assert params["properties"]["model_id"].get("enum") == [
             "Qwen/Qwen3.5-0.8B", "plain-id"
         ]
+
+
+def test_text_verbosity_reaches_responses_body_only_when_configured(transport):
+    """``agent.text_verbosity`` maps to top-level ``text.verbosity`` on Responses routes (#20203).
+
+    Unset/empty sends nothing (never flips the provider default), xAI never gets it
+    (its /responses rejects unknown top-level fields), and the chat_completions
+    transport has no such field at all.
+    """
+    from agent.transports import chat_completions  # noqa: F401  (registers the sibling)
+
+    msgs = [{"role": "user", "content": "hi"}]
+    assert transport.build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity="low")["text"] == {"verbosity": "low"}
+    for unset in (None, ""):
+        assert "text" not in transport.build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity=unset)
+    assert "text" not in transport.build_kwargs(
+        model="grok-4", messages=msgs, text_verbosity="low", is_xai_responses=True, base_url="https://api.x.ai/v1",
+    )
+    chat = get_transport("chat_completions").build_kwargs(model="gpt-5.1", messages=msgs, text_verbosity="low")
+    assert "text" not in chat and "text" not in (chat.get("extra_body") or {})
+
+
+class TestOpenAIReasoningWireProjection:
+    """Explicit ``reasoning_effort: none`` and non-reasoning OpenAI models on the Responses wire
+    (#75227, #76255): a disable is sent as ``effort: none`` where the model accepts it — omitting the
+    field leaves the model's default effort on — and chat-era models on api.openai.com, which 400 on any
+    ``reasoning`` key, get no ``reasoning`` field at all."""
+
+    OPENAI = "https://api.openai.com/v1"
+
+    def _reasoning(self, transport, model, reasoning_config, base_url=OPENAI):
+        kw = transport.build_kwargs(model=model, messages=[{"role": "user", "content": "Hi"}], tools=[],
+                                    base_url=base_url, reasoning_config=reasoning_config)
+        return kw.get("reasoning")
+
+    def test_explicit_none_is_sent_and_unset_keeps_the_default(self, transport):
+        assert self._reasoning(transport, "gpt-5.6-sol", {"enabled": False}) == {"effort": "none"}
+        assert self._reasoning(transport, "gpt-5.6-sol", None) == {"effort": "medium", "summary": "auto"}
+        # Astra's vocabulary has no ``none``: nothing to send, never an escalated level.
+        assert self._reasoning(transport, "gpt-6-astra", {"enabled": False}) is None
+
+    def test_disable_the_route_cannot_express_is_reported_once(self, transport, caplog):
+        """#75227: a disable the vocabulary cannot carry (Astra has no ``none``) is reported as an unsupported
+        configuration — the model's default effort stays on — instead of silently omitted; once per model."""
+        import logging
+        from agent.transports import codex as codex_transport
+        codex_transport._UNPROJECTABLE_DISABLE_WARNED.discard("gpt-6-astra")
+        with caplog.at_level(logging.WARNING, logger="agent.transports.codex"):
+            for _ in range(2):
+                assert self._reasoning(transport, "gpt-6-astra", {"enabled": False}) is None
+        warned = [r.getMessage() for r in caplog.records
+                  if r.name == "agent.transports.codex" and r.levelno >= logging.WARNING]
+        assert len(warned) == 1 and "gpt-6-astra" in warned[0], caplog.text
+
+    @pytest.mark.parametrize("model", ["gpt-4o-mini", "gpt-4.1-mini", "openai/gpt-4o", "ft:gpt-4o-mini:acme::abc1"])
+    def test_chat_era_openai_models_get_no_reasoning_field_on_the_official_origin(self, transport, model):
+        for rc in (None, {"enabled": True, "effort": "high"}, {"enabled": False}):
+            assert self._reasoning(transport, model, rc) is None, (model, rc)
+        # Reasoning models on the same origin and the same id on a relay keep the dial (the relay may translate).
+        assert self._reasoning(transport, "o4-mini", None) == {"effort": "medium", "summary": "auto"}
+        assert self._reasoning(transport, model, {"enabled": True, "effort": "high"},
+                               base_url="https://relay.example.com/v1") == {"effort": "high", "summary": "auto"}

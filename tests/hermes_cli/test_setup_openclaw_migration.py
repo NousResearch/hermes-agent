@@ -5,6 +5,7 @@ from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 from hermes_cli import setup as setup_mod
+from hermes_cli import setup_migration
 
 
 # ---------------------------------------------------------------------------
@@ -25,7 +26,7 @@ class TestOfferOpenclawMigration:
         script.write_text("# placeholder")
         with (
             patch("hermes_cli.setup.Path.home", return_value=tmp_path),
-            patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
+            patch.object(setup_migration, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", return_value=False),
         ):
             assert setup_mod._offer_openclaw_migration(tmp_path / ".hermes") is False
@@ -57,7 +58,7 @@ class TestOfferOpenclawMigration:
 
         with (
             patch("hermes_cli.setup.Path.home", return_value=tmp_path),
-            patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
+            patch.object(setup_migration, "_OPENCLAW_SCRIPT", script),
             # Both prompts answered Yes: preview offer + proceed confirmation
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
@@ -115,7 +116,7 @@ class TestOfferOpenclawMigration:
 
         with (
             patch("hermes_cli.setup.Path.home", return_value=tmp_path),
-            patch.object(setup_mod, "_OPENCLAW_SCRIPT", script),
+            patch.object(setup_migration, "_OPENCLAW_SCRIPT", script),
             patch.object(setup_mod, "prompt_yes_no", return_value=True),
             patch.object(setup_mod, "get_config_path", return_value=config_path),
             patch(
@@ -141,72 +142,6 @@ def _first_time_args() -> Namespace:
     )
 
 
-class TestSetupWizardOpenclawIntegration:
-    """Verify _offer_openclaw_migration is called during first-time setup."""
-
-    def test_migration_offered_during_first_time_setup(self, tmp_path):
-        """On first-time setup, _offer_openclaw_migration should be called."""
-        args = _first_time_args()
-
-        with (
-            patch.object(setup_mod, "ensure_hermes_home"),
-            patch.object(setup_mod, "load_config", return_value={}),
-            patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
-            patch.object(setup_mod, "get_env_value", return_value=""),
-            patch.object(setup_mod, "is_interactive_stdin", return_value=True),
-            patch("hermes_cli.auth.get_active_provider", return_value=None),
-            # User presses Enter to start
-            patch("builtins.input", return_value=""),
-            # Select "Full setup" (index 1) so we exercise the full path
-            patch.object(setup_mod, "prompt_choice", return_value=1),
-            # Mock the migration offer
-            patch.object(
-                setup_mod, "_offer_openclaw_migration", return_value=False
-            ) as mock_migration,
-            # Mock the actual setup sections so they don't run
-            patch.object(setup_mod, "setup_model_provider"),
-            patch.object(setup_mod, "setup_terminal_backend"),
-            patch.object(setup_mod, "setup_agent_settings"),
-            patch.object(setup_mod, "setup_gateway"),
-            patch.object(setup_mod, "setup_tools"),
-            patch.object(setup_mod, "save_config"),
-            patch.object(setup_mod, "_print_setup_summary"),
-        ):
-            setup_mod.run_setup_wizard(args)
-
-        mock_migration.assert_called_once_with(tmp_path)
-
-    def test_migration_reloads_config_on_success(self, tmp_path):
-        """When migration returns True, config should be reloaded."""
-        args = _first_time_args()
-        call_order = []
-
-        def tracking_load_config():
-            call_order.append("load_config")
-            return {}
-
-        with (
-            patch.object(setup_mod, "ensure_hermes_home"),
-            patch.object(setup_mod, "load_config", side_effect=tracking_load_config),
-            patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
-            patch.object(setup_mod, "get_env_value", return_value=""),
-            patch.object(setup_mod, "is_interactive_stdin", return_value=True),
-            patch("hermes_cli.auth.get_active_provider", return_value=None),
-            patch("builtins.input", return_value=""),
-            patch.object(setup_mod, "prompt_choice", return_value=1),
-            patch.object(setup_mod, "_offer_openclaw_migration", return_value=True),
-            patch.object(setup_mod, "setup_model_provider"),
-            patch.object(setup_mod, "setup_terminal_backend"),
-            patch.object(setup_mod, "setup_agent_settings"),
-            patch.object(setup_mod, "setup_gateway"),
-            patch.object(setup_mod, "setup_tools"),
-            patch.object(setup_mod, "save_config"),
-            patch.object(setup_mod, "_print_setup_summary"),
-        ):
-            setup_mod.run_setup_wizard(args)
-
-        # load_config called twice: once at start, once after migration
-        assert call_order.count("load_config") == 2
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +154,7 @@ class TestGetSectionConfigSummary:
 
     def test_model_returns_none_without_api_key(self):
         with patch.object(setup_mod, "get_env_value", return_value=""):
-            result = setup_mod._get_section_config_summary({}, "model")
+            result = setup_migration._get_section_config_summary({}, "model")
         assert result is None
 
 
@@ -242,7 +177,7 @@ class TestGetSectionConfigSummary:
             return "sk-ant-oat01-xxx" if key == "CLAUDE_CODE_OAUTH_TOKEN" else ""
 
         with patch.object(setup_mod, "get_env_value", side_effect=env_side):
-            result = setup_mod._get_section_config_summary({}, "model")
+            result = setup_migration._get_section_config_summary({}, "model")
         assert result is None
 
 
@@ -293,7 +228,7 @@ class TestSetupWizardSkipsConfiguredSections:
 
         # _platform_status (called by the gateway summary path) reads env
         # vars via hermes_cli.gateway.get_env_value, NOT setup_mod's. Patch
-        # both so xdist sibling tests can't leak a TELEGRAM_BOT_TOKEN /
+        # both so sibling tests can't leak a TELEGRAM_BOT_TOKEN /
         # WHATSAPP_* / etc. through and trick the wizard into thinking the
         # gateway section is already configured (which would skip it).
         import hermes_cli.gateway as gateway_mod

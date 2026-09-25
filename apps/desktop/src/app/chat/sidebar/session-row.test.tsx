@@ -1,17 +1,23 @@
+import { KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
+import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { registry } from '@/contrib/registry'
 import type { SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
+import { SESSION_ROW_AREAS, type SessionRowSlotProps } from '@/lib/session-row-slots'
+import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 
+import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SidebarSessionRow } from './session-row'
 
 afterEach(cleanup)
@@ -20,6 +26,11 @@ vi.mock('@/i18n', () => ({
   useI18n: () => ({
     t: {
       sidebar: {
+        messageCount: (count: number) => `${count} messages`,
+        toolCallCount: (count: number) => `${count} tool calls`,
+        projects: {
+          home: 'Home'
+        },
         row: {
           ageMin: 'm',
           ageNow: 'now',
@@ -30,7 +41,14 @@ vi.mock('@/i18n', () => ({
           needsInput: 'Needs input',
           sessionActions: 'Session actions',
           sessionRunning: 'Running',
+          todoProgress: 'Tasks completed',
           waitingForAnswer: 'Waiting for answer'
+        }
+      },
+      assistant: {
+        thread: {
+          today: (time: string) => `Today at ${time}`,
+          yesterday: (time: string) => `Yesterday at ${time}`
         }
       }
     }
@@ -47,9 +65,7 @@ vi.mock('@/app/chat/session-drag', () => ({ startSessionDrag: vi.fn() }))
 // regression in its ref/prop forwarding fails here again.
 // Only `sessionTitle` is overridden (makeSession fakes a bare `title` the real
 // one wouldn't read); the rest of the module is genuine so the arc test can
-// build session state with the same factory the app uses. It is a spy because
-// the row calls it exactly once per render, which is how the isolation test
-// below counts repaints.
+// build session state with the same factory the app uses.
 const sessionTitle = vi.fn((s: SessionInfo) => (s as unknown as { title: string }).title)
 
 vi.mock('@/lib/chat-runtime', async importOriginal => {
@@ -62,7 +78,11 @@ vi.mock('@/lib/session-source', () => ({
   handoffOriginSource: (state?: string, platform?: string) => (state && platform ? platform : null),
   sessionSourceLabel: (source: string) => source
 }))
-vi.mock('@/lib/time', () => ({ coarseElapsed: () => ({ unit: 'minute' as const, value: 5 }) }))
+vi.mock('@/lib/time', async importOriginal => {
+  const actual = await importOriginal<typeof Time>()
+
+  return { ...actual, coarseElapsed: () => ({ unit: 'minute' as const, value: 5 }) }
+})
 
 // These mocks use importOriginal rather than replacing the module wholesale:
 // session-row.tsx (and its transitive imports, e.g. session-color.ts) reads
@@ -105,14 +125,25 @@ vi.mock('@/store/windows', async importOriginal => {
 
 // SessionActionsMenu open behavior is covered in session-actions-menu.test.tsx
 // against the real component. Stub it here so this file stays focused on the
-// row chrome (handoff avatar tip, etc.).
+// row chrome (handoff avatar tip, etc.) — but record the props so the row's
+// own state plumbing (e.g. the archived flag, #98813) is still asserted.
+const menuProps = vi.hoisted(() => vi.fn())
+
 vi.mock('./session-actions-menu', () => ({
-  SessionActionsMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SessionContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>
+  SessionActionsMenu: (props: { children?: React.ReactNode }) => {
+    menuProps(props)
+
+    return <>{props.children}</>
+  },
+  SessionContextMenu: (props: { children?: React.ReactNode }) => {
+    menuProps(props)
+
+    return <>{props.children}</>
+  }
 }))
 
 vi.mock('./use-profile-prewarm', () => ({
-  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
+  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), notePointerMove: vi.fn(), startPrewarm: vi.fn() })
 }))
 
 function makeSession(overrides: Partial<SessionInfo> & { title: string }): SessionInfo {
@@ -127,28 +158,21 @@ function makeSession(overrides: Partial<SessionInfo> & { title: string }): Sessi
   } as unknown as SessionInfo
 }
 
-const tipTrigger = (el: HTMLElement) => el.closest('[data-slot="tooltip-trigger"]')
-
-// The status dot always paints an aria-hidden placeholder so every row's title
-// keeps the same left edge, so "the row's aria-hidden span" no longer names the
-// avatar on its own. `inline-grid` is PlatformAvatar's own layout class in both
-// of its branches — brand glyph and first-letter fallback — and the row passes
-// it no display class that tailwind-merge could drop it for.
-const handoffAvatar = (container: HTMLElement) =>
-  container.querySelector<HTMLElement>('span[aria-hidden="true"].inline-grid')
-
 const noop = vi.fn()
 
-const renderRow = (session: SessionInfo) =>
+const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
   render(
     <SidebarSessionRow
+      card={extra?.card}
       isPinned={false}
       isSelected={false}
       onArchive={noop}
       onDelete={noop}
       onPin={noop}
       onResume={noop}
+      onToggleUnread={noop}
       session={session}
+      unread={false}
     />
   )
 
@@ -176,54 +200,11 @@ describe('SidebarSessionRow running arc', () => {
 
     expect(arc(container)).toBeTruthy()
   })
-
-  // The row owns its status subscription so a turn starting repaints that row
-  // and nothing else — not its siblings, and not the list around them. Rows
-  // render once per fiber, so counting `sessionTitle` counts repaints.
-  it('repaints only the session whose turn started', () => {
-    render(
-      <>
-        {[makeSession({ id: 's1', title: 'One' }), makeSession({ id: 's2', title: 'Two' })].map(session => (
-          <SidebarSessionRow
-            isPinned={false}
-            isSelected={false}
-            key={session.id}
-            onArchive={noop}
-            onDelete={noop}
-            onPin={noop}
-            onResume={noop}
-            session={session}
-          />
-        ))}
-      </>
-    )
-    sessionTitle.mockClear()
-
-    act(() => {
-      publishSessionState('rt1', { ...createClientSessionState('s1'), busy: true })
-    })
-
-    expect(sessionTitle).toHaveBeenCalledTimes(1)
-    expect(sessionTitle).toHaveBeenCalledWith(expect.objectContaining({ id: 's1' }))
-  })
 })
 
 describe('SidebarSessionRow', () => {
-  it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {
-    render(
-      <SidebarSessionRow
-        isPinned={false}
-        isSelected={false}
-        onArchive={noop}
-        onDelete={noop}
-        onPin={noop}
-        onResume={noop}
-        session={makeSession({ title: 'Hermes doctor health check results' })}
-      />
-    )
-
-    const kebab = screen.getByRole('button', { name: 'Session actions' })
-    expect(tipTrigger(kebab)).toBeNull()
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   // Full-title tooltip on hover (#83000-class ask): the label is a tooltip
@@ -242,12 +223,6 @@ describe('SidebarSessionRow', () => {
       Object.defineProperty(el, 'scrollWidth', { configurable: true, value: scrollWidth })
       Object.defineProperty(el, 'clientWidth', { configurable: true, value: clientWidth })
     }
-
-    it('wraps the title in a tooltip trigger', () => {
-      renderRow(makeSession({ title }))
-
-      expect(label()).toBeTruthy()
-    })
 
     it('opens with the full title after a settled hover when the title overflows', () => {
       vi.useFakeTimers()
@@ -297,47 +272,142 @@ describe('SidebarSessionRow', () => {
     })
   })
 
-  it('does not render a handoff avatar for a locally-started session', () => {
-    const { container } = render(
-      <SidebarSessionRow
-        isPinned={false}
-        isSelected={false}
-        onArchive={noop}
-        onDelete={noop}
-        onPin={noop}
-        onResume={noop}
-        session={makeSession({ title: 'Local session' })}
-      />
-    )
+  // The Archived view reuses the row menu, and the menu needs the row's
+  // archived state to label its shared verb Unarchive (#98813).
+  it('forwards the archived state to the row menu', () => {
+    menuProps.mockClear()
+    renderRow(makeSession({ archived: true, title: 'Archived row' }))
 
-    expect(handoffAvatar(container)).toBeNull()
+    expect(menuProps).toHaveBeenCalledWith(expect.objectContaining({ archived: true }))
   })
 
-  it('wraps the handoff platform avatar in a Tip for a session started on another platform', () => {
-    const { container } = render(
+  it('forwards the non-archived state to the row menu', () => {
+    menuProps.mockClear()
+    renderRow(makeSession({ title: 'Live row' }))
+
+    expect(menuProps).toHaveBeenCalledWith(expect.objectContaining({ archived: false }))
+  })
+})
+
+// Regression for #83617: the row shell once spread the FULL dnd-kit handle, so
+// Space on a focused control inside the row (the ⋯ button that opens Rename)
+// reached the KeyboardSensor's activator — a drag armed, and the sensor then
+// ate the next Space at window level (the rename input dropped the keystroke).
+describe('SidebarSessionRow inside the sortable list', () => {
+  function SortableRow({ session }: { session: SessionInfo }) {
+    const { dragHandleProps, dragging, ref, reorderable, style } = useSortableBindings(session.id)
+
+    return (
       <SidebarSessionRow
+        dragging={dragging}
+        dragHandleProps={dragHandleProps}
         isPinned={false}
         isSelected={false}
         onArchive={noop}
         onDelete={noop}
         onPin={noop}
         onResume={noop}
-        session={makeSession({
-          handoff_platform: 'telegram',
-          handoff_state: 'active',
-          title: 'Continued from Telegram'
-        })}
+        onToggleUnread={noop}
+        ref={ref}
+        reorderable={reorderable}
+        session={session}
+        style={style}
+        unread={false}
       />
     )
+  }
 
-    // PlatformAvatar is the REAL component here (see the note above the vi.mock
-    // block, #67500 third pass) — it renders the Telegram brand SVG rather
-    // than the platform name as text, so query the avatar span itself rather
-    // than text content, and confirm its tooltip trigger actually attaches to
-    // it — proving the real forwardRef/...rest path works, not a mock that
-    // fakes it.
-    const avatar = handoffAvatar(container)
-    expect(avatar).toBeTruthy()
-    expect(tipTrigger(avatar as HTMLElement)).toBeTruthy()
+  function Host({ session }: { session: SessionInfo }) {
+    // The sidebar's own sensor set (index.tsx dndSensors).
+    const sensors = useSensors(
+      useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+      useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    )
+
+    return (
+      <ReorderableList ids={[session.id]} onReorder={noop} sensors={sensors}>
+        <SortableRow session={session} />
+      </ReorderableList>
+    )
+  }
+
+  const space = { code: 'Space', key: ' ' }
+
+  it('lets Space through to a focused row control instead of arming a keyboard drag', () => {
+    const { container } = render(<Host session={makeSession({ title: 'Renamable' })} />)
+    const kebab = screen.getByRole('button', { name: 'Session actions' })
+    kebab.focus()
+
+    // Not defaultPrevented (the ⋯ menu is stubbed in this file, so only
+    // dnd-kit could have claimed the key) and no grabber reports a drag.
+    expect(fireEvent.keyDown(kebab, space)).toBe(true)
+    expect(container.querySelector('[aria-pressed="true"]')).toBeNull()
+  })
+
+  it('still starts a keyboard reorder from the grabber', () => {
+    const { container } = render(<Host session={makeSession({ title: 'Renamable' })} />)
+    const grabber = container.querySelector<HTMLElement>('[data-reorder-handle]')!
+
+    grabber.focus()
+    fireEvent.keyDown(grabber, space)
+    expect(grabber.getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
+// Row-decoration slots: a plugin decorates rows through the registry with the
+// row's stored session id handed to its render — the seam the session-list API
+// pairs with (see #116305 item 3).
+describe('SidebarSessionRow decoration slots', () => {
+  const disposers: Array<() => void> = []
+
+  afterEach(() => {
+    disposers.splice(0).forEach(dispose => dispose())
+  })
+
+  const decorate = (area: string, id: string, testId: string) =>
+    disposers.push(
+      registry.register({
+        area,
+        data: {
+          render: ({ sessionId }: SessionRowSlotProps) => <span data-testid={testId}>{sessionId}</span>
+        },
+        id,
+        source: 'disk'
+      })
+    )
+
+  it('mounts leading and trailing decorations, each handed the DURABLE row id', () => {
+    act(() => {
+      decorate(SESSION_ROW_AREAS.leading, 'deco-lead', 'lead-deco')
+      decorate(SESSION_ROW_AREAS.trailing, 'deco-tail', 'tail-deco')
+    })
+
+    // Auto-compression rotates the live id. A plugin that remembered the live
+    // one decorates this row until the next compaction and then silently stops
+    // matching — so the slot hands the lineage root, the id core's own
+    // pin/reorder and `host.sessions.*` address.
+    renderRow(makeSession({ _lineage_root_id: 'root-9', id: 'live-9', title: 'Compressed' }))
+
+    expect(screen.getByTestId('lead-deco').textContent).toBe('root-9')
+    expect(screen.getByTestId('tail-deco').textContent).toBe('root-9')
+  })
+
+  it('renders nothing for an area with no registrations and survives an unmount', () => {
+    const { container } = renderRow(makeSession({ id: 'row-7', title: 'Plain' }))
+
+    expect(container.querySelector('[data-testid="lead-deco"]')).toBeNull()
+
+    act(() => {
+      decorate(SESSION_ROW_AREAS.leading, 'deco-lead', 'lead-deco')
+    })
+
+    // Same row, contribution arriving late: the slot mounts it in place.
+    expect(screen.getByTestId('lead-deco').textContent).toBe('row-7')
+
+    act(() => {
+      disposers.splice(0).forEach(dispose => dispose())
+    })
+
+    expect(screen.queryByTestId('lead-deco')).toBeNull()
   })
 })

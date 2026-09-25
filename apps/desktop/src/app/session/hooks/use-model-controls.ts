@@ -1,3 +1,4 @@
+import type { ModelOptionsResult } from '@hermes/shared'
 import { type QueryClient } from '@tanstack/react-query'
 import { useCallback, useRef } from 'react'
 
@@ -5,7 +6,8 @@ import type { ModelSelection } from '@/app/shell/model-menu-panel'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isBusySessionModelSwitch } from '@/lib/gateway-rpc'
-import { manualPickRemoved, modelOptionsQueryKey } from '@/lib/model-options'
+import { surfaceModelSwitchConfirm } from '@/lib/guarded-model-switch'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
@@ -20,14 +22,26 @@ import {
   setCurrentProvider
 } from '@/store/session'
 import { $sessionStates, sessionTileDelegate } from '@/store/session-states'
-import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelControlsOptions {
+  cacheOwnerConnectionId?: string
+  cacheProfile?: string
   queryClient: QueryClient
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-export function useModelControls({ queryClient, requestGateway }: ModelControlsOptions) {
+interface ModelSwitchResponse {
+  confirm_message?: string
+  confirm_required?: boolean
+  deferred?: boolean
+}
+
+export function useModelControls({
+  cacheOwnerConnectionId,
+  cacheProfile,
+  queryClient,
+  requestGateway
+}: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
   const profileRefreshEpochRef = useRef(0)
@@ -43,17 +57,29 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       provider: string,
       model: string,
       includeGlobal: boolean,
-      profile = $activeGatewayProfile.get()
+      profile = cacheProfile || $activeGatewayProfile.get(),
+      ownerConnectionId = cacheOwnerConnectionId
     ) => {
-      const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
+      const patch = (prev: ModelOptionsResult | undefined) => {
+        // Selection state can update before the catalog query has resolved.
+        // Keep that optimistic cache structurally complete; the composer
+        // interprets a response without `providers` as an empty catalog.
+        const providers = prev?.providers?.length
+          ? prev.providers
+          : provider && model
+            ? [{ models: [model], name: provider, slug: provider }]
+            : []
 
-      queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, sessionId), patch)
+        return { ...prev, provider, model, providers }
+      }
+
+      queryClient.setQueryData<ModelOptionsResult>(modelOptionsQueryKey(profile, sessionId, ownerConnectionId), patch)
 
       if (includeGlobal) {
-        queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile), patch)
+        queryClient.setQueryData<ModelOptionsResult>(modelOptionsQueryKey(profile, null, ownerConnectionId), patch)
       }
     },
-    [queryClient]
+    [cacheOwnerConnectionId, cacheProfile, queryClient]
   )
 
   // Settings → Model writes the profile default, which the backend applies to
@@ -84,81 +110,73 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
   // only fills an EMPTY selection so a user's pick (plain UI state in
   // $currentModel) survives the lifecycle refreshes that fire on boot / fresh
   // draft / session events. A live session owns the footer, so skip entirely.
-  const refreshCurrentModel = useCallback(
-    async (force = false) => {
-      // A forced profile swap opens a new intent epoch; an older in-flight
-      // response for a previous profile must stand down when it resolves.
-      if (force) {
-        profileRefreshEpochRef.current += 1
+  const refreshCurrentModel = useCallback(async (force = false) => {
+    // A forced profile swap opens a new intent epoch; an older in-flight
+    // response for a previous profile must stand down when it resolves.
+    if (force) {
+      profileRefreshEpochRef.current += 1
+    }
+
+    const profileRefreshEpoch = profileRefreshEpochRef.current
+    const profile = $activeGatewayProfile.get()
+
+    try {
+      if ($activeSessionId.get()) {
+        return
       }
 
-      const profileRefreshEpoch = profileRefreshEpochRef.current
+      // A manual pick is sticky. It is never diffed against the catalog: rows
+      // are hints, and a custom slug the row lacks is still the user's choice
+      // (the gateway validates it on switch).
+      const keepManualPick = () => !force && Boolean($currentModel.get()) && getCurrentModelSource() === 'manual'
 
-      try {
-        if ($activeSessionId.get()) {
-          return
-        }
-
-        // A manual pick stays sticky UNLESS it was removed from the catalog (its
-        // model no longer exists on the provider), in which case keeping it would
-        // 404 every new chat — fall through to reseed from the profile default.
-        // Reads the model-options cache the composer already populated; an
-        // unknown/not-yet-loaded catalog conservatively preserves the pick.
-        const keepManualPick = () => {
-          if (force || !$currentModel.get() || getCurrentModelSource() !== 'manual') {
-            return false
-          }
-
-          const options = queryClient.getQueryData<ModelOptionsResponse>(
-            modelOptionsQueryKey($activeGatewayProfile.get())
-          )
-
-          return !manualPickRemoved(options?.providers, $currentProvider.get(), $currentModel.get())
-        }
-
-        if (keepManualPick()) {
-          return
-        }
-
-        // Snapshot the selection generation before awaiting so a picker click
-        // that lands while getGlobalModelInfo is in flight wins over this older
-        // default — value comparisons alone miss re-selecting the same row.
-        const selectionGeneration = getComposerSelectionGeneration()
-        const result = await getGlobalModelInfo()
-
-        if (
-          profileRefreshEpochRef.current !== profileRefreshEpoch ||
-          $activeSessionId.get() ||
-          getComposerSelectionGeneration() !== selectionGeneration ||
-          keepManualPick()
-        ) {
-          return
-        }
-
-        if (typeof result.model === 'string') {
-          setCurrentModel(result.model)
-        }
-
-        if (typeof result.provider === 'string') {
-          setCurrentProvider(result.provider)
-        }
-
-        if (typeof result.model === 'string' || typeof result.provider === 'string') {
-          setCurrentModelSource('default')
-        }
-      } catch {
-        // The delayed session.info event still updates this once the agent is ready.
+      if (keepManualPick()) {
+        return
       }
-    },
-    [queryClient]
-  )
 
-  // Returns whether the switch succeeded so callers can await it before applying
-  // follow-up changes. The composer model is plain UI state: with no live
-  // session it's just stored (and shipped on the next session.create); with one
-  // it's scoped to that session via config.set. It NEVER writes the profile
-  // default — that lives in Settings → Model — so picking a model here can't
-  // silently mutate global config.
+      // Snapshot the selection generation before awaiting so a picker click
+      // that lands while getGlobalModelInfo is in flight wins over this older
+      // default — value comparisons alone miss re-selecting the same row.
+      const selectionGeneration = getComposerSelectionGeneration()
+      const result = await getGlobalModelInfo(profile)
+
+      if (
+        profileRefreshEpochRef.current !== profileRefreshEpoch ||
+        $activeSessionId.get() ||
+        getComposerSelectionGeneration() !== selectionGeneration ||
+        keepManualPick()
+      ) {
+        return
+      }
+
+      if (typeof result.model === 'string') {
+        setCurrentModel(result.model)
+      }
+
+      if (typeof result.provider === 'string') {
+        setCurrentProvider(result.provider)
+      }
+
+      if (typeof result.model === 'string' || typeof result.provider === 'string') {
+        setCurrentModelSource('default')
+      }
+    } catch {
+      // The delayed session.info event still updates this once the agent is ready.
+    }
+  }, [])
+
+  // Returns whether the switch was applied so callers can await it before
+  // applying follow-up changes. `true` means applied (or deferred/busy-queued
+  // for the next turn). `false` means NOT applied — either pending
+  // confirmation (warning with Confirm action already shown, pill rolled back)
+  // or a real failure (error toast). Callers must NOT treat `false` as a
+  // generic failure: for `pending` the gateway intentionally returned
+  // `confirm_required` and no error should be surfaced.
+  // The composer model is plain UI state: with no live session it's just
+  // stored (and shipped on the next session.create); with one it's scoped to
+  // that session via config.set. It NEVER writes the profile default — that
+  // lives in Settings → Model — so picking a model here can't silently mutate
+  // global config.
   //
   // `selection.sessionId` targets a specific surface (tile). When omitted, the
   // primary `$activeSessionId` is used (overlay / legacy callers). A tile
@@ -177,79 +195,28 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
         : ($sessionStates.get()[liveSessionId!]?.provider ?? '')
 
       const prevSource = getCurrentModelSource()
-      const liveGatewayProfile = $activeGatewayProfile.get()
+      const liveGatewayProfile = cacheProfile || $activeGatewayProfile.get()
 
-      if (touchesPrimary) {
-        setCurrentModel(selection.model)
-        setCurrentProvider(selection.provider)
-        markComposerSelectionManual()
-      } else if (liveSessionId) {
-        // Optimistic tile paint — session.info will confirm; rollback on error.
-        sessionTileDelegate()?.updateSession(liveSessionId, state => ({
-          ...state,
-          model: selection.model,
-          provider: selection.provider
-        }))
+      const paintSelection = () => {
+        if (touchesPrimary) {
+          setCurrentModel(selection.model)
+          setCurrentProvider(selection.provider)
+          markComposerSelectionManual()
+        } else if (liveSessionId) {
+          // Optimistic tile paint — session.info will confirm; rollback on error.
+          sessionTileDelegate()?.updateSession(liveSessionId, state => ({
+            ...state,
+            model: selection.model,
+            provider: selection.provider
+          }))
+        }
       }
 
-      updateModelOptionsCache(
-        liveSessionId,
-        selection.provider,
-        selection.model,
-        touchesPrimary && !liveSessionId,
-        liveGatewayProfile
-      )
-
-      // No live session yet: the pick is pure UI state. session.create reads
-      // $currentModel/$currentProvider and applies it as that session's override.
-      if (!liveSessionId) {
-        return true
+      const cacheSelection = (provider: string, model: string) => {
+        updateModelOptionsCache(liveSessionId, provider, model, touchesPrimary && !liveSessionId, liveGatewayProfile)
       }
 
-      try {
-        // The PRIMARY profile's main agent is the profile's default — its
-        // model/provider choice IS the default, so persist it to config.yaml
-        // (model.default + model.provider) via --global. This is what makes
-        // the selection "stick": a set model.provider outranks a leftover
-        // OPENAI_API_KEY env var in resolve_provider(), so the main agent
-        // keeps the chosen (e.g. subscription) provider across restarts
-        // instead of silently falling back to an env key.
-        //
-        // Two things stay --session, deliberately:
-        //  - a SECONDARY chat tile: picking a model there must not rewrite the
-        //    profile default (the cross-session-contamination guard).
-        //  - MoA (mixture-of-agents) presets: a transient orchestration choice
-        //    that must never become the persisted global gateway default.
-        const isSessionOnlyPreset = (selection.provider || '').toLowerCase() === 'moa'
-        const persistsAsDefault = touchesPrimary && !isSessionOnlyPreset
-        const scope = persistsAsDefault ? '--global' : '--session'
-
-        const result = await requestGateway<{ deferred?: boolean }>('config.set', {
-          session_id: liveSessionId,
-          key: 'model',
-          value: `${selection.model} --provider ${selection.provider} ${scope}`
-        })
-
-        // A pick made DURING a turn is queued by the gateway and applied at the
-        // next turn start (`deferred`). Re-fetching now would answer with the
-        // model still running and repaint the old name over the user's choice —
-        // the switch publishes session.info when it lands, and that is what
-        // re-syncs every surface.
-        if (!result?.deferred) {
-          void queryClient.invalidateQueries({ queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId) })
-        }
-
-        return true
-      } catch (err) {
-        // An OLDER gateway refuses a mid-turn switch outright (4009) instead of
-        // deferring it. Don't punish the user for a backend they haven't
-        // updated: keep the pick painted as the composer's selection, which is
-        // what the NEXT turn runs anyway. Current gateways never take this
-        // path — they answer `deferred`.
-        if (isBusySessionModelSwitch(err)) {
-          return true
-        }
-
+      const rollbackSelection = () => {
         if (touchesPrimary) {
           setCurrentModel(prevModel)
           setCurrentProvider(prevProvider)
@@ -262,19 +229,113 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
           }))
         }
 
-        updateModelOptionsCache(
-          liveSessionId,
-          prevProvider,
-          prevModel,
-          touchesPrimary && !liveSessionId,
-          liveGatewayProfile
-        )
+        cacheSelection(prevProvider, prevModel)
+      }
+
+      paintSelection()
+      cacheSelection(selection.provider, selection.model)
+
+      // No live session yet: the pick is pure UI state. session.create reads
+      // $currentModel/$currentProvider and applies it as that session's override.
+      if (!liveSessionId) {
+        return true
+      }
+
+      // The PRIMARY profile's main agent lets the gateway decide persistence
+      // (resolve_persist_behavior): session-only by default, persisted when
+      // model.persist_switch_by_default is true or when no default has ever
+      // been configured (the first-ever pick, so resolve_provider never falls
+      // through to a leftover OPENAI_API_KEY env var — #86414). A plain pick
+      // no longer silently rewrites config.yaml (#90235); Settings → Model
+      // remains the explicit "set as default" door.
+      //
+      // Two things stay --session, deliberately:
+      //  - a SECONDARY chat tile: picking a model there must not rewrite the
+      //    profile default (the cross-session-contamination guard).
+      //  - MoA (mixture-of-agents) presets: a transient orchestration choice
+      //    that must never become the persisted global gateway default.
+      const isSessionOnlyPreset = (selection.provider || '').toLowerCase() === 'moa'
+      const scope = touchesPrimary && !isSessionOnlyPreset ? '' : ' --session'
+
+      const requestSwitch = (confirmExpensiveModel = false) =>
+        requestGateway<ModelSwitchResponse>('config.set', {
+          session_id: liveSessionId,
+          key: 'model',
+          value: `${selection.model} --provider ${selection.provider}${scope}`,
+          ...(confirmExpensiveModel ? { confirm_expensive_model: true } : {})
+        })
+
+      const finishSwitch = (result: ModelSwitchResponse | undefined) => {
+        // A pick made DURING a turn is queued by the gateway and applied at the
+        // next turn start (`deferred`). Re-fetching now would answer with the
+        // model still running and repaint the old name over the user's choice —
+        // the switch publishes session.info when it lands, and that is what
+        // re-syncs every surface.
+        if (!result?.deferred) {
+          void queryClient.invalidateQueries({
+            queryKey: modelOptionsQueryKey(liveGatewayProfile, liveSessionId, cacheOwnerConnectionId)
+          })
+        }
+      }
+
+      try {
+        const result = await requestSwitch()
+
+        if (result?.confirm_required) {
+          rollbackSelection()
+          // ONE shared applier for guarded switches (#95293): the same
+          // confirm flow the Bots editor routes through — never fork this
+          // logic per surface.
+          // Not awaited: `selectModel` answers "was the switch applied NOW",
+          // and that answer only exists once the user answers the dialog.
+          void surfaceModelSwitchConfirm({
+            confirmMessage: result.confirm_message,
+            failureMessage: copy.modelSwitchFailed,
+            finish: finishSwitch,
+            // Staleness guard — the session or model can move on while the
+            // dialog is open. Answering it must not clobber the newer choice:
+            // bail (with a notice) if the live state no longer matches the
+            // snapshot this prompt was created for.
+            isStale: () =>
+              touchesPrimary
+                ? $activeSessionId.get() !== liveSessionId ||
+                  $currentModel.get() !== prevModel ||
+                  $currentProvider.get() !== prevProvider
+                : !liveSessionId ||
+                  $sessionStates.get()[liveSessionId]?.model !== prevModel ||
+                  $sessionStates.get()[liveSessionId]?.provider !== prevProvider,
+            model: selection.model,
+            repaint: () => {
+              paintSelection()
+              cacheSelection(selection.provider, selection.model)
+            },
+            requestConfirmed: () => requestSwitch(true),
+            rollback: rollbackSelection
+          })
+
+          return false
+        }
+
+        finishSwitch(result)
+
+        return true
+      } catch (err) {
+        // An OLDER gateway refuses a mid-turn switch outright (4009) instead of
+        // deferring it. Don't punish the user for a backend they haven't
+        // updated: keep the pick painted as the composer's selection, which is
+        // what the NEXT turn runs anyway. Current gateways never take this
+        // path — they answer `deferred`.
+        if (isBusySessionModelSwitch(err)) {
+          return true
+        }
+
+        rollbackSelection()
         notifyError(err, copy.modelSwitchFailed)
 
         return false
       }
     },
-    [copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
+    [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
   return { applySavedMainModel, refreshCurrentModel, selectModel }

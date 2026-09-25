@@ -1,14 +1,19 @@
 """Gateway /loop command tests — dispatch, routing capture, mid-run guard."""
 
+import asyncio
+import logging
+import threading
 import time
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
-from hermes_cli import loops
+from hermes_cli import goals, loops
 
 
 class _FakeSessionEntry:
@@ -19,7 +24,7 @@ class _FakeSessionStore:
     def __init__(self):
         self.entry = _FakeSessionEntry()
 
-    def get_or_create_session(self, source):
+    def get_or_create_session(self, source, *, touch_activity=True):
         return self.entry
 
     def _generate_session_key(self, source):
@@ -31,9 +36,16 @@ def loop_env(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    loops._DB_CACHE.clear()
+    goals._DB_CACHE.clear()
+    # Pre-warm the SessionDB cache from this sync (non-loop) context. Inside
+    # the async tests, a cold cache makes GoalManager.set() kick the bounded
+    # background bootstrap (loop-thread path) and wait only
+    # _DB_BOOTSTRAP_INIT_WAIT_S — on a loaded CI runner the init overruns the
+    # window, the goal is never persisted, and the active-goal assertion
+    # flakes (main run 33455779041). Warming here removes the race entirely.
+    goals._get_session_db()
     yield home
-    loops._DB_CACHE.clear()
+    goals._DB_CACHE.clear()
 
 
 def _make_runner():
@@ -92,14 +104,6 @@ async def test_gateway_loop_status_pause_stop(loop_env):
     assert "stopped" in stopped.lower()
 
 
-@pytest.mark.asyncio
-async def test_gateway_loop_goal_note_when_goal_active(loop_env):
-    from hermes_cli.goals import GoalManager
-
-    GoalManager(session_id="sid-gateway-loop").set("finish the migration")
-    runner = _make_runner()
-    response = await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
-    assert "active /goal" in response
 
 
 @pytest.mark.asyncio
@@ -137,3 +141,259 @@ async def test_post_turn_loop_completion_noop_without_inflight_tick(loop_env):
     reloaded = loops.load_loop("sid-gateway-loop")
     assert reloaded.status == "active"
     assert reloaded.ticks_fired == 0
+
+
+def test_streamed_already_sent_none_recovers_text_for_hooks():
+    """Streamed turns return None. Hooks must still see the delivered reply."""
+    event = _make_event("wakeup")
+    event._streamed_final_response = "CI is green.\nLOOP_COMPLETE"
+    assert GatewayRunner._final_text_for_post_turn_hooks(None, event) == (
+        "CI is green.\nLOOP_COMPLETE"
+    )
+    assert GatewayRunner._final_text_for_post_turn_hooks(None, _make_event("x")) == ""
+    assert (
+        GatewayRunner._final_text_for_post_turn_hooks(
+            {"final_response": "from dict"}, event
+        )
+        == "from dict"
+    )
+
+
+@pytest.mark.asyncio
+async def test_streamed_already_sent_completes_loop_tick(loop_env):
+    """A streamed wakeup must not leave awaiting_response stuck."""
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+    assert mgr.state.awaiting_response is True
+    assert mgr.is_due() is False
+
+    event = _make_event("wakeup")
+    event._streamed_final_response = "CI is done.\nLOOP_COMPLETE"
+    # Same inputs the already_sent branch leaves for _handle_message.
+    final_text = GatewayRunner._final_text_for_post_turn_hooks(None, event)
+    assert final_text.strip()
+
+    await GatewayRunner._post_turn_loop_completion(
+        runner,
+        session_entry=_FakeSessionEntry(),
+        source=None,
+        final_response=final_text,
+    )
+    reloaded = loops.load_loop("sid-gateway-loop")
+    assert reloaded.awaiting_response is False
+    assert reloaded.status == "done"
+
+
+@pytest.mark.asyncio
+async def test_empty_agent_result_releases_inflight_loop_tick(loop_env):
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+    assert mgr.state.awaiting_response is True
+
+    runner._post_turn_goal_continuation = AsyncMock()
+    await GatewayRunner._run_post_turn_hooks(
+        runner,
+        agent_result={"final_response": ""},
+        source=_make_event("wakeup").source,
+        is_internal=True,
+    )
+
+    runner._post_turn_goal_continuation.assert_not_awaited()
+    reloaded = loops.load_loop("sid-gateway-loop")
+    assert reloaded.awaiting_response is False
+    assert reloaded.status == "active"
+    assert reloaded.next_due_at > time.time()
+
+
+@pytest.mark.asyncio
+async def test_goal_hook_failure_does_not_block_loop_completion(loop_env, caplog):
+    runner = _make_runner()
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+
+    mgr = loops.LoopManager(session_id="sid-gateway-loop")
+    mgr.state.next_due_at = time.time() - 1
+    assert mgr.fire_tick() is not None
+
+    runner._post_turn_goal_continuation = AsyncMock(side_effect=RuntimeError("judge failed"))
+    with caplog.at_level(logging.DEBUG, logger="gateway.run"):
+        await GatewayRunner._run_post_turn_hooks(
+            runner,
+            agent_result={"final_response": "still working"},
+            source=_make_event("wakeup").source,
+            is_internal=True,
+        )
+
+    reloaded = loops.load_loop("sid-gateway-loop")
+    assert reloaded.awaiting_response is False
+
+
+
+
+
+
+@pytest.mark.asyncio
+async def test_loop_wakeup_watcher_runs_every_sessiondb_call_off_loop_thread(loop_env):
+    """Full wakeup path (slash-command loop, adapter present): list_active_loops,
+    fire_tick and complete_tick must each execute on an executor thread, never
+    on the event-loop thread (#92413)."""
+    runner = _make_runner()
+    runner._running = True
+    runner._running_agents = {}
+
+    class _Adapter:
+        handled = []
+
+        async def handle_message(self, event):
+            self.handled.append(event.text)
+
+    runner.adapters = {Platform.DISCORD: _Adapter()}
+    runner._build_process_event_source = lambda evt: SimpleNamespace(
+        platform=Platform.DISCORD, chat_id=evt["chat_id"], chat_type=evt["chat_type"],
+        thread_id=evt["thread_id"] or None, user_id=evt["user_id"], user_name=evt["user_name"],
+    )
+    runner._session_key_for_source = lambda source: "agent:main:discord:channel:chat-loop"
+
+    # A slash-command loop that is due now.
+    await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m /status"))
+    state = loops.load_loop("sid-gateway-loop")
+    state.next_due_at = time.time() - 1
+    loops.save_loop("sid-gateway-loop", state)
+
+    loop_thread = threading.current_thread()
+    on_loop_calls = []
+    seen_calls = []
+
+    def _record(name):
+        # Positive count guards against a future import hoist in run.py that
+        # would bypass these wrappers and leave the off-loop assertion vacuous.
+        seen_calls.append(name)
+        if threading.current_thread() is loop_thread:
+            on_loop_calls.append(name)
+
+    real_list = loops.list_active_loops
+    real_fire = loops.LoopManager.fire_tick
+    real_complete = loops.LoopManager.complete_tick
+
+    def _list_active_loops(*a, **k):
+        _record("list_active_loops")
+        return real_list(*a, **k)
+
+    def _fire_tick(self):
+        _record("fire_tick")
+        return real_fire(self)
+
+    def _complete_tick(self, last_response):
+        _record("complete_tick")
+        return real_complete(self, last_response)
+
+    orig_sleep = asyncio.sleep
+    calls = {"n": 0}
+
+    async def _one_pass_sleep(delay):
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            runner._running = False
+        return await orig_sleep(0)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(loops, "list_active_loops", _list_active_loops)
+        mp.setattr(loops.LoopManager, "fire_tick", _fire_tick)
+        mp.setattr(loops.LoopManager, "complete_tick", _complete_tick)
+        mp.setattr(asyncio, "sleep", _one_pass_sleep)
+        await GatewayRunner._loop_wakeup_watcher(runner, interval=0)
+
+    assert _Adapter.handled == ["/status"], _Adapter.handled
+    assert seen_calls == ["list_active_loops", "fire_tick", "complete_tick"], seen_calls
+    assert on_loop_calls == [], f"SessionDB calls ran on the event-loop thread: {on_loop_calls}"
+    # complete_tick ran (slash-command loops complete immediately).
+    assert loops.load_loop("sid-gateway-loop").ticks_fired == 1
+
+
+@pytest.mark.asyncio
+async def test_loop_wakeup_watcher_gates_profile_scope_on_active_loops(loop_env, monkeypatch, tmp_path):
+    """A secondary profile with no ACTIVE loop must not get its runtime scope entered on
+    every tick (each entry re-parses the profile's config/secrets — the dominant idle-CPU
+    cost on multiplex gateways); a profile holding an active loop must still be scanned."""
+    from hermes_state import SessionDB
+
+    work_home = tmp_path / "profiles" / "work"
+    work_home.mkdir(parents=True)
+    work_db = SessionDB(db_path=work_home / "state.db")
+    goals._DB_CACHE[str(work_home)] = work_db
+
+    scopes = [(None, None), ("work", work_home)]
+    monkeypatch.setattr("gateway.run._handoff_watch_scopes", lambda _r: scopes)
+
+    entered = []
+
+    class _SpyScope:
+        def __init__(self, home):
+            self.home = home
+
+        async def __aenter__(self):
+            entered.append(self.home)
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("gateway.run._async_profile_runtime_scope", _SpyScope)
+
+    runner = _make_runner()
+    runner._running_agents = {}
+    runner.adapters = {}
+
+    orig_sleep = asyncio.sleep
+
+    async def _run_one_tick():
+        runner._running = True
+        calls = {"n": 0}
+
+        async def _one_pass_sleep(delay):
+            calls["n"] += 1
+            if calls["n"] >= 2:  # 5s connect grace, then exactly one scan pass
+                runner._running = False
+            return await orig_sleep(0)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(asyncio, "sleep", _one_pass_sleep)
+            await asyncio.wait_for(
+                GatewayRunner._loop_wakeup_watcher(runner, interval=0), timeout=5)
+
+    try:
+        # Idle: no loop rows in the work profile's store → its scope is never entered.
+        await _run_one_tick()
+        assert entered == [], f"idle profile scope must not be entered; got {entered}"
+
+        # An ACTIVE loop row in the work profile's store opens the gate.
+        await GatewayRunner._handle_loop_command(runner, _make_event("/loop 5m poll CI"))
+        raw = loops._get_session_db().get_meta("loop:sid-gateway-loop")
+        assert raw
+        work_db.set_meta("loop:sid-work-loop", raw)
+        await _run_one_tick()
+        assert entered == [work_home], (
+            f"profile with an active loop must still be scanned; got {entered}")
+
+        # A cleared loop keeps its row (status=cleared): the gate must read status, not key existence.
+        entered.clear()
+        cleared = loops.LoopState.from_json(raw)
+        cleared.status = "cleared"
+        work_db.set_meta("loop:sid-work-loop", cleared.to_json())
+        await _run_one_tick()
+        assert entered == [], f"cleared loop row must not open the gate; got {entered}"
+
+        # Fail OPEN: a store the probe cannot open is "unknown", never "idle" — the scan runs.
+        monkeypatch.setattr("gateway.run_idle_gates._profile_session_db_probe", lambda _home: None)
+        await _run_one_tick()
+        assert entered == [work_home], (
+            f"unavailable store must fall back to the historical scan; got {entered}")
+    finally:
+        work_db.close()

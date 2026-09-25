@@ -1,10 +1,22 @@
+import { translateNow } from '@/i18n/runtime'
+import { peekCachedSlashCompletion } from '@/lib/slash-completion-cache'
+
+import desktopSlashRegistry from './desktop-slash-registry.json'
+
 export interface CommandsCatalogSection {
   name: string
   pairs: [string, string][]
 }
 
+export interface CommandCatalogMeta {
+  argument_mode?: 'mixed' | 'options' | 'text' | null
+  desktop?: string | null
+}
+
 export interface CommandsCatalogLike {
+  canon?: Record<string, string>
   categories?: CommandsCatalogSection[]
+  commands?: Record<string, CommandCatalogMeta>
   pairs?: [string, string][]
   skill_count?: number
   skills?: SkillCatalogMap
@@ -46,6 +58,7 @@ export interface DesktopThemeCommandOption {
 export type DesktopActionId =
   | 'branch'
   | 'browser'
+  | 'btw'
   | 'compress'
   | 'handoff'
   | 'hatch'
@@ -54,7 +67,9 @@ export type DesktopActionId =
   | 'new'
   | 'pet'
   | 'profile'
+  | 'reasoning'
   | 'skin'
+  | 'stop'
   | 'title'
   | 'wake'
   | 'yolo'
@@ -63,7 +78,7 @@ export type DesktopActionId =
 export type DesktopPickerId = 'model' | 'session'
 
 /** Why a known Hermes command has no desktop UI surface. */
-export type DesktopUnavailableReason = 'advanced' | 'messaging' | 'settings' | 'terminal'
+export type DesktopUnavailableReason = 'advanced' | 'composer-voice' | 'messaging' | 'settings' | 'terminal'
 
 /**
  * How the desktop fulfils a command. This is the single discriminator the
@@ -155,13 +170,19 @@ const rpc = (
 ): DesktopCommandSurface => ({ kind: 'rpc', rpc: rpcName, timeoutMs, buildParams })
 
 /**
- * THE source of truth for desktop slash commands. Everything below — execution
- * gating, popover suggestions, catalog filtering, pill grouping, and the
- * dispatcher's behavior — derives from this one table.
+ * Local desktop overlay — actions, pickers, and dedicated RPCs the Electron
+ * client owns. Registry commands without a row here are `exec` unless the
+ * catalog marks them unavailable/hidden. New commands and plugins declare
+ * `argument_mode` / `desktop` on the Python registry instead of adding a row.
  */
 const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   // Local client actions
   { name: '/new', description: 'Start a new desktop chat', aliases: ['/reset'], surface: action('new') },
+  {
+    name: '/stop',
+    description: 'Stop the active turn and background processes',
+    surface: action('stop')
+  },
   {
     name: '/branch',
     description: 'Branch the latest message into a new chat',
@@ -169,6 +190,12 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('branch')
   },
   { name: '/yolo', description: 'Toggle YOLO — auto-approve dangerous commands', surface: action('yolo') },
+  {
+    name: '/reasoning',
+    description: 'Reasoning effort or display [<level> [--global]|show|hide|full|clamp]',
+    surface: action('reasoning'),
+    argumentMode: 'options'
+  },
   {
     name: '/wake',
     description: 'Control the desktop wake-word listener [on|off|status]',
@@ -219,35 +246,6 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     argumentMode: 'mixed'
   },
 
-  // Backend-executed commands that render useful inline output.
-  // Commands with a dedicated gateway RPC (@method in tui_gateway/server.py)
-  // route to it directly via `rpc(...)` — bypassing slash.exec avoids the
-  // slash-worker pipe timeout and the "not a quick/plugin/skill command"
-  // fallback noise for commands the dispatcher doesn't handle inline.
-  // These commands have gateway RPCs, but their established desktop behavior
-  // carries richer CLI semantics: /agents includes delegations, /stop cancels
-  // them, /steer falls back to a next-turn prompt, and /usage is a formatted
-  // live report. Keep them on slash.exec until their RPC contracts are fully
-  // equivalent.
-  {
-    name: '/approvals',
-    description: 'Show or set approval mode [manual|smart|off]',
-    surface: exec(),
-    argumentMode: 'options'
-  },
-  {
-    name: '/agents',
-    description: 'Show active desktop sessions and running tasks',
-    aliases: ['/tasks'],
-    surface: exec()
-  },
-  {
-    name: '/background',
-    description: 'Run a prompt in the background',
-    aliases: ['/bg', '/btw'],
-    surface: exec(),
-    argumentMode: 'text'
-  },
   // /compress must be an action (session.compress RPC), not exec: the slash
   // worker route times out on large sessions (30s WS / 45s pipe) before the
   // LLM summarise call finishes, then command.dispatch surfaces a bogus
@@ -259,25 +257,14 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('compress'),
     argumentMode: 'text'
   },
-  { name: '/debug', description: 'Create a debug report', surface: exec() },
+  // /btw must be an action (prompt.btw RPC), not exec: the slash worker
+  // prints the answer after process_command returns, so Desktop only ever
+  // saw the acknowledgement (#99065). The answer arrives as btw.complete.
   {
-    name: '/goal',
-    description: 'Manage the standing goal for this session',
-    surface: exec(),
-    argumentMode: 'mixed'
-  },
-  {
-    name: '/loop',
-    description: 'Re-run a prompt on a recurring interval in this session',
-    aliases: ['/proactive'],
-    surface: exec(),
-    argumentMode: 'mixed'
-  },
-  {
-    name: '/personality',
-    description: 'Switch personality for this session',
-    surface: exec(),
-    argumentMode: 'options'
+    name: '/btw',
+    description: 'Ask a side question about this conversation without interrupting it',
+    surface: action('btw'),
+    argumentMode: 'text'
   },
   {
     name: '/pet',
@@ -292,15 +279,6 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     surface: action('hatch')
   },
   {
-    name: '/queue',
-    description: 'Queue a prompt for the next turn',
-    aliases: ['/q'],
-    surface: exec(),
-    argumentMode: 'text'
-  },
-  { name: '/retry', description: 'Retry the last user message', surface: exec() },
-  { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },
-  {
     name: '/save',
     description: 'Save the current transcript to JSON',
     surface: rpc('session.save', ctx => ({ session_id: ctx.sessionId }))
@@ -309,86 +287,183 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
     name: '/status',
     description: 'Show current session status',
     surface: rpc('session.status', ctx => ({ session_id: ctx.sessionId }))
-  },
-  {
-    name: '/steer',
-    description: 'Steer the current run after the next tool call',
-    surface: exec(),
-    argumentMode: 'text'
-  },
-  { name: '/stop', description: 'Stop running background processes', surface: exec() },
-  {
-    name: '/tools',
-    description: 'List or toggle tools available to the agent',
-    surface: exec(),
-    argumentMode: 'options'
-  },
-  { name: '/undo', description: 'Remove the last user/assistant exchange', surface: exec() },
-  { name: '/usage', description: 'Show token usage for this session', surface: exec() },
-  { name: '/version', description: 'Show Hermes Agent version', surface: exec() },
-
-  // No desktop surface, but carry an alias (underscore spelling variants).
-  { name: '/reload-mcp', aliases: ['/reload_mcp'], surface: unavailable('advanced') },
-  { name: '/reload-skills', aliases: ['/reload_skills'], surface: unavailable('advanced') }
+  }
 ]
 
-// Known commands with no desktop surface (and no alias) — a flat name list
-// per reason beats 40 identical object literals.
-const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = {
-  terminal: [
-    '/busy',
-    '/clear',
-    '/config',
-    '/copy',
-    '/cron',
-    '/density',
-    '/details',
-    '/exit',
-    '/footer',
-    '/gateway',
-    '/history',
-    '/image',
-    '/indicator',
-    '/logs',
-    '/mouse',
-    '/paste',
-    '/platforms',
-    '/plugins',
-    '/quit',
-    '/redraw',
-    '/reload',
-    '/restart',
-    '/sb',
-    '/set-home',
-    '/sethome',
-    '/snap',
-    '/snapshot',
-    '/statusbar',
-    '/toolsets',
-    '/update',
-    '/verbose'
-  ],
-  messaging: ['/approve', '/deny'],
-  settings: ['/skills', '/pets'],
-  advanced: ['/curator', '/fast', '/insights', '/kanban', '/reasoning', '/voice']
+/**
+ * Offline fallback for the registry's `desktop=` metadata, dumped from
+ * `hermes_cli/commands.py::desktop_surface_registry` by
+ * `scripts/dump_desktop_slash_registry.py`. The live `commands.catalog` answers
+ * first (`specFromCatalog`); this copy only covers the gap before the backend
+ * replies. A Python test and `desktop-slash-commands.test.ts` both fail when
+ * the JSON drifts from either side, so the Python registry stays the single
+ * place a command's desktop disposition is authored.
+ */
+const REGISTRY_DESKTOP_SURFACE: Readonly<Record<string, string | null>> = desktopSlashRegistry
+
+/**
+ * Commands the Python registry has never heard of, so they cannot ride the
+ * dump above. `/density`, `/details`, `/logs`, `/mouse` are Ink-process-local
+ * display toggles handled inside `ui-tui/src/app/slash/commands/core.ts`
+ * (three are advertised through `tui_gateway/server.py::_TUI_EXTRA`); `/pets`
+ * is the plural typo of the desktop's own `/pet` action and points at the
+ * sidebar instead of falling through as an unknown skill.
+ */
+export const TS_ONLY_NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = {
+  advanced: [],
+  'composer-voice': [],
+  messaging: [],
+  settings: ['/pets'],
+  terminal: ['/density', '/details', '/logs', '/mouse']
+}
+
+const LOCAL_SPEC_NAMES = new Set(DESKTOP_COMMAND_SPECS.flatMap(spec => [spec.name, ...(spec.aliases ?? [])]))
+
+/** Registry rows the local table doesn't already curate. A row with a real
+ *  unavailability reason blocks the command; a `null` row is an OFFERED
+ *  built-in (`/context`, `/usage`, …) and becomes a plain `exec` spec, so the
+ *  desktop recognizes every registry command offline — otherwise, before the
+ *  first `commands.catalog` round-trip (or against an older gateway whose
+ *  `complete.slash` rows carry no `kind`), `/context` read as a skill: Skills
+ *  group in the popover, skill chip on paste, extension dispatch (#116159).
+ *  `hidden` (e.g. `/model`) is a popover flag on an executable command and is
+ *  read from the live catalog by `specFromCatalog`; a local spec always wins
+ *  over the dump. */
+function registryDerivedSpecs(): DesktopCommandSpec[] {
+  return Object.entries(REGISTRY_DESKTOP_SURFACE).flatMap(([name, value]) => {
+    if (LOCAL_SPEC_NAMES.has(name)) {
+      return []
+    }
+
+    if (value === null) {
+      return [{ name, surface: exec() }]
+    }
+
+    const reason = asUnavailableReason(value)
+
+    return reason ? [{ name, surface: unavailable(reason) }] : []
+  })
 }
 
 const ALL_SPECS: readonly DesktopCommandSpec[] = [
   ...DESKTOP_COMMAND_SPECS,
-  ...(Object.entries(NO_DESKTOP_SURFACE) as [DesktopUnavailableReason, readonly string[]][]).flatMap(
+  ...registryDerivedSpecs(),
+  ...(Object.entries(TS_ONLY_NO_DESKTOP_SURFACE) as [DesktopUnavailableReason, readonly string[]][]).flatMap(
     ([reason, names]) => names.map(name => ({ name, surface: unavailable(reason) }))
   )
 ]
 
 const SPEC_BY_NAME = new Map<string, DesktopCommandSpec>(ALL_SPECS.map(spec => [spec.name, spec]))
 
+/** Names whose only local spec is the dump's offline `exec` placeholder. The
+ *  live catalog knows more about these (argument mode, `hidden`), so it wins
+ *  once it has answered; the placeholder only covers the cold gap. */
+const REGISTRY_OFFERED_NAMES = new Set(
+  Object.entries(REGISTRY_DESKTOP_SURFACE).flatMap(([name, value]) =>
+    value === null && !LOCAL_SPEC_NAMES.has(name) ? [name] : []
+  )
+)
+
 const ALIAS_TO_CANONICAL = new Map<string, string>(
   ALL_SPECS.flatMap(spec => (spec.aliases ?? []).map(alias => [alias, spec.name] as const))
 )
 
+let rememberedCatalog: CommandsCatalogLike | undefined
+
+/** Last catalog the composer saw — used so Space/Enter know argument mode
+ *  without waiting for another `/` keystroke. */
+export function rememberDesktopCommandsCatalog(catalog: CommandsCatalogLike | undefined): void {
+  rememberedCatalog = catalog
+}
+
+function liveCatalog(): CommandsCatalogLike | undefined {
+  return rememberedCatalog ?? peekCachedSlashCompletion<CommandsCatalogLike>('catalog')
+}
+
+function catalogMeta(command: string): CommandCatalogMeta | undefined {
+  const commands = liveCatalog()?.commands
+
+  if (!commands) {
+    return undefined
+  }
+
+  const normalized = normalizeCommand(command)
+  const canonical = ALIAS_TO_CANONICAL.get(normalized) || catalogCanonical(normalized) || normalized
+
+  return commands[canonical] ?? commands[normalized]
+}
+
+function catalogCanonical(normalized: string): string | undefined {
+  const canon = liveCatalog()?.canon
+
+  if (!canon) {
+    return undefined
+  }
+
+  return canon[normalized] ?? canon[normalized.toLowerCase()]
+}
+
+function asUnavailableReason(value: string | null | undefined): DesktopUnavailableReason | null {
+  if (
+    value === 'advanced' ||
+    value === 'composer-voice' ||
+    value === 'messaging' ||
+    value === 'settings' ||
+    value === 'terminal'
+  ) {
+    return value
+  }
+
+  return null
+}
+
+function asArgumentMode(value: string | null | undefined): DesktopSlashArgumentMode | undefined {
+  if (value === 'options' || value === 'text' || value === 'mixed') {
+    return value
+  }
+
+  return undefined
+}
+
+function specFromCatalog(command: string): DesktopCommandSpec | null {
+  const entry = catalogMeta(command)
+
+  if (!entry) {
+    return null
+  }
+
+  const name = canonicalDesktopSlashCommand(command)
+  const reason = asUnavailableReason(entry.desktop)
+
+  if (reason) {
+    return { name, surface: unavailable(reason) }
+  }
+
+  return {
+    name,
+    surface: exec(),
+    hidden: entry.desktop === 'hidden',
+    argumentMode: asArgumentMode(entry.argument_mode)
+  }
+}
+
+function isAliasCommand(command: string): boolean {
+  const normalized = normalizeCommand(command)
+
+  if (ALIAS_TO_CANONICAL.has(normalized)) {
+    return true
+  }
+
+  const resolved = catalogCanonical(normalized)
+
+  return Boolean(resolved && resolved.toLowerCase() !== normalized)
+}
+
 const UNAVAILABLE_MESSAGE: Record<DesktopUnavailableReason, (command: string) => string> = {
   advanced: command =>
     `${command} is not shown in the desktop slash palette. Use the relevant desktop control or terminal interface instead.`,
+  'composer-voice': () =>
+    'Voice chat lives in the composer here: click the microphone button and choose "Start voice chat", or use the voice shortcut from Settings → Keyboard Shortcuts.',
   messaging: command => `${command} is only used from messaging platforms.`,
   settings: command => `${command} is managed from the desktop sidebar.`,
   terminal: command => `${command} is only available in the terminal interface.`
@@ -409,18 +484,29 @@ function normalizeCommand(command: string): string {
 export function canonicalDesktopSlashCommand(command: string): string {
   const normalized = normalizeCommand(command)
 
-  return ALIAS_TO_CANONICAL.get(normalized) || normalized
+  return ALIAS_TO_CANONICAL.get(normalized) || catalogCanonical(normalized) || normalized
 }
 
 /** Resolve a command (or alias) to its desktop spec, or null for unknown/extension commands. */
 export function resolveDesktopCommand(command: string): DesktopCommandSpec | null {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command)) ?? null
+  const canonical = canonicalDesktopSlashCommand(command)
+  const local = SPEC_BY_NAME.get(canonical)
+
+  if (local && REGISTRY_OFFERED_NAMES.has(canonical)) {
+    return specFromCatalog(command) ?? local
+  }
+
+  return local ?? specFromCatalog(command)
 }
 
 function isKnownHermesSlashCommand(command: string): boolean {
   const normalized = normalizeCommand(command)
 
-  return SPEC_BY_NAME.has(normalized) || ALIAS_TO_CANONICAL.has(normalized)
+  if (SPEC_BY_NAME.has(normalized) || ALIAS_TO_CANONICAL.has(normalized)) {
+    return true
+  }
+
+  return catalogMeta(normalized) !== undefined
 }
 
 /**
@@ -439,6 +525,24 @@ export function isDesktopSlashExtensionCommand(command: string): boolean {
   return !isKnownHermesSlashCommand(normalized)
 }
 
+/**
+ * Popover group for a `complete.slash` row. The backend already tags each
+ * item `skill` | `command`; trust that so a new registry command isn't
+ * dumped into Skills just because this table has no row yet. Older backends
+ * omit `kind` — then the table is the fallback.
+ */
+export function slashCompletionGroup(command: string, kind?: string | null): 'Commands' | 'Skills' {
+  if (kind === 'skill') {
+    return 'Skills'
+  }
+
+  if (kind === 'command') {
+    return 'Commands'
+  }
+
+  return isDesktopSlashExtensionCommand(command) ? 'Skills' : 'Commands'
+}
+
 /** Gates execution: true unless the command is a known no-desktop-surface command. */
 export function isDesktopSlashCommand(command: string): boolean {
   const spec = resolveDesktopCommand(command)
@@ -455,11 +559,11 @@ export function isDesktopSlashSuggestion(command: string): boolean {
   const normalized = normalizeCommand(command)
 
   // Aliases stay hidden so the popover isn't cluttered with duplicates.
-  if (ALIAS_TO_CANONICAL.has(normalized)) {
+  if (isAliasCommand(normalized)) {
     return false
   }
 
-  const spec = SPEC_BY_NAME.get(normalized)
+  const spec = resolveDesktopCommand(normalized)
 
   if (spec) {
     return spec.surface.kind !== 'unavailable' && !spec.hidden
@@ -490,7 +594,7 @@ export function isModelPickerCommand(command: string): boolean {
 
 export function desktopSlashUnavailableMessage(command: string): string | null {
   const canonical = canonicalDesktopSlashCommand(command)
-  const surface = SPEC_BY_NAME.get(canonical)?.surface
+  const surface = resolveDesktopCommand(canonical)?.surface
 
   if (!surface) {
     return null
@@ -508,11 +612,23 @@ export function desktopSlashUnavailableMessage(command: string): string | null {
 }
 
 export function desktopSlashDescription(command: string, fallback = ''): string {
-  return SPEC_BY_NAME.get(canonicalDesktopSlashCommand(command))?.description || fallback
+  const canonical = canonicalDesktopSlashCommand(command)
+  const key = `composer.commandDescs.${canonical}`
+  const translated = translateNow(key)
+  const description = translated !== key ? translated : SPEC_BY_NAME.get(canonical)?.description
+
+  if (!description) {
+    return fallback
+  }
+
+  // Keep backend-owned flags and placeholders verbatim when replacing prose.
+  const usage = fallback.match(/\s+\(usage:\s+(.+)\)$/s)?.[0] ?? ''
+
+  return `${description}${usage}`
 }
 
 export function desktopSlashCommandArgumentMode(command: string): DesktopSlashArgumentMode | null {
-  return resolveDesktopCommand(command)?.argumentMode ?? null
+  return resolveDesktopCommand(command)?.argumentMode ?? asArgumentMode(catalogMeta(command)?.argument_mode) ?? null
 }
 
 export function desktopSkinSlashCompletions(
@@ -585,6 +701,8 @@ export function rankSkillCommands<T extends { text: string }>(
 }
 
 export function filterDesktopCommandsCatalog(catalog: CommandsCatalogLike): CommandsCatalogLike {
+  rememberDesktopCommandsCatalog(catalog)
+
   const categories = catalog.categories
     ?.map(section => ({
       ...section,

@@ -1,4 +1,4 @@
-import { type CronJob, getCronJobs, triggerCronJob } from '@/hermes'
+import { type CronJob, getApiRequestConnection, getCronJobs, triggerCronJob } from '@/hermes'
 import {
   beginCronJobsAction,
   beginCronJobsRequest,
@@ -18,10 +18,11 @@ export interface CronMutationRefreshResult<T> extends CronTriggerRefreshResult {
   value: T | null
 }
 
-async function refreshForGeneration(
-  profile: string,
-  request: CronJobsRequest
-): Promise<CronTriggerRefreshResult> {
+function cronRequestScope(profile: string): string {
+  return `${getApiRequestConnection() ?? ''}\u0000${profile}`
+}
+
+async function refreshForGeneration(profile: string, request: CronJobsRequest): Promise<CronTriggerRefreshResult> {
   try {
     const jobs = await getCronJobs(profile)
 
@@ -40,14 +41,14 @@ async function refreshForGeneration(
 }
 
 export function refreshCronJobs(profile: string): Promise<CronTriggerRefreshResult> {
-  return refreshForGeneration(profile, beginCronJobsRequest(profile))
+  return refreshForGeneration(profile, beginCronJobsRequest(cronRequestScope(profile)))
 }
 
 export async function mutateAndRefreshCronJobs<T>(
   profile: string,
   mutate: () => Promise<T>
 ): Promise<CronMutationRefreshResult<T>> {
-  const scopeToken = beginCronJobsAction(profile)
+  const scopeToken = beginCronJobsAction(cronRequestScope(profile))
   let value: T
 
   try {
@@ -90,9 +91,7 @@ export async function triggerAndRefreshCronJobs(
   jobId: string,
   profile: 'all' | string
 ): Promise<CronTriggerRefreshResult> {
-  const { value: _value, ...result } = await mutateAndRefreshCronJobs(profile, () =>
-    triggerCronJob(jobId)
-  )
+  const { value: _value, ...result } = await mutateAndRefreshCronJobs(profile, () => triggerCronJob(jobId))
 
   return result
 }

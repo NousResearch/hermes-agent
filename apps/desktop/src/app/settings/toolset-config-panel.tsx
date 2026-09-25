@@ -10,6 +10,7 @@ import {
   getToolsetConfig,
   getToolsetModels,
   pollOAuthSession,
+  type ProfileScope,
   revealEnvVar,
   runToolsetPostSetup,
   selectToolsetModel,
@@ -21,6 +22,7 @@ import { useI18n } from '@/i18n'
 import { Check, Loader2, Save, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
 import type {
   ActionStatusResponse,
@@ -32,6 +34,7 @@ import type {
 } from '@/types/hermes'
 
 import { EnvVarActionsMenu, EnvVarActionsTrigger, EnvVarContextMenu } from './env-var-actions-menu'
+import { prettyName } from './helpers'
 import { Pill } from './primitives'
 import { VoiceProviderFields } from './voice-provider-fields'
 
@@ -43,12 +46,28 @@ interface ToolsetConfigPanelProps {
   /** Capabilities profile-scope override: configure THIS profile instead of the
    *  app-wide active one. Omitted (every other caller) → app-wide active
    *  profile, so behavior is unchanged. Threaded into every fetch below. */
-  profile?: null | string
+  profile?: ProfileScope
 }
 
 /** Toolsets whose backends expose a selectable model catalog (mirrors the
  *  backend's _MODEL_CATALOG_TOOLSETS map). */
 const MODEL_CATALOG_TOOLSETS = new Set(['image_gen', 'video_gen'])
+
+/**
+ * `useNavigate` throws when there is no react-router context. Inside Settings
+ * (the panel's original home) there always is one, so behavior is unchanged;
+ * embedded in a plugin dialog OUTSIDE the router there is none, and this
+ * degrades to `null` instead of crashing the whole panel. Router presence is
+ * stable for a mounted instance's lifetime, so the try/catch never changes the
+ * hook count between renders (rules-of-hooks safe).
+ */
+function useOptionalNavigate(): null | ReturnType<typeof useNavigate> {
+  try {
+    return useNavigate()
+  } catch {
+    return null
+  }
+}
 
 function providerConfigured(provider: ToolProvider, envState: Record<string, boolean>): boolean {
   if (provider.env_vars.length === 0) {
@@ -85,13 +104,13 @@ interface EnvVarFieldProps {
   isSet: boolean
   onSaved: (key: string) => void
   onCleared: (key: string) => void
-  profile?: null | string
+  profile?: ProfileScope
 }
 
 function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarFieldProps) {
   const { t } = useI18n()
   const copy = t.settings.toolsets
-  const navigate = useNavigate()
+  const navigate = useOptionalNavigate()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [revealed, setRevealed] = useState<string | null>(null)
@@ -99,7 +118,9 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarField
 
   // Internal route change to Settings → API Keys (tools sub-view) with the
   // deep-link param keys-settings consumes to scroll + flash this key's card.
-  const openInKeys = () => navigate(`${SETTINGS_ROUTE}?tab=keys&key=${encodeURIComponent(envVar.key)}`)
+  // No-op when there is no router (embedded outside Settings, e.g. a plugin
+  // dialog): the "Manage keys" affordance simply doesn't navigate there.
+  const openInKeys = () => navigate?.(`${SETTINGS_ROUTE}?tab=keys&key=${encodeURIComponent(envVar.key)}`)
 
   async function handleSave() {
     if (!value) {
@@ -122,7 +143,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared, profile }: EnvVarField
   }
 
   async function handleClear() {
-    if (!window.confirm(copy.removeConfirm(envVar.key))) {
+    if (!(await confirm({ destructive: true, title: copy.removeConfirm(envVar.key) }))) {
       return
     }
 
@@ -231,7 +252,7 @@ interface PostSetupRunnerProps {
   /** Refresh the parent config after the install finishes (a backend may now
    *  report itself configured). */
   onComplete?: () => void
-  profile?: null | string
+  profile?: ProfileScope
 }
 
 /**
@@ -309,7 +330,16 @@ function PostSetupRunner({ toolset, postSetupKey, installed = false, onComplete,
                 title: copy.postSetupCompleteTitle,
                 message: copy.postSetupCompleteMessage(postSetupKey)
               }
-            : { kind: 'error', title: copy.postSetupErrorTitle, message: copy.postSetupErrorMessage(postSetupKey) }
+            : {
+                kind: 'error',
+                title: copy.postSetupErrorTitle,
+                message: copy.postSetupErrorMessage(prettyName(postSetupKey)),
+                action: {
+                  label: copy.postSetupOpenLogs,
+                  onClick: () => void window.hermesDesktop?.revealLogs?.().catch(() => undefined)
+                },
+                secondaryAction: { label: copy.postSetupRunAgain, onClick: () => void run() }
+              }
         )
         onComplete?.()
       }
@@ -370,7 +400,7 @@ interface ModelCatalogPickerProps {
   /** True when this provider is the one written to config — selecting a model
    *  only makes sense for the active backend. */
   isActiveBackend: boolean
-  profile?: null | string
+  profile?: ProfileScope
 }
 
 /**
@@ -626,7 +656,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
       const start = await startOAuthLogin('nous', profile)
 
       if (start.flow !== 'device_code') {
-        notifyError(new Error(`unexpected flow: ${start.flow}`), copy.nousAuthFailed)
+        notifyNousAuthFailed(`unexpected flow: ${start.flow}`)
 
         return
       }
@@ -662,16 +692,28 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
         }
 
         if (polled.status !== 'pending') {
-          notifyError(new Error(polled.error_message || `Sign-in ${polled.status}`), copy.nousAuthFailed)
+          notifyNousAuthFailed(polled.error_message || `Sign-in ${polled.status}`)
 
           return
         }
       }
     } catch (err) {
       if (mountedRef.current) {
-        notifyError(err, copy.nousAuthFailed)
+        notifyNousAuthFailed(err instanceof Error ? err.message : String(err))
       }
     }
+  }
+
+  // Plain failure copy with the raw poll status under Details and a one-click
+  // retry of the same sign-in flow (desktop-26).
+  function notifyNousAuthFailed(detail: string) {
+    notify({
+      kind: 'error',
+      title: copy.nousAuthFailed,
+      message: copy.nousAuthFailedMessage,
+      detail,
+      action: { label: copy.nousAuthTryAgain, onClick: () => void signInToNousPortal() }
+    })
   }
 
   function patchEnv(key: string, isSet: boolean) {
@@ -869,8 +911,11 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange, profile }: Too
                 {toolset === 'tts' && provider.tts_provider && (
                   // Voice/model settings for this backend (tts.<key>.*) —
                   // the same fields Settings → Voice renders, inline so the
-                  // Capabilities panel is a complete setup surface.
-                  <VoiceProviderFields providerKey={provider.tts_provider} section="tts" />
+                  // Capabilities panel is a complete setup surface. Profile
+                  // threaded like every other fetch in this panel: unscoped,
+                  // these fields read AND autosaved the ACTIVE profile's
+                  // config while the panel claimed to configure another.
+                  <VoiceProviderFields profile={profile} providerKey={provider.tts_provider} section="tts" />
                 )}
                 {MODEL_CATALOG_TOOLSETS.has(toolset) && (
                   <ModelCatalogPicker

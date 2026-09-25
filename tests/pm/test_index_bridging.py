@@ -84,3 +84,54 @@ def test_uv_timeout_names_the_mirror_knobs(tmp_path, monkeypatch):
     with pytest.raises(InstallError, match="UV_INDEX_URL") as info:
         environment._run(["sync"], cwd=tmp_path, timeout=7)
     assert "timed out after 7s" in str(info.value)
+
+
+def test_default_index_override_detects_mirrors_only(clean_index_env):
+    from pm.index_config import default_index_override
+
+    assert default_index_override({}) is None
+    assert default_index_override({"UV_INDEX_URL": "https://pypi.org/simple"}) is None
+    # Trailing slash is the same registry; extra indexes never move the default.
+    assert default_index_override({"UV_DEFAULT_INDEX": "https://pypi.org/simple/"}) is None
+    assert default_index_override({"UV_INDEX": "https://mirror.example/simple"}) is None
+    assert default_index_override({"UV_INDEX_URL": "https://mirror.example/simple"}) == \
+        "https://mirror.example/simple"
+    assert default_index_override({"UV_DEFAULT_INDEX": "https://mirror.example/simple/"}) == \
+        "https://mirror.example/simple"
+
+
+def test_bridged_pip_mirror_counts_as_default_index_override(clean_index_env, monkeypatch):
+    from pm.index_config import default_index_override
+
+    monkeypatch.setenv("PIP_INDEX_URL", "https://mirror.example/simple")
+
+    env = _base_environment()
+    assert default_index_override(env) == "https://mirror.example/simple"
+
+
+def test_stage_runtime_relocks_snapshot_when_index_is_mirrored(clean_index_env, monkeypatch, tmp_path):
+    """The pip.conf bridge is what breaks ``hermes pm doctor`` on mirrored hosts (#122112).
+
+    uv --locked rejects the committed lock once resolution goes through a mirror,
+    so the staged snapshot — a caller-owned copy — must re-resolve instead.
+    """
+    import pm.runtime_stage as runtime_stage
+    from pm.environment import PythonEnvironment
+
+    sync_calls: list[bool] = []
+
+    def record_sync(self, source, *, locked, **kwargs):
+        sync_calls.append(locked)
+
+    monkeypatch.setattr(PythonEnvironment, "create", lambda self: None)
+    monkeypatch.setattr(PythonEnvironment, "sync", record_sync)
+    monkeypatch.setattr(runtime_stage.subprocess, "run",
+                        lambda *a, **k: subprocess.CompletedProcess([], 0, "", ""))
+    monkeypatch.setenv("PIP_INDEX_URL", "https://mirror.example/simple")
+    runtime_stage.stage_runtime(tmp_path / "uv", tmp_path / "python", tmp_path / "runtime")
+    assert sync_calls == [False]
+
+    sync_calls.clear()
+    monkeypatch.delenv("PIP_INDEX_URL")
+    runtime_stage.stage_runtime(tmp_path / "uv", tmp_path / "python", tmp_path / "runtime2")
+    assert sync_calls == [True]

@@ -19,6 +19,7 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
     No project install, application extra, or application lock enters this graph.
     """
     from pm.environment import PythonEnvironment
+    from pm.index_config import default_index_override
     from pm.packages import uv_cache_dir
     from pm.runtime import runtime_environment
 
@@ -37,8 +38,12 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
             shutil.copyfile(project / name, snapshot / name)
         environment.create()
         if wheelhouse is None:
-            environment.sync(snapshot, locked=True, no_default_groups=True,
-                             no_install_project=True, timeout=600)
+            # A mirrored default index makes uv --locked reject the committed lock
+            # (its entries record PyPI) before anything installs. The snapshot is
+            # a caller-owned copy, so re-resolve it against the mirror instead —
+            # exactly what sync's frozen=False path is reserved for.
+            environment.sync(snapshot, locked=default_index_override(env) is None,
+                             no_default_groups=True, no_install_project=True, timeout=600)
         else:
             environment.install_wheelhouse(snapshot, wheelhouse, timeout=600)
     checked = subprocess.run(

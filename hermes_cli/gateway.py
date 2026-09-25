@@ -73,6 +73,7 @@ from hermes_cli.gateway_profile_lifecycle import owned_gateway_pid as _owned_gat
 # Module level on purpose: the update's restart watcher runs after the checkout moved, when a lazy
 # import would load the REPLACEMENT tree (tests/hermes_cli/test_update_post_swap_imports.py).
 from hermes_cli.gateway_restart_env import restart_watcher_env
+from hermes_cli.gateway_bundled_env import systemd_env_line as _systemd_env_line
 logger = logging.getLogger(__name__)
 
 # Shared ``subprocess.run`` kwargs for text-mode probes (stdout/stderr captured, decode-tolerant).
@@ -2996,13 +2997,6 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
 
 
 
-def _systemd_env_line(name: str, value: str) -> str:
-    """One ``Environment="NAME=value"`` line: ``\\`` and ``"`` escaped for systemd's quoting, ``%``
-    doubled so specifier expansion leaves the value alone."""
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
-    return f'Environment="{name}={escaped}"\n'
-
-
 def _installed_unit_ld_library_path(system: bool) -> str:
     """``LD_LIBRARY_PATH`` baked into the installed unit; ``""`` when absent."""
     return _unit_environment_value(get_systemd_unit_path(system=system), "LD_LIBRARY_PATH") or ""
@@ -3247,6 +3241,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
                               python=python_path, home=hermes_home)
     stop_mark = installation_command(project_root, module="gateway.systemd_stop_mark",
                                 python=python_path, home=hermes_home)
+    from hermes_cli.gateway_bundled_env import systemd_bundled_env_block
+    bundled_env_block = systemd_bundled_env_block(get_systemd_unit_path(system=system))  # #85357
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -3261,7 +3257,7 @@ WorkingDirectory={working_dir}
 
 Environment="HERMES_HOME={hermes_home}"
 Environment="HERMES_SUPERVISED_CHILD=1"
-Restart=always
+{bundled_env_block}Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}

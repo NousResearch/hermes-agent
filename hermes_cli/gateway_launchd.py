@@ -396,6 +396,9 @@ def generate_launchd_plist() -> str:
         f"<string>{escape(part)}</string>" for part in launchd_program_arguments(command, stdout_log, stderr_log)
     )
 
+    from hermes_cli.gateway_bundled_env import launchd_bundled_env_xml
+    bundled_env_xml = launchd_bundled_env_xml(_gw().get_launchd_plist_path())  # #85357
+
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist
     # rewrite would otherwise strip a manual limit and reintroduce EMFILE crashes.
     nofile_block = ""
@@ -436,7 +439,7 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
         <key>HERMES_SUPERVISED_CHILD</key>
-        <string>1</string>
+        <string>1</string>{bundled_env_xml}
     </dict>
 
     <key>LimitLoadToSessionType</key>

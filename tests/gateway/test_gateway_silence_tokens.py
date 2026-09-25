@@ -25,12 +25,13 @@ def _source():
     )
 
 
-def _event(*, internal: bool = False):
+def _event(*, internal: bool = False, reply_expected=None):
     return MessageEvent(
         text="side chatter",
         source=_source(),
         message_id="msg-42",
         internal=internal,
+        reply_expected=reply_expected,
     )
 
 
@@ -95,7 +96,8 @@ def test_failed_agent_result_never_counts_as_intentional_silence():
 
 
 @pytest.mark.asyncio
-async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypatch, tmp_path):
+@pytest.mark.parametrize("reply_expected", [None, True], ids=["adapter-unknown", "addressed"])
+async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypatch, tmp_path, reply_expected):
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={
         "final_response": "[SILENT]",
@@ -111,10 +113,31 @@ async def test_human_turn_gets_a_visible_fallback_for_a_silence_marker(monkeypat
     })
 
     response = await runner._handle_message_with_agent(
-        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+        _event(reply_expected=reply_expected), _source(), "agent:main:telegram:group:-1001:12345", 1
     )
 
     assert response and not is_intentional_silence_response(response)
+
+
+@pytest.mark.asyncio
+async def test_unaddressed_human_turn_suppresses_silence_without_warning(monkeypatch, tmp_path, caplog):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "[SILENT]",
+        "messages": [{"role": "user", "content": "side chatter"},
+                     {"role": "assistant", "content": "[SILENT]"}],
+        "tools": [], "history_offset": 0, "last_prompt_tokens": 0,
+        "api_calls": 1, "failed": False,
+    })
+    with caplog.at_level("DEBUG"):
+        response = await runner._handle_message_with_agent(
+            _event(reply_expected=False), _source(), "agent:main:telegram:group:-1001:12345", 1
+        )
+    assert response == ""
+    assert not any(record.levelname == "WARNING" and "silence marker" in record.message
+                   for record in caplog.records)
+    assert any(record.levelname == "DEBUG" and "unaddressed" in record.message
+               for record in caplog.records)
 
 
 @pytest.mark.asyncio

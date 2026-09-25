@@ -85,6 +85,14 @@ _MODEL_PICKER_ACTION_IDS = (
 )
 
 
+def slack_reply_expected(*, is_one_to_one_dm: bool, is_mentioned: bool, is_command_text: bool) -> bool:
+    """Was this inbound message addressed to the bot? A 1:1 DM, an @mention of this bot or a
+    command expects a reply, so the gateway must not let a bare silence marker vanish it. A message
+    admitted only through a free-response channel, a thread follow-up or ``ignore_other_user_mentions:
+    false`` may stay silent."""
+    return bool(is_one_to_one_dm or is_mentioned or is_command_text)
+
+
 def _slack_unfurl_kwargs(extra: Optional[Dict[str, Any]]) -> Dict[str, bool]:
     """Explicitly configured link-preview controls (omitted key = Slack default). String bools are
     coerced (config tooling persists YAML bools as strings); junk is dropped, NOT coerced to False,
@@ -4548,7 +4556,9 @@ class SlackAdapter(BasePlatformAdapter):
             event, text=text, original_text=original_text, command_probe_text=command_probe_text,
             is_command_text=is_command_text, channel_id=channel_id, team_id=team_id, ts=ts,
             user_id=user_id, thread_ts=thread_ts, is_dm=is_dm, media_urls=media_urls,
-            media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context)
+            media_types=media_types, media_text_inlined=media_text_inlined, channel_context=channel_context,
+            reply_expected=slack_reply_expected(
+                is_one_to_one_dm=is_one_to_one_dm, is_mentioned=is_mentioned, is_command_text=is_command_text))
         # React only when directly addressed; MPIMs are shared, so they need a
         # mention like any channel.
         if (is_one_to_one_dm or is_mentioned) and self._reactions_enabled():
@@ -4568,7 +4578,7 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, *, text: str, original_text: str, command_probe_text: str,
         is_command_text: bool, channel_id: str, team_id: str, ts: str, user_id: str,
         thread_ts: Optional[str], is_dm: bool, media_urls: List[str], media_types: List[str],
-        media_text_inlined: List[bool], channel_context: Optional[str]) -> MessageEvent:
+        media_text_inlined: List[bool], channel_context: Optional[str], reply_expected: Optional[bool] = None) -> MessageEvent:
         """Resolve names, title the DM thread, and build the ``MessageEvent``. Commands are restored
         from canonical input: the parser needs the token at char zero and enrichment (blocks,
         unfurls, file text, history) must never mutate arguments."""
@@ -4609,6 +4619,7 @@ class SlackAdapter(BasePlatformAdapter):
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=self._channel_prompt_with_identity(channel_id, team_id),
             channel_context=channel_context,
+            reply_expected=reply_expected,
             # thread_ts is the thread root, not an explicit reply (root is in channel_context).
             reply_to_text=None,
             auto_skill=resolve_channel_skills(self.config.extra, channel_id, None),

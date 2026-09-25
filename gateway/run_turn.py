@@ -1517,11 +1517,13 @@ class GatewayTurnMixin:
         self, agent_result, source, history, session_entry, session_key,
         _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
         persist_user_display_kind: Optional[str] = None,
+        reply_expected: Optional[bool] = None,
     ):
         """Turn the raw agent result into the outbound text: sentinel/silence handling, response
         logging, resume-pending clear, empty-response normalization, and identity-guarded
         post-compression session_id propagation. Returns
         ``(response, _intentional_silence, agent_messages)``."""
+        from gateway.response_filters import silence_allowed
         from gateway.run import (
             _is_gateway_hidden_reasoning_incomplete_turn, _normalize_empty_agent_response,
             _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
@@ -1535,13 +1537,18 @@ class GatewayTurnMixin:
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up may go silent, a human one must not.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        if _intentional_silence and not silence_allowed(_silence_kind, reply_expected):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
             )
             _intentional_silence = False
             response = _UNEXPECTED_SILENCE_REPLY
+        elif _intentional_silence and reply_expected is False:
+            logger.debug(
+                "silence marker suppressed on an unaddressed turn: platform=%s chat=%s",
+                _platform_name, source.chat_id or "unknown",
+            )
 
         # "(empty)" = the model produced no visible content after exhausting all retries. One
         # text with the CLI explainer and the desktop (agent/turn_explainers.py) so the user
@@ -2198,8 +2205,11 @@ class GatewayTurnMixin:
                 persist_user_message=prepared.persist_user_message,
                 persist_user_timestamp=prepared.persist_user_timestamp,
                 persist_user_display_kind=prepared.persist_user_display_kind,
+                reply_expected=getattr(event, "reply_expected", None),
                 persist_user_display_metadata={
-                    "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event)},
+                    "gateway_input_owner": prepared.persistence_owner,
+                    "reply_expected": getattr(event, "reply_expected", None),
+                    **diagnostic_metadata(event)},
                 message_type=event.message_type,
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
@@ -2228,6 +2238,7 @@ class GatewayTurnMixin:
                 agent_result, source, history, session_entry, session_key,
                 _quick_key, run_generation, _run_start_session_id, _platform_name, _msg_start_time,
                 persist_user_display_kind=prepared.persist_user_display_kind,
+                reply_expected=getattr(event, "reply_expected", None),
             )
             response = self._hmwa_prepend_reasoning(agent_result, response, source, _intentional_silence)
             _footer_line = self._hmwa_runtime_footer_line(agent_result, source, _turn_seconds)
@@ -3089,7 +3100,7 @@ class GatewayTurnMixin:
 
         # The one-slot progress/holder containers shared with the callbacks are TurnContext defaults.
         turn_ctx = TurnContext(
-            source=source, message=message, AIAgent=AIAgent, session_key=session_key,
+            source=source, reply_expected=turn_params.pop("reply_expected", None), message=message, AIAgent=AIAgent, session_key=session_key,
             run_generation=run_generation, _cleanup_progress=_cleanup_progress,
             _run_still_current=self._run_still_current_fn(session_key, run_generation),
             progress_queue=queue.Queue() if disp.needs_progress_queue else None,
@@ -3722,7 +3733,8 @@ class GatewayTurnMixin:
         )
         # Same silence predicate as the normal path, else this branch leaks the literal marker.
         if self._is_intentional_silence(_delivery_result, first_response):
-            if is_machinery_display_kind(turn_ctx.persist_user_display_kind):
+            from gateway.response_filters import silence_allowed
+            if silence_allowed(turn_ctx.persist_user_display_kind, getattr(turn_ctx, "reply_expected", None)):
                 logger.info(
                     "Queued follow-up for session %s: suppressing intentional silence marker before continuing.",
                     session_key or "?",
@@ -4226,6 +4238,7 @@ class GatewayTurnMixin:
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
         persist_user_display_metadata: Optional[dict] = None,
+        reply_expected: Optional[bool] = None,
         scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
@@ -4262,6 +4275,7 @@ class GatewayTurnMixin:
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            reply_expected=reply_expected,
             persist_user_display_metadata=persist_user_display_metadata,
             scheduled_heartbeat=scheduled_heartbeat,
         )

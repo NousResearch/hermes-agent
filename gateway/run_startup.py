@@ -763,7 +763,7 @@ class GatewayStartupMixin:
         silence marker on a machinery turn, a muted diagnostic wake); else the text to send, with a
         human turn's bare silence marker replaced by the same notice the live path sends."""
         from gateway.platforms.base import _strip_media_directives
-        from gateway.response_filters import is_intentional_silence_response, is_machinery_display_kind
+        from gateway.response_filters import is_intentional_silence_response, silence_allowed
         from gateway.run import _sanitize_gateway_final_response
         from gateway.run_turn import _UNEXPECTED_SILENCE_REPLY
         from gateway.warning_notifications import diagnostic_turn_muted
@@ -774,7 +774,10 @@ class GatewayStartupMixin:
                 or (coerce_epoch(last.get("timestamp")) or 0) < started):
             return None
         prompt = next((m for m in reversed(visible) if m.get("role") == "user"), {})
-        machinery = is_machinery_display_kind(prompt.get("display_kind"))
+        machinery = silence_allowed(
+            prompt.get("display_kind"),
+            (prompt.get("display_metadata") or {}).get("reply_expected"),
+        )
         if machinery:
             try:  # the owning profile's display policy, as the adapter reads it at delivery
                 scope = self._media_delivery_scope_for_source(origin)

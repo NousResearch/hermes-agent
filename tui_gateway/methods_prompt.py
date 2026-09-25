@@ -488,7 +488,8 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
 
 
 def _run_after_agent_ready(
-    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    voice_context=None
 ):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
@@ -519,7 +520,7 @@ def _run_after_agent_ready(
             return
     _run_prompt_submit(
         rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
-        terminal_callback=hosted_terminal_callback, turn_author=turn_author)
+        terminal_callback=hosted_terminal_callback, turn_author=turn_author, voice_context=voice_context)
 
 
 _TRUNCATION_PARAMS = (
@@ -612,6 +613,27 @@ def _(rid, params: dict) -> dict:
     voice_context = params.get("voice_context")
     session["voice_live_context"] = (
         voice_context[:6000] if session["client_surface"] == "voice-live" and isinstance(voice_context, str) else "")
+    # Structured counterpart for pre_llm_call hooks/plugins (#109455). Distinct from voice_context
+    # above (that's the spoken transcript text on the wire; this is the structured input_modality/
+    # client_surface signal threaded into agent._turn_voice_context) — and, like `surface` itself
+    # right above, client-declared and unauthenticated, NOT gateway-verified the way turn_author is
+    # (see the 4124 check on _turn_author above). Threaded as an explicit per-request argument below
+    # (turn_voice_context), like turn_author — NOT stashed on the shared session dict: a session is
+    # mutated on every submit, so a value stored there would misattribute to whichever turn next
+    # reads it (a queued/auto-continue/goal-followup turn that never went through this handler at all).
+    #
+    # client_surface is the CLIENT, never the engine: "voice-live" names GPT-Live everywhere else it
+    # appears (the /api/audio/voice-live/* routes, ClientSurface.voice_live, the renderer store), so
+    # putting it here would break a plugin testing client_surface == "desktop" for "every desktop
+    # turn" and would need re-deciding for a third engine. The engine rides in voice_engine instead,
+    # keeping the token that actually arrived rather than minting a new name for it. "desktop" is
+    # inferred, not asserted by the client: the gateway session carries no client identity, and
+    # `surface: "voice-live"` is only ever sent from apps/desktop — a non-desktop client adopting it
+    # would need this mapping revisited (as would declaring the modality client-side, per #109455).
+    turn_voice_context = (
+        {"input_modality": "voice", "voice_session_active": True, "client_surface": "desktop",
+         "voice_engine": "voice-live"}
+        if session["client_surface"] == "voice-live" else None)
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):
         # A rewind replays what the transcript shows: re-expand a skill invocation or
@@ -649,7 +671,8 @@ def _(rid, params: dict) -> dict:
             # for `running` to clear and resubmits with the truncation intact.
             return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
-            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author)
+            rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
+            voice_context=turn_voice_context)
         if busy_response is not None:
             return busy_response
     raw_rebind_ids = params.get("rebind_survivor_row_ids")
@@ -692,7 +715,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            turn_voice_context),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

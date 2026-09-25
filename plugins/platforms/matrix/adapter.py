@@ -2037,6 +2037,12 @@ class MatrixAdapter(BasePlatformAdapter):
         mentions_block = source_content.get("m.mentions") or {}  # MSC3952: authoritative signal
         mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+        # MSC3245 native voice: a recorded voice message carries m.mentions:{} even when the user
+        # typed a mention while recording (Element ships the typed mention as a SEPARATE m.text
+        # event). Under require_mention, an unmentioned voice is PARKED for a short window instead
+        # of dropped; the following bare-mention text event claims it (see _handle_text_message).
+        _sc_msgtype = str(source_content.get("msgtype", "") or "")
+        is_voice_event = _sc_msgtype == "m.audio" and "org.matrix.msc3245.voice" in source_content
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
             if self._allowed_rooms and room_id not in self._allowed_rooms:
@@ -2046,7 +2052,28 @@ class MatrixAdapter(BasePlatformAdapter):
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
-                if not is_mentioned and not body.startswith("/"):
+                if is_voice_event and not is_mentioned:
+                    # Wake-word-claimed voices pass through (transcript contained our name).
+                    if event_id in getattr(self, "_claimed_voice_events", set()):
+                        self._claimed_voice_events.discard(event_id)
+                        logger.info("Matrix: voice %s passes gate via spoken mention", event_id)
+                    else:
+                        # Park the voice: the user's typed mention usually follows within seconds.
+                        # The FULL handler args are parked here; _handle_media_message claims them.
+                        # WAKE-WORD path: transcribe the voice NOW and check for this bot's own name —
+                        # "hermesbot, wie ist das Wetter" (spoken mention) claims the voice immediately,
+                        # so the bot reacts without a typed follow-up mention.
+                        if getattr(self, "_pending_voice", None) is None:
+                            self._pending_voice = {}
+                        self._pending_voice[sender] = (room_id, event_id, time.time(), source_content, relates_to)
+                        if not hasattr(self, "_claimed_voice_events"):
+                            self._claimed_voice_events = set()
+                        asyncio.create_task(self._voice_wake_word_check(room_id, sender, event_id, source_content))
+                        logger.info(
+                            "Matrix: voice %s from %s parked — waiting for a mention text event", event_id, sender)
+                        # Signal the caller to skip processing without re-caching media.
+                        return None
+                elif not is_mentioned and not body.startswith("/"):
                     logger.debug(
                         "Matrix: ignoring message %s in %s — no @mention "
                         "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
@@ -2139,6 +2166,35 @@ class MatrixAdapter(BasePlatformAdapter):
         body = source_content.get("body", "") or ""
         if not body:
             return
+        # A bare mention ("@bot:" with no other text) claims a PARKED voice from the same sender:
+        # Element sends the typed mention as a separate m.text event right after the voice event
+        # (which carries m.mentions:{}). Only the mentioned bot receives the text, so only it
+        # processes the parked voice — other bots' parked voices expire unclaimed.
+        mentions_block = source_content.get("m.mentions") or {}
+        mention_user_ids = mentions_block.get("user_ids") if isinstance(mentions_block, dict) else None
+        formatted_body = source_content.get("formatted_body")
+        if (
+            getattr(self, "_pending_voice", None)
+            and sender in self._pending_voice
+            and self._is_bot_mentioned(body, formatted_body, mention_user_ids)
+            and not self._strip_mention(body).strip()
+            and not body.startswith("/")
+        ):
+            _voice_room, _voice_event_id, _parked_at, _voice_content, _voice_relates = (
+                self._pending_voice.pop(sender, (None, None, 0.0, None, None)))
+            if _voice_event_id and time.time() - _parked_at <= 120:
+                logger.info(
+                    "Matrix: bare mention %s from %s claims parked voice %s", event_id, sender, _voice_event_id)
+                # _handle_media_message re-enters the mention gate below, where the claimed event
+                # is again an unmentioned voice — without this marker it would simply RE-PARK and
+                # dispatch nothing (the voice hung forever). The gate consumes the marker once.
+                self._claimed_voice_events.add(_voice_event_id)
+                await self._handle_media_message(
+                    _voice_room, sender, _voice_event_id, time.time(), _voice_content,
+                    _voice_relates, _voice_content.get("msgtype", "m.audio"))
+                return
+            if _voice_event_id:
+                logger.info("Matrix: parked voice from %s expired — discarding", sender)
         msg_event = await self._build_inbound_event(
             room_id, sender, event_id, _normalize_matrix_bang_command(body), source_content, relates_to)
         if msg_event is None:
@@ -2147,6 +2203,54 @@ class MatrixAdapter(BasePlatformAdapter):
             self._enqueue_text_event(msg_event)
         else:
             await self.handle_message(msg_event)
+
+    async def _voice_wake_word_check(
+        self, room_id: str, sender: str, event_id: str, source_content: dict) -> None:
+        """Transcribe a PARKED voice and claim it when the transcript contains this bot's own
+        name (spoken mention: "hermesbot, wie ist das Wetter"). The voice stays parked for the
+        typed-mention claim path; the wake-word path processes it immediately when the name
+        matches. All bots transcribe in parallel — only the named one reacts."""
+        from tools.transcription_tools import transcribe_audio
+        url = source_content.get("url", "")
+        if not url:
+            return
+        try:
+            file_content = source_content.get("file", {}) if isinstance(source_content.get("file"), dict) else {}
+            encrypted = bool(file_content and file_content.get("url"))
+            msg_type, media_type, is_voice_message = self._classify_inbound_media(
+                "m.audio", source_content.get("info", {}).get("mimetype", "audio/ogg"), source_content)
+            cached = await self._download_and_cache_media(
+                url, event_id, file_content if encrypted else None, msg_type, media_type,
+                is_voice_message, source_content.get("body", ""))
+            if not cached:
+                return
+            result = await asyncio.to_thread(transcribe_audio, cached, None, "gateway")
+            # Envelope: {"success": bool, "transcript": str} — NOT {"text": ...}.
+            transcript = str((result or {}).get("transcript", "") or "").strip()
+            logger.info("Matrix: wake-word transcript for %s: %r", event_id, transcript[:80])
+            localpart = self._user_localpart()
+            if not localpart:
+                return
+            # Whisper mangles bot names ("hermesbot" -> "Hermesport") — exact \b match is too
+            # brittle. Fuzzy: any transcript word with >=0.7 similarity to the localpart claims
+            # the voice (hermesbot/hermesport ≈ 0.84; unrelated words stay well below).
+            import difflib
+            words = re.findall(r"[\w]+", transcript.lower())
+            name_matched = any(
+                difflib.SequenceMatcher(None, w, localpart.lower()).ratio() >= 0.7 for w in words)
+            logger.info("Matrix: wake-word name check for %s (localpart=%r, words=%r): %s",
+                        event_id, localpart, words[:10], name_matched)
+            if name_matched:
+                # This bot was spoken to: claim the parked voice and process it.
+                parked = (getattr(self, "_pending_voice", None) or {}).pop(sender, None)
+                if parked and parked[1] == event_id:
+                    logger.info("Matrix: voice %s claimed by SPOKEN mention (%r)", event_id, transcript[:60])
+                    self._claimed_voice_events.add(event_id)
+                    await self._handle_media_message(
+                        room_id, sender, event_id, time.time(), source_content,
+                        parked[4], "m.audio")
+        except Exception as exc:
+            logger.warning("Matrix: wake-word check failed for %s: %s", event_id, exc)
 
     async def _handle_media_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
@@ -2198,7 +2302,11 @@ class MatrixAdapter(BasePlatformAdapter):
             room_id, sender, event_id, body, source_content, relates_to, ctx=ctx, message_type=msg_type,
             media_urls=media_urls, media_types=[media_type] if media_urls else None, media_msgtype=msgtype)
         if msg_event is not None:
+            logger.info("Matrix: dispatching media event %s (type=%s, urls=%s) to gateway",
+                        event_id, msg_event.message_type, media_urls)
             await self.handle_message(msg_event)
+        else:
+            logger.info("Matrix: media event %s dropped by inbound gate", event_id)
 
     @staticmethod
     def _classify_inbound_media(

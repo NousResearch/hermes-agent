@@ -8,7 +8,7 @@ description: "Agent 创建的技能的后台维护——使用跟踪、过期检
 
 Curator 是针对 **agent 创建的技能**的后台维护流程。它跟踪每个技能被查看、使用和修补的频率，将长期未使用的技能经历 `active → stale → archived` 状态流转，并定期启动一个短暂的辅助模型审查，提出合并或修补漂移的建议。
 
-它的存在是为了防止通过[自我改进循环](/user-guide/features/skills#agent-managed-skills-skill_manage-tool)创建的技能无限堆积。每次 agent 解决新问题并保存技能时，该技能都会落入 `~/.hermes/skills/`。若没有维护，最终会出现数十个范围狭窄的近似重复项，污染技能目录并浪费 token（令牌）。
+它的存在是为了防止通过[自我改进循环](./skills.md#agent-managed-skills-skill_manage-tool)创建的技能无限堆积。每次 agent 解决新问题并保存技能时，该技能都会落入 `~/.hermes/skills/`。若没有维护，最终会出现数十个范围狭窄的近似重复项，污染技能目录并浪费 token（令牌）。
 
 默认情况下（`prune_builtins: true`），Curator 在 `archive_after_days` 天未使用后，可以归档**未使用的捆绑内置技能**（随仓库附带），与它主要管理的 agent 自创技能一并处理。通过 [agentskills.io](https://agentskills.io) 安装的 hub 技能始终不受影响。设置 `curator.prune_builtins: false` 可恢复旧的“仅 agent 自创”行为，此时捆绑技能绝不会被触碰。Curator 也**绝不自动删除**——最坏的结果是归档到 `~/.hermes/skills/.archive/`，这是可恢复的。
 
@@ -242,7 +242,7 @@ Curator 在 `min_idle_hours` 未经过时也会拒绝运行，因此在活跃的
 
 ## 另请参阅
 
-- [技能系统](/user-guide/features/skills)——技能的总体工作原理及创建技能的自我改进循环
-- [内存](/user-guide/features/memory)——维护长期记忆的并行后台审查
-- [捆绑技能目录](/reference/skills-catalog)
+- [技能系统](./skills.md)——技能的总体工作原理及创建技能的自我改进循环
+- [内存](./memory.md)——维护长期记忆的并行后台审查
+- [捆绑技能目录](../../reference/skills-catalog.md)
 - [Issue #7816](https://github.com/NousResearch/hermes-agent/issues/7816)——原始提案与设计讨论

@@ -15,20 +15,13 @@ from hermes_cli.tools_config import (
     _RECENTLY_SHIPPED_TOOLSETS,
     _apply_toolset_change,
     _checklist_toolset_keys,
-    _configure_provider,
-    _reconfigure_provider,
     _get_platform_tools,
-    _platform_toolset_summary,
-    _reconfigure_tool,
     _run_post_setup,
     _save_platform_tools,
     _toolset_has_keys,
-    _toolset_needs_configuration_prompt,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
-    gui_toolset_label,
     _visible_providers,
-    provider_readiness_status,
     tools_command,
 )
 
@@ -98,6 +91,35 @@ def test_scalar_platform_toolsets_fall_back_to_platform_default():
     assert enabled == default_enabled
 
 
+def test_enable_on_string_platform_toolsets_keeps_listed_entries():
+    """#115866: `hermes tools enable` must operate on the selection a list-literal
+    string encodes — not re-baseline it on the platform default, which silently
+    dropped the user's default-off entries (video, video_gen) on write."""
+    config = {"platform_toolsets": {"telegram": '["browser", "terminal", "video", "video_gen"]'}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _apply_toolset_change(config, "telegram", ["computer_use"], "enable")
+
+    saved = config["platform_toolsets"]["telegram"]
+    assert isinstance(saved, list)
+    assert {"browser", "terminal", "video", "video_gen", "computer_use"} <= set(saved)
+
+
+def test_malformed_list_string_platform_toolsets_warns_then_falls_back(caplog):
+    """A string that does not parse as a list falls back to the platform default
+    loudly: one warning naming the expected shape, never a silent substitution (#115866)."""
+    import hermes_cli.tools_config as tc
+
+    config = {"platform_toolsets": {"cli": '["web", terminal'}}
+    tc._warned_invalid_platform_toolsets.discard("cli")
+
+    with caplog.at_level("WARNING", logger="hermes_cli.tools_config"):
+        enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    default_enabled = _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+
+    assert enabled == default_enabled
+    assert [r for r in caplog.records if "platform_toolsets.cli" in r.getMessage()
+            and "expected a YAML list" in r.getMessage()]
 
 
 
@@ -709,26 +731,16 @@ class TestBrowserUseCliInstalledForAllNonCamofoxBackends:
 class TestImagegenBackendRegistry:
     """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""
 
-    def test_fal_backend_registered(self):
-        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
-        assert "fal" in IMAGEGEN_BACKENDS
 
-    def test_fal_catalog_loads_lazily(self):
-        """catalog_fn should defer import to avoid import cycles."""
-        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
-        catalog, default = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
-        assert default == "fal-ai/flux-2/klein/9b"
-        assert "fal-ai/flux-2/klein/9b" in catalog
-        assert "fal-ai/flux-2-pro" in catalog
 
-    def test_image_gen_providers_tagged_with_fal_backend(self):
-        """Both Nous Subscription and FAL.ai providers must carry the
-        imagegen_backend tag so _configure_provider fires the picker."""
-        from hermes_cli.tools_config import TOOL_CATEGORIES
+    def test_image_gen_providers_tagged_with_registered_backend(self):
+        """Every hardcoded image_gen row must name a backend in IMAGEGEN_BACKENDS
+        so _configure_provider can fire that backend's model picker."""
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS, TOOL_CATEGORIES
         providers = TOOL_CATEGORIES["image_gen"]["providers"]
         for p in providers:
-            assert p.get("imagegen_backend") == "fal", (
-                f"{p['name']} missing imagegen_backend tag"
+            assert p.get("imagegen_backend") in IMAGEGEN_BACKENDS, (
+                f"{p['name']} missing a registered imagegen_backend tag"
             )
 
 
@@ -743,8 +755,10 @@ class TestImagegenModelPicker:
         with patch("hermes_cli.tools_config._prompt_choice", return_value=1):
             _configure_imagegen_model("fal", config)
         # ordered[0] == current (default klein), ordered[1] == first non-default
-        assert config["image_gen"]["model"] != "fal-ai/flux-2/klein/9b"
-        assert config["image_gen"]["model"].startswith("fal-ai/")
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
+        catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]({})
+        assert config["image_gen"]["model"] != default_model
+        assert config["image_gen"]["model"] in catalog
 
     def test_picker_with_gpt_image_does_not_prompt_quality(self):
         """GPT-Image quality is pinned to medium in the tool's defaults —
@@ -753,7 +767,7 @@ class TestImagegenModelPicker:
             _configure_imagegen_model,
             IMAGEGEN_BACKENDS,
         )
-        catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
+        catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]({})
         model_ids = list(catalog.keys())
         ordered = [default_model] + [m for m in model_ids if m != default_model]
         gpt_idx = ordered.index("fal-ai/gpt-image-1.5")
@@ -778,12 +792,12 @@ class TestImagegenModelPicker:
     def test_picker_repairs_corrupt_config_section(self):
         """When image_gen is a non-dict (user-edit YAML), the picker should
         replace it with a fresh dict rather than crash."""
-        from hermes_cli.tools_config import _configure_imagegen_model
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS, _configure_imagegen_model
         config = {"image_gen": "some-garbage-string"}
         with patch("hermes_cli.tools_config._prompt_choice", return_value=0):
             _configure_imagegen_model("fal", config)
         assert isinstance(config["image_gen"], dict)
-        assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"
+        assert config["image_gen"]["model"] == IMAGEGEN_BACKENDS["fal"]["catalog_fn"]({})[1]
 
     def test_plugin_picker_falls_back_when_default_is_missing_from_catalog(self):
         """A stale cross-provider model must not become an unindexable row."""
@@ -828,20 +842,8 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
     spotify_rows = [t for t in all_ts if t[0] == "spotify"]
     assert len(spotify_rows) == 1, spotify_rows
     # Built-in label wins over the plugin label.
-    assert spotify_rows[0][1] == "🎵 Spotify"
-
-
-
-
-
-
-# ---------------------------------------------------------------------------
-# Inline Nous Portal login gate on managed-provider selection
-# ---------------------------------------------------------------------------
-
-
-
-
+    builtin_label = next(label for key, label, _ in CONFIGURABLE_TOOLSETS if key == "spotify")
+    assert spotify_rows[0][1] == builtin_label
 
 
 
@@ -885,26 +887,6 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
 
 
-
-
-# ─── provider_readiness_status ────────────────────────────────────────────────
-#
-# Server-side truth for the GUI "Ready" pill (issue: Capabilities tab showed
-# Ready for every zero-env-var provider row, including logged-out Nous
-# Subscription rows and never-installed KittenTTS/Piper).
-
-
-def _fake_features(*, logged_in: bool, paid: bool = True):
-    account = (
-        NousPortalAccountInfo(
-            logged_in=True, source="jwt", fresh=False, paid_service_access=paid
-        )
-        if logged_in
-        else NousPortalAccountInfo(
-            logged_in=False, source="none", fresh=False, paid_service_access=None
-        )
-    )
-    return SimpleNamespace(nous_auth_present=logged_in, account_info=account)
 
 
 def test_visible_providers_reuses_logged_out_feature_snapshot(monkeypatch):
@@ -977,26 +959,63 @@ def test_visible_providers_reuses_pool_video_feature_snapshot(monkeypatch):
 
 
 
-# ── Windows console-flash guard for post-setup subprocess spawns ──────────────
+# ── One managed image row ─────────────────────────────────────────────────────
 #
-# The desktop GUI runs post-setup hooks through a detached, console-less
-# `hermes tools post-setup <key>` child. On Windows each console child (npm,
-# npx, pip, powershell) spawned without CREATE_NO_WINDOW materializes a brand
-# new console window — the "terminal flash" reported on the Capabilities
-# browser-setup journey. `_post_setup_no_window_flags` is the single wrapper
-# every hook spawn passes as `creationflags`.
+# FAL, Krea and Portal models all live behind the single "Nous Subscription" row; the stored
+# model id picks the gateway. Before, the Portal plugin rendered its own row that also wrote
+# `provider: nous`, so two rows read active at once and the Portal pick generated on FAL.
 
 
+def _managed_image_row() -> dict:
+    return next(p for p in TOOL_CATEGORIES["image_gen"]["providers"] if p.get("managed_nous_feature") == "image_gen")
 
 
+def test_exactly_one_image_row_is_active_for_a_managed_selection(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.tools_config_providers import _plugin_image_gen_providers
+
+    monkeypatch.setattr(
+        tools_config, "get_nous_subscription_features",
+        lambda config, **kwargs: SimpleNamespace(features={"image_gen": SimpleNamespace(managed_by_nous=True)}),
+    )
+    rows = TOOL_CATEGORIES["image_gen"]["providers"] + _plugin_image_gen_providers()
+    for model in ("fal-ai/flux-2/klein/9b", "krea-2-medium", "google/gemini-3-pro-image"):
+        config = {"image_gen": {"provider": "nous", "model": model}}
+        active = [r["name"] for r in rows if tools_config._is_provider_active(r, config)]
+        assert active == [_managed_image_row()["name"]], (model, active)
 
 
-# ── Post-setup readiness predicates for the browser rows ─────────────────────
-#
-# The GUI's "Run setup" idempotence rides on provider_readiness_status
-# reporting ready/needs_setup honestly. agent_browser (local browser) must
-# track the FULL local install (CLI + Chromium), the cloud-provider hook
-# ("browserbase") only the CLI, and camofox its npm package.
+def test_gui_model_catalog_for_the_managed_row_spans_every_managed_gateway(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.web_routers.tools import _resolve_toolset_model_plugin, _toolset_model_catalog
+    from plugins.image_gen.krea import KREA_MODEL_IDS
+    from tools.image_generation_catalog import FAL_MODELS
+
+    paid = NousPortalAccountInfo(logged_in=True, source="jwt", fresh=False, paid_service_access=True)
+    monkeypatch.setattr(
+        tools_config, "get_nous_subscription_features",
+        lambda *args, **kwargs: SimpleNamespace(features={}, account_info=paid))
+    plugin = _resolve_toolset_model_plugin("image_gen", _managed_image_row())
+    catalog, default_model = _toolset_model_catalog("image_gen", plugin, {})
+
+    assert default_model in catalog and default_model in FAL_MODELS
+    assert KREA_MODEL_IDS <= set(catalog)
+    assert not any(mid.startswith("fal-ai/krea/") for mid in catalog), "Krea 2 must appear once, natively"
+
+
+def test_pool_only_account_is_offered_fal_models_only(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+    from hermes_cli.tools_config_providers import _managed_image_catalog
+
+    pool = NousPortalAccountInfo(
+        logged_in=True, source="jwt", fresh=False, paid_service_access=False,
+        tool_access=NousToolAccessInfo(enabled=True, coverage={"fal": True, "krea": False}))
+    monkeypatch.setattr(
+        tools_config, "get_nous_subscription_features",
+        lambda *args, **kwargs: SimpleNamespace(features={}, account_info=pool))
+    catalog, _ = _managed_image_catalog({})
+
+    assert catalog and {meta["backend"] for meta in catalog.values()} == {"fal"}
 
 
 # ── Toolsets that shipped after a platform's last `hermes tools` save ────────
@@ -1207,7 +1226,6 @@ def test_explicit_plugin_toolset_admitted_in_platform_toolsets(monkeypatch):
     # Resolve dplat_call inside the dplat_client toolset — _get_platform_tools
     # ends up calling resolve_toolset() which can fall back to the registry
     # for plugin-provided names. Patch resolve_toolset for "dplat_client".
-    from toolsets import TOOLSETS as _BASE_TOOLSETS
     import toolsets as _toolsets_mod
 
     original_resolve = _toolsets_mod.resolve_toolset

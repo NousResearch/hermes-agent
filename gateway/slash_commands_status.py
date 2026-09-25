@@ -16,6 +16,7 @@ from agent.i18n import t
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
 from gateway.session_transcript import TranscriptReadError
+from hermes_cli.status_report import build_status_fields
 
 # Log-record parity with gateway/run.py and the origin module.
 logger = logging.getLogger("gateway.run")
@@ -67,8 +68,17 @@ async def _quiet(call, default=None):
         return default
 
 
-HISTORY_UNREADABLE = ("⚠️ Conversation history is unreadable (state.db). "
-                      "This is not a new conversation — earlier messages exist but cannot be loaded.")
+HISTORY_UNREADABLE = ("⚠️ I can't read this conversation's history right now (your earlier messages "
+                      "exist but cannot be loaded). Run `hermes doctor --fix` on the host, or use /new "
+                      "to start fresh.")
+
+
+def _configured_provider() -> str:
+    """``model.provider`` from the gateway config ("" when unset)."""
+    from gateway.run import _load_gateway_config
+    user_config = _load_gateway_config()
+    model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
+    return _clean_str(model_cfg.get("provider")) if isinstance(model_cfg, dict) else ""
 
 
 def _quiet_sync(call, default=None):
@@ -79,39 +89,49 @@ def _quiet_sync(call, default=None):
         return default
 
 
-def _status_model_route(status_agent, persisted_route: dict, session_row: dict, session_entry):
-    """``(model, provider, context_used, context_total)`` for /status.
+def _status_model_route(
+    status_agent, active_override: dict, persisted_route: dict, session_row: dict, session_entry
+):
+    """``(model, provider, context_used, context_total, route)`` for /status.
 
-    Order: live/cached agent route -> persisted dominant route -> SessionDB row -> gateway config
-    (only loaded when something is still missing).
+    Order: live/cached agent route -> active session override -> persisted recent route ->
+    SessionDB row -> gateway config (only loaded when something is still missing). ``route`` carries
+    the ``provider`` / ``base_url`` / ``api_key`` of the winning source only, so a later context-window
+    lookup queries the endpoint that serves the displayed model (never a losing route's endpoint);
+    a winner without a ``base_url`` leaves the lookup on the default runtime route.
     """
     from gateway.run import _AGENT_PENDING_SENTINEL, _load_gateway_config, _resolve_gateway_model
     context_used = context_total = 0
-    routes = []
+    routes: list[tuple[str, str, dict]] = []
     if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
         routes.append((_clean_str(getattr(status_agent, "model", "")),
-                       _clean_str(getattr(status_agent, "provider", ""))))
+                       _clean_str(getattr(status_agent, "provider", "")),
+                       {"base_url": _clean_str(getattr(status_agent, "base_url", "")),
+                        "api_key": _clean_str(getattr(status_agent, "api_key", ""))}))
         ctx = getattr(status_agent, "context_compressor", None)
         if ctx is not None:
             context_used = max(0, _int_value(getattr(ctx, "last_prompt_tokens", 0)))
             context_total = _int_value(getattr(ctx, "context_length", 0))
+    routes.append((_clean_str(active_override.get("model")),
+                   _clean_str(active_override.get("provider")),
+                   {"base_url": _clean_str(active_override.get("base_url")),
+                    "api_key": _clean_str(active_override.get("api_key"))}))
     routes.append((_clean_str(persisted_route.get("model")),
-                   _clean_str(persisted_route.get("billing_provider"))))
-    row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")))
+                   _clean_str(persisted_route.get("billing_provider")), {}))
+    row_route = (_clean_str(session_row.get("model")), _clean_str(session_row.get("billing_provider")), {})
     # First fully-resolved (model AND provider) route wins; the SessionDB row is used even if partial.
-    model_name, provider_name = next((r for r in routes if r[0] and r[1]), row_route)
+    model_name, provider_name, route = next((r for r in routes if r[0] and r[1]), row_route)
     context_used = context_used or _int_value(getattr(session_entry, "last_prompt_tokens", 0))
     user_config: dict[str, Any] = {}
-    if not model_name or not provider_name or not context_total:
+    if not model_name or not provider_name:
         user_config = _quiet_sync(_load_gateway_config, {})
     model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
     model_cfg = model_cfg if isinstance(model_cfg, dict) else {}
     model_name = model_name or _resolve_gateway_model(user_config)
     provider_name = provider_name or _clean_str(model_cfg.get("provider"))
-    configured_context = model_cfg.get("context_length")
-    if not context_total and isinstance(configured_context, int) and configured_context > 0:
-        context_total = configured_context
-    return model_name, provider_name, context_used, context_total
+    # No raw ``model.context_length`` pin here: the resolver applies it only while the displayed
+    # route still matches the configured one (a session /model switch must not inherit it).
+    return model_name, provider_name, context_used, context_total, {"provider": provider_name, **route}
 
 
 def _context_compressor_lines(agent, ctx, used: int) -> list[str]:
@@ -230,23 +250,37 @@ class GatewayStatusCommandsMixin:
             session_entry.session_id
         )
         # Prefer the live or cached agent (actual runtime route + context compressor); fall back
-        # to SessionDB metadata + last_prompt_tokens so /status stays useful between turns.
+        # to an active /model override, then SessionDB metadata + last_prompt_tokens so /status
+        # stays useful between turns. Rehydrate first so this precedence survives gateway restarts.
         status_agent = agent if is_running else self._cached_agent_for(session_key)
-        model_name, provider_name, context_used, context_total = _status_model_route(
-            status_agent, persisted_route, session_row, session_entry
+        self._rehydrate_session_model_override(session_key)
+        active_override = self._session_model_override(session_key) or {}
+        model_name, provider_name, context_used, context_total, route = _status_model_route(
+            status_agent, active_override, persisted_route, session_row, session_entry
         )
+        if not context_total and model_name:
+            # Same resolver /context uses (off-loop: it can probe /models). A window the resolver only
+            # invented (unknown model → DEFAULT_FALLBACK_CONTEXT) stays hidden rather than being shown
+            # as a real limit; the occupancy-only line below is honest for that case.
+            resolved = await self._resolve_route_context(source, model_name, route)
+            if resolved is not None and resolved.context_source != "default":
+                context_total = _int_value(resolved.context_length)
 
-        stamp = "%Y-%m-%d %H:%M"
+        fields = build_status_fields(
+            session_entry.session_id, None, session_row, title=title, model=model_name, provider=provider_name,
+            created=session_entry.created_at, last_activity=session_entry.updated_at,
+            tokens=db_total_tokens, agent_running=is_running,
+        )
         lines = [t("gateway.status.header"), "",
-                 t("gateway.status.session_id", session_id=session_entry.session_id)]
-        if title:
-            lines.append(t("gateway.status.title", title=title))
-        lines += [t("gateway.status.created", timestamp=session_entry.created_at.strftime(stamp)),
-                  t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime(stamp))]
-        if model_name and provider_name:
-            lines.append(t("gateway.status.model_provider", model=model_name, provider=provider_name))
-        elif model_name:
-            lines.append(t("gateway.status.model", model=model_name))
+                 t("gateway.status.session_id", session_id=fields["session_id"])]
+        if fields["title"]:
+            lines.append(t("gateway.status.title", title=fields["title"]))
+        lines += [t("gateway.status.created", timestamp=fields["created"]),
+                  t("gateway.status.last_activity", timestamp=fields["last_activity"])]
+        if fields["model"] and fields["provider"]:
+            lines.append(t("gateway.status.model_provider", model=fields["model"], provider=fields["provider"]))
+        elif fields["model"]:
+            lines.append(t("gateway.status.model", model=fields["model"]))
         try:
             from hermes_cli.auth import resolve_provider
             from hermes_cli.anon_auth import guest_carries_inference
@@ -266,8 +300,8 @@ class GatewayStatusCommandsMixin:
                            pct=f"{mark}{pct}"))
         elif context_used:
             lines.append(t("gateway.status.context_used", used=mark + _fmt(context_used)))
-        state = t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")
-        lines += [t("gateway.status.tokens", tokens=_fmt(db_total_tokens)),
+        state = t("gateway.status.state_yes") if fields["agent_running"] else t("gateway.status.state_no")
+        lines += [t("gateway.status.tokens", tokens=fields["tokens"]),
                   t("gateway.status.agent_running", state=state)]
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
@@ -303,7 +337,7 @@ class GatewayStatusCommandsMixin:
             _int_value(session_row.get(k))
             for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
         )
-        route = await _quiet(lambda: db.get_dominant_session_model_route(session_id))
+        route = await _quiet(lambda: db.get_recent_session_model_route(session_id))
         return title, session_row, db_total_tokens, route if isinstance(route, dict) else {}
 
     @staticmethod
@@ -375,14 +409,7 @@ class GatewayStatusCommandsMixin:
             row = await _quiet(lambda: self._session_db.get_session(session_entry.session_id))
             model_name = _clean_str(row.get("model", "")) if isinstance(row, dict) else ""
         if not context_length:
-            from gateway.run import _profile_runtime_scope, _resolve_gateway_model_context
-
-            def _resolve_nonresident_context():
-                if getattr(getattr(self, "config", None), "multiplex_profiles", False):
-                    with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
-                        return _resolve_gateway_model_context(model_name or None)
-                return _resolve_gateway_model_context(model_name or None)
-            resolved = await _quiet(lambda: asyncio.to_thread(_resolve_nonresident_context))
+            resolved = await self._resolve_route_context(source, model_name)
             if resolved is not None:
                 model_name = model_name or resolved.model
                 context_length = _int_value(resolved.context_length)
@@ -392,6 +419,18 @@ class GatewayStatusCommandsMixin:
                 await _quiet(lambda: asyncio.to_thread(get_model_context_length, model_name))
             )
         return used, context_length, model_name
+
+    async def _resolve_route_context(self, source, model_name: str, route: dict | None = None):
+        """``_resolve_gateway_model_context`` for a non-resident session, run off the event loop inside
+        the profile serving ``source`` (multiplex). Fail-open: None on any error."""
+        from gateway.run import _profile_runtime_scope, _resolve_gateway_model_context
+
+        def _resolve():
+            if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                    return _resolve_gateway_model_context(model_name or None, route)
+            return _resolve_gateway_model_context(model_name or None, route)
+        return await _quiet(lambda: asyncio.to_thread(_resolve))
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
@@ -476,7 +515,9 @@ class GatewayStatusCommandsMixin:
             if not (payload.get("categories") or []):
                 return []
             details = _quiet_sync(lambda: compute_context_details(agent), {"skills": [], "toolsets": []}) if expanded else None
-            return render_context_breakdown_lines(payload, details=details, grid=False)
+            from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+            file_lines = _quiet_sync(lambda: render_context_file_lines(context_file_sources_for_agent(agent)), [])
+            return render_context_breakdown_lines(payload, details=details, grid=False) + ([""] + file_lines if file_lines else [])
         except Exception:
             return []
 
@@ -540,6 +581,11 @@ class GatewayStatusCommandsMixin:
         )
         if not provider and getattr(self, "_session_db", None) is not None:
             provider, base_url = await self._persisted_billing_route(source)
+        if not provider:
+            # Fresh or evicted session with no persisted route (e.g. /usage right after login):
+            # fall back to the configured provider, as /status does, so account limits such as
+            # Codex subscription windows still render from on-disk credentials (#15167).
+            provider = await _quiet(lambda: asyncio.to_thread(_configured_provider)) or None
         if wants_reset:
             if str(provider or "").strip().lower() != "openai-codex":
                 return t("gateway.usage.reset_wrong_provider")
@@ -600,14 +646,14 @@ class GatewayStatusCommandsMixin:
         return t("gateway.usage.no_data")
 
     async def _persisted_billing_route(self, source):
-        """``(provider, base_url)`` from the SessionDB row / dominant route when no agent is resident."""
+        """``(provider, base_url)`` from the SessionDB row / most recent route when no agent is resident."""
         async def _rows():
             entry = await self.async_session_store.get_or_create_session(source)
             persisted = await self._session_db.get_session(entry.session_id) or {}
-            route = await self._session_db.get_dominant_session_model_route(entry.session_id)
+            route = await self._session_db.get_recent_session_model_route(entry.session_id)
             return persisted, route if isinstance(route, dict) else {}
-        persisted, dominant = await _quiet(_rows, ({}, {}))
-        row = dominant if dominant.get("billing_provider") else persisted
+        persisted, recent = await _quiet(_rows, ({}, {}))
+        row = recent if recent.get("billing_provider") else persisted
         return row.get("billing_provider"), row.get("billing_base_url")
 
     async def _handle_insights_command(self, event: MessageEvent) -> str:

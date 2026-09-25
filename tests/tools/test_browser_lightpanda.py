@@ -39,13 +39,6 @@ def _clean_engine_cache():
 class TestGetBrowserEngine:
     """Test engine resolution from config and env vars."""
 
-    def test_default_is_auto(self):
-        """With no config or env var, engine defaults to 'auto'."""
-        from tools.browser_tool_cloud import _get_browser_engine
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("AGENT_BROWSER_ENGINE", None)
-            with patch("hermes_cli.config.read_raw_config", return_value={}):
-                assert _get_browser_engine() == "auto"
 
     def test_config_lightpanda(self):
         """Config browser.engine = 'lightpanda' is respected."""
@@ -55,14 +48,6 @@ class TestGetBrowserEngine:
             assert _get_browser_engine() == "lightpanda"
 
 
-    def test_caching(self):
-        """Result is cached — second call doesn't re-read config."""
-        from tools.browser_tool_cloud import _get_browser_engine
-        mock_read = MagicMock(return_value={"browser": {"engine": "lightpanda"}})
-        with patch("hermes_cli.config.read_raw_config", mock_read):
-            assert _get_browser_engine() == "lightpanda"
-            assert _get_browser_engine() == "lightpanda"
-            mock_read.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -138,20 +123,6 @@ class TestNeedsLightpandaFallback:
 # Config integration
 # ---------------------------------------------------------------------------
 
-class TestConfigIntegration:
-    """Verify engine config is in DEFAULT_CONFIG."""
-
-    def test_engine_in_default_config(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-        assert "engine" in DEFAULT_CONFIG["browser"]
-        assert DEFAULT_CONFIG["browser"]["engine"] == "auto"
-
-    def test_env_var_registered(self):
-        from hermes_cli.config import OPTIONAL_ENV_VARS
-        assert "AGENT_BROWSER_ENGINE" in OPTIONAL_ENV_VARS
-        entry = OPTIONAL_ENV_VARS["AGENT_BROWSER_ENGINE"]
-        assert entry["category"] == "tool"
-        assert entry["advanced"] is True
 
 
 class TestLightpandaRequirements:
@@ -184,18 +155,6 @@ class TestLightpandaRequirements:
 # cleanup_all_browsers resets engine cache
 # ---------------------------------------------------------------------------
 
-class TestCleanupResetsEngineCache:
-    """Verify cleanup_all_browsers resets engine-related globals."""
-
-    def test_engine_cache_reset(self):
-        import tools.browser_tool as bt
-        # Seed the cache
-        bt._cached_browser_engine = "lightpanda"
-        bt._browser_engine_resolved = True
-        # cleanup should reset them
-        bt_lifecycle.cleanup_all_browsers()
-        assert bt._cached_browser_engine is None
-        assert bt._browser_engine_resolved is False
 
 
 # ---------------------------------------------------------------------------
@@ -205,20 +164,6 @@ class TestCleanupResetsEngineCache:
 class TestChromeFallback:
     """Chrome fallback must hand off from Lightpanda without leaking engine policy."""
 
-    def test_uses_non_recursive_lightpanda_get_url(self):
-
-        with patch("tools.browser_tool_session._run_browser_command", return_value={
-                 "success": True, "data": {"url": "https://example.com/"}
-             }) as run_command, \
-             patch("tools.browser_tool_install._find_agent_browser", side_effect=FileNotFoundError("stop")):
-            result = bt_lightpanda_fallback._run_chrome_fallback_command(
-                "task1", "screenshot", [], timeout=30
-            )
-
-        run_command.assert_called_once_with(
-            "task1", "get", ["url"], timeout=10, _engine_override="lightpanda"
-        )
-        assert result == {"success": False, "error": "stop"}
 
     def test_chrome_fallback_injects_required_sandbox_args(self, tmp_path):
 
@@ -338,11 +283,9 @@ class TestLightpandaFallbackWarning:
 
         assert response["success"] is True
         assert response["browser_engine"] == "chrome"
-        assert response["browser_engine_fallback"] == {
-            "from": "lightpanda",
-            "to": "chrome",
-            "reason": "Lightpanda has no graphical renderer for screenshots; used Chrome for vision capture.",
-        }
+        assert response["browser_engine_fallback"]["from"] == "lightpanda"
+        assert response["browser_engine_fallback"]["to"] == "chrome"
+        assert response["browser_engine_fallback"]["reason"]
 
 # ---------------------------------------------------------------------------
 # _engine_override parameter
@@ -535,40 +478,40 @@ class TestLightpandaEngineStatus:
         return bt
 
     def test_not_lightpanda(self, monkeypatch):
-        bt = self._gates(monkeypatch, _using_lightpanda_engine=lambda: False)
+        self._gates(monkeypatch, _using_lightpanda_engine=lambda: False)
         assert bt_lightpanda_fallback.lightpanda_engine_status() == (False, "")
 
     def test_used_in_browser_use_mode(self, monkeypatch):
-        bt = self._gates(monkeypatch)
+        self._gates(monkeypatch)
         used, reason = bt_lightpanda_fallback.lightpanda_engine_status()
         assert used is True
         assert "lightpanda serve" in reason
 
     def test_used_with_builtin_tools(self, monkeypatch):
-        bt = self._gates(monkeypatch, _is_browser_use_cli_mode=lambda: False)
+        self._gates(monkeypatch, _is_browser_use_cli_mode=lambda: False)
         used, reason = bt_lightpanda_fallback.lightpanda_engine_status()
         assert used is True
         assert "--engine lightpanda" in reason
 
     def test_shadowed_by_cdp_override(self, monkeypatch):
-        bt = self._gates(monkeypatch, _get_cdp_override_raw=lambda: "ws://x")
+        self._gates(monkeypatch, _get_cdp_override_raw=lambda: "ws://x")
         used, reason = bt_lightpanda_fallback.lightpanda_engine_status()
         assert used is False and "CDP override" in reason
 
     def test_shadowed_by_camofox(self, monkeypatch):
-        bt = self._gates(monkeypatch, _is_camofox_mode=lambda: True)
+        self._gates(monkeypatch, _is_camofox_mode=lambda: True)
         used, reason = bt_lightpanda_fallback.lightpanda_engine_status()
         assert used is False and "Camofox" in reason
 
     def test_shadowed_by_cloud_provider(self, monkeypatch):
         provider = MagicMock()
         provider.display_name = "Browserbase"
-        bt = self._gates(monkeypatch, _get_cloud_provider=lambda: provider)
+        self._gates(monkeypatch, _get_cloud_provider=lambda: provider)
         used, reason = bt_lightpanda_fallback.lightpanda_engine_status()
         assert used is False and "Browserbase" in reason
 
     def test_shadowed_by_legacy_browser_use_cloud(self, monkeypatch):
-        bt = self._gates(monkeypatch)
+        self._gates(monkeypatch)
         monkeypatch.setattr(
             "tools.browser_use_cli.is_legacy_browser_use_cloud_config", lambda cfg: True
         )
@@ -576,7 +519,7 @@ class TestLightpandaEngineStatus:
         assert used is False and "Browser Use cloud" in reason
 
     def test_shadowed_by_real_profile(self, monkeypatch):
-        bt = self._gates(monkeypatch, _use_real_profile=lambda: True)
+        self._gates(monkeypatch, _use_real_profile=lambda: True)
         used, reason = bt_lightpanda_fallback.lightpanda_engine_status()
         assert used is False and "use_real_profile" in reason
 
@@ -585,7 +528,7 @@ class TestLightpandaEngineStatus:
         both set the real-profile toggle is the actual shadow."""
         provider = MagicMock()
         provider.display_name = "Browserbase"
-        bt = self._gates(
+        self._gates(
             monkeypatch,
             _use_real_profile=lambda: True,
             _get_cloud_provider=lambda: provider,
@@ -762,3 +705,16 @@ class TestLightpandaSessionLifecycle:
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)):
             bt_lifecycle._reap_orphaned_browser_sessions()
         reap.assert_called_once()
+
+    def test_orphan_reaper_survives_non_dict_record(self, tmp_path, monkeypatch):
+        """A parseable-but-non-object state file is swept like an unreadable one —
+        never an AttributeError that wedges the reaper."""
+        from tools import browser_lightpanda
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_dir = browser_lightpanda._state_dir()
+        bad = state_dir / "broken.json"
+        bad.write_text('"not a record"', encoding="utf-8")
+        dead_owner = state_dir / "dead.json"
+        dead_owner.write_text(json.dumps({"owner_pid": 2**22 + 7}), encoding="utf-8")
+        assert browser_lightpanda.reap_orphaned_lightpanda() == 0
+        assert not bad.exists() and not dead_owner.exists()

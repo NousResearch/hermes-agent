@@ -22,16 +22,20 @@ from typing import Any, Optional
 from fastapi import APIRouter, HTTPException
 
 from gateway.status import (
-    multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness)
+    multiplexer_liveness_for_profile, profile_platforms_from_multiplexer, resolve_gateway_liveness,
+    retained_gateway_state)
 from hermes_cli._subprocess_compat import windows_hide_flags
-from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path, redact_key
+from hermes_cli.config import OPTIONAL_ENV_VARS, get_env_path
 from hermes_constants import get_process_hermes_home
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_gateway import _restart_gateway_after
 from hermes_cli.web_server_messaging import (
     _TelegramOnboardingPairing, _WhatsAppOnboardingSession, _messaging_platform_catalog, _telegram_onboarding_error_message, _telegram_onboarding_lock, _telegram_onboarding_pairings, _whatsapp_onboarding_payload, _whatsapp_onboarding_sessions,
 )
-from hermes_cli.web_routers._common import http_failure
+from hermes_cli.web_routers._common import (
+    REDACTED_CREDENTIAL_WRITE_DETAIL, http_failure, is_redacted_credential_preview,
+    redacted_credential_preview,
+)
 from hermes_cli.web_models import (
     MessagingPlatformUpdate, TelegramOnboardingApply, TelegramOnboardingStart,
     WhatsAppOnboardingApply, WhatsAppOnboardingStart,
@@ -231,7 +235,7 @@ def _messaging_platform_payload(
     env_vars = [
         {
             "key": key, "required": key in entry["required_env"], "is_set": bool(value),
-            "redacted_value": redact_key(value) if value else None, **_messaging_env_info(key),
+            "redacted_value": redacted_credential_preview(value), **_messaging_env_info(key),
         }
         for key, value in ((key, env_value(key)) for key in entry["env_vars"])
     ]
@@ -246,7 +250,9 @@ def _messaging_platform_payload(
     elif gateway_running and not state:
         state = "pending_restart"
     elif not gateway_running and not state:
-        state = "startup_failed" if rt.get("gateway_state") == "startup_failed" else "gateway_stopped"
+        # Same verdict /api/status gives: ``hermes gateway stop`` keeps the last failure on disk,
+        # and a profile the operator stopped must not wear a "Start failed" badge for it.
+        state = "startup_failed" if retained_gateway_state(rt) == "startup_failed" else "gateway_stopped"
 
     error_code = runtime_platform.get("error_code")
     error_message = runtime_platform.get("error_message")
@@ -278,11 +284,17 @@ def _platform_payloads(scoped_dir: Optional[Path], entries) -> list[dict[str, An
     HERMES_HOME contextvar; the gateway status readers do not, hence the explicit path)."""
     env_on_disk = load_env()
     runtime = read_runtime_status(path=scoped_dir / "gateway_state.json") if scoped_dir is not None else read_runtime_status()
-    if runtime is None:
-        # A profile served by the multiplexer writes no record of its own; its adapters live in the
-        # multiplexer's record under ``<profile>:<platform>``. Unscoped, the profile is the process's
-        # own home (a pooled ``hermes --profile X serve``); the default home resolves to None here.
-        own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
+    # A profile served by the multiplexer writes no live record of its own; its adapters live in the
+    # multiplexer's record under ``<profile>:<platform>``. A leftover ``gateway_state.json`` from the
+    # profile's standalone days outranks nothing: only a record proving a live own gateway does —
+    # the same rung order ``resolve_gateway_liveness`` uses (own runtime PID before the multiplexer),
+    # so the two surfaces cannot disagree. Unscoped, the profile is the process's own home (a pooled
+    # ``hermes --profile X serve``); the default home resolves to a name the multiplexer never serves.
+    own_home = scoped_dir if scoped_dir is not None else get_process_hermes_home()
+    if (
+        runtime is None
+        or get_runtime_status_running_pid(runtime, expected_home=own_home) is None
+    ):
         served = multiplexer_liveness_for_profile(own_home)
         if served is not None:
             runtime = {**served[1], "platforms": profile_platforms_from_multiplexer(served[1], own_home.name)}
@@ -807,7 +819,7 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     enable a second one. Every other inbound-port platform (Twilio, LINE, Teams, ...) IS allowed on a
     secondary: the gateway serves it on the shared listener at ``/p/<profile>/<path>``.
     """
-    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS, load_gateway_config
+    from gateway.config import SHARED_LISTENER_MIRROR_PLATFORMS
 
     if platform_id not in SHARED_LISTENER_MIRROR_PLATFORMS:
         return None
@@ -825,11 +837,12 @@ def _multiplex_port_binding_conflict(platform_id: str, requested_profile: Option
     if target in ("default", "custom"):
         return None
 
-    # The flag that matters is the one the shared gateway reads at startup: the DEFAULT
-    # profile's config (plus the process-wide GATEWAY_MULTIPLEX_PROFILES override).
-    with _config_profile_scope("default"):
-        if not load_gateway_config().multiplex_profiles:
-            return None
+    # The flag that matters is the one the shared gateway settled at startup: its served record when
+    # it runs, else the DEFAULT profile's explicit config (plus the process-wide
+    # GATEWAY_MULTIPLEX_PROFILES override). An unset flag is decided by the gateway, not guessed here.
+    from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+    if not default_gateway_multiplexes():
+        return None
 
     return (
         f"Cannot enable '{platform_id}' on profile '{target}': gateway.multiplex_profiles is on and the "
@@ -862,16 +875,25 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
 
     def _apply():
         with _profile_scope(target_profile):
+            updates: dict[str, str] = {}
+
+            # Validate the whole request before clearing or replacing anything.
             for key in body.clear_env:
                 _check_allowed(key)
-                remove_env_value(key)
-
             for key, value in body.env.items():
                 _check_allowed(key)
                 trimmed = value.strip()
-                if trimmed:
-                    _validate_messaging_env_value(platform_id, key, trimmed)
-                    save_env_value(key, trimmed)
+                if not trimmed:
+                    continue
+                if is_redacted_credential_preview(trimmed):
+                    raise HTTPException(status_code=400, detail=REDACTED_CREDENTIAL_WRITE_DETAIL)
+                _validate_messaging_env_value(platform_id, key, trimmed)
+                updates[key] = trimmed
+
+            for key in body.clear_env:
+                remove_env_value(key)
+            for key, value in updates.items():
+                save_env_value(key, value)
 
             if body.enabled is not None:
                 _write_platform_enabled(platform_id, body.enabled)

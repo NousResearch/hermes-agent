@@ -9,6 +9,7 @@ crash-recovery wiring. Only the async lifecycle lives here; the child run is an 
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import os
@@ -17,10 +18,9 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, hermes_home_key
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 
@@ -47,7 +47,23 @@ _MAX_DELIVERY_ATTEMPTS = 8
 # Pending completions older than this are dropped on restart replay instead of
 # re-run as a full-context turn; 48h keeps weekend results deliverable.
 _MAX_COMPLETION_REPLAY_AGE_S = 48 * 3600.0
+# A delivery claim older than this is abandoned and may be re-claimed.
+_CLAIM_LEASE_S = 300.0
 _DB_LOCK = threading.Lock()
+
+# ── Orphaned-completion sweep ────────────────────────────────────────────────
+# Startup replay runs once per process, so a completion whose owner died while THIS process was
+# already running (a desktop reload) would wait for the next restart (#97202). Delivery loops (gateway
+# watcher, TUI poller) sweep each home they serve at most once per interval.
+ORPHAN_SWEEP_INTERVAL_S = 30.0
+# Idle time before a dead owner's pending row is re-offered; keeps the sweep off a row just touched.
+_ORPHAN_STALE_S = 60.0
+_orphan_lock = threading.Lock()
+# (home key, delegation_id) put on this process's queue by replay or sweep and not re-offered while
+# that copy is alive. A consumer that discards its copy with the row still pending hands it back
+# (``return_completion_offer``); the delivery claim stays the only thing that settles the row.
+_offered: set = set()
+_last_orphan_sweep: Dict[str, float] = {}
 
 # ── Stale-delegation detection (progress-based, on by default) ──────────────
 # A runner wedged before returning never reaches its finalizer, so it would show
@@ -83,14 +99,19 @@ def _db_path():
 
 
 def _connect() -> sqlite3.Connection:
+    from hermes_cli.sqlite_util import open_db
+    # Same state.db as hermes_state.SessionDB -- reuse its owner-only (0600)
+    # hardening so this writer doesn't create/leave the file (and its WAL
+    # sidecars) at the process umask. See hermes_state._secure_state_db_files.
+    from hermes_state import _secure_state_db_files
+
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
-    try:
-        _initialize_schema(conn)
-    except Exception:
-        conn.close()  # don't leak the connection on PRAGMA/DDL failure
-        raise
+    _secure_state_db_files(path, create_main=True)
+    # wal=False: SessionDB owns state.db's journal mode (_initialize_schema applies the barriers).
+    conn = open_db(path, db_label="state.db (async_delegation)", busy_timeout_ms=10_000,
+                   wal=False, row_factory=None, initialize=_initialize_schema)
+    _secure_state_db_files(path)
     return conn
 
 
@@ -110,23 +131,10 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
     reconcile_state_schema(conn)
 
 
-@contextmanager
-def _transaction() -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, and ALWAYS close it (``with conn:``
-    alone leaks the connection and WAL/SHM fds until GC).
+def _transaction():
+    from hermes_cli.sqlite_util import transaction
 
-    ``sqlite3.Connection.__enter__``/``__exit__`` only commit or roll back the transaction; they do not
-    close the connection. Using ``with _connect()`` alone therefore leaks a connection — and its WAL/SHM
-    file descriptors — on every durable dispatch, completion, and delivery-claim, deferring the close to the
-    garbage collector. On a long-running gateway that exhausts ``RLIMIT_NOFILE`` (the cron-ledger sibling of
-    this bug was #69567 / PR #69594).
-    """
-    conn = _connect()
-    try:
-        with conn:
-            yield conn
-    finally:
-        conn.close()
+    return transaction(_connect())
 
 
 def _capture_routing_origin() -> Dict[str, Any]:
@@ -149,8 +157,12 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         owner_started_at = None
     task_payload = {
         key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", *_ROUTING_KEYS)
+        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", *_ROUTING_KEYS)
         if key in record}
+    try:  # where the children's terminals started; lets recovery add a git-state hint
+        task_payload["owner_cwd"] = os.getcwd()
+    except OSError:
+        pass
     with _DB_LOCK, _transaction() as conn:
         conn.execute("""INSERT OR REPLACE INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
@@ -229,22 +241,35 @@ def _recovered_results(task: Dict[str, Any], result_json: Optional[str], error: 
     return [recorded.get(i) or {"task_index": i, "status": "unknown", "summary": None, "error": error} for i in indexes]
 
 
+def _owner_liveness() -> Optional[Callable[[Any, Any], bool]]:
+    """``alive(owner_pid, owner_started_at)`` over the shared drift-tolerant start-time comparator,
+    or None when the liveness probes cannot be imported."""
+    try:
+        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
+    except Exception:
+        return None
+
+    def alive(pid, started) -> bool:
+        return bool(pid) and _pid_exists(int(pid)) and (
+            started is None or start_time_fingerprints_match(started, get_process_start_time(int(pid)) or 0))
+    return alive
+
+
 def recover_abandoned_delegations() -> int:
     """Classify records whose owning process disappeared as outcome unknown; children a multi-child unit had already
     recorded (``record_unit_child``) are replayed with their real results."""
-    try:
-        from gateway.status import _pid_exists, get_process_start_time
-    except Exception:
+    alive = _owner_liveness()
+    if alive is None:
         return 0
     now, recovered = time.time(), 0
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute("""SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id, result_json
+                      owner_started_at, task_json, origin_session_id, result_json, state
                FROM async_delegations WHERE state IN ('running','finalizing')""").fetchall()
         for row in rows:
-            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json = row
-            if pid and _pid_exists(int(pid)) and (started is None or get_process_start_time(int(pid)) == int(started)):
+            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json, last_state = row
+            if alive(pid, started):
                 continue
             task = json.loads(task_json or "{}")
             error = "Delegation owner exited before recording a terminal result; outcome unknown."
@@ -253,17 +278,25 @@ def recover_abandoned_delegations() -> int:
                 done = sum(1 for r in recovered_results if r.get("status") != "unknown")
                 error = (f"Delegation owner exited before the unit finished; {done}/{len(recovered_results)} child "
                          "results were recorded and are included below, the rest are unknown.")
+            diagnostics = {"last_known_status": last_state, "task_transcripts": task.get("task_transcripts") or {}}
+            # Verbatim transcript tails + a git snapshot of the owner's cwd, so the parent can
+            # continue or re-dispatch from the event alone instead of opening files (#116000).
+            from tools.async_delegation_recovery_hints import git_state_hint, transcript_tails
+            if tails := transcript_tails(diagnostics["task_transcripts"]):
+                diagnostics["transcript_tails"] = tails
+            if hint := git_state_hint(task.get("owner_cwd")):
+                diagnostics["git_state_hint"] = hint
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
                 "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",
                 "parent_session_id": parent_id, "goal": task.get("goal", ""), "goals": task.get("goals"),
                 "context": task.get("context"), "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
-                "status": "unknown", "summary": None, "error": error,
+                "status": "unknown", "summary": None, "error": error, **diagnostics,
                 **({"results": recovered_results} if recovered_results else {}),
                 "dispatched_at": dispatched_at, "completed_at": now,
                 **{k: task[k] for k in _ROUTING_KEYS if task.get(k)}}
-            result = {"status": "unknown", "summary": None, "error": event["error"],
+            result = {"status": "unknown", "summary": None, "error": event["error"], **diagnostics,
                       **({"results": recovered_results} if recovered_results else {})}
             conn.execute("""UPDATE async_delegations SET state='unknown', completed_at=?,
                    updated_at=?, event_json=?, result_json=?, delivery_state='pending'
@@ -287,29 +320,101 @@ def restore_undelivered_completions(target_queue) -> int:
     (#64484).
     """
     recover_abandoned_delegations()
-    now, restored = time.time(), 0
+    now = time.time()
     with _DB_LOCK, _transaction() as conn:
         rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at
                FROM async_delegations
                WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
                ORDER BY completed_at, delegation_id""").fetchall()
-        for delegation_id, payload, completed_at, dispatched_at in rows:
-            age_basis = completed_at or dispatched_at
-            if age_basis and (now - age_basis) > _MAX_COMPLETION_REPLAY_AGE_S:
-                conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
-                              delivery_claim=NULL, delivery_claimed_at=NULL,
-                              updated_at=?
-                       WHERE delegation_id=? AND delivery_state='pending'""", (now, delegation_id))
-                logger.warning("Async delegation %s: pending completion is %.1fh old "
-                               "(cap %.1fh); terminally dropping the replay (result remains queryable).",
-                               delegation_id, (now - age_basis) / 3600.0, _MAX_COMPLETION_REPLAY_AGE_S / 3600.0)
-                continue
-            evt = json.loads(payload)
-            if isinstance(evt, dict):
-                evt["restored"] = True
-            target_queue.put(evt)
-            restored += 1
+        return _replay_pending(conn, rows, target_queue, now)
+
+
+def _replay_pending(conn, rows, target_queue, now: float) -> int:
+    """Put each pending ``(delegation_id, event_json, completed_at, dispatched_at)`` row on ``target_queue``
+    stamped ``restored``, or terminally drop it past ``_MAX_COMPLETION_REPLAY_AGE_S``. Records the offer so
+    the orphan sweep skips the row until the copy is handed back (``return_completion_offer``)."""
+    home, restored = hermes_home_key(get_hermes_home()), 0
+    for delegation_id, payload, completed_at, dispatched_at in rows:
+        age_basis = completed_at or dispatched_at
+        if age_basis and (now - age_basis) > _MAX_COMPLETION_REPLAY_AGE_S:
+            conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
+                          delivery_claim=NULL, delivery_claimed_at=NULL,
+                          updated_at=?
+                   WHERE delegation_id=? AND delivery_state='pending'""", (now, delegation_id))
+            logger.warning("Async delegation %s: pending completion is %.1fh old "
+                           "(cap %.1fh); terminally dropping the replay (result remains queryable).",
+                           delegation_id, (now - age_basis) / 3600.0, _MAX_COMPLETION_REPLAY_AGE_S / 3600.0)
+            continue
+        evt = json.loads(payload)
+        if isinstance(evt, dict):
+            evt["restored"] = True
+        target_queue.put(evt)
+        with _orphan_lock:
+            _offered.add((home, delegation_id))
+        restored += 1
     return restored
+
+
+def sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> int:
+    """Offer this home's completions whose owner died after THIS process started (#97202).
+
+    Startup replay (``restore_undelivered_completions``) covers owners that died before the process
+    started; this covers the rest while it runs. Abandoned in-flight rows are first classified by
+    ``recover_abandoned_delegations``. A terminal row qualifies when it is pending with an event, idle
+    past ``_ORPHAN_STALE_S``, not under a live delivery claim, and its owner fails the shared liveness
+    check. A row is offered once per live in-memory copy: a consumer that discards the copy with the row
+    still pending hands it back for the next sweep. The consumer's ``claim_completion_delivery`` stays
+    the atomic cross-process gate, so two processes offering one row never both deliver it. Rows past
+    the delivery budget or the replay age converge to ``dropped``. Reads the current profile's ledger:
+    callers bind the owning profile first."""
+    alive = _owner_liveness()
+    if alive is None or not _db_path().exists():
+        return 0  # never create a ledger just to sweep it
+    recover_abandoned_delegations()
+    now = time.time() if now is None else now
+    home = hermes_home_key(get_hermes_home())
+    with _orphan_lock:
+        offered = {delegation_id for key, delegation_id in _offered if key == home}
+    with _DB_LOCK, _transaction() as conn:
+        rows = conn.execute("""SELECT delegation_id, event_json, completed_at, dispatched_at,
+                      owner_pid, owner_started_at, delivery_attempts
+               FROM async_delegations
+               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
+                 AND event_json IS NOT NULL AND updated_at < ?
+                 AND (delivery_claim IS NULL OR delivery_claimed_at < ?)
+               ORDER BY completed_at, delegation_id""", (now - _ORPHAN_STALE_S, now - _CLAIM_LEASE_S)).fetchall()
+        orphans = []
+        for delegation_id, payload, completed_at, dispatched_at, pid, started, attempts in rows:
+            if delegation_id in offered or alive(pid, started):
+                continue
+            if (attempts or 0) >= _MAX_DELIVERY_ATTEMPTS:
+                # Its last claimant died holding the final attempt; converge like release_completion_delivery.
+                conn.execute("""UPDATE async_delegations SET delivery_state='dropped',
+                              delivery_claim=NULL, delivery_claimed_at=NULL, updated_at=?
+                       WHERE delegation_id=? AND delivery_state='pending'""", (now, delegation_id))
+                logger.warning("Async delegation %s exhausted its %d delivery attempts; "
+                               "marking terminally dropped (result remains queryable).",
+                               delegation_id, _MAX_DELIVERY_ATTEMPTS)
+                continue
+            orphans.append((delegation_id, payload, completed_at, dispatched_at))
+        return _replay_pending(conn, orphans, target_queue, now)
+
+
+def maybe_sweep_orphaned_completions(target_queue, *, now: Optional[float] = None) -> int:
+    """``sweep_orphaned_completions`` at most once per ``ORPHAN_SWEEP_INTERVAL_S`` per home (``now`` is
+    monotonic), for delivery loops that tick far more often. Never raises into the loop."""
+    home = hermes_home_key(get_hermes_home())
+    now = time.monotonic() if now is None else now
+    with _orphan_lock:
+        last = _last_orphan_sweep.get(home)
+        if last is not None and now - last < ORPHAN_SWEEP_INTERVAL_S:
+            return 0
+        _last_orphan_sweep[home] = now
+    try:
+        return sweep_orphaned_completions(target_queue)
+    except Exception:
+        logger.debug("Orphaned async delegation sweep failed", exc_info=True)
+        return 0
 
 
 def _update_delivery(sql: str, params: tuple) -> bool:
@@ -338,7 +443,7 @@ def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
                       delivery_attempts=delivery_attempts+1, updated_at=?
                WHERE delegation_id=? AND delivery_state='pending'
                  AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
-            (claim_id, now, now, delegation_id, now - 300))
+            (claim_id, now, now, delegation_id, now - _CLAIM_LEASE_S))
         return cur.rowcount == 1
 
 
@@ -419,7 +524,22 @@ def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
 
 
 def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
+    """Release a failed claim for a consumer that discards its copy (the TUI poller): the row is pending
+    again, so it must stay eligible for the orphan sweep."""
     _event_delivery(release_completion_delivery, evt, claim_id)
+    return_completion_offer(evt)
+
+
+def return_completion_offer(evt: Dict[str, Any]) -> None:
+    """Hand an offered completion back to the orphan sweep after its in-memory copy was discarded while
+    the durable row stays pending, e.g. a TUI session that cannot prove it owns the event drops it (every
+    session poller drains one process-wide queue). The next sweep may offer the row again. Delegation ids
+    are unique across profiles, so this clears the offer in every home."""
+    delegation_id = str(evt.get("delegation_id") or "") if evt.get("type") == "async_delegation" else ""
+    if not delegation_id or is_interim_delegation_event(evt):
+        return
+    with _orphan_lock:
+        _offered.difference_update({key for key in _offered if key[1] == delegation_id})
 
 
 def _event_delivery(fn, evt: Dict[str, Any], claim_id: str) -> None:
@@ -495,8 +615,10 @@ def _new_delegation_id() -> str:
 
 
 def _prune_completed_locked() -> None:
-    """Drop the oldest completed records beyond the cap. Caller holds ``_records_lock``."""
-    completed = [(rid, r) for rid, r in _records.items() if r.get("status") != "running"]
+    """Drop the oldest completed records beyond the cap. Caller holds ``_records_lock``.
+    ``stalling``/``finalizing`` are still live: evicting one makes the late runner return hit
+    ``_finalize``'s missing-record path and silently drop a real result."""
+    completed = [(rid, r) for rid, r in _records.items() if r.get("status") not in _LIVE_STATES]
     completed.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
     for rid, _ in completed[: max(0, len(completed) - _MAX_RETAINED_COMPLETED)]:
         _records.pop(rid, None)
@@ -532,13 +654,23 @@ def _batch_status(combined: Dict[str, Any]) -> str:
     return "error" if child_results and all(r.get("status") not in ok for r in child_results) else "completed"
 
 
-def _dispatch(
+def _dispatch(**kwargs) -> Dict[str, Any]:
+    from hermes_cli.backend_retirement import retirement
+
+    with retirement.work() as admitted:
+        if not admitted:
+            return {"status": "rejected", "error": "backend is retiring; reconnect to continue"}
+        return _dispatch_admitted(**kwargs)
+
+
+def _dispatch_admitted(
     *, delegation_id: str, goal: str, goals: Optional[List[str]], context: Optional[str],
     toolsets: Optional[List[str]], role: str, model: Optional[str], session_key: str,
     parent_session_id: Optional[str], runner: Callable[[], Dict[str, Any]], origin_ui_session_id: str,
     origin_session_id: str, interrupt_fn: Optional[Callable[[], None]], max_async_children: int,
     progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None,
+    task_transcripts: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Shared dispatch core for single (``goals is None``) and batch units. Capacity check +
     record insert happen under ONE lock hold so concurrent dispatches can't both pass the check
@@ -560,8 +692,12 @@ def _dispatch(
         "status": "running", "dispatched_at": dispatched_at, "completed_at": None,
         "interrupt_fn": interrupt_fn, **({"is_batch": True} if is_batch else {}), "progress_fn": progress_fn,
         "slot_key": slot_key or delegation_id,
+        **({"task_transcripts": dict(task_transcripts)} if task_transcripts else {}),
         # Which of the call's ``goals`` this unit runs (None = all of them).
         **({"task_indexes": list(task_indexes)} if task_indexes is not None else {}),
+        # The one stale-monitor thread serves every profile and starts with an empty Context;
+        # a forced finalization runs under the dispatcher's so it settles the same state.db.
+        "_context": contextvars.copy_context(),
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
     with _records_lock:
@@ -592,10 +728,16 @@ def _dispatch(
         finally:
             _finalize(delegation_id, result, status)
 
+    from hermes_cli.backend_retirement import retirement
+
+    # The outer dispatch reservation prevents a freeze during this handoff. Retain a worker
+    # reservation too: the stall monitor may finalize its registry record before it really exits.
+    retirement.acquire()
     try:
-        # Propagate the dispatching profile so the detached child resolves get_hermes_home() correctly.
-        executor.submit(propagate_context_to_thread(_worker))
+        future = executor.submit(propagate_context_to_thread(_worker))
+        future.add_done_callback(lambda _: retirement.release())
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
+        retirement.release()
         with _records_lock:
             _records.pop(delegation_id, None)
         with _DB_LOCK, _transaction() as conn:
@@ -641,6 +783,7 @@ def dispatch_async_delegation_batch(
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN, delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None,
+    task_transcripts: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Dispatch a fan-out unit (a whole batch, or one ``group`` of a delegate_task call) as ONE
     background unit: ``runner`` runs its tasks and returns the combined ``{"results": [...],
@@ -658,7 +801,7 @@ def dispatch_async_delegation_batch(
         parent_session_id=parent_session_id, runner=runner,
         origin_ui_session_id=origin_ui_session_id, origin_session_id=origin_session_id,
         interrupt_fn=interrupt_fn, max_async_children=max_async_children, progress_fn=progress_fn, slot_key=slot_key,
-        task_indexes=task_indexes,
+        task_indexes=task_indexes, task_transcripts=task_transcripts,
         capacity_error=(
             f"Async delegation capacity reached ({max_async_children} running). Wait for one to finish "
             "(its result will re-enter the chat), or raise delegation.max_concurrent_children in "
@@ -731,7 +874,11 @@ def _push_completion_event(record: Dict[str, Any], result: Dict[str, Any], statu
         **({} if is_batch else {"exit_reason": result.get("exit_reason")}),
         **{k: record[k] for k in _ROUTING_KEYS if record.get(k)},
         **{k: result[k] for k in _STALL_META_KEYS if k in result}}
-    _persist_completion(evt, result)
+    try:
+        _persist_completion(evt, result)
+    except Exception as exc:  # noqa: BLE001 — a lost durable row is recoverable; a lost result + leaked slot is not
+        logger.error(f"Async delegation{label} %s: durable completion write failed; delivering in-memory "
+                     "only (a restart may report this unit as unknown): %s", record.get("delegation_id"), exc)
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -856,20 +1003,30 @@ def _stale_monitor_loop() -> None:
                 fn = (_records.get(delegation_id) or {}).get("interrupt_fn")
             _call_interrupt(fn, "Async delegation %s stall interrupt failed: %s", delegation_id)
         for delegation_id in expired:
-            _finalize(delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
+            with _records_lock:
+                ctx = (_records.get(delegation_id) or {}).get("_context") or contextvars.copy_context()
+            ctx.run(_finalize, delegation_id, lambda rec, d=delegation_id: _stalled_result(d, rec), "stalled")
         if not any_monitorable:
             return
+
+
+def _stalled_error_text(event_record: Dict[str, Any]) -> str:
+    """Human wording for a force-finalized stall. This string reaches the user (CLI timeline, Desktop
+    async-result card), so it names the task, how long it was silent, and what to do — no issue
+    numbers or worker internals (those stay in the log line and the stall_* metadata)."""
+    goal = " ".join(str(event_record.get("goal") or "").split())
+    label = f'Background task "{goal[:120]}"' if goal else "The background task"
+    quiet = float(event_record.get("_stall_quiet_seconds") or 0)
+    silence = f" after {round(quiet / 60)} min of no progress" if quiet >= 60 else ""
+    return (f"{label} stopped responding{silence} and was cancelled. Nothing else was affected; "
+            "ask me to run it again if you still need it.")
 
 
 def _stalled_result(delegation_id: str, event_record: Dict[str, Any]) -> Dict[str, Any]:
     """Synthetic terminal result for a stalling delegation whose runner never returned."""
     completed_at = event_record.get("completed_at") or time.time()
     duration = round(completed_at - (event_record.get("dispatched_at") or completed_at), 2)
-    error = (
-        f"Async delegation {delegation_id} stalled: the detached subagent stopped making progress "
-        "(no new API calls, tool activity, or streamed tokens), did not respond to interruption, and never "
-        "produced a completion event. The worker may be wedged inside a model API call — this is a known "
-        "failure mode of long-lived gateway processes (#60203). Re-dispatch the task if it is still needed.")
+    error = _stalled_error_text(event_record)
     logger.error("Async delegation %s force-finalized as stalled after %.0fs", delegation_id, duration)
     # Structured stall metadata lets parents/UIs distinguish a stall-monitor
     # kill from other failures without parsing the error string.
@@ -990,6 +1147,9 @@ def _reset_for_tests() -> None:
         thread.join(timeout=2)
     with _records_lock:
         _records.clear()
+    with _orphan_lock:
+        _offered.clear()
+        _last_orphan_sweep.clear()
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

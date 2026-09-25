@@ -5,8 +5,10 @@
 time. Invalid timezone values log a warning and fall back — never crash.
 """
 
+import locale
 import logging
 import os
+import re
 import threading
 from datetime import datetime
 from typing import Dict, Optional, Tuple
@@ -24,6 +26,42 @@ logger = logging.getLogger(__name__)
 # identity/value pair. Call reset_cache() after in-place config changes.
 _cache_lock = threading.Lock()
 _tz_cache: Dict[Tuple[str, str], Tuple[str, Optional[ZoneInfo]]] = {}
+
+_SURROGATE_RE = re.compile(r"[\ud800-\udfff]")
+# ASCII plus surrogateescape'd bytes only: the shape of native text decoded with the wrong codec.
+_ESCAPED_BYTES_RE = re.compile(r"[\x00-\x7f\udc80-\udcff]*")
+
+
+def _repair_surrogates(text: str, encoding: Optional[str] = None) -> str:
+    """Make locale text JSON/UTF-8 safe; a no-op (same object) on valid text.
+
+    Windows hands back zone names in the ANSI code page (``heure d'\\xe9t\\xe9``) but a UTF-8
+    ``LC_CTYPE`` (UTF-8 mode, or a library flipping the process locale mid-run) decodes those
+    bytes with ``surrogateescape`` into lone surrogates. Recover the bytes and decode them with
+    the ANSI code page; when that is not possible, replace each surrogate with U+FFFD."""
+    if text.isascii() or not _SURROGATE_RE.search(text):
+        return text
+    if _ESCAPED_BYTES_RE.fullmatch(text):
+        try:
+            return text.encode("ascii", "surrogateescape").decode(encoding or locale.getencoding())
+        except (LookupError, UnicodeError):
+            pass
+    return _SURROGATE_RE.sub("\ufffd", text)
+
+
+def safe_strftime(value: datetime, fmt: str) -> str:
+    """``value.strftime(fmt)`` that never raises or returns lone surrogates over locale text.
+
+    ``datetime.strftime`` splices ``tzname()`` into the format as UTF-8, so a zone name carrying
+    surrogates (see ``_repair_surrogates``) raises ``UnicodeEncodeError`` before any string exists
+    (#102910). On that failure ``%Z`` is rendered from the repaired name instead. Output for valid
+    locale text is byte-identical to ``strftime`` (the system prompt must stay cache-stable)."""
+    try:
+        return _repair_surrogates(value.strftime(fmt))
+    except UnicodeEncodeError:
+        zone = _repair_surrogates(value.tzname() or "").replace("%", "%%")
+        return _repair_surrogates(value.strftime(
+            re.sub(r"%([%Z])", lambda m: zone if m.group(1) == "Z" else "%%", fmt)))
 
 
 def _env_timezone() -> str:
@@ -48,22 +86,18 @@ def _resolve_timezone_name() -> str:
     if tz_env:
         return tz_env
     try:
-        # Prefer the shared cached raw-config reader (mtime-keyed + libyaml): a direct safe_load of
-        # a large config.yaml costs ~100 ms and this ran inside the FIRST system prompt build.
+        # Prefer the shared cached effective-config loader (mtime-keyed + libyaml, managed overlay
+        # included so an administrator can pin ``timezone``): a direct safe_load of a large
+        # config.yaml costs ~100 ms and this ran inside the FIRST system prompt build. The bare
+        # parse is the stdlib-safe fallback for bootstrap consumers without hermes_cli importable.
         try:
-            from hermes_cli.config import read_raw_config
-            cfg = read_raw_config() or {}
+            from hermes_cli.config_effective import load_user_config_effective
+            cfg = load_user_config_effective(get_config_path())
         except Exception:
             import yaml
             config_path = get_config_path()
             cfg = (yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}) if config_path.exists() else {}
         if cfg:
-            # Managed scope: an administrator can pin ``timezone`` too (fail-open overlay).
-            try:
-                from hermes_cli import managed_scope
-                cfg = managed_scope.apply_managed_overlay(cfg)
-            except Exception:
-                pass
             tz_cfg = cfg.get("timezone", "")
             if isinstance(tz_cfg, str) and tz_cfg.strip():
                 return tz_cfg.strip()

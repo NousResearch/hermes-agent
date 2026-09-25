@@ -16,6 +16,11 @@ from gateway.stream_consumer_fences import ensure_closed_code_fences
 
 logger = logging.getLogger("gateway.stream_consumer")
 
+# Longest interim-edit interval flood backoff may reach. Interim edits are skipped (not slept)
+# until the interval elapses, so honouring a 30s Telegram retry_after costs nothing but a
+# stale preview; anything longer is left to the strike counter and the fallback send path.
+_MAX_EDIT_BACKOFF_SECS = 30.0
+
 
 class StreamTransportMixin:
     """Send/edit/frame primitives and the transport-ordered ``_send_or_edit``."""
@@ -326,9 +331,16 @@ class StreamTransportMixin:
             return True  # cursor-only / whitespace-only update
         # Don't open a new message for 1-2 tokens + cursor (rapid tool-calling): if
         # the cursor-strip edit is then rate-limited, "X ▉" stays forever.
-        if (self._message_id is None and self.cfg.cursor and self.cfg.cursor in text
-                and len(visible_stripped) < self._MIN_NEW_MSG_CHARS):
-            return True  # too short for a standalone message — accumulate more
+        # A segment-break finalize never carries the cursor, so gate it too or a 1-2 token
+        # preamble lands durably at every tool boundary and resets the progress anchor
+        # (#99026).  Turn finals are exempt: a short complete answer must be delivered.
+        # Tradeoff: on non-cumulative transports the held preamble is DROPPED, not
+        # carried — _end_segment sees update_visible=True and resets the segment.
+        preamble_finalize = finalize and not is_turn_final
+        if (self._message_id is None and len(visible_stripped) < self._MIN_NEW_MSG_CHARS
+                and (preamble_finalize or (self.cfg.cursor and self.cfg.cursor in text))):
+            # Mid-stream: accumulate more.  Segment-break finalize: dropped (see above).
+            return True
 
         # A failed native/draft transport disables itself and falls through so the
         # accumulated text still reaches the user via edit/send.
@@ -344,6 +356,10 @@ class StreamTransportMixin:
         self._last_edit_overflowed = False
         try:
             if self._message_id is None:
+                if not self._edit_supported and not finalize:
+                    # A failed send disabled edits: a preview sent now could never be updated and
+                    # would stay on screen truncated next to the final reply. Send only the final.
+                    return False
                 return await self._first_send(text, finalize=finalize)
             if not self._edit_supported:
                 return False  # edits unsupported; fallback path sends the final
@@ -481,6 +497,12 @@ class StreamTransportMixin:
         if not result.success:
             return await self._on_edit_failure(result, text, finalize=finalize,
                                                is_turn_final=is_turn_final)
+        raw_response = getattr(result, "raw_response", None)
+        if isinstance(raw_response, dict) and raw_response.get("skipped"):
+            # Adapter deferred the edit (Telegram's shared send+edit slot was busy): nothing
+            # changed on screen, so the visible prefix and flood state stay as they were and the
+            # next tick retries with the newer text.
+            return True
         self._already_sent = True
         self._track_preview_ids_from_result(result)
         # Oversized edit split across continuations: message_id is now the LAST
@@ -555,12 +577,18 @@ class StreamTransportMixin:
                 self._notify_new_message()
             return False
 
-        # Flood control: adaptive backoff (double the interval); disable edits only
+        # Flood control: adaptive backoff (double the interval, or the server's own
+        # retry_after when Telegram hands one back — the penalty is usually 9s+, so
+        # doubling 0.8s → 1.6s → 3.2s burns all strikes inside it); disable edits only
         # after _MAX_FLOOD_STRIKES in a row.
         immediate_final_fallback = False
         if self._is_flood_error(result):
             self._flood_strikes += 1
-            self._current_edit_interval = min(self._current_edit_interval * 2, 10.0)
+            backoff = min(self._current_edit_interval * 2, 10.0)
+            retry_after = getattr(result, "retry_after", None)
+            if isinstance(retry_after, (int, float)) and retry_after > 0:
+                backoff = max(backoff, min(float(retry_after), _MAX_EDIT_BACKOFF_SECS))
+            self._current_edit_interval = backoff
             logger.debug("Flood control on edit (strike %d/%d), backoff interval → %.1fs",
                          self._flood_strikes, self._MAX_FLOOD_STRIKES, self._current_edit_interval)
             immediate_final_fallback = (

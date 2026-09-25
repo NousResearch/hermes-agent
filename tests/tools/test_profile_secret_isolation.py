@@ -38,7 +38,9 @@ def _write_profile(home: Path, values: dict[str, str]) -> None:
 
 
 @pytest.fixture
-def multiplex_mode():
+def multiplex_mode(tmp_path, monkeypatch):
+    # Multiplex activation pins the launch home; establish it before activation.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "source"))
     set_multiplex_active(True)
     try:
         yield

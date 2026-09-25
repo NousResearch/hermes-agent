@@ -36,6 +36,15 @@ def _queue_prompt(state: SessionState, text: str) -> int:
         return len(state.queued_prompts)
 
 
+# Commands that mutate shared turn state must not run beside a live turn or beside each
+# other: slash dispatch happens on a worker thread while the turn iterates state.history and
+# reads agent._session_db, so clearing, rebinding, or swapping state.agent underneath
+# run_conversation tears the running turn. Gateway parity: all three are idle-only there.
+# The command_op flag is held for the whole handler so a turn cannot claim the session in
+# the check-then-act window (the /compress LLM call and /model agent rebuild take seconds).
+_MID_TURN_BLOCKED_COMMANDS = frozenset({"reset", "compress", "model"})
+
+
 class SlashCommandsMixin:
     """Slash-command surface for ``HermesACPAgent``; relies on ``_conn``, ``_send``, ``_schedule_soon``,
     ``session_manager`` and ``_switch_model`` from the host class."""
@@ -93,9 +102,16 @@ class SlashCommandsMixin:
 
         if cmd not in self._COMMANDS:
             return None
+        mutating = cmd in _MID_TURN_BLOCKED_COMMANDS
+        if mutating:
+            with state.runtime_lock:
+                if state.is_running or state.command_op:
+                    return (f"⏳ Session is busy; /{cmd} only works while the session is "
+                            "idle. Wait for the current response or cancel first.")
+                state.command_op = True
         handler = getattr(self, f"_cmd_{cmd}")
 
-        # Handlers run on the loop thread, outside the per-turn cwd-pinning context. ``/compress``
+        # Handlers run outside the per-turn cwd-pinning context. ``/compress``
         # and ``/model`` REBUILD the system prompt, so unpinned they'd bake the Hermes install tree
         # into the persisted cached prompt. Pin inside a fresh context: no leak, no teardown.
         def _dispatch() -> str | None:
@@ -112,6 +128,10 @@ class SlashCommandsMixin:
         except Exception as e:
             logger.error("Slash command /%s error: %s", cmd, e, exc_info=True)
             return f"Error executing /{cmd}: {e}"
+        finally:
+            if mutating:
+                with state.runtime_lock:
+                    state.command_op = False
 
     def _cmd_help(self, args: str, state: SessionState) -> str:
         lines = ["Available commands:", ""]
@@ -136,12 +156,18 @@ class SlashCommandsMixin:
             from types import SimpleNamespace
             from agent.memory_manager import inject_memory_provider_tools
 
-            toolsets = _expand_acp_enabled_toolsets(getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"])
-            tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+            toolsets = _expand_acp_enabled_toolsets(getattr(state.agent, "enabled_toolsets", None))
+            tools = get_tool_definitions(
+                enabled_toolsets=toolsets,
+                disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
+                quiet_mode=True,
+            )
             tool_view = SimpleNamespace(
                 tools=list(tools or []),
                 valid_tool_names={t.get("function", {}).get("name") for t in tools or [] if isinstance(t, dict)},
-                enabled_toolsets=toolsets, _memory_manager=getattr(state.agent, "_memory_manager", None),
+                enabled_toolsets=toolsets,
+                disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
+                _memory_manager=getattr(state.agent, "_memory_manager", None),
             )
             inject_memory_provider_tools(tool_view)
             tools = tool_view.tools
@@ -226,45 +252,40 @@ class SlashCommandsMixin:
         return "Conversation history cleared."
 
     def _cmd_compress(self, args: str, state: SessionState) -> str:
+        """``/compress [here [N] | <focus>] [--preview] [--aggressive]`` through the shared core."""
+        from agent.conversation_compression import finalize_context_engine_compression_notification
+        from agent.conversation_compression_manual import (
+            AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
+
         if not state.history:
             return "Nothing to compress — conversation is empty."
+        agent = state.agent
+        # No compression_enabled gate: it only disables *automatic* compaction (CLI/gateway parity).
+        if not hasattr(agent, "_compress_context"):
+            return "Context compression not available for this agent."
+        request = parse_compress_args(args)
+        if request.aggressive:
+            return AGGRESSIVE_UNSUPPORTED
+        original_session_db = getattr(agent, "_session_db", None)
         try:
-            agent = state.agent
-            # No compression_enabled gate: it only disables *automatic* compaction (CLI/gateway parity).
-            if not hasattr(agent, "_compress_context"):
-                return "Context compression not available for this agent."
-
-            original_count = len(state.history)
-            # Include system prompt + tool schemas so the figure reflects real request pressure.
-            # See #6217.
-            # See #6217.
-            _sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
-            _tools = getattr(agent, "tools", None) or None
-            approx_tokens = _estimate_tokens(state.history, agent, _sys_prompt, _tools)
-            original_session_db = getattr(agent, "_session_db", None)
-
-            try:
-                # Stable ACP session id: suppress _compress_context's SQLite session split.
-                agent._session_db = None
-                compressed, _ = agent._compress_context(
-                    state.history, _sys_prompt, approx_tokens=approx_tokens, task_id=state.session_id, force=True,
-                )
-            finally:
-                agent._session_db = original_session_db
-
-            state.history = compressed
-            self.session_manager.save_session(state.session_id)
-
-            new_tokens = _estimate_tokens(
-                state.history, agent, getattr(agent, "_cached_system_prompt", "") or _sys_prompt,
-                getattr(agent, "tools", None) or _tools,
-            )
-            return (
-                f"Context compressed: {original_count} -> {len(state.history)} messages\n"
-                f"~{approx_tokens:,} -> ~{new_tokens:,} tokens"
-            )
+            # Stable ACP session id: suppress _compress_context's SQLite session split.
+            agent._session_db = None
+            result = compress_now(
+                agent, state.history, request, system_message=getattr(agent, "_cached_system_prompt", "") or "",
+                task_id=state.session_id)
         except Exception as e:
             return f"Compression failed: {e}"
+        finally:
+            agent._session_db = original_session_db
+        if result.status != "compressed":
+            return "\n".join(render_compress_result(result))
+        state.history = result.after_messages
+        self.session_manager.save_session(state.session_id)
+        finalize_context_engine_compression_notification(agent, committed=True)
+        return (
+            f"Context compressed: {len(result.before_messages)} -> {len(state.history)} messages\n"
+            f"~{result.before_tokens:,} -> ~{result.after_tokens:,} tokens"
+        )
 
     def _cmd_steer(self, args: str, state: SessionState) -> str:
         steer_text = args.strip()

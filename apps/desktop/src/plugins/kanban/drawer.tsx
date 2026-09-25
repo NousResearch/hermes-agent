@@ -1,8 +1,8 @@
 /**
- * Task drawer — the desktop port of the dashboard's task detail, flat-styled:
- * status menu + meta table, DIAGNOSTICS (the "why is this stuck" panel, with
- * reassign recovery), description (editable), result/summary, dependencies,
- * comments (+composer), activity, run history, and the worker log tail.
+ * Task modal — the desktop port of the dashboard's task detail, Linear-style:
+ * a centered two-column dialog (main: diagnostics, description, result,
+ * dependencies, comments, activity, runs, log tail; right sidebar: property
+ * rows with the inline editors), instead of the old cramped right drawer.
  */
 
 import {
@@ -11,6 +11,10 @@ import {
   cn,
   Codicon,
   compactNumber,
+  CopyButton,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -18,10 +22,14 @@ import {
   DropdownMenuTrigger,
   ErrorState,
   host,
+  isSubmitEnter,
   Loader,
   LogView,
+  MessageTextContent,
+  SegmentedControl,
   Textarea,
   Tip,
+  useI18n,
   useMutation,
   useQuery,
   useQueryClient,
@@ -32,6 +40,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import {
   $boardSlug,
   addComment,
+  boardKeyPrefix,
   deleteTask,
   estimateTask,
   fetchLog,
@@ -39,11 +48,13 @@ import {
   fetchTask,
   logKey,
   patchTask,
-  PROFILES_KEY,
+  profilesKey,
   reassignTask,
   reclaimTask,
+  routedToScope,
   taskKey,
-  uploadAttachment
+  uploadAttachment,
+  useKanbanScope
 } from './api'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
@@ -53,7 +64,8 @@ import {
   type KanbanEvent,
   type KanbanTaskDetail,
   SEVERITY_TONE,
-  type TaskEstimate
+  type TaskEstimate,
+  type WorkerLog
 } from './types'
 import {
   ago,
@@ -65,6 +77,7 @@ import {
   isLockedTarget,
   type KanbanText,
   lockedReason,
+  PriorityGlyph,
   ScrollFade,
   Section,
   shortId,
@@ -169,12 +182,50 @@ function eventText(event: KanbanEvent, k: KanbanText): { detail?: string; label:
   }
 }
 
+// Task bodies, results, summaries and comments are agent-written markdown;
+// rendering them raw left `**Goal:**` and backticks literal. Same renderer as
+// chat. `media={false}`: kanban text is not session-scoped, so `MEDIA:` paths
+// must not be resolved against the active gateway.
+function TaskMarkdown({ text }: { text: string }) {
+  return (
+    <div className="min-w-0 [&_.aui-md>:first-child]:mt-0 [&_.aui-md>:last-child]:mb-0" data-selectable-text="true">
+      <MessageTextContent media={false} text={text} />
+    </div>
+  )
+}
+
+// Sidebar property row: a Section (so every sidebar label — these, Estimate,
+// Attachments — shares FIELD_LABEL and one rhythm) whose value slot holds the
+// inline editors. Values wrap anywhere so a long path never clips at the edge.
 function MetaRow({ children, label }: { children: ReactNode; label: string }) {
   return (
-    <>
-      <span className="text-(--ui-text-quaternary)">{label}</span>
-      <span className="min-w-0 truncate text-(--ui-text-secondary)">{children}</span>
-    </>
+    <Section label={label}>
+      <div className="min-w-0 text-[0.75rem] text-(--ui-text-secondary) [overflow-wrap:anywhere]">{children}</div>
+    </Section>
+  )
+}
+
+// The task's workspace: the kind as a badge when it says more than "a
+// directory", the path in mono (wrapping), and a copy affordance.
+function WorkspaceValue({ kind, path }: { kind: null | string | undefined; path: string }) {
+  return (
+    <div className="flex items-start gap-1.5">
+      <div className="flex min-w-0 flex-1 flex-col items-start gap-1">
+        {kind && kind !== 'dir' && (
+          <Badge size="xs" variant="muted">
+            {kind}
+          </Badge>
+        )}
+        <span className="font-mono text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">{path}</span>
+      </div>
+      <CopyButton
+        appearance="icon"
+        buttonSize="icon-xs"
+        buttonVariant="ghost"
+        className="-mt-0.5 shrink-0"
+        text={path}
+      />
+    </div>
   )
 }
 
@@ -205,7 +256,7 @@ function Diagnostics({ items, onReclaim }: { items: Diagnostic[]; onReclaim: () 
             title={`${diag.title}${diag.count > 1 ? ` ×${diag.count}` : ''}`}
             tone={tone}
           >
-            <p className="whitespace-pre-wrap text-[0.71rem] leading-relaxed text-(--ui-text-secondary)">
+            <p className="whitespace-pre-wrap text-[0.6875rem] leading-relaxed text-(--ui-text-secondary)">
               {diag.detail}
             </p>
             {actions.length > 0 && (
@@ -241,7 +292,8 @@ function AssigneeMenu({
   onReassign: (p: string) => void
 }) {
   const k = useKanban()
-  const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
+  const scope = useKanbanScope()
+  const { data: roster } = useQuery({ queryKey: profilesKey(scope), queryFn: fetchProfiles, staleTime: 60_000 })
 
   return (
     <DropdownMenu>
@@ -315,37 +367,45 @@ function CommentComposer({
     }
   }
 
+  const empty = !body.trim() || pending
+  const sendLabel = running ? k.send : k.comment
+
+  // Sized like the new-project idea field (default control padding, inset icon
+  // action); a labelled text button floating inside the textarea read as part
+  // of the input.
   return (
     <div className="flex flex-col gap-1.5">
       <div className="relative">
         <Textarea
-          className={cn('field-sizing-content max-h-40 min-h-0 resize-none', running ? 'pr-[3.5rem]' : 'pr-[5rem]')}
+          className="field-sizing-content max-h-40 resize-none pr-9 text-[0.8125rem]"
           onChange={event => setBody(event.target.value)}
           onKeyDown={event => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (isSubmitEnter(event) && !event.shiftKey) {
               event.preventDefault()
               submit()
             }
           }}
           placeholder={running ? k.messageWorker : k.addComment}
-          rows={1}
-          size="sm"
           value={body}
         />
-        <Button
-          className="absolute top-1 right-1"
-          disabled={!body.trim() || pending}
-          onClick={submit}
-          size="xs"
-          variant="secondary"
-        >
-          {running ? k.send : k.comment}
-        </Button>
+        <Tip label={sendLabel}>
+          <Button
+            aria-label={sendLabel}
+            className="absolute top-1 right-1 text-muted-foreground/80 hover:text-foreground"
+            disabled={empty}
+            onClick={submit}
+            size="icon-xs"
+            type="button"
+            variant="ghost"
+          >
+            <Codicon name="arrow-up" size="0.85rem" />
+          </Button>
+        </Tip>
       </div>
       {running && onRequeue && (
         <div className="flex items-center justify-between gap-2">
           <span className="text-[0.625rem] leading-tight text-(--ui-text-quaternary)">{k.deliveredLive}</span>
-          <Button className="shrink-0" disabled={!body.trim() || pending} onClick={requeue} size="xs" variant="outline">
+          <Button className="shrink-0" disabled={empty} onClick={requeue} size="xs" variant="outline">
             <Codicon name="debug-restart" size="0.7rem" />
             {k.requeueWithNote}
           </Button>
@@ -397,7 +457,7 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
           </Button>
         </div>
       ) : body ? (
-        <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{body}</p>
+        <TaskMarkdown text={body} />
       ) : (
         <p className="text-[0.8125rem] text-(--ui-text-quaternary)">{k.noDescription}</p>
       )}
@@ -409,12 +469,49 @@ function DescriptionSection({ body, onSave }: { body: null | string | undefined;
 // administrative note into that slot; hide those (Runs still shows them).
 const isAdminSummary = (summary: string) => /^status changed to \w+ \(dashboard\/direct\)$/.test(summary)
 
+// The filename is the download action. The path is the backend's own
+// stored_path, saved through the connection/profile that returned this detail;
+// a row without one (older backend) stays inert rather than guessing a path.
+function AttachmentDownload({
+  attachment,
+  onDownload
+}: {
+  attachment: KanbanAttachment
+  onDownload: (path: string, suggestedName: string) => Promise<void>
+}) {
+  const { t } = useI18n()
+  const path = attachment.stored_path?.trim()
+
+  const download = useMutation({
+    mutationFn: () => onDownload(path!, attachment.filename)
+  })
+
+  // Long names truncate in the narrow sidebar; the tip reveals the full name.
+  return (
+    <Tip label={attachment.filename} placement="row">
+      <Button
+        aria-label={`${t.fileMenu.download} ${attachment.filename}`}
+        className="max-w-full justify-start font-normal"
+        disabled={!path || download.isPending}
+        onClick={() => download.mutate()}
+        size="inline"
+        variant="text"
+      >
+        <Codicon name={download.isPending ? 'sync' : 'cloud-download'} size="0.75rem" spinning={download.isPending} />
+        <span className="truncate">{attachment.filename}</span>
+      </Button>
+    </Tip>
+  )
+}
+
 function AttachmentsSection({
   attachments,
+  onDownload,
   onUpload,
   pending
 }: {
   attachments: KanbanAttachment[]
+  onDownload: (path: string, suggestedName: string) => Promise<void>
   onUpload: (file: File) => void
   pending: boolean
 }) {
@@ -456,8 +553,7 @@ function AttachmentsSection({
         <ul className="flex flex-col gap-1">
           {attachments.map(attachment => (
             <li className="flex items-center gap-1.5 text-[0.75rem] text-(--ui-text-tertiary)" key={attachment.id}>
-              <Codicon name="file" size="0.75rem" />
-              {attachment.filename}
+              <AttachmentDownload attachment={attachment} onDownload={onDownload} />
             </li>
           ))}
         </ul>
@@ -537,6 +633,190 @@ function EstimateSection({ id }: { id: string }) {
   )
 }
 
+// Sidebar dependency chips: one wrap of title-labeled buttons per side
+// (Blocked by = parents, Blocks = children). Titles come from the backend's
+// `link_tasks`; ids remain in the tooltip + as the fallback label.
+function LinkChips({
+  ids,
+  linkTitles,
+  onOpen
+}: {
+  ids: string[]
+  linkTitles: Map<string, string>
+  onOpen: (id: string) => void
+}) {
+  return (
+    <div className="flex flex-wrap gap-1">
+      {ids.map(linked => {
+        const label = linkTitles.get(linked) || shortId(linked)
+
+        // Chips truncate in the narrow sidebar; the tip reveals the full title.
+        return (
+          <Tip key={linked} label={label} placement="row">
+            <button
+              aria-label={label}
+              className="max-w-full truncate rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+              onClick={() => onOpen(linked)}
+              type="button"
+            >
+              {label}
+            </button>
+          </Tip>
+        )
+      })}
+    </div>
+  )
+}
+
+/** The main column's feed: Comments (default) / Activity / Runs / Worker log,
+ *  selected Jira-style with a segmented control ("Activity ▸ Show: …"). The
+ *  control hides itself when only comments exist — nothing to switch to. */
+function FeedTabs({
+  commentPending,
+  detail,
+  log,
+  onComment,
+  onRequeue,
+  running
+}: {
+  commentPending: boolean
+  detail: KanbanTaskDetail
+  log: null | WorkerLog
+  onComment: (body: string) => void
+  onRequeue: (body: string) => void
+  running: boolean
+}) {
+  const k = useKanban()
+  const [tab, setTab] = useState<'activity' | 'comments' | 'log' | 'runs'>('comments')
+
+  const hasLog = !!log?.exists && !!log.content
+  const switchable = detail.events.length > 0 || detail.runs.length > 0 || hasLog
+
+  const tabs = [
+    { id: 'comments' as const, label: k.comments(detail.comments.length) },
+    { id: 'activity' as const, label: k.activity(detail.events.length) },
+    { id: 'runs' as const, label: k.runs(detail.runs.length) },
+    { id: 'log' as const, label: k.workerLog }
+  ].filter(
+    t =>
+      t.id === 'comments' ||
+      (t.id === 'activity' ? detail.events.length > 0 : t.id === 'runs' ? detail.runs.length > 0 : hasLog)
+  )
+
+  const help = (
+    <Tip label={running ? k.commentsHelpRunning : k.commentsHelp}>
+      <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
+        <Codicon name="question" size="0.8rem" />
+      </span>
+    </Tip>
+  )
+
+  const body = (
+    <div className="flex flex-col gap-4">
+      {tab === 'comments' && (
+        <>
+          {detail.comments.length > 0 && (
+            <ul className="flex flex-col gap-3">
+              {detail.comments.map(comment => (
+                <li className="flex flex-col gap-0.5" key={comment.id}>
+                  <div className="flex items-baseline gap-2 text-[0.75rem]">
+                    <span className="font-medium text-(--ui-text-secondary)">{comment.author}</span>
+                    <span className="text-[0.625rem] text-(--ui-text-quaternary)">{ago(comment.created_at)}</span>
+                  </div>
+                  <TaskMarkdown text={comment.body} />
+                </li>
+              ))}
+            </ul>
+          )}
+          <CommentComposer onRequeue={onRequeue} onSubmit={onComment} pending={commentPending} running={running} />
+        </>
+      )}
+      {tab === 'activity' && (
+        <ScrollFade deps={detail.events.length} max="7rem">
+          <ul className="flex flex-col gap-1">
+            {detail.events.map(event => {
+              const { detail: extra, label } = eventText(event, k)
+
+              return (
+                <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
+                  <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
+                  {extra && (
+                    <span className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)" title={extra}>
+                      {extra}
+                    </span>
+                  )}
+                  <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
+                </li>
+              )
+            })}
+          </ul>
+        </ScrollFade>
+      )}
+      {tab === 'runs' && (
+        <ScrollFade max="11rem">
+          <ul className="flex flex-col gap-1.5">
+            {detail.runs.map(run => {
+              const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run.outcome ?? run.status)
+
+              return (
+                <li className="flex flex-col gap-0.5 text-[0.6875rem]" key={run.id}>
+                  <div className="flex items-center gap-2">
+                    <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
+                      {run.outcome ?? run.status}
+                    </Badge>
+                    {run.profile && <span className="text-(--ui-text-tertiary)">{run.profile}</span>}
+                    {duration(run.started_at, run.ended_at) && (
+                      <span className="text-(--ui-text-quaternary)">{duration(run.started_at, run.ended_at)}</span>
+                    )}
+                    <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
+                      {ago(run.ended_at ?? run.started_at)}
+                    </span>
+                  </div>
+                  {(run.error || run.summary) && (
+                    <p
+                      className={cn(
+                        'line-clamp-2 whitespace-pre-wrap',
+                        run.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
+                      )}
+                    >
+                      {run.error ?? run.summary}
+                    </p>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </ScrollFade>
+      )}
+      {tab === 'log' && (
+        <ScrollFade deps={log?.content.length} max="12rem">
+          <LogView className="border-0 px-0">{log!.content}</LogView>
+        </ScrollFade>
+      )}
+    </div>
+  )
+
+  // With something to switch to, the segmented control IS the heading — a
+  // label above it only repeated the active tab ("Comments · 2" twice).
+  if (!switchable) {
+    return (
+      <Section action={help} label={k.comments(detail.comments.length)}>
+        {body}
+      </Section>
+    )
+  }
+
+  return (
+    <section className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <SegmentedControl onChange={setTab} options={tabs} value={tab} />
+        {help}
+      </div>
+      {body}
+    </section>
+  )
+}
+
 export function TaskDrawer({
   columns,
   id,
@@ -550,13 +830,14 @@ export function TaskDrawer({
 }) {
   const k = useKanban()
   const qc = useQueryClient()
+  const scope = useKanbanScope()
   const slug = useValue($boardSlug)
 
   // Socket-invalidated (bindApi); the interval is only the socketless heartbeat.
   const { data: detail, error } = useQuery({
-    enabled: !!id,
+    enabled: query => !!id && routedToScope(query),
     queryFn: () => fetchTask(id!),
-    queryKey: taskKey(slug, id ?? ''),
+    queryKey: taskKey(scope, slug, id ?? ''),
     refetchInterval: 30_000
   })
 
@@ -565,27 +846,15 @@ export function TaskDrawer({
   const defaultAssignee = useDefaultAssignee()
 
   const { data: log } = useQuery({
-    enabled: !!id,
+    enabled: query => !!id && routedToScope(query),
     queryFn: () => fetchLog(id!),
-    queryKey: logKey(slug, id ?? ''),
+    queryKey: logKey(scope, slug, id ?? ''),
     refetchInterval: running ? 3_000 : 15_000
   })
 
-  // Esc closes the drawer even though it isn't modal (no backdrop to click off).
-  useEffect(() => {
-    if (!id) {
-      return
-    }
-
-    const onKey = (event: KeyboardEvent) => event.key === 'Escape' && onClose()
-    window.addEventListener('keydown', onKey)
-
-    return () => window.removeEventListener('keydown', onKey)
-  }, [id, onClose])
-
   const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: taskKey(slug, id!) })
-    void qc.invalidateQueries({ queryKey: ['kanban', 'board', slug] })
+    void qc.invalidateQueries({ queryKey: taskKey(scope, slug, id!) })
+    void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   }
 
   // Optimistic status change against the task cache; rolls back + toasts on a
@@ -593,18 +862,18 @@ export function TaskDrawer({
   const moveMut = useMutation({
     mutationFn: (status: string) => patchTask(id!, { status }),
     onMutate: async status => {
-      await qc.cancelQueries({ queryKey: taskKey(slug, id!) })
-      const previous = qc.getQueryData<KanbanTaskDetail>(taskKey(slug, id!))
+      await qc.cancelQueries({ queryKey: taskKey(scope, slug, id!) })
+      const previous = qc.getQueryData<KanbanTaskDetail>(taskKey(scope, slug, id!))
 
       if (previous) {
-        qc.setQueryData(taskKey(slug, id!), { ...previous, task: { ...previous.task, status } })
+        qc.setQueryData(taskKey(scope, slug, id!), { ...previous, task: { ...previous.task, status } })
       }
 
       return { previous }
     },
     onError: (err, _status, context) => {
       if (context?.previous) {
-        qc.setQueryData(taskKey(slug, id!), context.previous)
+        qc.setQueryData(taskKey(scope, slug, id!), context.previous)
       }
 
       host.notify({ kind: 'error', message: errText(err) })
@@ -659,6 +928,10 @@ export function TaskDrawer({
 
   const errorMessage = error ? errText(error) : null
 
+  // Linked tasks resolved to titles by the backend (`link_tasks`); absent on
+  // older backends, where the chips fall back to short ids.
+  const linkTitles = new Map((detail?.link_tasks ?? []).map(linked => [linked.id, linked.title]))
+
   const move = (status: string) => {
     if (!task || status === task.status) {
       return
@@ -673,288 +946,193 @@ export function TaskDrawer({
     moveMut.mutate(status)
   }
 
+  // The shared Dialog owns the chrome tokens, focus trap, Esc and outside-click
+  // dismissal, and publishes itself as the portal container so the status,
+  // assignee, actions and model menus open inside it (no z-index rung needed).
+  // The body box is split into two independently scrolling columns, so it
+  // clips instead of scrolling itself; its height follows the content up to
+  // the cap.
   return (
-    <div className="absolute inset-y-0 right-0 z-20 flex w-[26rem] flex-col border-l border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) duration-150 ease-out animate-in fade-in slide-in-from-right-4">
-      <header className="flex flex-col gap-2 px-4 pt-3.5 pb-3">
-        <div className="flex items-center gap-2">
-          {task ? (
-            <StatusMenu columns={columns} onMove={move} status={task.status} />
-          ) : (
-            <span className="font-mono text-sm text-(--ui-text-tertiary)">{shortId(id)}</span>
-          )}
-          {task && (
-            <span className="font-mono text-[0.625rem] text-(--ui-text-quaternary)" data-selectable-text="true">
-              {shortId(task.id)}
-            </span>
-          )}
-          <div className="ml-auto flex items-center gap-0.5">
+    <Dialog onOpenChange={open => !open && onClose()} open>
+      <DialogContent
+        aria-describedby={undefined}
+        bodyClassName="flex max-h-[min(84vh,54rem)] flex-col gap-0 overflow-hidden p-0"
+        className="w-[min(62rem,94vw)] max-w-none"
+        showCloseButton={false}
+      >
+        <header className="flex flex-col gap-2 px-5 pt-4 pb-3">
+          <div className="flex items-center gap-2">
+            {task ? (
+              <StatusMenu columns={columns} onMove={move} status={task.status} />
+            ) : (
+              <span className="font-mono text-sm text-(--ui-text-tertiary)">{shortId(id)}</span>
+            )}
             {task && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    aria-label={k.taskActions}
-                    className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                    type="button"
-                  >
-                    <Codicon name="ellipsis" size="0.9rem" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      void navigator.clipboard.writeText(task.id)
-                      host.notify({ kind: 'info', message: k.copiedId(task.id) })
-                    }}
-                  >
-                    <Codicon name="copy" size="0.85rem" />
-                    {k.copyTaskId}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      void navigator.clipboard.writeText(task.title || task.id)
-                      host.notify({ kind: 'info', message: k.copiedTitle })
-                    }}
-                  >
-                    <Codicon name="copy" size="0.85rem" />
-                    {k.copyTitle}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onSelect={mutate(() => patchTask(task.id, { status: 'archived' }), onClose)}>
-                    <Codicon name="archive" size="0.85rem" />
-                    {k.archive}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem className="text-destructive" onSelect={mutate(() => deleteTask(task.id), onClose)}>
-                    <Codicon name="trash" size="0.85rem" />
-                    {k.delete}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <span className="font-mono text-[0.625rem] text-(--ui-text-quaternary)" data-selectable-text="true">
+                {shortId(task.id)}
+              </span>
             )}
-            <button
-              aria-label={k.close}
-              className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-              onClick={onClose}
-              type="button"
-            >
-              <Codicon name="close" size="0.9rem" />
-            </button>
-          </div>
-        </div>
-        {task && (
-          <h2 className="text-sm leading-snug font-semibold text-foreground" data-selectable-text="true">
-            {task.title || task.id}
-          </h2>
-        )}
-      </header>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4" data-selectable-text="true">
-        {errorMessage ? (
-          <ErrorState title={errorMessage} />
-        ) : !detail || !task ? (
-          <div className="grid h-32 place-items-center">
-            <Loader type="lemniscate-bloom" />
-          </div>
-        ) : (
-          <div className="flex flex-col gap-4 text-sm">
-            <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-[0.71rem]">
-              <MetaRow label={k.assignee}>
-                <AssigneeMenu
-                  current={task.assignee}
-                  onReassign={profile => void mutate(() => reassignTask(task.id, profile))()}
-                />
-              </MetaRow>
-              {typeof task.priority === 'number' && <MetaRow label={k.metaPriority}>{task.priority}</MetaRow>}
-              {task.tenant && <MetaRow label={k.metaTenant}>{task.tenant}</MetaRow>}
-              {task.workspace_path && (
-                <MetaRow label={k.workspace}>
-                  {task.workspace_kind ? `${task.workspace_kind}: ` : ''}
-                  {task.workspace_path}
-                </MetaRow>
+            <div className="ml-auto flex items-center gap-0.5">
+              {task && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button aria-label={k.taskActions} size="icon-xs" variant="ghost">
+                      <Codicon name="ellipsis" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        void navigator.clipboard.writeText(task.id)
+                        host.notify({ kind: 'info', message: k.copiedId(task.id) })
+                      }}
+                    >
+                      <Codicon name="copy" size="0.85rem" />
+                      {k.copyTaskId}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        void navigator.clipboard.writeText(task.title || task.id)
+                        host.notify({ kind: 'info', message: k.copiedTitle })
+                      }}
+                    >
+                      <Codicon name="copy" size="0.85rem" />
+                      {k.copyTitle}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={mutate(() => patchTask(task.id, { status: 'archived' }), onClose)}>
+                      <Codicon name="archive" size="0.85rem" />
+                      {k.archive}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      className="text-destructive"
+                      onSelect={mutate(() => deleteTask(task.id), onClose)}
+                    >
+                      <Codicon name="trash" size="0.85rem" />
+                      {k.delete}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
-              <MetaRow label={k.model}>
-                <ModelOverrideField
-                  onChange={next => void mutate(() => patchTask(task.id, overridePatch(next)))()}
-                  value={{
-                    effort: task.reasoning_effort ?? '',
-                    model: task.model_override ?? '',
-                    provider: task.provider_override ?? ''
-                  }}
-                />
-              </MetaRow>
-              {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
-              {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
-              {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}
+              <Button aria-label={k.close} onClick={onClose} size="icon-xs" variant="ghost">
+                <Codicon name="close" />
+              </Button>
             </div>
-
-            {task.status === 'ready' && !task.assignee && !defaultAssignee && (
-              <Callout title={k.readyUnassignedTitle} tone={SEVERITY_TONE.warning}>
-                <p className="text-[0.71rem] leading-relaxed text-(--ui-text-secondary)">{k.readyUnassignedBody}</p>
-              </Callout>
-            )}
-
-            {task.diagnostics && task.diagnostics.length > 0 && (
-              <Section label={k.diagnosticsN(task.diagnostics.length)}>
-                <Diagnostics items={task.diagnostics} onReclaim={() => void mutate(() => reclaimTask(task.id))()} />
-              </Section>
-            )}
-
-            <DescriptionSection body={task.body} onSave={body => void mutate(() => patchTask(task.id, { body }))()} />
-
-            <EstimateSection id={task.id} />
-
-            {task.result && (
-              <Section label={k.result}>
-                <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.result}</p>
-              </Section>
-            )}
-
-            {task.latest_summary && !isAdminSummary(task.latest_summary) && (
-              <Section label={k.latestSummary}>
-                <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.latest_summary}</p>
-              </Section>
-            )}
-
-            {(detail.links.parents.length > 0 || detail.links.children.length > 0) && (
-              <Section label={k.dependencies}>
-                {(['parents', 'children'] as const).map(side =>
-                  detail.links[side].length > 0 ? (
-                    <div className="flex flex-wrap items-center gap-1.5" key={side}>
-                      <span className="text-[0.6875rem] text-(--ui-text-quaternary)">
-                        {side === 'parents' ? k.blockedBy : k.blocks}
-                      </span>
-                      {detail.links[side].map(linked => (
-                        <button
-                          className="rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 font-mono text-[0.625rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                          key={linked}
-                          onClick={() => onOpen(linked)}
-                          type="button"
-                        >
-                          {shortId(linked)}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null
-                )}
-              </Section>
-            )}
-
-            <Section
-              action={
-                <Tip label={running ? k.commentsHelpRunning : k.commentsHelp}>
-                  <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
-                    <Codicon name="question" size="0.8rem" />
-                  </span>
-                </Tip>
-              }
-              label={k.comments(detail.comments.length)}
-            >
-              {detail.comments.length > 0 && (
-                <ul className="flex flex-col gap-2">
-                  {detail.comments.map(comment => (
-                    <li className="text-[0.75rem]" key={comment.id}>
-                      <span className="font-medium text-(--ui-text-secondary)">{comment.author}</span>
-                      <span className="ml-2 text-[0.625rem] text-(--ui-text-quaternary)">
-                        {ago(comment.created_at)}
-                      </span>
-                      <p className="whitespace-pre-wrap text-(--ui-text-tertiary)">{comment.body}</p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <CommentComposer
-                onRequeue={body => requeueMut.mutate(body)}
-                onSubmit={body => commentMut.mutate(body)}
-                pending={commentMut.isPending || requeueMut.isPending}
-                running={running}
-              />
-            </Section>
-
-            {detail.events.length > 0 && (
-              <Section label={k.activity(detail.events.length)}>
-                <ScrollFade deps={detail.events.length} max="7rem">
-                  <ul className="flex flex-col gap-1">
-                    {detail.events.map(event => {
-                      const { detail: extra, label } = eventText(event, k)
-
-                      return (
-                        <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
-                          <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
-                          {extra && (
-                            <span
-                              className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)"
-                              title={extra}
-                            >
-                              {extra}
-                            </span>
-                          )}
-                          <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </ScrollFade>
-              </Section>
-            )}
-
-            {detail.runs.length > 0 && (
-              <Section label={k.runs(detail.runs.length)}>
-                <ScrollFade max="11rem">
-                  <ul className="flex flex-col gap-1.5">
-                    {detail.runs.map(run => {
-                      const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run.outcome ?? run.status)
-
-                      return (
-                        <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>
-                          <div className="flex items-center gap-2">
-                            <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
-                              {run.outcome ?? run.status}
-                            </Badge>
-                            {run.profile && <span className="text-(--ui-text-tertiary)">{run.profile}</span>}
-                            {duration(run.started_at, run.ended_at) && (
-                              <span className="text-(--ui-text-quaternary)">
-                                {duration(run.started_at, run.ended_at)}
-                              </span>
-                            )}
-                            <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
-                              {ago(run.ended_at ?? run.started_at)}
-                            </span>
-                          </div>
-                          {(run.error || run.summary) && (
-                            <p
-                              className={cn(
-                                'line-clamp-2 whitespace-pre-wrap',
-                                run.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
-                              )}
-                            >
-                              {run.error ?? run.summary}
-                            </p>
-                          )}
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </ScrollFade>
-              </Section>
-            )}
-
-            {log?.exists && log.content && (
-              <Section label={log.truncated ? k.workerLogTail : k.workerLog}>
-                <ScrollFade deps={log.content.length} max="12rem">
-                  <LogView className="border-0 px-0">{log.content}</LogView>
-                </ScrollFade>
-              </Section>
-            )}
-
-            {Array.isArray(detail.attachments) && (
-              <AttachmentsSection
-                attachments={detail.attachments}
-                onUpload={file => uploadMut.mutate(file)}
-                pending={uploadMut.isPending}
-              />
-            )}
           </div>
-        )}
-      </div>
-    </div>
+          <DialogTitle className="leading-snug" data-selectable-text="true">
+            {task ? task.title || task.id : shortId(id)}
+          </DialogTitle>
+        </header>
+
+        <div className="flex min-h-0 flex-1 flex-col" data-selectable-text="true">
+          {errorMessage ? (
+            <ErrorState title={errorMessage} />
+          ) : !detail || !task ? (
+            <div className="grid h-32 place-items-center">
+              <Loader type="lemniscate-bloom" />
+            </div>
+          ) : (
+            <div className="flex min-h-0 flex-1">
+              <div className="min-w-0 flex-1 overflow-y-auto px-5 pb-5">
+                <div className="flex flex-col gap-5">
+                  {task.status === 'ready' && !task.assignee && !defaultAssignee && (
+                    <Callout title={k.readyUnassignedTitle} tone={SEVERITY_TONE.warning}>
+                      <p className="text-[0.6875rem] leading-relaxed text-(--ui-text-secondary)">
+                        {k.readyUnassignedBody}
+                      </p>
+                    </Callout>
+                  )}
+
+                  {task.diagnostics && task.diagnostics.length > 0 && (
+                    <Section label={k.diagnosticsN(task.diagnostics.length)}>
+                      <Diagnostics
+                        items={task.diagnostics}
+                        onReclaim={() => void mutate(() => reclaimTask(task.id))()}
+                      />
+                    </Section>
+                  )}
+
+                  <DescriptionSection
+                    body={task.body}
+                    onSave={body => void mutate(() => patchTask(task.id, { body }))()}
+                  />
+
+                  {task.result && (
+                    <Section label={k.result}>
+                      <TaskMarkdown text={task.result} />
+                    </Section>
+                  )}
+
+                  {task.latest_summary && !isAdminSummary(task.latest_summary) && (
+                    <Section label={k.latestSummary}>
+                      <TaskMarkdown text={task.latest_summary} />
+                    </Section>
+                  )}
+
+                  <FeedTabs
+                    commentPending={commentMut.isPending || requeueMut.isPending}
+                    detail={detail}
+                    log={log ?? null}
+                    onComment={body => commentMut.mutate(body)}
+                    onRequeue={body => requeueMut.mutate(body)}
+                    running={running}
+                  />
+                </div>
+              </div>
+              <aside className="flex w-64 shrink-0 flex-col gap-4 overflow-y-auto border-l border-(--ui-stroke-tertiary) px-4 pb-5">
+                <MetaRow label={k.assignee}>
+                  <AssigneeMenu
+                    current={task.assignee}
+                    onReassign={profile => void mutate(() => reassignTask(task.id, profile))()}
+                  />
+                </MetaRow>
+                {typeof task.priority === 'number' && (
+                  <MetaRow label={k.metaPriority}>
+                    <PriorityGlyph priority={task.priority} />
+                  </MetaRow>
+                )}
+                {task.tenant && <MetaRow label={k.metaTenant}>{task.tenant}</MetaRow>}
+                {task.workspace_path && (
+                  <MetaRow label={k.workspace}>
+                    <WorkspaceValue kind={task.workspace_kind} path={task.workspace_path} />
+                  </MetaRow>
+                )}
+                <MetaRow label={k.model}>
+                  <ModelOverrideField
+                    onChange={next => void mutate(() => patchTask(task.id, overridePatch(next)))()}
+                    value={{
+                      effort: task.reasoning_effort ?? '',
+                      model: task.model_override ?? '',
+                      provider: task.provider_override ?? ''
+                    }}
+                  />
+                </MetaRow>
+                {(detail.links.parents.length > 0 || detail.links.children.length > 0) &&
+                  (['parents', 'children'] as const).map(side =>
+                    detail.links[side].length > 0 ? (
+                      <MetaRow key={side} label={side === 'parents' ? k.blockedBy : k.blocks}>
+                        <LinkChips ids={detail.links[side]} linkTitles={linkTitles} onOpen={onOpen} />
+                      </MetaRow>
+                    ) : null
+                  )}
+                {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
+                {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
+                {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}
+                <EstimateSection id={task.id} />
+
+                {Array.isArray(detail.attachments) && (
+                  <AttachmentsSection
+                    attachments={detail.attachments}
+                    onDownload={detail.downloadAttachment}
+                    onUpload={file => uploadMut.mutate(file)}
+                    pending={uploadMut.isPending}
+                  />
+                )}
+              </aside>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }

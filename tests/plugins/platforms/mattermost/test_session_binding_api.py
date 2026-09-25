@@ -122,3 +122,27 @@ async def test_connected_target_normalizer_is_used(tmp_path):
         payload = await response.json()
     normalizer.assert_awaited_once_with("requested-channel", "reply-id")
     assert payload["binding"]["root_post_id"] == "canonical-root"
+
+
+@pytest.mark.asyncio
+async def test_create_thread_uses_session_title_and_persists_binding(tmp_path):
+    creator = AsyncMock(return_value=("channel1", "newroot"))
+    app = web.Application()
+    api = MattermostSessionBindingAPI(
+        _FakeAPIServerAdapter(),
+        thread_creator=creator,
+        store_factory=lambda: MattermostSessionBindingStore(tmp_path / "bindings.db"),
+    )
+    api._api_adapter.sessions["session-1"]["title"] = "Freunde"
+    api.register_routes(app)
+    async with TestClient(TestServer(app)) as test_client:
+        response = await test_client.post(
+            "/api/plugins/mattermost/v1/session-bindings/session-1/thread",
+            headers=_auth(),
+            json={"channel_id": "channel1"},
+        )
+        assert response.status == 201
+        payload = await response.json()
+
+    creator.assert_awaited_once_with("session-1", "channel1", "Freunde")
+    assert payload["binding"]["root_post_id"] == "newroot"

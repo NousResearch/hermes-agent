@@ -281,6 +281,45 @@ class MattermostAdapter(BasePlatformAdapter):
                 break
         return result
 
+    async def send_session_mirror(
+        self,
+        chat_id: str,
+        root_post_id: str,
+        content: str,
+        *,
+        session_id: str,
+        turn_id: str,
+        role: str,
+    ) -> SendResult:
+        """Post an API-originated turn into a bound thread with loop-proof metadata."""
+        payload = _with_mentions_disabled({
+            "channel_id": chat_id,
+            "root_id": root_post_id,
+            "message": f"**API client:** {content}" if role == "user" else content,
+            "props": {
+                "hermes_origin": "api_server",
+                "hermes_session_id": session_id,
+                "hermes_turn_id": turn_id,
+                "hermes_role": role,
+            },
+        })
+        return _post_result(await self._api_post("posts", payload), "Failed to mirror API turn")
+
+    async def create_session_thread(
+        self, chat_id: str, title: str, *, session_id: str
+    ) -> SendResult:
+        """Create the root post for a Hermes session binding."""
+        payload = _with_mentions_disabled({
+            "channel_id": chat_id,
+            "message": f"### {title}",
+            "props": {
+                "hermes_origin": "api_server",
+                "hermes_session_id": session_id,
+                "hermes_role": "thread_root",
+            },
+        })
+        return _post_result(await self._api_post("posts", payload), "Failed to create session thread")
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         data = await self._api_get(f"channels/{chat_id}")
         if not data:
@@ -557,7 +596,9 @@ class MattermostAdapter(BasePlatformAdapter):
             return
         # Ignore own messages, system posts and redeliveries.
         sender_id, post_id = post.get("user_id", ""), post.get("id", "")
-        if sender_id == self._bot_user_id or post.get("type") or self._dedup.is_duplicate(post_id):
+        props = post.get("props") if isinstance(post.get("props"), dict) else {}
+        if (sender_id == self._bot_user_id or props.get("hermes_origin") == "api_server"
+                or post.get("type") or self._dedup.is_duplicate(post_id)):
             return
         channel_id, is_dm = post.get("channel_id", ""), data.get("channel_type", "O") == "D"
         message_text = post.get("message", "")
@@ -722,6 +763,9 @@ def register(ctx) -> None:
     binding_runtime = MattermostSessionBindingRuntime()
     ctx.register_platform_handler("mattermost", binding_runtime.wire_mattermost)
     ctx.register_platform_handler("api_server", binding_runtime.wire_api_server)
+    ctx.register_hook("post_llm_call", binding_runtime.post_llm_call)
+    ctx.register_hook("on_session_end", binding_runtime.on_session_end)
+    ctx.register_hook("pre_gateway_dispatch", binding_runtime.pre_gateway_dispatch)
     ctx.register_platform(
         name="mattermost", label="Mattermost", adapter_factory=MattermostAdapter,
         check_fn=check_mattermost_requirements, validate_config=validate_mattermost_config,

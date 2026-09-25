@@ -1,7 +1,7 @@
 name: mattermost-platform
 label: Mattermost
 kind: platform
-version: 1.0.0
+version: 1.1.0
 description: >
   Mattermost gateway adapter for Hermes Agent.
   Connects to a self-hosted or cloud Mattermost instance via the v4 REST
@@ -9,6 +9,10 @@ description: >
   channels/DMs and the Hermes agent. Supports thread-mode replies, native
   file uploads, channel-scoped allowlists, and home-channel cron delivery.
 author: NousResearch
+hooks:
+  - post_llm_call
+  - on_session_end
+  - pre_gateway_dispatch
 requires_env:
   - name: MATTERMOST_URL
     description: "Mattermost server URL (e.g. https://mm.example.com)"

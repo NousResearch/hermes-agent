@@ -17,6 +17,7 @@ from .session_bindings import (
 API_PREFIX = "/api/plugins/mattermost/v1"
 
 TargetNormalizer = Callable[[str, str], Awaitable[tuple[str, str]]]
+ThreadCreator = Callable[[str, str, str], Awaitable[tuple[str, str]]]
 ConnectedProbe = Callable[[], bool]
 
 
@@ -39,11 +40,13 @@ class MattermostSessionBindingAPI:
         api_adapter: Any,
         *,
         target_normalizer: TargetNormalizer | None = None,
+        thread_creator: ThreadCreator | None = None,
         connected_probe: ConnectedProbe | None = None,
         store_factory: Callable[[], MattermostSessionBindingStore] = MattermostSessionBindingStore,
     ) -> None:
         self._api_adapter = api_adapter
         self._target_normalizer = target_normalizer
+        self._thread_creator = thread_creator
         self._connected_probe = connected_probe or (lambda: target_normalizer is not None)
         self._store_factory = store_factory
 
@@ -52,6 +55,7 @@ class MattermostSessionBindingAPI:
             ("GET", f"{API_PREFIX}/capabilities", self.capabilities),
             ("GET", f"{API_PREFIX}/session-bindings", self.list_bindings),
             ("GET", f"{API_PREFIX}/session-bindings/resolve", self.resolve_binding),
+            ("POST", f"{API_PREFIX}/session-bindings/{{session_id}}/thread", self.create_thread),
             ("GET", f"{API_PREFIX}/session-bindings/{{session_id}}", self.get_binding),
             ("PUT", f"{API_PREFIX}/session-bindings/{{session_id}}", self.put_binding),
             ("DELETE", f"{API_PREFIX}/session-bindings/{{session_id}}", self.delete_binding),
@@ -79,7 +83,7 @@ class MattermostSessionBindingAPI:
         return web.json_response({
             "object": "mattermost.capabilities",
             "version": 1,
-            "features": ["session_bindings", "bidirectional_sync"],
+            "features": ["session_bindings", "thread_creation", "bidirectional_sync"],
             "mattermost_connected": bool(self._connected_probe()),
         })
 
@@ -164,6 +168,53 @@ class MattermostSessionBindingAPI:
         except BindingValidationError as exc:
             return _error(str(exc), 400, "invalid_binding")
         return web.json_response(_binding_response(binding), status=200)
+
+    async def create_thread(self, request: web.Request) -> web.Response:
+        """Create a Mattermost root post and bind it to an existing Hermes session."""
+        if auth_error := self._auth_error(request):
+            return auth_error
+        if self._thread_creator is None:
+            return _error("Mattermost adapter is not connected", 503, "mattermost_unavailable")
+        session_id = request.match_info["session_id"]
+        session, session_error = await self._api_adapter._get_existing_session_or_404(session_id)
+        if session_error:
+            return session_error
+        try:
+            existing = await asyncio.to_thread(
+                self._store_factory().get_by_session, session_id
+            )
+        except BindingValidationError as exc:
+            return _error(str(exc), 400, "invalid_binding")
+        if existing is not None:
+            return _error("Hermes session is already bound", 409, "binding_exists")
+        body, body_error = await self._api_adapter._read_json_body(request)
+        if body_error:
+            return body_error
+        unknown = sorted(set(body) - {"channel_id", "title"})
+        if unknown:
+            return _error(
+                f"Unsupported thread fields: {', '.join(unknown)}",
+                400,
+                "unsupported_binding_field",
+            )
+        raw_title = body.get("title")
+        if raw_title is not None and not isinstance(raw_title, str):
+            return _error("title must be a string", 400, "invalid_title")
+        title = (raw_title or session.get("title") or "Hermes conversation").strip()
+        if not title:
+            title = "Hermes conversation"
+        try:
+            channel_id, root_post_id = await self._thread_creator(
+                session_id, body.get("channel_id"), title
+            )
+            binding = await asyncio.to_thread(
+                self._store_factory().replace, session_id, channel_id, root_post_id
+            )
+        except BindingValidationError as exc:
+            return _error(str(exc), 400, "invalid_binding")
+        except RuntimeError as exc:
+            return _error(str(exc), 503, "mattermost_unavailable")
+        return web.json_response(_binding_response(binding), status=201)
 
     async def delete_binding(self, request: web.Request) -> web.Response:
         if auth_error := self._auth_error(request):

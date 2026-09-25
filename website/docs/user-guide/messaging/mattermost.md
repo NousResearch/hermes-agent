@@ -325,6 +325,35 @@ mattermost:
 
 Keys are Mattermost channel IDs (find them in the channel URL or via the API). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
 
+## Optional Session API Bridge
+
+The Mattermost platform plugin can bind an existing Hermes API session to one
+Mattermost thread. This is optional: the normal Sessions API and ordinary
+Mattermost conversations continue to work when no binding exists.
+
+The versioned routes are mounted on the existing API server and use the same
+`Authorization: Bearer <API_SERVER_KEY>` authentication:
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `GET` | `/api/plugins/mattermost/v1/capabilities` | Detect bridge support and Mattermost connection state. |
+| `GET` | `/api/plugins/mattermost/v1/session-bindings` | List current bindings. |
+| `GET` | `/api/plugins/mattermost/v1/session-bindings/{session_id}` | Read one binding. |
+| `PUT` | `/api/plugins/mattermost/v1/session-bindings/{session_id}` | Bind an existing Mattermost root post or reply. |
+| `POST` | `/api/plugins/mattermost/v1/session-bindings/{session_id}/thread` | Create and bind a new Mattermost thread root. |
+| `DELETE` | `/api/plugins/mattermost/v1/session-bindings/{session_id}` | Remove a binding. |
+
+Binding an existing thread requires `channel_id` and `root_post_id`. Supplying
+the ID of a reply is supported; the plugin resolves and stores its canonical
+thread root. Creating a new thread requires `channel_id` and accepts an
+optional `title`.
+
+For a bound session, completed API turns are mirrored into the Mattermost
+thread. Replies in that thread continue the same Hermes `session_id`, so they
+appear in later Sessions API history reads. Origin metadata, Mattermost event
+deduplication, and persistent delivery receipts prevent echo loops and repeated
+mirrors. Unbound Mattermost threads retain their existing behavior.
+
 ## Security
 
 :::warning

@@ -14,10 +14,11 @@ from plugins.plugin_storage import plugin_db
 
 PLUGIN_STORAGE_NAME = "mattermost-platform"
 DATABASE_FILENAME = "session-bindings.db"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MAX_SESSION_ID_LENGTH = 256
 MAX_MATTERMOST_ID_LENGTH = 64
+MAX_TURN_ID_LENGTH = 256
 
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@-]*$")
 _MATTERMOST_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -114,6 +115,21 @@ class MattermostSessionBindingStore:
                     """
                 )
                 conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS mirror_deliveries (
+                        session_id TEXT NOT NULL,
+                        turn_id TEXT NOT NULL,
+                        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                        state TEXT NOT NULL CHECK (state IN ('pending', 'completed')),
+                        mattermost_post_id TEXT,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL,
+                        PRIMARY KEY (session_id, turn_id, role),
+                        FOREIGN KEY (session_id) REFERENCES session_bindings(session_id) ON DELETE CASCADE
+                    )
+                    """
+                )
+                conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_session_bindings_thread "
                     "ON session_bindings(channel_id, root_post_id)"
                 )
@@ -140,6 +156,21 @@ class MattermostSessionBindingStore:
         root = normalize_mattermost_id(root_post_id, field="root_post_id")
         now = time.time()
         with transaction(self._connect(), immediate=True) as conn:
+            existing = conn.execute(
+                "SELECT session_id, channel_id, root_post_id, created_at, updated_at "
+                "FROM session_bindings WHERE session_id = ?",
+                (session,),
+            ).fetchone()
+            if (
+                existing is not None
+                and existing["channel_id"] == channel
+                and existing["root_post_id"] == root
+            ):
+                # An idempotent PUT must not cascade-delete delivery receipts; those
+                # receipts are what keep a retried lifecycle hook from mirroring twice.
+                unchanged = self._from_row(existing)
+                assert unchanged is not None
+                return unchanged
             conn.execute(
                 "DELETE FROM session_bindings "
                 "WHERE session_id = ? OR (channel_id = ? AND root_post_id = ?)",
@@ -210,3 +241,72 @@ class MattermostSessionBindingStore:
         with transaction(self._connect(), immediate=True) as conn:
             cursor = conn.execute("DELETE FROM session_bindings WHERE session_id = ?", (session,))
             return cursor.rowcount > 0
+
+    def claim_delivery(
+        self,
+        session_id: Any,
+        turn_id: Any,
+        role: str,
+        *,
+        stale_after: float = 300.0,
+    ) -> bool:
+        """Atomically claim one mirrored role; stale crash remnants may be retried."""
+        session = normalize_session_id(session_id)
+        turn = _normalize_identifier(
+            turn_id,
+            field="turn_id",
+            maximum=MAX_TURN_ID_LENGTH,
+            pattern=_SESSION_ID_RE,
+        )
+        if role not in {"user", "assistant"}:
+            raise BindingValidationError("role must be user or assistant")
+        now = time.time()
+        with transaction(self._connect(), immediate=True) as conn:
+            row = conn.execute(
+                "SELECT state, updated_at FROM mirror_deliveries "
+                "WHERE session_id = ? AND turn_id = ? AND role = ?",
+                (session, turn, role),
+            ).fetchone()
+            if row is not None and (
+                row["state"] == "completed" or float(row["updated_at"]) > now - stale_after
+            ):
+                return False
+            conn.execute(
+                """
+                INSERT INTO mirror_deliveries
+                    (session_id, turn_id, role, state, mattermost_post_id, created_at, updated_at)
+                VALUES (?, ?, ?, 'pending', NULL, ?, ?)
+                ON CONFLICT(session_id, turn_id, role) DO UPDATE SET
+                    state = 'pending', mattermost_post_id = NULL, updated_at = excluded.updated_at
+                """,
+                (session, turn, role, now, now),
+            )
+            return True
+
+    def complete_delivery(
+        self, session_id: Any, turn_id: Any, role: str, mattermost_post_id: Any
+    ) -> None:
+        session = normalize_session_id(session_id)
+        turn = _normalize_identifier(
+            turn_id, field="turn_id", maximum=MAX_TURN_ID_LENGTH, pattern=_SESSION_ID_RE
+        )
+        post_id = normalize_mattermost_id(mattermost_post_id, field="root_post_id")
+        with transaction(self._connect(), immediate=True) as conn:
+            conn.execute(
+                "UPDATE mirror_deliveries SET state = 'completed', mattermost_post_id = ?, updated_at = ? "
+                "WHERE session_id = ? AND turn_id = ? AND role = ? AND state = 'pending'",
+                (post_id, time.time(), session, turn, role),
+            )
+
+    def release_delivery(self, session_id: Any, turn_id: Any, role: str) -> None:
+        """Release a failed pending send so a later hook retry can deliver it."""
+        session = normalize_session_id(session_id)
+        turn = _normalize_identifier(
+            turn_id, field="turn_id", maximum=MAX_TURN_ID_LENGTH, pattern=_SESSION_ID_RE
+        )
+        with transaction(self._connect(), immediate=True) as conn:
+            conn.execute(
+                "DELETE FROM mirror_deliveries "
+                "WHERE session_id = ? AND turn_id = ? AND role = ? AND state = 'pending'",
+                (session, turn, role),
+            )

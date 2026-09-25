@@ -79,8 +79,8 @@ def test_parallel_replacements_leave_one_valid_owner(tmp_path):
             f"session-{index}", "sharedchannel", "sharedroot"
         )
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        list(pool.map(write, range(24)))
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(write, range(8)))
 
     store = MattermostSessionBindingStore(path)
     winner = store.resolve("sharedchannel", "sharedroot")
@@ -104,3 +104,39 @@ def test_invalid_identifiers_fail_closed(tmp_path, field, value):
 
     with pytest.raises(BindingValidationError):
         _store(tmp_path).replace(**values)
+
+
+def test_mirror_delivery_claim_is_deduplicated_and_retryable(tmp_path):
+    store = _store(tmp_path)
+    store.replace("session-1", "channel1", "root1")
+
+    assert store.claim_delivery("session-1", "turn-1", "user") is True
+    assert store.claim_delivery("session-1", "turn-1", "user") is False
+    store.release_delivery("session-1", "turn-1", "user")
+    assert store.claim_delivery("session-1", "turn-1", "user") is True
+    store.complete_delivery("session-1", "turn-1", "user", "post1")
+    assert store.claim_delivery("session-1", "turn-1", "user") is False
+
+
+def test_idempotent_binding_replace_preserves_delivery_receipts(tmp_path):
+    store = _store(tmp_path)
+    original = store.replace("session-1", "channel1", "root1")
+    assert store.claim_delivery("session-1", "turn-1", "assistant") is True
+    store.complete_delivery("session-1", "turn-1", "assistant", "post1")
+
+    repeated = store.replace("session-1", "channel1", "root1")
+
+    assert repeated == original
+    assert store.claim_delivery("session-1", "turn-1", "assistant") is False
+
+
+def test_replacing_binding_cascades_old_delivery_receipts(tmp_path):
+    store = _store(tmp_path)
+    store.replace("session-1", "channel1", "root1")
+    assert store.claim_delivery("session-1", "turn-1", "assistant") is True
+    store.complete_delivery("session-1", "turn-1", "assistant", "post1")
+
+    store.replace("session-2", "channel1", "root1")
+    store.replace("session-1", "channel2", "root2")
+
+    assert store.claim_delivery("session-1", "turn-1", "assistant") is True

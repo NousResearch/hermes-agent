@@ -816,6 +816,9 @@ DEFAULT_CONFIG = {
         # Interface bare `hermes`/`hermes chat` launches: "cli" (prompt_toolkit REPL) | "tui" (Ink).
         # Flags win: `--cli` forces the REPL, `--tui` / HERMES_TUI=1 forces the TUI.
         "interface": "cli",
+        # Native TUI uses the terminal's primary buffer and scrollback instead of the custom
+        # alternate-screen viewport. Flags win: `--native` / `--tui-native` and `--cli`.
+        "tui_native": False,
         # `hermes --tui` auto-resumes the most recent human-facing session (like `hermes -c`).
         # HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,

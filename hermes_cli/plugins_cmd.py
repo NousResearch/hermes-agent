@@ -501,12 +501,13 @@ def _discard_key_and_leaf(names: set, key: str) -> None:
     names.discard(key.split("/")[-1])
 
 
-def _plugin_aliases(key: str) -> set:
+def _plugin_aliases(key: str, entries: Optional[list] = None) -> set:
     """Every spelling a config list may hold for *key*: the key, its bare leaf and the manifest name.
     The loader matches BOTH the canonical key (``web/firecrawl``) and the manifest name
-    (``web-firecrawl``), so a stale entry under any form vetoes an enable ("explicit disable wins")."""
+    (``web-firecrawl``), so a stale entry under any form vetoes an enable ("explicit disable wins").
+    Pass *entries* to reuse one :func:`_discover_all_plugins` scan across several keys."""
     names = {key, key.split("/")[-1]}
-    names.update(e[0] for e in _discover_all_plugins() if e[5] == key)
+    names.update(e[0] for e in (_discover_all_plugins() if entries is None else entries) if e[5] == key)
     return names
 
 
@@ -566,13 +567,18 @@ def _set_plugin_enabled(name: str, *, enable: bool, aliases=(), console=None) ->
     plugins = config.get("plugins") or {}
     enabled = set(plugins.get("enabled") or ())
     disabled = set(plugins.get("disabled") or ())
-    removed = disabled if enable else enabled
-    _discard_key_and_leaf(removed, name)
-    removed.difference_update(aliases)
-    (enabled if enable else disabled).add(name)
+    _apply_activation(enabled, disabled, name, aliases, enable=enable)
     _admit_and_save_plugin_sets(enabled, disabled, console=console,
                                action=f"{'Enable' if enable else 'Disable'} '{name}'",
                                expected_config=expected_config, plugin=name if enable else None)
+
+
+def _apply_activation(enabled: set, disabled: set, key: str, aliases, *, enable: bool) -> None:
+    """Add canonical *key* to the target list and purge it, its bare leaf and *aliases* from the other."""
+    removed = disabled if enable else enabled
+    _discard_key_and_leaf(removed, key)
+    removed.difference_update(aliases)
+    (enabled if enable else disabled).add(key)
 
 
 def _resolve_plugin_key(name: str) -> Optional[str]:

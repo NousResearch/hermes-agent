@@ -209,6 +209,68 @@ def test_packaged_renderer_bom_does_not_bypass_entry_validation(tmp_path):
 # Dependency admission and staging are exercised by test_desktop_source_build.py.
 
 
+# --- package-manager (Homebrew/pip) installs: no desktop source tree -------
+# (#61056: `hermes desktop` under Homebrew looked for apps/desktop inside the
+# Cellar site-packages, which the formula does not ship.)
+
+
+def test_site_packages_install_kind_detects_brew_and_pip():
+    brew_root = Path("/opt/homebrew/Cellar/hermes-agent/2026.7.7.2/libexec/site-packages")
+    pip_root = Path("/usr/lib/python3/dist-packages")
+    venv_root = Path("/home/u/proj/venv/lib/python3.12/site-packages")
+    assert main_desktop._site_packages_install_kind(brew_root) == "homebrew"
+    assert main_desktop._site_packages_install_kind(pip_root) == "pip"
+    assert main_desktop._site_packages_install_kind(venv_root) == "pip"
+    assert main_desktop._site_packages_install_kind(Path("/home/u/hermes-agent")) is None
+
+
+def test_gui_brew_install_prints_brew_guidance_not_venv_hint(tmp_path, monkeypatch, capsys):
+    """A Homebrew install has no apps/desktop tree and can never build one — the
+    error must say so instead of implying a broken checkout."""
+    root = tmp_path / "Cellar" / "hermes-agent" / "2026.7.7.2" / "libexec" / "site-packages"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    monkeypatch.setattr(main_desktop, "_launch_installed_macos_desktop_app", lambda: False)
+
+    with pytest.raises(SystemExit) as exc:
+        main_desktop.cmd_gui(_ns())
+
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "Desktop GUI source not found" in out
+    assert "Homebrew" in out
+
+
+def test_gui_brew_install_launches_installed_app_when_present(tmp_path, monkeypatch):
+    """Prefer the separately installed /Applications/Hermes.app over failing."""
+    root = tmp_path / "Cellar" / "hermes-agent" / "2026.7.7.2" / "libexec" / "site-packages"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    launched = []
+    monkeypatch.setattr(main_desktop, "_launch_installed_macos_desktop_app", lambda: launched.append(1) or True)
+
+    with pytest.raises(SystemExit) as exc:
+        main_desktop.cmd_gui(_ns())
+
+    assert exc.value.code == 0
+    assert launched == [1]
+
+
+@pytest.mark.parametrize("exists,platform", [(True, "darwin"), (False, "darwin"), (True, "linux")])
+def test_launch_installed_macos_desktop_app_gates_on_bundle_and_platform(tmp_path, monkeypatch, exists, platform):
+    monkeypatch.setattr(main_desktop.sys, "platform", platform)
+    exe = Path("/Applications/Hermes.app/Contents/MacOS/Hermes")
+    monkeypatch.setattr(main_desktop.Path, "is_file", lambda self: exists if self == exe else Path.is_file(self))
+    calls = []
+    if exists and platform == "darwin":
+        import hermes_cli.bundled_app as bundled_app
+        monkeypatch.setattr(bundled_app, "launch_detached", lambda argv, **kw: calls.append(argv) or 4321)
+
+    assert main_desktop._launch_installed_macos_desktop_app() is (exists and platform == "darwin")
+    if exists and platform == "darwin":
+        assert calls == [[str(exe)]]
+
+
 # ── Content-hash stamp tests ──────────────────────────────────────────
 
 

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getLatestSessionMessages, getSession } from '@/hermes'
 import { textPart, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $compactingSessions, setSessionCompacting } from '@/store/compaction'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
 import { $queuedPromptsBySession, getQueuedPrompts } from '@/store/composer-queue'
 import { requestGatewayForAgent } from '@/store/gateway'
@@ -1438,6 +1439,64 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     // to /interrupt.
     expect(renderedText).toContain('⊙ Goal set (20-turn budget): ship the release notes')
     expect(renderedText).toContain('queued')
+
+    dropSessionState(RUNTIME_SESSION_ID)
+    $queuedPromptsBySession.set({})
+  })
+
+  it('tells the user how to stop the reply when the busy kickoff cannot queue (#42093)', async () => {
+    // The queue key resolves blank (a stored id that is only whitespace, so
+    // `enqueueQueuedPrompt` trims it to null) — the one reachable 'busy'
+    // return. The refusal copy used to demand `/interrupt`, a slash command
+    // that does not exist on any surface; it must name the controls the user
+    // actually has (Stop button / Esc) instead.
+    $queuedPromptsBySession.set({})
+    publishSessionState(RUNTIME_SESSION_ID, {
+      ...createClientSessionState('   '),
+      busy: true
+    })
+
+    const states: Record<string, unknown>[] = []
+    const busyRef = { current: true }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set (20-turn budget): keep going',
+          message: 'keep going'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal keep going')
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    // Actionable controls, not the non-existent /interrupt dead end.
+    expect(renderedText).toContain('Stop button')
+    expect(renderedText).not.toContain('/interrupt')
 
     dropSessionState(RUNTIME_SESSION_ID)
     $queuedPromptsBySession.set({})
@@ -5282,6 +5341,35 @@ describe('usePromptActions submit entry-time runtime ownership proof (#64789/#65
     expect(
       calls.find(c => c.method === 'prompt.submit' && c.params?.session_id === RUNTIME_SESSION_B_RESUMED)
     ).toBeDefined()
+  })
+})
+
+describe('usePromptActions cancelRun', () => {
+  afterEach(() => {
+    cleanup()
+    $compactingSessions.set({})
+    vi.restoreAllMocks()
+  })
+
+  it('clears a stuck compaction overlay so Stop dismisses "Summarizing thread"', async () => {
+    // A hung compaction never emits message.start/complete/error, so the
+    // per-session compacting flag (and its overlay) sticks. Stop is the user's
+    // only recourse and must clear it.
+    setSessionCompacting(RUNTIME_SESSION_ID, true)
+    expect($compactingSessions.get()[RUNTIME_SESSION_ID]).toBe(true)
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.cancelRun()
+
+    expect($compactingSessions.get()[RUNTIME_SESSION_ID]).toBeUndefined()
+    expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
   })
 })
 

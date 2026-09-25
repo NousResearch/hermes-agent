@@ -202,6 +202,7 @@ export function FloatingOverlays({
   cols,
   compIdx,
   completions,
+  nativeMode = false,
   onActiveSessionSelect,
   onActiveSessionClose,
   onModelSelect,
@@ -221,7 +222,7 @@ export function FloatingOverlays({
   | 'onNewPromptSession'
   | 'onResumeSelect'
   | 'pagerPageSize'
->) {
+> & { nativeMode?: boolean }) {
   const { gw } = useGateway()
   const overlay = useStore($overlayState)
   const sid = useStore($uiSessionId)
@@ -412,9 +413,15 @@ export function FloatingOverlays({
     })
   }
 
-  return (
+  const grid = <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={widgets} />
+
+  return nativeMode ? (
+    <Box alignItems="flex-start" flexDirection="column" marginBottom={1} width="100%">
+      {grid}
+    </Box>
+  ) : (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
-      <WidgetGrid cols={cols} columns={1} gap={0} paddingX={0} paddingY={0} rowGap={0} widgets={widgets} />
+      {grid}
     </Box>
   )
 }

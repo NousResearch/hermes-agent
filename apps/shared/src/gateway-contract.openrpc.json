@@ -21847,6 +21847,18 @@
             ],
             "default": null,
             "title": "Max"
+          },
+          "allow_shortcut": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Allow Shortcut"
           }
         },
         "required": [
@@ -24095,6 +24107,11 @@
           "isKanban": {
             "default": false,
             "title": "Iskanban",
+            "type": "boolean"
+          },
+          "isGit": {
+            "default": true,
+            "title": "Isgit",
             "type": "boolean"
           },
           "sessions": {
@@ -38144,6 +38161,18 @@
           "name": "payload",
           "schema": {
             "$ref": "#/components/schemas/PreviewRestartProgressPayload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "projects.changed",
+      "summary": "projects.db moved; refetch the Projects sidebar.",
+      "params": [
+        {
+          "name": "payload",
+          "schema": {
+            "$ref": "#/components/schemas/ChangeSignalPayload"
           }
         }
       ]

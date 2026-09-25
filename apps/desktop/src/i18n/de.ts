@@ -4445,7 +4445,7 @@ export const deOverrides = {
       copyFailure: 'Kriterium konnte nicht in die Zwischenablage kopiert werden',
       continuationFailed: 'Ziel-Fortsetzung konnte nicht übermittelt werden',
       continuationQueued: 'Ziel fortgesetzt — Fortsetzung in der Warteschlange, bis die aktuelle Runde endet',
-      continuationBusy: 'Ziel fortgesetzt — Session ist beschäftigt, /interrupt zum Fortsetzen der aktuellen Runde',
+      continuationBusy: 'Ziel fortgesetzt — Session ist beschäftigt; stoppe zuerst die aktuelle Antwort (Stopp-Button oder Esc), um fortzufahren',
       controlUnavailable: msg => `Session-Steuerung nicht verfügbar: ${msg}`,
       dismissError: 'Fehler verwerfen',
       add: 'Hinzufügen'
@@ -4793,6 +4793,7 @@ export const deOverrides = {
     replaceCurrent: 'Aktuellen Wert ersetzen',
     pasteApiKey: 'API-Key einfügen',
     localApiKeyPlaceholder: 'API-Key (optional – nur falls Ihr Endpunkt einen benötigt)',
+    localModelNamePlaceholder: 'Modellname (z. B. command-a-plus-05-2026)',
     couldNotSave: 'Anmeldedaten konnten nicht gespeichert werden.',
     connecting: 'Verbinden',
     update: 'Aktualisieren',
@@ -4946,6 +4947,7 @@ export const deOverrides = {
       search: 'Modelle durchsuchen',
       noModels: 'Keine Modelle gefunden',
       editModels: 'Modelle bearbeiten…',
+      followDefault: 'Standard aus den Einstellungen verwenden',
       refreshModels: 'Modelle aktualisieren',
       fast: 'Schnell'
     },

@@ -548,8 +548,17 @@ def _locate_skill(name: str, local_category_name: Optional[str], project_dirs: l
                 "`hermes skills untrust`."), None, None
     if not skill_md or not skill_md.exists():
         available = [s["name"] for s in _sort_skills(_find_all_skills())[:20]]
+        # Keep the local suggestions, but reserve a separate bounded window for
+        # plugin names: generated namespaces cannot be guessed from a bare name.
+        # Reuse the listing path's discovery and availability filters.
+        plugin_rows = json.loads(skills_list(category="plugin")).get("skills", [])
+        bare = name.rsplit(":", 1)[-1]
+        plugin_names = sorted(
+            {s["name"] for s in plugin_rows if ":" in s["name"]},
+            key=lambda qualified: (qualified.rsplit(":", 1)[-1] != bare, qualified))
+        available.extend(qualified for qualified in plugin_names[:20] if qualified not in available)
         return _fail(f"Skill '{name}' not found.", available_skills=available,
-                     hint="Use skills_list to see all available skills"), None, None
+                     hint="Use the exact qualified plugin:skill name shown above, or skills_list to see all available skills"), None, None
     return None, skill_dir, skill_md
 
 

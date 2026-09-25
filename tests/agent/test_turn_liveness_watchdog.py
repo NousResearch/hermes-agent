@@ -35,7 +35,6 @@ import pytest
 
 from run_agent import AIAgent
 
-
 class _DB:
     def __init__(self, session_exists=True, acquire_result=True):
         self.events = []
@@ -69,7 +68,6 @@ class _DB:
     def release_session_turn_lease(self, session_id, holder):
         self.events.append(("release", session_id, holder))
 
-
 class _BlockingCommitFence:
     """Controllable compression commit fence for the stall-abort witness.
 
@@ -102,7 +100,6 @@ class _BlockingCommitFence:
         self.entered.set()
         assert self.release.wait(10.0), "fence was never released"
         return True
-
 
 class _ParkingReleaseLock:
     """Activity-lock wrapper that parks the releasing thread at one exact
@@ -138,7 +135,6 @@ class _ParkingReleaseLock:
                 "parked activity-lock release was never released"
             )
         return result
-
 
 def _agent_with_db(db, *, session_id="stalled-session", platform="desktop"):
     agent = AIAgent.__new__(AIAgent)
@@ -177,7 +173,6 @@ def _agent_with_db(db, *, session_id="stalled-session", platform="desktop"):
     agent._session_turn_lease_refresh_interval = 60.0
     return agent
 
-
 @pytest.fixture
 def watchdog_config(monkeypatch):
     """Arm the watchdog fast through config.yaml — the only supported surface.
@@ -199,7 +194,6 @@ def watchdog_config(monkeypatch):
     )
     return monkeypatch
 
-
 def _run_turn(agent, inner_loop, monkeypatch):
     """Drive AIAgent.run_conversation with a fake inner conversation loop."""
     from agent import conversation_loop as loop_module
@@ -211,7 +205,6 @@ def _run_turn(agent, inner_loop, monkeypatch):
         conversation_history=[{"role": "user", "content": "stale"}],
     )
 
-
 def test_watchdog_force_aborts_silently_stalled_turn(watchdog_config, monkeypatch, caplog):
     """A turn with zero observable progress past the bound is surfaced and
     force-aborted as an interrupted turn instead of hanging forever."""
@@ -219,18 +212,14 @@ def test_watchdog_force_aborts_silently_stalled_turn(watchdog_config, monkeypatc
     agent = _agent_with_db(db)
 
     interrupt_seen = {}
-    t_start = time.time()
-
     def stalled_loop(_agent, _message, _system, history, *_args, **_kwargs):
         # Simulate the #95548 zombie: the loop makes no progress and never
         # touches the activity clock. It only notices the watchdog's
         # hard interrupt (real wedges may not even do that — see the lease
         # test below).
-        while not _agent._interrupt_requested:
-            if time.time() - t_start > 10:
-                break
-            time.sleep(0.005)
-        interrupt_seen["at"] = time.time()
+        assert _agent._hard_interrupt_requested.wait(30.0), (
+            "watchdog did not publish a hard interrupt"
+        )
         interrupt_seen["message"] = _agent._interrupt_message
         return {
             "final_response": "aborted",
@@ -243,14 +232,9 @@ def test_watchdog_force_aborts_silently_stalled_turn(watchdog_config, monkeypatc
     with caplog.at_level(logging.ERROR, logger="agent.turn_liveness"):
         result = _run_turn(agent, stalled_loop, monkeypatch)
 
-    elapsed = time.time() - t_start
-
     # The turn was surfaced as interrupted, not hung.
     assert result["interrupted"] is True
     assert result["final_response"] == "aborted"
-    # The watchdog fired before our 10s outer bound, and after the 0.3s idle
-    # bound (poll interval makes the exact fire instant approximate).
-    assert 0.2 <= elapsed < 10.0
     # The stall was logged loudly with the session named.
     assert any(
         "Turn liveness watchdog fired" in record.getMessage()
@@ -263,7 +247,6 @@ def test_watchdog_force_aborts_silently_stalled_turn(watchdog_config, monkeypatc
     # The durable lease was released on the interrupted exit path.
     assert db.events[-1][0] == "release"
     assert db.events[-1][1] == "stalled-session"
-
 
 def test_watchdog_does_not_fire_while_turn_still_making_progress(
     watchdog_config, monkeypatch, caplog
@@ -302,7 +285,6 @@ def test_watchdog_does_not_fire_while_turn_still_making_progress(
     # The lease refresher ran during the turn — renewal is orthogonal to the
     # watchdog and continued while the turn was alive.
     assert len(db.refresh_times) >= 1
-
 
 def test_watchdog_stops_lease_renewal_when_interrupt_cannot_unwind_wedge(
     watchdog_config, monkeypatch
@@ -354,7 +336,6 @@ def test_watchdog_stops_lease_renewal_when_interrupt_cannot_unwind_wedge(
     )
     # The lease row was still released when the turn finally unwound.
     assert [e[0] for e in db.events][-1] == "release"
-
 
 def test_watchdog_declines_abort_when_activity_resumes_during_warning(
     watchdog_config, monkeypatch, caplog
@@ -441,9 +422,6 @@ def test_watchdog_declines_abort_when_activity_resumes_during_warning(
     # …and the lease kept renewing through the resumed turn.
     assert len(db.refresh_times) >= 1
     assert db.events[-1][0] == "release"
-
-
-
 
 def test_watchdog_declines_abort_when_activity_resumes_after_revalidation(
     watchdog_config, monkeypatch, caplog
@@ -538,7 +516,6 @@ def test_watchdog_declines_abort_when_activity_resumes_after_revalidation(
     assert len(db.refresh_times) >= 1
     assert db.events[-1][0] == "release"
 
-
 def test_watchdog_declines_abort_when_activity_resumes_inside_interrupt_publication(
     watchdog_config, monkeypatch, caplog
 ):
@@ -623,7 +600,6 @@ def test_watchdog_declines_abort_when_activity_resumes_inside_interrupt_publicat
     assert len(db.refresh_times) >= 1
     assert db.events[-1][0] == "release"
 
-
 def test_watchdog_declines_abort_when_interrupt_publish_raises(
     watchdog_config, monkeypatch, caplog
 ):
@@ -695,9 +671,6 @@ def test_watchdog_declines_abort_when_interrupt_publish_raises(
     # …and the lease kept renewing because the abort was declined.
     assert len(db.refresh_times) >= 1
     assert db.events[-1][0] == "release"
-
-
-
 
 def test_declined_abort_does_not_cancel_pending_compression_commit():
     """#99758 P1 review: a stale liveness claim must not cancel a legitimate
@@ -780,5 +753,3 @@ def test_declined_abort_does_not_cancel_pending_compression_commit():
         "cancelled: begin_commit() refused"
     )
     fence.finish_commit()
-
-

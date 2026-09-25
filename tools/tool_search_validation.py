@@ -14,6 +14,78 @@ from tools.tool_search_catalog import BRIDGE_TOOL_NAMES, _registry_entry
 logger = logging.getLogger("tools.tool_search")
 
 _SCHEMA_LITERAL_KEYS = frozenset({"const", "default", "enum", "example", "examples"})
+_ITEM_ENVELOPE_KEYS = ("item",)
+
+
+def _unwrap_item_envelope(value: Any) -> Tuple[Any, bool]:
+    """Unwrap a single-key dict whose only entry looks like ``{"item": <scalar>}``.
+
+    Frontier LLMs (Anthropic/Codex/Responses-style tool-call parsing) occasionally emit a
+    JSON-shaped response_item envelope where the schema declares a bare scalar or array
+    element. That is the shape of a tool RESULT item, not of a tool-call argument.
+    """
+    if not isinstance(value, dict) or len(value) != 1:
+        return value, False
+    [(key, inner)] = value.items()
+    if key not in _ITEM_ENVELOPE_KEYS:
+        return value, False
+    if isinstance(inner, dict) and len(inner) == 1 and next(iter(inner)) in _ITEM_ENVELOPE_KEYS:
+        return value, False
+    return inner, True
+
+
+def _repair_item_envelopes(value: Any, _seen: Optional[set] = None) -> Tuple[Any, bool]:
+    """Recursively unwrap ``{"item": <x>}`` envelopes inside arrays and scalars.
+
+    Idempotent, cycle-safe, and narrow: only fires when the shape is unambiguously malformed.
+    """
+    if _seen is None:
+        _seen = set()
+    oid = id(value)
+    if oid in _seen:
+        return value, False
+    _seen.add(oid)
+    changed = False
+    if isinstance(value, dict):
+        out = {}
+        for key, val in value.items():
+            new_val, child_changed = _repair_item_envelopes(val, _seen)
+            if not child_changed:
+                unwrapped, did = _unwrap_item_envelope(val)
+                if did:
+                    new_val = unwrapped
+                    changed = True
+            elif child_changed:
+                changed = True
+            out[key] = new_val
+        return (out if changed else value), changed
+    if isinstance(value, list):
+        any_changed = False
+        repaired: List[Any] = []
+        for item in value:
+            if isinstance(item, dict):
+                unwrapped, did = _unwrap_item_envelope(item)
+                if did:
+                    repaired.append(unwrapped)
+                    any_changed = True
+                    continue
+            new_item, child_changed = _repair_item_envelopes(item, _seen)
+            if child_changed:
+                any_changed = True
+            repaired.append(new_item)
+        return (repaired if any_changed else value), any_changed
+    return value, False
+
+
+def _flatten_single_envelope_lists(value: Any) -> Any:
+    """Collapse the ``[[...]]`` left behind after unwrapping an array argument's envelope."""
+    if isinstance(value, dict):
+        return {k: _flatten_single_envelope_lists(v) for k, v in value.items()}
+    if isinstance(value, list):
+        if len(value) == 1 and isinstance(value[0], list):
+            return value[0]
+        return [_flatten_single_envelope_lists(item) for item in value]
+    return value
 
 
 def _schema_for_local_validation(node: Any) -> Any:
@@ -111,6 +183,20 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         except Exception:
             logger.debug("Deferred-argument coercion failed for %s", name, exc_info=True)
             candidate_args = dict(args)
+        # Repair {"item": <x>} response-item envelopes before jsonschema validation so a
+        # valid call matches the registered schema (upstream issue #99270, PR #115020).
+        try:
+            repaired_args, _changed = _repair_item_envelopes(candidate_args)
+            if _changed:
+                # Unwrapping an array argument's envelope can leave [[...]] behind.
+                repaired_args = _flatten_single_envelope_lists(repaired_args)
+                logger.debug(
+                    "tool_call to %r: repaired item-envelope args %r -> %r",
+                    name, candidate_args, repaired_args,
+                )
+                candidate_args = repaired_args
+        except Exception:  # pragma: no cover — never block on a repair bug
+            logger.debug("Item-envelope repair failed for %s", name, exc_info=True)
         try:
             from jsonschema.exceptions import best_match
             from jsonschema.validators import validator_for

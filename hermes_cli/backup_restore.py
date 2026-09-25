@@ -106,7 +106,7 @@ def _safe_restore_db(src: Path, dst: Path) -> bool:
             dst_conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         except Exception:
             pass
-        src_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        src_conn = sqlite3.connect(f"{src.resolve().as_uri()}?mode=ro", uri=True)
         try:
             src_conn.backup(dst_conn)
         finally:
@@ -380,7 +380,7 @@ def _count_session_rows(path: Path) -> Optional[Tuple[int, int]]:
     if not path.is_file():
         return None
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
     except sqlite3.Error:
         return None
     try:

@@ -39,6 +39,7 @@ from hermes_cli.web_server_profiles import (
     _fallback_profile_dicts, _hub_action_name, _write_profile_mcp_servers,
 )
 from hermes_cli.web_server_sessions import _open_session_db_at_path
+from hermes_state_health import STORAGE_CORRUPT, note_storage_error, storage_state
 from starlette.concurrency import run_in_threadpool
 from hermes_cli.web_models import (
     ProfileCreate, ProfileActiveUpdate, ProfileExport, ProfileImport, ProfileRename,
@@ -214,7 +215,7 @@ def _profile_targets(log_label: str) -> List[Tuple[str, Path]]:
     fan-out that only needs name/path (#114041)."""
     from hermes_cli import profiles as profiles_mod
     try:
-        targets = list(profiles_mod.profiles_to_serve(multiplex=True))
+        targets = list(profiles_mod.profiles_to_serve(multiplex=True, include_standalone=True, include_parked=True))
     except Exception:
         _log.exception("%s: profile enumeration failed", log_label)
         targets = []
@@ -268,6 +269,8 @@ def _read_profile_db(name: str, home, errors: Optional[List[Dict[str, str]]],
         db = _open_session_db_at_path(db_path, read_only=True)
         return fn(db)
     except Exception as exc:
+        # An open that dies on a damaged file never reaches SessionDB's read helpers.
+        note_storage_error(db_path, exc)
         _warn_profile_read_error(name, exc)
         if errors is not None:
             errors.append({"profile": name, "error": str(exc)})
@@ -275,6 +278,14 @@ def _read_profile_db(name: str, home, errors: Optional[List[Dict[str, str]]],
     finally:
         if db is not None:
             db.close()
+
+
+def _corrupt_profile_stores(targets) -> Dict[str, str]:
+    """``{profile: "corrupt"}`` for every scanned profile whose state.db this process has latched
+    as structurally corrupt (``hermes_state_health``). Lets Desktop tell an empty or partial list
+    from a damaged store, including when some reads still succeed (#72046)."""
+    return {name: STORAGE_CORRUPT for name, home in targets
+            if storage_state(Path(home) / "state.db") == STORAGE_CORRUPT}
 
 
 # Sidebar scan cache TTL: short enough that the UI never shows meaningfully stale data, long
@@ -447,7 +458,8 @@ def get_profiles_sessions(
     if not full:
         _strip_session_list_rows(window)
     return {"sessions": window, "total": sum(totals.values()), "profile_totals": totals,
-            "limit": limit, "offset": offset, "errors": errors}
+            "limit": limit, "offset": offset, "errors": errors,
+            "storage": _corrupt_profile_stores(targets)}
 
 
 @sessions_router.get("/api/profiles/sessions/sidebar")
@@ -499,9 +511,11 @@ def get_profiles_sessions_sidebar(
         _sidebar_profile_cache_put(cache_key, slices)
         return slices
 
+    scanned = []
     for name, home in targets:
         if recents_scope != "all" and name != recents_scope:
             continue
+        scanned.append((name, home))
         db_path = Path(home) / "state.db"
         if not db_path.exists():
             continue
@@ -534,7 +548,7 @@ def get_profiles_sessions_sidebar(
                     "profiles_usage": profile_totals},
         "cron": {"sessions": _window("cron")},
         "messaging": {"sessions": _window("messaging"), "total": len(rows["messaging"])},
-        "errors": errors}
+        "errors": errors, "storage": _corrupt_profile_stores(scanned)}
 
 
 def _merge_by_id(into: Dict[str, Dict[str, Any]], entries: List[Dict[str, Any]], child_key: str) -> None:
@@ -876,12 +890,11 @@ async def delete_profile_endpoint(name: str):
 @router.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
-
     def _run():
         # Probe and read in one hop (two round-trips would widen the check/read window).
         if not soul_path.exists():
             return _MISSING
-        return soul_path.read_text(encoding="utf-8")
+        return soul_path.read_text(encoding="utf-8-sig")
 
     content = await _read_off_loop(_run, "SOUL.md", OSError)
     if content is _MISSING:
@@ -968,7 +981,7 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 def _read_desktop_overlay(profile_dir: Path) -> Any:
     """The desktop appearance overlay bundled with an imported profile
     (``desktop.json`` at the profile root); raises when unreadable."""
-    return json.loads((profile_dir / "desktop.json").read_text(encoding="utf-8"))
+    return json.loads((profile_dir / "desktop.json").read_text(encoding="utf-8-sig"))
 
 
 @router.post("/api/profiles/{name}/export")
@@ -1010,7 +1023,8 @@ async def import_profile_endpoint(body: ProfileImport):
 
     # Bundled desktop appearance overlay, so the desktop needn't make another round-trip.
     desktop_overlay = None
-    if (profile_dir / "desktop.json").is_file():
+    overlay_path = profile_dir / "desktop.json"
+    if overlay_path.is_file():
         desktop_overlay = _best_effort(
             "Reading desktop.json from imported profile %s failed", imported,
             fn=lambda: _read_desktop_overlay(profile_dir))

@@ -1,7 +1,7 @@
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopConnectionsRegistry } from '@/global'
+import type { DesktopBootstrapState, DesktopConnectionsRegistry } from '@/global'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $desktopBoot } from '@/store/boot'
 import {
@@ -374,6 +374,77 @@ async function flushAsync() {
   })
 }
 
+it('loads and tracks saved gateways without mounting the statusbar or Settings', async () => {
+  const desktop = fakeDesktop()
+  const bootFetch = deferred<void>()
+  type Listener = Parameters<NonNullable<Window['hermesDesktop']['connections']['onChanged']>>[0]
+  const listeners = new Set<Listener>()
+
+  let registry: DesktopConnectionsRegistry = {
+    version: 2,
+    primary: primaryConn.connectionId,
+    secureTokenStorage: true,
+    connections: [
+      { id: primaryConn.connectionId, kind: 'remote', label: 'Primary', tokenPreview: null, tokenSet: false },
+      { id: coderConn.connectionId, kind: 'remote', label: 'Coder', tokenPreview: null, tokenSet: false }
+    ]
+  }
+
+  const list = vi.fn(async () => registry)
+  const setLastUsed = vi.fn(async () => ({ ok: true, registry }))
+
+  Object.assign(desktop, {
+    connections: {
+      list,
+      setLastUsed,
+      onChanged: (callback: Listener) => {
+        listeners.add(callback)
+
+        return () => listeners.delete(callback)
+      }
+    }
+  })
+  ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+  // Only the real gateway lifecycle mounts; no optional UI can load the cache.
+  const view = render(<Harness refreshSessions={() => bootFetch.promise} />)
+  await flushAsync()
+
+  expect($connectionsRegistry.get()).toEqual(registry)
+  expect($desktopBoot.get().running).toBe(true)
+  expect(setLastUsed).not.toHaveBeenCalled()
+
+  bootFetch.resolve()
+  await flushAsync()
+  expect($desktopBoot.get().running).toBe(false)
+  expect(setLastUsed).toHaveBeenCalledExactlyOnceWith(primaryConn.connectionId)
+
+  const activeConnection = $connection.get()
+  registry = {
+    ...registry,
+    connections: registry.connections.map(entry => ({ ...entry, label: `${entry.label} renamed` }))
+  }
+  await act(async () => {
+    for (const callback of listeners) {
+      callback({ connectionId: coderConn.connectionId, reason: 'saved' })
+    }
+  })
+  expect($connectionsRegistry.get()).toEqual(registry)
+
+  registry = { ...registry, connections: registry.connections.slice(0, 1) }
+  await act(async () => {
+    for (const callback of listeners) {
+      callback({ connectionId: coderConn.connectionId, reason: 'removed' })
+    }
+  })
+  expect($connectionsRegistry.get()).toEqual(registry)
+  expect($connection.get()).toBe(activeConnection)
+  expect(setLastUsed).toHaveBeenCalledTimes(1)
+
+  view.unmount()
+  expect(listeners.size).toBe(0)
+})
+
 // Drive the exponential backoff forward by its full cap so the next scheduled
 // reconnect attempt actually runs (1s,2s,4s,8s,15s,15s…). Returns after the
 // attempt's async work settles.
@@ -608,6 +679,18 @@ describe('primary failure foreground isolation', () => {
 
       const desktop = Object.assign(fakeDesktop(), {
         getRecentLogs: vi.fn(async () => ({ lines: [] })),
+        getBootstrapState: vi.fn(async (): Promise<DesktopBootstrapState> => ({
+          active: false,
+          manifest: null,
+          stages: {},
+          error: null,
+          log: [],
+          startedAt: null,
+          completedAt: null,
+          setupChoice: null,
+          unsupportedPlatform: null,
+          bundled: false
+        })),
         getConnectionConfig: vi.fn(async () => ({ mode: 'cloud', remoteAuthMode: 'oauth', remoteUrl: cloud.baseUrl })),
         getConnectionFor: vi.fn(async () => ({
           ...coderConn,

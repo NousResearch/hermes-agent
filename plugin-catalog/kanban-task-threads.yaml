@@ -1,13 +1,17 @@
 name: kanban-task-threads
 repo: https://github.com/diegomarino/kanban-task-threads
-sha: 0ae90a3869b8f3508bb8d9a96bc87bebb1c03094
-description: "Give every Hermes kanban task a live Discord forum thread with a rewritten status card and append-only event log. Disclosure — posts task title, status, assignee, branch, a ≤180-char comment excerpt and a 140-char prerequisite excerpt to the Discord webhook URL you configure (no host allowlist); reads the kanban DB read-only; stores thread state in <kanban_home>/kanban/plugins/kanban-task-threads/."
+sha: 467284665eb18360e9c32cd8fe4ff76690a66231
+description: "Give every Hermes kanban task a live Discord forum thread with a rewritten status card and append-only event log. Disclosure — sends task and lifecycle data to the configured Discord webhook (no host allowlist). Cards and event replies use built-in or operator-configured templates and may include identifiers, titles, status, assignment, branch and workspace metadata, relationships and blocking details, comments, event actors, reviewers, reasons, summaries, and configured dashboard links; the comment excerpt length is configurable. Fixed prerequisite announcements additionally send the prerequisite task ID, title, assignee, and up to 140 characters of its body and are not template-configurable. The absolute workspace path is off by default and requires explicit opt-in. Reads the kanban database read-only and stores thread mapping state under <kanban_home>/kanban/plugins/kanban-task-threads/. With an optional existing publisher-profile Discord bot token, reads forum and thread metadata; creates or repairs managed status tags and emojis; replaces applied tags on plugin-managed threads; renames threads; and archives or unarchives them. Discord fetches webhook avatars from the configured HTTPS asset origin. Disclosure — the avatar asset origin defaults to the author-hosted https://diegomarino.github.io/kanban-task-threads (disable with avatars_enabled: false). With the bot token the periodic metadata audit also lists the guild's active threads (filtered to the forum) and may rewrite the forum's available-tag list to add the 11 managed status tags (requires Manage Channels)."
 maintainer: diegomarino
 tier: community
 category: automation
 requires_hermes: ">=0.20"
 docs_url: https://github.com/diegomarino/kanban-task-threads#readme
-version: "0.2.2"
+version: "0.4.1"
+image: https://raw.githubusercontent.com/diegomarino/kanban-task-threads/467284665eb18360e9c32cd8fe4ff76690a66231/docs/assets/catalog-banner.png
+screenshots:
+  - https://raw.githubusercontent.com/diegomarino/kanban-task-threads/467284665eb18360e9c32cd8fe4ff76690a66231/docs/assets/catalog-screenshot-full.png
+  - https://raw.githubusercontent.com/diegomarino/kanban-task-threads/467284665eb18360e9c32cd8fe4ff76690a66231/docs/assets/catalog-banner-detail.png
 platforms: []
 capabilities:
   provides_tools: []

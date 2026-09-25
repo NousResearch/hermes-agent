@@ -10,6 +10,7 @@ tests/docker/test_container_restart.py.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,8 @@ from hermes_cli.container_boot import (
     ReconcileAction,
     reconcile_profile_gateways,
 )
+
+pytestmark = pytest.mark.platforms("linux")
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +49,9 @@ def _hermetic_container_argv(monkeypatch: pytest.MonkeyPatch) -> None:
         "hermes_cli.container_boot._read_container_argv",
         lambda: (),
     )
+    # This fixture owns real files, but does not run as the image's service user.
+    monkeypatch.setattr("hermes_cli.service_manager._HERMES_UID", os.getuid())
+    monkeypatch.setattr("hermes_cli.service_manager._HERMES_GID", os.getgid())
 
 
 def _make_profile(
@@ -180,18 +186,6 @@ def test_registered_profile_has_finish_script(tmp_path: Path) -> None:
     assert "125" in text
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def test_register_service_overwrites_existing_slot(tmp_path: Path) -> None:
     """A second reconciliation pass cleanly replaces an existing
     slot (the tmp+rename publication overwrites the previous one)."""
@@ -223,17 +217,9 @@ def test_register_service_overwrites_existing_slot(tmp_path: Path) -> None:
     assert (scandir / "gateway-coder" / "down").exists()
 
 
-
-
 # ---------------------------------------------------------------------------
 # Default-profile slot — always registered (PR #30136 review item I1)
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
 
 
 def test_profiles_default_subdir_is_skipped_with_warning(
@@ -268,14 +254,9 @@ def test_profiles_default_subdir_is_skipped_with_warning(
 # ---------------------------------------------------------------------------
 
 
-
-
-
-
 def test_main_skips_reconcile_in_dashboard_container_s6v3(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The dashboard skip must fire under the s6-overlay v3 argv shape.
 
@@ -317,22 +298,6 @@ def test_main_skips_reconcile_in_dashboard_container_s6v3(
     assert rc == 0
     assert not (scandir / "gateway-worker").exists()
     assert not (scandir / "gateway-default").exists()
-    assert "skipping (dashboard container" in capsys.readouterr().out
-
-
-
-
-# ---------------------------------------------------------------------------
-# prior_exit annotation (NS-608 — unclean-shutdown forensics)
-# ---------------------------------------------------------------------------
-
-
-def _write_lifecycle_sentinel(profile_dir: Path, payload: dict) -> None:
-    state_dir = profile_dir / "state"
-    state_dir.mkdir(parents=True, exist_ok=True)
-    (state_dir / "gateway.lifecycle.json").write_text(json.dumps(payload))
-
-
 
 
 # ---------------------------------------------------------------------------

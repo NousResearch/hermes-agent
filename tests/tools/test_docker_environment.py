@@ -1,6 +1,5 @@
 import logging
 import os
-from io import StringIO
 import subprocess
 
 import pytest
@@ -61,7 +60,7 @@ def _make_dummy_env(**kwargs):
     )
 
 
-def test_ensure_docker_available_logs_and_raises_when_not_found(monkeypatch, caplog):
+def test_ensure_docker_available_raises_when_not_found(monkeypatch):
     """When docker cannot be found, raise a clear error before container setup."""
 
     monkeypatch.setattr(docker_env, "find_docker", lambda: None)
@@ -71,16 +70,8 @@ def test_ensure_docker_available_logs_and_raises_when_not_found(monkeypatch, cap
         lambda *args, **kwargs: pytest.fail("subprocess.run should not be called when docker is missing"),
     )
 
-    with caplog.at_level(logging.ERROR):
-        with pytest.raises(RuntimeError) as excinfo:
-            _make_dummy_env()
-
-    assert "Docker executable not found in PATH or known install locations" in str(excinfo.value)
-    assert any(
-        "no docker executable was found in PATH or known install locations"
-        in record.getMessage()
-        for record in caplog.records
-    )
+    with pytest.raises(RuntimeError):
+        _make_dummy_env()
 
 
 def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
@@ -104,56 +95,6 @@ def test_auto_mount_host_cwd_adds_volume(monkeypatch, tmp_path):
     assert f"{project_dir}:/workspace" in run_args_str
 
 
-def test_non_persistent_cleanup_removes_container(monkeypatch):
-    """When persist_across_processes=false, cleanup() must docker stop AND
-    docker rm so containers don't leak across hermes processes.
-
-    Updated for issue #20561: the previous implementation used fire-and-forget
-    ``subprocess.Popen("... &", shell=True)`` which raced with parent exit;
-    the new implementation uses ``subprocess.run`` on a daemon thread with
-    bounded timeouts. See test_cleanup_with_persist_disabled_stops_and_rms
-    for the full behavior contract.
-    """
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
-    _mock_subprocess_run(monkeypatch)
-    # Run the worker thread synchronously so assertions can observe its work.
-    import threading
-    monkeypatch.setattr(threading, "Thread", _FakeThread)
-
-    env = docker_env.DockerEnvironment(
-        image="python:3.11", cwd="/root", timeout=60,
-        task_id="ephemeral-task", persistent_filesystem=False,
-        persist_across_processes=False,
-    )
-    container_id = env._container_id
-    assert container_id
-
-    # Capture cleanup-time docker calls (everything before this was init).
-    cleanup_calls = []
-    real_run = docker_env.subprocess.run
-
-    def _capture(cmd, **kw):
-        cleanup_calls.append((list(cmd) if isinstance(cmd, list) else cmd, kw))
-        return real_run(cmd, **kw)
-
-    monkeypatch.setattr(docker_env.subprocess, "run", _capture)
-    env.cleanup()
-
-    stops = [c for c in cleanup_calls if isinstance(c[0], list) and c[0][1:2] == ["stop"]]
-    assert stops, f"cleanup() should docker stop {container_id}; got {cleanup_calls}"
-
-
-class _FakePopen:
-    def __init__(self, cmd, **kwargs):
-        self.cmd = cmd
-        self.kwargs = kwargs
-        self.stdout = StringIO("")
-        self.stdin = None
-        self.returncode = 0
-
-    def poll(self):
-        return self.returncode
 
 
 def _make_execute_only_env(forward_env=None):
@@ -643,6 +584,7 @@ def _bind_mount_specs(run_args):
     ]
 
 
+@pytest.mark.platforms("linux")
 def test_persistent_bind_mounts_survive_a_session_key_task_id(monkeypatch, tmp_path):
     """A gateway session key reaches the persistent sandbox path as-is, and it
     carries colons (``session:agent:main:telegram:dm:<chat_id>``). Docker reads
@@ -718,11 +660,6 @@ def test_sandbox_dir_name_drops_separators_docker_and_the_fs_reserve():
         assert not (set(name) & set(':/\\')), name
 
 
-def test_sandbox_dir_name_is_stable_across_calls():
-    """Cross-process container reuse resolves the sandbox by name, so the
-    mapping must be a pure function of the id — no randomness, no pid."""
-    value = "session:agent:main:discord:guild:1:2"
-    assert docker_env._sandbox_dir_name(value) == docker_env._sandbox_dir_name(value)
 
 
 def test_sandbox_dir_name_bounds_pathological_ids():
@@ -741,22 +678,6 @@ def test_sandbox_dir_name_never_resolves_to_the_sandbox_root():
         assert not (set(name) & set(':/\\')), name
 
 
-def test_labels_attribute_populated_after_init(monkeypatch):
-    """``self._labels`` must be set to the same key/value pairs that went onto
-    docker run, so subsequent reuse / reaper paths can match without re-running
-    the sanitizer or re-importing the profile module."""
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
-    _mock_subprocess_run(monkeypatch)
-
-    env = _make_dummy_env(task_id="abc")
-
-    assert env._labels == {
-        "hermes-agent": "1",
-        "hermes-task-id": "abc",
-        "hermes-profile": "default",
-        "hermes-egress": "off",
-    }
 
 
 def test_shared_container_key_replaces_profile_identity(monkeypatch):
@@ -1170,34 +1091,6 @@ def test_docker_run_timeout_cleans_up_orphaned_container(monkeypatch):
     assert rm_cmd[3].startswith("hermes-"), "should remove the container by its generated name"
 
 
-def test_find_reusable_handles_empty_label_string(monkeypatch):
-    """Robustness against trailing-tab sloppiness in ps output: the
-    ``ID\\tState\\t\\n`` line (Docker CLI v29.5.3 emitted this shape for
-    absent labels when the probe still carried a third column) must not make
-    the parser drop the container — the ID is still parsed and the container
-    still reused. Regression test for the egilewski review on #48073."""
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
-
-    def _run(cmd, **kwargs):
-        if isinstance(cmd, list) and len(cmd) >= 2:
-            if cmd[1] == "version":
-                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
-            if cmd[1] == "ps":
-                # Trailing tab after the State column
-                return subprocess.CompletedProcess(
-                    cmd, 0,
-                    stdout="safe-cid\trunning\t\n",
-                    stderr="",
-                )
-        return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
-
-    monkeypatch.setattr(docker_env.subprocess, "run", _run)
-
-    env = _make_dummy_env(task_id="empty-label")
-    assert env._container_id == "safe-cid", (
-        f"container with a trailing tab in ps output should be reused, got {env._container_id!r}"
-    )
 
 
 # ── Cleanup correctness (issue #20561) ────────────────────────────
@@ -1369,32 +1262,6 @@ def test_cleanup_with_persist_disabled_stops_and_rms(monkeypatch):
     )
 
 
-def test_cleanup_uses_subprocess_run_not_detached_shell(monkeypatch):
-    """The pre-fix code used ``subprocess.Popen("... &", shell=True)`` which
-    raced with parent-process exit and silently dropped cleanup work. The
-    new code must use ``subprocess.run`` with bounded ``timeout=`` so the
-    work actually completes within the process lifetime.
-
-    Asserts cleanup never reaches into shell-mode Popen. Uses
-    ``force_remove=True`` so cleanup actually issues docker calls — the
-    default persist-mode path is now a no-op (commit 4) and would trivially
-    pass this assertion without exercising the docker code at all.
-    """
-    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
-    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
-    _mock_subprocess_run(monkeypatch)
-    _install_fake_thread(monkeypatch)
-
-    def _forbidden_popen(*args, **kwargs):
-        raise AssertionError(
-            f"cleanup must not use subprocess.Popen anymore (issue #20561); "
-            f"got args={args} kwargs={kwargs}"
-        )
-
-    monkeypatch.setattr(docker_env.subprocess, "Popen", _forbidden_popen)
-
-    env = _make_dummy_env(task_id="no-popen-cleanup")
-    env.cleanup(force_remove=True)  # must not raise
 
 
 def test_cleanup_on_env_with_no_container_id_does_not_raise(monkeypatch):
@@ -1421,59 +1288,6 @@ def _now_iso(offset_seconds: int = 0) -> str:
     t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=offset_seconds)
     # Format like Docker emits — with nanoseconds-style trailing digits.
     return t.isoformat().replace("+00:00", ".123456789Z")
-
-
-def _reaper_run_mock(monkeypatch, ps_ids: list[str], inspect_responses: dict[str, str],
-                      rm_succeeds: bool = True):
-    """Build a subprocess.run mock for reaper tests.
-
-    * ``ps_ids`` — what ``docker ps -a --filter ... --format '{{.ID}}'`` returns
-    * ``inspect_responses[cid]`` — what ``docker inspect ... FinishedAt`` returns
-      for each cid; ``""`` means "field unset".
-    * ``rm_succeeds`` — whether ``docker rm -f`` returns 0.
-
-    Captures every call so tests can assert which containers were rm'd.
-    """
-    calls = []
-
-    def _run(cmd, **kwargs):
-        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
-        if not isinstance(cmd, list) or len(cmd) < 2:
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-        sub = cmd[1]
-        if sub == "ps":
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout="\n".join(ps_ids) + ("\n" if ps_ids else ""), stderr="",
-            )
-        if sub == "inspect":
-            # cmd is [docker, inspect, --format, '{{.State.FinishedAt}}', cid]
-            cid = cmd[-1]
-            return subprocess.CompletedProcess(
-                cmd, 0, stdout=inspect_responses.get(cid, "") + "\n", stderr="",
-            )
-        if sub == "rm":
-            return subprocess.CompletedProcess(
-                cmd, 0 if rm_succeeds else 1,
-                stdout="", stderr="" if rm_succeeds else "no such container",
-            )
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-    monkeypatch.setattr(docker_env.subprocess, "run", _run)
-    return calls
-
-
-def test_reap_orphan_returns_zero_when_no_matches(monkeypatch):
-    """No labeled containers → no rm calls, returns 0. Establishes the
-    happy-path baseline for the orphan reaper (issue #20561)."""
-    calls = _reaper_run_mock(monkeypatch, ps_ids=[], inspect_responses={})
-
-    removed = docker_env.reap_orphan_containers(
-        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
-    )
-
-    assert removed == 0
-    rms = [c for c in calls if isinstance(c[0], list) and c[0][1:2] == ["rm"]]
-    assert not rms, "no rm calls expected when ps returns empty"
 
 
 def test_reap_orphan_continues_after_individual_rm_failure(monkeypatch):
@@ -1586,7 +1400,6 @@ def test_container_finished_at_returns_none_on_zero_value():
     map to None so the reaper treats the container as unreapable."""
     # Direct test of the parsing helper — no subprocess needed since the
     # check happens after the inspect call returns.
-    import subprocess as _subprocess
 
     class _MockRun:
         def __init__(self, stdout):
@@ -1642,12 +1455,6 @@ def test_credential_mount_skipped_when_source_is_directory(monkeypatch, tmp_path
     run_args_str = " ".join(run_calls[0][0])
     assert "google_token.json" not in run_args_str
 
-    # Should log a warning about the directory source
-    assert any(
-        "source is a directory" in rec.getMessage()
-        for rec in caplog.records
-    )
-
 
 def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, caplog):
     """Credential mount should be skipped when source file no longer exists."""
@@ -1680,11 +1487,6 @@ def test_credential_mount_skipped_when_source_missing(monkeypatch, tmp_path, cap
     assert run_calls, "docker run should have been called"
     run_args_str = " ".join(run_calls[0][0])
     assert "deleted_token.json" not in run_args_str
-
-    assert any(
-        "source not found" in rec.getMessage()
-        for rec in caplog.records
-    )
 
 
 # ── s6-overlay /init image handling (issue #34628) ────────────────

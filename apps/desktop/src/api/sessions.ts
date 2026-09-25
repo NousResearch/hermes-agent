@@ -204,6 +204,9 @@ export interface SidebarSessionsResponse {
   cron: SidebarSessionSlice
   messaging: SidebarSessionSlice
   errors?: Array<{ profile: string; error: string }>
+  /** `{profile: 'corrupt'}` for each profile whose state.db the backend has found
+   *  structurally damaged. Absent from older backends. */
+  storage?: Record<string, 'corrupt'>
 }
 
 export interface SidebarSessionsRequest {
@@ -252,7 +255,9 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
   const cronErrors = cron.errors ?? []
   const messagingErrors = messaging.errors ?? []
 
-  return {
+  const storage = { ...recents.storage, ...cron.storage, ...messaging.storage }
+
+  const response: SidebarSessionsResponse = {
     recents: {
       profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
       sessions: recents.sessions,
@@ -267,6 +272,12 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
       ...(messagingErrors.length ? { errors: messagingErrors } : {})
     }
   }
+
+  if (Object.keys(storage).length > 0) {
+    response.storage = storage
+  }
+
+  return response
 }
 
 /** The PR each of these sessions opened, recovered from its own transcript —
@@ -343,7 +354,8 @@ export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<
       sessions: stampActiveConnectionOwner(result.messaging?.sessions ?? []),
       ...(result.errors?.length ? { errors: result.errors } : {})
     },
-    errors: result.errors
+    errors: result.errors,
+    storage: result.storage
   }
 }
 

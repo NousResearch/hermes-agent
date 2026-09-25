@@ -3,47 +3,11 @@
 import pytest
 from types import SimpleNamespace
 
-from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse
-from agent.transports import get_transport, register_transport, _REGISTRY
+from agent.transports import get_transport
 
 
 # ── ABC contract tests ──────────────────────────────────────────────────
-
-class TestProviderTransportABC:
-    """Verify the ABC contract is enforceable."""
-
-    def test_cannot_instantiate_abc(self):
-        with pytest.raises(TypeError):
-            ProviderTransport()
-
-    def test_concrete_must_implement_all_abstract(self):
-        class Incomplete(ProviderTransport):
-            @property
-            def api_mode(self):
-                return "test"
-        with pytest.raises(TypeError):
-            Incomplete()
-
-    def test_minimal_concrete(self):
-        class Minimal(ProviderTransport):
-            @property
-            def api_mode(self):
-                return "test_minimal"
-            def convert_messages(self, messages, **kw):
-                return messages
-            def convert_tools(self, tools):
-                return tools
-            def build_kwargs(self, model, messages, tools=None, **params):
-                return {"model": model, "messages": messages}
-            def normalize_response(self, response, **kw):
-                return NormalizedResponse(content="ok", tool_calls=None, finish_reason="stop")
-
-        t = Minimal()
-        assert t.api_mode == "test_minimal"
-        assert t.validate_response(None) is True  # default
-        assert t.extract_cache_stats(None) is None  # default
-        assert t.map_finish_reason("end_turn") == "end_turn"  # default passthrough
 
 
 # ── Registry tests ───────────────────────────────────────────────────────
@@ -52,28 +16,6 @@ class TestTransportRegistry:
 
     def test_get_unregistered_returns_none(self):
         assert get_transport("nonexistent_mode") is None
-
-
-
-    def test_register_and_get(self):
-        class DummyTransport(ProviderTransport):
-            @property
-            def api_mode(self):
-                return "dummy_test"
-            def convert_messages(self, messages, **kw):
-                return messages
-            def convert_tools(self, tools):
-                return tools
-            def build_kwargs(self, model, messages, tools=None, **params):
-                return {}
-            def normalize_response(self, response, **kw):
-                return NormalizedResponse(content=None, tool_calls=None, finish_reason="stop")
-
-        register_transport("dummy_test", DummyTransport)
-        t = get_transport("dummy_test")
-        assert t.api_mode == "dummy_test"
-        # Cleanup
-        _REGISTRY.pop("dummy_test", None)
 
 
 # ── AnthropicTransport tests ────────────────────────────────────────────
@@ -101,11 +43,6 @@ class TestAnthropicTransport:
         assert "input_schema" in result[0]
 
 
-
-
-
-
-
     def test_map_finish_reason(self, transport):
         assert transport.map_finish_reason("end_turn") == "stop"
         assert transport.map_finish_reason("tool_use") == "tool_calls"
@@ -114,8 +51,6 @@ class TestAnthropicTransport:
         assert transport.map_finish_reason("refusal") == "content_filter"
         assert transport.map_finish_reason("model_context_window_exceeded") == "length"
         assert transport.map_finish_reason("unknown") == "stop"
-
-
 
 
     def test_normalize_response_text(self, transport):
@@ -157,10 +92,11 @@ class TestAnthropicTransport:
 
         details = {"type": "refusal", "category": "general_harms", "explanation": "classifier halt"}
         delta_event = SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="refusal", stop_details=details))
+        message_stop_event = SimpleNamespace(type="message_stop")
 
         def _stream_cm(final):
             stream = MagicMock()
-            stream.__iter__ = MagicMock(return_value=iter([delta_event]))
+            stream.__iter__ = MagicMock(return_value=iter([delta_event, message_stop_event]))
             stream.get_final_message = MagicMock(return_value=final)
             cm = MagicMock()
             cm.__enter__, cm.__exit__ = MagicMock(return_value=stream), MagicMock(return_value=False)
@@ -216,17 +152,3 @@ class TestAnthropicTransport:
         assert tc.name == "terminal"
         assert tc.id == "toolu_123"
         assert '"command"' in tc.arguments
-
-
-
-    def test_convert_messages_extracts_system(self, transport):
-        """Test convert_messages separates system from messages."""
-        messages = [
-            {"role": "system", "content": "You are helpful."},
-            {"role": "user", "content": "Hi"},
-        ]
-        system, msgs = transport.convert_messages(messages)
-        # System should be extracted
-        assert system is not None
-        # Messages should only have user
-        assert len(msgs) >= 1

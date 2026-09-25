@@ -86,7 +86,7 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
 
 def _read_active_session_file(path: Path) -> Optional[str]:
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError):
         return None
     return str(data.get("session_id") or "").strip() or None
@@ -185,6 +185,12 @@ async def _unwind_console_worker(worker: Any, scope: InterruptScope, reason: str
     if not done:
         exited.cancel()
         _log.warning("console worker still running %ss after %s", _CONSOLE_UNWIND_TIMEOUT_SECONDS, reason)
+
+
+async def _wait_for_console_worker(worker: Any) -> Any:
+    return await asyncio.wait_for(
+        asyncio.wrap_future(worker), timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS,
+    )
 
 
 class _ConsoleSender:
@@ -309,7 +315,7 @@ async def console_ws(ws: WebSocket) -> None:
             _execute_console_line, engine, line, confirmed=confirmed, profile=profile, scope=scope,
         )
         try:
-            result = await asyncio.wait_for(asyncio.wrap_future(worker), timeout=_CONSOLE_COMMAND_TIMEOUT_SECONDS)
+            result = await _wait_for_console_worker(worker)
         except asyncio.CancelledError:
             await _unwind_console_worker(worker, scope, "cancelled")
             raise
@@ -432,6 +438,7 @@ async def _pty_fail(ws: WebSocket, exc: BaseException) -> None:
 @router.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     from hermes_cli.web_server_chat import PTY_REGISTRY, PtyBridge, PtyUnavailableError, _PTY_BRIDGE_AVAILABLE, _RESIZE_RE
+    from pm.package import InstallError
     gate = await _ws_gate(ws, "pty")
     if gate is None:
         return
@@ -478,6 +485,16 @@ async def pty_ws(ws: WebSocket) -> None:
     resolve_kwargs = {"resume": resume, "sidecar_url": sidecar_url, "profile": profile}
     if active_session_file is not None:
         resolve_kwargs["active_session_file"] = str(active_session_file)
+    # A picked workspace only applies to a FRESH chat; a resumed session keeps its own cwd.
+    if not resume:
+        from hermes_cli.web_routers.chat_workspaces import resolve_chat_cwd
+        try:
+            workspace_cwd = resolve_chat_cwd(ws.query_params.get("cwd"))
+        except HTTPException as exc:  # dead/relative path: fail closed, never the launch dir
+            await _pty_fail(ws, exc)
+            return
+        if workspace_cwd:
+            resolve_kwargs["workspace_cwd"] = workspace_cwd
 
     try:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
@@ -485,6 +502,9 @@ async def pty_ws(ws: WebSocket) -> None:
         await _pty_fail(ws, exc)
         return
     except SystemExit as exc:  # _make_tui_argv sys.exit(1)s when node/npm is missing
+        await _pty_fail(ws, exc)
+        return
+    except InstallError as exc:  # PM could not provide node; its remedy names the fix
         await _pty_fail(ws, exc)
         return
 

@@ -83,7 +83,7 @@ def _exec(mod: Any, logger: Optional[logging.Logger] = None) -> bool:
     try:
         mod.__spec__.loader.exec_module(mod)
         return True
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         if logger:
             logger.debug("Failed to exec_module %s: %s", mod.__name__, e)
         return False
@@ -150,12 +150,12 @@ def instance_from_module(mod: Any, *, collector: Any, collected_attr: str, base_
             instance = getattr(collector, collected_attr)
             if instance:
                 return instance
-        except Exception as e:
+        except (Exception, SystemExit) as e:
             logger.debug("register() failed for %s: %s", name, e)
     for attr_name in dir(mod):
         attr = getattr(mod, attr_name, None)
         if isinstance(attr, type) and issubclass(attr, base_cls) and attr is not base_cls:
-            with contextlib.suppress(Exception):
+            with contextlib.suppress(Exception, SystemExit):
                 return attr()
     return None
 
@@ -165,7 +165,7 @@ def load_named(name: str, plugin_dir: Path, load_from_dir: Callable[[Path], Opti
     """Shared body of ``load_<kind>(name)``: load from *plugin_dir*, warn + None on failure."""
     try:
         instance = load_from_dir(plugin_dir)
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         logger.warning("Failed to load %s '%s': %s", kind.lower(), name, e)
         return None
     if not instance:
@@ -178,5 +178,5 @@ def probe_availability(load: Callable[[], Optional[Any]]) -> bool:
     try:
         instance = load()
         return instance is not None and (instance.is_available() if hasattr(instance, "is_available") else True)
-    except Exception:
+    except (Exception, SystemExit):
         return False

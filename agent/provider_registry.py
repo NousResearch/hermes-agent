@@ -173,7 +173,7 @@ def is_available_safe(
     """``bool(provider.is_available())`` that treats a raising provider as unavailable."""
     try:
         return bool(provider.is_available())
-    except Exception as exc:  # noqa: BLE001
+    except (Exception, SystemExit) as exc:  # noqa: BLE001
         logger.log(level, fmt, provider.name, exc, exc_info=exc_info)
         return False
 

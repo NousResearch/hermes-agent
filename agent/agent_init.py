@@ -1057,7 +1057,7 @@ def _load_tools(agent, enabled_toolsets, disabled_toolsets):
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()
-    except Exception:
+    except (Exception, SystemExit):
         logger.warning("Plugin discovery failed during agent setup", exc_info=True)
 
     # Capture the registry generation FIRST so a concurrent refresh can detect staleness.
@@ -1267,7 +1267,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
     )
     if not skip_memory or _memory_toolset_requested:
         # Memory is optional — don't break agent init
-        with suppress(Exception):
+        with suppress(Exception, SystemExit):
             from tools.memory_tool import (
                 MemoryStore, get_builtin_memory_config, get_builtin_memory_store_flags,
             )
@@ -1305,7 +1305,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                 elif _mp is not None and _mem_provider_name not in _warned_unavailable_providers:
                     # unavailable_reason() reads config/probes importlib — skip it once warned.
                     _unavailable_reason = ""
-                    with suppress(Exception):
+                    with suppress(Exception, SystemExit):
                         _unavailable_reason = _mp.unavailable_reason()
                     _warn_memory_provider_unavailable(_mem_provider_name, _unavailable_reason)
                 if agent._memory_manager.providers:
@@ -1314,7 +1314,7 @@ def _init_memory(agent, _agent_cfg, skip_memory, platform):
                 else:
                     _ra().logger.debug("Memory provider '%s' not found or not available", _mem_provider_name)
                     agent._memory_manager = None
-        except Exception as _mpe:
+        except (Exception, SystemExit) as _mpe:
             _ra().logger.warning("Memory provider plugin init failed: %s", _mpe)
             agent._memory_manager = None
 
@@ -1805,14 +1805,14 @@ def _select_context_engine(_agent_cfg):
     try:
         from plugins.context_engine import load_context_engine
         _selected_engine = load_context_engine(_engine_name)
-    except Exception as _ce_load_err:
+    except (Exception, SystemExit) as _ce_load_err:
         _ra().logger.debug("Context engine load from plugins/context_engine/: %s", _ce_load_err)
 
     if _selected_engine is None:
         try:
             from hermes_cli.plugins import get_plugin_context_engine
             _candidate = get_plugin_context_engine()
-        except Exception:
+        except (Exception, SystemExit):
             _candidate = None
         if _candidate is not None and _candidate.name == _engine_name:
             # Deep-copy the shared singleton so a child's update_model() can't mutate the

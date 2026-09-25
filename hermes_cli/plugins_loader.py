@@ -314,7 +314,9 @@ class PluginLoaderMixin:
                 from hermes_cli.plugins_ledger import _hook_source_of
 
                 self._drop_fallback_hooks(_hook_source_of(manifest.name, module))
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
+            # SystemExit too: a plugin module or register() with sys.exit() must not take the
+            # whole process down with it; KeyboardInterrupt still propagates.
             owned = [r for r in self._registration_order if r.plugin_key == plugin_key]
             self._dispose_registrations(owned)
             self._forget_registrations(owned)

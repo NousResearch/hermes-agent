@@ -372,7 +372,10 @@ def match_runtime_outcomes(
     The platform restart branches each re-discover their own targets, so a runtime the plan saw can
     be missed with no signal. Returns one ``{kind, profile, pid, mechanism, outcome}`` row per
     planned runtime; outcome is ``restarted``, ``stopped``, ``failed``, ``deferred`` or
-    ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). Never raises.
+    ``unaccounted`` (no bookkeeping mentions it — the blind-spot tripwire). ``unaccounted`` rows
+    additionally carry a one-line ``hint`` naming which tripwire fired and what to check, so a
+    receipt reader can tell "needs manual action" from "a replacement may have come up on its own".
+    See #122228. Never raises.
     Serve/dashboard runtimes are reconciled in their OWN vocabulary and never borrow the gateway's
     outcome: with ``stale_serve_pids`` a pre-update serve whose incarnation is gone counts as
     ``restarted``, one still alive is ``unaccounted``; without the probe an untouched serve stays
@@ -395,39 +398,61 @@ def match_runtime_outcomes(
         killed = {int(p) for p in (killed_pids or set())}
         stale_serves = {int(p) for p in stale_serve_pids} if stale_serve_pids is not None else None
 
-        def _outcome(r: RuntimeRecord) -> str:
+        def _outcome(r: RuntimeRecord) -> tuple[str, Optional[str]]:
             killed_here = r.pid is not None and r.pid in killed
             if r.kind in _SERVE_KINDS:
                 if killed_here:
-                    return "stopped"
+                    return "stopped", None
                 if any(_serve_unit_matches_profile(r.profile, u) for u in failed_set):
-                    return "failed"
+                    return "failed", None
                 if stale_serves is not None and r.pid not in stale_serves:
                     # Incarnation-verified: the pre-update process is gone (replaced by its unit / the
                     # dashboard cleanup respawn / the Desktop app).
-                    return "restarted"
+                    return "restarted", None
                 if r.supervisor == "desktop":
                     if stale_serves is not None:
                         # Still alive on pre-update code, but the Desktop app owns it and the restart phase
                         # must not kill it (_DESKTOP_SERVE_SKIP_REASON); only the app can pick up the new code.
-                        return "deferred"
-                    return "unaccounted"
+                        return "deferred", None
+                    return "unaccounted", (
+                        "no survivor-probe result; the Desktop app may already own this serve — "
+                        "relaunch/reconnect the Desktop app and re-check before restarting it manually"
+                    )
                 if stale_serves is not None:
-                    return "unaccounted"
-                return "restarted" if any(_serve_unit_matches_profile(r.profile, s) for s in restarted_set) else "unaccounted"
+                    return "unaccounted", (
+                        "the pre-update process was still alive when probed and no restart bookkeeping "
+                        "mentions it — restart it manually unless a newer one has already taken its place"
+                    )
+                if any(_serve_unit_matches_profile(r.profile, s) for s in restarted_set):
+                    return "restarted", None
+                return "unaccounted", (
+                    "no survivor-probe result and no restart bookkeeping mentions it — a replacement may "
+                    "have started on its own; verify before manual action"
+                )
             if r.profile in relaunched:
-                return "restarted"
+                return "restarted", None
             if killed_here:
-                return "stopped"
+                return "stopped", None
             if _gateway_named_in(r, failed_set):
-                return "failed"
-            return "restarted" if _gateway_named_in(r, restarted_set) else "unaccounted"
+                return "failed", None
+            if _gateway_named_in(r, restarted_set):
+                return "restarted", None
+            return "unaccounted", (
+                "planned for restart but no restart bookkeeping mentions it — restart it manually"
+            )
 
         for r in plan.runtimes:
             if isinstance(r, RuntimeRecord):
-                outcomes.append(
-                    {"kind": r.kind, "profile": r.profile, "pid": r.pid, "mechanism": r.restart_via, "outcome": _outcome(r)}
-                )
+                outcome, hint = _outcome(r)
+                row: dict[str, Any] = {
+                    "kind": r.kind, "profile": r.profile, "pid": r.pid,
+                    "mechanism": r.restart_via, "outcome": outcome,
+                }
+                if hint is not None:
+                    # `unaccounted` alone cannot be told apart from "a replacement came up on its
+                    # own" by a receipt reader — the hint states which tripwire fired. See #122228.
+                    row["hint"] = hint
+                outcomes.append(row)
     except Exception as exc:
         logger.debug("Runtime-outcome reconciliation failed: %s", exc)
     return outcomes

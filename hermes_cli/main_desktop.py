@@ -1425,6 +1425,10 @@ def cmd_gui(args: argparse.Namespace):
             desktop_launch_notice(f"✓ Desktop {build_label} is up to date (content stamp matches)", source_mode=source_mode)
     except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
         print(f"✗ Desktop GUI build failed: {exc}")
+        # The bundle is an independently rebuildable artifact — hand the reader the exact retry
+        # command instead of a bare failure line; it stops a running app itself. See #122228.
+        print("  Retry the artifact on its own:  hermes desktop --build-only --force-build")
+        print("  (a running desktop app is stopped automatically to free the build output)")
         raise SystemExit(1) from exc
 
     # Best-effort and idempotent; a failure must never stop the app from launching.

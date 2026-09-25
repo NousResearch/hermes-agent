@@ -4,8 +4,11 @@
 Check bodies live in the ``doctor_*`` siblings.
 """
 
+import io
+import json
 import os
 import sys
+from contextlib import redirect_stdout
 
 from hermes_cli.config import get_env_path, get_hermes_home, get_project_root
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -169,6 +172,23 @@ def run_doctor(args):
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
     if getattr(args, 'ack', None):
         return _ack_advisory(args.ack)
+    runtime_requested = bool(getattr(args, 'runtime', False))
+    json_requested = bool(getattr(args, 'json', False))
+    if json_requested:
+        if not runtime_requested:
+            print(json.dumps({
+                "schema_version": 1,
+                "status": "error",
+                "error_class": "RuntimeFlagRequired",
+            }, sort_keys=True))
+            return
+        from hermes_cli.doctor_runtime import run_runtime_diagnostic
+        # Third-party plugin and provider initialization may print status lines. JSON mode
+        # owns stdout so its machine-readable contract remains a single valid document.
+        with redirect_stdout(io.StringIO()):
+            report = run_runtime_diagnostic()
+        print(json.dumps(report.to_dict(), sort_keys=True))
+        return
     print()
     for line in ("┌─────────────────────────────────────────────────────────┐",
                  "│                 🩺 Hermes Doctor                        │",
@@ -183,6 +203,15 @@ def run_doctor(args):
     with warn_on_error(""):
         from hermes_cli.doctor_live import maybe_run_live_checks
         maybe_run_live_checks(args, total.manual_issues)
+    if runtime_requested:
+        with warn_on_error(""):
+            from hermes_cli.doctor_runtime import run_runtime_diagnostic, render_runtime_report
+            runtime_report = run_runtime_diagnostic()
+            render_runtime_report(runtime_report)
+            if runtime_report.status == "fail":
+                total.manual_issues.append(
+                    f"Runtime diagnostic failed in {runtime_report.failed_phase or 'an unknown phase'}."
+                )
     _print_summary(should_fix, total)
     return int(bool(total.issues or total.manual_issues))
 

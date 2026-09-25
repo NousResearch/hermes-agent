@@ -237,7 +237,15 @@ class GatewayInboundMixin:
             # DMs get a pairing code or a one-time decline, groups are ignored. A bot cannot pair, and
             # answering one mid-cooldown is outbound traffic.
             pairable_dm = source.chat_type == "dm" and not getattr(source, "is_bot", False)
-            behavior = self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) if pairable_dm else None
+            behavior = None
+            if pairable_dm:
+                # A routed runtime must not offer pairing that the receiving bot disables.
+                behavior = self._under_authorization_profile(
+                    source,
+                    lambda: self._get_unauthorized_dm_behavior(
+                        source.platform, profile=self._adapter_profile_for_source(source)
+                    ),
+                )
             if behavior == "pair":
                 logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
                 await self._hm_offer_pairing_code(source)

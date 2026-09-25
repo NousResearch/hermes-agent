@@ -824,5 +824,9 @@ def _session_title(agent: Any) -> str:
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised as a background process
+    # Spawned as a script with the sender's sys.executable, which under PM is the bare store
+    # interpreter (dependencies are activated in-process, never inherited), so boot like every
+    # entry point before the lazy Hermes imports. Run as a path, sys.path[0] is tools/.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    import hermes_bootstrap  # noqa: F401
     raise SystemExit(_delivery_main(sys.argv[1:]))

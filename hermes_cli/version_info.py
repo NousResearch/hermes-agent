@@ -5,13 +5,15 @@ Resolution order:
    ``scripts/write_install_stamp.py`` for every packager (Docker, Nix, and
    the desktop app). The stamp is authoritative
    for packaged builds.
-2. Live git — for unstamped source/dev installs with a ``.git`` directory.
+2. Live git — for source/dev installs, including source stamps. A matching
+   commit does not prove the stamp saw all release tags.
 3. Unknown — no stamp and no git. The provenance is unknown.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tomllib
 from dataclasses import dataclass
@@ -56,9 +58,12 @@ def _derived_version(
 
 
 def _run_git(repo_dir: Path, *args: str) -> str | None:
+    from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV
+
     try:
         result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, timeout=3, cwd=str(repo_dir)
+            ["git", *args], capture_output=True, text=True, timeout=3, cwd=str(repo_dir),
+            env={**os.environ, **NO_LAZY_FETCH_ENV},
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -160,9 +165,11 @@ def _stamp_version_info() -> VersionInfo | None:
         return None
     stamp_source = str(data.get("source") or "")
     if stamp_source == "git" and (stamp_file.parent / ".git").exists():
-        live_commit = _run_git(stamp_file.parent, "rev-parse", "HEAD")
-        if live_commit and live_commit != commit:
-            return None
+        # Tags can arrive without moving HEAD. Source stamps attest completion,
+        # but must not freeze incomplete release metadata for plugin admission.
+        live = _git_version_info(stamp_file.parent)
+        if live.commit:
+            return live
 
     base_version = data.get("baseVersion") or "unknown"
     display_version = data.get("displayVersion") or base_version

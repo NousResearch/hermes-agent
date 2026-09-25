@@ -245,8 +245,18 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     import pm
     from hermes_cli._launchers import resolve_store_python
     from hermes_cli.update_lock import UpdateLock, read_live_update
+    from pm.package import InstallError
 
-    current = pm.venv_is_current(project_root=root)
+    try:
+        current = pm.venv_is_current(project_root=root)
+    except InstallError as exc:
+        if exc.package != "venv":
+            raise
+        # Established installs validate plugin admission while calculating
+        # currency. Stale release refs can refuse that probe before recovery
+        # gets to refresh them. Retry through the locked update path; sync
+        # still validates the complete union and cannot waive the refusal.
+        current = False
     pending = completion_pending_path(root)
     if not current or pending.is_file():
         lock = UpdateLock()
@@ -292,10 +302,12 @@ def _finish_source_update(root: Path, *, current: bool, pending: Path) -> None:
         # Established PM installs retain their recorded extras and plugin union instead.
         from pm.client import ensure_tools_for_sync
         from pm.extras import legacy_selection
+        from hermes_cli.source_stamp import refresh_source_version
         extras = legacy_selection(root) if not runtime_facts_path(root).is_file() else None
         # Same order as `hermes update`: an interrupted update or a hand-run
         # `git pull` leaves this tree's lockfile ahead of the installed tools.
         ensure_tools_for_sync()
+        refresh_source_version(root)
         pm.sync_venv(extras, explicit=True, project_root=root)
         collect_superseded_generations(root)
         # These can predate the swap. Once PM commits the replacement they

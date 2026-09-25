@@ -518,7 +518,7 @@ if _legacy_post_swap is not None:
     raise SystemExit(_continue_legacy_post_swap(_handoff_path, argv_tail=_argv_tail))
 
 
-from pm.environments import activate_dependencies
+from pm.environments import DependencyPythonMismatch, activate_dependencies
 from hermes_cli._early_recovery import recover_if_needed
 
 from hermes_cli._parser import command_argv
@@ -528,19 +528,25 @@ _pm_repair = command_argv(sys.argv[1:])[:2] == ["pm", "repair"]
 if not _pm_repair:
     from hermes_cli.venv_sync import prepare_launch, relaunch_command
 
+    def _relaunch(python: Path) -> None:
+        _main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+        command = relaunch_command(
+            python, _root, sys.argv, sys.orig_argv,
+            getattr(_main_spec, "name", None),
+        )
+        # The selected environment is activated and leased by bootstrap, not
+        # Python startup: an old venv's executable .pth hooks must wait too.
+        command.insert(1, "-S")
+        if os.name == "nt":
+            import subprocess
+
+            raise SystemExit(subprocess.call(command))
+        os.execv(str(python), command)
+
     try:
         _launch_python = prepare_launch(_root, sys.argv[1:])
         if _launch_python is not None:
-            _main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
-            _command = relaunch_command(
-                _launch_python, _root, sys.argv, sys.orig_argv,
-                getattr(_main_spec, "name", None),
-            )
-            if os.name == "nt":
-                import subprocess
-
-                raise SystemExit(subprocess.call(_command))
-            os.execv(str(_launch_python), _command)
+            _relaunch(_launch_python)
     except Exception as exc:
         # Degrade, never brick the CLI: the previous dependency generation is still selected
         # (a failed sync commits nothing), so an offline or half-finished update leaves a
@@ -551,7 +557,14 @@ if not _pm_repair:
               file=sys.stderr)
     recover_if_needed(_root)
     try:
-        activate_dependencies(_root)
+        try:
+            activate_dependencies(_root)
+        except DependencyPythonMismatch as exc:
+            # Also heals launchers already published by a failed migration.
+            # Missing/mislabelled interpreters must fail, not loop forever.
+            if not exc.python.is_file() or exc.python.absolute() == Path(sys.executable).absolute():
+                raise
+            _relaunch(exc.python)
     except (RuntimeError, OSError) as exc:
         if command_argv(sys.argv[1:])[:1] != ["pm"]:
             print(f"hermes: {exc}; run `hermes pm repair`", file=sys.stderr)

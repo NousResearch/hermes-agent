@@ -139,3 +139,28 @@ def test_invalid_selected_environment_never_silently_falls_back(tmp_path, monkey
     }))
     with pytest.raises(RuntimeError, match="environment"):
         runtime_paths.selected_venv(root)
+
+
+@pytest.mark.platforms("windows", "posix")
+@pytest.mark.parametrize("version_key", ["version", "version_info"])
+def test_foreign_python_cannot_activate_dependency_hooks(tmp_path, monkeypatch, version_key):
+    import sys
+    from pm import environments
+
+    root = tmp_path / "repo"
+    environment = root / "venv"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    other_version = (sys.version_info.major, sys.version_info.minor + 1)
+    environment.mkdir(parents=True)
+    (environment / "pyvenv.cfg").write_text(
+        f"{version_key} = {other_version[0]}.{other_version[1]}.0\n", encoding="utf-8")
+    site = environments.site_packages(environment)
+    site.mkdir(parents=True)
+    activated = tmp_path / "activated"
+    (site / "probe.pth").write_text(
+        f"import pathlib; pathlib.Path({str(activated)!r}).touch()\n", encoding="utf-8")
+    before = sys.path[:]
+    with pytest.raises(RuntimeError, match="Python.*dependencies"):
+        environments.activate_dependencies(root)
+    assert sys.path == before
+    assert not activated.exists(), "foreign-ABI dependencies executed before the interpreter check"

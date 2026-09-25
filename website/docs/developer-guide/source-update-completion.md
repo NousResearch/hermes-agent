@@ -32,6 +32,24 @@ results). Selected-Python completion owns launcher publication, builders, cache
 invalidation, all-profile configuration/state/skills maintenance, process scans,
 fleet restart, Windows resume, dashboard deduplication and verification.
 
+Before PM admits the installed plugin union, preparation refreshes source release
+tags through `source_stamp.refresh_source_version`. A branch or SHA fetch alone
+does not guarantee those refs exist, especially in a clone configured with
+`--no-tags`. The current and historical updater bootstraps share this step; startup
+recovery needs it only when syncing stale source dependencies, not for ordinary
+launches, metadata queries or passive PM checks. An admission refusal during the
+startup currency probe enters the locked recovery path too, so stale version
+metadata cannot block its own refresh; synchronization still validates the union.
+Shallow checkouts first acquire
+the commit graph so release ancestry is meaningful. Failure to fetch propagates
+instead of weakening plugin requirements or inventing a version.
+
+For a mutable source stamp, version resolution reads live local Git metadata even
+when the stamped commit still matches HEAD: tags can arrive independently. A
+packaged build's stamp remains authoritative. Preparation clears the process's
+version cache but does not publish an install stamp or bootstrap-complete receipt;
+those remain the successful completion tail's responsibility.
+
 The existing per-kind restart and abort-recovery algorithms remain; transient
 supervisor/process failures are real even without mixed-generation imports. Only
 the purge/reload workaround and independent retry/ZIP tail compositions disappear.
@@ -57,6 +75,23 @@ starting the completion process, including when preparation cannot begin. The pa
 lifecycle obligation when the child cannot execute or is killed. A failed child
 never clears the pending fleet obligation. No automatic code rollback after
 maintenance has begun (SQLite snapshots remain file-loss recovery, not rollback).
+
+### Failed Python migration and native Desktop
+
+This failure can **completely block the native Desktop app**, not merely prevent
+an update: its backend exits before becoming ready when a newly published Python
+launcher loads retained dependencies compiled for a different Python minor version.
+An installed Python tool is not proof that the application environment was rebuilt.
+
+`pm.environments.activate_dependencies` checks the selected environment's Python
+version (`version` for stdlib venv, `version_info` for uv) before loading executable
+`.pth` hooks or native extensions. Bootstrap
+relaunches the same invocation with that environment's interpreter, using `-I -S`
+so dependency activation still belongs to bootstrap. This also recovers a launcher
+already published by a failed migration. A missing or mismatched environment
+interpreter fails with a repair diagnostic instead of repeatedly relaunching.
+The failed update remains pending; fallback does not report update success or
+rewrite the selection, stamp, plugin requirements, or launcher.
 
 ## Historical surface
 

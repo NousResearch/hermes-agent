@@ -67,7 +67,8 @@ def test_payload_store_cannot_escape_payload(tmp_path, monkeypatch, escape):
     monkeypatch.setenv("HERMES_RUNTIME_DIR", str(outside))
     assert store_root(repo) == outside
 
-def test_site_packages_follows_the_venv_python_not_the_caller(tmp_path):
+@pytest.mark.parametrize("version_key", ["version", "version_info"])
+def test_site_packages_follows_the_venv_python_not_the_caller(tmp_path, version_key):
     """Regression: the tree must be dated from the venv, not from this process.
 
     An app-driven upgrade rebuilt the dependency environment with CPython 3.14
@@ -77,11 +78,14 @@ def test_site_packages_follows_the_venv_python_not_the_caller(tmp_path):
     only tolerates a missing tree when no generation was published.
     """
     venv = tmp_path / "venv"
-    (venv / "lib" / "python3.9" / "site-packages").mkdir(parents=True)
-    (venv / "pyvenv.cfg").write_text("home = /usr/bin\nversion = 3.9.20\n", encoding="utf-8")
+    venv.mkdir()
+    (venv / "pyvenv.cfg").write_text(f"home = /usr/bin\n{version_key} = 3.9.20\n", encoding="utf-8")
 
+    # uv writes version_info, including on Windows where Lib/site-packages
+    # has no Python version in its directory name. No lib fallback yet.
     assert venv_python_version(venv) == (3, 9)
     if os.name != "nt":
+        (venv / "lib" / "python3.9" / "site-packages").mkdir(parents=True)
         # The contract: the composed path is the venv's real tree. Dated from the
         # caller instead, it names python<this-interpreter> and misses this dir.
         assert site_packages(venv) == venv / "lib" / "python3.9" / "site-packages"

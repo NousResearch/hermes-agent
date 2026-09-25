@@ -92,6 +92,7 @@ def transition(tmp_path):
     )
     (package / "source_stamp.py").write_text(
         "from hermes_cli.probe import event\n"
+        "refresh_source_version = lambda root: event('release_metadata')\n"
         "write_source_stamp = lambda root: event('stamp')\n"
     )
     # The shared completion tail is part of the NEW tree the child runs from.

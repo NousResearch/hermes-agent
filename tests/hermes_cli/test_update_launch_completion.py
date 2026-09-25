@@ -291,3 +291,62 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
 
+
+@pytest.mark.platforms("windows", "posix")
+@pytest.mark.parametrize("layout", ["legacy", "selected"])
+@pytest.mark.parametrize("mode", ["script", "module", "command"])
+def test_failed_migration_relaunches_before_dependency_activation(tmp_path, monkeypatch, layout, mode):
+    """A rewritten Desktop launcher must not pair new Python with the old environment.
+
+    The version probe models a different launcher ABI; re-exec, selection, .pth
+    activation and argument preservation are real, using a disposable interpreter.
+    """
+    import shutil
+    import venv
+    from pm.environments import install_state_dir, site_packages, venv_python
+    from tests.hermes_cli.test_source_launcher_publication import BOOT_FILES
+
+    repository = Path(__file__).resolve().parents[2]
+    root = tmp_path / "source with spaces"
+    for relative in BOOT_FILES:
+        destination = root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repository / relative, destination)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    state = install_state_dir(root)
+    environment = root / "venv" if layout == "legacy" else state / "environments" / "previous" / "venv"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    python = venv_python(environment)
+    if layout == "selected":
+        runtime_facts_path(root).write_text(json.dumps({"packages": {"venv": {
+            "environment": str(environment), "stamp": "previous",
+        }}}), encoding="utf-8")
+    activated = tmp_path / "activation.jsonl"
+    (site_packages(environment) / "probe.pth").write_text(
+        "import pathlib, sys, json; "
+        f"p = pathlib.Path({str(activated)!r}); "
+        "p.open('a').write(json.dumps(sys.executable) + '\\n')\n", encoding="utf-8")
+    entry = root / "migration_probe.py"
+    entry.write_text(
+        "import sys, json\nfrom pathlib import Path\n"
+        "from hermes_cli import venv_sync\nfrom pm import environments\n"
+        "def fail(*args, **kwargs):\n    raise RuntimeError('plugin compatibility blocked sync')\n"
+        "venv_sync.prepare_launch = fail\n"
+        f"if Path(sys.executable) != Path({str(python)!r}):\n"
+        "    environments.venv_python_version = lambda _: (sys.version_info.major, sys.version_info.minor + 1)\n"
+        f"    environments.site_packages = lambda _: Path({str(site_packages(environment))!r})\n"
+        "import hermes_bootstrap\n"
+        "print(json.dumps({'executable': sys.executable, 'args': sys.argv[1:], 'unbuffered': sys.stdout.write_through}))\n",
+        encoding="utf-8")
+    invocation = {
+        "script": [str(entry)], "module": ["-m", "migration_probe"],
+        "command": ["-c", "import migration_probe"],
+    }[mode]
+    args = ["--profile", "name with spaces", "-c", "session"]
+    result = subprocess.run([sys.executable, "-u", *invocation, *args], cwd=root,
+                            env=dict(os.environ), capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"executable": str(python), "args": args, "unbuffered": True}
+    assert "plugin compatibility blocked sync" in result.stderr
+    assert [json.loads(line) for line in activated.read_text().splitlines()] == [str(python)]
+

@@ -7,9 +7,48 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 
-from hermes_cli.version_info import _git_version_info, _reset_version_info_cache
+from hermes_cli.version_info import _git_version_info, _reset_version_info_cache, _run_git
+
+
+def refresh_source_version(root: Path) -> None:
+    """Prepare release metadata before an update's PM plugin admission.
+
+    Only update/recovery paths call this, never version queries or PM currency
+    checks. Fetching a branch/SHA need not bring release refs (especially after
+    a --no-tags clone); publishing a completion stamp here would falsely attest
+    the builds and maintenance that PM has not yet allowed to run.
+    """
+    root = Path(root)
+    if not (root / ".git").exists():
+        return  # ZIP fallback has no usable Git provenance to refresh.
+    if _run_git(root, "remote", "get-url", "origin"):
+        from hermes_cli.gitlock import fetch_full_commit_graph
+
+        # Keep private-fork credential helpers, but never wait for a terminal
+        # prompt during automatic recovery in front of Desktop startup.
+        kwargs = {"stdin": subprocess.DEVNULL,
+                  "env": dict(os.environ, GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="Never")}
+        fetch_full_commit_graph(root, **kwargs)
+        # Explicit tag refs override remote.origin.tagOpt=--no-tags, without
+        # fetching every branch, moving HEAD, replacing tags or FETCH_HEAD.
+        subprocess.run(
+            ["git", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
+             "origin", "refs/tags/v*:refs/tags/v*"],
+            cwd=root, check=True, capture_output=True, text=True, timeout=120, **kwargs,
+        )
+        # A treeless unshallow may still lack a historical release's pyproject.
+        # Hydrate it here, not lazily from a version query or PM currency check.
+        described = _run_git(root, "describe", "--tags", "--long", "--match", "v2[0-9][0-9][0-9].*", "HEAD")
+        if described:
+            tag = described.rsplit("-", 2)[0]
+            subprocess.run(
+                ["git", "show", f"{tag}:pyproject.toml"], cwd=root,
+                check=True, capture_output=True, text=True, timeout=120, **kwargs,
+            )
+    _reset_version_info_cache()
 
 
 def write_source_stamp(root: Path) -> dict | None:

@@ -22,12 +22,14 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
     from pm.environments import activation_environment, install_state_dir, runtime_facts_path
     from hermes_cli._launchers import resolve_store_python
     from hermes_cli.venv_sync import publish_launchers
+    from hermes_cli.source_stamp import refresh_source_version
 
     correlation = request["update_id"]
     with receipt.worker_context(correlation):
         # A pre-PM installation has no required-tool facts. A current Python
         # generation alone does not prove its Node/Git/tool closure is ready.
         ensure_tools_for_sync()
+        refresh_source_version(root)
         from pm.extras import legacy_selection
 
         extras = legacy_selection(root) if not runtime_facts_path(root).is_file() else None

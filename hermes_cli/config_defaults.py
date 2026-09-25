@@ -2755,6 +2755,10 @@ OPTIONAL_ENV_VARS = {
         "Actual Computer inference key", "https://actual.inc/user/keys"),
     "FIREWORKS_API_KEY": _prov("Fireworks AI API key", "Fireworks AI API key",
         "https://app.fireworks.ai/settings/users/api-keys"),
+    "CHEAPERINFERENCE_API_KEY": _prov(
+        "Cheaper Inference API key (gateway: each request served by a discounted upstream)",
+        "Cheaper Inference API key", "https://cheaperinference.com/docs"),
+    "CHEAPERINFERENCE_BASE_URL": _base_url("Cheaper Inference"),
     "MINIMAX_API_KEY": _prov("MiniMax API key (international)", "MiniMax API key",
         "https://www.minimax.io/"),
     "MINIMAX_BASE_URL": _base_url("MiniMax"),

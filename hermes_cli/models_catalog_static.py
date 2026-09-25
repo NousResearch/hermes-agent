@@ -482,6 +482,7 @@ _PROVIDER_ALIASES = dict((
     ("actualcomputer", "actual"), ("aci", "actual"), ("nebius", "nebius-token-factory"),
     ("nebius-tokenfactory", "nebius-token-factory"), ("nebius-tf", "nebius-token-factory"),
     ("token-factory", "nebius-token-factory"), ("tokenfactory", "nebius-token-factory"),
+    ("cheaper-inference", "cheaperinference"), ("cheaperinference.com", "cheaperinference"),
     ("minimax-china", "minimax-cn"), ("minimax_cn", "minimax-cn"), ("minimax-portal", "minimax-oauth"),
     ("minimax-global", "minimax-oauth"), ("minimax_oauth", "minimax-oauth"), ("claude", "anthropic"),
     ("claude-code", "anthropic"), ("deep-seek", "deepseek"), ("opencode", "opencode-zen"), ("zen", "opencode-zen"),

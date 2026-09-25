@@ -7,6 +7,7 @@ logs/pid/exit files, code-execution sandboxes) at real storage.
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -23,7 +24,7 @@ def _make_local_env(env: dict) -> LocalEnvironment:
 def test_temp_dir_override_honored(tmp_path):
     target = str(tmp_path)
     env = _make_local_env({"TERMINAL_TEMP_DIR": target})
-    assert env.get_temp_dir() == target
+    assert Path(env.get_temp_dir()) == Path(target)
 
 
 def test_temp_dir_from_process_env(tmp_path):
@@ -32,7 +33,7 @@ def test_temp_dir_from_process_env(tmp_path):
     prev = os.environ.get("TERMINAL_TEMP_DIR")
     os.environ["TERMINAL_TEMP_DIR"] = target
     try:
-        assert env.get_temp_dir() == target
+        assert Path(env.get_temp_dir()) == Path(target)
     finally:
         if prev is None:
             os.environ.pop("TERMINAL_TEMP_DIR", None)
@@ -53,7 +54,7 @@ def test_temp_dir_empty_falls_through(tmp_path, monkeypatch):
     """An empty/relative terminal.temp_dir must not redirect."""
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     env = _make_local_env({"TERMINAL_TEMP_DIR": ""})
-    assert env.get_temp_dir() == str(tmp_path)
+    assert Path(env.get_temp_dir()) == tmp_path
 
 
 def test_default_is_hermes_cache_not_tmp(tmp_path, monkeypatch):
@@ -66,7 +67,7 @@ def test_default_is_hermes_cache_not_tmp(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     env = _make_local_env({})
     result = env.get_temp_dir()
-    assert result == str(tmp_path / ".hermes" / "cache" / "terminal")
+    assert Path(result) == tmp_path / ".hermes" / "cache" / "terminal"
     assert os.path.isdir(result)
 
 
@@ -75,7 +76,7 @@ def test_tmpdir_still_beats_default(tmp_path, monkeypatch):
     monkeypatch.delenv("TERMINAL_TEMP_DIR", raising=False)
     monkeypatch.setenv("TMPDIR", str(tmp_path))
     env = _make_local_env({})
-    assert env.get_temp_dir() == str(tmp_path)
+    assert Path(env.get_temp_dir()) == tmp_path
 
 
 def test_cleanup_terminal_temp_cache(tmp_path, monkeypatch):

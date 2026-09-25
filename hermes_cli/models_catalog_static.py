@@ -500,6 +500,11 @@ _PROVIDER_ALIASES = dict((
     ("lm_studio", "lmstudio"), ("chatgpt", "openai-codex"), ("chatgpt-codex", "openai-codex"),
     ("ollama", "custom"),  # bare "ollama" = local; use "ollama-cloud" for cloud
     ("ollama_cloud", "ollama-cloud"),
+    # Local OpenAI-compatible servers route through the generic "custom" provider
+    # (parity with hermes_cli.auth and hermes_cli.providers). Issue #62213. The llamacpp
+    # aliases stay unmapped: they are the managed local runtime's picker id, and the model
+    # validator must reach its staged-library branch before the custom one.
+    ("local", "custom"), ("vllm", "custom"),
 ))
 
 

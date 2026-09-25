@@ -100,6 +100,7 @@ def main():
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument("--session-key", required=True)
     p.add_argument("--model", default="")
+    p.add_argument("--provider", default="")
     args = p.parse_args()
     os.environ["HERMES_SESSION_KEY"] = args.session_key
     os.environ["HERMES_INTERACTIVE"] = "1"
@@ -108,7 +109,11 @@ def main():
     _start_parent_death_watchdog(os.getppid())
     _prepare_slash_worker_runtime()
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        cli = HermesCLI(model=args.model or None, compact=True, resume=args.session_key, verbose=False)
+        # --provider pins the CLI to the parent agent's resolved provider (a MoA session's virtual
+        # "moa" provider included). Without it HermesCLI re-resolves from config and dispatches the
+        # MoA preset NAME to the configured real provider (#57283).
+        cli = HermesCLI(model=args.model or None, provider=args.provider or None,
+                        compact=True, resume=args.session_key, verbose=False)
     # Spurious stdin-EOF recovery (same shared-file-description O_NONBLOCK issue as the gateway entry
     # point — any child inheriting fd 0 can flip the flag).
     _sw_recovery_times: list[float] = []

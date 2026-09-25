@@ -763,6 +763,7 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reasoning_effort": "",
             "language": "",
+            "instructions": "",  # extra naming rules appended to the title prompt, e.g. "Prefix with the project"
         },
         "memory_query_rewrite": _aux(8, reasoning_effort=False),
         "tts_audio_tags": _aux(30),

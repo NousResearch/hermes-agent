@@ -278,7 +278,49 @@ class TestUnifiedCronjobTool:
         assert updated["job"]["schedule"] == "every day at 9am"
 
         from cron.jobs import get_job
-        assert get_job(job_id)["schedule"]["expr"] == "0 9 * * *"
+        stored = get_job(job_id)
+        assert stored["schedule"]["expr"] == "0 9 * * *"
+        assert stored["enabled"] is True
+        assert stored["state"] == "scheduled"
+
+    def test_update_schedule_can_preserve_disabled_lifecycle(self):
+        """A schedule correction must not re-arm an explicitly disabled job."""
+        from cron.jobs import get_job, update_job
+
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+        update_job(job_id, {"enabled": False, "state": "scheduled"})
+
+        updated = json.loads(cronjob(
+            action="update", job_id=job_id, schedule="every day at 9am",
+            preserve_lifecycle=True,
+        ))
+
+        assert updated["success"] is True
+        stored = get_job(job_id)
+        assert stored["schedule"]["expr"] == "0 9 * * *"
+        assert stored["enabled"] is False
+        assert stored["state"] == "scheduled"
+
+    def test_update_schedule_can_preserve_paused_lifecycle(self):
+        """The opt-in also keeps the canonical paused state and disabled flag."""
+        from cron.jobs import get_job
+
+        created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
+        job_id = created["job_id"]
+        paused = json.loads(cronjob(action="pause", job_id=job_id))
+        assert paused["job"]["state"] == "paused"
+
+        updated = json.loads(cronjob(
+            action="update", job_id=job_id, schedule="every monday 9am",
+            preserve_lifecycle=True,
+        ))
+
+        assert updated["success"] is True
+        stored = get_job(job_id)
+        assert stored["schedule"]["expr"] == "0 9 * * 1"
+        assert stored["enabled"] is False
+        assert stored["state"] == "paused"
 
     def test_list_handles_partial_legacy_job_records(self):
         from cron.jobs import save_jobs

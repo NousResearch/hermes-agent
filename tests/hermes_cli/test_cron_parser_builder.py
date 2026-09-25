@@ -33,6 +33,12 @@ def test_cron_edit_no_agent_tristate():
     assert parser.parse_args(["cron", "edit", "j"]).no_agent is None
 
 
+def test_cron_edit_preserve_lifecycle_flag():
+    parser = _build()
+    assert parser.parse_args(["cron", "edit", "j"]).preserve_lifecycle is False
+    assert parser.parse_args(["cron", "edit", "j", "--preserve-lifecycle"]).preserve_lifecycle is True
+
+
 def test_cron_accept_hooks_flag_on_run_and_tick():
     parser = _build()
     # --accept-hooks is suppressed-default; present only when passed.

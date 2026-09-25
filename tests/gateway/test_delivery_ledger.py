@@ -382,6 +382,41 @@ class TestPrune:
         assert _row("ob-1") is None
 
 
+class TestRecordDeliveredObligation:
+    """Outbound-first senders (hermes send CLI, cron in-channel sends, the kanban notifier,
+    MCP) book their already-delivered sends here — accounting only, born terminal."""
+
+    def test_books_terminal_delivered_row(self):
+        dl.record_delivered_obligation(
+            obligation_id="ob-out-1", session_key="outbound:slack:C1", platform="slack",
+            chat_id="C1", thread_id=None, content="deploy finished")
+        row = _row("ob-out-1")
+        assert row["state"] == "delivered"
+        assert row["attempts"] == 0
+        assert row["content"] == "deploy finished"
+        assert row["owner_pid"] == os.getpid()
+
+    def test_delivered_outbound_row_is_never_swept_even_when_owner_dies(self):
+        dl.record_delivered_obligation(
+            obligation_id="ob-out-2", session_key="outbound:slack:C1", platform="slack",
+            chat_id="C1", thread_id=None, content="deploy finished")
+        _orphan("ob-out-2")  # CLI process exited right after the send
+        claimed = dl.sweep_recoverable(now=time.time() + 10_000)
+        assert all(c["obligation_id"] != "ob-out-2" for c in claimed)
+        assert _row("ob-out-2")["state"] == "delivered"
+
+    def test_prune_retains_like_any_delivered_row(self):
+        dl.record_delivered_obligation(
+            obligation_id="ob-out-3", session_key="outbound:slack:C1", platform="slack",
+            chat_id="C1", thread_id=None, content="deploy finished")
+        with dl._connect() as conn:
+            conn.execute(
+                "UPDATE delivery_obligations SET updated_at=? WHERE obligation_id=?",
+                (time.time() - dl._RETENTION_SECONDS - 60, "ob-out-3"),
+            )
+        with dl._DB_LOCK, dl._transaction() as conn:
+            dl._prune_unlocked(conn, time.time())
+        assert _row("ob-out-3") is None
 
 
 class TestGatewayRedeliverySweep:

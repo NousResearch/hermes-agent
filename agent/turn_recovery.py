@@ -456,7 +456,7 @@ def _recover_format_errors(
 def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_context: Any, messages: List[Dict[str, Any]],
-    api_messages: Any,
+    api_messages: Any, conversation_history: Any, api_call_count: Any,
 ) -> Tuple[bool, bool]:
     """One-shot recovery chain that runs AFTER ``classify_api_error`` and before the
     generic retry path. Order is load-bearing (each branch may ``return`` early):
@@ -478,7 +478,94 @@ def recover_after_classification(
             _vlines(agent, "🔐 Nous paid access verified — refreshed runtime credentials and retrying request...")
             return True, False
 
+    # OpenRouter rate-limit recovery is governed by llm-routing-core.
+    # The core owns the model-attempt sequence; CredentialPool rotates only
+    # after the configured model chain is exhausted.
+    if (
+        agent._is_openrouter_url()
+        and classified.reason == FailoverReason.rate_limit
+    ):
+        from agent.llm_routing_core_adapter import HermesOpenRouterRecovery
+
+        _routing = getattr(agent, "_llm_routing_recovery", None)
+        if _routing is None:
+            _routing = HermesOpenRouterRecovery(
+                "/home/red/.cache/hermes/llm-routing-state.db"
+            )
+            agent._llm_routing_recovery = _routing
+
+        _routing_state = getattr(agent, "_llm_routing_recovery_state", None)
+        if _routing_state is None:
+            _routing_state = _routing.new_recovery_state()
+            agent._llm_routing_recovery_state = _routing_state
+
+        _credential_pool = getattr(agent, "_credential_pool", None)
+        _current_entry = _credential_pool.current() if _credential_pool else None
+        _credential = getattr(_current_entry, "id", None)
+
+        if _credential:
+            _model = getattr(agent, "model", "") or ""
+            _fallback_chain = getattr(agent, "_fallback_chain", []) or []
+            _models = _routing.openrouter_models(
+                _model,
+                _fallback_chain,
+            )
+            _coordinator = _routing.coordinator(
+                _credential,
+                _models,
+            )
+            agent._llm_routing_coordinator = _coordinator
+
+            _candidate = _routing.candidate(_credential, _model)
+            _action = _coordinator.model_failure(
+                _routing_state,
+                _candidate,
+            )
+
+            if _action.kind == "retry_model":
+                _vlines(
+                    agent,
+                    f"🔄 OpenRouter {_model} — retry {_routing_state.attempt_count(_candidate)}/4 "
+                    f"in {_action.delay_seconds}s...",
+                )
+                _interrupted = interruptible_backoff_sleep(
+                    agent,
+                    _action.delay_seconds,
+                    _retry,
+                    messages=messages,
+                    conversation_history=conversation_history,
+                    api_call_count=api_call_count,
+                    abort_message="Interrupt detected during OpenRouter recovery wait, aborting.",
+                    interrupt_text="Operation interrupted during OpenRouter model recovery.",
+                    activity_label=f"OpenRouter model recovery ({_action.delay_seconds}s)",
+                )
+                if _interrupted is not None:
+                    return False, False
+                return True, False
+
+            if _action.kind == "next_model":
+                _is_last_model = bool(_models) and _model == _models[-1]
+
+                if not _is_last_model:
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        _retry.has_retried_429 = False
+                        return True, False
+
+                # Every configured OpenRouter model for this credential is exhausted.
+                # Apply the core's 24-hour credential cooldown before allowing
+                # Hermes CredentialPool to rotate to another credential.
+                if _is_last_model:
+                    _cooldown = _routing.credential_exhausted(_credential)
+                    _vlines(
+                        agent,
+                        f"🔐 OpenRouter credential exhausted — cooling down for "
+                        f"{_cooldown.delay_seconds // 3600}h before credential rotation.",
+                    )
+
+                _retry.has_retried_429 = False
+
     recovered_with_pool, _retry.has_retried_429 = agent._recover_with_credential_pool(
+
         status_code=status_code, has_retried_429=_retry.has_retried_429,
         classified_reason=classified.reason, error_context=error_context,
         billing_unverified=classified.billing_unverified,
@@ -1382,8 +1469,16 @@ def route_classified_error(
     _is_zai_coding_overload = is_zai_coding_overload_error(base_url=str(base_url), model=model, error=api_error)
     if _is_zai_coding_overload:
         max_retries = max(max_retries, zai_coding_overload_retry_ceiling())
+    _openrouter_core_rate_limit = (
+        agent._is_openrouter_url()
+        and classified.reason == FailoverReason.rate_limit
+    )
     _should_fallback = (
-        (is_rate_limited and _wrapped_output_cap_budget is None)
+        (
+            is_rate_limited
+            and _wrapped_output_cap_budget is None
+            and not _openrouter_core_rate_limit
+        )
         or (_is_transport_failure and retry_count >= 2)
     )
     if _should_fallback and agent._fallback_index < len(agent._fallback_chain):

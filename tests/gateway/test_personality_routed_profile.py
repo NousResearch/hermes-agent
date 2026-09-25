@@ -40,6 +40,6 @@ def test_routed_profile_prompt_resolves_from_its_own_config(tmp_path, monkeypatc
 
     with _profile_runtime_scope(routed_home):
         assert persist_personality("pirate")
-        assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, "c") == "ARR"
+        assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, "c") == "BETA-PERSONA\n\nARR"
     assert "pirate" not in (default_home / "config.yaml").read_text()
     assert runner._get_system_prompt_for_channel(Platform.TELEGRAM, "c") == "DEFAULT-PERSONA"

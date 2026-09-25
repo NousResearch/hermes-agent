@@ -361,7 +361,7 @@ def _resolve_credentials_data(extra: Optional[dict] = None) -> dict:
     """Load the first credential record containing a private key."""
     for path in _credentials_candidates(extra):
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except (OSError, ValueError):
             continue
         if isinstance(data, dict) and _credentials_key(data):
@@ -559,6 +559,8 @@ class BuzzAdapter(BasePlatformAdapter):
         self._channel_state: Dict[str, dict] = {}
         # Cursors read from disk at connect(), consumed by each channel's first seed.
         self._restored_cursors: Dict[str, dict] = {}
+        # Orders off-loop cursor writes: each snapshot is taken under it, so an older one never lands last.
+        self._cursor_write_lock = asyncio.Lock()
         self._channel_names: Dict[str, str] = {}
         # channel_id -> raw ``channels list`` entry; drives DM-vs-channel classification.
         self._channel_meta: Dict[str, dict] = {}
@@ -864,8 +866,10 @@ class BuzzAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Buzz edit needs a message id")
         if not content:
             return SendResult(success=False, error="Empty message")
-        args = ["messages", "edit", "--event", str(message_id), "--content", "-"]
-        code, out, err = await self._run_cli(args, input_text=content)
+        # Unlike ``messages send``, the CLI's ``messages edit`` takes ``--content`` literally (no ``-``/stdin
+        # expansion); the ``=`` form keeps clap from reading hyphen-leading text as a flag.
+        args = ["messages", "edit", "--event", str(message_id), f"--content={content}"]
+        code, out, err = await self._run_cli(args)
         if code != 0:
             return SendResult(success=False, error=_cli_error_message(err, code), retryable=code == 2)
         data = _json_or(out, {})
@@ -1102,6 +1106,7 @@ class BuzzAdapter(BasePlatformAdapter):
                 async with websockets.connect(
                     self._websocket_url(), open_timeout=_WS_AUTH_TIMEOUT, close_timeout=5,
                     ping_interval=20, ping_timeout=20, max_size=_WS_MAX_MESSAGE_BYTES,
+                    happy_eyeballs_delay=0.25,  # race IPv6/IPv4 in loop.create_connection (#114265)
                 ) as websocket:
                     await self._authenticate_websocket(websocket)
                     subscriptions = await self._subscribe_websocket(websocket)
@@ -1233,7 +1238,7 @@ class BuzzAdapter(BasePlatformAdapter):
         try:
             if not (path := self._cursor_path()).exists():
                 return
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
         except Exception:
             logger.debug("Buzz: could not read channel cursors", exc_info=True)
             return
@@ -1252,8 +1257,8 @@ class BuzzAdapter(BasePlatformAdapter):
             seen = [str(event_id) for event_id in raw_seen][-_SEEN_CAP:] if isinstance(raw_seen, list) else []
             self._restored_cursors[str(channel_id)] = {"chat_type": str(entry.get("chat_type") or ""), "last_ts": last_ts, "seen": seen}
 
-    def _save_cursors(self) -> None:
-        """Persist every watched channel's cursor.  Never raises."""
+    def _cursor_payload(self) -> dict:
+        """Snapshot of every watched channel's cursor (taken on the loop: ``_channel_state`` is loop-owned)."""
         channels = {
             channel_id: {
                 "chat_type": state.get("chat_type") or "group", "last_ts": int(state.get("last_ts") or 0),
@@ -1261,10 +1266,17 @@ class BuzzAdapter(BasePlatformAdapter):
             }
             for channel_id, state in self._channel_state.items()
         }
-        payload = {"identity": self._self_pubkey, "relay": self.relay_url, "channels": channels}
+        return {"identity": self._self_pubkey, "relay": self.relay_url, "channels": channels}
+
+    def _save_cursors(self) -> None:
+        """Persist every watched channel's cursor.  Never raises."""
+        self._write_cursors(self._cursor_path(), self._cursor_payload())
+
+    @staticmethod
+    def _write_cursors(path: Path, payload: dict) -> None:
         try:
             from utils import atomic_json_write
-            atomic_json_write(self._cursor_path(), payload, indent=None)
+            atomic_json_write(path, payload, indent=None)
         except Exception:
             logger.debug("Buzz: could not persist channel cursors", exc_info=True)
 
@@ -1379,7 +1391,9 @@ class BuzzAdapter(BasePlatformAdapter):
             await self._handle_event(channel_id, state, event)
         self._trim_seen(state)
         if self._cursor_mark(state) != before:
-            self._save_cursors()
+            # The write fsyncs + renames, and on the WebSocket transport this runs once per inbound event.
+            async with self._cursor_write_lock:
+                await asyncio.to_thread(self._write_cursors, self._cursor_path(), self._cursor_payload())
 
     @staticmethod
     def _parse_imeta_attachments(event: dict) -> Tuple[List[dict], int]:

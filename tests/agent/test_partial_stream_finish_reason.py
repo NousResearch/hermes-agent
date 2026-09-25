@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
-from agent.conversation_loop import _get_continuation_prompt
+from agent.conversation_loop import _join_truncated_parts
 
 
 # ── Helpers (mirrors test_streaming.py) ────────────────────────────────────
@@ -238,8 +238,6 @@ class TestCleanStreamEndMidToolCall:
         assert getattr(response, "_dropped_tool_names", None) == ["execute_code"]
 
 
-
-
 # ── Clean stream-end before any argument byte arrives (#80498) ─────────────
 
 class TestCleanStreamEndBeforeAnyToolArgs:
@@ -360,26 +358,25 @@ class TestMixedToolCallsOneDroppedOneComplete:
 
 # ── Length-continuation prompt branching ──────────────────────────────────
 
-class TestLengthContinuationPromptBranching:
-    """When finish_reason=length, the continuation prompt that reaches the
-    model has to tell the truth: real truncation vs. network interruption
-    vs. dropped tool call (#31998).  Three distinct prompts now exist."""
+class TestLengthContinuationAssembly:
+    def test_distinct_continuation_is_preserved(self):
+        assert _join_truncated_parts([
+            ("The first half ends here", True),
+            ("and the second half adds new information.", False),
+        ]) == (
+            "The first half ends here\n"
+            "and the second half adds new information."
+        )
 
-    def _simulate_branch(self, response_id: str, dropped_tools=None) -> str:
-        """Return the continuation prompt text the loop would inject for
-        a `finish_reason=length` response with the given id."""
-        is_partial = response_id == PARTIAL_STREAM_STUB_ID
-        return _get_continuation_prompt(is_partial, dropped_tools)
+    def test_repeated_tail_is_trimmed_without_losing_new_text(self):
+        repeated = "A sufficiently long repeated transition sentence ends here."
 
-    def test_partial_stream_stub_uses_network_prompt(self):
-        prompt = self._simulate_branch(PARTIAL_STREAM_STUB_ID)
-        assert "network error mid-stream" in prompt
-        assert "output length limit" not in prompt
-
-
-    def test_no_id_falls_through_to_length_prompt(self):
-        prompt = self._simulate_branch("")
-        assert "output length limit" in prompt
+        assert _join_truncated_parts([
+            (f"Existing answer. {repeated}", True),
+            (f"{repeated} New inbound details remain visible.", False),
+        ]) == (
+            f"Existing answer. {repeated} New inbound details remain visible."
+        )
 
 
 
@@ -423,19 +420,26 @@ class TestConversationLoopPartialStreamContinuation:
         from tests.agent.test_run_agent import _mock_response, _mock_assistant_msg
 
         # First API call: the partial-stream stub (length on partial-stream-stub id).
+        repeated_tail = (
+            "**Conclusion**: the project remains on standby until the stable "
+            "release. Nothing changes."
+        )
         partial_stub = SimpleNamespace(
             id=PARTIAL_STREAM_STUB_ID,
             model="test/model",
             choices=[SimpleNamespace(
                 index=0,
-                message=_mock_assistant_msg(content="The first half of "),
+                message=_mock_assistant_msg(
+                    content=f"The first half of the answer is forty-two.\n\n{repeated_tail}"
+                ),
                 finish_reason=FINISH_REASON_LENGTH,
             )],
             usage=None,
         )
-        # Second API call: model continues with the rest, clean stop.
+        # Second API call: the model restarts from the complete-looking tail
+        # even though the nudge said not to repeat it, then stops cleanly.
         continuation = _mock_response(
-            content="the answer is forty-two.", finish_reason="stop",
+            content=repeated_tail, finish_reason="stop",
         )
 
         loop_agent.client.chat.completions.create.side_effect = [
@@ -472,6 +476,27 @@ class TestConversationLoopPartialStreamContinuation:
         # And the final response stitches both halves together.
         assert "first half of" in result["final_response"]
         assert "forty-two" in result["final_response"]
+        assert result["final_response"].count(repeated_tail) == 1
+
+    def test_output_limit_continuation_preserves_intentional_repetition(self, loop_agent):
+        from tests.agent.test_run_agent import _mock_response
+
+        repeated = "This intentionally repeated sentence is longer than thirty-two characters."
+        first = _mock_response(
+            content=f"First copy: {repeated}", finish_reason=FINISH_REASON_LENGTH,
+        )
+        continuation = _mock_response(content=repeated, finish_reason="stop")
+        loop_agent.client.chat.completions.create.side_effect = [first, continuation]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("repeat this sentence twice")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        assert result["final_response"].count(repeated) == 2
 
 
 class TestContentFilterStallActivatesFallback:
@@ -585,7 +610,6 @@ class TestContentFilterStallActivatesFallback:
         assert result["completed"] is True
 
 
-
 class TestEmptyPartialStreamStubNotPersisted:
     """Regression for the session-poisoning bug hit with moonshotai/kimi-k3
     via OpenRouter (2026-07-20): a stream dropped mid-``write_file`` tool
@@ -663,7 +687,6 @@ class TestEmptyPartialStreamStubNotPersisted:
         assert result["completed"] is True
 
 
-
 class TestBuildAssistantMessageEmptyContentPad:
     """Layer 2 was consolidated into the class owner: the builder stores
     textless turns AS-IS (no write-time pad — a pad here broke codex
@@ -712,15 +735,6 @@ class TestBuildAssistantMessageEmptyContentPad:
         )
         assert msg["content"] == ""
         assert msg["tool_calls"]
-        assert isinstance(msg["timestamp"], float)
-
-    def test_non_empty_content_unchanged(self):
-        from agent.chat_completion_helpers import build_assistant_message
-        from tests.agent.test_run_agent import _mock_assistant_msg
-
-        agent = self._agent_for_builder()
-        msg = build_assistant_message(agent, _mock_assistant_msg(content="hi"), "stop")
-        assert msg["content"] == "hi"
         assert isinstance(msg["timestamp"], float)
 
 

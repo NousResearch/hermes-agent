@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import ssl
 import subprocess
 import sys
 from pathlib import Path
@@ -17,8 +18,17 @@ from hermes_cli.doctor_report import (
 from hermes_constants import is_termux as _is_termux
 
 
-def _python_install_cmd() -> str:
-    return "python -m pip install" if _is_termux() else "uv pip install"
+def _python_repair_hint() -> str:
+    from hermes_cli.config import detect_install_method
+    from hermes_cli.doctor import PROJECT_ROOT
+
+    method = detect_install_method(PROJECT_ROOT)
+    if is_nix_install_method(method):
+        return recommended_update_command_for_method(method)
+    if method in ("docker", "apt"):
+        command = recommended_update_command_for_method(method)
+        return f"Run `{command}`" + (", then recreate the Hermes container" if method == "docker" else "")
+    return "Run `hermes pm repair`, then restart Hermes"
 
 
 def _system_package_install_cmd(pkg: str) -> str:
@@ -89,6 +99,27 @@ def _format_db_size(db_path: Path) -> str:
         return "size unknown"
 
 
+def _report_database_holders(name: str, db_path: Path) -> None:
+    """Name the processes holding ``db_path`` (or a WAL sidecar) so the operator knows what to stop before the
+    offline journal-mode conversion; a partial or unavailable scan is reported as "cannot prove quiet", never as
+    an all-clear (the scan is the same fail-closed authority repair/VACUUM/checkpoint admission uses)."""
+    from hermes_state_holders import describe_holder_pid, foreign_state_db_holders
+    unknown: list[str] = []
+    by_pid: dict[int, set[str]] = {}
+    for pid, target in foreign_state_db_holders(db_path):
+        if pid <= 0 or target.startswith("uninspectable"):
+            unknown.append(target)
+        else:
+            by_pid.setdefault(pid, set()).add(Path(target.removesuffix(" (deleted)")).name)
+    for pid in sorted(by_pid):
+        check_info(f"{name} is held by {describe_holder_pid(pid)}: {', '.join(sorted(by_pid[pid]))}")
+    if unknown:
+        check_warn(f"{name}: cannot prove the database is quiet",
+                   f"(holder scan incomplete: {unknown[0][:120]}" + (f"; +{len(unknown) - 1} more" if len(unknown) > 1 else "") + ")")
+    elif not by_pid:
+        check_info(f"{name}: no other process holds it right now — the offline conversion can run")
+
+
 def _report_database_journal_modes(hermes_home: Path | None = None, version_info: tuple[int, ...] | None = None) -> None:
     """List each database's journal mode; warn on WAL under a vulnerable SQLite, and on a configured
     ``database.journal_mode: delete`` that never took effect."""
@@ -120,8 +151,9 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
             check_warn(f"{name} is in WAL mode ({size}) despite database.journal_mode=delete",
                        "(the setting never applied: an existing WAL database is never live-downgraded"
                        + ("; also exposed to the WAL-reset bug" if vulnerable else "")
-                       + ". Stop every Hermes process for this profile, then run a one-time offline "
-                       "'PRAGMA journal_mode=DELETE' on the file)")
+                       + ". Stop every Hermes process for this profile, then run "
+                       f"`hermes sessions set-journal-mode delete{'' if name == 'state.db' else f' --db {path}'}`)")
+            _report_database_holders(name, path)
         elif error is not None:
             if vulnerable:
                 check_warn(f"{name}: journal mode could not be read", f"({error}; cannot rule out WAL exposure)")
@@ -134,9 +166,9 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
             if vulnerable:
                 exposed.append(name)
             check_warn(f"{name} is in WAL mode on a cross-VM filesystem (virtiofs/9p, {size})",
-                       "(WAL can silently corrupt across the VM boundary; stop every Hermes process and run a one-time "
-                       "offline 'PRAGMA journal_mode=DELETE' on the file, then set `database.journal_mode: delete` — "
-                       "or move the database onto a native/named volume)")
+                       "(WAL can silently corrupt across the VM boundary; stop every Hermes process and run "
+                       f"`hermes sessions set-journal-mode delete{'' if name == 'state.db' else f' --db {path}'}`, then "
+                       "set `database.journal_mode: delete` — or move the database onto a native/named volume)")
         elif mode == "wal" and vulnerable:
             exposed.append(name)
             check_warn(f"{name} is in WAL mode ({size})", "(exposed to the WAL-reset bug until SQLite is upgraded)")
@@ -148,40 +180,8 @@ def _report_database_journal_modes(hermes_home: Path | None = None, version_info
         check_info(f"To clear the exposure: {_wal_reset_repair_hint()}")
 
 
-def _read_pyproject_version() -> str | None:
-    """Read the ``[project]`` version from pyproject.toml; None for installed wheels (no pyproject) or unreadable files."""
-    from hermes_cli.doctor import PROJECT_ROOT
-    try:
-        text = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    except OSError:
-        return None
-    in_project = False
-    for line in map(str.strip, text.splitlines()):
-        if line.startswith("[") and line.endswith("]"):
-            in_project = line == "[project]"
-        elif in_project and line.startswith("version") and "=" in line:
-            return line.split("=", 1)[1].split("#", 1)[0].strip().strip("\"'") or None
-    return None
-
-
-def _check_version_consistency(issues: list[str]) -> None:
-    """Detect pyproject.toml vs hermes_cli.__version__ drift (a conflict resolution can revert one but not the
-    other). Silent no-op for installed wheels (no pyproject)."""
-    try:
-        from hermes_cli import __version__ as init_version
-    except Exception:
-        return
-    pyproject_version = _read_pyproject_version()
-    if pyproject_version is None:
-        return
-    if pyproject_version == init_version:
-        return check_ok("Version files consistent", f"({init_version})")
-    _fail_and_issue("Version mismatch between source files", f"(pyproject.toml {pyproject_version} != hermes_cli/__init__.py {init_version})",
-                    "Re-sync version files (e.g. run 'hermes update', or set hermes_cli/__init__.py __version__ to match pyproject.toml)", issues)
-
-
 def _check_s6_supervision(issues: list[str]) -> None:
-    """Under our s6 /init, report static services and per-profile gateway slots that are ``up``; no-op elsewhere.
+    """Under our s6 /init, report static services and the ONE host gateway slot; no-op elsewhere.
     Counterpart to :func:`_check_gateway_service_linger` (systemd-on-host)."""
     try:
         from hermes_cli.service_manager import S6ServiceManager, detect_service_manager
@@ -194,70 +194,81 @@ def _check_s6_supervision(issues: list[str]) -> None:
     for static in ("main-hermes", "dashboard"):  # s6-rc symlinks under /run/service/, same s6-svstat probe
         up = mgr.is_running(static)
         (check_ok if up else check_info)(f"{static}: up" if up else f"{static}: down (expected if not enabled via env)")
-    profiles = mgr.list_profile_gateways()
-    if not profiles:
-        return check_info("No per-profile gateways registered yet — create one with `hermes profile create <name>`")
-    up_count = sum(1 for p in profiles if mgr.is_running(f"gateway-{p}"))
-    check_ok(f"Per-profile gateways: {up_count}/{len(profiles)} supervised up"
-             + (f" ({', '.join(sorted(profiles))})" if len(profiles) <= 8 else ""))
+    _report_host_gateway_slot(mgr, issues)
+
+
+def _report_host_gateway_slot(mgr, issues: list[str]) -> None:
+    """Multiplex-only: ONE gateway process serves N profiles, so report THAT process and its
+    roster. The old ``Per-profile gateways: up/total`` line described a topology we no longer
+    run — it counted supervision slots and never said which profiles were actually served."""
+    from gateway.host_topology import host_gateway_topology
+    slots = sorted(mgr.list_profile_gateways())
+    topology = host_gateway_topology()
+    if topology is None:
+        if not slots:
+            return check_info("No gateway registered yet — run `hermes gateway install`")
+        up = [p for p in slots if mgr.is_running(f"gateway-{p}")]
+        issues.append("No host gateway owns the gateway role — start the ONE host multiplexer: "
+                      "hermes --profile default gateway start")
+        return check_warn(f"No host gateway owns the gateway role ({len(up)}/{len(slots)} supervision "
+                          f"slots up: {', '.join(slots)})", "(nothing is serving these profiles)")
+    check_ok(f"Host gateway: {topology.describe()}")
+    legacy_up = sorted(p for p in slots if p != "default" and mgr.is_running(f"gateway-{p}"))
+    if legacy_up:
+        check_warn(f"LEGACY per-profile gateway slots still supervised: {', '.join(legacy_up)}",
+                   "(multiplex-only: the host gateway already serves every profile from one process)")
+        issues.append("Fold the legacy per-profile gateways into the host gateway: "
+                      "hermes --profile default gateway migrate --multiplex")
 
 
 def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
-    """Verify the certifi CA bundle is loadable before the first HTTPS call tracebacks.
+    """Verify the actual TLS policy is usable before the first HTTPS call tracebacks.
 
-    ``--fix`` repairs a broken bundle (e.g. a brew Python upgrade rebuilt the venv) by force-reinstalling
-    certifi into THIS interpreter's environment and re-verifying.
+    The policy is ``agent.ssl_verify``: the platform verifier (truststore) is
+    installed process-wide and every stack builds SSL contexts through it. There
+    is no certifi bundle to validate anymore; the check is that the platform
+    store is in force and a default context constructs.
     """
     try:
-        from agent.ssl_guard import verify_ca_bundle
-        from agent.errors import SSLConfigurationError
+        from agent.ssl_verify import install_truststore
     except Exception as e:
-        return check_warn("SSL certificate check skipped", str(e))
+        return check_warn("TLS trust check skipped", str(e))
     if issues is None:
         issues = []
+    platform_store = install_truststore()
+    if not platform_store:
+        check_warn("TLS platform trust store unavailable",
+                   "OpenSSL default trust paths are in use; certificates trusted only by the OS store (a corporate root) will not verify")
     try:
-        verify_ca_bundle()
-        return check_ok("SSL CA certificate bundle is valid")
-    except SSLConfigurationError as e:
-        first_error = str(e)
+        ssl.create_default_context()
     except Exception as e:
-        return check_warn("SSL certificate check skipped", str(e))
-    check_fail("SSL CA certificate bundle is broken", first_error)
-    pip_cmd = f"{sys.executable} -m pip install --force-reinstall certifi"
-    if not should_fix:
-        issues.append(f"Repair the CA bundle: run `hermes doctor --fix`, or `{pip_cmd}`")
+        _fail_and_issue("TLS default SSL context cannot be constructed", str(e),
+                        _python_repair_hint() + "; if TLS still fails, repair Python through the installation owner.", issues)
         return
-    print("    → Repairing: force-reinstalling certifi...")
-    try:
-        result = subprocess.run([sys.executable, "-m", "pip", "install", "--force-reinstall", "certifi"],
-                                capture_output=True, text=True, timeout=300)
-        failure = ("certifi reinstall failed", (result.stderr or result.stdout or "")[-500:]) if result.returncode != 0 else None
-    except Exception as exc:
-        failure = ("certifi repair could not run pip", str(exc))
-    if failure:
-        return _fail_and_issue(*failure, f"Reinstall certifi manually: {pip_cmd}", issues)
-    # Drop cached certifi modules so where() resolves the fresh install without a restart.
-    import importlib
-    for mod_name in [m for m in sys.modules if m == "certifi" or m.startswith("certifi.")]:
-        sys.modules.pop(mod_name, None)
-    importlib.invalidate_caches()
-    try:
-        verify_ca_bundle()
-        check_ok("SSL CA certificate bundle repaired (certifi reinstalled)")
-    except SSLConfigurationError as e:
-        _fail_and_issue("SSL CA certificate bundle still broken after reinstall", str(e),
-                        "certifi reinstall did not restore the CA bundle — check for a custom CA env var "
-                        "(SSL_CERT_FILE/REQUESTS_CA_BUNDLE) pointing at a missing file, or recreate the venv.", issues)
+    if platform_store:
+        check_ok("TLS platform trust store configured; default SSL context available")
+    else:
+        check_ok("TLS default SSL context available (OpenSSL trust paths)")
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:
-    """Warn when a systemd user gateway service will stop after logout (skipped under s6: no linger concept)."""
+    """Warn when a systemd user gateway service will stop after logout (skipped under s6: no linger concept).
+
+    Multiplex-only: the HOST gateway runs under the default profile's unit, so a doctor run from a
+    SERVED profile must still check it — gating on the active profile's own unit silently skipped
+    the check for every profile that does not own a service of its own.
+    """
     try:
-        from hermes_cli.gateway import get_systemd_linger_status, get_systemd_unit_path, is_linux
+        from hermes_cli.gateway import (
+            _SERVICE_BASE, get_systemd_linger_status, get_systemd_unit_path, is_linux,
+            user_systemd_unit_dir)
         from hermes_cli.service_manager import detect_service_manager
     except Exception as e:
         return check_warn("Gateway service linger", f"(could not import gateway helpers: {e})")
-    if not is_linux() or detect_service_manager() == "s6" or not get_systemd_unit_path().exists():
+    if not is_linux() or detect_service_manager() == "s6":
+        return
+    host_unit = user_systemd_unit_dir() / f"{_SERVICE_BASE}.service"
+    if not (get_systemd_unit_path().exists() or host_unit.exists()):
         return
     _section("Gateway Service")
     linger_enabled, linger_detail = get_systemd_linger_status()
@@ -394,6 +405,28 @@ def _check_security_advisories(should_fix: bool, f: Finding) -> None:
             check_warn(f"{h.package}=={h.installed_version} still installed (advisory {h.advisory.id} acknowledged)")
 
 
+def _staged_venv_dir() -> "Path | None":
+    """pm's provisioned runtime venv, or None when nothing is staged.
+
+    ``pm.packages.Venv().venv_dir()`` is pm's public authority for where
+    the runtime venv lives, including an external selected generation or
+    the original source/payload environment before first sync. A resolved
+    path without a venv marker is not a provisioned venv — pm also returns
+    the intended location before first sync, and
+    doctor must not read an empty directory as staged dependencies.
+    """
+    try:
+        import pm  # noqa: F401 — imports pm.packages, registering the definitions
+        from pm.packages import Venv
+
+        venv_dir = Venv().venv_dir()
+    except Exception:
+        return None
+    if venv_dir is not None and (Path(venv_dir) / "pyvenv.cfg").is_file():
+        return Path(venv_dir)
+    return None
+
+
 @doctor_check()
 def _check_python_environment(should_fix: bool, f: Finding) -> None:
     """Interpreter, linked SQLite, venv, macOS TCC anchors/FDA/grants, version-file drift."""
@@ -414,14 +447,26 @@ def _check_python_environment(should_fix: bool, f: Finding) -> None:
         if src:
             check_info(f"SQLite source id: {(src[:48] + '…') if len(src) > 48 else src}")
         _report_database_journal_modes()
-    check_bool(sys.prefix != sys.base_prefix, "Virtual environment active", ("Not in virtual environment", "(recommended)"))
+    # PM launchers run base Python with the selected dependency tree on
+    # sys.path. Neither sys.prefix nor a stale PYTHONPATH proves activation.
+    staged = _staged_venv_dir()
+    if staged is not None:
+        from pm.environments import site_packages
+
+        selected_site = site_packages(staged).resolve()
+        running_here = selected_site.is_dir() and any(Path(entry).resolve() == selected_site for entry in sys.path)
+        check_ok(f"Runtime venv staged ({staged})",
+                 "(active in this process)" if running_here else "(this process runs outside it)")
+    else:
+        check_bool(sys.prefix != sys.base_prefix, "Virtual environment active",
+                   ("Not in virtual environment", "(recommended)"))
     # macOS TCC interpreter anchor (#95596): dylib-complete re-land of the mechanism reverted in #95563.
     # Silent on non-macOS.
     check_macos_tcc_anchor(should_fix=should_fix)
     # macOS Full Disk Access (issue #52010 follow-up): one grant silences every per-folder prompt
     # permanently. Silent on non-macOS.
     check_macos_full_disk_access()
-    _check_version_consistency(f.issues)
+
     # macOS TCC grant persistence (issue #86385): a locally-built desktop bundle whose DR is cdhash-pinned
     # loses every permission grant on each rebuild; a post-#73681 identifier-pinned DR survives, but grants
     # made to older binaries stay stale (toggle shows ON while macOS re-prompts).
@@ -436,7 +481,7 @@ def _check_certificates(should_fix: bool, f: Finding) -> None:
 # (import name, display name, optional)
 _PACKAGES = (
     ("openai", "OpenAI SDK", False), ("rich", "Rich (terminal UI)", False), ("dotenv", "python-dotenv", False),
-    ("yaml", "PyYAML", False), ("httpx", "HTTPX", False),
+    ("ruamel.yaml", "ruamel.yaml", False), ("httpx", "HTTPX", False),
     ("croniter", "Croniter (cron expressions)", True), ("telegram", "python-telegram-bot", True), ("discord", "discord.py", True),
 )
 
@@ -451,7 +496,7 @@ def _check_required_packages(should_fix: bool, f: Finding) -> None:
             if optional:
                 check_warn(name, "(optional, not installed)")
             else:
-                _fail_and_issue(name, "(missing)", f"Install {name}: {_python_install_cmd()} {module}", f.issues)
+                _fail_and_issue(name, "(missing)", f"Repair {name}: {_python_repair_hint()}", f.issues)
 
 
 @doctor_check()
@@ -462,16 +507,36 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
 
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
-    """Venv entry point and the ~/.local/bin (or $PREFIX/bin) symlink; skipped on Windows."""
+    """Check the install-owned launch contract without replacing custom commands."""
     from hermes_cli.doctor import PROJECT_ROOT
     if sys.platform == "win32":
         return
     _section("Command Installation")
-    venv_bin = next((c for c in (PROJECT_ROOT / n / "bin" / "hermes" for n in ("venv", ".venv")) if c.exists()), None)
-    if venv_bin is None:
-        check_warn("Venv entry point not found", "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')")
-        return f.manual_issues.append(f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'")
-    check_ok(f"Venv entry point exists ({venv_bin.relative_to(PROJECT_ROOT)})")
+    from hermes_cli.config import detect_install_method
+
+    method = detect_install_method(PROJECT_ROOT)
+    if is_nix_install_method(method) or method in ("docker", "apt"):
+        command = shutil.which("hermes")
+        if command:
+            check_ok(f"Hermes command managed by {method} ({command})")
+        else:
+            check_warn(f"Hermes command not on PATH ({method}-managed)")
+            f.manual_issues.append(_python_repair_hint())
+        return
+    from hermes_cli._launchers import resolve_store_python
+    from pm.environments import base_venv, selected_venv
+
+    try:
+        selected = selected_venv(PROJECT_ROOT)
+    except (OSError, ValueError, RuntimeError) as exc:
+        check_fail("Cannot resolve selected dependencies", str(exc))
+        return f.manual_issues.append(_python_repair_hint())
+    pm_launcher = selected != base_venv(PROJECT_ROOT) or resolve_store_python(PROJECT_ROOT) is not None
+    venv_bin = PROJECT_ROOT / "hermes" if pm_launcher else selected / "bin" / "hermes"
+    if not venv_bin.is_file():
+        check_warn("Hermes entry point not found", f"({venv_bin})")
+        return f.manual_issues.append("Repair or reinstall the Hermes launcher through the installation owner")
+    check_ok(f"Hermes entry point exists ({venv_bin})")
     # Expected command link directory (mirrors install.sh logic).
     prefix = os.environ.get("PREFIX", "")
     termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)
@@ -482,9 +547,11 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
         if target == expected:
             return check_ok(f"{display}/hermes → correct target")
         check_warn(f"{display}/hermes points to wrong target", f"(→ {target}, expected → {expected})")
+        owned_targets = {(PROJECT_ROOT / name / "bin" / "hermes").resolve() for name in ("venv", ".venv")}
+        if target not in owned_targets:
+            return f.manual_issues.append(f"Review {display}/hermes manually; its target is user-managed and was not changed")
         if not should_fix:
             return f.issues.append(f"Broken symlink at {display}/hermes — run 'hermes doctor --fix'")
-        link.unlink()
         verb = "Fixed"
     elif link.exists():  # regular file (wrapper script), not a symlink
         return check_ok(f"{display}/hermes exists (non-symlink)")
@@ -494,8 +561,18 @@ def _check_command_installation(should_fix: bool, f: Finding) -> None:
             return f.issues.append(f"Missing {display}/hermes symlink — run 'hermes doctor --fix'")
         link_dir.mkdir(parents=True, exist_ok=True)
         verb = "Created"
-    link.symlink_to(venv_bin)
-    check_ok(f"{verb} symlink: {display}/hermes → {venv_bin}")
+    if pm_launcher:
+        from hermes_cli._launchers import stage_launcher
+
+        if stage_launcher("hermes", PROJECT_ROOT, link_dir) is None:
+            check_fail("Could not publish Hermes launcher")
+            return f.manual_issues.append("Repair the PM store interpreter through the installation owner, then rerun 'hermes doctor --fix'")
+        check_ok(f"{verb} PM launcher: {display}/hermes")
+    else:
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to(venv_bin)
+        check_ok(f"{verb} symlink: {display}/hermes → {venv_bin}")
     f.fixed += 1
     if verb == "Created" and str(link_dir) not in os.environ.get("PATH", "").split(os.pathsep):
         check_warn(f"{display} is not on your PATH", "(add it to your shell config: export PATH=\"$HOME/.local/bin:$PATH\")")

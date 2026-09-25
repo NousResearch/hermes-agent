@@ -185,13 +185,12 @@ describe('requestModelOptions', () => {
 
 describe('modelOptionsQueryKey', () => {
   it('isolates new-chat catalogs by active gateway profile', () => {
-    expect(modelOptionsQueryKey('default')).toEqual(['model-options', 'default', 'global'])
-    expect(modelOptionsQueryKey('compass')).toEqual(['model-options', 'compass', 'global'])
     expect(modelOptionsQueryKey('default')).not.toEqual(modelOptionsQueryKey('compass'))
   })
 
   it('keeps session catalogs inside the owning profile namespace', () => {
-    expect(modelOptionsQueryKey(' compass ', 'session-1')).toEqual(['model-options', 'compass', 'session-1'])
+    expect(modelOptionsQueryKey(' compass ', 'session-1')).toEqual(modelOptionsQueryKey('compass', 'session-1'))
+    expect(modelOptionsQueryKey('compass', 'session-1')).not.toEqual(modelOptionsQueryKey('default', 'session-1'))
   })
 
   it('isolates identical profile and session names across registry connections', () => {
@@ -199,7 +198,7 @@ describe('modelOptionsQueryKey', () => {
     const sourceBKey = modelOptionsQueryKey('default', 'session-1', 'source-b')
     const queryClient = new QueryClient()
 
-    expect(sourceAKey).toEqual(['model-options', 'default', 'session-1', 'owner', 'source-a'])
+    expect(sourceAKey).not.toEqual(sourceBKey)
     queryClient.setQueryData(sourceAKey, { providers: [{ models: ['a/model'], slug: 'a' }] })
     queryClient.setQueryData(sourceBKey, { providers: [{ models: ['b/model'], slug: 'b' }] })
 

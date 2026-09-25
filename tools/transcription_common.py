@@ -19,6 +19,9 @@ DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
 DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
 DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
 DEFAULT_ELEVENLABS_STT_MODEL = os.getenv("STT_ELEVENLABS_MODEL", "scribe_v2")
+# Seconds for one STT HTTP request; shared by the OpenAI-SDK path and the QQ adapter so a
+# self-hosted model's cold start is not cut off at the old fixed 30s (#112939).
+DEFAULT_STT_TIMEOUT = 60.0
 LOCAL_STT_COMMAND_ENV = "HERMES_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "HERMES_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
@@ -57,20 +60,26 @@ def _ok_result(transcript: str, provider: str) -> Dict[str, Any]:
     return {"success": True, "transcript": transcript, "provider": provider}
 
 
-def _lazy_ensure_quietly(dep: str) -> None:
-    """Best-effort ``tools.lazy_deps.ensure(dep, prompt=False)``; failures are swallowed.
-    prompt=False: a bare input() deadlocks under the interactive CLI where prompt_toolkit owns
-    stdin; installs are gated by ``security.allow_lazy_installs``."""
+def _lazy_ensure_quietly(extra: str) -> None:
+    """Best-effort ``pm.ensure_import(extra)``; failures are swallowed.
+    Installs are gated by ``security.allow_lazy_installs`` inside pm."""
     try:
-        from tools.lazy_deps import ensure
-        ensure(dep, prompt=False)
+        import pm
+        pm.ensure_import(extra)
     except Exception:
         pass
 
 
 def _process_error_detail(exc: "subprocess.CalledProcessError") -> str:
     """stderr > stdout > str(exc) for a failed helper binary."""
-    return exc.stderr.strip() or exc.stdout.strip() or str(exc)
+    for output in (exc.stderr, exc.stdout):
+        if isinstance(output, bytes):
+            detail = output.decode("utf-8", errors="replace").strip()
+        else:
+            detail = str(output or "").strip()
+        if detail:
+            return detail
+    return str(exc)
 
 
 def _log_prompt_unsupported(label: str) -> None:

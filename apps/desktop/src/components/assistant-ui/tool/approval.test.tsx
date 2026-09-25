@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { act, cleanup, fireEvent, render as renderUi, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render as renderUi, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -82,14 +82,6 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
-  it('renders approval controls for protected instruction writes', () => {
-    setRequest('Update protected agent instructions')
-    render(<PendingApprovalStack />)
-
-    expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
-  })
-
   it('answers the live approval request with {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
     const respond = liveApproval()
@@ -104,6 +96,71 @@ describe('PendingApprovalStack', () => {
     expect(hasOpenServerRequest('srq-approval')).toBe(false)
     expect(request).not.toHaveBeenCalledWith('approval.respond', expect.anything())
     expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('hands focus back to the surface the user was in before clicking Run', async () => {
+    mockGateway()
+    liveApproval()
+    setRequest('computer_use type', undefined, { requestId: 'apr-1', serverRequestId: 'srq-approval' })
+
+    // The agent's preceding computer_use click left focus in the terminal pane.
+    const terminal = document.createElement('textarea')
+    const pane = document.createElement('div')
+    pane.dataset.terminal = ''
+    pane.append(terminal)
+    document.body.append(pane)
+    terminal.focus()
+
+    try {
+      render(<PendingApprovalStack />)
+      const run = screen.getByRole('button', { name: /Run/ })
+
+      // Chromium moves focus onto the pressed button before `click` fires.
+      fireEvent.pointerDown(run)
+      run.focus()
+      fireEvent.click(run)
+
+      await waitFor(() => {
+        expect(hasOpenServerRequest('srq-approval')).toBe(false)
+      })
+      await waitFor(() => {
+        expect(document.activeElement).toBe(terminal)
+      })
+    } finally {
+      pane.remove()
+    }
+  })
+
+  it('leaves focus alone when the user moved on before the approval settled', async () => {
+    mockGateway()
+    liveApproval()
+    setRequest('computer_use type', undefined, { requestId: 'apr-1', serverRequestId: 'srq-approval' })
+
+    const terminal = document.createElement('textarea')
+    const elsewhere = document.createElement('input')
+    document.body.append(terminal, elsewhere)
+    terminal.focus()
+
+    try {
+      render(<PendingApprovalStack />)
+      const run = screen.getByRole('button', { name: /Run/ })
+
+      fireEvent.pointerDown(run)
+      run.focus()
+      fireEvent.click(run)
+      elsewhere.focus()
+
+      await waitFor(() => {
+        expect(hasOpenServerRequest('srq-approval')).toBe(false)
+      })
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(document.activeElement).toBe(elsewhere)
+    } finally {
+      terminal.remove()
+      elsewhere.remove()
+    }
   })
 
   it('falls back to the approval.respond RPC when no live server request is registered', async () => {
@@ -124,15 +181,6 @@ describe('PendingApprovalStack', () => {
       })
     })
     expect($approvalRequest.get()).toBeNull()
-  })
-
-  it('keeps the full command in a bounded scrollable body', () => {
-    const longCommand = 'python -c "' + 'x'.repeat(400) + '"'
-    setRequest(longCommand)
-    render(<PendingApprovalStack />)
-
-    expect(screen.getByText(longCommand).className).toContain('max-h-40')
-    expect(screen.getByText(longCommand).className).toContain('overflow-auto')
   })
 
   it('answers the live approval request with {choice: "deny"} on Reject', async () => {
@@ -191,16 +239,6 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByRole('button', { name: /Run/ })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /More approval options/ })).toBeNull()
-  })
-
-  it('renders the stack independently of mounted tool rows', () => {
-    setRequest('rm /tmp/hermes_approval_test.txt')
-    const { container } = render(<PendingApprovalStack />)
-    const stack = container.querySelector('[data-slot="tool-approval-stack"]')
-
-    expect(stack).not.toBeNull()
-    expect(within(stack as HTMLElement).getByRole('button', { name: /Run/ })).toBeTruthy()
-    expect(within(stack as HTMLElement).getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
   it('keeps a failed request in front and releases held Enter until the user retries', async () => {

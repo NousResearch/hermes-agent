@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // Enforced dock invariants: a pane whose dock hint carries `enforce: true`
 // (Bot Mode's Bots pane) re-homes onto its center anchor at EVERY boot's
@@ -35,6 +35,13 @@ const stackedTree = {
 }
 
 describe('enforced dock (stacked Bots pane → sessions-zone tab, every boot)', () => {
+  beforeAll(async () => {
+    // Transform the store graph outside the first test's deadline. Each boot
+    // still loads a fresh instance after beforeEach resets the module cache.
+    await import('@/components/pane-shell/tree/store')
+    vi.resetModules()
+  })
+
   beforeEach(() => {
     window.localStorage.clear()
     vi.resetModules()

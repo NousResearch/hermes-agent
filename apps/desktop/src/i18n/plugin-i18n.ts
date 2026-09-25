@@ -16,8 +16,8 @@ import { atom } from 'nanostores'
 import { useCallback } from 'react'
 
 import { useI18n } from './context'
-import type { Locale } from './locale'
-import { getRuntimeI18nLocale, translateFrom } from './runtime'
+import { getRuntimeI18nLocale, subscribeRuntimeI18nLocale, translateFrom } from './runtime'
+import type { Locale } from './types'
 
 /** A leaf message: a literal or an interpolator (`n => `${n} left``). */
 export type PluginMessageValue = string | ((...args: never[]) => string)
@@ -43,6 +43,9 @@ export interface PluginI18n {
   /** Module-level translator against the app's active locale (mirrors
    *  `translateNow`). Non-reactive — in React prefer `usePluginI18n`. */
   t: PluginTranslate
+  /** Observe locale changes (not initial registration) to rebuild static labels.
+   *  Returns an unsubscribe function; also disposed on plugin unload. */
+  onLocaleChange: (listener: () => void) => () => void
 }
 
 const registry = new Map<string, Map<Locale, PluginMessages>>()
@@ -96,6 +99,7 @@ export function translatePlugin(pluginId: string, locale: Locale, key: string, a
 export function createPluginI18n(pluginId: string, track: (dispose: () => void) => () => void): PluginI18n {
   return {
     register: bundles => track(registerPluginLocales(pluginId, bundles)),
+    onLocaleChange: listener => track(subscribeRuntimeI18nLocale(listener)),
     t: (key, ...args) => translatePlugin(pluginId, getRuntimeI18nLocale(), key, args)
   }
 }

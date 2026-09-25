@@ -29,6 +29,7 @@ export function createClientSessionState(
     model: '',
     provider: '',
     reasoningEffort: '',
+    reasoningEffortWire: '',
     serviceTier: '',
     fast: false,
     yolo: false,
@@ -46,6 +47,17 @@ export function createClientSessionState(
     turnLive: false,
     usage: null
   }
+}
+
+/**
+ * Mark a freshly resumed slice's effort as not-yet-known. The deferred-build
+ * resume reply has no `reasoning_effort`, and falling through to the profile
+ * default would paint a level the built agent's `session.info` then replaces
+ * (#79807). A slice whose effort was already reported (a fast build can beat
+ * the resume reply) keeps it.
+ */
+export function markReasoningEffortPending(state: ClientSessionState): ClientSessionState {
+  return state.reasoningEffortPending === false ? state : { ...state, reasoningEffortPending: true }
 }
 
 export function sessionTitle(session: SessionInfo): string {
@@ -173,31 +185,6 @@ export function attachmentId(kind: ComposerAttachment['kind'], value: string): s
   return `${kind}:${normalizeAttachmentValue(kind, value)}`
 }
 
-/** A GitHub PR review-thread (`#discussion_r<id>`) or conversation
- *  (`#issuecomment-<id>`) deep link — the one paste shape that can resolve to
- *  a structured review attachment instead of a plain `@url:` chip. */
-export const PR_COMMENT_URL_RE =
-  /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+(?:\/[^#\s]*)?#(?:discussion_r|issuecomment-)\d+$/
-
-/** The send-time expansion of a `review` attachment. `detail` holds the
- *  resolved comment as JSON (HermesPrComment shape); a malformed payload falls
- *  back to the attachment's URL ref so the send never throws. */
-export function reviewCommentBlock(detail: string): null | string {
-  try {
-    const c = JSON.parse(detail)
-
-    const anchor = c.path
-      ? `${c.path}${c.line ? `:${c.startLine && c.startLine !== c.line ? `${c.startLine}-` : ''}${c.line}` : ''}`
-      : `PR #${c.prNumber}`
-
-    const hunk = c.diffHunk ? `\n--- diff hunk ---\n${String(c.diffHunk).trim()}` : ''
-
-    return `\`\`\`review-comment ${anchor}\n@${c.author} on ${c.url}\n\n${String(c.body).trim()}${hunk}\n\`\`\``
-  } catch {
-    return null
-  }
-}
-
 export function pathLabel(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() || path
 }
@@ -212,18 +199,6 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
 
   if (attachment.kind === 'terminal' && attachment.detail) {
     return `\`\`\`terminal\n${attachment.detail.trim()}\n\`\`\``
-  }
-
-  // A resolved PR review comment: expand to a fenced block carrying the
-  // anchor (file:line), author, body, and — when present — the diff hunk the
-  // comment sits on, so "address this" needs no re-explaining what "this" is.
-  // A malformed payload falls through to the refText (the pasted URL).
-  if (attachment.kind === 'review' && attachment.detail) {
-    const block = reviewCommentBlock(attachment.detail)
-
-    if (block) {
-      return block
-    }
   }
 
   if (attachment.refText) {
@@ -257,9 +232,23 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
   }
 
   if (attachment.kind === 'image') {
+    // Prefer a filesystem-backed `@image:<path>` ref so the in-flight bubble
+    // renders through the same DirectiveImage path as a reloaded turn. That
+    // component shows a bounded thumbnail inline (no full-resolution paint, so
+    // the multi-image send freeze this design guards against does not return)
+    // and hands the full-resolution file to the lightbox/download — fixing the
+    // live-vs-reload fidelity gap where a sent screenshot stayed 512px until a
+    // session reload rehydrated it (#93204). Remote gateways resolve the same
+    // path over the authenticated media API, so no /api/media 403.
+    const pathRef = attachment.path || attachment.detail
+
+    if (pathRef) {
+      return `@image:${formatRefValue(pathRef)}`
+    }
+
     if (attachment.thumbnailUrl?.startsWith('data:')) {
-      // The pill and the in-flight bubble render the bounded thumbnail. Full
-      // bytes are read separately for lightbox/download and model upload.
+      // No path to rehydrate from (e.g. pasted bytes): render the bounded
+      // thumbnail inline. Full bytes remain available for the model upload.
       return attachment.thumbnailUrl
     }
 
@@ -269,10 +258,9 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
       return attachment.previewUrl
     }
 
-    // A newly attached image has no thumbnail while its queued resize is still
-    // pending. Do not fall through to @image:<path>: the optimistic bubble would
-    // fetch and paint the full source, recreating the freeze if Send wins the
-    // race. The model upload remains path/byte based and is unaffected.
+    // A newly attached image with no path and no thumbnail yet: the queued
+    // resize is still pending. Render nothing rather than paint the full source
+    // and recreate the freeze if Send wins the race.
     return null
   }
 

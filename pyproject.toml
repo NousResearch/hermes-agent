@@ -254,7 +254,6 @@ piper = [
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
-hindsight = ["hindsight-client==0.6.1"]
 google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",
@@ -723,7 +722,7 @@ google-auth-httplib2 = false
 google-auth-oauthlib = false
 google-cloud-pubsub = false
 h2 = false
-hindsight-client = false
+
 honcho-ai = false
 httplib2 = false
 httpx = false

@@ -770,6 +770,18 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
         agent._cached_system_prompt = stored_prompt
+        # A fresh agent loaded current MEMORY.md / USER.md before this older
+        # prompt was restored. Rebase freshness tracking on what the restored
+        # prompt and replayable sidecars actually delivered, so changes made
+        # while Hermes was closed ride this turn without mutating the prefix.
+        _restore_memory_baseline = getattr(
+            getattr(agent, "_memory_store", None), "restore_delivery_baseline", None
+        )
+        if callable(_restore_memory_baseline):
+            try:
+                _restore_memory_baseline(stored_prompt, conversation_history)
+            except Exception as exc:
+                logger.warning("Native memory restore reconciliation failed: %s", exc)
         # The reused bytes may describe the surface this conversation STARTED on; correct that
         # at the tail of the request instead of rebuilding the prompt in front of it (#104414).
         announced_switch = stage_surface_switch_note(agent, stored_prompt, conversation_history)

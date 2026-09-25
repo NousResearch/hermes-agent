@@ -24,6 +24,7 @@ import pytest
 
 from agent.conversation_loop import _restore_or_build_system_prompt
 from agent.surface_switch import _SURFACE_NAME_END, _SURFACE_SWITCH_NOTE_PREFIX, identity_line_value
+from tools.memory_tool_store import MemoryStore
 
 
 def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
@@ -42,6 +43,80 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     agent.enabled_toolsets = agent.disabled_toolsets = None  # all toolsets, as an unrestricted agent
     return agent
+
+
+class TestNativeMemoryRestoreFreshness:
+    """A resumed session must compare disk memory with what its transcript saw."""
+
+    @staticmethod
+    def _stored_prompt(memory_block: str) -> str:
+        return (
+            f"SYSTEM PROMPT BODY\n\n{memory_block}\n\n"
+            "Conversation started: Monday, January 05, 2026\n"
+            "Model: test-model\nProvider: openrouter\nPlatform: cli"
+        )
+
+    def test_change_while_closed_is_delivered_once_after_restore(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        MemoryStore._write_file(tmp_path / "MEMORY.md", ["before close"])
+        original = MemoryStore()
+        original.load_from_disk()
+        stored_prompt = self._stored_prompt(original.format_for_system_prompt("memory"))
+
+        # Simulate closing Hermes, editing native memory, then constructing a new
+        # agent for the persisted session. Its constructor sees the new disk bytes,
+        # while the restored system prompt still contains the old bytes.
+        MemoryStore._write_file(tmp_path / "MEMORY.md", ["changed while closed"])
+        resumed = MemoryStore()
+        resumed.load_from_disk()
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored_prompt}
+        agent = _make_agent(session_db=db)
+        agent._memory_store = resumed
+        history = [{"role": "user", "content": "earlier turn"}]
+
+        _restore_or_build_system_prompt(agent, None, history)
+
+        note = resumed.consume_freshness_context()
+        assert "changed while closed" in note
+        assert "before close" not in note
+        assert agent._cached_system_prompt == stored_prompt
+        assert resumed.consume_freshness_context() == ""
+
+        # A gateway may construct another fresh agent on the next turn. The
+        # persisted sidecar proves this version was already delivered, so it
+        # must not be injected again.
+        next_store = MemoryStore()
+        next_store.load_from_disk()
+        next_agent = _make_agent(session_db=db)
+        next_agent._memory_store = next_store
+        replay = history + [
+            {"role": "user", "content": "resume", "api_content": f"resume\n\n{note}"},
+            {"role": "assistant", "content": "continued"},
+        ]
+        _restore_or_build_system_prompt(next_agent, None, replay)
+        assert next_store.consume_freshness_context() == ""
+
+    def test_empty_file_while_closed_is_delivered_after_restore(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        MemoryStore._write_file(tmp_path / "MEMORY.md", ["removed while closed"])
+        original = MemoryStore()
+        original.load_from_disk()
+        stored_prompt = self._stored_prompt(original.format_for_system_prompt("memory"))
+
+        (tmp_path / "MEMORY.md").write_text("", encoding="utf-8")
+        resumed = MemoryStore()
+        resumed.load_from_disk()
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored_prompt}
+        agent = _make_agent(session_db=db)
+        agent._memory_store = resumed
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "earlier turn"}]
+        )
+
+        assert "MEMORY.md is now empty." in resumed.consume_freshness_context()
 
 
 # ---------------------------------------------------------------------------

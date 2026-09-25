@@ -125,7 +125,11 @@ class MemoryStore:
         self.memory_char_limit, self.user_char_limit = memory_char_limit, user_char_limit
         self.memory_enabled, self.user_profile_enabled = memory_enabled, user_profile_enabled
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
-        self._last_delivered_prompt_view: Dict[str, str] = {"memory": "", "user": ""}
+        # ``None`` means the current disk view has not reached the restored
+        # conversation yet. Empty string is a real, delivered empty view.
+        self._last_delivered_prompt_view: Dict[str, Optional[str]] = {
+            "memory": "", "user": ""
+        }
         self._consolidation_failures = 0  # per turn; reset by reset_consolidation_failures()
 
     # Per-turn counter of failed at-capacity consolidation attempts; reset at each turn boundary by
@@ -178,6 +182,61 @@ class MemoryStore:
             )
             self._system_prompt_snapshot[target] = block
             self._last_delivered_prompt_view[target] = block
+
+    def restore_delivery_baseline(
+        self, system_prompt: str, conversation_history: Any
+    ) -> None:
+        """Align freshness tracking with a restored conversation's actual view.
+
+        A newly constructed store loads today's disk bytes, but a resumed session
+        restores an older frozen system prompt. Replayable freshness sidecars may
+        supersede that prompt, so walk them newest-first and use the latest mention
+        of each native-memory target as the delivery baseline.
+        """
+        history = conversation_history if isinstance(conversation_history, list) else []
+        for target in ("memory", "user"):
+            if not self.target_enabled(target):
+                continue
+            current = self._system_prompt_snapshot[target]
+            filename = self._path_for(target).name
+            header = MEMORY_BLOCK_HEADERS[target]
+            delivered = None
+
+            for message in reversed(history):
+                if not isinstance(message, dict):
+                    continue
+                payloads = []
+                api_content = message.get("api_content")
+                if isinstance(api_content, str):
+                    payloads.append(api_content)
+                content = message.get("content")
+                if isinstance(content, str):
+                    payloads.append(content)
+                elif isinstance(content, list):
+                    payloads.extend(
+                        part.get("text")
+                        for part in content
+                        if isinstance(part, dict) and isinstance(part.get("text"), str)
+                    )
+
+                for payload in reversed(payloads):
+                    if "[Native memory refreshed]" not in payload:
+                        continue
+                    mentions_target = header in payload or f"{filename} is now empty." in payload
+                    if not mentions_target:
+                        continue
+                    delivered = (
+                        current in payload
+                        if current
+                        else f"{filename} is now empty." in payload
+                    )
+                    break
+                if delivered is not None:
+                    break
+
+            if delivered is None:
+                delivered = current in system_prompt if current else header not in system_prompt
+            self._last_delivered_prompt_view[target] = current if delivered else None
 
     def consume_freshness_context(self) -> str:
         """Return changed native memory as one-shot current-turn context.

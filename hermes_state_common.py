@@ -217,16 +217,24 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
         f" AND NOT ({_COMPRESSION_CHILD_SQL.format(a=alias)}) AND NOT ({_RESET_CHILD_SQL.format(a=alias)}))")
 
 
+_SQL_IN_WINDOW = f"BETWEEN {EPOCH_MIN!r} AND {EPOCH_MAX!r}"
+
+
+def _sql_in_window(expr: str) -> str:
+    """*expr* when it is inside the ``coerce_epoch`` window, else NULL."""
+    return f"(SELECT _win.v FROM (SELECT {expr} AS v) _win WHERE _win.v {_SQL_IN_WINDOW})"
+
+
 def _sql_freshest_of(activity: str, session_id_expr: str, started: str) -> str:
     """Freshest of *activity* and the latest message timestamp for *session_id_expr*, else *started*.
     Heartbeats are rate-limited (~60s) so ``last_activity_at`` can lag a newer message; never use it alone.
     Cells outside the ``coerce_epoch`` window (garbage doubles salvaged from a damaged page, TEXT) are
-    skipped, or one bad message row pins the session's recency to ``5e+246`` (#91536)."""
-    in_window = f"BETWEEN {EPOCH_MIN!r} AND {EPOCH_MAX!r}"
+    skipped, fallback included, or one bad row pins the session's recency to ``5e+246`` (#91536); a
+    session with no trusted cell at all is NULL."""
     msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr}"
-        f" AND _act_m.timestamp {in_window})")
+        f" AND _act_m.timestamp {_SQL_IN_WINDOW})")
     return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v"
-        f" WHERE _act_v.v {in_window}), {started})")
+        f" WHERE _act_v.v {_SQL_IN_WINDOW}), {_sql_in_window(started)})")
 
 
 def _sql_session_last_active(alias: str = "s") -> str:

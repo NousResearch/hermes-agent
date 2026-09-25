@@ -80,6 +80,21 @@ def test_last_active_skips_a_garbage_message_timestamp(tmp_path):
     assert tip_rows["recovered"]["last_active"] == good
 
 
+def test_last_active_never_falls_back_to_a_corrupt_started_at(corrupt_db):
+    """With no in-window activity or message timestamp left, the ``started_at`` fallback must be filtered
+    too, or the corrupt cell becomes ``last_active`` and pins the session to the top of MRU (#91536)."""
+    corrupt_db._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET last_activity_at = NULL WHERE id = 'bad-huge'"))
+    listings = (corrupt_db.list_sessions_rich(limit=10), corrupt_db.list_sessions_rich(limit=10, order_by_last_active=True),
+                corrupt_db.search_sessions(limit=10))
+    for rows in listings:
+        by_id = {r["id"]: r for r in rows}
+        assert by_id["bad-huge"]["last_active"] is None and by_id["bad-text"]["last_active"] is None
+        assert by_id["good"]["last_active"] is not None
+    for rows in listings[1:]:
+        assert rows[0]["id"] == "good"
+
+
 def test_writers_never_persist_an_out_of_window_timestamp(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

@@ -1674,6 +1674,8 @@ export interface GroupChatRoom extends GroupChat {
    *  an older epoch is cancelled even when sticky hold detection is disabled. */
   stoppedEpoch?: number
   turn?: GroupMember | null
+  /** Current tool/step the member is running (runtime-only, like turn). */
+  turnPreview?: null | string
 }
 
 /** Toggle automatic text-to-hold detection for one room. Turning it off also

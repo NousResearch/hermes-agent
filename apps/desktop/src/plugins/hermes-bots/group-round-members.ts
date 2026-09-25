@@ -143,13 +143,19 @@ async function runVisibleMemberTurn(
   images?: Attachment[]
 ) {
   const turn = { ...member }
-  updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn }), { sync: false })
+  // `turnPreview` rides the turn: cleared with it so a new turn never shows the
+  // tool the PREVIOUS one ran before its own transcript names one.
+  updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn, turnPreview: null }), { sync: false })
 
   try {
     return await runGroupChatMemberTurn(context.group, member, prompt, context.thread, images)
   } finally {
     if (context.binding.isLive() && $groupChats.get()[context.group]?.turn === turn) {
-      updateGroupChat(context.group, (room: GroupChatRoom) => ({ ...room, turn: null }), { sync: false })
+      updateGroupChat(
+        context.group,
+        (room: GroupChatRoom) => ({ ...room, turn: null, turnPreview: null }),
+        { sync: false }
+      )
     }
   }
 }

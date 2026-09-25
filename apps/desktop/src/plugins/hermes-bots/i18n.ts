@@ -317,6 +317,7 @@ type BotsMessages = {
     dropToRoom: string
     waitingForAnswer: string
     memberThinking: (name: string) => string
+    memberWorkingOn: (name: string, tool: string) => string
     roomWorking: string
     messageRoom: (group: string) => string
     newThreadPlaceholder: (group: string) => string
@@ -753,6 +754,7 @@ const en: BotsMessages = {
     dropToRoom: 'Drop to attach — every responding bot sees it',
     waitingForAnswer: 'Waiting for your answer…',
     memberThinking: name => `${name} is thinking…`,
+    memberWorkingOn: (name, tool) => `${name} is working: ${tool}`,
     roomWorking: 'The room is working…',
     messageRoom: group => `Message ${group}`,
     newThreadPlaceholder: group => `New thread in ${group}… (@name to direct, @everyone for all)`,
@@ -1183,6 +1185,7 @@ const ja: BotsMessages = {
     dropToRoom: 'ドロップして添付 — 応答するすべてのボットが見られます',
     waitingForAnswer: 'あなたの回答を待っています…',
     memberThinking: name => `${name}が考えています…`,
+    memberWorkingOn: (name, tool) => `${name}が作業中：${tool}`,
     roomWorking: 'ルームが作業中です…',
     messageRoom: group => `${group}にメッセージ`,
     newThreadPlaceholder: group => `${group}で新しいスレッド…（@名前で個別、@everyoneで全員）`,
@@ -1603,6 +1606,7 @@ const zh: BotsMessages = {
     dropToRoom: '拖放以附加 — 每个回应的机器人都能看到',
     waitingForAnswer: '等待你的回答…',
     memberThinking: name => `${name} 正在思考…`,
+    memberWorkingOn: (name, tool) => `${name} 正在执行：${tool}`,
     roomWorking: '房间正在处理…',
     messageRoom: group => `发消息给 ${group}`,
     newThreadPlaceholder: group => `在 ${group} 中开启新讨论串…（@名称指定，@everyone 全体）`,
@@ -2020,6 +2024,7 @@ const zhHant: BotsMessages = {
     dropToRoom: '拖放以附加 — 每個回應的機器人都能看到',
     waitingForAnswer: '等待你的回答…',
     memberThinking: name => `${name} 正在思考…`,
+    memberWorkingOn: (name, tool) => `${name} 正在執行：${tool}`,
     roomWorking: '房間正在處理…',
     messageRoom: group => `傳訊息給 ${group}`,
     newThreadPlaceholder: group => `在 ${group} 中開啟新討論串…（@名稱指定，@everyone 全體）`,

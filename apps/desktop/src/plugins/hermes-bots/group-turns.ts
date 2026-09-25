@@ -49,6 +49,9 @@ interface GroupTurnTranscriptMessage {
   display_kind?: string
   role?: string
   text?: string
+  /** Tool name on role=tool rows (present in the gateway transcript but
+   *  previously undeclared here — see gateway session.py append_message). */
+  tool_name?: string
 }
 
 /** What a finished turn left behind: the member's reply, or the notice of the
@@ -101,6 +104,24 @@ function pickGroupTurnReply(messages: GroupTurnTranscriptMessage[], before: numb
   }
 
   return passText
+}
+
+/** Extract the current tool/step name from THIS turn's transcript tail so the
+ *  room can show "majiang is working: patch_file.py" instead of a bare
+ *  "majiang is thinking…". `before` is the index of the turn's own prompt row —
+ *  the same floor `pickGroupTurnReply` scans from — because rows before it
+ *  belong to earlier turns and would name a tool this turn never ran. Scans
+ *  newest-first, so a turn that used several tools reports its latest one. */
+export function pickCurrentTool(messages: GroupTurnTranscriptMessage[], before: number): null | string {
+  for (let i = messages.length - 1; i >= before; i--) {
+    const msg = messages[i]
+
+    if (msg?.role === 'tool' && typeof msg?.tool_name === 'string' && msg.tool_name) {
+      return msg.tool_name
+    }
+  }
+
+  return null
 }
 
 /** The reply of a STRANDED turn: the first substantive assistant row after the
@@ -1134,6 +1155,16 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
     // outlive the base turn timeout or it dies unanswered at 3 minutes.
     if (busy || awaitingUser) {
       deadline = Math.min(started + GROUP_TURN_HARD_CAP_MS, Math.max(deadline, Date.now() + GROUP_TURN_TIMEOUT_MS))
+
+      // Surface WHAT the member is doing: the latest tool row of THIS turn
+      // (runtime-only, like turn). Assigned on every tick so a turn that ran no
+      // tool falls back to the thinking line instead of keeping a stale name.
+
+      updateGroupChat(context.group, (r: GroupChatRoom) => {
+        r.turnPreview = pickCurrentTool(messages, before)
+
+        return r
+      })
     }
   }
 

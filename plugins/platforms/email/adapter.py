@@ -159,10 +159,11 @@ def _send_imap_id(imap: "imaplib.IMAP4") -> None:
         return
     try:
         try:
-            from hermes_cli import __version__ as _hermes_version
+            from hermes_cli.version_info import get_version_info
+            version = get_version_info().base_version
         except Exception:  # noqa: BLE001 — keep ID best-effort if import fails
-            _hermes_version = "0"
-        imap.xatom("ID", f'("name" "hermes-agent" "version" "{_hermes_version}" '
+            version = "0"
+        imap.xatom("ID", f'("name" "hermes-agent" "version" "{version}" '
                          '"vendor" "NousResearch" "support-email" "noreply@nousresearch.com")')
     except Exception as e:  # noqa: BLE001 — best-effort, never fatal
         logger.debug("[Email] IMAP ID command not accepted: %s", e)

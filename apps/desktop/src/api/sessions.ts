@@ -258,8 +258,7 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
 
   const storage = { ...recents.storage, ...cron.storage, ...messaging.storage }
 
-  return {
-    ...(Object.keys(storage).length ? { storage } : {}),
+  const response: SidebarSessionsResponse = {
     recents: {
       profiles_truncated: profilesTruncatedFrom(recents.sessions, req.recentsLimit),
       sessions: recents.sessions,
@@ -274,6 +273,12 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
       ...(messagingErrors.length ? { errors: messagingErrors } : {})
     }
   }
+
+  if (Object.keys(storage).length > 0) {
+    response.storage = storage
+  }
+
+  return response
 }
 
 /** The PR each of these sessions opened, recovered from its own transcript —

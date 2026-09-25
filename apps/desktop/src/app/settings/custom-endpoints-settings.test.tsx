@@ -248,10 +248,10 @@ describe('CustomEndpointsSettings', () => {
     expect(screen.getByText('Applies to')).toBeTruthy()
 
     fireEvent.change(await screen.findByPlaceholderText('Axet Proxy'), { target: { value: 'Studio gateway' } })
-    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8081/v1'), {
+    fireEvent.change(await screen.findByPlaceholderText('http://127.0.0.1:8081/v1'), {
       target: { value: 'https://studio.example.com/v1' }
     })
-    fireEvent.change(screen.getByPlaceholderText('gpt-5.4'), { target: { value: 'studio-model' } })
+    fireEvent.change(await screen.findByPlaceholderText('gpt-5.4'), { target: { value: 'studio-model' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
     expect(saveCustomEndpoint).toHaveBeenCalledWith(

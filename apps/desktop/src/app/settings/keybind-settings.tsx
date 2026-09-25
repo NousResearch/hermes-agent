@@ -24,6 +24,7 @@ import {
   $capture,
   beginCapture,
   bindingsFor,
+  clearBinding,
   conflictsFor,
   endCapture,
   resetAllBindings,
@@ -272,10 +273,23 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
         </button>
       </Tip>
 
-      {/* Reset only shows once a binding diverges from its default; the spacer
-          holds the column otherwise so rows stay aligned. */}
+      {/* Reset shows once a binding diverges from its default. A shipped chord
+          (sidebar mod+b) has no reset, so that same slot clears it instead. */}
       {isDefault ? (
-        <span aria-hidden className="size-6 shrink-0" />
+        combos.length > 0 ? (
+          <Tip label={k.clear}>
+            <button
+              aria-label={k.clear}
+              className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-all hover:bg-(--ui-control-active-background) hover:text-foreground group-hover:opacity-100"
+              onClick={() => clearBinding(action.id)}
+              type="button"
+            >
+              <Codicon name="close" size="0.8125rem" />
+            </button>
+          </Tip>
+        ) : (
+          <span aria-hidden className="size-6 shrink-0" />
+        )
       ) : (
         <Tip label={k.reset}>
           <button

@@ -424,7 +424,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             active: activeView === 'sessions',
             icon: Archive,
             id: 'sessions',
-            label: t.settings.nav.archivedChats,
+            label: t.settings.nav.sessions,
             onSelect: () => setActiveView('sessions')
           },
           {

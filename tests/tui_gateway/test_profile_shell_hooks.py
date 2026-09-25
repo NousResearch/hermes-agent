@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-import yaml
+import hermes_yaml as yaml
 
 
 def test_agent_build_arms_only_consented_profile_policy(tmp_path, monkeypatch):

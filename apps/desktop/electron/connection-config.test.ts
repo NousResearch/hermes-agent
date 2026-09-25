@@ -16,6 +16,7 @@ import type { AddressInfo } from 'node:net'
 
 import { test, vi } from 'vitest'
 
+import { httpStatusError } from './api-transport'
 import { makeNousCloudBackendDownError } from './backend-health'
 import {
   apiRequestRegistryConnectionId,
@@ -54,6 +55,7 @@ import {
   translateSelfProfileQuery,
   withTransientRetries
 } from './connection-config'
+import { mintGatewayWsTicket } from './oauth-rest-request'
 
 test('legacy Settings resolution retains its HTTP origin across awaits and rejects route replacement', async () => {
   const received: string[] = []
@@ -1403,6 +1405,40 @@ test('resolveTestWsUrl (oauth, auth rejected) requests sign-in and does not skip
       assert.match(err.message, /sign in again/i)
       assert.equal(err.needsOauthLogin, true)
       assert.ok(err.cause instanceof Error)
+
+      return true
+    }
+  )
+})
+
+test('resolveTestWsUrl (oauth, stale app bearer) names the app token, not the server OAuth session', async () => {
+  const staleBearer = 'stale-app-bearer-do-not-log'
+
+  const cause = await mintGatewayWsTicket('https://gw.example.com', {
+    ensureNativeAccessToken: async () => staleBearer,
+    fetchJson: async (_url, _token, options) => {
+      assert.equal(options.bearer, staleBearer)
+      throw httpStatusError(401, JSON.stringify({ reason: 'invalid_or_expired_session' }))
+    },
+    fetchJsonViaOauthSession: async () => {
+      throw httpStatusError(401, JSON.stringify({ reason: 'no_cookie' }))
+    }
+  }).catch((error: unknown) => error)
+
+  await assert.rejects(
+    () =>
+      resolveTestWsUrl('https://gw.example.com', 'oauth', null, {
+        mintTicket: async () => {
+          throw cause
+        }
+      }),
+    (err: any) => {
+      assert.match(err.message, /app token is invalid/i)
+      assert.match(err.message, /saved gateway bearer/i)
+      assert.doesNotMatch(err.message, /oauth session/i)
+      assert.doesNotMatch(err.message, /re-authenticate/i)
+      assert.equal(err.message.includes(staleBearer), false)
+      assert.equal(err.needsOauthLogin, true)
 
       return true
     }

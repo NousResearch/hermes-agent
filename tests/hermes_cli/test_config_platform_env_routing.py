@@ -2,7 +2,7 @@
 ``.env`` — the file the platform setup flows and ``/sethome`` already write (#111848)."""
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 def test_platform_env_key_round_trips_without_a_config_yaml_copy(tmp_path, monkeypatch, capsys):

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { setAlwaysExternalLinks } from '@/store/external-links'
 import { $previewTabs, closeRightRail } from '@/store/preview'
 
 import {
@@ -41,6 +42,7 @@ function installTitleBridge(title: string) {
 afterEach(() => {
   __resetLinkTitleCache()
   closeRightRail()
+  setAlwaysExternalLinks(false)
   vi.restoreAllMocks()
   cleanup()
 
@@ -131,6 +133,19 @@ describe('external link helpers', () => {
     render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
 
     fireEvent.click(screen.getByRole('link', { name: 'Example link' }), IS_MAC ? { metaKey: true } : { ctrlKey: true })
+
+    expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('sends a plain click to the OS browser when "always external" is on', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+    setAlwaysExternalLinks(true)
+
+    render(<ExternalLink href="https://example.com/path/to/resource">Example link</ExternalLink>)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Example link' }))
 
     expect(openExternal).toHaveBeenCalledWith('https://example.com/path/to/resource')
     expect($previewTabs.get()).toHaveLength(0)

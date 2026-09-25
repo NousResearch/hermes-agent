@@ -337,11 +337,22 @@ class TestStartRun:
         mock_create.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_events_stream_forwards_interim_commentary(self, adapter):
-        """Mid-turn assistant commentary (Codex ``phase="commentary"``) reaches /v1/runs clients
-        as ``message.interim`` {text, already_streamed}; the final answer is unchanged (#67580)."""
+    @pytest.mark.parametrize("worker_fails", [False, True], ids=["completed", "failed"])
+    async def test_events_stream_forwards_interim_commentary(self, adapter, worker_fails):
+        """Commentary reaches /v1/runs clients before the terminal event, even
+        when the worker finishes before asyncio wraps its Future (#67580)."""
         import json
+        from concurrent.futures import ThreadPoolExecutor
 
+        class CompletedWorkerExecutor(ThreadPoolExecutor):
+            def submit(self, fn, /, *args, **kwargs):
+                future = super().submit(fn, *args, **kwargs)
+                # A fast worker may finish before asyncio wraps its future.
+                # Make that ordering deterministic, with real thread callbacks.
+                future.exception(timeout=10)
+                return future
+
+        asyncio.get_running_loop().set_default_executor(CompletedWorkerExecutor(max_workers=1))
         app = _create_runs_app(adapter)
 
         def create_agent(**kwargs):
@@ -351,6 +362,8 @@ class TestStartRun:
             def run_conversation(**_kw):
                 interim("Checking the docs first.", already_streamed=False)
                 interim("Applying the fix.", already_streamed=True)
+                if worker_fails:
+                    raise RuntimeError("worker failed")
                 return {"final_response": "Done."}
 
             agent.run_conversation.side_effect = run_conversation
@@ -366,8 +379,13 @@ class TestStartRun:
         events = [json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: ")]
         interim = [(e["text"], e["already_streamed"]) for e in events if e["event"] == "message.interim"]
         assert interim == [("Checking the docs first.", False), ("Applying the fix.", True)]
-        completed = next(e for e in events if e["event"] == "run.completed")
-        assert completed["output"] == "Done."
+        assert [e["event"] for e in events] == [
+            "message.interim", "message.interim", "run.failed" if worker_fails else "run.completed",
+        ]
+        if worker_fails:
+            assert events[-1]["error"] == "worker failed"
+        else:
+            assert events[-1]["output"] == "Done."
 
     @pytest.mark.asyncio
     async def test_start_passes_request_model_provider_options_to_create_agent(self, adapter):

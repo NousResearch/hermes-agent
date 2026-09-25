@@ -32,10 +32,13 @@ from typing import Any
 
 import pytest
 
+from tests.e2e.core._pm_dependencies import select_test_dependencies
 from tests.e2e.core.mcp_plugins._helpers import (
     FINAL,
+    REPO_ROOT,
+    E2EHome,
     KnownSymptom,
-    build_home,
+    build_home as _build_home,
     calls_received,
     inbound,
     provider,
@@ -79,6 +82,13 @@ KNOWN: dict[str, tuple[str, str]] = {
 }
 
 
+def build_home(root: Path, base_url: str, *, extra: dict[str, Any] | None = None) -> E2EHome:
+    eh = _build_home(root, base_url, extra=extra)
+    select_test_dependencies(eh.hermes_home, REPO_ROOT)
+    eh.extra_env["HERMES_DISABLE_LAZY_INSTALLS"] = "1"
+    return eh
+
+
 PLUGIN = "e2eplug"
 SERVER = "plug"
 PLUG_TOOL = tool_name(SERVER, "ro_probe")
@@ -119,6 +129,16 @@ def _toggle_on(host, key: str) -> list[dict[str, Any]]:
     result = host.rpc.call("plugins.manage", {"action": "toggle", "key": key, "enable": True}, timeout=180)
     assert result.get("ok") and not result.get("unchanged"), result
     return ((result.get("activation") or {}).get("live_now") or {}).get("mcp_servers") or []
+
+
+def test_plugin_sandbox_selects_real_pm_tools_offline(tmp_path: Path) -> None:
+    """The same isolated home used by activation can resolve PM's pinned toolchain without downloads."""
+    eh = build_home(tmp_path, "http://127.0.0.1:1")
+    child = subprocess.run([sys.executable, "-c",
+                            "from pm._uv import _toolchain; assert _toolchain(realize=False) is not None"],
+                           env=eh.env({"HERMES_DISABLE_LAZY_INSTALLS": "1"}), cwd=eh.project,
+                           capture_output=True, text=True, timeout=30)
+    assert child.returncode == 0, child.stderr
 
 
 # 1. live activation in an open chat ------------------------------------------------------------

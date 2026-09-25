@@ -559,20 +559,39 @@ async def _start_device_code_flow(provider_id: str, profile: Optional[str] = Non
     return await starter(profile)
 
 
-def _oauth_provider_disconnect_command(provider: Dict[str, Any]) -> Optional[str]:
+def _claude_code_disconnect_command(platform: str) -> str:
+    """Host-native command that removes Claude Code's borrowed credential file.
+
+    Windows must not emit ``rm -f``. PowerShell aliases ``rm`` to ``Remove-Item``,
+    and ``-f`` binds both ``-Force`` and ``-Filter`` (AmbiguousParameter).
+    """
+    if platform == "win32":
+        literal = '"$HOME/.claude/.credentials.json"'
+        return (
+            f"if (Test-Path -LiteralPath {literal}) {{ "
+            f"Remove-Item -LiteralPath {literal} -Force -ErrorAction Stop }}"
+        )
+    rm_file = "rm -f ~/.claude/.credentials.json"
+    if platform == "darwin":
+        return f'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; {rm_file}'
+    return rm_file
+
+
+def _oauth_provider_disconnect_command(
+    provider: Dict[str, Any], platform: Optional[str] = None
+) -> Optional[str]:
     """Shell command that clears an external provider's credentials, or None.
 
     The disconnect API never silently deletes files another CLI owns; the GUI runs
     this in its embedded terminal so the user sees exactly what executes. Claude Code
     has no scriptable logout, so remove what logout would: the macOS Keychain entry
     and/or ``~/.claude/.credentials.json`` (the two ``read_claude_code_credentials()`` sources).
+    ``platform`` is the host the command will run on (default: this process). Pass it
+    explicitly in tests; do not fake ``sys.platform``.
     """
     if provider.get("flow") != "external" or provider.get("id") != "claude-code":
         return None
-    rm_file = "rm -f ~/.claude/.credentials.json"
-    if sys.platform == "darwin":
-        return f'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; {rm_file}'
-    return rm_file
+    return _claude_code_disconnect_command(platform or sys.platform)
 
 
 def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, Any]) -> Optional[str]:
@@ -653,13 +672,23 @@ def _clear_anthropic_auth() -> bool:
             oauth_file.unlink()
             cleared = True
     except Exception:
-        pass
+        _log.exception("disconnect anthropic OAuth file failed")
+        raise
     try:
         from hermes_cli.auth import clear_provider_auth
         cleared = clear_provider_auth("anthropic") or cleared
     except Exception:
-        pass
+        _log.exception("disconnect anthropic auth store failed")
+        raise
     return cleared
+
+
+def _disconnect_http_error(status_code: int, provider_name: str) -> HTTPException:
+    if status_code == 409:
+        detail = f"No stored credentials were removed for {provider_name}."
+    else:
+        detail = f"Failed to remove stored credentials for {provider_name}."
+    return HTTPException(status_code=status_code, detail=detail)
 
 
 @router.delete("/api/providers/oauth/{provider_id}")
@@ -677,19 +706,31 @@ async def disconnect_oauth_provider(provider_id: str, request: Request, profile:
         _reject_if_not_disconnectable(provider, _resolve_provider_status(provider_id, provider.get("status_fn")))
 
         if provider_id == "anthropic":
-            cleared = _clear_anthropic_auth()
+            try:
+                cleared = _clear_anthropic_auth()
+            except HTTPException:
+                raise
+            except Exception:
+                _log.exception("disconnect %s failed", provider_id)
+                raise _disconnect_http_error(500, provider["name"])
+            if not cleared:
+                raise _disconnect_http_error(409, provider["name"])
             _log.info("oauth/disconnect: %s", provider_id)
-            return {"ok": bool(cleared), "provider": provider_id}
+            return {"ok": True, "provider": provider_id}
         try:
             from hermes_cli.auth import clear_provider_auth, invalidate_nous_auth_status_cache
             cleared = clear_provider_auth(provider_id)
             if provider_id == "nous":
                 invalidate_nous_auth_status_cache()
+            if not cleared:
+                raise _disconnect_http_error(409, provider["name"])
             _log.info("oauth/disconnect: %s (cleared=%s)", provider_id, cleared)
-            return {"ok": bool(cleared), "provider": provider_id}
-        except Exception as e:
+            return {"ok": True, "provider": provider_id}
+        except HTTPException:
+            raise
+        except Exception:
             _log.exception("disconnect %s failed", provider_id)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise _disconnect_http_error(500, provider["name"])
 
     return await scoped_to_thread(profile, _run)
 

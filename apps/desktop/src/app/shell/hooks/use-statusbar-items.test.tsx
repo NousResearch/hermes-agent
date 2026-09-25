@@ -1,10 +1,17 @@
 import { renderHook } from '@testing-library/react'
 import type { WritableAtom } from 'nanostores'
-import type { ReactNode } from 'react'
+import { isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $connection, $currentCwd, $selectedStoredSessionId, $sessions } from '@/store/session'
+import {
+  $connection,
+  $currentCwd,
+  $selectedStoredSessionId,
+  $sessions,
+  $sessionStartedAt,
+  $tileSessionFocusStartedAt
+} from '@/store/session'
 import { $focusedTreePaneId as $focusedTreePaneIdMock } from '@/store/session-focus'
 import { $sessionTiles } from '@/store/session-states'
 
@@ -56,6 +63,8 @@ afterEach(() => {
   $focusedTreePaneId.set(null)
   $selectedStoredSessionId.set(null)
   $sessions.set([])
+  $sessionStartedAt.set(null)
+  $tileSessionFocusStartedAt.set(null)
 })
 
 describe('statusbar workspace menu — "Open containing folder"', () => {
@@ -86,5 +95,99 @@ describe('statusbar workspace menu — "Open containing folder"', () => {
 
     expect(workspaceMenuIds()).toContain('copy-workspace-path')
     expect(workspaceMenuIds()).not.toContain('reveal-workspace-finder')
+  })
+})
+
+const statusbarOptions = {
+  agentsOpen: false,
+  chatOpen: true,
+  commandCenterOpen: false,
+  extraLeftItems: [],
+  extraRightItems: [],
+  freshDraftReady: false,
+  gatewayState: 'ready' as const,
+  inferenceStatus: null,
+  openAgents: () => {},
+  openCommandCenterSection: () => {},
+  requestGateway: async () => undefined as never,
+  statusSnapshot: null,
+  toggleCommandCenter: () => {}
+}
+
+function sessionTimerItem() {
+  const { result } = renderHook(() => useStatusbarItems(statusbarOptions), { wrapper })
+
+  return result.current.statusbarItems.find(item => item.id === 'session-timer')
+}
+
+function timerSince(item: ReturnType<typeof sessionTimerItem>): number | null {
+  return isValidElement<{ since: number | null }>(item?.detail) ? item.detail.props.since : null
+}
+
+describe('statusbar session timer — focused since (#103123)', () => {
+  const dayOldRowSeconds = 1_700_000_000
+
+  it('uses the primary focus stamp, not the row age, and labels it so a long value is not a turn', () => {
+    $selectedStoredSessionId.set('primary')
+    $sessionStartedAt.set(4_000)
+    $sessions.set([{ id: 'primary', started_at: dayOldRowSeconds }] as never)
+    $focusedTreePaneId.set(null)
+
+    const item = sessionTimerItem()
+
+    expect(timerSince(item)).toBe(4_000)
+    expect(item?.label).toBe('Focused since')
+    expect(item?.title).toMatch(/not how long a turn/)
+  })
+
+  it('stamps tile focus instead of the day-old row, on the same labeled item', () => {
+    const before = Date.now()
+
+    $selectedStoredSessionId.set('primary')
+    $sessionStartedAt.set(4_000)
+    $sessions.set([{ id: 'tile-old', started_at: dayOldRowSeconds }] as never)
+    $focusedTreePaneId.set('session-tile:tile-old')
+
+    const item = sessionTimerItem()
+    const since = timerSince(item)
+
+    expect(since).toBeGreaterThanOrEqual(before)
+    expect(since).toBeLessThanOrEqual(Date.now())
+    expect(since).not.toBe(dayOldRowSeconds * 1000)
+    expect(since).not.toBe(4_000)
+    expect(item?.label).toBe('Focused since')
+    expect(item?.hidden).toBeFalsy()
+  })
+
+  it('re-stamps when the same tile is focused again after primary', () => {
+    const now = vi.spyOn(Date, 'now')
+
+    $selectedStoredSessionId.set('primary')
+    now.mockReturnValue(10_000)
+    $focusedTreePaneId.set('session-tile:tile-old')
+    expect($tileSessionFocusStartedAt.get()).toEqual({ since: 10_000, storedId: 'tile-old' })
+
+    now.mockReturnValue(20_000)
+    $focusedTreePaneId.set(null)
+    expect($tileSessionFocusStartedAt.get()?.since).toBe(10_000)
+
+    now.mockReturnValue(30_000)
+    $focusedTreePaneId.set('session-tile:tile-old')
+    expect($tileSessionFocusStartedAt.get()).toEqual({ since: 30_000, storedId: 'tile-old' })
+
+    now.mockRestore()
+  })
+
+  it('hides the item when a focused tile has no focus stamp', () => {
+    $selectedStoredSessionId.set('primary')
+    $sessionStartedAt.set(4_000)
+    $sessions.set([{ id: 'tile-old', started_at: dayOldRowSeconds }] as never)
+    $focusedTreePaneId.set('session-tile:tile-old')
+    $tileSessionFocusStartedAt.set(null)
+
+    const item = sessionTimerItem()
+
+    expect(timerSince(item)).toBeNull()
+    expect(item?.hidden).toBe(true)
   })
 })

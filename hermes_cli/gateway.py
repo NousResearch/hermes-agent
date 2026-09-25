@@ -4587,7 +4587,8 @@ from hermes_cli.gateway_setup_wizard import (  # noqa: E402,F401 — facade re-e
 _WATCHDOG_EXIT_REASONS = {
     "loop_liveness_watchdog": (
         "event loop stopped dispatching (housekeeping, cron and the kanban dispatcher froze); "
-        f"the liveness watchdog exited with code {GATEWAY_SERVICE_RESTART_EXIT_CODE} for the supervisor to restart it"
+        f"the liveness watchdog exited with code {GATEWAY_SERVICE_RESTART_EXIT_CODE} for the "
+        "supervisor to restart it (all-thread stacks: logs/gateway-loop-liveness.log)"
     ),
     "shutdown_watchdog": "shutdown drain wedged; the shutdown watchdog forced the exit (see logs/gateway-shutdown-watchdog.log)",
 }

@@ -3,14 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import pathlib
 import threading
 import time
 from unittest.mock import MagicMock, patch
 
 from gateway.shutdown_watchdog import (
+    get_loop_liveness_dump_path,
     loop_heartbeat_forever,
     start_loop_liveness_watchdog,
+    write_loop_liveness_dump,
 )
 
 def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
@@ -41,7 +45,12 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
 
     assert not handle.is_alive()
     critical.assert_called_once()
-    dump.assert_called_once_with(all_threads=True)
+    # Both dumps fire, in order: the forensic file dump (header + all-threads stacks appended to
+    # logs/gateway-loop-liveness.log) and then the stderr mirror the supervisor captures. stop()
+    # landed during the first one, so the hard exit stays disarmed.
+    assert [call.kwargs.get("all_threads") for call in dump.call_args_list] == [True, True]
+    assert "file" in dump.call_args_list[0].kwargs
+    assert "file" not in dump.call_args_list[1].kwargs
     assert exit_codes == []
 
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
@@ -287,6 +296,74 @@ def test_loop_liveness_watchdog_marks_runtime_degraded_before_restart():
     assert record["gateway_state"] == "degraded"
     assert record["exit_reason"] == "loop_liveness_watchdog"
     assert record["restart_requested"] is True
+
+
+def test_loop_liveness_watchdog_writes_forensic_dump_file(tmp_path, monkeypatch):
+    """A wedged loop must leave the all-threads dump ON DISK, not only on stderr.
+
+    Parity with the armed shutdown-watchdog path: on Windows a launcher with a hidden console
+    (``sh.Run ..., 0``) discards stderr, so a supervisor that cannot capture stdio would lose
+    the evidence entirely. Same fire path as production: real faulthandler, real file, real
+    ``logs/gateway-loop-liveness.log`` under HERMES_HOME; only ``os._exit`` is faked.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    dump_path = get_loop_liveness_dump_path()
+    assert dump_path == tmp_path / "logs" / "gateway-loop-liveness.log"
+    loop = MagicMock(spec=asyncio.AbstractEventLoop)
+    fired = threading.Event()
+    exit_codes = []
+
+    def fake_exit(code: int) -> None:
+        exit_codes.append(code)
+        fired.set()
+
+    started = time.monotonic()
+    with patch("gateway.shutdown_watchdog.os._exit", side_effect=fake_exit):
+        handle = start_loop_liveness_watchdog(
+            loop, probe_interval=0.01, probe_timeout=0.01, max_strikes=2
+        )
+        assert handle is not None
+        assert fired.wait(timeout=5.0), "watchdog did not reach its restart exit"
+        handle.stop()
+        handle.join(timeout=1.0)
+    elapsed = time.monotonic() - started
+
+    assert exit_codes == [75]
+    assert dump_path.is_file(), "the loop-liveness dump file was never created"
+    text = dump_path.read_text(encoding="utf-8")
+    header_line, _, dump_text = text.partition("\n")
+    header = json.loads(header_line)
+    assert header["event"] == "loop_liveness_watchdog"
+    assert header["pid"] == os.getpid()
+    assert header["strikes"] == 2
+    assert header["probe_interval_s"] == 0.01
+    assert header["probe_timeout_s"] == 0.01
+    assert header["fired_at"], "the header must carry the fire timestamp"
+    # Not a bare header: every thread's stack is in the file, followed by the end marker.
+    assert "--- faulthandler dump (all threads) ---" in text
+    assert "Current thread 0x" in dump_text or "Thread 0x" in dump_text
+    assert "--- end dump ---" in dump_text
+    # The forensic write must not stall the exit it precedes.
+    assert elapsed < 2.0, f"watchdog took {elapsed:.2f}s to reach its exit"
+
+
+def test_write_loop_liveness_dump_appends_and_never_raises(tmp_path):
+    """Appends (one header per fire, no clobbering) and swallows an unusable dump path."""
+    first = write_loop_liveness_dump(1, probe_interval_s=30.0, probe_timeout_s=10.0,
+                                     home=tmp_path)
+    second = write_loop_liveness_dump(3, probe_interval_s=30.0, probe_timeout_s=10.0,
+                                      home=tmp_path)
+    assert first == second
+    headers = [json.loads(line) for line in first.read_text(encoding="utf-8").splitlines()
+               if line.startswith("{")]
+    assert [h["strikes"] for h in headers] == [1, 3]
+
+    # A path that cannot be a directory (a file where logs/ should be) is swallowed, not raised.
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    assert write_loop_liveness_dump(1, probe_interval_s=1.0, probe_timeout_s=1.0,
+                                    home=blocked) == get_loop_liveness_dump_path(blocked)
+
 
 def test_heartbeat_write_does_not_block_the_loop_it_monitors():
     """The heartbeat write must not freeze the loop the watchdog is watching.

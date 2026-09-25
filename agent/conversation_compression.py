@@ -3733,10 +3733,16 @@ def _commit_compaction(
                     from hermes_cli.partial_compress import rejoin_compressed_head_and_tail
                     persisted = rejoin_compressed_head_and_tail(compressed, verbatim_tail)
                     tail_count += len(verbatim_tail)
+                from agent.conversation_compression_archive import coverage_for_commit
+                covered_ids, unresolved_held = coverage_for_commit(
+                    agent._session_db, agent.session_id,
+                    messages_before_compression if messages_before_compression is not None else messages,
+                    verbatim_tail)
                 agent._session_db.archive_and_compact(
                     agent.session_id, persisted, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
                     watermark=_held_watermark(agent, lease.watermark, messages, verbatim_tail),
                     lock_holder=lease.holder, tail_count=tail_count, carried_messages=carried_messages,
+                    covered_ids=covered_ids, unresolved_held=unresolved_held,
                 )
                 compressed = persisted
                 split_status = "in_place_committed"

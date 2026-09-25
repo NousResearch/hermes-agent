@@ -86,18 +86,16 @@ import {
   sidebarProfileForScope
 } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
+import { $projectScope, ALL_PROJECTS, exitProjectScope } from '@/store/project-scope'
 import {
   $activeProjectId,
   $newProjectDropPlacement,
   $projectOwnerBySessionId,
   $projects,
-  $projectScope,
   $projectTree,
   $projectTreeLoading,
   $reposScanning,
-  ALL_PROJECTS,
   enterProject,
-  exitProjectScope,
   followEnteredProjectCwd,
   openProjectCreate,
   refreshProjects,

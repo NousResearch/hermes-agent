@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import concurrent.futures as cf
 import copy
+import importlib.util
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -364,7 +365,10 @@ def test_tui_gateway_model_switch_routing(tmp_path: Path, request: pytest.Fixtur
             Switch("model-legacy --provider custom:legacy-host", "legacy"),
             Switch("alias-env", "alias"),
             Switch("model-alias --provider named-host", "named"),
-            Switch("builtin-label-lan", "alias", ok=False, keyless=True),
+            # PM keeps runtime extras out of the test env; without the SDK the switch is refused
+            # before any request leaves, so there is no egress to route.
+            *([Switch("builtin-label-lan", "alias", ok=False, keyless=True)]
+              if importlib.util.find_spec("anthropic") is not None else []),
             Switch("model-legacy --provider custom:legacy-host", "legacy"),
             Switch("model-pool --provider pool-host", "pool", ok=False),
             Switch(None, "pool"),

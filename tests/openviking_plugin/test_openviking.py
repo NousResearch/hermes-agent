@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 import plugins.memory.openviking as openviking_plugin
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 from plugins.memory.openviking import OpenVikingMemoryProvider
 
 
@@ -756,7 +756,7 @@ class TestOpenVikingAutoRecallPrefetch:
         ]
         assert all(headers.get("x-openviking-actor-peer", "") == peer for headers in normalized_headers)
         assert all(
-            headers.get("user-agent") == f"openviking-memory-hermes/{_HERMES_VERSION}"
+            headers.get("user-agent") == f"openviking-memory-hermes/{get_version_info().base_version}"
             for headers in normalized_headers
         )
         assert all(headers.get("x-openviking-account") == "acct" for headers in normalized_headers)

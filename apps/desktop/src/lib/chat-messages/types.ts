@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import { type BillingBlock, type PersistedTurn, type ToolLabel } from '@hermes/shared'
+import { type BillingBlock, type MessageCompletePayload, type PersistedTurn, type ToolLabel } from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
@@ -204,6 +204,9 @@ export type GatewayEventPayload = {
   // message.complete — signals the final text was already previewed via
   // interim_assistant_callback, so the UI can settle instead of duplicating.
   response_previewed?: boolean
+  // message.complete — a transform_llm_output hook rewrote the final text after streaming;
+  // it authoritatively replaces the current turn's streamed text even without a prefix match.
+  response_transformed?: MessageCompletePayload['response_transformed']
   persisted_turn?: PersistedTurn | null
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string

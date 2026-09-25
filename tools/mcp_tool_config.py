@@ -172,18 +172,18 @@ def _launcher_fallback(command: str, *, windows: Optional[bool] = None) -> str:
     ``uv``/``uvx``: GUI launches (the Electron desktop app, macOS LaunchAgents) inherit the bare
     ``/usr/bin:/bin:/usr/sbin:/sbin`` PATH, which carries none of uv's install locations, so a bare
     ``command: uvx`` MCP server fails with ENOENT at ``execvp`` from Desktop even though it works
-    from an interactive terminal (#37589). Probed in the order uv's own docs install it: the
-    Hermes-managed ``<home>/bin`` first, then the per-user installer's ``~/.local/bin``, then
-    Homebrew (Apple Silicon ``/opt``, Intel ``/usr/local``)."""
+    from an interactive terminal (#37589). The directory table lives in
+    ``hermes_platform.resolver.known_dirs.uv_tool_dirs`` (probed in the order uv's own docs install
+    it: the per-user installer first, then Homebrew); the Hermes-managed ``<home>/bin`` is probed
+    before it."""
     from hermes_constants import get_hermes_home
+    from hermes_platform.resolver.known_dirs import uv_tool_dirs
     home = os.path.expanduser("~")
     if command in {"uv", "uvx"}:
-        directories = [
-            os.path.join(str(get_hermes_home()), "bin"),
-            os.path.join(home, ".local", "bin"),  # uv's official installer
-            os.path.join(os.sep, "opt", "homebrew", "bin"),  # Apple Silicon Homebrew
-            os.path.join(os.sep, "usr", "local", "bin"),  # Intel Homebrew / from-source
-        ]
+        # expanduser: the table carries the ``~`` form so both this walk and
+        # locate_command's expandvars+expanduser agree on one spelling.
+        directories = [os.path.join(str(get_hermes_home()), "bin"),
+                       *(os.path.expanduser(d) for d in uv_tool_dirs())]
     else:
         from hermes_constants import iter_hermes_node_dirs
         # /usr/local/bin: canonical Node location (from-source Linux, Hermes Docker image, Intel

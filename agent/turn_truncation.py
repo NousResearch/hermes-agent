@@ -246,9 +246,7 @@ def _abort_reason(agent: Any, content: Any, has_tool_calls: bool) -> Optional[tu
     """``(vprint, user response, error)`` when continuation must NOT be attempted:
     thinking exhausted the budget (reasoning blocks with no visible text after them —
     ``content=None`` from non-<think> models is normal truncation), or a repetition loop
-    burned the budget on one fragment (reasoning stripped first). A length stop whose
-    only text is a reasoning side channel is unfinished thought: continuation owns it.
-    """
+    burned the budget on one fragment (reasoning stripped first)."""
     if has_tool_calls:
         return None
     if content and _THINK_TAG_RE.search(content) and not agent._has_content_after_think_block(content):

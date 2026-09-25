@@ -680,17 +680,26 @@ def _fetch_nano_gpt_account_usage(
     if isinstance(weekly, dict):
         used_pct = weekly.get("percentUsed")
         reset_at = _parse_dt(weekly.get("resetAt") / 1000.0 if _is_num(weekly.get("resetAt")) else weekly.get("resetAt"))
-        if _is_num(used_pct):
-            # percentUsed is a 0–1 fraction (56.1M/60M tokens → 0.934), not a percent.
-            used = float(used_pct) * 100.0 if float(used_pct) <= 1.0 else float(used_pct)
+        limits = sub.get("limits") if isinstance(sub.get("limits"), dict) else {}
+        allowance = limits.get("weeklyInputTokens")
+        if _is_num(weekly.get("used")) and _is_num(allowance) and float(allowance) > 0:
+            # The plan allowance is the true denominator: past the cap (allowOverage) the server
+            # clamps remaining to 0 — used/(used+remaining) would pin at exactly 100% — and
+            # percentUsed is a 0–1 fraction that stalls at 1.0. used/allowance still reads 100.03%.
             windows.append(AccountUsageWindow(
-                label="Weekly token limit", used_percent=used, reset_at=reset_at,
+                label="Weekly token limit",
+                used_percent=float(weekly["used"]) / float(allowance) * 100.0,
+                reset_at=reset_at,
             ))
         elif _is_num(weekly.get("used")) and _is_num(weekly.get("remaining")) and float(weekly["used"]) + float(weekly["remaining"]) > 0:
             total = float(weekly["used"]) + float(weekly["remaining"])
-            reset_at = _parse_dt(weekly.get("resetAt") / 1000.0 if _is_num(weekly.get("resetAt")) else weekly.get("resetAt"))
             windows.append(AccountUsageWindow(
                 label="Weekly token limit", used_percent=float(weekly["used"]) / total * 100.0, reset_at=reset_at,
+            ))
+        elif _is_num(used_pct):
+            # percentUsed is a 0–1 fraction (56.1M/60M tokens → 0.934), never a percent.
+            windows.append(AccountUsageWindow(
+                label="Weekly token limit", used_percent=min(float(used_pct) * 100.0, 100.0), reset_at=reset_at,
             ))
     daily_images = sub.get("dailyImages")
     if isinstance(daily_images, dict) and _is_num(daily_images.get("percentUsed")):
@@ -699,8 +708,14 @@ def _fetch_nano_gpt_account_usage(
         if _is_num(used) and _is_num(remaining):
             # The allowance (used + remaining) is the natural unit; plans may vary it.
             label += f" ({int(float(used))}/{int(float(used) + float(remaining))})"
+        # percentUsed is a 0–1 fraction, not a percent — scale it (used/remaining preferred
+        # when present: it stays exact if the server ever reports >100% here).
+        if _is_num(used) and _is_num(remaining) and float(used) + float(remaining) > 0:
+            pct = float(used) / (float(used) + float(remaining)) * 100.0
+        else:
+            pct = min(float(daily_images["percentUsed"]) * 100.0, 100.0)
         windows.append(AccountUsageWindow(
-            label=label, used_percent=float(daily_images["percentUsed"]),
+            label=label, used_percent=pct,
             reset_at=_parse_dt(daily_images.get("resetAt") / 1000.0 if _is_num(daily_images.get("resetAt")) else daily_images.get("resetAt")),
         ))
 

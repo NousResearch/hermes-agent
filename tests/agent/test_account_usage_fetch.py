@@ -204,6 +204,48 @@ def test_fetch_account_usage_nano_gpt_scales_fraction_and_reads_balance(monkeypa
     assert "Balance: $27.30" in snapshot.details
 
 
+def test_fetch_account_usage_nano_gpt_over_quota_weekly_reads_over_100_percent(monkeypatch):
+    """Real payload 2026-09-25: 60,019,979 of 60,000,000 weekly tokens used —
+    percentUsed is the 0–1 fraction 1.0003. The old ``<= 1.0`` scale heuristic
+    flipped on it and rendered 100.03% as "1% used, 99% remaining". With allowOverage
+    the server clamps remaining to 0, so used/(used+remaining) stays authoritative
+    past the cap and percentUsed (stalled at 1.0) must clamp, not scale-by-magnitude."""
+
+    class _Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            return _Response({
+                "active": True,
+                "allowOverage": True,
+                "limits": {"weeklyInputTokens": 60_000_000, "dailyImages": 100},
+                "weeklyInputTokens": {"used": 60_019_979, "remaining": 0,
+                                      "percentUsed": 1.0003329833333334, "resetAt": 1_790_553_600_000},
+                "dailyImages": {"used": 37, "remaining": 63, "percentUsed": 0.37, "resetAt": 1_790_380_800_000},
+            })
+
+        def post(self, url, headers=None, json=None):
+            return _Response({"usd_balance": "20.56824493"})
+
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0, follow_redirects=False: _Client(),
+    )
+
+    snapshot = fetch_account_usage("nano-gpt", api_key="sk-nano-test")
+
+    assert snapshot is not None
+    weekly, images = snapshot.windows[0], snapshot.windows[1]
+    assert weekly.used_percent > 100  # overage visible, NOT flipped to 1.0%
+    assert images.used_percent == 37.0  # fraction scaled, NOT 0.37%
+    lines = render_account_usage_lines(snapshot)
+    assert any("0% remaining" in line for line in lines)  # renderer clamps the remaining side
+
+
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.resolve_runtime_provider",

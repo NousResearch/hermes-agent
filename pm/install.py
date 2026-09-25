@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 
 from pm import paths
-from pm.downloader import DownloadPaused, ProgressFn
+from pm.downloader import DownloadError, DownloadPaused, ProgressFn
 from pm.lock import Facts, Lockfile
 from pm.package import InstallError, Package, Runner, StatePackage, compose_env
 from pm.plugin_inputs import Candidates, Members, PluginInput, Selection, StagedUpdate
@@ -297,6 +297,42 @@ def _copy_verified_source(package, lockfile, copy_from, staged, version, target)
         raise InstallError(package.name, "copied bytes do not match the bundled source")
 
 
+def _repin_retired_artifacts(package, lockfile, version, target) -> bool:
+    """Re-pin artifacts whose pinned archive the supplier has retired.
+
+    Rolling suppliers retire archives under a pin that is still current: BtbN
+    prunes its dated autobuild tags on a short retention window, and the Termux
+    pool retires rows. Only the retired build is replaced -- never the version
+    or the target (see ``Package.fetch_url``) -- and only when the live index
+    advertises a different archive for the same pin. Hashing follows the same
+    rules as ``pm update``'s re-pin. Returns True when the lockfile now pins
+    fresh archives and the caller may retry.
+    """
+    try:
+        urls = package.fetch_urls(version, target)
+    except Exception:
+        return False  # no advertised replacement: keep the original failure
+    current = lockfile.artifacts(package.name, target)
+    if not urls or urls == [row["url"] for row in current]:
+        return False
+    from pm.store import hash_url
+
+    known = {row["url"]: row["sha256"] for row in current}
+    pinned = []
+    try:
+        for url in urls:
+            digest = known.get(url) or package.known_sha256(version, url) or hash_url(url)
+            pinned.append({"url": url, "sha256": digest})
+        table = lockfile.pinned_artifacts(package.name)
+        table[target] = pinned[0] if len(pinned) == 1 else pinned
+        lockfile.set_pin(package.name, version, table)
+        lockfile.save()
+    except Exception:
+        return False  # hashing or publication failed: keep the original failure
+    LOG.info("repair: %s re-pinned retired archives for %s %s", package.name, version, target)
+    return True
+
+
 def _log_repair(package, previous, version, artifacts) -> None:
     """Work item 6: replacing an ESTABLISHED fact is a repair — log it,
     no transaction system, no receipt file."""
@@ -364,9 +400,23 @@ def _install(
                 if copy_from is not None:
                     _copy_verified_source(package, lockfile, copy_from, staged, version, target)
                 else:
-                    staged = _prepare_artifacts(package, store, scratch, artifacts, version, target,
-                                                progress=progress, pause_event=pause_event,
-                                                download_progress=download_progress)
+                    try:
+                        staged = _prepare_artifacts(package, store, scratch, artifacts, version, target,
+                                                    progress=progress, pause_event=pause_event,
+                                                    download_progress=download_progress)
+                    except (InstallError, DownloadPaused):
+                        raise
+                    except DownloadError:
+                        # The pinned archive may have been retired under a pin
+                        # that is still current. Re-pin the retired build (same
+                        # version, same target) and retry the fetch once.
+                        if not _repin_retired_artifacts(package, lockfile, version, target):
+                            raise
+                        artifacts = lockfile.artifacts(package.name, target)
+                        pin = json.dumps({"target": target, "sha256": [a["sha256"] for a in artifacts]})
+                        staged = _prepare_artifacts(package, store, scratch, artifacts, version, target,
+                                                    progress=progress, pause_event=pause_event,
+                                                    download_progress=download_progress)
                 if pause_event is not None and pause_event.is_set():
                     raise DownloadPaused("install paused")
                 if progress is not None:

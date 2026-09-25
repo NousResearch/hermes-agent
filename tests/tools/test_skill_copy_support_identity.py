@@ -20,6 +20,11 @@ def test_skill_view_refuses_support_drift_but_preserves_explicit_selection(tmp_p
         path.parent.mkdir(parents=True)
         path.write_text("same", encoding="utf-8")
 
+    def no_whole_support_read(path):
+        raise AssertionError("copy identity must stream files, not read_bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", no_whole_support_read)
+
     def view(name="demo"):
         return json.loads(skill_view(name, preprocess=False))
 
@@ -60,14 +65,14 @@ def test_legacy_copy_and_unreadable_support_fail_closed(tmp_path, monkeypatch):
     support = package / "helper.txt"
     support.write_text("additional content", encoding="utf-8")
     assert json.loads(skill_view("demo", preprocess=False))["success"] is False
-    real_read = Path.read_bytes
+    real_read = Path.open
 
-    def unreadable(path):
+    def unreadable(path, *args, **kwargs):
         if path == support:
             raise PermissionError("fixture denies this support file")
-        return real_read(path)
+        return real_read(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    monkeypatch.setattr(Path, "open", unreadable)
     result = json.loads(skill_view("demo", preprocess=False))
     assert result["success"] is False
     assert "Ambiguous" in result["error"]

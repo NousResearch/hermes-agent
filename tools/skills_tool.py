@@ -492,7 +492,11 @@ def _skill_copy_content(skill_md: Path) -> dict:
     """Compare package content, not generated artifacts or a legacy flat file's siblings."""
     import stat
 
-    content = {"SKILL.md": hashlib.sha256(skill_md.read_bytes()).digest()}
+    def digest(path):
+        with path.open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").digest()
+
+    content = {"SKILL.md": digest(skill_md)}
     if skill_md.name != "SKILL.md":
         return content
 
@@ -511,7 +515,7 @@ def _skill_copy_content(skill_md: Path) -> dict:
             path = Path(directory) / name
             if not stat.S_ISREG(path.stat().st_mode):
                 raise OSError("Cannot establish skill-copy identity for a non-regular file")
-            content[path.relative_to(skill_md.parent).as_posix()] = hashlib.sha256(path.read_bytes()).digest()
+            content[path.relative_to(skill_md.parent).as_posix()] = digest(path)
     return content
 
 

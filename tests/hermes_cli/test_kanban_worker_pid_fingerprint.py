@@ -7,7 +7,10 @@ must require the spawn-time start fingerprint to match, never bare PID existence
 
 import os
 import signal
+import subprocess
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -38,6 +41,104 @@ def _claimed_running(conn, *, pid: int, started_at, max_runtime=None) -> str:
         conn.execute("UPDATE task_runs SET started_at = ? WHERE id = (SELECT current_run_id FROM tasks WHERE id = ?)",
                      (old, tid))
     return tid
+
+
+def test_worker_registration_survives_dispatcher_exit_and_fences_stale_runs(board, tmp_path, monkeypatch):
+    conn = board
+    tid = kb.create_task(conn, title="orphan window", assignee="worker")
+    claimed = kb.claim_task(conn, tid)
+    marker = tmp_path / "model-entered"
+    release = tmp_path / "release"
+    env = os.environ.copy()
+    env.pop("HERMES_DELEGATED_CHILD_CONTEXT", None)
+    env.update(HERMES_KANBAN_DB=str(tmp_path / "kanban.db"),
+               HERMES_KANBAN_TASK=tid, HERMES_KANBAN_RUN_ID=str(claimed.current_run_id),
+               HERMES_KANBAN_CLAIM_LOCK=claimed.claim_lock,
+               MODEL_MARKER=str(marker), MODEL_RELEASE=str(release))
+    root = Path(__file__).resolve().parents[2]
+    # Invoke the -q boundary in a separate interpreter: no direct call to the PID helper here.
+    worker_code = """
+import os
+import time
+from pathlib import Path
+import cli
+from hermes_cli.cli_single_query import _run_single_query_mode
+
+cli._should_seed_interactive = lambda *args: True
+cli._collect_query_images = lambda *args: ('job', [])
+class Worker:
+    def run(self):
+        Path(os.environ['MODEL_MARKER']).write_text(str(os.getpid()))
+        while not Path(os.environ['MODEL_RELEASE']).exists():
+            time.sleep(0.05)
+_run_single_query_mode(Worker(), 'job', None, False, True)
+"""
+    def launch():
+        return subprocess.Popen([sys.executable, "-c", worker_code], cwd=root, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    worker = launch()
+    try:
+        deadline = time.monotonic() + 25
+        while not marker.exists() and worker.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert marker.exists(), f"worker did not enter the model boundary (rc={worker.poll()})"
+        child_pid = int(marker.read_text())
+        registered = kb.get_task(conn, tid)
+        assert registered.worker_pid == child_pid
+        fingerprint = conn.execute("SELECT worker_started_at FROM tasks WHERE id = ?",
+                                   (tid,)).fetchone()[0]
+        assert fingerprint == kbd._process_fingerprint(child_pid)
+        run = conn.execute("SELECT worker_pid, worker_started_at FROM task_runs WHERE id = ?",
+                           (claimed.current_run_id,)).fetchone()
+        assert (run["worker_pid"], run["worker_started_at"]) == (child_pid, fingerprint)
+        # The original dispatcher has gone; a fresh connection must not spawn the live worker twice.
+        conn.execute("UPDATE tasks SET claim_expires = ? WHERE id = ?", (int(time.time()) - 3600, tid))
+        monkeypatch.setattr(kbd, "_profile_exists_fn", lambda: None)
+        with kbc.connect(tmp_path / "kanban.db") as restarted:
+            spawns = []
+            tick = kbd.dispatch_once(restarted, spawn_fn=lambda *args: spawns.append(args),
+                                     max_in_progress=20, max_spawn=1)
+        assert tick.spawned == [] and spawns == []
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        release.touch()
+        try:
+            worker.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            worker.kill()
+            worker.communicate()
+    assert worker.returncode == 0
+    assert len([e for e in kb.list_events(conn, tid) if e.kind == "spawned"]) == 1
+    # The same environment after a successor claims the card must stop before model work.
+    marker.unlink()
+    conn.execute("UPDATE tasks SET claim_lock = ?, current_run_id = current_run_id + 1, "
+                 "worker_pid = NULL WHERE id = ?", ("superseded", tid))
+    stale = launch()
+    try:
+        stale.communicate(timeout=25)
+    except subprocess.TimeoutExpired:
+        stale.kill()
+        stale.communicate()
+        pytest.fail("superseded worker did not exit")
+    assert stale.returncode != 0 and not marker.exists()
+
+
+def test_registration_during_reclaim_selection_prevents_duplicate(board, monkeypatch):
+    conn = board
+    tid = kb.create_task(conn, title="late registration", assignee="worker")
+    claimed = kb.claim_task(conn, tid)
+    conn.execute("UPDATE tasks SET claim_expires = ? WHERE id = ?", (int(time.time()) - 3600, tid))
+
+    def register_during_reclaim(*args, **kwargs):
+        assert kbd._set_worker_pid(conn, tid, os.getpid(),
+                                   expected_run_id=claimed.current_run_id, claim_lock=claimed.claim_lock)
+        return {"status": "not_started"}
+
+    monkeypatch.setattr(kb, "_terminate_reclaimed_worker", register_during_reclaim)
+    assert kb.release_stale_claims(conn) == 0
+    assert kb.get_task(conn, tid).worker_pid == os.getpid()
+    assert kb.get_task(conn, tid).status == "running"
 
 
 def test_recycled_pid_is_reclaimed_without_being_signalled(board):

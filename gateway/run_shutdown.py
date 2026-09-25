@@ -965,6 +965,8 @@ class GatewayShutdownMixin:
             if getattr(self, "session_store", None) is not None:
                 await self.async_session_store._ensure_loaded()
                 entry = self.session_store._entries.get(session_key)
+                if entry is not None and not entry.active_turn_token:
+                    return None
                 source = getattr(entry, "origin", None) if entry else None
         except Exception as e:
             logger.debug("Failed to load session origin for shutdown notification %s: %s", session_key, e)

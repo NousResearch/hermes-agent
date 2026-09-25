@@ -37,6 +37,48 @@ def _make_agent(**overrides):
     return SimpleNamespace(**base)
 
 
+@pytest.mark.parametrize("tools,skill_index", [([], ""), (["skill_view", "read_file"], "- hermes-agent: runtime help")])
+def test_white_label_prompt_omits_four_sections_but_keeps_skills(monkeypatch, tools, skill_index):
+    from agent import system_prompt
+
+    monkeypatch.setattr(system_prompt, "_skills_prompt", lambda _agent: skill_index)
+    agent = _make_agent(
+        _white_label_prompt=True, valid_tool_names=tools,
+        model="test-model", provider="test-provider", platform="cli",
+    )
+    with (
+        patch("agent.prompt_builder.load_soul_md", return_value="Custom assistant"),
+        patch("agent.prompt_builder.build_environment_hints", return_value=""),
+        patch("agent.prompt_builder.build_context_files_prompt", return_value=""),
+        patch("agent.coding_context.coding_system_prompt_parts", return_value=([], [], [])),
+    ):
+        parts = build_system_prompt_parts(agent)
+    rendered = "\n\n".join(parts.values())
+    assert "Custom assistant" in rendered
+    assert skill_index in rendered
+    assert "You run on Hermes Agent" not in rendered
+    assert "Active Hermes profile:" not in rendered
+    assert "Model: test-model" not in rendered
+    assert "Provider: test-provider" not in rendered
+    assert "## Mid-turn user steering" not in rendered
+    assert "Platform: cli" in rendered
+
+
+def test_default_prompt_retains_four_sections_with_skill_pointer(monkeypatch):
+    from agent import system_prompt
+
+    monkeypatch.setattr(system_prompt, "_skills_prompt", lambda _agent: "- hermes-agent: runtime help")
+    agent = _make_agent(
+        valid_tool_names=["skill_view", "read_file"], model="test-model", provider="test-provider",
+    )
+    with patch("agent.prompt_builder.build_environment_hints", return_value=""):
+        prompt = build_system_prompt(agent)
+    assert "load it with skill_view(name='hermes-agent')" in prompt
+    assert "Active Hermes profile:" in prompt
+    assert "Model: test-model\nProvider: test-provider" in prompt
+    assert "## Mid-turn user steering" in prompt
+
+
 def _captured_context_cwd(agent):
     """The cwd build_system_prompt_parts hands to build_context_files_prompt."""
     captured = {}

@@ -7,7 +7,9 @@ late-binding seam so ``monkeypatch.setattr(web_server_cron, ...)`` keeps working
 
 import asyncio
 import functools
+import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -21,6 +23,8 @@ from hermes_cli.web_server_cron import (
 )
 from hermes_cli.web_models import AutomationBlueprintInstantiate, CronJobCreate, CronJobUpdate
 from hermes_cli.web_routers._common import log as _log
+from hermes_time import get_timezone as _get_timezone
+from hermes_constants import get_hermes_home as _get_hermes_home
 
 router = APIRouter()
 
@@ -149,6 +153,175 @@ def _get_cron_job_sync(job_id: str, profile: Optional[str] = None):
     return _found(_call_cron_for_profile(_job_profile(job_id, profile), "get_job", job_id))
 
 
+_CRON_OUTPUT_FILENAME_FORMAT = "%Y-%m-%d_%H-%M-%S"
+
+
+def _cron_output_runs_dir(profile: Optional[str], job_id: str) -> Path:
+    """Output docs live under the job's home — resolve it even without a hint."""
+    if profile:
+        try:
+            _, profile_home = _cron_profile_home(profile)
+        except Exception:
+            profile_home = _get_hermes_home()
+    else:
+        profile_home = _get_hermes_home()
+    return Path(profile_home) / "cron" / "output" / job_id
+
+
+def _cron_output_run_timestamp(path: Path) -> Optional[float]:
+    """Epoch seconds for an output filename's wall time.
+
+    save_job_output writes the stem with hermes_time.now() — the configured
+    IANA timezone (HERMES_TIMEZONE / config), falling back to server-local.
+    Read it back with that same ZONE, not a fixed offset snapshot of today's
+    local offset: a snapshot is wrong when the configured zone differs from
+    the server's, and off by an hour for a historical file across a DST
+    transition. With no configured zone, astimezone() on the naive datetime
+    resolves the offset in effect on the filename's own date.
+    """
+    try:
+        naive = datetime.strptime(path.stem, _CRON_OUTPUT_FILENAME_FORMAT)
+    except ValueError:
+        return None
+    tz = _get_timezone()
+    if tz is not None:
+        return naive.replace(tzinfo=tz).timestamp()
+    return naive.astimezone().timestamp()
+
+
+def _cron_output_run_preview(path: Path, max_chars: int = 180) -> str:
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    preview = re.sub(r"\s+", " ", raw).strip()
+    if len(preview) <= max_chars:
+        return preview
+    return preview[: max_chars - 1].rstrip() + "…"
+
+
+def _cron_job_last_run_timestamp(job: Optional[Dict[str, Any]]) -> Optional[float]:
+    if not isinstance(job, dict):
+        return None
+    raw = job.get("last_run_at")
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _cron_output_status_label(job: Optional[Dict[str, Any]]) -> str:
+    if not isinstance(job, dict):
+        return ""
+    status = str(job.get("last_status") or "").strip()
+    if not status:
+        return ""
+    return status.replace("_", " ").upper()
+
+
+def _list_cron_output_runs(
+    job: Optional[Dict[str, Any]],
+    canonical_job_id: str,
+    profile: Optional[str],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """SessionDB-less run history for jobs that never create agent sessions.
+
+    Script-only (no_agent) jobs deliberately skip SessionDB (cron/scheduler.run_job),
+    so their completed runs are invisible to the run-history endpoint. Their
+    output docs — one .md per fire under cron/output/<job_id>/ — are the only
+    per-run record. Rows mirror /api/sessions shape with source='cron_output'
+    so the frontend reuses SessionInfo; ids use a cron_output: prefix that can
+    never collide with SessionDB cron_{job_id}_* session ids.
+    """
+    output_dir = _cron_output_runs_dir(profile, canonical_job_id)
+    try:
+        files = sorted(
+            (path for path in output_dir.glob("*.md") if path.is_file()),
+            key=lambda path: path.name,
+            reverse=True,
+        )
+    except OSError:
+        files = []
+
+    latest_ts = _cron_job_last_run_timestamp(job)
+    latest_status = _cron_output_status_label(job)
+    runs: List[Dict[str, Any]] = []
+
+    for index, path in enumerate(files[:limit]):
+        started_at = _cron_output_run_timestamp(path)
+        if started_at is None:
+            try:
+                started_at = path.stat().st_mtime
+            except OSError:
+                started_at = 0.0
+        preview = _cron_output_run_preview(path)
+        title = preview or "Script-only run"
+        if (
+            index == 0
+            and latest_status
+            and (latest_ts is None or abs(latest_ts - started_at) <= 120)
+        ):
+            title = f"{latest_status} · {title}"
+        runs.append({
+            "id": f"cron_output:{canonical_job_id}:{path.stem}",
+            "title": title,
+            "preview": preview or None,
+            "source": "cron_output",
+            "started_at": started_at,
+            "last_active": started_at,
+            "ended_at": started_at,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "message_count": 0,
+            "tool_call_count": 0,
+            "model": None,
+            "cwd": None,
+            "archived": False,
+            "is_active": False,
+        })
+
+    if runs:
+        return runs
+
+    # No output docs survived (pruned or never written) but the job HAS run:
+    # surface one metadata-only row from last_run_at/last_status instead of the
+    # bare "No runs" the issue reports.
+    if latest_ts is None:
+        return []
+
+    preview = ""
+    if isinstance(job, dict):
+        preview = str(job.get("last_error") or "").strip()
+    title = _cron_output_status_label(job) or "Script-only run"
+    if preview:
+        title = f"{title} · {preview}"
+    return [{
+        "id": f"cron_output:{canonical_job_id}:latest",
+        "title": title,
+        "preview": preview or None,
+        "source": "cron_output",
+        "started_at": latest_ts,
+        "last_active": latest_ts,
+        "ended_at": latest_ts,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "message_count": 0,
+        "tool_call_count": 0,
+        "model": None,
+        "cwd": None,
+        "archived": False,
+        "is_active": False,
+    }]
+
+
 def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
     """Run sessions produced by a cron job, newest first.
 
@@ -157,10 +330,13 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     this job. Same row shape as ``/api/sessions`` so the frontend reuses
     SessionInfo. Backed by ``SessionDB.list_cron_job_runs`` — a bounded id-range
     scan, so cost scales with the requested window, not total cron history.
+    Script-only (no_agent) jobs never write sessions: their history falls back
+    to per-fire output docs (``_list_cron_output_runs``).
     """
     selected = _job_owner_profile(job_id, profile)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
     canonical = job_id
+    job = None
     if selected:
         job = _call_cron_for_profile(selected, "get_job", job_id)
         if job and job.get("id"):
@@ -174,6 +350,8 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     db = _open_session_db_for_profile(selected, read_only=True)
     try:
         runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
+        if not runs:
+            return {"runs": _list_cron_output_runs(job, canonical, selected, limit_n), "limit": limit_n}
         now = time.time()
         for s in runs:
             s["is_active"] = s.get("ended_at") is None and (now - s.get("last_active", s.get("started_at", 0))) < 300

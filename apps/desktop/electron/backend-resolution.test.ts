@@ -5,8 +5,8 @@ import { test } from 'vitest'
 import {
   isIgnoreExisting,
   postBootstrapResolveOptions,
-  selectBackendRung,
-  type BackendResolutionInput
+  type BackendResolutionInput,
+  selectBackendRung
 } from './backend-resolution'
 
 function discovered(overrides: Partial<BackendResolutionInput> = {}): BackendResolutionInput {

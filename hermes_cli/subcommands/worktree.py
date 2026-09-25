@@ -17,9 +17,21 @@ def build_worktree_parser(subparsers) -> None:
         "list", aliases=["ls", "audit"],
         help="Classify every tree: age, size, verdict, reason (default action)")
     worktree_list.add_argument("--repo", help="Repo root (default: current repo)")
+    worktree_list.add_argument(
+        "--json", action="store_true",
+        help="Machine-readable audit output (trees, external trees, branches)")
+    worktree_list.add_argument(
+        "--older-than", type=float, metavar="DAYS", dest="older_than",
+        help="Treat reapable trees younger than DAYS as keep")
     worktree_prune = worktree_subparsers.add_parser(
         "prune", help="Remove safe trees and delete fully-merged local branches")
     worktree_prune.add_argument("--repo", help="Repo root (default: current repo)")
+    worktree_prune.add_argument(
+        "--json", action="store_true",
+        help="Machine-readable result (actions taken/planned, preserved trees)")
+    worktree_prune.add_argument(
+        "--older-than", type=float, metavar="DAYS", dest="older_than",
+        help="Only reap trees idle for at least DAYS days (safety gates still apply)")
     worktree_prune.add_argument(
         "--dry-run", action="store_true", help="Show the plan without changing anything")
     worktree_prune.add_argument(

@@ -1,23 +1,26 @@
 """Profile-local durable audit ledger for cron execution attempts.
 
 The ledger records what is known about each attempt; it is not a retry queue. Interrupted attempts
-become ``unknown`` only after their exact owner process is proved gone. Terminal states are
-immutable. Also hosts the SQLite ledger helpers shared with ``cron.incidents`` / ``cron.notepad``.
+become ``unknown`` only after their owner process is proved gone — a start-time reading that fails
+to match the claim-time fingerprint is not proof of death. Terminal states are immutable.
 """
 
 from __future__ import annotations
 
+import math
 import os
 import sqlite3
 import threading
 import time
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
+from cron.constants import CLAIM_TTL_INACTIVITY_HEADROOM
 
 # Optional test override. Production resolves the path at transaction time so dashboard operations
 # that temporarily enter another profile cannot leak that profile's records into the import-time
@@ -25,61 +28,30 @@ from hermes_time import now as _hermes_now
 EXECUTIONS_FILE: Optional[Path] = None
 MAX_TERMINAL_EXECUTIONS = 1000
 HANDOFF_ADOPTION_GRACE_SECONDS = 30.0
+# Floor for the live-owner stale-claim bound (#115692); see _live_owner_stale_after_seconds.
+LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS = 7200.0
 _TERMINAL_STATES = ("completed", "failed", "unknown")
 _lock = threading.RLock()
 _PROCESS_ID = uuid.uuid4().hex
 
 
-# --- shared SQLite ledger plumbing --------------------------------------------------------------
-
-def open_ledger(path: Path) -> sqlite3.Connection:
-    """Open a profile-local ledger DB, creating its ``cron/`` dir with the store's permissions."""
-    from cron.jobs import _ensure_cron_dir
-
-    _ensure_cron_dir(path.parent)
-    return sqlite3.connect(path, timeout=5)
-
-
-def prepare_ledger(
-    conn: sqlite3.Connection, *, db_label: str, synchronous_full: bool = True
-) -> None:
-    """Row factory + busy timeout + WAL (with fallback) + optional ``synchronous=FULL``."""
-    from hermes_state_wal import apply_wal_with_fallback
-
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA busy_timeout=5000")
-    apply_wal_with_fallback(conn, db_label=db_label)
-    if synchronous_full:
-        conn.execute("PRAGMA synchronous=FULL")
-
-
-@contextmanager
-def ledger_transaction(
-    lock: threading.RLock,
-    connect: Callable[[], sqlite3.Connection],
-    initialize_schema: Callable[[sqlite3.Connection], None],
-) -> Iterator[sqlite3.Connection]:
-    """Open a connection, commit/rollback on exit, always close. ``sqlite3.Connection``'s own
-    context manager does NOT close (leaks WAL/SHM fds until GC); schema init runs inside the
-    ``try`` so a PRAGMA/DDL failure after ``connect()`` still closes."""
-    with lock:
-        conn = connect()
-        try:
-            initialize_schema(conn)
-            with conn:
-                yield conn
-        finally:
-            conn.close()
-
-
 # --- executions ledger --------------------------------------------------------------------------
 
 def _connect() -> sqlite3.Connection:
-    return open_ledger(EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db"))
+    # Late imports: a scheduler daemon that outlives an on-disk upgrade already has the OLD
+    # ``hermes_cli.sqlite_util`` / ``cron.jobs`` cached, so new names must be resolved at call time,
+    # not at import time (the guarantee cron/ledger.py used to carry, see e24c8499).
+    from cron.jobs import _ensure_cron_dir
+    from hermes_cli.sqlite_util import open_db
+
+    path = EXECUTIONS_FILE or (get_hermes_home().resolve() / "cron" / "executions.db")
+    _ensure_cron_dir(path.parent)
+    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
 
 
 def _initialize_schema(conn: sqlite3.Connection) -> None:
-    prepare_ledger(conn, db_label="cron/executions.db")
+    from hermes_cli.sqlite_util import add_column_if_missing
+
     conn.execute(
         """CREATE TABLE IF NOT EXISTS executions (
              id TEXT PRIMARY KEY,
@@ -98,8 +70,6 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
              error TEXT
            )"""
     )
-    from hermes_cli.sqlite_util import add_column_if_missing
-
     add_column_if_missing(
         conn, "executions", "handoff_pending",
         "handoff_pending INTEGER NOT NULL DEFAULT 0",
@@ -115,11 +85,19 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_executions_status_claimed "
         "ON executions(status, claimed_at DESC, id DESC)"
     )
+    add_column_if_missing(conn, "executions", "delivery_outcome", "delivery_outcome TEXT")
+    add_column_if_missing(conn, "executions", "scheduled_instant", "scheduled_instant TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_executions_occurrence "
+        "ON executions(job_id, scheduled_instant) WHERE status='completed'"
+    )
 
 
 @contextmanager
 def _transaction() -> Iterator[sqlite3.Connection]:
-    with ledger_transaction(_lock, _connect, _initialize_schema) as conn:
+    from hermes_cli.sqlite_util import transaction
+
+    with _lock, transaction(_connect()) as conn:
         yield conn
 
 
@@ -158,7 +136,38 @@ def _owner_is_live(pid: int, started_at: Optional[int]) -> bool:
     if started_at is None:
         return pid == os.getpid()
     current = _process_start_time(pid)
-    return current is not None and current == started_at
+    if current is None:
+        return True  # cannot compare -> cannot prove death; a misread must not rewrite state
+    # Drifted same-host readings (#117505) are not proof of death; a live misread is still
+    # bounded by the stale-claim sweep below.
+    from gateway.status import start_time_fingerprints_match
+    return start_time_fingerprints_match(started_at, current)
+
+
+def _live_owner_stale_after_seconds() -> Optional[float]:
+    """Age past which a claimed/running row with a LIVE owner is treated as wedged.
+
+    Derived from the existing knobs, never a bare wall-clock constant:
+    ``max(3 × HERMES_CRON_TIMEOUT, cron script timeout, 7200)``. Returns ``None`` (never reclaim
+    live owners — today's behaviour) when the inactivity timeout is 0/unlimited or not a finite
+    positive number: with no bound to derive from, fail closed.
+    """
+    from cron.scheduler import _cron_inactivity_seconds
+    from cron.scheduler_script import _get_script_timeout
+
+    inactivity = float(_cron_inactivity_seconds())
+    if not math.isfinite(inactivity) or inactivity <= 0:
+        return None
+    return max(
+        inactivity * CLAIM_TTL_INACTIVITY_HEADROOM,
+        float(_get_script_timeout()),
+        LIVE_OWNER_STALE_CLAIM_FLOOR_SECONDS,
+    )
+
+
+def _claim_age_seconds(claimed_at: str) -> float:
+    """Seconds since ``claimed_at`` (NOT NULL, always the aware ISO string from hermes_time.now)."""
+    return (_hermes_now() - datetime.fromisoformat(claimed_at)).total_seconds()
 
 
 def _prune_unlocked(conn: sqlite3.Connection) -> None:
@@ -172,8 +181,12 @@ def _prune_unlocked(conn: sqlite3.Connection) -> None:
     )
 
 
-def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
+def create_execution(
+    job_id: str, *, source: str, scheduled_instant: Optional[str] = None,
+) -> Dict[str, Any]:
     """Persist a claimed attempt before executor/provider dispatch."""
+    from cron.occurrences import scheduled_instant as canonical_instant
+
     now = _hermes_now().isoformat()
     execution_id = uuid.uuid4().hex
     pid = os.getpid()
@@ -181,14 +194,28 @@ def create_execution(job_id: str, *, source: str) -> Dict[str, Any]:
         conn.execute(
             """INSERT INTO executions
                (id, job_id, source, process_id, pid, process_started_at,
-                status, claimed_at)
-               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?)""",
+                status, claimed_at, scheduled_instant)
+               VALUES (?, ?, ?, ?, ?, ?, 'claimed', ?, ?)""",
             (execution_id, str(job_id), str(source), _PROCESS_ID, pid,
-             _process_start_time(pid), now),
+             _process_start_time(pid), now, canonical_instant(scheduled_instant)),
         )
         record = _fetch(conn, execution_id)
     _emit_execution_state(record)
     return record  # type: ignore[return-value]
+
+
+def set_execution_occurrence(execution_id: str, instant: Optional[str]) -> None:
+    """Bind the store-claimed snapshot before a provider hands it to a worker."""
+    from cron.occurrences import scheduled_instant
+
+    with _transaction() as conn:
+        cur = conn.execute(
+            "UPDATE executions SET scheduled_instant=? WHERE id=? AND status='claimed' "
+            "AND handoff_pending=0 AND process_id=? AND pid=?",
+            (scheduled_instant(instant), execution_id, _PROCESS_ID, os.getpid()),
+        )
+        if cur.rowcount != 1:
+            raise RuntimeError("Cron occurrence could not be bound before dispatch")
 
 
 def mark_execution_handoff_pending(execution_id: str) -> Optional[Dict[str, Any]]:
@@ -265,10 +292,10 @@ def finish_execution(
         cur = conn.execute(
             """UPDATE executions
                SET status=?, finished_at=?, error=?, handoff_pending=0,
-                   handoff_started_at=NULL
+                   handoff_started_at=NULL, delivery_outcome=?
                WHERE id=? AND status IN ('claimed','running')
                  AND process_id=? AND pid=?""",
-            (status, now, detail, execution_id, _PROCESS_ID, os.getpid()),
+            (status, now, detail, delivery_outcome, execution_id, _PROCESS_ID, os.getpid()),
         )
         if cur.rowcount != 1:
             return None
@@ -278,23 +305,54 @@ def finish_execution(
     return record
 
 
+_OWNER_GONE_REASON = (
+    "Scheduler restarted after this execution's owner exited before a durable "
+    "terminal state; whether side effects ran is unknown."
+)
+_OWNER_WEDGED_REASON = (
+    "Owner process is still alive but the claim outlived the derived stale bound; "
+    "treated as wedged (#115692). The process was not terminated; whether side effects "
+    "ran is unknown."
+)
+
+
 def recover_interrupted_executions() -> int:
-    """Mark provably abandoned attempts unknown without scheduling retries."""
+    """Mark abandoned attempts unknown without scheduling retries: rows whose owner is provably
+    dead, plus rows whose live owner holds a claim older than the derived stale bound (the
+    process is not killed)."""
     now = _hermes_now().isoformat()
     changed = 0
     recovered: List[Dict[str, Any]] = []
+    # Derived on the first live-owned row only: the bound reads config, and the idle gateway
+    # tick must stay config-free (tests/cron/test_idle_tick_config_skip.py).
+    stale_after: Optional[float] = None
+    stale_after_resolved = False
     with _transaction() as conn:
         rows = conn.execute(
             """SELECT id, status, process_id, pid, process_started_at,
-                      handoff_pending, handoff_started_at
+                      handoff_pending, handoff_started_at, claimed_at
                FROM executions
                WHERE status IN ('claimed','running')"""
         ).fetchall()
         for row in rows:
             if row["process_id"] == _PROCESS_ID:
                 continue
+            reason = _OWNER_GONE_REASON
             if _owner_is_live(int(row["pid"]), row["process_started_at"]):
-                continue
+                # A live owner is normally a legitimately running job. A worker permanently
+                # deadlocked (e.g. futex_wait behind a route/proxy flip, #115692) also passes
+                # this check, so a claim older than the derived bound is treated as wedged
+                # and released — the external-worker wait loop polls this ledger for a
+                # terminal status, so the job can fire again. The wedged worker PROCESS is
+                # NOT terminated here (leaked until host restart); rows owned by this process
+                # (process_id == _PROCESS_ID, in-process runs) are skipped above and remain
+                # out of scope.
+                if not stale_after_resolved:
+                    stale_after = _live_owner_stale_after_seconds()
+                    stale_after_resolved = True
+                if stale_after is None or _claim_age_seconds(row["claimed_at"]) <= stale_after:
+                    continue
+                reason = _OWNER_WEDGED_REASON
             handoff_started_at = row["handoff_started_at"]
             if (
                 row["handoff_pending"]
@@ -310,10 +368,7 @@ def recover_interrupted_executions() -> int:
                    WHERE id=? AND status=? AND process_id=? AND pid=?
                      AND handoff_pending=?
                      AND handoff_started_at IS ?""",
-                (now,
-                 "Scheduler restarted after this execution's owner exited before a durable "
-                 "terminal state; whether side effects ran is unknown.",
-                 row["id"], row["status"], row["process_id"], row["pid"],
+                (now, reason, row["id"], row["status"], row["process_id"], row["pid"],
                  row["handoff_pending"], row["handoff_started_at"]),
             )
             changed += cur.rowcount

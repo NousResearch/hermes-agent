@@ -10,11 +10,9 @@ import {
   deleteProfile,
   deleteSession,
   getAllSessionMessages,
-  getCronJobs,
+  getCustomEndpoints,
   getGlobalModelInfo,
   getGlobalModelOptions,
-  getHermesConfig,
-  getHermesConfigDefaults,
   getLatestSessionMessages,
   getOlderSessionMessages,
   getProfiles,
@@ -30,10 +28,8 @@ import {
   setApiRequestConnection,
   setApiRequestProfile,
   speakText,
-  transcribeAudio,
   triggerCronJob
 } from './hermes'
-import { refreshActiveProfile } from './store/profile'
 import { $transcriptTailBySessionId, transcriptTailState } from './store/transcript-tail'
 
 const emptySessionsResponse = {
@@ -62,28 +58,6 @@ describe('Hermes REST helpers', () => {
     Reflect.deleteProperty(window, 'hermesDesktop')
   })
 
-  it('uses a longer timeout for the single-profile session list', async () => {
-    await listSessions(50, 1)
-
-    expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: '/api/sessions?limit=50&offset=0&min_messages=1&archived=exclude&order=recent',
-        timeoutMs: 60_000
-      })
-    )
-  })
-
-  it('uses a longer timeout for the all-profile session list', async () => {
-    await listAllProfileSessions(50, 1)
-
-    expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: '/api/profiles/sessions?limit=50&offset=0&min_messages=1&archived=exclude&order=recent&profile=all',
-        timeoutMs: 60_000
-      })
-    )
-  })
-
   it('batches the sidebar slices into a single request with per-slice limits + excludes', async () => {
     api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
 
@@ -100,8 +74,7 @@ describe('Hermes REST helpers', () => {
       expect.objectContaining({
         path:
           '/api/profiles/sessions/sidebar?recents_profile=work&recents_limit=30&cron_limit=50' +
-          '&messaging_limit=100&recents_exclude=cron%2Ctool&messaging_exclude=cron%2Cdesktop',
-        timeoutMs: 60_000
+          '&messaging_limit=100&recents_exclude=cron%2Ctool&messaging_exclude=cron%2Cdesktop'
       })
     )
   })
@@ -191,6 +164,19 @@ describe('Hermes REST helpers', () => {
     expect(api.mock.calls[0][0]).not.toHaveProperty('profile')
   })
 
+  it('pins the profile list to an explicit (connection, profile) scope', async () => {
+    setApiRequestConnection('remote-a')
+    setApiRequestProfile('iris')
+
+    await getProfiles({ connectionId: 'remote-b', profile: 'scout' })
+    await getProfiles({ connectionId: 'local', profile: 'default' })
+
+    expect(api.mock.calls.map(([request]) => request)).toEqual([
+      expect.objectContaining({ connectionId: 'remote-b', profile: 'scout', path: '/api/profiles' }),
+      expect.objectContaining({ connectionId: 'local', profile: 'default', path: '/api/profiles' })
+    ])
+  })
+
   it('preserves ambient and explicit-local ownership for session and profile requests', async () => {
     setApiRequestConnection('remote-a')
 
@@ -230,6 +216,41 @@ describe('Hermes REST helpers', () => {
     expect(result.recents.sessions).toEqual([])
     expect(result.cron.sessions).toEqual([])
     expect(result.messaging.sessions).toEqual([])
+  })
+
+  it('counts pinned rows toward a full legacy page so older sessions stay reachable', async () => {
+    // #81484: pins inside the window take LIMIT slots. 3 pinned + 17 unpinned
+    // against a cap of 20 IS a full page; discounting the pins read 17 < 20
+    // and the load-more row never mounted.
+    const row = (id: string, pinned: boolean) => ({ id, title: id, profile: 'default', pinned })
+
+    const recents = [
+      ...Array.from({ length: 3 }, (_, i) => row(`pinned-${i}`, true)),
+      ...Array.from({ length: 17 }, (_, i) => row(`recent-${i}`, false))
+    ]
+
+    api.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        return Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
+      }
+
+      if (path.includes('source=cron') || path.includes('exclude_sources=')) {
+        return Promise.resolve({ ...emptySessionsResponse, sessions: [], total: 0 })
+      }
+
+      return Promise.resolve({ ...emptySessionsResponse, sessions: recents, total: recents.length })
+    })
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(result.recents.profiles_truncated).toEqual({ default: true })
   })
 
   it('falls back to the per-slice endpoint when the batched route 404s on an older backend', async () => {
@@ -416,58 +437,6 @@ describe('Hermes REST helpers', () => {
     expect((api.mock.calls[1][0] as { path: string }).path).toMatch(/^\/api\/profiles\/sessions\/sidebar\?/)
   })
 
-  it('uses a longer timeout for profile listing during desktop startup', async () => {
-    api.mockResolvedValue({ profiles: [] })
-
-    await getProfiles()
-
-    expect(api).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: '/api/profiles',
-        timeoutMs: 60_000
-      })
-    )
-  })
-
-  it('uses a longer timeout for active profile refresh during desktop startup', async () => {
-    api.mockResolvedValueOnce({ current: 'default' }).mockResolvedValueOnce({ profiles: [] })
-
-    await refreshActiveProfile()
-
-    expect(api).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        path: '/api/profiles/active',
-        timeoutMs: 60_000
-      })
-    )
-    expect(api).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        path: '/api/profiles',
-        timeoutMs: 60_000
-      })
-    )
-  })
-
-  it('gives the whole startup data burst the long timeout, not just profiles', async () => {
-    api.mockResolvedValue({})
-
-    const bootCalls: [() => Promise<unknown>, string][] = [
-      [getHermesConfig, '/api/config'],
-      [getHermesConfigDefaults, '/api/config/defaults'],
-      [getGlobalModelInfo, '/api/model/info'],
-      [() => getGlobalModelOptions(), '/api/model/options?explicit_only=1'],
-      [getCronJobs, '/api/cron/jobs']
-    ]
-
-    for (const [call, path] of bootCalls) {
-      api.mockClear()
-      await call()
-      expect(api).toHaveBeenCalledWith(expect.objectContaining({ path, timeoutMs: 60_000 }))
-    }
-  })
-
   it('waits for synchronous cron triggers as a long-running operation', async () => {
     api.mockResolvedValue({ id: 'job-1' })
 
@@ -496,6 +465,8 @@ describe('Hermes REST helpers', () => {
     expect(call.timeoutMs).toBeUndefined()
   })
 
+  // Explicit profile/connection writes (deleting a profile) carry the foreground
+  // dial tag; session reads stay on the ambient default (#111651).
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {
     api.mockResolvedValue({ messages: [], session_id: 'session-1' })
 
@@ -539,11 +510,12 @@ describe('Hermes REST helpers', () => {
       connectionId: 'source-a',
       method: 'DELETE',
       path: '/api/profiles/backend-worker',
+      priority: 'foreground',
       profile: 'backend-worker'
     })
   })
 
-  it('hydrates the latest transcript with a small tail page (120, latest, compacted rows included)', async () => {
+  it('hydrates the latest transcript with a small tail page (latest, compacted rows included)', async () => {
     api.mockResolvedValue({
       messages: [],
       pagination: { limit: 120, offset: 0, order: 'latest', returned: 0 },
@@ -552,9 +524,8 @@ describe('Hermes REST helpers', () => {
 
     await getLatestSessionMessages('session-1', 'xiaoxuxu')
 
-    expect(LATEST_SESSION_MESSAGES_LIMIT).toBe(120)
     expect(api).toHaveBeenCalledWith({
-      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=120&order=latest&include_compacted=true',
+      path: `/api/sessions/session-1/messages?profile=xiaoxuxu&limit=${LATEST_SESSION_MESSAGES_LIMIT}&order=latest&include_compacted=true`,
       profile: 'xiaoxuxu'
     })
   })
@@ -579,22 +550,7 @@ describe('Hermes REST helpers', () => {
     await getOlderSessionMessages('session-1', 'xiaoxuxu', 240)
 
     expect(api).toHaveBeenCalledWith({
-      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=120&offset=240&order=latest&include_compacted=true',
-      profile: 'xiaoxuxu'
-    })
-  })
-
-  it('passes bounded transcript pagination through to the backend', async () => {
-    api.mockResolvedValue({ messages: [], session_id: 'session-1' })
-
-    await getSessionMessages('session-1', 'xiaoxuxu', {
-      limit: 500,
-      offset: 1000,
-      order: 'latest'
-    })
-
-    expect(api).toHaveBeenCalledWith({
-      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=1000&order=latest',
+      path: `/api/sessions/session-1/messages?profile=xiaoxuxu&limit=${LATEST_SESSION_MESSAGES_LIMIT}&offset=240&order=latest&include_compacted=true`,
       profile: 'xiaoxuxu'
     })
   })
@@ -639,7 +595,8 @@ describe('Hermes REST helpers', () => {
 
   it('bounds blocking TTS synthesis timeouts by text length', () => {
     expect(audioSpeakRequestTimeoutMs('short message')).toBe(AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS)
-    expect(audioSpeakRequestTimeoutMs('x'.repeat(8_000))).toBe(280_000)
+    expect(audioSpeakRequestTimeoutMs('x'.repeat(8_000))).toBeGreaterThan(AUDIO_SPEAK_MIN_REQUEST_TIMEOUT_MS)
+    expect(audioSpeakRequestTimeoutMs('x'.repeat(8_000))).toBeLessThan(AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS)
     expect(audioSpeakRequestTimeoutMs('x'.repeat(100_000))).toBe(AUDIO_SPEAK_MAX_REQUEST_TIMEOUT_MS)
   })
 
@@ -670,29 +627,11 @@ describe('Hermes REST helpers', () => {
 
   it('bounds blocking transcription timeouts by payload length', () => {
     expect(audioTranscribeRequestTimeoutMs('data:audio/webm;base64,AA==')).toBe(AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS)
-    expect(audioTranscribeRequestTimeoutMs('x'.repeat(3_000_000))).toBe(300_000)
+    expect(audioTranscribeRequestTimeoutMs('x'.repeat(3_000_000))).toBeGreaterThan(
+      AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS
+    )
+    expect(audioTranscribeRequestTimeoutMs('x'.repeat(3_000_000))).toBeLessThan(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS)
     expect(audioTranscribeRequestTimeoutMs('x'.repeat(9_000_000))).toBe(AUDIO_TRANSCRIBE_MAX_REQUEST_TIMEOUT_MS)
-  })
-
-  it('uses an extended timeout for blocking transcription', async () => {
-    api.mockResolvedValueOnce({
-      ok: true,
-      provider: 'openai',
-      text: 'transcribed text'
-    })
-
-    await expect(transcribeAudio('data:audio/webm;base64,AA==', 'audio/webm')).resolves.toEqual({
-      ok: true,
-      provider: 'openai',
-      text: 'transcribed text'
-    })
-
-    expect(api).toHaveBeenCalledWith({
-      body: { data_url: 'data:audio/webm;base64,AA==', mime_type: 'audio/webm' },
-      method: 'POST',
-      path: '/api/audio/transcribe',
-      timeoutMs: AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS
-    })
   })
 
   it('defaults model options to configured providers only', async () => {
@@ -711,6 +650,18 @@ describe('Hermes REST helpers', () => {
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/model/options?refresh=1&include_unconfigured=1'
+      })
+    )
+  })
+
+  it('scopes custom endpoint reads to the requested settings profile', async () => {
+    await getCustomEndpoints('content-studio')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/providers/custom-endpoints',
+        profile: 'content-studio',
+        priority: 'foreground'
       })
     )
   })

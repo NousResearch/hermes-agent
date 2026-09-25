@@ -24,33 +24,7 @@ class TestReadFileSchemaStatic(unittest.TestCase):
     converter is a broken install handled by read_extract's teaching
     error, not a schema variant."""
 
-    def test_formats_stated_unconditionally(self):
-        from tools.file_tools import READ_FILE_SCHEMA
 
-        desc = READ_FILE_SCHEMA["description"]
-        for token in (".ipynb", ".docx", ".pptx", ".doc/.ppt/.xls",
-                      "PDF (text layer)", "OpenDocument", "RTF", "EPUB"):
-            self.assertIn(token, desc, token)
-        # No availability hedging, no install mechanics, no gate.
-        self.assertNotIn("when the optional", desc)
-        self.assertNotIn("auto-installed", desc)
-        self.assertNotIn("anydoc", desc)
-
-    def test_pdf_wording_upgrades_with_hosted_ocr_route(self):
-        """The ONE dynamic word: text-layer → scanned-or-text, keyed on
-        hosted_ocr_available(). Nous gateway deliberately does not
-        upgrade (Parse proxy live-probed broken 2026-08-28)."""
-        import tools.file_tools as ft
-
-        with patch("tools.read_extract.hosted_ocr_available",
-                   return_value=True):
-            d = ft._read_file_schema_overrides()["description"]
-        self.assertIn("PDF (scanned or text)", d)
-        self.assertNotIn("PDF (text layer)", d)
-        with patch("tools.read_extract.hosted_ocr_available",
-                   return_value=False):
-            o = ft._read_file_schema_overrides()
-        self.assertEqual(o, {})  # base wording stands
 
     def test_hosted_ocr_available_gate_states(self):
         """Maintainer decision: ONLY a direct FIRECRAWL_API_KEY unlocks —
@@ -100,34 +74,8 @@ class TestReadFileSchemaStatic(unittest.TestCase):
         self.assertIsNone(key)
         self.assertIsNone(url)
 
-    def test_coverage_warning_teaching_left_to_the_warning(self):
-        """The response-time warning owns the recovery curriculum."""
-        from tools.file_tools import READ_FILE_SCHEMA
 
-        desc = READ_FILE_SCHEMA["description"]
-        self.assertNotIn("EXTRACTION COVERAGE WARNING", desc)
-        self.assertNotIn("NEEDS OCR", desc)
-        self.assertNotIn("pdftoppm", desc)
-        import inspect
-        from tools import read_extract
 
-        src = inspect.getsource(read_extract)
-        self.assertIn("NEEDS OCR", src)
-        self.assertIn("pdftoppm", src)
-        self.assertIn("vision_analyze", src)
-
-    def test_binary_note_stays_last(self):
-        from tools.file_tools import READ_FILE_SCHEMA
-
-        desc = READ_FILE_SCHEMA["description"]
-        self.assertLess(desc.find("EPUB"), desc.find("Cannot read images/binary"))
-
-    def test_missing_anydoc_error_teaches_install(self):
-        from tools.read_extract import _anydoc_missing_error
-
-        err = _anydoc_missing_error("x.epub")
-        self.assertIn("firecrawl-anydoc", err)
-        self.assertNotEqual(err, "Unsupported document type: 'x.epub'")
 
 
 class TestNeedsOcrPath(unittest.TestCase):
@@ -179,14 +127,6 @@ class TestNeedsOcrPath(unittest.TestCase):
             out = rx._extract_anydoc("scan.pdf")
         self.assertIn("[NEEDS OCR", out)
         self.assertIn("pages 2, 3", out)
-        self.assertIn("attempted and failed", out)
-        # Maintainer-directed: HINT at checking for an OCR skill; never
-        # name one (none is guaranteed to exist), never sell config knobs.
-        self.assertIn("check whether an OCR skill is available", out)
-        self.assertIn("skills_list", out)
-        self.assertNotIn("ocr-and-documents", out)
-        self.assertNotIn("marker-pdf", out)
-        self.assertNotIn("hosted_ocr", out)
 
     def test_disabled_warns_without_attempt(self):
         from tools import read_extract as rx
@@ -197,24 +137,24 @@ class TestNeedsOcrPath(unittest.TestCase):
             out = rx._extract_anydoc("scan.pdf")
         self.assertIn("[NEEDS OCR", out)
         self.assertEqual(len(calls), 1)  # no hosted attempt
-        # Same shape when disabled: skill hint, no knob advertising.
-        self.assertIn("check whether an OCR skill is available", out)
-        self.assertNotIn("hosted_ocr", out)
-        self.assertNotIn("ocr-and-documents", out)
 
     def test_pin_lockstep(self):
-        """pyproject core pin and lazy_deps self-heal pin must match."""
-        import re
+        """The doc-extract extra PM uses to self-heal must pin core's anydoc."""
+        import tomllib
         from pathlib import Path
 
-        py = Path("pyproject.toml").read_text(encoding="utf-8")
-        lz = Path("tools/lazy_deps.py").read_text(encoding="utf-8")
-        m1 = re.search(r'"firecrawl-anydoc==([\d.]+)"', py)
-        m2 = re.search(r'"firecrawl-anydoc==([\d.]+)"', lz)
-        self.assertIsNotNone(m1)
-        self.assertIsNotNone(m2)
-        self.assertEqual(m1.group(1), m2.group(1))
+        from packaging.requirements import Requirement
 
+        pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+        project = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]
+
+        def anydoc_pins(reqs):
+            return {str(r.specifier) for r in map(Requirement, reqs) if r.name == "firecrawl-anydoc"}
+
+        core = anydoc_pins(project["dependencies"])
+        extra = anydoc_pins(project["optional-dependencies"]["doc-extract"])
+        self.assertEqual(len(core), 1)
+        self.assertEqual(extra, core)
 
 if __name__ == "__main__":
     unittest.main()

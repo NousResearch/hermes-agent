@@ -215,7 +215,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                                         if ln and not ln.startswith("#")), description)
                 seen_names.add(name)
                 skills.append({"name": name, "description": _truncate_description(description),
-                               "category": _get_category_from_path(skill_md)})
+                               # Frontmatter category (flat skills have no category dir to infer from);
+                               # path-derived category is the fallback for skills nested by directory.
+                               "category": frontmatter.get("category") or _get_category_from_path(skill_md)})
             except (UnicodeDecodeError, PermissionError) as e:
                 logger.debug("Failed to read skill file %s: %s", skill_md, e)
             except Exception as e:

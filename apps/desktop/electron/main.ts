@@ -2013,8 +2013,22 @@ async function openPreviewInBrowser(rawUrl: string) {
 }
 
 // `file://` URLs come from the artifacts panel (the renderer can't open them
-// itself because Chromium blocks that navigation). Dispatch to the OS file
-// association; if that fails, reveal the file in the system file manager.
+// itself because Chromium blocks that navigation). Reveal the file in the
+// system file manager instead of dispatching to the OS file association:
+// on Windows, archive artifacts (.gz/.tar) have no usable association, and
+// handing the path back to the OS shell bounces the open through the default
+// (Chromium) handler, which re-downloads the file — an infinite download loop
+// (issue #53170). Reveal-in-folder never re-opens the file, so it can't loop.
+//
+// A short per-path dedupe window additionally absorbs renderer-side double
+// clicks and retry storms so repeated open requests can't pile up windows.
+const FILE_REVEAL_DEDUPE_MS = 1_500
+const recentFileReveals = new Map<string, number>()
+
+export function _resetFileRevealDedupeForTest() {
+  recentFileReveals.clear()
+}
+
 async function openExternalFile(rawUrl: string) {
   let localPath: string
 
@@ -2024,17 +2038,27 @@ async function openExternalFile(rawUrl: string) {
     return
   }
 
-  try {
-    const error = await shell.openPath(localPath)
+  const now = Date.now()
+  const lastReveal = recentFileReveals.get(localPath)
 
-    if (!error) {
-      return
+  if (lastReveal !== undefined && now - lastReveal < FILE_REVEAL_DEDUPE_MS) {
+    rememberLog(`[file] duplicate reveal request within ${FILE_REVEAL_DEDUPE_MS}ms; ignored: ${localPath}`)
+    return
+  }
+
+  recentFileReveals.set(localPath, now)
+
+  // Prune stale entries so the map can't grow without bound over a long session.
+  for (const [path, ts] of recentFileReveals) {
+    if (now - ts >= FILE_REVEAL_DEDUPE_MS && path !== localPath) {
+      recentFileReveals.delete(path)
     }
+  }
 
-    rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
+  try {
     shell.showItemInFolder(localPath)
   } catch (error) {
-    rememberLog(`[file] openPath rejected: ${error instanceof Error ? error.message : String(error)}`)
+    rememberLog(`[file] reveal in folder failed: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 

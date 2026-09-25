@@ -34,7 +34,12 @@ jobs:
         run: |
           sudo apt-get install -y zsh xvfb \
             libgtk-3-0 libnotify4 libnss3 libxss1 libxtst6 \
+            libx11-dev libxi-dev \
             xdg-utils libatspi2.0-0 libdrm2 libgbm1 libasound2t64
+      # libx11-dev/libxi-dev: the Linux HUD monitor builds
+      # apps/desktop/electron/native/hud-modifier-monitor-x11.c natively during
+      # the check step (cc + X11/Xlib.h + XInput2 headers); runtime -lX11/-lXi
+      # libs alone are not enough.
 
       # setup-pm caches npm downloads, not the installed workspace tree.
       # The job then extracts the full workspace node_modules

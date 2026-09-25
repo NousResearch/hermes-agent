@@ -79,6 +79,29 @@ def test_default_prompt_retains_four_sections_with_skill_pointer(monkeypatch):
     assert "## Mid-turn user steering" in prompt
 
 
+def test_white_label_config_reaches_agent_prompt(tmp_path, monkeypatch):
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("agent:\n  white_label_prompt: true\n", encoding="utf-8")
+    with (
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
+    ):
+        agent = AIAgent(
+            model="test-model", provider="openrouter", api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1", quiet_mode=True,
+            skip_context_files=True, skip_memory=True,
+        )
+    assert agent._white_label_prompt is True
+    prompt = agent._build_system_prompt()
+    assert "You run on Hermes Agent" not in prompt
+    assert "Active Hermes profile:" not in prompt
+    assert "Model: test-model" not in prompt
+    assert "Provider: openrouter" not in prompt
+
+
 def _captured_context_cwd(agent):
     """The cwd build_system_prompt_parts hands to build_context_files_prompt."""
     captured = {}

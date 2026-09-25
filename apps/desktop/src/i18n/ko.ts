@@ -892,6 +892,8 @@ export const koOverrides = {
         agentSuccess: name => `에이전트 플러그인 ${name} 설치됨`,
         desktopSuccess: name => `데스크톱 플러그인 ${name} 설치됨`,
         agentFailed: '에이전트 플러그인 설치 실패',
+        installUncertain:
+          'Hermes가 설치 결과를 기다리지 않고 중단했지만, 플러그인은 아직 설치 중일 수 있습니다. 이 창을 닫고 플러그인에서 재검색을 실행한 뒤 다시 설치하세요.',
         desktopFailed: '데스크톱 플러그인 설치 실패',
         missingEnv: (name, vars) =>
           `${name}이(가) 설치되었지만 동작하려면 키가 필요합니다: ${vars}. 지금 추가하지 않으면 이 플러그인의 도구가 실패합니다.`

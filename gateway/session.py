@@ -345,6 +345,13 @@ def _discord_platform_notes(context: SessionContext) -> List[str]:
         "Voice-channel state, when relevant, appears in the current message as a "
         "`[Voice channel now: ...]` note."
     )]
+    if context.source.chat_type in {"group", "thread"}:
+        lines += ["", (
+            "In shared conversations, distinguish requests to you from people talking to one "
+            "another. Read the context, but do not reply to human-to-human FYIs or side chatter. "
+            "When no response or action is appropriate, output exactly NO_REPLY without tools "
+            "or commentary. Handle genuine requests and contextual follow-ups even without an @mention."
+        )]
     return lines
 
 

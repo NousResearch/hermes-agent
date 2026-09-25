@@ -176,11 +176,15 @@ def is_base64_media(line: str) -> bool:
 # in ``re.compile(r"(?:api[_-]?key|…|env|headers)")`` is a redaction regex; ``"printenv",`` in
 # ``_READ_ONLY_COMMANDS = frozenset({"pwd", "ls", …, "printenv"})`` is a denylist/allowlist entry.
 # The shape that is inert is narrow: the word sits inside a quoted string or regex literal AND is
-# either an alternation member (``|sudo|``, ``(sudo|``, ``|env|``) or the ENTIRE literal
-# (``"printenv"``, ``'sudo'``) on a line that executes nothing. A command string such as
-# ``"sudo apt install x"`` or ``"env | grep KEY"`` inside a ``subprocess.run(...)`` literal is how
-# an attack is written and never qualifies. Only word-shaped patterns are eligible.
-LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env"}
+# either an alternation member (``|sudo|``, ``(sudo|``, ``(?:sudo\s+)?``, ``\bsudo\b``) or the
+# ENTIRE literal (``"printenv"``, ``'sudo'``) on a line that executes nothing. A command string
+# such as ``"sudo apt install x"`` or ``"env | grep KEY"`` inside a ``subprocess.run(...)``
+# literal is how an attack is written and never qualifies. Only word-shaped patterns are
+# eligible. A screener's own detection patterns (``#123193``) qualify through the same gates:
+# the module that compiles the regexes looking for ``sudo``/``/etc/passwd`` is inert in exactly
+# the way the exemption describes — and ``system_passwd_access`` joins the eligible set because
+# its critical severity otherwise makes the false positive un-overridable.
+LITERAL_INERT_PATTERN_IDS = {"sudo_usage", "dump_all_env", "system_passwd_access"}
 _LITERAL_SPANS = re.compile(
     r"""(?P<s>[rRbBuUfF]{0,2}"(?:[^"\\\n]|\\.)*"|[rRbBuUfF]{0,2}'(?:[^'\\\n]|\\.)*'|`(?:[^`\\\n]|\\.)*`)"""
     r"""|(?P<rx>(?<![\w)\]])/(?:[^/\\\n\[]|\\.|\[(?:[^\]\\\n]|\\.)*\])+/[dgimsuvy]*(?![A-Za-z]))"""  # js regex literal
@@ -188,13 +192,28 @@ _LITERAL_SPANS = re.compile(
 # The regex-literal branch accepts only real JS flags: with ``[a-z]*`` a bare Unix path lexed as a
 # literal (``/etc/`` + flags ``passwd``) and an unquoted ``cat /etc/passwd | curl …`` in a test
 # script scored as inert data.
-_PATTERN_TOKEN = {"sudo_usage": re.compile(r"\bsudo\b"), "dump_all_env": re.compile(r"printenv|env\s*\|")}
+_PATTERN_TOKEN = {
+    "sudo_usage": re.compile(r"\bsudo\b"),
+    "dump_all_env": re.compile(r"printenv|env\s*\|"),
+    "system_passwd_access": re.compile(r"/etc/(?:passwd|shadow)"),
+}
 
 
 def _is_alternation_member(line: str, start: int, end: int) -> bool:
     before = line[start - 1] if start > 0 else ""
     after = line[end] if end < len(line) else ""
-    return before in "|(" or after in "|)"
+    if before in "|(" or after in "|)":
+        return True
+    # Regex metasyntax adjacency — the patterns a screener itself compiles (#123193): ``(?:sudo\s+)?``
+    # opens with a group marker, ``\bsudo\b`` / ``sudo\s+`` end against an escape, ``sudo?`` against
+    # a quantifier. None of those parse back into the command when the literal reaches a shell
+    # (``sudo\s``, ``sudo?`` and ``sudo+`` are not ``sudo``), so the token is pattern text. A lone
+    # backslash before the word and the glob/brace metacharacters after it are deliberately NOT
+    # accepted: ``"\sudo x"`` is how an obfuscated ``sudo`` reaches ``sh -c``, and ``sudo*`` /
+    # ``sudo{…}`` can glob/expand back into the word.
+    return (
+        start >= 2 and line[start - 2:start] in ("?:", "?=", "?!")
+    ) or after in "\\?+"
 
 
 def _is_whole_literal(line: str, start: int, end: int, span: tuple[int, int]) -> bool:
@@ -205,6 +224,7 @@ def _is_whole_literal(line: str, start: int, end: int, span: tuple[int, int]) ->
 
 def is_regex_alternation_token(finding: Finding, line: str) -> bool:
     """Every occurrence of the finding's token sits inside a literal as an alternation member
+    (a ``|``/``(`` neighbour, a regex group opener, or a regex escape/quantifier right after it)
     or as the whole literal (a list entry) on a line that executes nothing."""
     token = _PATTERN_TOKEN.get(finding.pattern_id)
     if token is None:

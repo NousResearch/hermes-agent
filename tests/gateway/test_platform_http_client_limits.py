@@ -16,12 +16,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-
 @pytest.fixture(autouse=True)
 def _clear_env(monkeypatch):
     monkeypatch.delenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", raising=False)
-
 
 def test_env_override_rejects_garbage(monkeypatch):
     """Malformed env values fall back to defaults rather than raising."""

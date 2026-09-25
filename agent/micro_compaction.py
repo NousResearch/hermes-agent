@@ -420,10 +420,14 @@ class MicroCompactionMixin:
                 if isinstance(message, dict) and message.get(_cc()._DB_PERSISTED_MARKER)
             ]
             watermark = None
+            covered_ids = unresolved_held = None
             if held is not None and start_watermark is not None:
                 watermark = _cc()._archive_watermark_for(session_db, session_id, held, start_watermark)
+                from agent.conversation_compression_archive import coverage_for_commit
+                covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, held)
             session_db.archive_and_compact(
-                session_id, compacted_messages, carried_messages=carried_messages, watermark=watermark)
+                session_id, compacted_messages, carried_messages=carried_messages, watermark=watermark,
+                covered_ids=covered_ids, unresolved_held=unresolved_held)
             # Shared post-commit stamp site with batch commit and proactive prune.
             # See #98450.
             _cc().stamp_db_persisted_markers(compacted_messages)

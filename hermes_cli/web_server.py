@@ -33,8 +33,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli import __version__
 from hermes_cli.config import load_config
+from hermes_cli.version_info import get_version_info
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -45,15 +45,17 @@ except ImportError:
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
     # them out of every other install path. After install, re-import.
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.dashboard", prompt=False)
-        from fastapi import FastAPI, HTTPException, Request
+        from pm import ensure_import
+        ensure_import("web")
+        from fastapi import (
+            FastAPI, HTTPException, Request,
+        )
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import JSONResponse
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
-            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn'"
+            "Run hermes pm repair, then restart Hermes."
         )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
@@ -184,6 +186,11 @@ async def _lifespan(app: "FastAPI"):
     from tui_gateway import methods_groups as _hosted_groups
     import tui_gateway.server  # noqa: F401
 
+    try:
+        tui_gateway.server.install_tui_message_injector()
+    except Exception:
+        _log.warning("TUI message injector did not install", exc_info=True)
+
     hosted_room_start_cancel = threading.Event()
 
     def _start_hosted_rooms() -> None:
@@ -263,6 +270,10 @@ async def _lifespan(app: "FastAPI"):
     try:
         yield
     finally:
+        try:
+            tui_gateway.server.clear_tui_message_injector()
+        except Exception:
+            _log.debug("TUI message injector clear skipped", exc_info=True)
         hosted_room_start_cancel.set()
         _hosted_groups.stop_hosted_room_service(timeout=5.0)
         hosted_room_start_thread.join(timeout=1.0)
@@ -306,7 +317,7 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
     return _app_state_default(app, "pty_active_session_files", dict)
 
 
-app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=_lifespan)
 
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
@@ -1591,7 +1602,7 @@ import shutil  # noqa: F401,E402
 import stat  # noqa: F401,E402
 import tempfile  # noqa: F401,E402
 from datetime import timezone  # noqa: F401,E402
-import yaml  # noqa: F401,E402
+import hermes_yaml as yaml  # noqa: F401,E402
 import zipfile  # noqa: F401,E402
 
 

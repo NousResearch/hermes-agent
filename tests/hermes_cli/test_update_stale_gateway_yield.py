@@ -123,7 +123,7 @@ def test_verify_fleet_hands_stale_rows_to_survivor_signalling(monkeypatch):
     )
     with contextlib.redirect_stdout(io.StringIO()), pytest.raises(SystemExit) as exc:
         fleet_mod._verify_fleet_after_update(
-            restart, _pre_update_plan=None, _windows_gateway_resume=None, node_failures=[], update_complete=True,
+            restart, _pre_update_plan=None, _windows_gateway_resume=None, update_complete=True,
         )
     assert exc.value.code == 1
     assert seen["fleet"] == stale_fleet

@@ -25,16 +25,17 @@ import sys
 
 import pytest
 
-from tests.e2e.core.security._helpers import run_hermes, write_home
+from tests.e2e.core._pending_fixes import known_gate
+from tests.e2e.core.security._helpers import BoundaryBreach, run_hermes, write_home
 from tests.e2e.core.security._redact import (
-    CONFIG, SCENARIOS, Ctx, Director, Secrets, World, assert_harness_sane, cells, check, collect, echo_preconditions,
-    prompt_for, seed_workspace,
+    CONFIG, SCENARIOS, Ctx, Director, Secrets, World, assert_harness_sane, cell_id, cells, check, collect,
+    echo_preconditions, prompt_for, seed_workspace,
 )
 from tests.fakes.fake_llm_provider import FakeLLMServer
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell commands (cat | tee, curl)")
 
-KNOWN: dict[str, str] = {}  # cell id ``<scenario>-<sink>`` -> "#issue symptom"
+KNOWN: dict[str, tuple[str, str]] = {}  # cell id ``<scenario>-<sink>`` -> (pattern, "#issue symptom")
 
 _SESSION_RE = re.compile(r"session_id:\s*(\S+)")
 
@@ -69,4 +70,5 @@ def cli_world(tmp_path_factory) -> World:
 
 @pytest.mark.parametrize("scenario, sink", cells(KNOWN, platform=False))
 def test_cli_turn_never_persists_or_replays_a_secret(cli_world: World, scenario: str, sink: str) -> None:
-    check(cli_world, scenario, sink)
+    with known_gate(KNOWN, cell_id(scenario, sink), raises=BoundaryBreach):
+        check(cli_world, scenario, sink)

@@ -3296,10 +3296,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         next_rearm_tokens = after + runway
         if session_db and session_id:
             try:
+                from agent.conversation_compression_archive import coverage_for_commit
+                covered_ids, unresolved_held = coverage_for_commit(session_db, session_id, messages)
                 session_db.archive_and_compact(
                     session_id, pruned_msgs,
                     model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens},
                     watermark=_archive_watermark_for(session_db, session_id, messages),
+                    covered_ids=covered_ids, unresolved_held=unresolved_held,
                 )
             except StaleHeldHistory:
                 # Another compaction already committed this session's history; a lease-less prune of the
@@ -4192,13 +4195,15 @@ Write only the summary body. Do not include any preamble or prefix."""
         from agent.conversation_loop import (
             _CODEX_ACK_CONTINUATION_NUDGE, _CODEX_INCOMPLETE_NUDGE, _DEGENERATE_FINAL_NUDGE,
             _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE, _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
-            _LENGTH_CONTINUATION_NETWORK_STUB, _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+            _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB, _LENGTH_CONTINUATION_NETWORK_STUB,
+            _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         )
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT, _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
             MAX_ITERATIONS_SUMMARY_REQUEST, _CODEX_INCOMPLETE_NUDGE, _CODEX_ACK_CONTINUATION_NUDGE,
             _DEGENERATE_FINAL_NUDGE, _DROPPED_TOOLCALL_NUDGE_CONTENT, _EMPTY_TOOL_RESPONSE_NUDGE,
-            _LENGTH_CONTINUATION_NETWORK_STUB, _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+            _LENGTH_CONTINUATION_NETWORK_STUB, _LEGACY_LENGTH_CONTINUATION_NETWORK_STUB,
+            _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         } or text.startswith((
             _BACKGROUND_PROCESS_NOTIFICATION_PREFIX, TODO_INJECTION_HEADER + "\n", _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
         ))

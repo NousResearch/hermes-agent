@@ -639,13 +639,92 @@ def test_launch_external_worker_pin_extends_the_sanitized_env_not_os_environ(
 
     assert scheduler._launch_external_cron_worker(job) is True
     entries = spawned[0][1]["env"]["PYTHONPATH"].split(os.pathsep)
-    assert entries == [str(repo_root), str(tmp_path / "kept-by-sanitizer")]
+    # Relationship, not an exact list: on a self-managed install the pin also restores the
+    # activated dependency site-packages (#122222), so the entry count is runner-dependent.
+    assert entries[0] == str(repo_root)
+    assert str(tmp_path / "kept-by-sanitizer") in entries
 
     # Wheel / pipx layout: repo_root == purelib -> untouched.
     monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: repo_root)
     untouched = {"PYTHONPATH": str(tmp_path / "kept-by-sanitizer")}
     assert worker_env_mod.pin_hermes_tree_on_pythonpath(dict(untouched), repo_root) == untouched
     assert "PYTHONPATH" not in worker_env_mod.pin_hermes_tree_on_pythonpath({}, repo_root)
+
+
+def test_pin_restores_activated_dependency_site_packages(monkeypatch, tmp_path):
+    """#122222: on a self-managed install the sanitizer drops the activated dependency
+    site-packages and the store-Python worker cannot import them; the pin restores them
+    next to the tree, in activation order, after the tree and before the kept entries."""
+    import cron.scheduler_worker_env as worker_env_mod
+
+    venv = tmp_path / "installs" / "env"
+    dependency = venv / "lib" / "python3.14" / "site-packages"
+    dependency.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("version = 3.14\n")
+    repo_root = tmp_path / "hermes-agent"
+    repo_root.mkdir()
+    monkeypatch.setattr(
+        worker_env_mod, "_activated_dependency_site_packages", lambda: dependency.resolve()
+    )
+
+    env = worker_env_mod.pin_hermes_tree_on_pythonpath(
+        {"PYTHONPATH": str(tmp_path / "kept")}, repo_root
+    )
+    entries = env["PYTHONPATH"].split(os.pathsep)
+    assert entries == [
+        str(repo_root.resolve()),
+        str(dependency.resolve()),
+        str(tmp_path / "kept"),
+    ]
+
+
+def test_activated_dependency_site_packages_derives_from_sys_path(monkeypatch, tmp_path):
+    import cron.scheduler_worker_env as worker_env_mod
+
+    venv = tmp_path / "env"
+    dependency = venv / "lib" / "python3.14" / "site-packages"
+    dependency.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("version = 3.14\n")
+    purelib = tmp_path / "purelib"
+    purelib.mkdir()
+
+    monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: purelib.resolve())
+    monkeypatch.setattr(
+        worker_env_mod.sys,
+        "path",
+        [str(purelib), str(dependency), str(tmp_path / "user-libs")],
+    )
+
+    assert worker_env_mod._activated_dependency_site_packages() == dependency.resolve()
+
+
+def test_activated_dependency_site_packages_excludes_own_purelib(monkeypatch, tmp_path):
+    """A runner that owns its dependencies (here its only venv site-packages IS its own
+    purelib) needs nothing added, so nothing is invented."""
+    import cron.scheduler_worker_env as worker_env_mod
+
+    purelib = tmp_path / "venv" / "lib" / "python3.11" / "site-packages"
+    purelib.mkdir(parents=True)
+    (tmp_path / "venv" / "pyvenv.cfg").write_text("version = 3.11\n")
+    monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: purelib.resolve())
+    monkeypatch.setattr(worker_env_mod.sys, "path", [str(purelib)])
+
+    assert worker_env_mod._activated_dependency_site_packages() is None
+
+
+def test_activated_dependency_site_packages_requires_real_venv(monkeypatch, tmp_path):
+    """A directory that merely happens to be named site-packages, outside any venv, is
+    never pinned."""
+    import cron.scheduler_worker_env as worker_env_mod
+
+    not_a_venv = tmp_path / "site-packages"
+    not_a_venv.mkdir()
+    purelib = tmp_path / "purelib"
+    purelib.mkdir()
+    monkeypatch.setattr(worker_env_mod, "_installed_purelib", lambda: purelib.resolve())
+    monkeypatch.setattr(worker_env_mod.sys, "path", [str(not_a_venv)])
+
+    assert worker_env_mod._activated_dependency_site_packages() is None
 
 
 def test_shared_run_path_hands_gateway_fire_to_external_worker(monkeypatch):

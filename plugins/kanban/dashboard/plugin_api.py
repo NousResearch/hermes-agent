@@ -1666,11 +1666,19 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
 _EVENT_POLL_SECONDS = 0.3
 
 
-def _int_param(ws: WebSocket, name: str) -> int:
+def _since_param(ws: WebSocket) -> Optional[int]:
+    """The client's event cursor, or None when it sent none (or garbage): the stream then
+    starts at the board's current tail. Only an explicit ``since`` replays history — a
+    client that wants the past asks for it; one that just opened the board already holds
+    the snapshot, and replaying every ``task_events`` row page by page (200 rows per 300 ms)
+    turned each open, board switch and reconnect into minutes of refetch churn."""
+    raw = ws.query_params.get("since")
+    if raw is None or not str(raw).strip():
+        return None
     try:
-        return int(ws.query_params.get(name, "0"))
+        return max(0, int(raw))
     except ValueError:
-        return 0
+        return None
 
 
 def _ws_board(raw: Optional[str]) -> Optional[str]:
@@ -1689,6 +1697,13 @@ class _EventTail:
         self._board = board
         self._conn: Optional[sqlite3.Connection] = None
         self._executor: Optional[ThreadPoolExecutor] = None
+
+    def _latest(self) -> int:
+        """The board's current tail: the cursor a client without one starts from."""
+        if self._conn is None:
+            self._conn = kbc.connect(board=self._board)
+        rows = self._conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM task_events", ()).fetchall()
+        return int(rows[0]["m"]) if rows else 0
 
     def _fetch(self, cursor: int) -> tuple[int, list[dict]]:
         if self._conn is None:
@@ -1711,10 +1726,16 @@ class _EventTail:
             self._conn.close()
             self._conn = None
 
-    async def poll(self, cursor: int) -> tuple[int, list[dict]]:
+    def _run(self, fn, *args):
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kanban-events")
-        return await asyncio.get_running_loop().run_in_executor(self._executor, self._fetch, cursor)
+        return asyncio.get_running_loop().run_in_executor(self._executor, fn, *args)
+
+    async def latest(self) -> int:
+        return await self._run(self._latest)
+
+    async def poll(self, cursor: int) -> tuple[int, list[dict]]:
+        return await self._run(self._fetch, cursor)
 
     async def shutdown(self) -> None:
         if self._executor is None:
@@ -1736,8 +1757,9 @@ async def stream_events(ws: WebSocket):
     # Board is pinned at the handshake; the UI opens a new WS on board change
     # rather than reconciling two cursors mid-stream.
     tail = _EventTail(_ws_board(ws.query_params.get("board")))
-    cursor = _int_param(ws, "since")
+    since = _since_param(ws)
     try:
+        cursor = since if since is not None else await tail.latest()
         while True:
             # Race receive() against the poll interval so a disconnect is detected even when no
             # events flow (else idle boards leak poll tasks). Other client messages are ignored.

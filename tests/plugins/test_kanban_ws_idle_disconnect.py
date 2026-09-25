@@ -162,6 +162,9 @@ async def test_stream_events_reuses_connection_and_closes_after_disconnect(
 
     monkeypatch.setattr(mod.asyncio, "wait_for", _poll_twice_then_disconnect)
     ws = _PollingWebSocket()
+    # A client that names its cursor: the stream polls from there and never pays the
+    # connect-time tail read, so the execute counts below stay the polls alone.
+    ws.query_params = {"since": "0"}
 
     await mod.stream_events(ws)
 
@@ -214,6 +217,9 @@ async def test_stream_events_closes_connection_when_cancelled(monkeypatch):
 
     monkeypatch.setattr(mod.asyncio, "wait_for", _poll_once_then_wait)
     ws = _PollingWebSocket()
+    # A client that names its cursor: the stream polls from there and never pays the
+    # connect-time tail read, so the execute counts below stay the polls alone.
+    ws.query_params = {"since": "0"}
     task = asyncio.create_task(mod.stream_events(ws))
 
     await real_wait_for(first_fetch_done.wait(), timeout=5)

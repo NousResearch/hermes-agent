@@ -28,7 +28,12 @@ import {
 } from '@hermes/plugin-sdk'
 
 // Native completion notification.
-import { bindCompletionNotify, type CompletionEvent, onKanbanEventsFrame } from './completion-notify'
+import {
+  bindCompletionNotify,
+  type CompletionEvent,
+  onKanbanEventsFrame,
+  seedCompletionBaseline
+} from './completion-notify'
 import type {
   BoardExportResult,
   BoardImportResult,
@@ -101,11 +106,47 @@ const routedScope = (): string => host.activeConnectionId() ?? LOCAL_SCOPE
  *  `bindApi`; sites with their own `enabled` compose it. */
 export const routedToScope = (query: { queryKey: readonly unknown[] }): boolean => query.queryKey[2] === routedScope()
 
+// Where each board's event stream left off this session. The socket reopens
+// on every board switch and reconnect; resuming from the last frame's cursor
+// replays only what was missed, never the board's whole history. Session-only
+// on purpose: events that land while the app is closed are documented as not
+// replayed on the next launch. Keyed by connection too: a slug names a
+// different board (and event-id sequence) on every gateway.
+const eventCursors = new Map<string, number>()
+
+const cursorKey = (scope: string, slug: string) => `${scope}\n${slug}`
+
+/** The cursor a fresh socket for `slug` on `scope` starts from: the last frame
+ *  this session saw, else the cached board snapshot's `latest_event_id` (the
+ *  board is already rendered from it), else nothing yet. */
+function eventsSince(scope: string, slug: string): number | undefined {
+  const seen = eventCursors.get(cursorKey(scope, slug))
+
+  if (typeof seen === 'number') {
+    return seen
+  }
+
+  for (const archived of [false, true]) {
+    const board = queryClient.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
+
+    if (typeof board?.latest_event_id === 'number') {
+      return board.latest_event_id
+    }
+  }
+
+  return undefined
+}
+
 /** One live `task_events` frame → precise cache invalidation: the board, plus
- *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
+ *  each touched task's detail. The polls (60s board / 30s drawer) stay as the
  *  fallback — the socket just makes the board feel instant. */
-function onEventsFrame(slug: string, data: unknown): void {
-  const events = (data as { events?: CompletionEvent[] })?.events
+function onEventsFrame(streamScope: string, slug: string, data: unknown): void {
+  const frame = data as { cursor?: unknown; events?: CompletionEvent[] }
+  const events = frame?.events
+
+  if (typeof frame?.cursor === 'number') {
+    eventCursors.set(cursorKey(streamScope, slug), frame.cursor)
+  }
 
   if (!events?.length) {
     return
@@ -122,7 +163,7 @@ function onEventsFrame(slug: string, data: unknown): void {
 
   // Completion notification (after invalidation so notify failure
   // never interferes with cache invalidation).
-  void onKanbanEventsFrame(slug, events).catch(() => undefined)
+  void onKanbanEventsFrame(slug, events, streamScope).catch(() => undefined)
 }
 
 // A persisted, subscribable atom (the structural slice we need — avoids
@@ -162,10 +203,52 @@ export function bindApi(
   persist($collapsedLanes, COLLAPSED_KEY, {})
 
   let close: (() => void) | null = null
+  let dialGeneration = 0
 
   const open = (slug: string) => {
+    const generation = ++dialGeneration
     close?.()
-    close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data => onEventsFrame(slug, data))
+    close = null
+    // The connection this socket dials: a frame arriving after a switch
+    // still belongs to the gateway that sent it.
+    const scope = routedScope()
+
+    const dial = (since?: number) => {
+      if (generation !== dialGeneration) {
+        return
+      }
+
+      const params = new URLSearchParams()
+
+      if (slug) {
+        params.set('board', slug)
+      }
+
+      if (since !== undefined) {
+        params.set('since', String(since))
+        // Notifications baseline where the stream starts. Read from /board when
+        // the first frame arrives, the baseline already includes that frame.
+        seedCompletionBaseline(scope, slug, since)
+      }
+
+      const query = params.toString()
+      close = socket(query ? `/events?${query}` : '/events', data => onEventsFrame(scope, slug, data))
+    }
+
+    const since = eventsSince(scope, slug)
+
+    if (since !== undefined) {
+      dial(since)
+
+      return
+    }
+
+    // Nothing known yet: start the stream at the snapshot the board renders
+    // from (the same query), so no event can land between the two reads.
+    void queryClient.fetchQuery({ queryFn: () => fetchBoard(false), queryKey: boardKey(scope, slug, false) }).then(
+      board => dial(typeof board.latest_event_id === 'number' ? board.latest_event_id : undefined),
+      () => dial()
+    )
   }
 
   // The local connection keeps the BARE key (the bare-local rule of
@@ -203,6 +286,7 @@ export function bindApi(
   )
 
   return () => {
+    dialGeneration += 1
     unsubs.forEach(unsub => unsub())
     close?.()
     rest = null

@@ -17,12 +17,15 @@
  *    desktop shell fires only while the user is AWAY from Hermes. This is the
  *    door that covers "walked away and the worker hit a blocker".
  *
- * Cursor contract: first observation of a board baselines
+ * Cursor contract: a board's baseline is the cursor its events stream starts
+ * from (api.ts seeds it at dial); failing that, the first frame baselines
  * seen[board] = GET /board latest_event_id (MAX task_events.id for that
  * board). Events id <= seen are historical/replay — never notified, no
  * cursor change. id > seen advances cursor for EVERY kind; only terminal
- * kinds emit. Reconnect replays from 0; cursor filters. Board switch never
+ * kinds emit. A replayed frame is filtered by the cursor. Board switch never
  * mixes cursors; returning reuses prior cursor (never reset to current MAX).
+ * Cursors are per connection too: a slug names a different board, with its
+ * own event ids, on every gateway.
  * Fail-closed: while a board's baseline is unknown, no event can be
  * classified so none is notified. Empty slug ('') suppressed.
  */
@@ -56,6 +59,8 @@ const TERMINAL_NOTIFY = new Map<string, { titleKey: string; toast: ToastKind }>(
 
 const seenEventIdByBoard = new Map<string, number>()
 const baselinePending = new Set<string>()
+
+const cursorKey = (scope: string, slug: string) => `${scope}\n${slug}`
 
 let rest: Rest | null = null
 let translate: PluginTranslate | null = null
@@ -91,23 +96,33 @@ export function bindCompletionNotify(r: Rest, pluginTranslate?: PluginTranslate,
   osDoor = os ?? null
 }
 
-async function ensureBaseline(slug: string): Promise<void> {
-  if (seenEventIdByBoard.has(slug) || baselinePending.has(slug)) {
+/** The events stream for `slug` on connection `scope` starts right after `eventId`: that is
+ *  the baseline, taken with the subscription itself. Never moves an existing one. */
+export function seedCompletionBaseline(scope: string, slug: string, eventId: number): void {
+  const key = cursorKey(scope, slug)
+
+  if (!seenEventIdByBoard.has(key)) {
+    seenEventIdByBoard.set(key, eventId)
+  }
+}
+
+async function ensureBaseline(key: string, slug: string): Promise<void> {
+  if (seenEventIdByBoard.has(key) || baselinePending.has(key)) {
     return
   }
 
-  baselinePending.add(slug)
+  baselinePending.add(key)
 
   try {
     const board = (await rest!<{ latest_event_id?: unknown }>(`/board?board=${encodeURIComponent(slug)}`)) as {
       latest_event_id?: unknown
     }
 
-    seenEventIdByBoard.set(slug, typeof board.latest_event_id === 'number' ? board.latest_event_id : 0)
+    seenEventIdByBoard.set(key, typeof board.latest_event_id === 'number' ? board.latest_event_id : 0)
   } catch {
     // Fail-closed: unknown baseline → notifications stay suppressed.
   } finally {
-    baselinePending.delete(slug)
+    baselinePending.delete(key)
   }
 }
 
@@ -181,16 +196,17 @@ function notifyOne(kind: string, spec: { titleKey: string; toast: ToastKind }, e
   }
 }
 
-/** Consume one /events frame for a board. Returns true when a terminal-event
- *  notification was fired. Never throws: notification failure cannot
- *  interfere with api.ts cache invalidation. */
-export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent[]): Promise<boolean> {
+/** Consume one /events frame for a board on the connection `scope`. Returns
+ *  true when a terminal-event notification was fired. Never throws:
+ *  notification failure cannot interfere with api.ts cache invalidation. */
+export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent[], scope = 'local'): Promise<boolean> {
   if (!events?.length || slug === '' || !rest) {
     return false
   }
 
-  await ensureBaseline(slug)
-  const seen = seenEventIdByBoard.get(slug)
+  const key = cursorKey(scope, slug)
+  await ensureBaseline(key, slug)
+  const seen = seenEventIdByBoard.get(key)
 
   if (seen === undefined) {
     return false
@@ -205,7 +221,7 @@ export async function onKanbanEventsFrame(slug: string, events?: CompletionEvent
     }
 
     cursor = ev.id
-    seenEventIdByBoard.set(slug, cursor)
+    seenEventIdByBoard.set(key, cursor)
     const spec = TERMINAL_NOTIFY.get(ev.kind ?? '')
 
     if (spec) {

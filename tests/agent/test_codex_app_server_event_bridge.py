@@ -28,7 +28,6 @@ from agent.codex_runtime import (
     make_codex_app_server_event_bridge,
 )
 
-
 def _make_stub_agent() -> SimpleNamespace:
     """Minimal stand-in for AIAgent that records every callback fire."""
     return SimpleNamespace(
@@ -40,22 +39,15 @@ def _make_stub_agent() -> SimpleNamespace:
         ),
     )
 
-
 def _item_started(item: dict) -> dict:
     return {"method": "item/started", "params": {"item": item}}
-
 
 def _item_completed(item: dict) -> dict:
     return {"method": "item/completed", "params": {"item": item}}
 
-
 # ---------- name / args / preview / result mapping ----------
 
-
 class TestCodexItemToToolName:
-
-
-
 
     def test_dynamic_tool_call_uses_tool_field(self):
         assert _codex_item_to_tool_name(
@@ -73,10 +65,6 @@ class TestCodexItemToToolName:
         assert _codex_item_to_tool_name(
             {"type": "mcpToolCall", "server": "hermes-tools", "tool": "browser_navigate"}
         ) == "browser_navigate"
-
-
-
-
 
 class TestCodexItemToArgs:
 
@@ -96,13 +84,11 @@ class TestCodexItemToArgs:
             ]
         }
 
-
     def test_non_dict_arguments_get_wrapped(self):
         args = _codex_item_to_args({
             "type": "dynamicToolCall", "arguments": ["a", "b"],
         })
         assert args == {"arguments": ["a", "b"]}
-
 
 class TestCodexItemToPreview:
     def test_command_preview_truncated(self):
@@ -124,10 +110,6 @@ class TestCodexItemToPreview:
         assert "/p0.py" in preview and "/p2.py" in preview
         assert "+2 more" in preview
 
-
-
-
-
 class TestCodexItemCompletionPayload:
     def test_command_success_returns_aggregated_output(self):
         result, is_error = _codex_item_completion_payload({
@@ -138,8 +120,6 @@ class TestCodexItemCompletionPayload:
         assert result == "hello\nworld\n"
         assert is_error is False
 
-
-
     def test_mcp_tool_error_is_error(self):
         result, is_error = _codex_item_completion_payload({
             "type": "mcpToolCall",
@@ -148,10 +128,7 @@ class TestCodexItemCompletionPayload:
         assert "[error]" in result
         assert is_error is True
 
-
-
 # ---------- bridge: dispatch contracts ----------
-
 
 class TestStreamDeltaDispatch:
     def test_agent_message_delta_fires_stream_delta(self):
@@ -165,8 +142,6 @@ class TestStreamDeltaDispatch:
         assert agent._fire_stream_delta.call_args_list[0].args == ("hello ",)
         assert agent._fire_stream_delta.call_args_list[1].args == ("world",)
 
-
-
     def test_reasoning_delta_fires_reasoning_callback(self):
         agent = _make_stub_agent()
         bridge = make_codex_app_server_event_bridge(agent)
@@ -174,7 +149,6 @@ class TestStreamDeltaDispatch:
                 "params": {"delta": "thinking..."}})
         agent._fire_reasoning_delta.assert_called_once_with("thinking...")
         agent._fire_stream_delta.assert_not_called()
-
 
 class TestToolProgressDispatch:
     def test_command_started_fires_tool_started(self):
@@ -220,10 +194,6 @@ class TestToolProgressDispatch:
         assert completed.kwargs["is_error"] is False
         assert completed.kwargs["result"] == "hi\n"
 
-
-
-
-
     def test_web_search_builtin_fires_started_and_completed(self):
         """Codex's built-in webSearch produces a start/complete bubble pair
         with the query as preview and args (#26541)."""
@@ -245,9 +215,6 @@ class TestToolProgressDispatch:
         assert calls[0].args[2] == "hermes agent docs"
         assert calls[0].args[3] == {"query": "hermes agent docs"}
 
-
-
-
 class TestAgentMessageInterimDispatch:
     def test_completed_agent_message_emits_interim(self):
         agent = _make_stub_agent()
@@ -260,8 +227,6 @@ class TestAgentMessageInterimDispatch:
         agent._emit_interim_assistant_message.assert_called_once_with(
             {"role": "assistant", "content": "I'll check the config first."}
         )
-
-
 
     def test_show_commentary_off_suppresses_interim(self):
         """display.show_commentary=false silences agentMessage interim
@@ -279,7 +244,6 @@ class TestAgentMessageInterimDispatch:
             "type": "commandExecution", "id": "cmd-1", "command": "ls",
         }))
         agent.tool_progress_callback.assert_called_once()
-
 
 class TestBridgeRobustness:
 
@@ -306,9 +270,6 @@ class TestBridgeRobustness:
         bridge(_item_completed({
             "type": "agentMessage", "id": "am-x", "text": "hi",
         }))
-
-
-
 
 # ---------- end-to-end: bridge is wired in run_codex_app_server_turn ----------
 

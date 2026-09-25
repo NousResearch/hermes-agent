@@ -205,9 +205,14 @@ def record_start_and_check_storm(
         now = datetime.now(timezone.utc).timestamp()
         existing: list[float] = []
         if path.exists():
-            for line in path.read_text(encoding="utf-8").splitlines():
-                with contextlib.suppress(ValueError):
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
                     existing.append(float(line))
+                except ValueError:
+                    pass  # corrupt/truncated ledger line — skip, never fatal
         existing.append(now)
         recent = [ts for ts in existing if now - ts <= window_s]
         # Ring-buffer the persisted file so it stays bounded.
@@ -456,11 +461,33 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
 
 
 def _get_process_start_time(pid: int) -> Optional[int]:
-    """Per-process start-time fingerprint (PID-reuse guard), or None: ``/proc/<pid>/stat`` field 22
-    on Linux, else psutil ``create_time()`` in centiseconds. Units differ per platform; the guard
-    only compares same-host values."""
-    with contextlib.suppress(IndexError, ValueError, OSError):
-        return int(Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[21])
+    """Return a stable per-process start-time fingerprint, or None.
+
+    Used as a PID-reuse guard: a ``(pid, start_time)`` pair uniquely identifies
+    a process, so a recycled PID (same number, different process) yields a
+    different value and is never mistaken for the original.
+
+    On Linux this is field 22 of ``/proc/<pid>/stat`` (start time in clock
+    ticks since boot, an int).  On platforms without ``/proc`` (macOS, Windows)
+    we fall back to ``psutil.Process(pid).create_time()`` — a float epoch
+    timestamp — quantized to an int (centiseconds) for stable equality.
+
+    The two sources are never mixed on a single platform: ``/proc`` always
+    succeeds first on Linux, and always fails on macOS/Windows so psutil is
+    always used there.  Because the guard only compares the value recorded at
+    spawn against the live value *on the same host*, the differing units across
+    platforms are irrelevant — only same-source equality matters.
+    """
+    stat_path = Path(f"/proc/{pid}/stat")
+    try:
+        # Field 22 in /proc/<pid>/stat is process start time (clock ticks).
+        return int(stat_path.read_text(encoding="utf-8").split()[21])  # windows-footgun: ok (/proc is BOM-free)
+    except (FileNotFoundError, IndexError, PermissionError, ValueError, OSError):
+        pass
+
+    # No /proc (macOS / Windows): psutil is a hard dependency and exposes a
+    # cross-platform creation time.  Quantize to centiseconds so repeated reads
+    # of the same process compare equal without float-precision fragility.
     try:
         import psutil  # type: ignore
         return int(round(psutil.Process(pid).create_time() * 100))
@@ -524,6 +551,12 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         return None
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
+        return "run"
+    # Atomic Hermes' bundled desktop runner shares HERMES_HOME with the CLI; without this,
+    # `gateway run --replace` does not recognise it as a running gateway, skips the
+    # terminate-and-scoped-lock-handoff path, and collides with its still-held scoped locks
+    # (e.g. the Discord bot-token lock). See #22418.
+    if any(b == "desktop-gateway.py" for b in basenames):
         return "run"
     if any(b in ("hermes-gateway", "hermes-gateway.exe") for b in basenames):
         return "run"
@@ -694,7 +727,8 @@ def _get_code_identity_fields() -> dict[str, Any]:
     degrades to absent fields.
     """
     try:
-        from hermes_cli.build_info import get_code_identity
+        from hermes_cli.version_info import get_code_identity
+
         identity = get_code_identity()
         return {"code_sha": identity.get("sha"), "code_version": identity.get("version")}
     except Exception:
@@ -723,8 +757,11 @@ def _read_json_file(path: Path, *, bare_pid_ok: bool = False) -> Optional[dict[s
     """JSON object at ``path``, or None when absent/empty/unreadable/invalid. ``bare_pid_ok`` also
     accepts legacy bare-integer PID files as ``{"pid": N}``."""
     try:
-        raw = path.read_text(encoding="utf-8").strip() if path.exists() else ""
-    except (OSError, UnicodeDecodeError):  # vanished, EACCES, non-UTF-8 garbage
+        raw = path.read_text(encoding="utf-8-sig").strip()
+    except (OSError, UnicodeDecodeError):
+        # OSError: file vanished or permission flipped between exists() and
+        # read. UnicodeDecodeError: file holds non-UTF-8 / binary garbage
+        # (a truncated or clobbered status file). Either way it's unusable.
         return None
     if not raw:
         return None
@@ -869,13 +906,6 @@ def _posix_is_zombie(pid: int) -> bool:
         return len(stat_fields) > 2 and stat_fields[2] == "Z"
     except FileNotFoundError:
         with contextlib.suppress(Exception):
-            # --compile-bytecode: uv does NOT write __pycache__ by default (pip does), so without it the
-            # first `import <backend>` in the foreground of a user request recompiles every module of the
-            # backend *and* its transitive deps (#100461). This covers the whole install;
-            # _warm_installed_bytecode below is the belt-and-braces pass for the spec's own roots on any
-            # tier.
-            # CREATE_NO_WINDOW on Windows — under the desktop GUI's windowless parent, this spawn otherwise
-            # flashes a console (#56747).
             r = subprocess.run(
                 ["ps", "-o", "state=", "-p", str(pid)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,

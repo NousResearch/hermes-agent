@@ -4,6 +4,12 @@ import { defineLocale } from './define-locale'
 import { introZhHant } from './intro-zh-hant'
 
 export const zhHant = defineLocale({
+  externalOpenFailed: {
+    title: '無法開啟此連結',
+    message: '沒有註冊用於開啟此位址的瀏覽器。請複製連結並手動開啟。',
+    copyUrl: '複製連結',
+    close: '關閉'
+  },
   intro: introZhHant,
   sessionImport: {
     title: '從其他應用程式繼續',
@@ -159,6 +165,8 @@ export const zhHant = defineLocale({
   },
 
   notifications: {
+    sharedProfileWarning:
+      '另一個 Hermes 安裝實例正在使用此設定檔。兩個實例共用此設定檔的設定和資料，因此變更可能發生衝突。你可以繼續使用，也可以在變更前關閉另一個實例。',
     region: '通知',
     hide: '隱藏',
     show: '顯示',
@@ -352,6 +360,7 @@ export const zhHant = defineLocale({
     plugins: {
       openFolder: '開啟桌面外掛資料夾',
       installModal: {
+        installUncertain: 'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
         repoPlaceholder: 'https://github.com/owner/repo',
@@ -1029,40 +1038,7 @@ export const zhHant = defineLocale({
       driverHealth: '驅動程式健康狀態'
     },
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `版本 ${value}`,
-      versionUnavailable: '版本不可用',
-      bundleOutOfSync: '應用程式建置版本過舊',
-      bundleOutOfSyncDesc:
-        'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
-      bundleOutOfSyncAction: '取得安裝程式',
-      bundleSwapPending: '重新啟動以完成更新',
-      bundleSwapPendingDesc:
-        '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
-      bundleSwapPendingAction: '重新啟動 Hermes',
-      updates: '更新',
-      checkNow: '立即檢查',
-      checking: '檢查中…',
-      seeWhatsNew: '查看新增內容',
-      updateNow: '立即更新',
-      releaseNotes: '發行說明',
-      onLatest: '你已是最新版本。',
-      installing: '正在安裝更新。',
-      cantUpdate: '此版本無法從應用程式內自行更新。',
-      cantReach: '無法連線到更新伺服器。',
-      tapCheck: '點選「立即檢查」以尋找更新。',
-      updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
-      updateReadyUnknown: '新更新已就緒。',
-      lastChecked: age => `上次檢查：${age}`,
-      justNowSuffix: ' · 剛剛',
-      automaticUpdates: '自動更新',
-      automaticUpdatesDesc: 'Hermes 會在背景自動檢查更新，並在有可用更新時通知你。',
-      branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
-      never: '從未',
-      justNow: '剛剛',
-      minAgo: count => `${count} 分鐘前`,
-      hoursAgo: count => `${count} 小時前`,
-      daysAgo: count => `${count} 天前`
+      updates: '更新'
     },
     config: {
       minimizeToTrayTitle: '最小化至系統匣',
@@ -1366,6 +1342,7 @@ export const zhHant = defineLocale({
       }
     },
     localModels: {
+      connectionChanged: '本地模型連線已變更',
       title: '本地模型',
       runtimeTitle: '本地執行環境',
       runtimeReady: backend => `就緒 · ${backend}`,
@@ -1397,7 +1374,13 @@ export const zhHant = defineLocale({
       quickstartConfigure: '讓我選擇',
       downloaded: '已下載',
       downloadAction: size => `下載 · ${size}`,
-      downloadProgress: (done, total) => `正在下載 ${done} / ${total}`,
+      downloadProgress: (done, total) => `${done} / ${total}`,
+      downloadStatusRunning: '下載中',
+      downloadSpeed: rate => `${rate}`,
+      downloadEta: time => `剩餘約 ${time}`,
+      downloadPausedLabel: '已暫停',
+      downloadPauseAction: '暫停',
+      downloadResumeAction: '繼續',
       downloadDoneToast: model => `${model} 已就緒。`,
       installDoneToast: '本地執行環境已安裝就緒。',
       useAction: '使用',
@@ -1408,7 +1391,7 @@ export const zhHant = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——已設定的組建。`,
+      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend})。`,
       activeDetail: '新對話使用此模型——傳送首條訊息時載入',
       activeNotLoaded: '首條訊息時載入',
       loadedPill: '已載入',
@@ -2285,6 +2268,16 @@ export const zhHant = defineLocale({
     switchToConnection: name => `切換至 ${name}`,
     switchConnectionFailed: name => `無法連線至 ${name}`,
     manageProfiles: '管理設定檔…',
+    fleet: {
+      localDevice: '此裝置（本機後端——若未安裝 Hermes 則會安裝，否則開啟新的工作階段）',
+      switchDeviceTitle: '切換到此裝置？',
+      switchDeviceDesc: '這會在這台電腦上開啟新的工作階段。目前的對話仍留在另一個閘道。',
+      switchDeviceConfirm: '切換',
+      installDeviceTitle: '切換到此裝置？',
+      installDeviceDesc: '這會在本機安裝 Hermes，然後在這台電腦上開啟新的工作階段。確認之前不會開始安裝。',
+      installDeviceConfirm: '本機安裝',
+      connectExistingInstead: '改為連線現有環境'
+    },
     remoteOverride: {
       menuItem: '連線至遠端主機…',
       badge: (host: string) => `執行於 ${host}`,
@@ -2748,6 +2741,7 @@ export const zhHant = defineLocale({
       branchFrom: '分支',
       rename: '重新命名…',
       archive: '封存',
+      unarchive: '取消封存',
       newWindow: '新視窗',
       openInTerminal: '在終端機中開啟',
       copyIdFailed: '無法複製工作階段 ID',
@@ -3096,7 +3090,7 @@ export const zhHant = defineLocale({
       copyFailure: '複製條件到剪貼板失敗',
       continuationFailed: '提交目標延續內容失敗',
       continuationQueued: '目標已恢復 — 延續內容已排隊，將在目前回合結束後送出',
-      continuationBusy: '目標已恢復 — 會話忙碌中，請 /interrupt 目前回合以繼續',
+      continuationBusy: '目標已恢復 — 會話忙碌中，請先停止目前回覆（Stop 按鈕或 Esc）以繼續',
       controlUnavailable: msg => `會話控制無法使用: ${msg}`,
       dismissError: '關閉錯誤',
       add: '新增'
@@ -3149,6 +3143,13 @@ export const zhHant = defineLocale({
   },
 
   updates: {
+    discontinuedTitle: '此版本的 Hermes 已停止支援',
+    discontinuedBody: '此版本的 Hermes 已停止支援，可能無法正常運作——請解除安裝。您的資料仍保留在磁碟上。',
+    channels: { stable: '穩定版', canary: '預覽版' },
+    bundleSwapPending: '重新啟動以完成更新',
+    bundleSwapPendingDesc:
+      '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
+    bundleSwapPendingAction: '重新啟動 Hermes',
     stages: {
       idle: '準備中…',
       prepare: '準備中…',
@@ -3171,6 +3172,7 @@ export const zhHant = defineLocale({
     connectionRetry: '請檢查網路連線後重試。',
     gitUnusable: 'Hermes 無法在這台電腦上執行 Git，因此無法檢查更新。',
     latestBody: '您正在執行最新版本。',
+    versionDetailsDistributionStore: 'Microsoft Store',
     latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',
@@ -3230,7 +3232,31 @@ export const zhHant = defineLocale({
       notAvailable: '此後端無法更新。',
       failed: '後端更新失敗。',
       noReturn: '後端未恢復連線。更新可能未完成——請檢查後端主機。'
-    }
+    },
+    // Restored About-card strings (moved from `settings.about.*` to `updates.*`).
+    version: value => `版本 ${value}`,
+    versionUnavailable: '版本不可用',
+    checkNow: '立即檢查',
+    seeWhatsNew: '查看新增內容',
+    releaseNotes: '發行說明',
+    onLatest: '你已是最新版本。',
+    installing: '正在安裝更新。',
+    cantReach: '無法連線到更新伺服器。',
+    tapCheck: '點選「立即檢查」以尋找更新。',
+    updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
+    updateReadyUnknown: '新更新已就緒。',
+    lastChecked: age => `上次檢查：${age}`,
+    never: '從未',
+    justNow: '剛剛',
+    minAgo: count => `${count} 分鐘前`,
+    hoursAgo: count => `${count} 小時前`,
+    daysAgo: count => `${count} 天前`,
+    justNowSuffix: ' · 剛剛',
+    bundleOutOfSync: '應用程式建置版本過舊',
+    bundleOutOfSyncDesc:
+      'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
+    bundleOutOfSyncAction: '取得安裝程式',
+    checkingShort: '檢查中…'
   },
 
   guidedGreeting: {
@@ -3419,6 +3445,7 @@ export const zhHant = defineLocale({
       search: '搜尋模型',
       noModels: '找不到模型',
       editModels: '編輯模型…',
+      followDefault: '使用設定中的預設模型',
       refreshModels: '重新整理模型',
       fast: '快速'
     },
@@ -3534,7 +3561,8 @@ export const zhHant = defineLocale({
         title: '上下文使用量',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-      session: '工作階段',
+      focusedSince: '聚焦以來',
+      focusedSinceTitle: '自本次聚焦此對話以來的時間，不是回合執行時長',
       yoloOn: 'YOLO 已開啟 — 自動核准危險指令。Shift+點擊可全域切換。',
       yoloOff: 'YOLO 已關閉。Shift+點擊可全域切換。',
       modelNone: '無',
@@ -4085,6 +4113,8 @@ export const zhHant = defineLocale({
     sessionUnavailable: '工作階段不可用',
     createSessionFailed: '無法建立新工作階段',
     promptFailed: '提示詞傳送失敗',
+    staleSessionTitle: '對話已過期',
+    staleSessionBody: '此視窗落後於同一對話的其他視窗。已載入最新訊息。若仍要傳送請再試一次。',
     providerCredentialRequired: '傳送第一則訊息前請先新增提供方憑證。',
     emptySlashCommand: '空的斜線指令',
     desktopCommands: '桌面端指令',
@@ -4126,6 +4156,8 @@ export const zhHant = defineLocale({
     deleteFailed: '刪除失敗',
     archived: '已封存',
     archiveFailed: '封存失敗',
+    restored: '已還原',
+    unarchiveFailed: '取消封存失敗',
     cwdChangeFailed: '工作目錄變更失敗',
     cwdStagedTitle: '工作目錄已暫存',
     cwdStagedMessage: '重新啟動桌面後端後，工作目錄變更才會套用至此作用中工作階段。',

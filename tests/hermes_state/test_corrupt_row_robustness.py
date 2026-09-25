@@ -57,6 +57,44 @@ def test_list_export_and_insights_survive_corrupt_timestamp_rows(corrupt_db, cap
     assert any("bad-huge" in rec.getMessage() for rec in caplog.records)
 
 
+def test_last_active_skips_a_garbage_message_timestamp(tmp_path):
+    """The Desktop sessions pane reads ``last_active`` straight from ``list_sessions_rich`` and builds
+    ``new Date(last_active * 1000)``; one salvaged garbage double must not become the session's recency
+    (#91536)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("recovered", "cli")
+        for text in ("first", "second", "third"):
+            db.append_message("recovered", "user", text)
+        good = max(row["timestamp"] for row in db.get_messages("recovered"))
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET timestamp = 5.4905047707024164e+246 WHERE session_id = 'recovered' "
+            "AND id = (SELECT MIN(id) FROM messages WHERE session_id = 'recovered')"))
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET last_activity_at = 'not-a-timestamp' WHERE id = 'recovered'"))
+        rows = {r["id"]: r for r in db.list_sessions_rich(limit=10)}
+        tip_rows = {r["id"]: r for r in db.list_sessions_rich(limit=10, order_by_last_active=True)}
+    finally:
+        db.close()
+    assert rows["recovered"]["last_active"] == good
+    assert tip_rows["recovered"]["last_active"] == good
+
+
+def test_last_active_never_falls_back_to_a_corrupt_started_at(corrupt_db):
+    """With no in-window activity or message timestamp left, the ``started_at`` fallback must be filtered
+    too, or the corrupt cell becomes ``last_active`` and pins the session to the top of MRU (#91536)."""
+    corrupt_db._execute_write(lambda conn: conn.execute(
+        "UPDATE sessions SET last_activity_at = NULL WHERE id = 'bad-huge'"))
+    listings = (corrupt_db.list_sessions_rich(limit=10), corrupt_db.list_sessions_rich(limit=10, order_by_last_active=True),
+                corrupt_db.search_sessions(limit=10))
+    for rows in listings:
+        by_id = {r["id"]: r for r in rows}
+        assert by_id["bad-huge"]["last_active"] is None and by_id["bad-text"]["last_active"] is None
+        assert by_id["good"]["last_active"] is not None
+    for rows in listings[1:]:
+        assert rows[0]["id"] == "good"
+
+
 def test_writers_never_persist_an_out_of_window_timestamp(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

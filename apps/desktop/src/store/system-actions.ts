@@ -4,6 +4,7 @@ import { getActionStatus, getStatus, restartGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { sharedGatewayProfiles } from '@/lib/shared-gateway-restart'
 import { confirm } from '@/store/confirm'
+import { reconnectGateway } from '@/store/gateway-reconnect'
 import { notify, notifyError } from '@/store/notifications'
 import type { ActionResponse } from '@/types/hermes'
 
@@ -21,10 +22,32 @@ export const $gatewayRestarting = atom(false)
 // non-zero exit so the caller can surface the failure. In no-service installs
 // the child becomes the foreground gateway and never exits, so "still running
 // when the window closes" counts as success.
+//
+// `gateway-restart` is polled against the very backend the restart takes down:
+// while the old process exits and the new one binds, requests refuse/fail and
+// the in-memory action registry dies with the old process (a 404 or a fresh
+// process's `running:false, exit_code:null` is a healthy mid-restart state,
+// not a failure). Those poll errors are tolerated so the restart the user
+// asked for cannot surface as a false "restart failed" toast (#123111).
 async function awaitAction(name: string): Promise<void> {
   for (let attempt = 0; attempt < POLL_ATTEMPTS; attempt += 1) {
     await new Promise(resolve => window.setTimeout(resolve, POLL_INTERVAL_MS))
-    const status = await getActionStatus(name, POLL_TIMEOUT_S)
+
+    let status: Awaited<ReturnType<typeof getActionStatus>>
+
+    try {
+      status = await getActionStatus(name, POLL_TIMEOUT_S)
+    } catch {
+      // The backend accepted the restart POST a moment ago and is now
+      // refusing — the expected shape of the restart window itself.
+      continue
+    }
+
+    if (!status.running && status.exit_code == null) {
+      // A fresh process that never saw this action id answers exactly this
+      // way; only a recorded non-zero exit (or a full budget) is a failure.
+      continue
+    }
 
     if (!status.running) {
       if (status.exit_code != null && status.exit_code !== 0) {
@@ -97,12 +120,20 @@ export async function runGatewayRestart(): Promise<boolean> {
     return false
   } finally {
     $gatewayRestarting.set(false)
+    // The restart took down the process serving this client's own WebSocket
+    // (and any action-registry state with it), so leaving recovery to the
+    // passive close→backoff machinery lets a Windows close-frame-less drop sit
+    // as a zombie until the 45s heartbeat deadline — or until the user
+    // relaunches the app. Hand reconnection to the owner that knows how; a
+    // not-yet-registered handler or a still-down backend rejects and is
+    // swallowed (the boot loop keeps retrying regardless).
+    void reconnectGateway().catch(() => undefined)
   }
 }
 
 // Watch a restart the BACKEND spawned (e.g. after Telegram QR onboarding writes
 // credentials) instead of one this app requested. Same indicator, same bounded
-// poll; resolves `false` on a non-zero exit so the caller can re-arm its banner.
+// poll, same restart-window tolerance and reconnect follow-through.
 export async function watchGatewayRestartOutcome(): Promise<boolean> {
   $gatewayRestarting.set(true)
 
@@ -114,5 +145,6 @@ export async function watchGatewayRestartOutcome(): Promise<boolean> {
     return false
   } finally {
     $gatewayRestarting.set(false)
+    void reconnectGateway().catch(() => undefined)
   }
 }

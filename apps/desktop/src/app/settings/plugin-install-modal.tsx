@@ -16,13 +16,14 @@ import {
   preventCloseButtonAutoFocus
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
-import { COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { type AgentPluginLiveNow, COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
 import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
@@ -30,13 +31,25 @@ import {
   openPluginInstallRequest,
   type PluginInstallRequest
 } from '@/store/plugin-install-request'
-import { $activeGatewayProfile, $profileScope } from '@/store/profile'
+import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
 import { $connection } from '@/store/session'
-import { runGatewayRestart } from '@/store/system-actions'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
 type ProbePhase = 'idle' | 'probing' | 'ready' | 'error'
+
+type InstallModalCopy = ReturnType<typeof useI18n>['t']['settings']['plugins']['installModal']
+
+/** What an agent-plugin install made usable, as toast fragments ("12 tools connected", ...). */
+function installOutcome(m: InstallModalCopy, live: AgentPluginLiveNow, nextChat: boolean): string[] {
+  const tools = live.mcpServers.reduce((n, server) => n + (server.connected ? server.tools.length : 0), 0)
+
+  return [
+    ...(tools > 0 ? [m.toolsConnected(tools)] : []),
+    ...(live.skills.length > 0 ? [m.skillsReady(live.skills)] : []),
+    ...(nextChat ? [m.nextChat] : [])
+  ]
+}
 
 export function PluginInstallModal() {
   const request = useStore($pluginInstallRequest)
@@ -48,9 +61,11 @@ export function PluginInstallModal() {
   const onSettings = location.pathname.startsWith(SETTINGS_ROUTE)
   const connection = useStore($connection)
   const activeProfile = useStore($activeGatewayProfile)
+  const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
 
   const [repoInput, setRepoInput] = useState('')
+  const [targetProfile, setTargetProfile] = useState('default')
   const [phase, setPhase] = useState<ProbePhase>('idle')
   const [probe, setProbe] = useState<ProbeResult | null>(null)
   const [installAgent, setInstallAgent] = useState(true)
@@ -60,6 +75,7 @@ export function PluginInstallModal() {
   const [pinRef, setPinRef] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
+  const [installUncertain, setInstallUncertain] = useState(false)
   const probeToken = useRef(0)
 
   const resetState = useCallback(() => {
@@ -73,6 +89,7 @@ export function PluginInstallModal() {
     setPinRef('')
     setInstalling(false)
     setInstallError(null)
+    setInstallUncertain(false)
   }, [])
 
   const applyLegacyHint = useCallback((payload: PluginInstallRequest, detected: ProbeResult) => {
@@ -94,6 +111,7 @@ export function PluginInstallModal() {
       setPhase('probing')
       setProbe(null)
       setInstallError(null)
+      setInstallUncertain(false)
       // Reviewed catalog picks streamline the ceremony: enable defaults ON
       // (installing a reviewed entry to not use it is the rare case).
       setEnableAgent(payload.enable ?? true)
@@ -151,21 +169,23 @@ export function PluginInstallModal() {
       return
     }
 
+    setTargetProfile(normalizeProfileKey(request.profile || activeProfile || profileScope))
+
     if (request.repo) {
       void runProbe(request)
     }
-  }, [request, resetState, runProbe])
+  }, [activeProfile, profileScope, request, resetState, runProbe])
 
-  const profileLabel = request?.profile || activeProfile || profileScope || 'default'
+  const targetProfileInfo = profiles.find(profile => normalizeProfileKey(profile.name) === targetProfile)
+  const profileOptions = targetProfileInfo ? profiles : [...profiles, { name: targetProfile }]
+  const targetProfileLabel = profileLabel(targetProfileInfo ?? { name: targetProfile })
 
   const agentTargetHint =
     connection?.mode === 'remote'
-      ? m.agentTargetRemote(profileLabel)
+      ? m.agentTargetRemote(targetProfileLabel)
       : m.agentTargetLocal(
-          profileLabel,
-          request?.profile && request.profile !== 'default'
-            ? `~/.hermes/profiles/${request.profile}/plugins/`
-            : '~/.hermes/plugins/'
+          targetProfileLabel,
+          targetProfile === 'default' ? '~/.hermes/plugins/' : `~/.hermes/profiles/${targetProfile}/plugins/`
         )
 
   // A unified package installed into a local backend carries its own desktop
@@ -186,7 +206,7 @@ export function PluginInstallModal() {
   }
 
   const handleInstall = async () => {
-    if (!request || !probe?.ok || installing) {
+    if (!request || !probe?.ok || installing || installUncertain) {
       return
     }
 
@@ -198,10 +218,12 @@ export function PluginInstallModal() {
 
     setInstalling(true)
     setInstallError(null)
+    setInstallUncertain(false)
 
     const errors: string[] = []
     const successes: string[] = []
     let agentInstalled = false
+    let live: AgentPluginLiveNow = { mcpServers: [], skills: [] }
 
     try {
       if (installAgent && probe.agent) {
@@ -211,12 +233,18 @@ export function PluginInstallModal() {
           enable: enableAgent,
           catalogName: request.catalogName,
           ref: pinRefTrimmed || undefined,
-          profile: request.profile
+          profile: targetProfile
         })
 
         if (result.ok) {
-          successes.push(m.agentSuccess(result.pluginName ?? request.repo))
+          successes.push(
+            [
+              m.agentSuccess(result.pluginName ?? request.repo),
+              ...installOutcome(m, result.live, result.nextChat)
+            ].join(' · ')
+          )
           agentInstalled = true
+          live = result.live
 
           if (result.missingEnv?.length) {
             const firstVar = result.missingEnv[0]
@@ -236,20 +264,36 @@ export function PluginInstallModal() {
           for (const warning of result.warnings ?? []) {
             notify({ kind: 'warning', message: warning })
           }
+        } else if (result.timedOut) {
+          // A client timeout does not cancel the backend install. Do not clone
+          // the desktop half or offer a retry while the package may still be
+          // installing. A read-only list refresh can show an already landed
+          // package; the user can rescan later if the backend is still busy.
+          setInstallUncertain(true)
+          void loadAgentPlugins(requestGateway, targetProfile)
+
+          return
         } else {
           errors.push(result.error || m.agentFailed)
         }
       }
 
       if (installDesktop && probe.desktop) {
-        if (agentInstalled && desktopHalfFromPackage) {
+        if (desktopHalfFromPackage) {
           // Unified package into a LOCAL backend: the desktop half ships inside
-          // the package folder Electron just watched land. Materialise it from
-          // there (one source of truth, follows updates/uninstall) instead of
-          // cloning a second, standalone copy under another folder name.
+          // the package folder. Materialise it from there (one source of truth,
+          // follows updates/uninstall) instead of cloning a second, standalone
+          // copy under another folder name. This holds whether or not the agent
+          // install above succeeded: a package already on disk answers "already
+          // exists" without Force, and falling through to the clone would land
+          // desktop-plugins/<git-name>/ beside the package copy (#100412). When
+          // there is nothing to materialise, nothing was installed. The agent
+          // error already says so.
           const touched = (await window.hermesDesktop?.reconcileDesktopPlugins?.()) ?? []
 
-          successes.push(m.desktopSuccess(probe.agentName ?? request.repo))
+          if (agentInstalled || touched.length > 0) {
+            successes.push(m.desktopSuccess(probe.agentName ?? request.repo))
+          }
 
           if (touched.length > 0) {
             await discoverRuntimePlugins()
@@ -272,21 +316,18 @@ export function PluginInstallModal() {
         }
       }
 
-      await loadAgentPlugins(requestGateway)
+      await loadAgentPlugins(requestGateway, targetProfile)
 
       if (errors.length === 0) {
         for (const message of successes) {
           notify({ kind: 'success', message })
         }
 
-        // An enabled agent plugin only takes effect after a gateway restart —
-        // offer the restart right here instead of a dim hint to run later.
+        // Open chats of the profile already have the plugin's MCP tools and skills (no click).
         if (agentInstalled && enableAgent) {
-          notify({
-            kind: 'success',
-            message: m.restartToApply,
-            action: { label: m.restartNow, onClick: () => void runGatewayRestart() }
-          })
+          for (const server of live.mcpServers.filter(s => !s.connected)) {
+            notify({ kind: 'warning', message: m.serverNotConnected(server.name, server.error || '') })
+          }
         }
 
         closePluginInstallRequest()
@@ -419,20 +460,39 @@ export function PluginInstallModal() {
                 </div>
 
                 {probe.agent && (
-                  <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
-                    <Checkbox
-                      checked={installAgent}
-                      disabled={busy}
-                      onCheckedChange={value => setInstallAgent(value === true)}
-                    />
-                    <span className="min-w-0">
-                      <span className="block font-medium text-foreground">{m.agentLabel}</span>
-                      <span className="block text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {agentTargetHint}
-                        {probe.agentName ? ` · ${probe.agentName}` : ''}
+                  <div className="space-y-2 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
+                    <label className="flex items-start gap-3">
+                      <Checkbox
+                        checked={installAgent}
+                        disabled={busy}
+                        onCheckedChange={value => setInstallAgent(value === true)}
+                      />
+                      <span className="min-w-0">
+                        <span className="block font-medium text-foreground">{m.agentLabel}</span>
+                        <span className="block text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {agentTargetHint}
+                          {probe.agentName ? ` · ${probe.agentName}` : ''}
+                        </span>
                       </span>
-                    </span>
-                  </label>
+                    </label>
+                    <label className="block space-y-1 pl-7">
+                      <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
+                        {m.profileLabel}
+                      </span>
+                      <Select disabled={busy || !installAgent} onValueChange={setTargetProfile} value={targetProfile}>
+                        <SelectTrigger aria-label={m.profileLabel} className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {profileOptions.map(profile => (
+                            <SelectItem key={profile.name} value={normalizeProfileKey(profile.name)}>
+                              {profileLabel(profile)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </label>
+                  </div>
                 )}
 
                 {probe.desktop && (
@@ -519,6 +579,14 @@ export function PluginInstallModal() {
                 {installError}
               </p>
             )}
+            {installUncertain && (
+              <p
+                className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-secondary)"
+                role="status"
+              >
+                {m.installUncertain}
+              </p>
+            )}
           </div>
         )}
 
@@ -532,7 +600,7 @@ export function PluginInstallModal() {
             </Button>
           ) : (
             <Button
-              disabled={busy || phase !== 'ready' || !probe?.ok || pinRefInvalid}
+              disabled={busy || installUncertain || phase !== 'ready' || !probe?.ok || pinRefInvalid}
               onClick={() => void handleInstall()}
             >
               {installing ? m.installing : m.install}

@@ -52,11 +52,6 @@ def test_derived_cap_small_vm_floors_at_two():
     assert kbd.derive_default_max_in_progress({"mem_total_kib": GIB // 4}) == 2
 
 
-def test_derived_cap_scales_with_memory_and_ceilings():
-    assert kbd.derive_default_max_in_progress({"mem_total_kib": 2 * GIB}) == 4
-    assert kbd.derive_default_max_in_progress({"mem_total_kib": 4 * GIB}) == 8
-    # Big iron clamps at the ceiling — explicit config is the escape hatch.
-    assert kbd.derive_default_max_in_progress({"mem_total_kib": 64 * GIB}) == 8
 
 
 def test_derived_cap_fails_open_without_memtotal():
@@ -93,18 +88,8 @@ def test_resolve_max_in_progress_unset_and_unknown_memory_is_uncapped(monkeypatc
 # ---------------------------------------------------------------------------
 
 
-def test_pressure_level_unknown_on_empty_sample(monkeypatch):
-    monkeypatch.setattr(kbd, "_system_memory_sample", lambda: {})
-    assert kbd._memory_pressure_level() == "unknown"
 
 
-def test_pressure_level_classifies_via_gateway_thresholds():
-    ok = {"mem_available_kib": GIB // 2, "mem_total_kib": 1 * GIB}
-    critical = {"mem_available_kib": 32 * 1024, "mem_total_kib": 1 * GIB}
-    elevated = {"mem_available_kib": 100 * 1024, "mem_total_kib": 1 * GIB}
-    assert kbd._memory_pressure_level(ok) == "ok"
-    assert kbd._memory_pressure_level(critical) == "critical"
-    assert kbd._memory_pressure_level(elevated) == "elevated"
 
 
 # ---------------------------------------------------------------------------

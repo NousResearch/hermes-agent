@@ -414,9 +414,9 @@ def _set_cwd(rid, params, key, value, session):
     if not os.path.isdir(cwd):
         return _err(rid, 4002, f"working directory does not exist: {raw}")
     _write_config_key("terminal.cwd", cwd)
-    # ``TERMINAL_CWD`` is the LAUNCH process's; a profile-bound session persists its cwd through its
-    # own config.yaml (written above under the session scope) and must not leak it into other profiles.
-    if not (isinstance(session, dict) and session.get("profile_home")):
+    # ``TERMINAL_CWD`` belongs to the launch process. Keep launch-profile updates live, but never
+    # publish an explicit or session-bound secondary profile's cwd into that process-wide carrier.
+    if Path(get_hermes_home()).resolve() == Path(_hermes_home).resolve():
         os.environ["TERMINAL_CWD"] = cwd
     return _kv(rid, "terminal.cwd", cwd, cwd=cwd, branch=git_probe.branch(cwd))
 
@@ -471,12 +471,21 @@ _CONFIG_SETTERS = {
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
 
+# Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
+# agent.* for every surface, the process env every later child inherits). A non-empty session_id this
+# backend no longer holds (reaped / re-minted) is a stale session, not "no session": it answers 4001 so
+# the client resumes, never the global write. An explicit scope="global" is still honoured.
+_SESSION_SCOPED_KEYS = frozenset({"model", "fast", "yolo", "reasoning"})
+
 
 @method("config.set")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
     session = _sessions.get(params.get("session_id", ""))
+    if session is None and params.get("session_id") and key in _SESSION_SCOPED_KEYS \
+            and _word(params.get("scope")) != "global":
+        return _sess_nowait(params, rid)[1]
     handler = _CONFIG_SETTERS.get(key)
     if handler is None and key.startswith("details_mode."):
         handler = _set_details_section

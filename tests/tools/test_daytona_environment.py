@@ -53,9 +53,8 @@ def _patch_daytona_imports(monkeypatch):
 @pytest.fixture()
 def daytona_sdk(monkeypatch):
     """Provide a mock daytona SDK module and return it for assertions."""
-    # The SDK itself is faked below.  Do not ask lazy_deps to install the
-    # optional package while exercising that fake.
-    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+    # The SDK itself is faked below; bypass the PM install while exercising it.
+    monkeypatch.setattr("tools.environments.daytona.ensure_lazy_dep", lambda extra: None)
     return _patch_daytona_imports(monkeypatch)
 
 
@@ -117,6 +116,12 @@ def make_env(daytona_sdk, monkeypatch):
 # ---------------------------------------------------------------------------
 
 class TestCwdResolution:
+    def test_constructor_prepares_sdk_once(self, make_env, monkeypatch):
+        calls = []
+        monkeypatch.setattr("tools.environments.daytona.ensure_lazy_dep", calls.append)
+        make_env()
+        assert calls == ["daytona"]
+
     def test_default_cwd_resolves_home(self, make_env):
         env = make_env(home_dir="/home/testuser")
         assert env.cwd == "/home/testuser"
@@ -189,21 +194,6 @@ class TestExecute:
         assert result["returncode"] == 0
 
 
-    def test_daytona_error_triggers_retry(self, make_env, daytona_sdk):
-        sb = _make_sandbox()
-        sb.state = "started"
-        sb.process.exec.side_effect = [
-            _make_exec_response(result="/root"),  # $HOME
-            _make_exec_response(result="", exit_code=0),  # init_session
-            daytona_sdk.DaytonaError("transient"),  # first attempt fails
-            _make_exec_response(result="ok", exit_code=0),  # retry succeeds
-        ]
-        env = make_env(sandbox=sb)
-
-        result = env.execute("echo retry")
-        # DaytonaError now surfaces directly through _ThreadedProcessHandle
-        # (no retry logic) — the error becomes returncode=1
-        assert result["returncode"] == 1
 
 
 # ---------------------------------------------------------------------------

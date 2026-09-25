@@ -75,9 +75,14 @@ def _anydoc() -> Optional[Any]:
                 and time.monotonic() - _anydoc_failed_at < ANYDOC_RETRY_SECONDS):
             return None
         try:
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("tool.doc_extract", prompt=False)  # read_file must never block on a prompt
-            _anydoc_module = importlib.import_module("anydoc")
+            from pm import ensure_import
+
+            # read_file must never block on an install prompt.
+            ensure_import("doc-extract")
+        except Exception:
+            _anydoc_failed_at = time.monotonic()
+            return None
+        try:            _anydoc_module = importlib.import_module("anydoc")
         except Exception:  # install failure, ImportError or a broken native binding
             _anydoc_failed_at = time.monotonic()
             return None
@@ -139,8 +144,8 @@ def _anydoc_missing_error(path: str) -> str:
     return (
         f"Cannot convert {path!r}: this format needs the optional anydoc "
         "converter, which is not installed (install blocked or first "
-        "attempt failed; retried every 5 minutes). Fix: `pip install "
-        "firecrawl-anydoc` in Hermes's environment, or convert the file "
+        "attempt failed; retried every 5 minutes). Run `hermes pm repair` "
+        "to restore firecrawl-anydoc, or convert the file "
         "yourself via terminal (e.g. libreoffice --headless --convert-to "
         "txt).")
 
@@ -176,7 +181,7 @@ def _needs_ocr_warning(path: str, pages, hosted_error: str = "") -> str:
         f"[NEEDS OCR: pages {page_list} of this PDF are scanned images "
         f"with no text layer — their content is MISSING below. {hosted}"
         "If the missing pages matter: render just those pages with "
-        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(path)} /tmp/page` "
+        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(path)} $TMPDIR/page` "
         "and inspect via vision_analyze, or check whether an OCR skill is "
         "available (skills_list).]\n")
 
@@ -307,7 +312,7 @@ def _pdf_coverage_note(path: str, display_path: Optional[str] = None) -> str:
         f"{_gap_map(counts, texts, empty)}\n"
         "Decide which gaps you actually need — do NOT OCR or render "
         "everything. For the gaps that matter, render just that range with "
-        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(shown)} /tmp/page` "
+        f"`pdftoppm -jpeg -r 150 -f <first> -l <last> {shlex.quote(shown)} $TMPDIR/page` "
         "and inspect each image with the vision_analyze tool, or use the "
         "ocr-and-documents skill (marker-pdf) for bulk OCR of large "
         "ranges.]\n")
@@ -408,7 +413,7 @@ _CELL_LABELS = {"markdown": "Markdown", "code": "Code", "raw": "Raw"}
 
 def _extract_notebook(path: str, *, display_path: Optional[str] = None) -> str:
     try:
-        with open(path, encoding="utf-8", errors="replace") as fh:
+        with open(path, encoding="utf-8-sig", errors="replace") as fh:
             nb = json.load(fh)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise ExtractionError(f"Not a valid notebook: {exc}") from exc

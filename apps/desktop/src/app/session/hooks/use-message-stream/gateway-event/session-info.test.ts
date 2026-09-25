@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import {
+  $activeSessionId,
   $currentCwd,
   $selectedStoredSessionId,
   $workspaceCwdOwner,
@@ -145,5 +146,77 @@ describe('handleSessionInfoEvent workspace ownership', () => {
     handleSessionInfoEvent(ctx)
 
     expect(next).toBe(original)
+  })
+})
+
+// #93942 scenario B: a mid-conversation model/provider switch rebuilds the
+// runtime, which then speaks under a NEW session_id. Without the re-bind the
+// pane keeps listening on the dead id and every later event of the same
+// conversation fails the isActiveEvent gate until a full resume.
+describe('handleSessionInfoEvent rebuilt-runtime re-bind', () => {
+  function rebuiltRuntimeInfo(storedSessionId: unknown, oldState?: Partial<ClientSessionState>): GatewayEventContext {
+    const ctx = sessionInfoEvent({
+      activeSessionId: 'runtime-old',
+      cwd: '',
+      explicitSid: 'runtime-new',
+      storedSessionId: 'stored-1'
+    })
+
+    ctx.payload = { ...ctx.payload, stored_session_id: storedSessionId } as typeof ctx.payload
+
+    if (oldState) {
+      ctx.deps.sessionStateByRuntimeIdRef.current.set('runtime-old', {
+        ...createClientSessionState('stored-1'),
+        ...oldState
+      })
+    }
+
+    return ctx
+  }
+
+  beforeEach(() => {
+    $selectedStoredSessionId.set('stored-1')
+    $activeSessionId.set('runtime-old')
+  })
+
+  afterEach(() => {
+    $selectedStoredSessionId.set(null)
+    $activeSessionId.set(null)
+  })
+
+  it('adopts the rebuilt runtime id when its lineage matches the open conversation', () => {
+    const ctx = rebuiltRuntimeInfo('stored-1', { busy: false })
+
+    handleSessionInfoEvent(ctx)
+
+    expect($activeSessionId.get()).toBe('runtime-new')
+    expect(ctx.deps.activeSessionIdRef.current).toBe('runtime-new')
+    expect($selectedStoredSessionId.get()).toBe('stored-1')
+  })
+
+  it.each([
+    ['busy', { busy: true }],
+    ['awaiting a response', { awaitingResponse: true }],
+    ['streaming', { streamId: 'stream-1' }]
+  ] as const)('refuses to hijack the pane while the old runtime is %s', (_label, oldState) => {
+    const ctx = rebuiltRuntimeInfo('stored-1', oldState)
+
+    handleSessionInfoEvent(ctx)
+
+    expect($activeSessionId.get()).toBe('runtime-old')
+    expect(ctx.deps.activeSessionIdRef.current).toBe('runtime-old')
+  })
+
+  it.each([
+    ['an empty', ''],
+    ['a missing', undefined],
+    ['a different conversation', 'stored-other']
+  ])('does not re-bind on %s stored_session_id', (_label, storedSessionId) => {
+    const ctx = rebuiltRuntimeInfo(storedSessionId)
+
+    handleSessionInfoEvent(ctx)
+
+    expect($activeSessionId.get()).toBe('runtime-old')
+    expect(ctx.deps.activeSessionIdRef.current).toBe('runtime-old')
   })
 })

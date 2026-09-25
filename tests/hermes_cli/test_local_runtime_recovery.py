@@ -22,7 +22,7 @@ def _wait_for(predicate, timeout=10):
     assert predicate(), "process transition did not complete"
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("case", [
     "modern", "legacy", "live-owner", "pid-reused", "unknown-owner", "wrong-exe",
     "legacy-key", "legacy-models", "busy", "state-replaced", "wrong-parent",
@@ -37,7 +37,6 @@ def test_startup_preserves_trees_and_explicit_stop_checks_owner(tmp_path, monkey
     monkeypatch.setattr(bootstrap, "_SUPERVISOR", None)
     monkeypatch.setattr(bootstrap, "_presets_stale", lambda: False)
     monkeypatch.setattr(bootstrap, "_detect_gpu_vendor", lambda: None)
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.installed_tags", lambda: [])
 
     # A copied native interpreter stands in for the installed server; no live model is touched.
     exe = root / "test-build" / "cpu" / "llama-server.exe"
@@ -53,12 +52,15 @@ def test_startup_preserves_trees_and_explicit_stop_checks_owner(tmp_path, monkey
     # A real owner exits without cleanup, leaving a router and its model child.
     ready = tmp_path / "router.json"
     child_script = tmp_path / "router.py"
+    # The record lands by rename: the parent polls ``ready.exists()``, and an in-place write is visible
+    # (empty) the instant the child opens it — a loaded runner then reads b"" and json.loads raises.
     child_script.write_text(
         "import json,os,sys,time,subprocess,psutil\n"
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
-        "with open(sys.argv[1], 'w') as f:\n"
+        "with open(sys.argv[1] + '.tmp', 'w') as f:\n"
         " json.dump({'router': os.getpid(), 'child': child.pid, "
         "'create_time': psutil.Process().create_time()}, f)\n"
+        "os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n"
         "time.sleep(60)\n", encoding="utf-8")
     owner = subprocess.Popen([
         sys.executable, "-c",
@@ -196,7 +198,7 @@ def test_shutdown_during_backoff_cannot_restart_or_remove_another_server(tmp_pat
     assert json.loads(supervisor.state_path().read_text()) == other
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_supervisor_reaps_owned_job_even_after_router_exit(tmp_path, monkeypatch):
     from types import SimpleNamespace
     from hermes_cli.local_runtime import supervisor
@@ -357,7 +359,7 @@ def test_explicit_stop_preserves_verified_root_incarnation(tmp_path, monkeypatch
         owned_child.kill.assert_called_once_with()
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_reparented_router_keeps_its_endpoint(tmp_path, monkeypatch):
     from hermes_cli.local_runtime import endpoint, supervisor
 
@@ -390,7 +392,7 @@ print(json.dumps({'pid': proc.pid, 'create_time': proc.create_time(), 'executabl
             owner.stdout.close()
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 @pytest.mark.parametrize("damage", ["valid", "birth", "exe", "bool-pid", "bool-birth", "nan", "inf", "owner-bool", "owner-nan", "parent", "partial", "list", "invalid", "unreadable"])
 def test_retained_endpoint_validates_identity(tmp_path, monkeypatch, damage):
     from hermes_cli.local_runtime import endpoint, recovery, supervisor

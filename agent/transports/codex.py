@@ -80,7 +80,11 @@ _PERPLEXITY_RESERVED_TOOL_NAMES = (
     "people_search",
     "finance_search",
 )
+# xAI and OpenAI Responses (api.openai.com and the ChatGPT Codex backend) reserve ``tool_search``
+# for their native Tool Search ("Function 'tool_search.tool_search' not allowed in reserved
+# namespace 'tool_search'", #83122 / #95003).
 _XAI_RESERVED_TOOL_NAMES = ("tool_search",)
+_OPENAI_RESPONSES_HOSTS = frozenset({"api.openai.com", "chatgpt.com"})
 _RESERVED_TOOL_ALIAS_PREFIX = "hermes_"
 
 # Reverse map used ONLY when normalize_response runs on a transport that never
@@ -171,11 +175,52 @@ def _xai_prefers_native_web_search() -> bool:
         return True
 
 
-def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_responses: bool) -> tuple[Any, dict[str, str]]:
+def _reserves_tool_search(params: dict[str, Any], is_xai_responses: bool) -> bool:
+    """True when the Responses endpoint owns the ``tool_search`` namespace (xAI, OpenAI, ChatGPT Codex)."""
+    if is_xai_responses or params.get("is_codex_backend") is True:
+        return True
+    try:
+        from utils import base_url_hostname
+
+        return base_url_hostname(str(params.get("base_url") or "")).lower() in _OPENAI_RESPONSES_HOSTS
+    except Exception:
+        return False
+
+
+def _openai_prefers_native_web_search() -> bool:
+    """True when the active web-search backend selects OpenAI's server-side ``web_search``.
+
+    Same contract as :func:`_xai_prefers_native_web_search` with one deliberate
+    difference: it fails CLOSED (False). A resolution failure must leave the client-side
+    Hermes tool in place rather than swap in a built-in the endpoint might reject.
+
+    Only consulted for the Codex backend (``chatgpt.com/backend-api/codex``); a custom
+    OpenAI-compatible endpoint does not implement the server-side tool.
+    """
+    try:
+        from agent.web_search_registry import get_active_search_provider
+
+        provider = get_active_search_provider()
+        if provider is not None:
+            return getattr(provider, "name", None) == "openai-native"
+
+        from tools.web_tools import _get_search_backend
+
+        return (_get_search_backend() or "").strip().lower() == "openai-native"
+    except Exception:  # noqa: BLE001 — a probe failure must not change the request shape
+        return False
+
+
+def _alias_wire_tools(
+    response_tools: Any, params: dict[str, Any], is_xai_responses: bool, is_codex_backend: bool = False,
+) -> tuple[Any, dict[str, str]]:
     """Apply provider-reserved tool-name aliasing; returns ``(tools, {alias: original})`` for THIS request.
 
     xAI: a client ``web_search`` collides with Grok's native search — native mode
     swaps it 1:1 for the built-in, client mode keeps Hermes dispatch under an alias.
+
+    OpenAI Codex: the Responses endpoint carries the same collision, so the backend
+    selection drives the same 1:1 swap (``web.search_backend: openai-native``).
     """
     wire_aliases: dict[str, str] = {}
 
@@ -190,6 +235,13 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
                 {**t, "name": _XAI_CLIENT_WEB_SEARCH_ALIAS} if is_client_web_search(t) else t for t in response_tools
             ]
             wire_aliases[_XAI_CLIENT_WEB_SEARCH_ALIAS] = "web_search"
+    # OpenAI Codex: the Responses endpoint exposes the same server-executed ``web_search``,
+    # and a client-side function of that name collides with it the same way. Unlike xAI there
+    # is no alias fallback: when the user has not selected ``openai-native`` we leave the
+    # client tool untouched, so an endpoint that cannot host the built-in never breaks.
+    if is_codex_backend and response_tools and any(is_client_web_search(t) for t in response_tools):
+        if _openai_prefers_native_web_search():
+            response_tools = [t for t in response_tools if not is_client_web_search(t)] + [{"type": "web_search"}]
     # OpenCode Responses backends reserve web_search / search_files as function names (HTTP 400 "custom
     # function name 'X' is reserved", #85589). Alias them on the wire; normalize_response maps them back.
     if response_tools and _is_opencode_responses_backend(params):
@@ -214,17 +266,24 @@ def _alias_wire_tools(response_tools: Any, params: dict[str, Any], is_xai_respon
     # request emits is recorded here and stashed on the transport, so the reverse rewrite in
     # ``normalize_response`` applies only to aliases that were actually sent (never to a real tool that
     # merely shares an alias-shaped name).
-    if is_xai_responses and response_tools:
+    if response_tools and _reserves_tool_search(params, is_xai_responses):
         response_tools, _xai_aliases = _alias_reserved_tools(response_tools, _XAI_RESERVED_TOOL_NAMES)
         wire_aliases.update(_xai_aliases)
     return response_tools, wire_aliases
 
 
+# Models already warned that an explicit disable has no wire form on their route (one warning per process).
+_UNPROJECTABLE_DISABLE_WARNED: set[str] = set()
+
+
 def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
     """``(effort, enabled)`` for the request, effort clamped (never escalated) to the endpoint's vocabulary.
 
-    A profile-declared ``()`` means "no reasoning parameters accepted" (400 on any
-    reasoning field) and disables reasoning outright.
+    A profile-declared ``()`` (or a model that takes no ``reasoning`` field on its route) means "no
+    reasoning parameters accepted" (400 on any reasoning field) and disables reasoning outright:
+    ``(None, False)``. An explicit ``reasoning_effort: none`` on a route whose vocabulary has ``none``
+    resolves to ``("none", False)`` so the disable goes on the wire instead of being omitted — omitting
+    it re-enables the model's default effort (gpt-5.6 defaults to ``medium``, #75227).
     """
     reasoning_effort, reasoning_enabled = "medium", True
     reasoning_config = params.get("reasoning_config")
@@ -252,9 +311,21 @@ def _resolve_reasoning(model: str, params: dict[str, Any]) -> tuple[Any, bool]:
         declared = None
         if not (is_codex_backend or _is_openai_api_origin(base_url)):
             declared = _profile_declared_efforts(params.get("provider"), model, base_url)
-        if declared is not None and not declared:
-            reasoning_enabled = False
-        supported = declared or _codex_efforts_for_route(model, base_url, is_codex_backend=is_codex_backend)
+        supported = declared if declared is not None else _codex_efforts_for_route(
+            model, base_url, is_codex_backend=is_codex_backend)
+        if not supported:
+            return None, False
+    if not reasoning_enabled:
+        has_none = any(str(level).strip().lower() == "none" for level in supported)
+        if not has_none and model not in _UNPROJECTABLE_DISABLE_WARNED:
+            # #75227: report the unsupported configuration instead of silently falling back.
+            _UNPROJECTABLE_DISABLE_WARNED.add(model)
+            logger.warning(
+                "reasoning_effort: none cannot be sent for %s — its route accepts only %s, so the model's "
+                "default effort stays on (an omitted reasoning field does not disable it).",
+                model, ", ".join(str(level) for level in supported),
+            )
+        return ("none" if has_none else None), False
     return clamp_effort(reasoning_effort, supported), reasoning_enabled
 
 
@@ -303,7 +374,17 @@ def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
 
 
 def _codex_efforts_for_route(model: Any, base_url: Any, *, is_codex_backend: bool = False) -> tuple[str, ...]:
-    """Keep Astra's new vocabulary off unrelated Responses-compatible endpoints."""
+    """Effort vocabulary for a Responses route; ``()`` when the model takes no ``reasoning`` field at all.
+
+    Keeps Astra's new vocabulary off unrelated Responses-compatible endpoints, and sends nothing for the
+    chat-era OpenAI families (gpt-4o, gpt-4.1, ...) on api.openai.com, which 400 on any ``reasoning``
+    key (#76255). Only the exact OpenAI origin is judged: a relay serving those ids may translate.
+    """
+    if not is_codex_backend and _is_openai_api_origin(base_url):
+        from agent.model_metadata import openai_model_rejects_reasoning
+
+        if openai_model_rejects_reasoning(str(model or "")):
+            return ()
     if is_astra_model(model) and not (
         is_codex_backend or _is_official_openai_responses_route(model, base_url)
     ):
@@ -450,7 +531,8 @@ def _is_azure_responses(params: dict[str, Any]) -> bool:
 def _newest_reasoning_only(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Copy of ``messages`` keeping ``codex_reasoning_items`` only on the newest assistant row that has any.
     Foundry rejects a request that replays encrypted reasoning from more than one prior response (HTTP 400
-    "Conflicting authenticated continuation identities", #105369). ``compaction`` checkpoints stay everywhere."""
+    "Conflicting authenticated continuation identities", #105369). ``compaction`` checkpoints stay everywhere.
+    A trimmed row is marked ``codex_reasoning_trimmed`` so the converter still drops its ``msg_*`` id (#97427)."""
     out: list[dict[str, Any]] = []
     newest_kept = False
     for msg in reversed(messages):
@@ -458,7 +540,7 @@ def _newest_reasoning_only(messages: list[dict[str, Any]]) -> list[dict[str, Any
         if isinstance(items, list) and any(isinstance(i, dict) and i.get("type") != "compaction" for i in items):
             if newest_kept:
                 checkpoints = [i for i in items if isinstance(i, dict) and i.get("type") == "compaction"]
-                msg = dict(msg)
+                msg = dict(msg, codex_reasoning_trimmed=True)
                 if checkpoints:
                     msg["codex_reasoning_items"] = checkpoints
                 else:
@@ -492,7 +574,9 @@ def _reasoning_fields(
     """``reasoning`` / ``include`` request fields for the endpoint family.
 
     xAI 400s on ``reasoning.effort`` outside its allowlist; GitHub Models takes a
-    verbatim ``github_reasoning_extra`` and never ``include``.
+    verbatim ``github_reasoning_extra`` and never ``include``. A disabled ask resolved to
+    ``effort="none"`` is sent as ``{"effort": "none"}`` — the wire has no other way to switch
+    a reasoning model's default effort off (#75227).
     """
     include = ["reasoning.encrypted_content"] if replay_encrypted_reasoning else []
     fields: dict[str, Any] = {}
@@ -511,6 +595,8 @@ def _reasoning_fields(
             fields["include"] = include
     elif not is_github_responses and not is_xai_responses:
         fields["include"] = []
+        if effort == "none":
+            fields["reasoning"] = {"effort": "none"}
     return fields
 
 
@@ -612,7 +698,9 @@ class ResponsesApiTransport(ProviderTransport):
         native_compaction_active = _native_compaction_active(context_management)
 
         reasoning_effort, reasoning_enabled = _resolve_reasoning(model, params)
-        response_tools, self._last_wire_aliases = _alias_wire_tools(self.convert_tools(tools), params, is_xai_responses)
+        response_tools, self._last_wire_aliases = _alias_wire_tools(
+            self.convert_tools(tools), params, is_xai_responses, is_codex_backend,
+        )
 
         # Lazy: provider plugins import this transport during model_metadata init.
         from agent.model_metadata import strip_codex_context_variant_suffix as _strip_ctx_variant
@@ -656,6 +744,11 @@ class ResponsesApiTransport(ProviderTransport):
             replay_encrypted_reasoning=replay_encrypted_reasoning,
             is_xai_responses=is_xai_responses, is_github_responses=is_github_responses,
         ))
+        # agent.text_verbosity -> top-level ``text.verbosity`` (#20203). Unset sends nothing;
+        # xAI's /responses rejects unknown top-level fields, same as service_tier below.
+        text_verbosity = params.get("text_verbosity")
+        if text_verbosity and not is_xai_responses:
+            kwargs["text"] = {"verbosity": text_verbosity}
         if request_overrides:
             kwargs.update(request_overrides)
             kwargs["model"] = wire_model

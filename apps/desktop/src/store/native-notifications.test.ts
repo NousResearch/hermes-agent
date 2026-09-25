@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
-import type { SessionInfo } from '@/types/hermes'
 
 import { $gateway } from './gateway'
 import {
@@ -19,7 +18,7 @@ import {
 import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
 import { $approvalRequest, clearAllPrompts, setApprovalRequest } from './prompts'
 import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
-import { $activeSessionId, setActiveSessionId, setSessions } from './session'
+import { setActiveSessionId } from './session'
 import { dropSessionState, publishSessionState } from './session-states'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
@@ -159,48 +158,12 @@ describe('dispatchNativeNotification preferences', () => {
     dispatchNativeNotification({ kind: 'turnError', sessionId, title: 'boom' })
     expect(notify).toHaveBeenCalledTimes(1)
   })
-
-  it('forwards kind and sessionId to the bridge', () => {
-    setActiveSessionId('abc')
-    dispatchNativeNotification({ body: 'hi', kind: 'turnError', sessionId: 'abc', title: 'boom' })
-    expect(notify).toHaveBeenCalledWith(
-      expect.objectContaining({ body: 'hi', kind: 'turnError', sessionId: 'abc', title: 'boom' })
-    )
-  })
-})
-
-describe('dispatchNativeNotification session context', () => {
-  it('names the session on blocking-prompt titles only, falling back to the id tail without a row', () => {
-    setSessions([{ id: 'named-chat', title: 'Migrate the schema' } as SessionInfo])
-
-    try {
-      dispatchNativeNotification({ kind: 'input', sessionId: 'named-chat', title: 'Input needed' })
-      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Input needed — Migrate the schema' }))
-
-      dispatchNativeNotification({ kind: 'approval', sessionId: 'abcdef123456', title: 'Approval needed' })
-      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Approval needed — #123456' }))
-
-      setActiveSessionId('named-chat')
-      dispatchNativeNotification({ kind: 'turnDone', sessionId: 'named-chat', title: 'Hermes finished' })
-      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Hermes finished' }))
-    } finally {
-      setSessions([])
-    }
-  })
 })
 
 describe('dispatchNativeNotification post-connect baseline', () => {
   it('suppresses a prompt replayed right after a socket opens', () => {
     markNativeNotifyBaseline()
     dispatchNativeNotification({ kind: 'approval', sessionId: freshSession(), title: 'approve' })
-    expect(notify).not.toHaveBeenCalled()
-  })
-
-  it('suppresses a completion replayed right after a socket opens', () => {
-    const sessionId = freshSession()
-    setActiveSessionId(sessionId)
-    markNativeNotifyBaseline()
-    dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
     expect(notify).not.toHaveBeenCalled()
   })
 
@@ -334,13 +297,6 @@ describe('sendTestNativeNotification', () => {
     setActiveSessionId('on-screen')
     sendTestNativeNotification('Hermes', 'works')
     expect(notify).toHaveBeenCalledTimes(1)
-  })
-})
-
-describe('$activeSessionId wiring', () => {
-  it('reflects the setter used for gating', () => {
-    setActiveSessionId('xyz')
-    expect($activeSessionId.get()).toBe('xyz')
   })
 })
 

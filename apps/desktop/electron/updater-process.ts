@@ -1,26 +1,136 @@
-import { spawn, type SpawnOptions } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
+import { spawn, type SpawnOptions, spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { existsSync, realpathSync, statSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
-import { resolveVenvDir } from './venv-blocker-scan'
-import { hiddenWindowsChildOptions } from './windows-child-options'
+/** Historical layouts still matter when uninstalling or migrating a source install. */
+export function resolveVenvDir(updateRoot: string): string {
+  for (const name of ['venv', '.venv']) {
+    const candidate: string = path.join(updateRoot, name)
 
-/** File prerequisites only: dependency recovery must remain reachable through update. */
-export function windowsUpdatePrerequisiteError(updateRoot: string): string | null {
-  const maintainedDir = path.join(updateRoot, 'scripts', 'desktop-update')
-  const required = [path.join(resolveVenvDir(updateRoot), 'Scripts', 'python.exe')]
-
-  // Pre-reorg flat scripts remain supported; damaged modern trees do not.
-  if (existsSync(maintainedDir)) {
-    required.push(path.join(maintainedDir, 'windows.ps1'))
+    try {
+      if (statSync(candidate).isDirectory()) {
+        return candidate
+      }
+    } catch {
+      // Try the other supported layout, then retain the legacy diagnostic path.
+    }
   }
 
-  for (const candidate of required) {
+  return path.join(updateRoot, 'venv')
+}
+
+import { platformDefaultHermesHome } from './data-paths'
+import { hiddenWindowsChildOptions } from './windows-child-options'
+
+/** Exact installation identity; PATH may refer to another checkout. */
+export function resolveInstallationLauncher(
+  updateRoot: string,
+  isWindows: boolean = process.platform === 'win32',
+  hermesHome: string = process.env.HERMES_HOME ?? ''
+): string | null {
+  const names: string[] = isWindows ? ['hermes.exe', 'hermes.cmd'] : ['hermes']
+
+  for (const name of names) {
+    const candidate: string = path.join(updateRoot, '.hermes', 'bin', name)
+
     if (stagedFileExists(candidate)) {
-      continue
+      return candidate
+    }
+  }
+
+  // Earlier PM installers published only to user-bin. Trust that historical
+  // launcher only after its existing version surface proves exact source identity.
+  if (stagedFileExists(path.join(updateRoot, 'hermes_cli', '_launchers.py'))) {
+    const defaultHome: string = platformDefaultHermesHome(os.homedir(), process.env, isWindows ? 'win32' : 'linux')
+
+    const dirs: string[] = isWindows
+      ? [
+          path.join(hermesHome || defaultHome, 'bin'),
+          path.join(defaultHome, 'bin'),
+          path.join(path.dirname(updateRoot), 'bin')
+        ]
+      : [path.join(os.homedir(), '.local', 'bin'), path.join(hermesHome || defaultHome, 'bin')]
+
+    for (const dir of new Set(dirs)) {
+      for (const name of names) {
+        const candidate: string = path.join(dir, name)
+
+        if (stagedFileExists(candidate) && launcherTargetsInstallation(candidate, updateRoot)) {
+          return candidate
+        }
+      }
+    }
+  }
+
+  // An old shim is a migration rung, never a damaged PM install fallback.
+  if (!existsSync(path.join(updateRoot, 'pm'))) {
+    const legacy: string = path.join(updateRoot, 'venv', isWindows ? 'Scripts' : 'bin', names[0])
+
+    if (stagedFileExists(legacy)) {
+      return legacy
+    }
+  }
+
+  return null
+}
+
+// cmd.exe re-parses its command line, so a launcher path carrying any of
+// these would change the command instead of naming a file.
+const CMD_UNSAFE_PATH: RegExp = /["%&|<>^\r\n]/
+
+export function launcherTargetsInstallation(launcher: string, root: string): boolean {
+  try {
+    // Node refuses to exec a .cmd directly (CVE-2024-27980), and `shell:true`
+    // would hand an interpolated path to cmd.exe wholesale. Invoke cmd.exe
+    // explicitly instead: a fixed argv, the path quoted verbatim and screened
+    // for cmd metacharacters, and nothing else for the shell to interpret.
+    const viaCmd: boolean = process.platform === 'win32' && /\.cmd$/i.test(launcher)
+
+    if (viaCmd && CMD_UNSAFE_PATH.test(launcher)) {
+      return false
     }
 
-    return `Update aborted: ${candidate} is missing or unreadable. Repair the installation and review antivirus quarantine before retrying.`
+    const command: string = viaCmd ? (process.env.ComSpec ?? 'cmd.exe') : launcher
+    const args: string[] = viaCmd ? ['/d', '/s', '/c', `""${launcher}" --version"`] : ['--version']
+
+    const probe: SpawnSyncReturns<string> = spawnSync(command, args, {
+      cwd: root,
+      encoding: 'utf8',
+      timeout: 15000,
+      windowsHide: true,
+      windowsVerbatimArguments: viaCmd,
+      env: { ...process.env, HERMES_INSTALL_ROOT: root }
+    })
+
+    if (probe.error || probe.status !== 0) {
+      return false
+    }
+
+    const reported: string | undefined = /^Install directory: (.+)$/m.exec(probe.stdout)?.[1]?.trim()
+
+    return reported !== undefined && realpathSync(reported) === realpathSync(root)
+  } catch {
+    return false
+  }
+}
+
+/** File prerequisites only: dependency recovery remains reachable through update. */
+export function windowsUpdatePrerequisiteError(updateRoot: string, hermesHome?: string): string | null {
+  if (!resolveInstallationLauncher(updateRoot, true, hermesHome)) {
+    return `Update aborted: the installation launcher under ${updateRoot} is missing. Repair this installation before retrying.`
+  }
+
+  const maintainedDir: string = path.join(updateRoot, 'scripts', 'desktop-update')
+
+  if (existsSync(maintainedDir)) {
+    for (const name of ['windows.ps1']) {
+      const candidate: string = path.join(maintainedDir, name)
+
+      if (!stagedFileExists(candidate)) {
+        return `Update aborted: ${candidate} is missing or unreadable. Repair the installation and review antivirus quarantine before retrying.`
+      }
+    }
   }
 
   return null
@@ -127,24 +237,34 @@ export function resolvePosixScriptHandoff(
 }
 
 /**
- * Wrap a PowerShell hand-off invocation so it survives a detached, hidden
- * spawn from Electron.
+ * Wrap a PowerShell hand-off invocation so it survives a hidden spawn from
+ * Electron without ever showing a console window (#116161).
  *
  * Verified empirically (2026-08-09, Windows 11): `spawn('powershell', [...,
  * '-File', script], { detached: true, stdio: 'ignore', windowsHide: true })`
  * exits 0 WITHOUT executing a single line of the script. powershell.exe is a
- * console-subsystem binary; detached+windowsHide gives it no console to
- * attach to, and Windows PowerShell 5.1 dies during console init before
- * -File processing (the same class of failure as #54220's conhost work, on
- * the launch side). The same spawn with a visible console, or non-detached,
- * runs fine — so unit tests and foreground use hide the bug.
+ * console-subsystem binary; libuv maps `detached: true` to DETACHED_PROCESS,
+ * which gives the child NO console (and makes the OS ignore CREATE_NO_WINDOW),
+ * and Windows PowerShell 5.1 dies during console init before -File processing
+ * (the same class of failure as #54220's conhost work, on the launch side).
  *
- * `cmd /c start "" /min powershell ...` was the variant that survived the
- * full detached+hidden production shape in testing: `start` allocates the
- * child its own (minimized) console and fully detaches it from cmd.exe,
- * which exits immediately. The spawned pid is therefore the WRAPPER's —
- * callers must not use it as a marker owner (the script claims the marker
- * itself with its own $PID).
+ * The parent-console model that follows from that (and that every other
+ * hidden spawn in this app relies on): a console child inherits its parent's
+ * console; only a console-LESS parent forces the OS to allocate a new,
+ * visible one. So the wrapper cmd.exe is spawned NON-detached — libuv then
+ * honours `windowsHide` (CREATE_NO_WINDOW) and cmd.exe owns one hidden
+ * console — and `start "" /b powershell ...` runs the script inside that
+ * hidden console (`/min` would tell `start` to allocate a NEW console for the
+ * child, which is what flashed a minimized PowerShell window on every
+ * hand-off; `/b` shares the wrapper's). The console outlives cmd.exe for as
+ * long as powershell is attached to it.
+ *
+ * Survival past our own exit does not need `detached`: libuv's per-process
+ * job object has JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, so grandchildren
+ * (`start`'s powershell) are never members and Windows does not tie a
+ * process's lifetime to its parent. `start` returns immediately, so the
+ * spawned pid is the WRAPPER's — callers must not use it as a marker owner
+ * (the script claims the marker itself with its own $PID).
  */
 export function wrapHandoffForDetachedConsole(
   handoff: UpdateScriptHandoff,
@@ -152,10 +272,13 @@ export function wrapHandoffForDetachedConsole(
 ): {
   command: string
   args: string[]
+  /** Spawn NON-detached so the wrapper gets a hidden console the script inherits. */
+  detached: false
 } {
   return {
     command: 'cmd.exe',
-    args: ['/d', '/s', '/c', 'start', '', '/min', handoff.command, ...handoff.args, ...extraArgs]
+    args: ['/d', '/s', '/c', 'start', '', '/b', handoff.command, ...handoff.args, ...extraArgs],
+    detached: false
   }
 }
 

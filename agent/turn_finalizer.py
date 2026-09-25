@@ -270,7 +270,7 @@ def _close_transcript_tail(agent, messages, final_response, interrupted, _recove
         _apply_override(messages)
 
 
-def _micro_compact_after_turn(agent, messages, final_response, logger) -> None:
+def _micro_compact_after_turn(agent, messages, final_response, logger, task_id) -> None:
     """Post-turn micro-compaction: absorb the oldest uncompacted exchange into the
     rolling summary before persist, amortizing compression across turns."""
     try:
@@ -297,7 +297,14 @@ def _micro_compact_after_turn(agent, messages, final_response, logger) -> None:
                 _compressor._flush_scan_cursor_invalidated = False
                 agent._db_flush_scan_prefix = None
             if isinstance(_compacted, list) and _compacted:
+                _spliced = _compacted is not messages  # no-op and defrag passes return the input
                 messages[:] = _compacted
+                if _spliced:
+                    # The splice summarized tool results away: a repeat read must serve them
+                    # again, not an "unchanged" stub pointing at a body that is gone (#32106).
+                    from agent.conversation_compression import _reset_read_dedup_caches
+
+                    _reset_read_dedup_caches(task_id, session_id=agent.session_id or "")
             if _before != len(messages):
                 logger.info("Micro-compaction: %d -> %d messages", _before, len(messages))
     except Exception as _mc_err:
@@ -593,7 +600,7 @@ def finalize_turn(
             final_response, _, _ = apply_llm_output_transform(agent, final_response, turn_id=turn_id, logger=logger)
         _close_transcript_tail(agent, messages, final_response, interrupted, _recovered_from_stream)
         if not interrupted and not failed:
-            _micro_compact_after_turn(agent, messages, final_response, logger)
+            _micro_compact_after_turn(agent, messages, final_response, logger, effective_task_id)
         agent._persist_session(messages, conversation_history)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)

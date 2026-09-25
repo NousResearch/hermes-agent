@@ -1734,19 +1734,24 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     has_replayable_native_compaction_checkpoint,
                 )
 
-                note_checkpoint = getattr(
-                    agent.context_compressor, "note_native_compaction_checkpoint", None
-                )
-                if (
-                    callable(note_checkpoint)
-                    and has_replayable_native_compaction_checkpoint(agent, [msg])
-                ):
-                    note_checkpoint()
-                    # The response priced the pre-checkpoint input, not the next
-                    # compacted request. A matching durable prefix is now stale.
-                    from agent.usage_anchor import set_usage_anchor
+                if has_replayable_native_compaction_checkpoint(agent, [msg]):
+                    note_checkpoint = getattr(
+                        agent.context_compressor, "note_native_compaction_checkpoint", None
+                    )
+                    if callable(note_checkpoint):
+                        note_checkpoint()
+                        # The response priced the pre-checkpoint input, not the next
+                        # compacted request. A matching durable prefix is now stale.
+                        from agent.usage_anchor import set_usage_anchor
 
-                    set_usage_anchor(agent, None)
+                        set_usage_anchor(agent, None)
+                    # The next request drops every item before this checkpoint, so a repeat
+                    # read must serve content again, not an "unchanged" stub (#32106).
+                    # Without a task id the reset would clear every task's caches.
+                    if task_id := getattr(agent, "_current_task_id", None):
+                        from agent.conversation_compression import _reset_read_dedup_caches
+
+                        _reset_read_dedup_caches(task_id, session_id=getattr(agent, "session_id", None) or "")
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]

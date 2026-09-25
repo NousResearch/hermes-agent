@@ -813,7 +813,9 @@ test('resolveRequestedPathForIpc resolves the slash-prefixed drive form MEDIA ca
 
   assert.equal(
     resolved,
-    path.win32.sep === path.sep ? path.win32.resolve('C:/Users/tester/Downloads/report.zip') : path.resolve(slashPrefixedDrive)
+    path.win32.sep === path.sep
+      ? path.win32.resolve('C:/Users/tester/Downloads/report.zip')
+      : path.resolve(slashPrefixedDrive)
   )
 
   if (path.win32.sep === path.sep) {

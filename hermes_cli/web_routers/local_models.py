@@ -523,16 +523,45 @@ def local_models_status():
 
 # ── hardware: what this machine can do ───────────────────────
 def _nvidia_smi_facts() -> dict:
-    """GPU identity + live utilization (NVIDIA only; other vendors degrade to {} and the UI hides those readouts)."""
+    """GPU identity + live utilization (NVIDIA + AMD)."""
+    names = []
+    max_util = 0
+    total_used = 0
+
     smi_exe = hardware._nvidia_smi_path()
-    if not smi_exe:
+    if smi_exe:
+        with contextlib.suppress(OSError, ValueError, subprocess.TimeoutExpired):
+            smi = subprocess.run([smi_exe, "--query-gpu=name,utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
+                                 capture_output=True, text=True, timeout=5)
+            if smi.returncode == 0 and smi.stdout.strip():
+                for line in smi.stdout.strip().splitlines():
+                    name, util, used_mib = (x.strip() for x in line.split(","))
+                    short_name = name.replace("NVIDIA GeForce ", "").replace("NVIDIA ", "")
+                    names.append(short_name)
+                    max_util = max(max_util, int(util))
+                    total_used += int(used_mib)
+
+    hipinfo_exe = r"C:\Program Files\AMD\ROCm\7.1\bin\hipInfo.exe"
+    import os
+    if os.path.exists(hipinfo_exe):
+        with contextlib.suppress(OSError, ValueError, subprocess.TimeoutExpired):
+            hip = subprocess.run([hipinfo_exe], capture_output=True, text=True, timeout=5)
+            if hip.returncode == 0:
+                amd_name = None
+                total_gb = 0
+                for line in hip.stdout.splitlines():
+                    if line.startswith("Name:"):
+                        amd_name = line.split(":", 1)[1].strip().replace("AMD Radeon ", "").replace("AMD ", "")
+                        names.append(amd_name)
+                    elif line.startswith("memInfo.total:"):
+                        total_gb = float(line.split(":")[1].strip().split()[0])
+                    elif line.startswith("memInfo.free:"):
+                        free_gb = float(line.split(":")[1].strip().split()[0])
+                        total_used += int((total_gb - free_gb) * 1024)
+
+    if not names:
         return {}
-    smi = subprocess.run([smi_exe, "--query-gpu=name,utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True, timeout=5)
-    if smi.returncode != 0 or not smi.stdout.strip():
-        return {}
-    name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))
-    return dict(gpu_name=name, gpu_util_percent=int(util), vram_used_bytes=int(used_mib) << 20)
+    return dict(gpu_name=" + ".join(names), gpu_util_percent=max_util, vram_used_bytes=total_used << 20)
 
 
 @router.get("/api/local-models/hardware")

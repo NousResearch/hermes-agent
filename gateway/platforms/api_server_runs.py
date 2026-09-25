@@ -915,13 +915,40 @@ async def _execute_run_via_live_owner(self, run: _RunLaunch, home, record: Dict[
 async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
     """Drive one admitted run, publish its terminal event/status, release live state."""
     _redact_api_error_text = _api_server._redact_api_error_text
+    _resolve_media_to_data_urls = _api_server._resolve_media_to_data_urls
     run_id, loop = run.run_id, asyncio.get_running_loop()
+    # Buffered so a MEDIA:<path> tag split across chunk boundaries still
+    # resolves to an inline data URL instead of leaking as literal text
+    # to a client subscribed to /v1/runs/{id}/events -- the confirmed
+    # 2026-07-28 incident (POST /v1/runs) hit exactly this path. See
+    # StreamingMediaTagResolver's docstring.
+    _run_delta_resolver = _api_server.StreamingMediaTagResolver()
 
     def _text_cb(delta: Optional[str]) -> None:
         if delta is None or run_id not in self._run_streams:
             return
+        safe_text = _run_delta_resolver.feed(delta)
+        if not safe_text:
+            return
         with suppress(Exception):
-            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
+            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=safe_text))
+
+    def _flush_run_delta_resolver() -> None:
+        """Emit whatever the MEDIA-tag resolver is still holding back.
+
+        Idempotent -- ``flush()`` clears its own buffer, so calling this on
+        a path that already flushed is a no-op returning "". That is what
+        lets it be called both on the normal post-run path and again from
+        the ``finally`` safety net without double-emitting.
+        """
+        try:
+            remainder = _run_delta_resolver.flush()
+        except Exception:
+            return
+        if not remainder:
+            return
+        with suppress(Exception):
+            run.put_event(_run_event(run_id, "message.delta", delta=remainder))
 
     def _interim_cb(text: str, *, already_streamed: bool = False) -> None:
         # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls),
@@ -964,6 +991,13 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage, served_runtime = await _submit_api_worker(
             loop, lambda: _run_agent_sync(self, run, agent, approval_notify, _api_server=_api_server))
+        # Release any MEDIA-tag holdback BEFORE the terminal event. feed()
+        # retains all text from the last "MEDIA:" onward, so a terminal path
+        # that skips the flush silently swallows text this endpoint used to
+        # deliver (raw, but delivered). Doing it here -- once, before the
+        # cancelled/failed/completed branching below -- covers all three
+        # uniformly; the finally block covers the raising paths.
+        _flush_run_delta_resolver()
         if not isinstance(result, dict):
             result = {}
         status, fields = terminal_run_status(result)
@@ -980,7 +1014,8 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
                 runtime=served_runtime, requested_runtime=requested if any(requested.values()) else None,
                 route_source=("model_routes" if run.agent_kwargs.get("route")
                               else "raw_request" if any(requested.values()) else "global"))
-            _finish(status, fields, output=result.get("final_response", ""), usage=usage, runtime=served_runtime)
+            _finish(status, fields, output=_resolve_media_to_data_urls(result.get("final_response", "")),
+                    usage=usage, runtime=served_runtime)
     except asyncio.CancelledError:
         _finish("cancelled")
         raise
@@ -995,6 +1030,13 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         # On cancellation (/stop) the executor thread may still block on an approval
         # Event; unregistering releases it. Idempotent on normal completion.
         _unregister_approval_notify(run.approval_session_key)
+        # Safety net for the paths that never reach the post-run flush above:
+        # a raising _run_agent_sync (provider auth failure, generic
+        # exception) or cancellation. Must run BEFORE the close sentinel
+        # below or the delta would be enqueued after the consumer has
+        # already stopped reading. Idempotent, so the normal path's own
+        # flush makes this a no-op there.
+        _flush_run_delta_resolver()
         with suppress(Exception):
             loop.call_soon(run.put_event, None)  # close after the queued events
         _retire_live_run(self, run_id)

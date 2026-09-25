@@ -4,6 +4,7 @@ Based on PR #1085 by ismoilh (salvaged).
 """
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -304,7 +305,8 @@ class TestAtomicWrite:
         res = ops.patch_replace(str(target), "b = 2", "b = 22")
         assert res.success, res.error
         assert target.read_text(encoding="utf-8") == "a = 1\nb = 22\nc = 3\n"
-        assert (os.stat(target).st_mode & 0o777) == 0o600
+        if sys.platform != "win32":
+            assert (os.stat(target).st_mode & 0o777) == 0o600
 
 
 class TestBomHandling:
@@ -325,6 +327,16 @@ class TestBomHandling:
         env = LocalEnvironment(cwd=str(tmp_path))
         return ShellFileOperations(env, cwd=str(tmp_path))
 
+    def test_helpers(self):
+        from tools.file_operations import _strip_bom, _has_bom
+        assert _strip_bom("\ufeffhello") == ("hello", True)
+        assert _strip_bom("hello") == ("hello", False)
+        assert _strip_bom("") == ("", False)
+        # mid-string BOM is data, not a marker — left alone
+        assert _strip_bom("a\ufeffb") == ("a\ufeffb", False)
+        assert _has_bom("\ufeffx") is True
+        assert _has_bom("x") is False
+        assert _has_bom(None) is False
 
     def test_read_strips_bom(self, ops, tmp_path: Path):
         target = tmp_path / "bom.py"
@@ -370,6 +382,12 @@ class TestBomHandling:
         assert raw.startswith(self.BOM.encode("utf-8")), "BOM lost on V4A update"
         assert b"print('world')" in raw
 
+    def test_file_has_bom_ignores_stripped_pre_content(self, ops, tmp_path: Path):
+        # _file_has_bom must probe the DISK even when handed pre_content
+        # that (having been BOM-stripped upstream) claims there is no BOM.
+        target = tmp_path / "bom_probe.py"
+        target.write_bytes(self.BOM.encode("utf-8") + b"x = 1\n")
+        assert ops._file_has_bom(str(target), pre_content="x = 1\n") is True
 
     def test_v4a_update_keeps_terminal_escape_bytes_on_untouched_lines(self, ops, tmp_path: Path):
         # read_file_raw feeds the V4A write-back: every byte on a line the patch never touched
@@ -654,6 +672,7 @@ class TestProtectedInstructionFiles:
     def test_prompts_even_under_yolo(self, tmp_path, approvals, monkeypatch):
         """The whole point: auto-approve/yolo must NOT bypass this gate."""
         import tools.approval as A
+        from tools import approval_context
         monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", True)
         target = tmp_path / "AGENTS.md"
         approvals["answer"] = "deny"
@@ -1056,3 +1075,78 @@ class TestMultiplexProfileWriteGuardsAreProfileScoped:
             reset_hermes_home_override(tok)
         assert err is not None
         assert "Refusing to write to Hermes config file" in err
+
+
+class TestDuplicateDrivePrefixGuard:
+    """Fail-closed guard on a path that already contains a duplicated drive
+    prefix (e.g., ``C:\\Foo\\C:\\Foo`` from a cwd+path prepending bug somewhere
+    upstream). Better to refuse the write than to silently land a file in the
+    wrong place. See path-pollution issue #108508 follow-up.
+
+    The check lives in ``write_file_tool`` before any state-mutating call; the
+    purpose here is to lock in the rule and fail loudly if it ever regresses.
+    """
+
+    def test_clean_absolute_path_passes(self):
+        # Bypass any stale .pyc that may have been written before the guard
+        # landed. Future-proof: the guard lives in write_file_tool itself, so
+        # reimporting is the only thing that gets the patched code.
+        import importlib
+        import tools.file_tools as _ft
+        importlib.reload(_ft)
+        write_file_tool = _ft.write_file_tool
+        # Single, well-formed absolute path: must not be flagged.
+        result = write_file_tool(
+            path=r"C:\Users\bbask\hermes-acceptance\test-clean.py",
+            content="x",
+            cross_profile=True,
+        )
+        # The guard short-circuits BEFORE any tool error/success; it must NOT
+        # mention the duplicated drive prefix.
+        assert "duplicated drive prefix" not in (result or ""), (
+            f"Clean absolute path was incorrectly flagged: {result!r}"
+        )
+
+    def test_mangled_path_is_rejected(self):
+        import importlib
+        import tools.file_tools as _ft
+        importlib.reload(_ft)
+        write_file_tool = _ft.write_file_tool
+        # This is the exact pattern observed in the 2026-09-11 path-pollution
+        # bug: the agent sent an absolute path and the kernel/cwd logic
+        # prepended the cwd, producing a duplicated-drive prefix.
+        mangled = (
+            r"C:\Users\bbask\Hermes-Workspace"
+            r"\C:\Users\bbask\hermes-acceptance\test-mangled.py"
+        )
+        result = write_file_tool(
+            path=mangled,
+            content="x",
+            cross_profile=True,
+        )
+        assert result is not None
+        assert "duplicated drive prefix" in result, (
+            f"Mangled path was NOT rejected by the guard: {result!r}"
+        )
+        # The actual destination must NOT have been created on disk.
+        import os
+        assert not os.path.exists(mangled), (
+            f"File was created at the wrong path: {mangled!r}"
+        )
+
+    def test_relative_path_passes(self):
+        import importlib
+        import tools.file_tools as _ft
+        importlib.reload(_ft)
+        write_file_tool = _ft.write_file_tool
+        # Relative paths still resolve against cwd; they don't look duplicated.
+        result = write_file_tool(
+            path="test-relative.py",
+            content="x",
+            cross_profile=True,
+        )
+        assert "duplicated drive prefix" not in (result or "")
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

@@ -26,9 +26,10 @@ from pathlib import Path
 import pytest
 
 REPO_SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
-HOST_SCRIPTS = Path(
-    os.environ.get("HERMES_HOST_SCRIPT_ROOT", str(Path.home() / ".hermes" / "scripts"))
-)
+# Opt-in only: the hermetic suite forbids reading the real ~/.hermes, so the
+# host comparison runs when HERMES_HOST_SCRIPT_ROOT points at the host scripts.
+_HOST_ROOT = os.environ.get("HERMES_HOST_SCRIPT_ROOT", "")
+HOST_SCRIPTS = Path(_HOST_ROOT) if _HOST_ROOT else Path("/nonexistent-host-script-root")
 
 
 def _vendored() -> list[Path]:

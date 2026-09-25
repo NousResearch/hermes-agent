@@ -427,20 +427,36 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             return
         try:
             from agent.runtime_cwd import set_session_cwd
-            from tools.mcp_tool_discovery import register_mcp_servers
+            from tools.mcp_tool_common import _sanitize_error
+            from tools.mcp_tool_discovery import get_mcp_status, register_mcp_servers
 
             configs = {s.name: _mcp_server_config(s) for s in mcp_servers}
 
-            def _register_pinned() -> None:
+            def _register_pinned() -> list[tuple[str, str]]:
                 # new_session/load_session run outside the per-turn cwd pin; the session's logical cwd is
                 # the default stdio child cwd (tools/mcp_tool_transport.py::_run_stdio), so pin it here.
                 set_session_cwd(state.cwd)
                 register_mcp_servers(configs)
+                return [
+                    (str(status.get("name") or "unknown"), _sanitize_error(str(status.get("error") or "unknown error")))
+                    for status in get_mcp_status(configs)
+                    if status.get("status") == "failed"
+                ]
 
-            await asyncio.to_thread(_register_pinned)  # to_thread already runs in a copied context
+            failures = await asyncio.to_thread(_register_pinned)  # to_thread already runs in a copied context
         except Exception:
             logger.warning("Session %s: failed to register ACP MCP servers", state.session_id, exc_info=True)
             return
+        if self._conn:
+            for name, reason in failures:
+                display_name = " ".join(name.split())[:200] or "unknown"
+                await self._send(
+                    state.session_id,
+                    acp.update_agent_message_text(
+                        f"MCP server '{display_name}' failed to connect: {reason}"
+                    ),
+                    fail_msg="Session %s: failed to report an MCP registration error",
+                )
         try:
             from model_tools import get_tool_definitions
             from agent.memory_manager import inject_memory_provider_tools

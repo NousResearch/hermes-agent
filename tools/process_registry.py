@@ -1174,7 +1174,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             if pty_alive:
                 survivors.append(session.pid)
         if session.pid_scope == "host" and session.pid:
-            if self._host_pid_is_ours(session.pid, session.host_start_time):
+            if self._detached_host_fate(session.pid, session.host_start_time) == "running":
                 if session.pid not in survivors:
                     survivors.append(session.pid)
                 survivors.extend(
@@ -2290,13 +2290,13 @@ class ProcessRegistry(ProcessCheckpointMixin):
         elif session.env_ref and session.pid:
             session.env_ref.execute(f"kill {session.pid} 2>/dev/null", timeout=5)
         elif session.detached and session.pid_scope == "host" and session.pid:
-            # Identity check, not bare liveness: a gone/recycled PID means our
-            # process exited — never tree-kill the stranger. Still stop an owned
-            # scope: a daemonized descendant may survive the wrapper PID.
+            # Same fate as poll/list: a gone or reused PID means our process is
+            # gone — never tree-kill the stranger — but a live PID with an
+            # unreadable start time is still ours and must really be killed.
             # If this recovered session also carries an owned systemd scope, stop that scope before
             # returning: a daemonized descendant may still be alive there even though the wrapper PID exited
             # or was recycled across the gateway restart (#70716, teknium1 review).
-            if not self._host_pid_is_ours(session.pid, session.host_start_time):
+            if self._detached_host_fate(session.pid, session.host_start_time) != "running":
                 if session.systemd_unit:
                     _stop_systemd_unit(session.systemd_unit)
                 with session._lock:
@@ -2308,7 +2308,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 # whose start time does not match.
                 self._close_reused_detached(session)
                 return {"status": "already_exited", "exit_code": session.exit_code, **output}
-            self._terminate_host_pid(session.pid, session.host_start_time)
+            # Identity was just proven above. Re-passing the start time would make
+            # an unreadable probe refuse the kill and leave the re-adopted child running.
+            self._terminate_host_pid(session.pid)
         else:
             return {
                 # Reject non-positive timeouts — the schema declares minimum=1, but not every caller

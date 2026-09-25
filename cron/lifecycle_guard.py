@@ -262,6 +262,10 @@ def _read_referenced_script(path: Path) -> tuple[Optional[str], bool]:
         return None, False
     try:
         metadata = os.fstat(descriptor)
+        if stat.S_ISDIR(metadata.st_mode):
+            # A directory is not an executable script and cannot carry lifecycle
+            # commands; source-code path literals can reference directories.
+            return None, False
         if not stat.S_ISREG(metadata.st_mode):
             return None, True
         # Read a bounded chunk first — even for oversized files, the first

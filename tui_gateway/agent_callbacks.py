@@ -208,7 +208,18 @@ def _wire_callbacks(sid: str):
         from gateway.session_context import get_session_env
 
         owner_sid = get_session_env("HERMES_UI_SESSION_ID")
-        val = _ask("secret", owner_sid, pl) if owner_sid else ""
+        # Credential admission is fenced to a live runtime. owner_sid is a ContextVar copied onto
+        # the worker's thread at spawn: a background/btw/preview worker outlives its session, and
+        # the close path's `_clear_pending` cancels only requests ALREADY open — it cannot fence
+        # one created afterward. Without a session here the request would register, wait 300s for
+        # a client that never reconnects, and any late answer would settle into the saver with no
+        # owner to revalidate (andrexibiza P2, #121471). A parked reconnectable record also keeps
+        # `write_json` off the stdio fallback — there is no `session.resume` for a closed sid.
+        if owner_sid and _sessions.get(owner_sid) is None:
+            logger.info("secret prompt for %s refused: its UI session is closed", owner_sid)
+            val = ""
+        else:
+            val = _ask("secret", owner_sid, pl) if owner_sid else ""
         if not val:
             return {"success": True, "stored_as": env_var, "validated": False, "skipped": True, "message": "skipped"}
         from hermes_cli.config import save_env_value_secure

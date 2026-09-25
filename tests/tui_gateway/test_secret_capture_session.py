@@ -81,6 +81,11 @@ def test_secret_prompt_goes_to_active_turn_not_last_wired_session(monkeypatch):
     server, server_requests, skills_tool = _gateway(monkeypatch)
     server._wire_callbacks("session-A")
     server._wire_callbacks("session-B")  # replaces the process-global callback
+    # A live turn's UI owner is a live session record (secret admission is fenced to one;
+    # see test_closed_runtime_secret_request_is_refused).
+    with server._sessions_lock:
+        server._sessions["session-A"] = {"agent": object(), "session_key": "key-A"}
+        server._sessions["session-B"] = {"agent": object(), "session_key": "key-B"}
 
     tokens = server._set_session_context("turn-A", ui_session_id="session-A")
     try:
@@ -91,6 +96,9 @@ def test_secret_prompt_goes_to_active_turn_not_last_wired_session(monkeypatch):
         )
     finally:
         server._clear_session_context(tokens)
+        with server._sessions_lock:
+            for sid in ("session-A", "session-B"):
+                server._sessions.pop(sid, None)
         server_requests.reset_for_tests()
 
     assert [frame["method"] for frame in frames] == ["secret"]
@@ -203,3 +211,68 @@ def test_background_prompt_secret_reaches_its_own_session_and_profile(two_profil
     assert _saved_tokens(launch) == []
     done = [frame["params"] for frame in frames if (frame.get("params") or {}).get("type") == "background.complete"]
     assert [(event["session_id"], event["payload"]["text"]) for event in done] == [("session-A", "available")]
+
+
+def test_closed_runtime_secret_request_is_refused(two_profiles, monkeypatch):
+    """After its session closed, a worker's secret ask must create no request and save nothing.
+
+    andrexibiza's P2 scenario: start ``prompt.background`` for A, pause immediately before
+    credential capture, close A through the real ``session.close`` handler, then resume the
+    worker. ``_spawn_side_agent`` keeps A's UI/profile context on the worker thread, and the
+    close path cancels only requests ALREADY open — the ask that lands after the close used to
+    register (``_session_client_answers_requests`` treats an absent session as answerable,
+    ``write_json`` falls back to stdio) and wait 300s, and a late answer settled into the saver
+    with the owner gone. The refusal must be at admission: zero post-close ``secret`` requests,
+    zero ``.env`` writes, and the skill reports setup needed.
+    """
+    launch, home_a, home_b = two_profiles
+    server, server_requests, skills_tool = _gateway(monkeypatch)
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+
+    ask_gate = threading.Event()  # main → worker: resume the ask
+    ask_reached = threading.Event()  # worker → main: paused right before credential capture
+    agent_a = object()
+    session_a = {
+        "agent": agent_a, "session_key": "key-session-A", "profile_home": str(home_a), "cwd": str(home_a)}
+
+    class ModelBoundary:
+        def __init__(self, **_kw):
+            pass
+
+        def run_conversation(self, **_kw):
+            ask_reached.set()
+            ask_gate.wait(30)  # pause right before the skill's credential capture
+            view = json.loads(skills_tool.skill_view("secret-skill", preprocess=False))
+            return {"final_response": view.get("readiness_status") or view.get("error")}
+
+    monkeypatch.setattr("run_agent.AIAgent", ModelBoundary)
+    monkeypatch.setattr(server, "_background_agent_kwargs", lambda _agent, _task_id: {})
+    frames, completed = _client(server, server_requests, monkeypatch, {"session-A": "a-secret"})
+    with server._sessions_lock:
+        server._sessions["session-A"] = session_a
+    try:
+        server._wire_callbacks("session-B")  # closure sid must not be borrowed either
+        reply = server._methods["prompt.background"](
+            "rid", {"session_id": "session-A", "text": "load secret-skill"})
+        assert "error" not in reply, reply
+        assert ask_reached.wait(30), "background worker never reached the ask"
+
+        # The real close path: the close handler pops the session and tears it down.
+        assert "error" not in server._methods["session.close"]("rid2", {"session_id": "session-A"})
+        with server._sessions_lock:
+            assert "session-A" not in server._sessions
+        ask_gate.set()  # resume the worker: its secret ask arrives AFTER the close
+        assert completed.wait(30), "background worker never completed"
+    finally:
+        ask_gate.set()
+        with server._sessions_lock:
+            server._sessions.pop("session-A", None)
+        server_requests.reset_for_tests()
+
+    assert [frame for frame in frames if frame.get("method") == "secret"] == []
+    assert server_requests.open_request_count() == 0
+    assert _saved_tokens(home_a) == []
+    assert _saved_tokens(home_b) == []
+    assert _saved_tokens(launch) == []
+    done = [frame["params"] for frame in frames if (frame.get("params") or {}).get("type") == "background.complete"]
+    assert [(event["session_id"], event["payload"]["text"]) for event in done] == [("session-A", "setup_needed")]

@@ -164,7 +164,7 @@ def test_stream_refusals_and_large_payloads_do_not_corrupt_the_next_call(monkeyp
 
     def dispatch(name, args, **kw):
         calls.append(args["path"])
-        return json.dumps({"path": large_response if args["path"] == "large" else args["path"]})
+        return json.dumps({"path": large_response if args["path"] == "large" else args["path"]}, indent=2)
 
     monkeypatch.setattr("model_tools.handle_function_call", dispatch)
     with tempfile.TemporaryDirectory(prefix="hrpc-", dir="/tmp") as root:

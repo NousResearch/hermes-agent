@@ -149,7 +149,9 @@ class RemoteRPCStream:
                     ) if _rpc_token_ok(request, rpc_token) else tool_error("Unauthorized RPC request")
                 if self.stop.is_set():
                     break
-                encoded = result.encode() + b"\n"
+                # Handlers may return pretty-printed JSON. Preserve the value,
+                # but make each response one frame on the newline protocol.
+                encoded = (json.dumps(json.loads(result), ensure_ascii=False) + "\n").encode()
                 self.process.stdin.write(encoded)
                 self.process.stdin.flush()
         except (OSError, ValueError):

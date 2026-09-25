@@ -63,6 +63,34 @@ def test_heartbeat_carries_only_new_output_and_stops_at_exit(tmp_path, monkeypat
                            timeout=2.5)
 
 
+def test_schema_minimum_heartbeat_is_disabled_for_foreground(monkeypatch):
+    from tools import terminal_tool as tt
+
+    captured = {}
+
+    def fake_terminal_tool(**kwargs):
+        captured.update(kwargs)
+        return json.dumps({"output": "Background process started", "session_id": "proc_x", "exit_code": 0})
+
+    monkeypatch.setattr(tt, "terminal_tool", fake_terminal_tool)
+    heartbeat_schema = tt.TERMINAL_SCHEMA["parameters"]["properties"]["heartbeat"]
+    generated = {
+        "command": "pwd",
+        "background": False,
+        "timeout": 20,
+        "pty": False,
+        "notify": False,
+        "heartbeat": heartbeat_schema["minimum"],
+    }
+
+    result = json.loads(tt._handle_terminal(generated))
+
+    assert not result.get("error")
+    assert captured["background"] is False
+    assert captured["heartbeat"] == 0
+    assert captured["notify_on_complete"] is False
+
+
 def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monkeypatch):
     from tools import terminal_tool as tt
 

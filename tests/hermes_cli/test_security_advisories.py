@@ -255,15 +255,17 @@ class TestRealCatalog:
     def test_vulnerable_below_entries_are_well_formed_ranges(self):
         """Structural contract for any `vulnerable_below` triple that ships.
 
-        A stray typo like `"v20.18.1"` (a leading, non-numeric character) does not
-        raise anywhere in the pipeline — `_semver_tuple` silently collapses it to
-        `(0, 0, 0)` (see `test_semver_tuple_non_numeric_leading_segment_collapses_to_zero`),
+        `_semver_tuple` now tolerates one leading 'v' (see
+        `test_semver_tuple_strips_one_leading_v`), but a catalog entry should never carry
+        one in the first place — a strict `\\d+\\.\\d+\\.\\d+` shape check here keeps the
+        source of truth unambiguous rather than relying on the parser's leniency. Any
+        OTHER non-numeric leading segment still silently collapses to `(0, 0, 0)`
+        (`test_semver_tuple_other_non_numeric_leading_segments_still_collapse_to_zero`),
         which would quietly turn a scoped floor into "vulnerable since the dawn of
-        time". A strict `\\d+\\.\\d+\\.\\d+` shape check here catches that class of
-        typo at test time instead of at false-positive-report time. Likewise, a
-        `floor_version >= fixed_version` entry can never match anything (dead
-        weight that silently never fires) and is almost certainly a copy-paste
-        mistake, not intentional.
+        time" — this regex catches that class of typo at test time instead of at
+        false-positive-report time. Likewise, a `floor_version >= fixed_version` entry
+        can never match anything (dead weight that silently never fires) and is almost
+        certainly a copy-paste mistake, not intentional.
         """
         import re
         semver_shape = re.compile(r"^\d+\.\d+\.\d+$")
@@ -443,16 +445,22 @@ def test_semver_tuple_empty_string_is_zero_not_a_crash():
     assert adv._semver_tuple("") == (0, 0, 0)
 
 
-def test_semver_tuple_non_numeric_leading_segment_collapses_to_zero():
-    """Documents a real landmine: a stray leading 'v' in a HARDCODED floor_version
-    or fixed_version constant (e.g. a typo'd `"v20.18.1"` instead of `"20.18.1"`)
-    is not rejected anywhere — it silently parses as (0, 0, 0). For a floor_version
-    this SILENTLY WIDENS the range to "vulnerable since 0.0.0", the exact
-    false-positive-across-release-lines bug this triple shape exists to prevent.
-    `test_vulnerable_below_entries_are_well_formed_ranges` guards the real catalog
-    against this landmine structurally; this test pins the underlying behavior so
-    a future refactor of `_semver_tuple` cannot silently change it without notice."""
-    assert adv._semver_tuple("v20.18.1") == (0, 0, 0)
+def test_semver_tuple_strips_one_leading_v():
+    """A stray leading 'v' (e.g. a floor_version/fixed_version copy-pasted from `node
+    --version` output or Node's own release notes, both of which write `"v20.18.1"`)
+    parses the same as the bare digits, not as (0, 0, 0) — see the fixed landmine this
+    documents in `_semver_tuple`'s docstring. `test_vulnerable_below_entries_are_well_formed_ranges`
+    still rejects a "v"-prefixed catalog entry outright (strict X.Y.Z shape); this is
+    defense in depth for any other caller."""
+    assert adv._semver_tuple("v20.18.1") == (20, 18, 1)
+    assert adv._semver_tuple("V20.18.1") == (20, 18, 1)
+
+
+def test_semver_tuple_other_non_numeric_leading_segments_still_collapse_to_zero():
+    """Only a single leading 'v'/'V' is tolerated — any other non-numeric leading segment
+    still collapses to (0, 0, 0), same as before the 'v' fix."""
+    assert adv._semver_tuple("vv20.18.1") == (0, 0, 0)
+    assert adv._semver_tuple("x20.18.1") == (0, 0, 0)
 
 
 def test_semver_tuple_tolerates_surrounding_whitespace():

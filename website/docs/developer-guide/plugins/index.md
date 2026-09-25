@@ -664,6 +664,30 @@ Config and state have different owners: settings are user-visible behavior in
 `config.yaml`, while state is plugin-owned runtime data under
 `<HERMES_HOME>/plugin-data/`. Neither API exposes another plugin's namespace.
 
+### Record Kanban task events
+
+A plugin that keeps workflow facts on a Kanban card (a review verdict, a gate
+decision, a failure record) uses `ctx.kanban_events` instead of importing
+`kanban_db` internals or querying `task_events` directly:
+
+```python
+def register(ctx):
+    def on_completed(task_id, board=None, run_id=None, **_):
+        ctx.kanban_events.append(task_id, "verdict_v1", {"ok": True}, board=board, run_id=run_id)
+
+    ctx.register_hook("kanban_task_completed", on_completed)
+    # Resumable read: keep the last id in ctx.state.
+    since = ctx.state.get("event_cursor", default=0)
+    for event in ctx.kanban_events.read(since_id=since, kinds=[ctx.kanban_events.kind("verdict_v1"), "blocked"]):
+        since = event["id"]
+    ctx.state.set("event_cursor", since)
+```
+
+Plugin kinds are stored as `<plugin-id>:<kind>` (`[a-z0-9][a-z0-9_.-]{0,63}`), so a
+plugin cannot emit a core lifecycle event. Payloads are JSON objects up to 64 KiB.
+The append runs in the same write transaction helper as core transitions and
+raises `KeyError` for an unknown task. Core kinds are readable by their plain name.
+
 ### Settings form in the Desktop
 
 Every key you declare in the manifest's `config_schema` renders as a field in the

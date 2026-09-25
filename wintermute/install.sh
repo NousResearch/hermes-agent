@@ -151,21 +151,6 @@ fi
 # with it, which would pull their code over Wintermute's. This marker makes Hermes never ask.
 touch "$HERMES_HOME/.skip_upstream_prompt"
 
-# Off-machine backup (optional): if a push URL is set, save his lived state to a git branch
-# on a system cron, so an accident or an rm never erases who he became. Excludes his secrets.
-cp "$REPO_DIR/backup.sh" "$HERMES_HOME/scripts/wintermute_backup.sh"
-chmod +x "$HERMES_HOME/scripts/wintermute_backup.sh"
-if grep -Eq "^[[:space:]]*(export[[:space:]]+)?WINTERMUTE_BACKUP_REMOTE=[^[:space:]]" "$HERMES_HOME/.env" 2>/dev/null; then
-    echo "==> Off-machine backup: remote found, installing a 6-hourly cron"
-    CRON_LINE="0 */6 * * * HERMES_HOME=$HERMES_HOME /bin/bash $HERMES_HOME/scripts/wintermute_backup.sh >> $HERMES_HOME/wintermute/backup.log 2>&1"
-    ( crontab -l 2>/dev/null | grep -v "wintermute_backup.sh" ; echo "$CRON_LINE" ) | crontab - \
-        && echo "    cron installed" || echo "    could not install cron (crontab unavailable?)"
-    echo "==> Running a first backup now"
-    HERMES_HOME="$HERMES_HOME" /bin/bash "$HERMES_HOME/scripts/wintermute_backup.sh" || echo "    first backup skipped/failed (check the remote and auth)"
-else
-    echo "==> Off-machine backup: no WINTERMUTE_BACKUP_REMOTE in .env — skipping (add it to enable)"
-fi
-
 echo "==> Cron job"
 HERMES_HOME="$HERMES_HOME" "$HERMES_PY" "$REPO_DIR/setup_cron.py" "$TARGET"
 

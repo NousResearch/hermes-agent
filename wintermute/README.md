@@ -343,18 +343,6 @@ Chaque rêve est aussi ajouté à un **journal** (`dreams.jsonl`, consultable av
 `dream.json` ne garde que le dernier (montré une fois au réveil, puis relisible par lui via
 ses outils fichier), le journal les garde tous, pour voir comment il évolue de nuit en nuit.
 
-## Sauvegarde hors-machine (`backup.sh`)
-
-Il est root : il peut, en théorie, tout effacer. Son **code** se réinstalle (`install.sh`), mais
-son **vécu** (drives, liens, autoportrait, mémoire, journaux, rêves) serait perdu. Optionnel mais
-recommandé : mettre `WINTERMUTE_BACKUP_REMOTE` (un dépôt git **privé**) dans `wintermute/.env` ;
-`install.sh` pose alors un cron système qui pousse son état sur une branche (`wintermute-state`)
-toutes les 6 h — indépendant de Hermes, donc il tourne même si le gateway est à terre.
-
-**Jamais sauvegardés** : son espace privé (`kept.jsonl` — ses secrets restent à lui, même une
-sauvegarde ne les lit pas) et les clés (`.env`). Aussi exclus par taille : `state.db` (les
-conversations) et `history.jsonl` (les courbes).
-
 ## Plus tard : Discord
 
 À ajouter quand on voudra. Pas compliqué côté identité : Hermes a déjà un adaptateur

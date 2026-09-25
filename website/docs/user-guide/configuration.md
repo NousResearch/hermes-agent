@@ -1571,6 +1571,20 @@ How a read refreshes the window follows the provider: Anthropic-style caches res
 
 The clock is saved with the session (`sessions.prompt_cache_clock`), so a resumed session (and `/context` on a session with no running agent) shows the same window. A compaction committed since the clock was saved makes it unknown, even across a restart.
 
+### Cache warming (opt-in)
+
+A cache entry expires `cache_ttl` after its last use, so a single tool call that runs longer than that (a five-minute build, a long test suite) drops the whole prefix and the next request pays a full-price cache **write**. Cache warming replays the last request with `max_tokens: 1` shortly before the entry expires — one cache **read** of the prompt, roughly a twelfth of the write it prevents:
+
+```yaml
+prompt_caching:
+  cache_warming: "off"   # "off" (default) | "streaming" | "idle"
+```
+
+- `"streaming"` warms only while a turn is still running (a tool round longer than the TTL); the next request is certain, so the refresh is a near-guaranteed saving.
+- `"idle"` also warms between turns, for up to 30 minutes after the last response, pricing the chance you come back at 15%.
+
+Every refresh is gated on expected savings of at least $0.05 (`p × miss cost − warm cost`), so a small prompt or an unpriced model never pays for one; streaming warming stops after an hour and idle warming after 30 minutes regardless. Claude requests that carry cache markers are warmed on native Anthropic (`api.anthropic.com`) and on Chat Completions gateways such as Nous Portal and OpenRouter. A gateway may not keep the `1h` tier (on Nous Portal a `1h` entry was gone after 7 minutes), so off native Anthropic the refresh runs on the 5-minute schedule whatever `cache_ttl` says. Requests with budget-based extended thinking are skipped because `max_tokens: 1` would change the budget Anthropic keys the cache on. Refresh tokens and dollars count toward the session totals (`session_cache_warm_calls`) but never enter the conversation.
+
 ## Auxiliary Models
 
 Hermes uses "auxiliary" models for side tasks like image analysis, browser screenshot analysis, session-title generation, and context compression. By default (`auxiliary.*.provider: "auto"`), Hermes routes every auxiliary task to your **main chat model** — the same provider/model you picked in `hermes model`. You don't need to configure anything to get started, but be aware that on expensive reasoning models (Opus, MiniMax M2.7, etc.) auxiliary tasks add meaningful cost. If you want cheap-and-fast side tasks regardless of your main model, set `auxiliary.<task>.provider` and `auxiliary.<task>.model` explicitly (for example, Gemini Flash on OpenRouter for vision). (Web extraction is not an auxiliary task: `web_extract` and browser snapshots truncate long content deterministically and store the full text for `read_file` paging — no LLM involved.)

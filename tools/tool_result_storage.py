@@ -13,6 +13,7 @@ import shlex
 import tempfile
 import threading
 import time
+from typing import Any, Optional
 
 from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAULT_BUDGET
 
@@ -140,6 +141,26 @@ def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
     return None
 
 
+_WINDOWS_DRIVE_PREFIX_RE = re.compile(r"^[A-Za-z]:/")
+
+
+def _posix_remote_temp_dir(value: Any) -> Optional[str]:
+    """Normalize a temp-dir candidate to POSIX remote form, or None.
+
+    Remote shells are POSIX even on a Windows host (#122168): a correct env
+    answer like ``C:/.../cache/terminal`` (forward slashes, valid in git
+    bash) must be accepted, while a backslash host path (``C:\\...\\Temp``)
+    can never be interpolated into remote mkdir/cd commands. Shared by the
+    execute_code / background-task / result-storage resolvers.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    norm = value.strip().replace("\\", "/")
+    if norm.startswith("/") or _WINDOWS_DRIVE_PREFIX_RE.match(norm):
+        return norm.rstrip("/") or "/"
+    return None
+
+
 def _resolve_storage_dir(env) -> str:
     """Return the best temp-backed storage dir for this environment."""
     get_temp_dir = getattr(env, "get_temp_dir", None)
@@ -149,7 +170,8 @@ def _resolve_storage_dir(env) -> str:
             temp_dir = get_temp_dir()
         except Exception as exc:
             logger.debug("Could not resolve env temp dir: %s", exc)
-    return f"{temp_dir.rstrip('/') or '/'}/hermes-results" if temp_dir else STORAGE_DIR
+    posix = _posix_remote_temp_dir(temp_dir) if temp_dir else None
+    return f"{posix}/hermes-results" if posix else STORAGE_DIR
 
 
 def _safe_result_filename(tool_use_id: str) -> str:

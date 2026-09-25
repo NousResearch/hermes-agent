@@ -1133,13 +1133,20 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     @staticmethod
     def _env_temp_dir(env: Any) -> str:
-        """Return the writable sandbox temp dir for env-backed background tasks."""
+        """Return the writable sandbox temp dir for env-backed background tasks.
+
+        POSIX remote form (#122168): the env answer is normalized so a
+        forward-slash ``C:/...`` on a Windows host is accepted instead of
+        falling through to ``/tmp``.
+        """
+        from tools.tool_result_storage import _posix_remote_temp_dir
         get_temp_dir = getattr(env, "get_temp_dir", None)
         if callable(get_temp_dir):
             try:
                 temp_dir = get_temp_dir()
-                if isinstance(temp_dir, str) and temp_dir.startswith("/"):
-                    return temp_dir.rstrip("/") or "/"
+                posix = _posix_remote_temp_dir(temp_dir) if temp_dir else None
+                if posix is not None:
+                    return posix
             except Exception as exc:
                 logger.debug("Could not resolve environment temp dir: %s", exc)
         return tempfile.gettempdir()

@@ -5,6 +5,7 @@ the _send_update_notification startup hook (sends results after restart).
 """
 
 import json
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -13,7 +14,16 @@ import pytest
 
 from gateway.config import Platform
 from gateway.platforms.event import MessageEvent
+from gateway.run import _resolve_hermes_bin
 from gateway.session import SessionSource
+
+
+@pytest.fixture(autouse=True)
+def isolated_installation_runtime(monkeypatch):
+    """Keep launcher selection inside pytest's guarded filesystem sandbox."""
+    import hermes_cli._launchers as launchers
+
+    monkeypatch.setattr(launchers, "resolve_store_python", lambda root: None)
 
 
 def _make_event(text="/update", platform=Platform.TELEGRAM,
@@ -91,20 +101,83 @@ class TestHandleUpdateCommand:
         assert "Not a git repository" in result
 
 
+    def test_resolve_hermes_bin_uses_managed_installation_launcher(self, monkeypatch):
+        """A managed store must select the persistent install launcher."""
+        import shutil
+        from pathlib import Path
+        import hermes_cli._launchers as launchers
+        import gateway.run as gateway_run
+
+        monkeypatch.delenv("HERMES_BIN", raising=False)
+        monkeypatch.setattr(launchers, "resolve_store_python", lambda root: Path("/store/python"))
+        monkeypatch.setattr(shutil, "which", lambda name: "/tmp/attacker/hermes")
+
+        argv = _resolve_hermes_bin()
+
+        expected = gateway_run.Path(gateway_run.__file__).resolve().parent.parent / ".hermes" / "bin" / "hermes"
+        assert argv == [str(expected)]
+
+    def test_resolve_hermes_bin_rejects_hostile_path(self, tmp_path):
+        """A PATH executable must not shadow the running source install."""
+        import stat
+        import hermes_cli._launchers as launchers
+
+        attacker = tmp_path / "hermes"
+        attacker.write_text("#!/bin/sh\nexit 97\n", encoding="utf-8")
+        attacker.chmod(attacker.stat().st_mode | stat.S_IXUSR)
+
+        with patch.object(launchers, "resolve_store_python", return_value=None), \
+             patch("shutil.which", return_value=str(attacker)):
+            argv = _resolve_hermes_bin()
+
+        assert argv is not None
+        assert str(attacker) not in argv
+
     @pytest.mark.asyncio
-    async def test_resolve_hermes_bin_module_argv(self):
-        """_resolve_hermes_bin uses the running interpreter's module argv when hermes_cli is
-        importable, even when PATH also offers a ``hermes`` binary (#111569: a PATH-first
-        lookup would re-exec an attacker-planted executable on /update and /restart)."""
-        import sys
-        from gateway.run import _resolve_hermes_bin
+    async def test_resolve_hermes_bin_does_not_hide_launcher_failure(self):
+        """Confirmed source install must fail loud instead of using PATH."""
+        import hermes_cli._launchers as launchers
 
-        fake_spec = MagicMock()
         with patch("shutil.which", return_value="/tmp/attacker/hermes"), \
-             patch("importlib.util.find_spec", return_value=fake_spec):
-            result = _resolve_hermes_bin()
+             patch.object(
+                 launchers,
+                 "installation_command",
+                 side_effect=RuntimeError("broken launcher"),
+             ):
+            try:
+                argv = _resolve_hermes_bin()
+            except RuntimeError as exc:
+                assert str(exc) == "broken launcher"
+            else:
+                raise AssertionError(f"launcher failure silently fell back to PATH: {argv}")
 
-        assert result == [sys.executable, "-m", "hermes_cli.main"]
+    @pytest.mark.asyncio
+    async def test_resolve_hermes_bin_runs_outside_source_checkout(self, tmp_path):
+        """Restart/update re-exec must work from a task workspace.
+
+        The gateway can import ``hermes_cli`` through its bootstrap even when
+        managed Python cannot from another cwd. Run the real resolved argv
+        with empty PYTHONPATH; raw ``python -m hermes_cli.main`` fails there.
+        """
+        import subprocess
+        import hermes_cli._launchers as launchers
+        from unittest.mock import patch as mock_patch
+
+        with mock_patch.object(launchers, "resolve_store_python", return_value=None):
+            argv = _resolve_hermes_bin()
+        assert argv is not None
+        result = subprocess.run(
+            argv + ["--version"],
+            cwd=tmp_path,
+            env={**os.environ, "PYTHONPATH": ""},
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"`{' '.join(argv)} --version` failed outside checkout "
+            f"(rc={result.returncode}); stderr={result.stderr[:200]!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_resolve_hermes_bin_falls_back_to_path_then_none(self):

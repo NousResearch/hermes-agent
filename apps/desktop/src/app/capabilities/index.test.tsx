@@ -13,6 +13,7 @@ const getSkills = vi.fn()
 const getToolsets = vi.fn()
 const setSkillEnabled = vi.fn()
 const setToolsetEnabled = vi.fn()
+const setToolsetGroupEnabled = vi.fn()
 const getToolsetConfig = vi.fn()
 const selectToolsetProvider = vi.fn()
 const getUsageAnalytics = vi.fn()
@@ -31,6 +32,8 @@ vi.mock('@/hermes', async importOriginal => ({
   setSkillEnabled: (name: string, enabled: boolean, profile?: null | string) => setSkillEnabled(name, enabled, profile),
   setToolsetEnabled: (name: string, enabled: boolean, profile?: null | string) =>
     setToolsetEnabled(name, enabled, profile),
+  setToolsetGroupEnabled: (group: string, enabled: boolean, profile?: null | string) =>
+    setToolsetGroupEnabled(group, enabled, profile),
   getToolsetConfig: (name: string, profile?: null | string) => getToolsetConfig(name, profile),
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
   getUsageAnalytics: (days: number, profile?: null | string) => getUsageAnalytics(days, profile),
@@ -494,5 +497,41 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     await waitFor(() =>
       expect(vi.mocked(installHubSkill)).toHaveBeenCalledWith('official/gifs/gif-search', expect.anything())
     )
+  })
+})
+
+// Section header switches are kill switches for the group: the header reads ON
+// when AT LEAST ONE child is enabled (mixed included), and clicking it while on
+// disables every child. A fully-disabled group reads OFF; clicking enables all.
+describe('CapabilitiesView section header switches', { timeout: 60_000 }, () => {
+  it('reads a mixed group as on and disables the whole group from the header', async () => {
+    getToolsets.mockResolvedValue([
+      toolset({ group: 'web' }),
+      toolset({
+        name: 'file',
+        label: 'File Operations',
+        description: 'read, write, patch, search',
+        enabled: false,
+        tools: ['read_file'],
+        group: 'web'
+      })
+    ])
+    setToolsetGroupEnabled.mockResolvedValue({ ok: true, group: 'web', enabled: false, names: ['web', 'file'] })
+
+    await renderSkills()
+
+    // Mixed (one on, one off) must read as ON, not OFF.
+    const header = await screen.findByRole('switch', { name: 'Web & Search' })
+    expect(header.getAttribute('aria-checked')).toBe('true')
+
+    // Clicking the lit header disables every child in one backend call.
+    await act(async () => {
+      fireEvent.click(header)
+    })
+    await waitFor(() => expect(setToolsetGroupEnabled.mock.calls[0].slice(0, 2)).toEqual(['web', false]))
+
+    await waitFor(() => expect(header.getAttribute('aria-checked')).toBe('false'))
+    const row = screen.getByRole('switch', { name: 'Turn Web Search toolset on' })
+    expect(row.getAttribute('aria-checked')).toBe('false')
   })
 })

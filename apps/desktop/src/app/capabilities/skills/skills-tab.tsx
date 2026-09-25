@@ -128,7 +128,9 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
   }, [visibleSkills])
 
   const categoryState = useMemo(() => {
-    const state = new Map<string, { allEnabled: boolean; size: number }>()
+    // Kill-switch semantics: any enabled child → header ON; clicking it while
+    // on disables the whole category.
+    const state = new Map<string, { anyEnabled: boolean; size: number }>()
     const rowsByCategory = new Map<string, SkillInfo[]>()
     for (const skill of skills) {
       const key = categoryFor(skill)
@@ -136,7 +138,7 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
     }
 
     for (const [category, rows] of rowsByCategory) {
-      state.set(category, { allEnabled: rows.every(skill => skill.enabled), size: rows.length })
+      state.set(category, { anyEnabled: rows.some(skill => skill.enabled), size: rows.length })
     }
 
     return state
@@ -386,7 +388,7 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
                   <GroupHeaderRow
                     busy={bulkBusy}
                     count={size}
-                    enabled={state?.allEnabled ?? false}
+                    enabled={state?.anyEnabled ?? false}
                     label={prettyName(category)}
                     onToggle={checked => void bulkCategoryApply(category, checked)}
                   />

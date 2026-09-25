@@ -97,9 +97,11 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
   // current query would be a lie.
   const bulkToolsets = useMemo(() => toolsets.filter(ts => isDesktopToolsetVisible(ts.name)), [toolsets])
 
-  // Whole-group truth for the section-header switches: size + are all enabled.
+  // Whole-group truth for the section-header switches: size + is any child on.
+  // The header is a kill switch — mixed reads as ON; clicking it while on
+  // disables the whole group.
   const groupState = useMemo(() => {
-    const state = new Map<string, { allEnabled: boolean; size: number }>()
+    const state = new Map<string, { anyEnabled: boolean; size: number }>()
     const rowsByGroup = new Map<string, ToolsetInfo[]>()
     for (const ts of bulkToolsets) {
       const key = ts.group ?? 'other'
@@ -107,7 +109,7 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
     }
 
     for (const [group, rows] of rowsByGroup) {
-      state.set(group, { allEnabled: rows.every(ts => ts.enabled), size: rows.length })
+      state.set(group, { anyEnabled: rows.some(ts => ts.enabled), size: rows.length })
     }
 
     return state
@@ -244,7 +246,7 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
               <GroupHeaderRow
                 busy={bulkBusy}
                 count={size}
-                enabled={state?.allEnabled ?? false}
+                enabled={state?.anyEnabled ?? false}
                 label={t.skills.toolsetGroupName(group)}
                 onToggle={checked => void bulkApplyGroup(group, checked)}
               />

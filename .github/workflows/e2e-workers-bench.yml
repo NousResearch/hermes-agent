@@ -8,9 +8,14 @@ name: E2E workers bench (temporary)
 # Why it duplicates tests.yml's e2e job instead of calling it: tests.yml is
 # `workflow_call`-only and hardcodes HERMES_TEST_WORKERS in the step env, so a
 # caller cannot vary it. Keep the steps below in sync with tests.yml.
+#
+# Why `push` and not `workflow_dispatch`: GitHub resolves a manual dispatch of
+# a workflow file from the DEFAULT branch, and this file must never land there.
+# Scoped to this one throwaway branch, so a push here is the trigger.
 
 on:
-  workflow_dispatch:
+  push:
+    branches: [ethie/e2e-workers-bench]
 
 permissions:
   contents: read

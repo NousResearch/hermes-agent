@@ -801,6 +801,56 @@ Behavior:
   `reaction:added`/`reaction:removed` [gateway hooks](../features/hooks.md#available-events)
   for observers that don't need agent turns.
 
+
+### Per-thread response mute (`reaction_mute_mode`)
+
+A principal can silence the bot in one thread by putting a reaction (default `:mute:`)
+on any message in it; removing the reaction unmutes. The bot keeps *ingesting* the
+thread — auth, thread hydration and the transcript row all still happen — it just does
+not start a turn there. Off by default; ship it in `log-only` first to see what it would
+have suppressed.
+
+```yaml
+slack:
+  # off (default) | log-only | enforce
+  reaction_mute_mode: log-only
+  # Reaction name that toggles the mute (colons optional). Default: mute
+  # reaction_mute_emoji: no_bell
+  # Slack member IDs allowed to toggle. Empty = the SLACK_ALLOWED_USERS allowlist.
+  # An allow-all install with no explicit list means nobody can toggle (fail closed).
+  # reaction_mute_users: [U0123456789, U0987654321]
+```
+
+Environment equivalents: `SLACK_REACTION_MUTE_MODE`, `SLACK_REACTION_MUTE_EMOJI`,
+`SLACK_REACTION_MUTE_USERS` (comma-separated), and `SLACK_REACTION_MUTE_DB` (state file,
+default `$HERMES_HOME/slack_reaction_mute.db`). Needs the `reactions:read` scope plus the
+`reaction_added` / `reaction_removed` event subscriptions (both in the generated manifest);
+it works whether or not `reaction_triggers` is enabled and never routes the mute emoji to
+the agent.
+
+Behavior:
+
+- The mute is keyed on the thread, `(channel_id, thread_ts)`. A reaction on a reply
+  resolves the reply's parent first, so reacting anywhere in the thread mutes the whole
+  thread. A reaction on a top-level message with no replies yet mutes the thread that
+  message becomes.
+- Several principals may add the same reaction; the thread stays muted until the **last**
+  one removes theirs. Re-adding or removing a reaction the bot never saw is a no-op, so
+  the toggle is idempotent in both directions (a `reaction_removed` missed while the
+  gateway was down leaves the thread muted until the reaction is re-added and removed).
+- Reactions from anyone not in the allowed list are ignored and logged
+  (`reaction_mute ignored: user=... is not a principal`).
+- Under `enforce`, a message in a muted thread is appended to that thread's session
+  transcript as a user row (with the same sender prefix and hydrated thread context a turn
+  would carry) and no model call is made, so the conversation is intact when the thread is
+  unmuted. Recognized slash commands (`/status`, `/stop`, ...) always pass through.
+- State persists in a dedicated SQLite file (`thread_mutes`, unique per thread;
+  `thread_mute_reactors`, the reactor set; `mute_events`, an audit log with kinds
+  `muted`, `unmuted`, `would_suppress`, `suppressed`, `ignored_non_principal`,
+  `command_bypass`). Inspect it with
+  `sqlite3 ~/.hermes/slack_reaction_mute.db "select * from mute_events order by id desc limit 10"`.
+- Every toggle and every suppression is an INFO log line prefixed `[Slack] reaction_mute`.
+
 ### Peer-Agent Smoke Check
 
 For multi-bot Slack deployments that rely on strict per-turn mentions, keep the following profile:

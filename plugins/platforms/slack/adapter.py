@@ -1,6 +1,7 @@
 """Slack platform adapter: slack-bolt Socket Mode (messages, slash commands, threads)."""
 
 import asyncio
+import contextlib
 import contextvars
 import functools
 import inspect
@@ -286,6 +287,23 @@ def _session_status_method(client: Any):
         if method is not None:
             return method
     return client.assistant_threads_setStatus
+
+
+def _uses_agent_sessions(client: Any) -> bool:
+    """True when status writes go to ``agents.sessions.setStatus`` (lifecycle enum only)."""
+    return _sdk_supports_agent_sessions() and getattr(client, "agents_sessions_setStatus", None) is not None
+
+
+def _agent_session_status(status: str) -> str:
+    """Map a legacy status line to an Agent Sessions lifecycle value. ``agents.sessions.setStatus``
+    accepts only ``active|processing|suspended|closed``; free text is rejected. Any non-empty
+    working text means ``processing``; an empty clear means ``active`` (idle, reusable)."""
+    return status if status in _AGENT_SESSION_STATES else ("processing" if status else "active")
+
+
+_AGENT_SESSION_STATES = frozenset({"active", "processing", "suspended", "closed"})
+# Re-send an unchanged lifecycle value at most this often (Slack may reset it on posts).
+_AGENT_STATUS_REFRESH_S = 60.0
 
 
 def _session_title_method(client: Any):
@@ -1096,6 +1114,9 @@ class SlackAdapter(BasePlatformAdapter):
         # long retry loops used to spam threads with dozens of out-of-order status messages.
         self._status_message_ids: Dict[Tuple[str, str, str], str] = {}
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
+        # Last Agent Sessions lifecycle value written per (team, channel, thread).
+        self._agent_session_states: Dict[Tuple[str, str, str], Tuple[str, float]] = {}
+        self._status_loop: Optional[asyncio.AbstractEventLoop] = None
         # Threads already rehydration-checked this process (first reply after a restart injects
         # missed messages exactly once); message IDs with reaction lifecycle (bounded: an exception
         # between add and finalize would leak entries).
@@ -2719,6 +2740,7 @@ class SlackAdapter(BasePlatformAdapter):
             return
         if not self._app:
             return
+        self._status_loop = asyncio.get_running_loop()
         thread_ts = None
         if metadata:
             # Same synthetic-thread guard as sending: with reply_in_thread=false thread_id is the
@@ -2757,12 +2779,57 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _set_thread_status(
         self, chat_id: str, team_id: str, thread_ts: str, status: str, fail_label: str) -> None:
-        """``assistant.threads.setStatus`` (empty ``status`` clears); failures are debug-logged."""
+        """Thread status write (empty ``status`` clears). Agent Sessions receives lifecycle values
+        only and repeats of the same value are skipped; the legacy Assistant API receives the
+        text line. Failures are debug-logged."""
         try:
-            _set_status = _session_status_method(self._get_client(chat_id, team_id=team_id))
-            await _set_status(channel_id=chat_id, thread_ts=thread_ts, status=status)
+            client = self._get_client(chat_id, team_id=team_id)
+            if _uses_agent_sessions(client):
+                status = _agent_session_status(status)
+                key = self._workspace_thread_key(team_id, chat_id, str(thread_ts))
+                last = self._agent_session_states.get(key) if key else None
+                if last and last[0] == status and time.monotonic() - last[1] < _AGENT_STATUS_REFRESH_S:
+                    return
+                await client.agents_sessions_setStatus(
+                    channel_id=chat_id, thread_ts=thread_ts, status=status)
+                if key:
+                    self._agent_session_states[key] = (status, time.monotonic())
+                    self._evict_oldest_by_ts(
+                        self._agent_session_states, self._ACTIVE_STATUS_THREADS_MAX, lambda k: k[2])
+                return
+            await client.assistant_threads_setStatus(
+                channel_id=chat_id, thread_ts=thread_ts, status=status)
         except Exception as e:
-            logger.debug("[Slack] assistant.threads.setStatus %s: %s", fail_label, e)
+            logger.debug("[Slack] thread status %s: %s", fail_label, e)
+
+    def pause_typing_for_chat(self, chat_id: str) -> None:
+        """Pause the working refresh while waiting on the user (clarify/approval); tracked threads
+        in this chat show Agent Sessions ``suspended`` until work resumes."""
+        super().pause_typing_for_chat(chat_id)
+        self._schedule_status_for_chat(chat_id, "suspended")
+
+    def resume_typing_for_chat(self, chat_id: str) -> None:
+        """Resume the refresh; tracked threads go back to ``processing`` immediately."""
+        super().resume_typing_for_chat(chat_id)
+        self._schedule_status_for_chat(chat_id, "processing")
+
+    def _schedule_status_for_chat(self, chat_id: str, status: str) -> None:
+        """Thread-safe lifecycle write for every tracked status thread of ``chat_id``. Called from
+        the agent thread, so it hops onto the adapter loop; a no-op without Agent Sessions."""
+        loop = getattr(self, "_status_loop", None)
+        if not self._app or loop is None or loop.is_closed():
+            return
+        targets = [
+            (key, entry) for key, entry in list(getattr(self, "_active_status_threads", {}).items())
+            if isinstance(key, tuple) and len(key) == 3 and key[1] == str(chat_id)
+            and isinstance(entry, dict)]
+        for _key, entry in targets:
+            team_id, thread_ts = entry.get("team_id", ""), entry.get("thread_ts", "")
+            if not thread_ts or not _uses_agent_sessions(self._get_client(chat_id, team_id=team_id)):
+                continue
+            with contextlib.suppress(RuntimeError):
+                asyncio.run_coroutine_threadsafe(
+                    self._set_thread_status(chat_id, team_id, thread_ts, status, status), loop)
 
     @staticmethod
     def _default_status_text(started: Optional[float]) -> str:

@@ -5650,10 +5650,12 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus = AsyncMock()
         a._app.client.assistant_threads_setStatus = AsyncMock()
         await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})  # refresh: no rewrite
+        # agents.sessions.setStatus takes lifecycle enums only, never status prose.
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="is thinking...",
+            status="processing",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
 
@@ -5670,9 +5672,39 @@ class TestAgentSessionsApiRouting:
         a._app.client.agents_sessions_setStatus.assert_called_once_with(
             channel_id="C123",
             thread_ts="parent_ts",
-            status="",
+            status="active",
         )
         a._app.client.assistant_threads_setStatus.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_waiting_on_user_sets_suspended_then_processing(self):
+        import asyncio
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = True
+        a = self._adapter()
+        a._app.client.agents_sessions_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        # Clarify/approval pause is called from the agent thread.
+        await asyncio.to_thread(a.pause_typing_for_chat, "C123")
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        await asyncio.to_thread(a.resume_typing_for_chat, "C123")
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        statuses = [c.kwargs["status"] for c in a._app.client.agents_sessions_setStatus.call_args_list]
+        assert statuses == ["processing", "suspended", "processing"]
+
+    @pytest.mark.asyncio
+    async def test_pause_is_noop_on_legacy_assistant_api(self):
+        import asyncio
+        _slack_mod._AGENT_SESSIONS_SUPPORTED = False
+        a = self._adapter()
+        a._app.client.assistant_threads_setStatus = AsyncMock()
+        await a.send_typing("C123", metadata={"thread_id": "parent_ts"})
+        await asyncio.to_thread(a.pause_typing_for_chat, "C123")
+        for _ in range(10):
+            await asyncio.sleep(0.01)
+        assert [c.kwargs["status"] for c in a._app.client.assistant_threads_setStatus.call_args_list] == [
+            "is thinking..."]
 
     @pytest.mark.asyncio
     async def test_thread_title_uses_agents_sessions_rename(self):

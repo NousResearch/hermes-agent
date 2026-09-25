@@ -282,3 +282,35 @@ class TestSidebarTruncation:
             _seed_session(home, f"s-{index}", source="desktop", pinned=index == 5)
         # Six on disk, two pins among the newest four: a full window, more below it.
         assert window() == (4, {"default": True})
+
+
+class TestSidebarShowSubagents:
+    """``sessions.show_subagents`` is read from each profile's OWN config and only widens recents (#97202)."""
+
+    @staticmethod
+    def _seed_subagent(home, parent_id, child_id):
+        from hermes_state import SessionDB
+
+        _seed_session(home, parent_id, source="desktop")
+        db = SessionDB(db_path=home / "state.db")
+        try:
+            db.create_session(child_id, source="subagent", parent_session_id=parent_id,
+                              model_config={"_delegate_from": parent_id})
+            db.append_message(session_id=child_id, role="user", content="audit billing")
+        finally:
+            db.close()
+
+    def test_recents_list_subagent_runs_only_for_the_profile_that_opted_in(self, client, profiles_on_disk):
+        (profiles_on_disk["worker"] / "config.yaml").write_text("sessions:\n  show_subagents: true\n")
+        self._seed_subagent(profiles_on_disk["default"], "default-parent", "default-sub")
+        self._seed_subagent(profiles_on_disk["worker"], "worker-parent", "worker-sub")
+
+        payload = client.get(
+            "/api/profiles/sessions/sidebar",
+            params={"recents_profile": "all", "recents_exclude": "cron,subagent", "messaging_exclude": "cli,cron,desktop"},
+        ).json()
+
+        assert payload["errors"] == []
+        assert _slice_ids(payload, "recents") == {"default-parent", "worker-parent", "worker-sub"}
+        # The messaging slice keeps its shape: a subagent run is not a platform thread.
+        assert _slice_ids(payload, "messaging") == set()

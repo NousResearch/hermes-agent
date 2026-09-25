@@ -189,9 +189,18 @@ def test_waiter_is_a_runner_entrypoint_the_approval_gate_lets_through(root):
     parts = shlex.split(cmd)
 
     assert detect_dangerous_command(cmd)[0] is False, cmd
-    assert parts[1].endswith("bot_mode_dm.py") and parts[2] == "--wait-reply"
-    assert parts[3] == str(bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{'b' * 32}.json")
-    assert parts[4:] == ["@researcher on ssh-vps", str(bot_relay.REPLY_WAIT_SECONDS)]
+    # Either invocation form is a runner entrypoint, never inline interpreter source: the
+    # launcher form (deps activated, ``--run-module``) or the direct script form.
+    if parts[1:2] == ["--run-module"]:
+        assert parts[2] == "tools.bot_mode_dm"
+        assert parts[3] == "--wait-reply"
+        tail = parts[4:]
+    else:
+        assert parts[0].endswith("python") and parts[1].endswith("bot_mode_dm.py")
+        assert parts[2] == "--wait-reply"
+        tail = parts[3:]
+    reply_path = str(bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{'b' * 32}.json")
+    assert tail == [reply_path, "@researcher on ssh-vps", str(bot_relay.REPLY_WAIT_SECONDS)]
 
 
 def test_waiter_outlives_the_desktop_deliver_deadline():
@@ -271,7 +280,7 @@ def test_hostile_roster_fields_ride_as_argv_data(root):
     parts = shlex.split(cmd)
 
     assert "-c" not in parts
-    assert parts[4] == f"@researcher on {inj}"
+    assert f"@researcher on {inj}" in parts
     reply_path = bot_relay.relay_root(root) / bot_relay.REPLIES_DIR / f"{env['id']}.json"
     reply_path.parent.mkdir(parents=True, exist_ok=True)
     reply_path.write_text(json.dumps({"reply": "pong"}), encoding="utf-8")

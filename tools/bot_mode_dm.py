@@ -538,6 +538,63 @@ def _local_delivery_home(argv: list[str]) -> Path | None:
     return dict(_roster(_hermes_root(Path(_default_home())))).get(argv[2])
 
 
+def _admission_failure_payload(dm_file: str, exc: BaseException) -> dict[str, Any]:
+    """Classify a live-admission crash by the durable evidence actually on disk.
+
+    ``_admit_live_dm`` writes ``<dm_file>.live.json`` (the intent, carrying the pinned
+    payload) BEFORE calling ``deliver_to_live_owner``, which writes the receipt. So the two
+    artifacts on disk say exactly how far the attempt got:
+
+    * Neither on disk — the crash was at or before the intent write: nothing was admitted
+      and nothing was delivered. KNOWABLE failure; a fresh send mints a NEW delivery id, so
+      re-sending cannot double-deliver.
+    * Intent only — the crash was inside admission before the receipt landed: still nothing
+      admitted, nothing delivered. KNOWABLE failure, and re-drivable in place because the
+      delivery id is payload-pinned (``deliver_to_live_owner`` returns the existing receipt
+      for the same id+owner+message instead of admitting a second copy).
+    * Intent and receipt — admission DID land; only the process died before returning. This
+      is the one genuinely ambiguous outcome, and the receipt is retained, so a re-drive
+      reads it rather than executing the input again.
+
+    The old contract answered every case with ``ambiguous`` + "Do not resend", which is only
+    true in the last one: a peer following it after a crash that admitted nothing lost the
+    message silently. See #122490.
+    """
+    from tools.bot_failure_reasons import delivery_failure_reason
+    from tools.bot_live_delivery import read_delivery_result
+
+    delivery_id = _dm_delivery_id(dm_file)
+    intent_path = Path(str(dm_file) + ".live.json")
+    intent: dict[str, Any] = {}
+    if intent_path.exists():
+        with contextlib.suppress(OSError, ValueError):
+            parsed = json.loads(intent_path.read_text(encoding="utf-8-sig"))
+            intent = parsed if isinstance(parsed, dict) else {}
+    home = (intent.get("owner") or {}).get("profile_home")
+    if not home or intent.get("delivery_id") != delivery_id:
+        # No durable intent: nothing was admitted before the crash.
+        return {
+            "status": "failed", "retryable": True, "delivery_id": delivery_id,
+            "error": f"Delivery was NOT sent: live admission failed before it recorded anything ({exc}).",
+            "reason": delivery_failure_reason(exc), "evidence_file": dm_file,
+        }
+    if read_delivery_result(home, delivery_id) is None:
+        # Intent pinned, receipt absent: the crash landed inside admission. Nothing admitted.
+        return {
+            "status": "failed", "retryable": True, "delivery_id": delivery_id,
+            "error": (f"Delivery was NOT sent: live admission failed before it admitted anything ({exc}). "
+                      f"Re-drive this delivery id; it resumes the pinned attempt instead of sending twice."),
+            "reason": delivery_failure_reason(exc), "evidence_file": dm_file,
+        }
+    return {
+        "status": "ambiguous", "delivery_id": delivery_id,
+        "error": f"Live admission outcome unknown: {exc}.",
+        "detail": ("The admission receipt exists and is retained; a re-drive with this "
+                   "delivery id reads that receipt instead of executing the input again."),
+        "evidence_file": dm_file,
+    }
+
+
 def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
                   profile_home: Path | None = None, author: Optional[dict] = None) -> int:
     """Route to the live owner before attempting a CLI transport. Live deliveries
@@ -559,9 +616,7 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
             try:
                 record = _admit_live_dm(home, dm_file, author)
             except Exception as exc:
-                print(json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
-                    "error": f"Live admission outcome unknown: {exc}. Do not resend.",
-                    "evidence_file": dm_file}))
+                print(json.dumps(_admission_failure_payload(dm_file, exc)))
                 return 1
             if record is not None:
                 return _wait_live_dm(record["profile_home"], record["delivery_id"], dm_file=dm_file)
@@ -581,12 +636,57 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
         _unlink_dm_file(dm_file)
 
 
+#: The launcher's location relative to the checkout, and the module this file is. Both are
+#: exactly what ``hermes_cli._launchers.installation_command`` publishes for a source install:
+#: ``<root>/.hermes/bin/<name>`` and the ``--run-module <module>`` prefix.
+_LAUNCHER_REL = Path(".hermes") / "bin" / "hermes"
+_RUNNER_MODULE = "tools.bot_mode_dm"
+
+
+def _managed_python() -> str:
+    """The dependency-activating launcher for a CHILD process, or "" when none is published.
+
+    ``sys.executable`` is NOT a usable interpreter for a child under the Desktop launcher: the
+    agent process itself runs on PM's bare managed tools-python (no site-packages), with its
+    dependencies injected in-process by ``hermes_bootstrap``. A child spawned with it dies on
+    the first third-party import — ``No module named 'ruamel'`` — i.e. the whole delivery is
+    lost before admission. The published launcher activates the install's dependency
+    generation and then runs the module (``--run-module``), which is the seam the CLI itself
+    boots through.
+
+    The launcher sits inside this checkout, so this needs no toolchain resolution and touches
+    no ambient state: a checkout with no published launcher (a dev tree) returns "" and every
+    caller falls back to ``sys.executable`` exactly as before (#122490).
+    """
+    launcher = Path(__file__).resolve().parent.parent / _LAUNCHER_REL
+    return str(launcher) if launcher.is_file() and os.access(launcher, os.X_OK) else ""
+
+
+def _runner_command(runner_argv_rest: list[str]) -> list[str]:
+    """The argv prefix that runs this module as the background delivery runner.
+
+    Through the launcher when one is published — ``<launcher> --run-module tools.bot_mode_dm
+    <args>``, the same shape ``hermes_cli._launchers.installation_command`` builds — else
+    ``[sys.executable, <this file>, <args>]`` for a dev checkout. Both forms hand the runner
+    the identical trailing argv: ``runpy`` sets ``sys.argv`` up like a direct script run
+    (argv[0] is the module's own path), which ``_delivery_main`` accounts for.
+    """
+    launcher = _managed_python()
+    if not launcher:
+        return [sys.executable, str(Path(__file__).resolve()), *runner_argv_rest]
+    return [launcher, "--run-module", _RUNNER_MODULE, *runner_argv_rest]
+
+
 def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
                       profile_home: Path | None = None, author: Optional[dict] = None) -> str:
     """Build an argv-safe command for the cleanup-owning background runner:
-    ``--run-delivery [--author <json>] <mode> <dm_file> [--profile-home <path>] <argv...>``."""
-    runner_argv = [sys.executable, str(Path(__file__).resolve()), "--run-delivery",
-                   "stdin" if stdin_file else "query-file", dm_file]
+    ``--run-delivery [--author <json>] <mode> <dm_file> [--profile-home <path>] <argv...>``.
+
+    The runner is launched through the install's dependency-activating launcher rather than
+    ``sys.executable``: under the Desktop the parent is PM's bare managed interpreter, and a
+    child that inherits it cannot import this repo's dependencies at all.
+    """
+    runner_argv = _runner_command(["--run-delivery", "stdin" if stdin_file else "query-file", dm_file])
     if profile_home is not None:
         runner_argv.extend(["--profile-home", str(Path(profile_home).resolve())])
     runner_argv.extend(argv)
@@ -595,8 +695,14 @@ def _delivery_command(argv: list[str], dm_file: str, *, stdin_file: bool,
         # paths executable there; backslash paths are parsed as command names (exit 127).
         runner_argv = [part.replace("\\", "/") for part in runner_argv]
     if author:
-        # Inserted after the slash rewrite: JSON escapes are backslashes too.
-        runner_argv[3:3] = ["--author", json.dumps(author, separators=(",", ":"))]
+        # Inserted after the slash rewrite: JSON escapes are backslashes too. Located by the
+        # marker rather than a fixed index: the launcher form is one element longer than the
+        # direct form, so a hardcoded offset put this pair BEFORE --run-delivery and the runner
+        # exited 2 without spawning a transport — a silently lost delivery for every product-built
+        # send on an install that publishes the launcher. The forward occurrence is always ours:
+        # ``_runner_command`` puts it in the prefix, and the transport argv follows it.
+        marker = runner_argv.index("--run-delivery")
+        runner_argv[marker + 1:marker + 1] = ["--author", json.dumps(author, separators=(",", ":"))]
     return shlex.join(runner_argv)
 
 
@@ -609,9 +715,11 @@ def _start_delivery(argv: list[str], content: str, label: str, *, stdin_file: bo
         try:
             record = _admit_live_dm(profile_home, dm_file, author)
         except Exception as exc:
-            return json.dumps({"status": "ambiguous", "delivery_id": _dm_delivery_id(dm_file),
-                "error": f"Live delivery admission could not be confirmed: {exc}. Do not resend.",
-                "evidence_file": dm_file})
+            # Build the payload BEFORE anything is cleaned up: the intent is what proves whether
+            # admission got as far as a receipt, and removing it first would report a delivery
+            # that was actually admitted as "not sent". The intent/DM file stay as the evidence,
+            # exactly as on the runner path.
+            return json.dumps(_admission_failure_payload(dm_file, exc))
         if record is not None:
             command = _delivery_command(argv, dm_file, stdin_file=False, profile_home=profile_home, author=author)
             notification = json.loads(_spawn_delivery(command, label, task_id=task_id, agent=agent))
@@ -770,7 +878,17 @@ def _wait_reply_main(reply_path: str, label: str, budget_seconds: str) -> int:
 
 def _delivery_main(args: list[str]) -> int:
     """Runner entry for the argv ``_delivery_command`` and ``bot_relay.waiter_command`` build.
-    Malformed argv exits 2 without touching the DM file."""
+    Malformed argv exits 2 without touching the DM file.
+
+    ``args`` is the runner's arguments after argv[0]. Every publisher sets argv[0] to this
+    module's own path before the runner flags (a direct ``python bot_mode_dm.py …`` script
+    run, a ``--run-module`` launcher run, or a bare ``python -m``), so one flag there is
+    skipped rather than rejected — without it the runner reached ``_delivery_main`` with
+    ``["--run-delivery", …]`` shifted and exited 2, which read as a delivery failure while
+    the DM file was left behind (#122490)."""
+    if args and args[0] in (str(Path(__file__).resolve()), "tools.bot_mode_dm", "bot_mode_dm") \
+            and not args[0].startswith("--"):
+        args = args[1:]
     if args[:1] == ["--wait-reply"]:
         return _wait_reply_main(*args[1:]) if len(args) == 4 else 2
     if not args or args[0] != "--run-delivery":

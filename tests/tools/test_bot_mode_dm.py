@@ -235,25 +235,62 @@ def _capture_spawn(monkeypatch):
     return calls
 
 
+def _runner_prefix_len(parts):
+    """Index where the runner's OWN arguments begin, past the argv that invokes the module.
+
+    The runner is launched two ways and the tests must read both: through the install's
+    dependency-activating launcher (``<launcher> --run-module tools.bot_mode_dm``, what a
+    real install publishes) or, in a bare dev tree, as ``<python> tools/bot_mode_dm.py``.
+    Everything after this index is the runner grammar the helpers below parse.
+    """
+    if parts[:1] == ["--run-module"] or parts[1:2] == ["--run-module"]:
+        return 3
+    if parts[:1] and parts[0].endswith("bot_mode_dm.py"):
+        return 1
+    if len(parts) > 1 and parts[1].endswith("bot_mode_dm.py"):
+        return 2  # <python> tools/bot_mode_dm.py
+    return 0
+
+
 def _runner_parts(command):
-    """(mode, dm_file, transport argv) of a runner command. The optional ``--author <json>`` pair is skipped."""
+    """(mode, dm_file, transport argv) of a runner command. The optional ``--author <json>`` pair is skipped.
+
+    It rides immediately after ``--run-delivery`` in both invocation forms: the builder locates
+    that flag rather than a fixed index, because the launcher prefix is one element longer than
+    the direct one and an index-based insert landed the pair before the flag it must follow.
+    """
     parts = shlex.split(command)
-    marker = parts.index("--run-delivery")
-    if parts[marker + 1] == "--author":
+    marker = _runner_prefix_len(parts)
+    assert parts[marker] == "--run-delivery", parts
+    marker += 1
+    if parts[marker : marker + 1] == ["--author"]:
         marker += 2
-    argv = parts[marker + 3 :]
+    argv = parts[marker + 2 :]
     if argv[:1] == ["--profile-home"]:
         argv = argv[2:]
-    return parts[marker + 1], parts[marker + 2], argv
+    return parts[marker], parts[marker + 1], argv
 
 
 def _runner_author(command):
     """The parsed ``--author`` payload of a runner command, or None when the pair is absent."""
     parts = shlex.split(command)
-    marker = parts.index("--run-delivery")
-    if parts[marker + 1] != "--author":
+    marker = _runner_prefix_len(parts)
+    assert parts[marker] == "--run-delivery", parts
+    marker += 1
+    if parts[marker : marker + 1] != ["--author"]:
         return None
-    return json.loads(parts[marker + 2])
+    return json.loads(parts[marker + 1])
+
+
+def _scripts_the_runner_directly(monkeypatch):
+    """Pin the spawn to the ``<sys.executable> tools/bot_mode_dm.py`` form.
+
+    The quoting/stdin/round-trip tests below are about the runner grammar, not about which
+    argv invokes the module, and a real install publishes the launcher form unconditionally —
+    pinning the direct form keeps their subject (and their real subprocess) hermetic. The
+    launcher form has its own round-trip test.
+    """
+    monkeypatch.setattr(bot_mode_dm, "_managed_python", lambda: "")
 
 
 def test_local_delivery_command_and_ack(tmp_path, monkeypatch):
@@ -794,8 +831,9 @@ def test_delivery_main_child_env_carries_only_the_argv_author(tmp_path, monkeypa
     assert not dm_file.exists()
 
 
-def test_real_delivery_command_round_trip_carries_author(tmp_path):
+def test_real_delivery_command_round_trip_carries_author(tmp_path, monkeypatch):
     """Through a real subprocess, the runner argv built by ``_delivery_command`` sets HERMES_TURN_AUTHOR on the child."""
+    _scripts_the_runner_directly(monkeypatch)
     dm_file = tmp_path / "message.txt"
     dm_file.write_text("secret", encoding="utf-8")
     observed = tmp_path / "observed.txt"
@@ -852,7 +890,8 @@ def test_local_turn_decodes_utf8_reply_without_locale_default(tmp_path, monkeypa
 
 
 @pytest.mark.parametrize("stdin_file", [False, True])
-def test_real_delivery_command_round_trip(tmp_path, stdin_file):
+def test_real_delivery_command_round_trip(tmp_path, stdin_file, monkeypatch):
+    _scripts_the_runner_directly(monkeypatch)
     dm_file = tmp_path / "message with spaces.txt"
     dm_file.write_text("secret λ\nsecond line", encoding="utf-8")
     observed = tmp_path / "observed with spaces.txt"
@@ -879,8 +918,9 @@ def test_real_delivery_command_round_trip(tmp_path, stdin_file):
 
 
 @pytest.mark.platforms("windows")
-def test_delivery_command_round_trip_through_windows_local_shell(tmp_path):
+def test_delivery_command_round_trip_through_windows_local_shell(tmp_path, monkeypatch):
     """Native runner paths must survive the Git Bash process boundary."""
+    _scripts_the_runner_directly(monkeypatch)
     from tools.environments.local import _find_shell
 
     dm_file = tmp_path / "message with spaces.txt"
@@ -1214,3 +1254,239 @@ def test_local_turn_relays_utf8_reply_under_a_gbk_default_codec(tmp_path, monkey
 
     assert bot_mode_dm._run_local_turn(argv, str(dm_file)) == 0
     assert reply in capsys.readouterr().out
+
+
+# ── the runner is spawned deps-activated, not with the parent's interpreter ──
+#
+# Under the Desktop launcher the agent process runs on PM's bare managed tools-python
+# (no site-packages) and gets its dependencies injected in-process by hermes_bootstrap.
+# A child spawned with sys.executable therefore cannot import this repo's dependencies at
+# all, and the delivery died pre-admission on `No module named 'ruamel'`. The runner must
+# go through the install's dependency-activating launcher instead.
+
+
+def test_runner_uses_the_deps_activated_launcher_when_one_is_published(monkeypatch):
+    """The runner must not be spawned with ``sys.executable`` when the install's launcher exists.
+
+    This is the reproduced failure: ``sys.executable`` is the bare managed tools-python under the
+    Desktop, so the child died on ``No module named 'ruamel'`` before any admission work.
+    """
+    launcher = Path(bot_mode_dm.__file__).resolve().parent.parent / ".hermes" / "bin" / "hermes"
+    if not launcher.is_file():  # a bare source tree publishes none; the fallback test covers it
+        pytest.skip("no published launcher in this checkout")
+    monkeypatch.setattr(sys, "executable", "/bare/managed/python3")
+
+    assert bot_mode_dm._managed_python() == str(launcher)
+    argv = shlex.split(bot_mode_dm._delivery_command(
+        ["hermes", "-p", "researcher", "chat", "-Q"], "/tmp/dm.txt", stdin_file=False))
+    # Deps activate in the child: launcher + --run-module, never the bare interpreter that cannot
+    # import this repo's dependencies. The trailing argv matches the direct-form contract.
+    assert argv[:3] == [str(launcher), "--run-module", "tools.bot_mode_dm"]
+    assert "/bare/managed/python3" not in argv
+    mode, dm_file, transport = _runner_parts(" ".join(shlex.quote(p) for p in argv))
+    assert (mode, dm_file, transport) == (
+        "query-file", "/tmp/dm.txt", ["hermes", "-p", "researcher", "chat", "-Q"])
+
+
+def test_managed_python_falls_back_when_no_executable_launcher_is_published(tmp_path, monkeypatch):
+    """The dev-tree contract: no published (or non-executable) launcher -> "", i.e. sys.executable.
+
+    The resolver is rooted at the module's own location, so a fake checkout proves the fallback
+    without touching the live install's launcher.
+    """
+    import os
+
+    root = tmp_path / "checkout"
+    (root / "tools").mkdir(parents=True)
+    module = root / "tools" / "bot_mode_dm.py"
+    module.write_text("", encoding="utf-8")
+    monkeypatch.setattr(bot_mode_dm, "__file__", str(module))
+
+    assert bot_mode_dm._managed_python() == ""  # nothing published at all
+
+    launcher = root / ".hermes" / "bin" / "hermes"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n", encoding="utf-8")
+    assert bot_mode_dm._managed_python() == ""  # written, but not executable
+
+    launcher.chmod(0o755)
+    assert bot_mode_dm._managed_python() == str(launcher)
+
+
+def _launcher_form_argv(launcher, dm_file, *transport):
+    """The argv a ``--run-module`` launcher run actually hands the runner.
+
+    ``runpy.run_module`` replaces ``sys.argv`` wholesale: argv[0] becomes the module's own
+    source path (NOT the launcher), so the runner entry sees argv[0] == this module's file
+    before its own flags.
+    """
+    return [str(Path(bot_mode_dm.__file__).resolve()), "--run-delivery", "query-file",
+            str(dm_file), *transport]
+
+
+def test_delivery_main_ignores_the_module_path_runpy_puts_at_argv0(tmp_path, monkeypatch, capsys):
+    """A ``--run-module`` runner run must not be rejected as malformed.
+
+    ``tools/bot_mode_dm.py`` is executed as the runner both as a direct script and through the
+    launch seam; only the direct form has the runner flags at the front. Before this, the
+    launcher form shifted every flag by one and exited 2 — which read as a delivery failure
+    while the DM file was left on disk.
+    """
+    monkeypatch.setattr(bot_mode_dm, "_default_home", lambda: str(tmp_path))
+    monkeypatch.setattr(bot_mode_dm, "_local_delivery_home", lambda argv: None)
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(bot_mode_dm, "_run_delivery",
+                        lambda argv, dm, **kw: seen.append((argv, dm, kw)) or 0)
+
+    rc = bot_mode_dm._delivery_main(_launcher_form_argv(".hermes/bin/hermes", dm_file, "hermes", "-p", "ops"))
+
+    assert rc == 0, capsys.readouterr().err
+    assert seen == [(["hermes", "-p", "ops"], str(dm_file), {"stdin_file": False, "profile_home": None, "author": None})]
+
+
+def test_launcher_form_places_the_author_after_run_delivery_and_round_trips(tmp_path, monkeypatch):
+    """A product-built send carries an author; the launcher form is one element longer than the
+    direct form, so a fixed-index insert put ``--author`` BEFORE ``--run-delivery`` and every
+    spawned runner exited 2 without spawning a transport. Live-consumer targets still landed
+    (admission is parent-side, before the spawn), which is what hid it — CLI-transport targets
+    were silently lost, the exact class this seam exists to fix.
+    """
+    monkeypatch.setattr(bot_mode_dm, "_managed_python", lambda: "/fake/launcher")
+    author = {"id": "bot:default", "name": "hermes", "is_bot": True}
+    command = bot_mode_dm._delivery_command(
+        ["hermes", "-p", "social-mac", "chat", "-Q"], str(tmp_path / "message.txt"),
+        stdin_file=False, author=author)
+    parts = shlex.split(command)
+    assert parts[:3] == ["/fake/launcher", "--run-module", "tools.bot_mode_dm"]
+    assert parts.index("--author") == parts.index("--run-delivery") + 1, parts
+
+    # The runner accepts exactly what the builder produced: launcher form AND author together.
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    seen = []
+    monkeypatch.setattr(bot_mode_dm, "_default_home", lambda: str(tmp_path))
+    monkeypatch.setattr(bot_mode_dm, "_local_delivery_home", lambda argv: None)
+    monkeypatch.setattr(bot_mode_dm, "_run_delivery",
+                        lambda argv, dm, **kw: seen.append((argv, dm, kw)) or 0)
+
+    # runpy hands the runner the module path at argv[0], then what the launcher passed after the module.
+    assert bot_mode_dm._delivery_main(
+        [str(Path(bot_mode_dm.__file__).resolve()), *parts[3:]]) == 0
+    assert seen[0][0] == ["hermes", "-p", "social-mac", "chat", "-Q"]
+    assert seen[0][2]["author"] == author
+
+
+def test_delivery_main_still_rejects_genuinely_malformed_argv(tmp_path):
+    """The argv[0] skip is narrowly the module path: a real bad flag still exits 2."""
+    assert bot_mode_dm._delivery_main(["--nonsense", "query-file", "/tmp/x"]) == 2
+    assert bot_mode_dm._delivery_main([]) == 2
+    assert bot_mode_dm._delivery_main([str(Path(bot_mode_dm.__file__).resolve())]) == 2
+
+
+# NOTE: the launcher form is exercised end-to-end out of band, against a REAL home: the
+# launcher's dependency activation selects the install's generation, which an isolated
+# HERMES_HOME (every test here) intentionally has no stamp for. Spawning it under pytest
+# would assert a property of the test environment, not of the fix. What the tests pin is the
+# argv contract — ``<launcher> --run-module tools.bot_mode_dm <runner grammar>`` — plus the
+# runner's own two invocation forms above.
+
+
+# ── the live-admission crash contract ──
+#
+# A crashed admission used to answer `ambiguous` + "Do not resend" in every case, but the
+# crash here happens BEFORE any admission side effect (no receipt, no mailbox entry): a peer
+# following "do not resend" lost the message forever. The outcome is classified from the
+# durable artifacts actually on disk instead.
+
+
+def _crashing_admission(monkeypatch):
+    """``_admit_live_dm`` raising before any durable side effect (the reproduced crash)."""
+    def crash(*_args, **_kwargs):
+        raise RuntimeError("No module named 'ruamel'")
+
+    monkeypatch.setattr(bot_mode_dm, "_admit_live_dm", crash)
+
+
+def test_admission_crash_without_intent_is_retryable_not_a_do_not_resend(tmp_path, monkeypatch):
+    """Nothing was ever admitted, so the sender must NOT be told to drop the message.
+
+    This is the reproduced failure: the runner died on import before admission, so no intent
+    and no receipt existed — yet the answer said "Do not resend", silently losing the message.
+    """
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+
+    payload = bot_mode_dm._admission_failure_payload(str(dm_file), RuntimeError("No module named 'ruamel'"))
+
+    assert payload["status"] == "failed"
+    assert payload["retryable"] is True
+    assert "NOT sent" in payload["error"]
+    assert "resend" not in payload["error"].lower()
+    assert payload["delivery_id"] == bot_mode_dm._dm_delivery_id(dm_file)
+
+
+def test_admission_crash_with_intent_but_no_receipt_is_re_drivable(tmp_path, monkeypatch):
+    """The intent is pinned, the receipt is absent: the id is payload-pinned, so re-drive is safe."""
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    pinned = bot_mode_dm._dm_delivery_id(dm_file)
+    Path(str(dm_file) + ".live.json").write_text(
+        json.dumps({"owner": {"profile_home": str(tmp_path)}, "delivery_id": pinned, "message": "hello"}),
+        encoding="utf-8")
+
+    payload = bot_mode_dm._admission_failure_payload(str(dm_file), RuntimeError("boom"))
+
+    assert payload["status"] == "failed" and payload["retryable"] is True
+    assert "NOT sent" in payload["error"]
+    assert payload["delivery_id"] == pinned
+
+
+def test_admission_crash_with_receipt_is_ambiguous_and_re_points_at_the_receipt(tmp_path, monkeypatch):
+    """Only a landed-then-crashed admission is genuinely unknown — and its receipt survives."""
+    from tools import bot_live_delivery as live
+
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    pinned = bot_mode_dm._dm_delivery_id(dm_file)
+    Path(str(dm_file) + ".live.json").write_text(
+        json.dumps({"owner": {"profile_home": str(tmp_path)}, "delivery_id": pinned, "message": "hello"}),
+        encoding="utf-8")
+    monkeypatch.setattr(live, "read_delivery_result",
+                        lambda home, delivery_id: {"status": "queued", "delivery_id": pinned})
+
+    payload = bot_mode_dm._admission_failure_payload(str(dm_file), RuntimeError("boom"))
+
+    assert payload["status"] == "ambiguous"
+    assert payload["delivery_id"] == pinned
+    assert "receipt" in payload["detail"]
+
+
+def test_start_delivery_reports_the_retryable_contract_instead_of_silence(tmp_path, monkeypatch):
+    """The in-turn sender path must carry the same contract (not raise behind the ack)."""
+    home = _managed_home(tmp_path, teammates=("researcher",))
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path)
+    _crashing_admission(monkeypatch)
+
+    result = json.loads(bot_mode_dm.message_agent_tool(
+        "researcher", "hello", agent=_FakeAgent(home, title="Bot Chat")))
+
+    assert result["status"] == "failed" and result["retryable"] is True
+    assert "NOT sent" in result["error"]
+
+
+def test_run_delivery_reports_the_retryable_contract_on_a_broken_intent(tmp_path, monkeypatch, capsys):
+    """The runner path (the one a peer's completion notification carries) too."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _crashing_admission(monkeypatch)
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text("hello", encoding="utf-8")
+    # Intent present but unreadable -> no durable intent -> the knowable-failure contract.
+    Path(str(dm_file) + ".live.json").write_text("{not json", encoding="utf-8")
+
+    assert bot_mode_dm._run_delivery([], str(dm_file), stdin_file=False) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "failed" and payload["retryable"] is True
+    assert "resend" not in payload["error"].lower()
+

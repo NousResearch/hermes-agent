@@ -1699,6 +1699,15 @@ export const setNewChatWorkspaceTarget = (next: NewChatWorkspaceTarget): number 
   return generation
 }
 
+// True only when the next new chat's cwd is a deliberate workspace choice (#52589).
+// The desktop otherwise seeds a chat's cwd from its app-global workspace (the launch
+// profile's configured directory / project scope); the gateway must treat that as an
+// inherited default — NOT an explicit pick — so a named profile's own terminal.cwd
+// wins. Path equality cannot distinguish the two, so the flag ships with the create.
+export const $currentCwdExplicit = atom(false)
+
+export const setCurrentCwdExplicit = (next: Updater<boolean>) => updateAtom($currentCwdExplicit, next)
+
 export const workspaceCwdForNewSession = (): string => {
   // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
   // rail (which keys off $currentCwd) shows no branch and the first message runs

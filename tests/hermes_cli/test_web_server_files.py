@@ -361,6 +361,36 @@ def test_sensitive_env_files_hidden_from_listing(forced_files_client):
 
 
 
+def test_dangling_symlink_does_not_break_the_listing(forced_files_client):
+    """One broken symlink must not blank the whole managed listing.
+
+    ``_managed_file_entry`` runs per entry and re-raised the stat OSError, so a
+    symlink whose target is gone (a removed worktree, a stale build link)
+    turned ``GET /api/files`` into a 500 for the entire directory.
+    """
+    client, root = forced_files_client
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "keep.txt").write_text("keep")
+    (root / "keep-dir").mkdir()
+
+    try:
+        (root / "gone-link.txt").symlink_to(root / "gone.txt")
+    except (NotImplementedError, OSError):
+        pytest.skip("symlinks are not supported on this filesystem")
+
+    response = client.get("/api/files", params={"path": str(root)})
+
+    assert response.status_code == 200
+    entries = {entry["name"]: entry for entry in response.json()["entries"]}
+    assert set(entries) == {"keep.txt", "keep-dir", "gone-link.txt"}
+    broken = entries["gone-link.txt"]
+    # The link itself is described (it is still there, and still deletable from
+    # the OS), and the healthy siblings are unaffected.
+    assert broken["is_directory"] is False
+    assert isinstance(broken["size"], int)
+    assert broken["mtime"] > 0
+
+
 def test_other_credential_store_basenames_blocked(forced_files_client):
     """Regression: the managed-files guard must cover the same credential
     basenames as gateway.platforms.base._ROOT_CREDENTIAL_FILES and

@@ -3,6 +3,7 @@
 
 import mimetypes
 import os
+import stat
 import urllib.request
 from dataclasses import dataclass
 from fastapi import HTTPException, Request
@@ -188,13 +189,22 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
 
     try:
         st = resolved.stat()
-    except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+    except OSError:
+        # An unresolvable target — a symlink whose target is gone, or a target
+        # this process cannot stat. Describing the link itself keeps the entry
+        # in the listing; letting the OSError escape here used to 500 the WHOLE
+        # directory listing (this helper runs per entry), so one dangling
+        # symlink made the dashboard file browser show nothing at all.
+        try:
+            st = target.lstat()
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
 
-    is_dir = resolved.is_dir()
-    mime_type = None if is_dir else (mimetypes.guess_type(resolved.name)[0] or "application/octet-stream")
+    is_dir = stat.S_ISDIR(st.st_mode)
+    name = target.name or resolved.name or str(resolved)
+    mime_type = None if is_dir else (mimetypes.guess_type(name)[0] or "application/octet-stream")
     return {
-        "name": target.name or resolved.name or str(resolved),
+        "name": name,
         "path": str(resolved),
         "is_directory": is_dir,
         "size": None if is_dir else st.st_size,

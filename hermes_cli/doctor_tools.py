@@ -176,12 +176,22 @@ _TOOLSET_SETUP_HINTS: dict[str, str] = {
 }
 
 
+# Setup-hinted toolsets whose remedy is never an API key (PM-managed CLI installs: the fix is
+# 'hermes tools post-setup <hook>'). They keep their row hint, but must stay out of the generic
+# "configure missing API keys" summary — that advice cannot resolve them.
+_NON_KEY_SETUP_TOOLSETS = frozenset({"browser-use"})
+
+
 def _setup_gated(item: dict) -> bool:
-    return bool(item.get("missing_vars") or item.get("env_vars") or item.get("name") in _TOOLSET_SETUP_HINTS)
+    if item.get("missing_vars") or item.get("env_vars"):
+        return True
+    name = item.get("name")
+    return name in _TOOLSET_SETUP_HINTS and name not in _NON_KEY_SETUP_TOOLSETS
 
 
 def _missing_api_key_toolsets_for_summary(unavailable: list[dict]) -> list[dict]:
-    """Filter unavailable setup-gated toolsets (missing key OR setup hint) to those enabled for the CLI."""
+    """Filter unavailable setup-gated toolsets (missing key OR setup hint — except hints that
+    can never be a key) to those enabled for the CLI."""
     api_key_unavailable = [item for item in unavailable if _setup_gated(item)]
     enabled_toolsets = _enabled_cli_toolsets_for_doctor()
     return api_key_unavailable if enabled_toolsets is None else [i for i in api_key_unavailable if str(i.get("name") or "") in enabled_toolsets]

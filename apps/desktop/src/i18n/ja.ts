@@ -2874,7 +2874,8 @@ export const ja = defineLocale({
       copyFailure: '基準のコピーに失敗しました',
       continuationFailed: 'ゴールの継続送信に失敗しました',
       continuationQueued: 'ゴールを再開しました — 継続は現在のターン終了後に送信されます',
-      continuationBusy: 'ゴールを再開しました — セッションが実行中です。続行するには、まず現在の応答を停止してください（Stop ボタンまたは Esc）',
+      continuationBusy:
+        'ゴールを再開しました — セッションが実行中です。続行するには、まず現在の応答を停止してください（Stop ボタンまたは Esc）',
       controlUnavailable: msg => `セッション制御を利用できません: ${msg}`,
       dismissError: 'エラーを閉じる',
       add: '追加'
@@ -2929,7 +2930,8 @@ export const ja = defineLocale({
 
   updates: {
     discontinuedTitle: 'このHermesビルドはサポートされていません',
-    discontinuedBody: 'このHermesビルドはサポートが終了し、動作しなくなる可能性があります。アンインストールしてください。データはディスクに残ります。',
+    discontinuedBody:
+      'このHermesビルドはサポートが終了し、動作しなくなる可能性があります。アンインストールしてください。データはディスクに残ります。',
     channels: { stable: '安定版', canary: '先行版' },
     bundleSwapPending: '再起動して更新を完了',
     bundleSwapPendingDesc:

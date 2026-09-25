@@ -163,6 +163,9 @@ class PluginLedgerMixin:
     def _remove_platform_name_if_unowned(self, name: str) -> None:
         self._remove_name_if_unowned("platform", self._plugin_platform_names, name)
 
+    def _remove_service_name_if_unowned(self, name: str) -> None:
+        self._remove_name_if_unowned("background_service", self._plugin_service_names, name)
+
     def _forget_registrations(self, registrations: List[PluginRegistration]) -> None:
         if not registrations:
             return
@@ -266,6 +269,9 @@ class PluginLedgerMixin:
         from gateway.platform_registry import platform_registry
         for platform_name in tuple(self._plugin_platform_names):
             platform_registry.unregister(platform_name)
+        from gateway.service_registry import service_registry
+        for service_name in tuple(self._plugin_service_names):
+            service_registry.unregister(service_name, scope=self.scope_key)
         # Ledger-owned tool names are excluded: their handles already restored the previous entry, and blanket
         # deregistration would remove what the ledger just restored.
         ledger_tool_names = {r.key for r in registrations if r.kind == "tool"}
@@ -287,7 +293,8 @@ class PluginLedgerMixin:
         self._persistent_carryover.extend(r for r in self._active_persistent() if id(r) not in carryover_ids)
         for container in (
             self._ownership_ledger, self._plugins, self._hooks, self._middleware,
-            self._plugin_tool_names, self._plugin_platform_names, self._cli_commands,
+            self._plugin_tool_names, self._plugin_platform_names, self._plugin_service_names,
+            self._cli_commands,
             self._plugin_commands, self._plugin_skills, self._portable_mcp_servers,
             self._portable_mcp_server_plugins, self._aux_tasks, self._system_prompt_sections, self._approval_transports,
             self._slack_action_handlers, self._predeclared_modules, self._predeclared_tools,

@@ -27,6 +27,7 @@ interface MentionCompletionItem {
   display: string
   insert: string
   meta: string
+  handles?: string[]
 }
 
 interface ComposerDraft {
@@ -365,6 +366,34 @@ describe('@-mention completions', () => {
 
     const result = await handler({ text: '@cos-bot status?' })
     expect(result.text).toMatch(/message_agent target: "default@vps"/)
+  })
+
+  it('claims the raw profile name of a local row so the popover drops its gateway twin', async () => {
+    // `john-2` titled `John ♥` tags as @john; the live gateway lists the same
+    // backend profile by raw name (@john-2). The contributed row claims that
+    // name — one row per bot, under the tag the user actually typed.
+    const { provide } = await contributions({
+      focused: 'default',
+      profiles: [
+        { name: 'default' },
+        { name: 'john-2', ui_meta: { 'hermes-bots': { title: 'John ♥' } } },
+        { name: 'eva-2', ui_meta: { 'hermes-bots': { title: 'Eva 🌥' } } }
+      ]
+    })
+
+    const john = provide('john').find(item => item.insert === '@john')
+    const eva = provide('eva').find(item => item.insert === '@eva')
+
+    expect(john?.handles).toEqual(['@john-2'])
+    expect(eva?.handles).toEqual(['@eva-2'])
+  })
+
+  it('never claims a remote row\'s name — the local gateway\'s twin is a different bot', async () => {
+    const { provide } = await contributions({ profiles: [{ name: 'default' }, REMOTE_DEFAULTS[0]] })
+
+    const contributed = provide('cos').find(item => item.insert === '@cos-bot')
+
+    expect(contributed?.handles).toBeUndefined()
   })
 })
 

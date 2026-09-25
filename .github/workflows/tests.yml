@@ -180,7 +180,8 @@ jobs:
         # and must not share interpreter state.
         # tests/e2e/core/upgrade runs in its own job (e2e-upgrade) below.
         run: |
-          scripts/run_tests.sh --include-integration tests/e2e
+          mapfile -t files < <(find tests/e2e -name 'test_*.py' -not -path 'tests/e2e/core/upgrade/*' | sort)
+          scripts/run_tests.sh --include-integration "${files[@]}"
         env:
           # An e2e file is a process tree, not one CPU-bound pytest worker. With
           # 32 files at once the hosted run starved live children before their

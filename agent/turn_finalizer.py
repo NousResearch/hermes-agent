@@ -304,6 +304,24 @@ def _micro_compact_after_turn(agent, messages, final_response, logger) -> None:
         logger.info("Micro-compaction failed: %s", _mc_err)
 
 
+def _compact_after_turn(
+    agent, messages, conversation_history, system_message, user_message, effective_task_id,
+    compression_attempts,
+) -> None:
+    """Compact the just-persisted transcript in place and re-persist it so the next turn
+    starts on the compacted set instead of waiting on the summarizer."""
+    from agent.turn_context_compaction import run_turn_end_compaction, turn_end_compaction_enabled
+
+    if not turn_end_compaction_enabled(agent, compression_attempts):
+        return
+    compacted, baseline = run_turn_end_compaction(
+        agent, messages=messages, conversation_history=conversation_history,
+        system_message=system_message, user_message=user_message, effective_task_id=effective_task_id,
+    )
+    if compacted:
+        agent._persist_session(messages, baseline)
+
+
 def _log_turn_exit(agent, messages, final_response, api_call_count, _turn_exit_reason, interrupted, logger) -> None:
     """Always INFO so agent.log captures WHY every turn ended; WARNING when the last
     message is a tool result (the "just stops" scenario)."""
@@ -491,7 +509,7 @@ def finalize_turn(
     agent, *, final_response, api_call_count, interrupted, failed, messages, conversation_history,
     effective_task_id, turn_id, user_message, original_user_message, _should_review_memory,
     _turn_exit_reason, _pending_verification_response=None,
-    _pending_verification_response_previewed=False,
+    _pending_verification_response_previewed=False, system_message=None, compression_attempts=0,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict."""
     from agent.conversation_loop import logger
@@ -563,6 +581,17 @@ def finalize_turn(
         agent._persist_session(messages, conversation_history)
 
     _guarded_cleanup("persist_session", _persist_step, _cleanup_errors, logger)
+
+    # After the turn is durable, as its own guarded step: a summarizer failure never costs the reply.
+    if not interrupted and not failed and final_response:
+        _guarded_cleanup(
+            "turn_end_compaction",
+            lambda: _compact_after_turn(
+                agent, messages, conversation_history, system_message, user_message, effective_task_id,
+                compression_attempts,
+            ),
+            _cleanup_errors, logger,
+        )
 
     # Keep the gateway's separate in-memory history snapshot current even on
     # cleanup error, so a later prompt isn't sent with a pre-turn snapshot.

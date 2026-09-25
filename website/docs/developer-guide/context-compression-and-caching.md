@@ -140,6 +140,10 @@ never-estimate acceptance. The following policies remain unchanged:
   whole prefix, model, tools, or system prompt.
 - Opt-in idle compaction uses its own floor/cooldown and can act on unanchored
   pressure; it does not share the threshold gate's one-request wait.
+- Turn-end compaction (`turn_context_compaction.run_turn_end_compaction`) reuses the
+  preflight trigger and runs from `finalize_turn` after the turn's own persist, so the next
+  turn starts on a compacted transcript; a skipped or failed pass leaves the turn-start
+  preflight to take over.
 - Pre-agent gateway hygiene retains its rough-history fallback and hard-message
   safety valve. The replay harness's `gateway` shape reloads transcript dictionaries;
   it does **not** exercise that separate hygiene policy.

@@ -10,6 +10,8 @@ config.yaml. These tests pin the slot-rescue contract.
 import sys
 import types
 
+import pytest
+
 from hermes_cli import mcp_config as mc
 
 

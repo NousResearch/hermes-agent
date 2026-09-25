@@ -1,0 +1,35 @@
+name: index-network
+title: Index Network
+repo: https://github.com/indexnetwork/hermes-plugin
+sha: 1517a63c41e12b942e70073d0dab56f54b4c8187
+description: >-
+  Index tools for intents, networks, and opportunities. Browser login stores
+  this device's INDEX_SESSION_TOKEN. When this install is the selected
+  negotiator, the plugin starts a local Bun sidecar from the pinned bundle.
+maintainer: indexnetwork
+tier: community
+category: tools
+docs_url: https://github.com/indexnetwork/hermes-plugin#readme
+version: "0.47.2"
+capabilities:
+  provides_tools:
+    - index_read_intents
+    - index_research_profile
+    - index_create_intent
+    - index_update_intent
+    - index_add_intent_to_network
+    - index_list_intent_networks
+    - index_read_networks
+    - index_read_network_memberships
+    - index_update_network
+    - index_create_network
+    - index_join_network
+    - index_list_opportunities
+    - index_update_opportunity
+    - index_read_docs
+    - index_agent_me
+    - index_open_app
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+    - INDEX_SESSION_TOKEN

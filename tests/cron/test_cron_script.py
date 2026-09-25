@@ -308,6 +308,86 @@ class TestRunJobScript:
 
 
 
+    @pytest.mark.platforms("linux", "macos")
+    def test_posix_script_pins_the_activated_dependency_environment(self, cron_env, tmp_path, monkeypatch):
+        """A script's third-party import must reach the child on POSIX.
+
+        The scheduler runs on the bare store interpreter with the dependency generation on
+        its own ``sys.path``, and the sanitizer strips both Hermes-owned PYTHONPATH entries
+        before the child spawns — so the script's first non-stdlib import died with
+        ``ModuleNotFoundError`` (``ruamel``, ``yaml``, ...). The dep here exists only in the
+        pinned directory, so the run proves the overlay reached the child.
+        """
+        from cron.scheduler_script import _run_job_script
+
+        generation = (
+            tmp_path / "venv" / "lib"
+            / f"python{sys.version_info[0]}.{sys.version_info[1]}" / "site-packages"
+        )
+        generation.mkdir(parents=True)
+        (generation / "runtime_dep.py").write_text("VALUE = 'runtime ok'\n", encoding="utf-8")
+        # Exactly what pm.environments.activate_dependencies leaves on the scheduler's path.
+        monkeypatch.setattr(sys, "path", [str(generation), *sys.path])
+
+        script = cron_env / "scripts" / "dep_probe.py"
+        script.write_text("import runtime_dep; print(runtime_dep.VALUE)\n", encoding="utf-8")
+
+        success, output = _run_job_script("dep_probe.py")
+        assert success is True
+        assert output == "runtime ok"
+
+    @pytest.mark.platforms("linux", "macos")
+    def test_posix_script_argv_overlays_tree_and_dependency_entries(self, cron_env, tmp_path, monkeypatch):
+        """``_script_argv`` keeps the interpreter and adds the tree + dependency entries."""
+        from cron import scheduler_script as sched_script
+        from cron.scheduler_script import _script_argv
+
+        generation = (
+            tmp_path / "venv" / "lib"
+            / f"python{sys.version_info[0]}.{sys.version_info[1]}" / "site-packages"
+        )
+        generation.mkdir(parents=True)
+        monkeypatch.setattr(sys, "path", [str(generation), *sys.path])
+
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text('print("ok")\n', encoding="utf-8")
+
+        argv, overlay, err = _script_argv(script)
+        assert err is None
+        # The interpreter is already the runtime's; only the import path was missing.
+        assert argv[0] == sys.executable
+        assert argv[1] == str(script)
+        pythonpath = overlay.get("PYTHONPATH", "")
+        assert pythonpath
+        entries = pythonpath.split(os.pathsep)
+        repo_root = Path(sched_script.__file__).resolve().parents[1]
+        assert entries[0] == str(repo_root)
+        assert str(generation) in entries
+
+    @pytest.mark.platforms("linux", "macos")
+    def test_activated_dependency_site_packages_ignores_own_and_mismatched_dirs(self, tmp_path, monkeypatch):
+        """Skip what the interpreter already hands the child, and other interpreters' envs."""
+        from cron.scheduler_script import _activated_dependency_site_packages
+
+        version = f"python{sys.version_info[0]}.{sys.version_info[1]}"
+        own = tmp_path / "own-venv" / "lib" / version / "site-packages"
+        own.mkdir(parents=True)
+        monkeypatch.setattr(sys, "path", [str(own)])
+        monkeypatch.setattr(
+            "cron.scheduler_script.sysconfig.get_paths", lambda: {"purelib": str(own)}
+        )
+        assert _activated_dependency_site_packages() is None
+
+        # A generation built for another Python must never be pinned (#122395): it would
+        # trade ModuleNotFoundError for import errors from compiled modules.
+        mismatched = tmp_path / "old-venv" / "lib" / "python2.7" / "site-packages"
+        mismatched.mkdir(parents=True)
+        monkeypatch.setattr(sys, "path", [str(mismatched)])
+        monkeypatch.setattr(
+            "cron.scheduler_script.sysconfig.get_paths", lambda: {"purelib": str(own)}
+        )
+        assert _activated_dependency_site_packages() is None
+
     def test_emoji_stdout_round_trips_through_script_capture(self, cron_env):
         """Emoji in script stdout must reach the caller intact (#42384).
 

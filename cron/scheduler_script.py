@@ -16,6 +16,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import sysconfig
 import threading
 import time
 from cron.env_settings import cron_env_setting
@@ -158,6 +159,68 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
             env_overlay["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
 
     return str(interpreter), env_overlay
+
+
+def _activated_dependency_site_packages() -> Optional[Path]:
+    """``site-packages`` of the dependency environment THIS process runs on, else None.
+
+    A PM-managed install exposes dependencies by *path* (``pm.environments.
+    activate_dependencies`` does ``site.addsitedir`` + ``PYTHONPATH`` and deliberately does
+    not change ``sys.prefix``), so the environment the scheduler itself runs on is visible
+    on our own ``sys.path`` -- and on nothing else the child receives. Read it from there:
+    the spawn path must not do HERMES_HOME filesystem reads (a process under an overridden
+    HERMES_HOME would touch the real home), and a venv's layout already carries the
+    interpreter version it was built for, so no ``pyvenv.cfg`` parse is needed.
+
+    ``None`` when the interpreter owns its dependencies (wheel/pipx/pip install, dev venv):
+    it already hands them to the child, so there is nothing to overlay.
+    """
+    try:
+        interpreter_purelib = Path(sysconfig.get_paths()["purelib"]).resolve()
+    except (KeyError, OSError):
+        interpreter_purelib = None
+    version = f"python{sys.version_info[0]}.{sys.version_info[1]}"
+    for entry in sys.path:
+        candidate = Path(entry)
+        if candidate.name not in {"site-packages", "dist-packages"} or not candidate.is_dir():
+            continue
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if interpreter_purelib is not None and resolved == interpreter_purelib:
+            continue
+        # Only a directory shaped like a venv's own for THIS interpreter version
+        # (``<venv>/lib/pythonX.Y/site-packages``): a generation built for a different
+        # Python would trade ModuleNotFoundError for compiled-module import errors.
+        if resolved.parent.name != version or resolved.parent.parent.name != "lib":
+            continue
+        return resolved
+    return None
+
+
+def _posix_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
+    """POSIX twin of ``_windows_cron_python_invocation``: hand the cron child the runtime's
+    dependency path.
+
+    The scheduler process runs with ``PYTHONPATH`` = repo root + the activated dependency
+    environment, but ``build_subprocess_env`` strips exactly those Hermes-owned entries
+    before a child is spawned, and the launch interpreter is the bare store Python whose
+    own site-packages holds nothing but pip. So a script run as ``[sys.executable, path]``
+    cannot import the runtime's third-party dependencies (``ruamel``, ``honcho``, ``httpx``,
+    ...): every config-reading or plugin-importing script dies with ModuleNotFoundError
+    before its first line of real work. Overlay the same two entries back (the Windows
+    branch does this with ``.pth`` bootstrap support).
+
+    Best-effort: an interpreter that owns its dependencies keeps a tree-only overlay.
+    """
+    if sys.platform == "win32":
+        return python_exe, {}
+    entries = [str(Path(__file__).resolve().parents[1])]
+    dependencies = _activated_dependency_site_packages()
+    if dependencies is not None and str(dependencies) not in entries:
+        entries.append(str(dependencies))
+    return python_exe, {"PYTHONPATH": os.pathsep.join(entries)}
 
 
 def _terminate_cron_script_process(proc: subprocess.Popen) -> None:
@@ -317,7 +380,8 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
 def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optional[str]]:
     """``(argv, env_overlay, error)`` for a validated script. Interpreter by extension — the
     shebang is deliberately NOT honoured (small, auditable surface): ``.sh``/``.bash`` → bash,
-    else ``sys.executable`` (Windows uv-venv overlay gets the .pth bootstrap)."""
+    else ``sys.executable`` plus the runtime dependency overlay (Windows: ``.pth`` bootstrap;
+    POSIX: PYTHONPATH = repo + selected environment's site-packages)."""
     if path.suffix.lower() in {".sh", ".bash"}:
         # which() finds Git Bash on Windows; None there → clear error instead of a "[WinError 2]".
         _bash = shutil.which("bash") or ("/bin/bash" if os.path.isfile("/bin/bash") else None)
@@ -328,9 +392,12 @@ def _script_argv(path: Path) -> tuple[Optional[list[str]], dict[str, str], Optio
                 "or rewrite the script as Python (.py)."
             )
         return [_bash, str(path)], {}, None
-    python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
-    if env_overlay:
-        return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
+    if sys.platform == "win32":
+        python_exe, env_overlay = _windows_cron_python_invocation(sys.executable)
+        if env_overlay:
+            return _windows_cron_bootstrap_argv(python_exe, env_overlay, str(path)), env_overlay, None
+        return [python_exe, str(path)], env_overlay, None
+    python_exe, env_overlay = _posix_cron_python_invocation(sys.executable)
     return [python_exe, str(path)], env_overlay, None
 
 

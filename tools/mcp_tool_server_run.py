@@ -342,6 +342,8 @@ class MCPServerRunMixin:
                     config = self._refresh_remote_config(config)
                 rebuild = True
                 run_transport = self._run_http if self._is_http() else self._run_stdio
+                # Resolved in this (owning) profile's scope, as the transport resolves it.
+                self._resolved_identity = _registration._resolved_identity(self.name, config)
                 if not await self._on_clean_return(await run_transport(config), budget):
                     break
             except asyncio.CancelledError:

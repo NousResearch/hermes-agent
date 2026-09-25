@@ -3,6 +3,7 @@ include/exclude filtering, trust-tier metadata capture, utility-tool selection, 
 resolution and the schema-cache write-through. Both entry points (``_register_server_tools``
 live, ``_register_from_cache_sync`` lazy) build ``_Candidate`` records for ``_register_candidates``."""
 
+import hashlib
 import json
 import logging
 import threading
@@ -427,16 +428,35 @@ def _auth_type(config: dict) -> str:
     return (config.get("auth") or "").lower().strip()
 
 
-def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False) -> bool:
-    """Whether *server* matches *config*, with OAuth connections never reusable across profiles.
+def _resolved_identity(server_name: str, config: dict) -> str:
+    """Digest of what a connection is opened with that the config does not show, resolved in the
+    CURRENT profile's scope: a stdio child's env (external secret-source values) and default cwd,
+    an HTTP connection's headers after ``identity_header`` (``value_from: profile``). The
+    connecting task records it per attempt; an adopter recomputes it. Only the hash is kept."""
+    from agent.runtime_cwd import resolve_context_cwd
+    from tools.mcp_tool_errors import _apply_identity_header
 
-    OAuth credentials live in the owning profile's token storage rather than the static config,
-    so identical OAuth configs cannot prove that two profiles authenticate as the same account.
-    """
+    if "url" in config:
+        resolved: Any = _apply_identity_header(server_name, config, dict(config.get("headers") or {}))
+    else:
+        cwd = config.get("cwd")
+        resolved = [_config._build_safe_env(config.get("env")), cwd if cwd is not None else resolve_context_cwd()]
+    return hashlib.sha256(json.dumps(resolved, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _same_server_route(server: Any, config: dict, *, cross_profile: bool = False) -> bool:
+    """Whether *server* matches *config*. Across profiles the static config is not enough: OAuth
+    tokens live in the owner's token store (never reusable), and secret-source env, the profile
+    identity header and the session cwd resolve per profile, so the adopter's resolution must hash
+    to what the owner connected with."""
     if _connection_identity(getattr(server, "_config", {}) or {}) != _connection_identity(config):
         return False
+    if not cross_profile:
+        return True
     # Identities match, so both sides carry the same normalised auth type.
-    return not (cross_profile and _auth_type(config) == "oauth")
+    recorded = getattr(server, "_resolved_identity", None)
+    return (_auth_type(config) != "oauth" and recorded is not None
+            and recorded == _resolved_identity(server.name, config))
 
 
 def register_connected_into_current_scope(servers: dict) -> int:

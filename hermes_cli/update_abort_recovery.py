@@ -248,7 +248,9 @@ def _owed_stale_serve_rows(rows) -> list[dict]:
     :func:`_warn_stale_serve_runtimes` and recorded in the receipt. See #111494. (The
     fleet-restart-pending marker draws the same boundary for its own inventory, so a supervisor-owned
     serve row no longer keeps that warning armed either.)"""
-    return [row for row in (rows or []) if row.get("supervisor") != "desktop"]
+    from hermes_cli.update_inventory import CLIENT_OWNED_SERVE_SUPERVISORS
+
+    return [row for row in (rows or []) if row.get("supervisor") not in CLIENT_OWNED_SERVE_SUPERVISORS]
 
 
 def _abort_recovery_is_complete(

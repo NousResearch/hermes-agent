@@ -412,12 +412,14 @@ def _live_or_curated_ids(slug: str, curated: dict, *fallback_keys: str, merge_mo
     ``non_blocking`` (GUI read path) reads the disk cache only — a provider that is slow or down
     contributes its curated list instead of stalling the whole picker (#114215)."""
     from hermes_cli.models import _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids
+    from hermes_cli.chat_catalog import without_generation_models
+
     model_ids = cached_provider_model_ids(slug, non_blocking=non_blocking)
     if not model_ids:
         model_ids = _first_curated(curated, fallback_keys or (slug,))
         if merge_models_dev and slug in _MODELS_DEV_PREFERRED:
             model_ids = _merge_with_models_dev(slug, model_ids)
-    return model_ids
+    return without_generation_models(model_ids)
 
 
 def _first_curated(curated: dict, keys) -> list:

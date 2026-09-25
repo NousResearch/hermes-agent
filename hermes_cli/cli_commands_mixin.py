@@ -2002,11 +2002,19 @@ class CLICommandsMixin:
                             self._app.invalidate()
 
                 bg_agent.thinking_callback = _bg_thinking
-                result = bg_agent.run_conversation(user_message=prompt, task_id=task_id)
-                response = result.get("final_response", "") if result else ""
-                if not response and result and result.get("error"):
-                    response = f"Error: {result['error']}"
-                return response
+                try:
+                    result = bg_agent.run_conversation(user_message=prompt, task_id=task_id)
+                    response = result.get("final_response", "") if result else ""
+                    if not response and result and result.get("error"):
+                        response = f"Error: {result['error']}"
+                    return response
+                finally:
+                    # One agent per /bg task in a long-lived CLI process: close()
+                    # is the owner boundary (memory shutdown, tool subprocesses,
+                    # httpx clients); an unclosed side agent leaks all of them
+                    # until the CLI exits (#50197).
+                    with suppress(Exception):
+                        bg_agent.close()
             finally:
                 with suppress(Exception):
                     set_sudo_password_callback(None)

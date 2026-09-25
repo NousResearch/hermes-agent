@@ -21,6 +21,15 @@ import { clearActiveSessionTodos } from '@/store/todos'
 
 import type { GatewayEventContext } from './types'
 
+/** Lifecycle text that announces the session left its selected model for a fallback. */
+export function isFallbackSwitchStatus(kind: string | undefined, text: string): boolean {
+  if (kind === 'fallback') {
+    return Boolean(text.trim())
+  }
+
+  return /model fallback|provider fallback|switched to fallback|switching to fallback/i.test(text)
+}
+
 /** status.update / review.summary / notification.show / notification.clear /
  *  error — the status-and-notice tail of the dispatcher. */
 export function handleStatusEvent(ctx: GatewayEventContext): boolean {
@@ -111,6 +120,25 @@ export function handleStatusEvent(ctx: GatewayEventContext): boolean {
       void refreshBackgroundProcesses(sessionId)
     } else if (sessionId && payload?.kind === 'goal') {
       applyGoalStatusText(sessionId, coerceGatewayText(payload?.text))
+    } else if (sessionId && isFallbackSwitchStatus(payload?.kind, coerceGatewayText(payload?.text))) {
+      // A provider/model switch is durable: the TUI paints it on the status rail, but Desktop
+      // used to swallow every non-compaction status.update, so the reply came from a different
+      // model with no indication.
+      const text = coerceGatewayText(payload?.text).trim()
+
+      flushQueuedDeltas(sessionId)
+      updateSessionState(sessionId, state => ({
+        ...state,
+        messages: [
+          ...state.messages,
+          {
+            id: `fallback-switch-${occurredAt}`,
+            role: 'system',
+            parts: [textPart(text, occurredAt)],
+            timestamp: occurredAt
+          }
+        ]
+      }))
     }
 
     return true

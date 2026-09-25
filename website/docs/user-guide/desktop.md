@@ -271,12 +271,38 @@ When you have two or more [profiles](./profiles.md), the config-backed settings 
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
 
-- **Skills** — browse, install, and manage [skills](./features/skills.md). The Skills tab lists your installed skills with enable/disable toggles, and below them the full built-in optional-skills catalog that ships with Hermes — each entry has a one-click **Install** button that flips the row into the installed list once it finishes.
+- **Skills** — open **Capabilities → Skills** to manage [skills](./features/skills.md). **Installed** shows the selected profile's actual skills and enable/disable state. **Browse** searches the same full published catalog as the public Skills Hub, with native cards and details.
+- **Plugins** — **Capabilities → Plugins** uses the same **Installed / Browse** layout. Installed combines actual app-level desktop plugins with agent plugins from the selected profile; Browse shows the public [Plugin Catalog](./features/plugin-catalog.md). Search stays at the top, and the tab switch and actions share one row on both pages.
 - **Memory graph (Star Map)** — type `/journey` (aliases `/learning`, `/memory-graph`) in chat to open an interactive constellation of learned skills and memories over time, with a playback scrubber. Nodes can be edited or deleted right from the panel (skills are archived, memories removed). See [Learning Journey](./features/memory.md#learning-journey-journey).
 - **Cron** — view and manage [scheduled jobs](../reference/cli-commands.md#hermes-cron). With **All profiles** on, the list aggregates every profile's jobs; a job's run history and actions (pause, resume, edit, delete) always go to the profile that owns the job, whichever profile is active.
 - **Profiles** — switch between [Hermes profiles](./profiles.md) (isolated config/skills/sessions).
 - **Messaging** — set up gateway channels. Telegram has a **Quick setup** card: click **Create with QR**, scan the code (or open the link) in Telegram, and Hermes creates the bot, detects your user ID for the allowlist, saves the credentials, and restarts the gateway for you. Any credential save, clear, or enable toggle keeps a **Restart now** banner on the page until the gateway has actually restarted; if a restart fails, the banner stays so you can retry or restart manually.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
+
+#### Where Browse gets its data
+
+These are native Desktop views, **not embedded website pages**. Desktop and
+the public website consume the same generated CDN snapshots:
+
+| Catalog | Public docs alias | Desktop fetch URL |
+|---|---|---|
+| Skills | [`/docs/api/skills.json`](https://hermes-agent.nousresearch.com/docs/api/skills.json) | `https://nousresearch.github.io/hermes-agent/docs/api/skills.json` |
+| Plugins | [`/docs/api/plugins.json`](https://hermes-agent.nousresearch.com/docs/api/plugins.json) | `https://nousresearch.github.io/hermes-agent/docs/api/plugins.json` |
+
+The skills snapshot combines `skills/`, `optional-skills/`, and the centralized
+skills index. The plugin snapshot comes from `plugin-catalog/*.yaml` and cached star
+counts; the same publish supplies the installer's removed-entry list. Browsing does not make live
+GitHub API calls or fetch plugin/skill source repositories. **Installed** is
+separate: its state comes from the selected profile's backend and the app's
+desktop-plugin registry, not those public snapshots.
+
+The public hubs' install buttons open `hermes://skill/install?identifier=...`
+or `hermes://plugin/install?catalog=...` links and require confirmation in Desktop.
+Use an updated Desktop build for these routes; the cards retain copyable CLI
+commands if the app is missing or too old. See
+[skill links](./features/skills.md#install-from-the-website) and
+[plugin links](./features/plugins.md#one-click-install-links-desktop) for the
+parameters and review flow.
 
 ### Bot Mode (built in)
 
@@ -539,25 +565,25 @@ SHA-pinned) plus an import allowlist — not isolation. A plugin whose
 row; **⌘K → Reload desktop plugins** re-reads every installed `plugin.js`,
 including one an installer replaced in place.
 
-**Capabilities → Plugins** is the one place for everything that extends
-Hermes: **one row per plugin**, with two switch columns.
+**Capabilities → Plugins → Installed** shows the actual installed state:
+**one list entry per plugin**, with Desktop and Agent controls in its detail pane.
 
 - A plugin can extend **this app**, **the agent**, or **both** — the badge on
   each row says which, inferred from what the package contains (`plugin.yaml`
   → agent half, `plugin.js` → desktop half). A plugin with both halves is one
   row, never two.
-- **Desktop column** — the half loaded into this app. It is app-level: the
+- **Desktop control** — the half loaded into this app. It is app-level: the
   same switch, the same value, whichever profile, gateway, or remote machine
   the window is looking at. Desktop code loads from exactly one place,
   `~/.hermes/desktop-plugins/`; the desktop half of a unified agent+desktop
   package is copied there by the app when the package is installed (and
   follows its updates and uninstall), so switching profiles never loads,
   unloads, or re-scopes a pane. Toggles apply live.
-- **Agent column** — the half installed in the selected profile's backend
+- **Agent control** — the half installed in the selected profile's backend
   ([agent plugins](./features/plugins.md): user, git, project, pip and
   portable installs), with an **Update** chip when a catalog pin moved. The
-  profile selector lives in this column's header because it governs only
-  this column; with a single profile there is no selector at all.
+  profile selector governs only the agent half; with a single profile there
+  is no selector at all.
   Repo-bundled built-ins (platform adapters, provider plugins) are not
   listed: they ship enabled and are configured from their own surfaces. The
   exceptions are the bundled lifecycle plugins with no surface of their own
@@ -582,13 +608,14 @@ Hermes: **one row per plugin**, with two switch columns.
   button; confirming deletes that folder on this computer and unloads the
   plugin immediately, no gateway involved.
 
-Discovery sits underneath: the live [Plugin Catalog](./features/plugin-catalog.md)
-picker installs reviewed entries at their pinned commit into the selected
-profile, and **Install from Git** takes any other repository through the same
-review-then-install dialog; its optional **Pin to commit** field installs one
-exact 40-character commit SHA (private repos included), and pinned plugins
-carry a `pinned @ <sha8>` badge in the list. Old `Settings → Plugins` links
-redirect here.
+Switch to **Browse** for the native [Plugin Catalog](./features/plugin-catalog.md).
+Both Browse and **Install from Git** open the review-then-install dialog. For
+an agent-plugin catalog install, the backend resolves the catalog name to its
+reviewed pin. Website links carry only that name; Desktop looks up the reviewed
+repository and commit rather than trusting metadata supplied by a link.
+**Install from Git** also offers **Pin to commit** for agent-plugin installs
+(a full 40-character SHA, including private repositories); pinned agent plugins
+show a `pinned @ <sha8>` badge. Old `Settings → Plugins` links redirect here.
 
 ## Troubleshooting
 

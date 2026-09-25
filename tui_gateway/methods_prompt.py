@@ -915,8 +915,15 @@ def _(rid, params: dict) -> dict:
         from run_agent import AIAgent
         kwargs = _background_agent_kwargs(session["agent"], task_id)
         with _side_agent_session_db(kwargs.get("session_db")) as session_db:
-            result = AIAgent(**{**kwargs, "session_db": session_db}).run_conversation(
-                user_message=text, task_id=task_id)
+            agent = AIAgent(**{**kwargs, "session_db": session_db})
+            try:
+                result = agent.run_conversation(user_message=text, task_id=task_id)
+            finally:
+                # AIAgent.close() is the owner boundary (memory shutdown, tool
+                # subprocesses, httpx clients); an unclosed side agent leaks
+                # all of them for the gateway's life (#50197).
+                with contextlib.suppress(Exception):
+                    agent.close()
         return _final_response_text(result)
 
     return _spawn_side_agent(rid, session, task_id, parent, "background.complete", body)

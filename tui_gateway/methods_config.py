@@ -189,9 +189,11 @@ def _cfg_get_thinking_mode(params):
 
 
 def _cfg_get_mtime(params):
+    from hermes_cli.config_backend import config_exists, config_version
     cfg_path = _hermes_home / "config.yaml"
     try:
-        mtime = cfg_path.stat().st_mtime if cfg_path.exists() else 0
+        # The client only compares for change; the file backend's version leads with st_mtime_ns.
+        mtime = config_version(cfg_path)[0] / 1_000_000_000 if config_exists(cfg_path) else 0
     except Exception:
         return {"mtime": 0}
     # mcp_rev: hash of the MCP-relevant sections so the poller reloads MCP servers only when

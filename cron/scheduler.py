@@ -1587,6 +1587,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     """Load config.yaml and resolve the run's model: per-job pin > cron.model (fleet default) >
     the main agent model (config ``model:``, then HERMES_MODEL). Re-read every tick (no cache) so
     ``hermes cron edit --model`` and ``hermes model`` both apply next tick."""
+    from hermes_cli.config_backend import config_exists
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
     _cron_default_provider = ""
     _cfg: dict = {}
@@ -1594,7 +1595,7 @@ def _load_cron_job_config(job: dict, job_id: str, job_name: str) -> _CronJobConf
     try:
         from hermes_cli.config_effective import load_user_config_effective
         _cfg_path = str(_get_hermes_home() / "config.yaml")
-        if os.path.exists(_cfg_path):
+        if config_exists(_cfg_path):
             _cfg = load_user_config_effective(Path(_cfg_path))
             # Coerce null to {} so a falsy default never clobbers a resolved env value.
             _model_cfg = _cfg.get("model") or {}

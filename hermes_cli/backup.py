@@ -720,7 +720,7 @@ def run_import(args) -> Optional[int]:
             print(f"Detected archive prefix: {prefix!r} (will be stripped)")
 
         # Check for existing installation
-        has_config = (hermes_root / "config.yaml").exists()
+        has_config = (hermes_root / "config.yaml").exists()  # config-reader: ok — profile marker for the backup scope (file tooling)
         has_env = (hermes_root / ".env").exists()
 
         if (has_config or has_env) and not args.force:
@@ -926,7 +926,7 @@ def run_import(args) -> Optional[int]:
                         continue
                     profile_name = entry.name
                     # Only create wrappers for directories with config
-                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():
+                    if not (entry / "config.yaml").exists() and not (entry / ".env").exists():  # config-reader: ok — profile marker for the backup scope (file tooling)
                         continue
                     collision = check_alias_collision(profile_name)
                     if collision:

@@ -254,16 +254,14 @@ def _config_default_interface_early() -> str:
     """Return the configured default interface ("cli"/"tui") via a minimal
     YAML read. Best-effort: any error falls back to "cli" (legacy behavior)."""
     global _EARLY_INTERFACE_CACHE
+    from hermes_cli.config_backend import config_exists, read_config_doc
     cfg_path = _early_interface_config_path()
     if _EARLY_INTERFACE_CACHE is not None and _EARLY_INTERFACE_CACHE[0] == cfg_path:
         return _EARLY_INTERFACE_CACHE[1]
     value = "cli"
     try:
-        if os.path.exists(cfg_path):
-            import hermes_yaml as _yaml_iface
-
-            with open(cfg_path, encoding="utf-8-sig") as _f:
-                raw = _yaml_iface.safe_load(_f) or {}
+        if config_exists(cfg_path):
+            raw = read_config_doc(cfg_path) or {}
             disp = raw.get("display", {})
             if isinstance(disp, dict):
                 iface = disp.get("interface")
@@ -682,6 +680,7 @@ load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 # .env value still wins — this is config.yaml fallback only. network.force_ipv4
 # is read from the same parse to avoid a second full load_config() (~17ms).
 _FORCE_IPV4_EARLY = False
+from hermes_cli.config_backend import config_exists
 try:
     # The effective-config cache (shared raw parse with read_raw_config()) means this SAME parse
     # serves hermes_logging, hermes_time and later raw reads: 3-4 config.yaml parses become one.
@@ -689,7 +688,7 @@ try:
     from hermes_cli.config_effective import load_user_config_effective as _load_effective_early
 
     _cfg_path = get_hermes_home() / "config.yaml"
-    if _cfg_path.exists():
+    if config_exists(_cfg_path):
         _early_cfg_raw = _load_effective_early(_cfg_path)
         if "HERMES_REDACT_SECRETS" not in os.environ:
             _early_sec_cfg = _early_cfg_raw.get("security", {})

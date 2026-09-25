@@ -517,7 +517,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
                 # _replace_entry unlinks first so copy2 cannot write through a symlinked .env.EXAMPLE.
                 _replace_entry(src, target / ENV_EXAMPLE_FILENAME)
                 continue
-            if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
+            if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():  # config-reader: ok — file tooling
                 continue
             if src.is_dir():
                 _merge_dir(src, _real_dir(target, rel_parts), rel_parts)

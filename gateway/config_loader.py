@@ -385,15 +385,12 @@ def read_yaml_layers(home: Path) -> dict:
     (``gateway.relay.relay_explicitly_disabled``) reads through here so it cannot disagree with
     ``load_gateway_config()`` on which files count.
     """
-    config_yaml_path = home / "config.yaml"
-    yaml_cfg: dict = {}
-    if config_yaml_path.exists():
-        # The installer seeds config.yaml by copying cli-config.yaml.example (~120 KB, almost all
-        # comments), and nothing caches this loader — so the pure-Python parser dominates the load.
-        from utils import fast_safe_load
+    from hermes_cli.config_backend import get_config_backend
 
-        with open(config_yaml_path, encoding="utf-8-sig") as f:
-            yaml_cfg = fast_safe_load(f) or {}
+    backend = get_config_backend()
+    yaml_cfg: dict = {}
+    if backend.exists(home):
+        yaml_cfg = backend.read_user_layer(home).doc or {}
 
     from hermes_cli.config import _expand_env_vars
 

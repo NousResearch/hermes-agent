@@ -156,6 +156,7 @@ def _load_hermes_env() -> None:
     the profile's external secret sources over it — so it is authoritative as-is; replaying raw
     ``.env`` over it would let a stale user value beat the secret-manager one for this request.
     """
+    from hermes_cli.config_backend import config_exists
     import os
     try:
         from hermes_cli.config import get_hermes_home
@@ -179,7 +180,7 @@ def _load_hermes_env() -> None:
     # Bridge top-level scalars the user (or the managed layer) actually wrote — never DEFAULT_CONFIG —
     # into the environment, without overriding existing values.
     config_path = home / "config.yaml"
-    if not config_path.exists():
+    if not config_exists(config_path):
         return
     try:
         from hermes_cli.config_effective import load_user_config_effective

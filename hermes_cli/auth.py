@@ -2336,8 +2336,9 @@ def _logout_default_provider_from_config() -> Optional[str]:
 
 def _reset_config_provider() -> Path:
     """Reset config.yaml provider back to auto after logout."""
+    from hermes_cli.config_backend import config_exists
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_exists(config_path):
         return config_path
     require_readable_config_before_write(config_path)
     config = read_raw_config()

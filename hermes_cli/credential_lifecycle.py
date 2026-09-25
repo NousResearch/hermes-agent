@@ -85,12 +85,13 @@ def _scrub_config_yaml_mirrors(old_value: str, new_value: str | None) -> List[st
     ``.env`` is touched. ``new_value=None`` removes the field. Operates on the RAW user config
     so defaults are never baked into the user's file.
     """
+    from hermes_cli.config_backend import config_exists
     if not old_value:
         return []
     from hermes_cli.config import atomic_config_write, get_config_path, read_user_config_raw
 
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_exists(config_path):
         return []
     try:
         user_config = read_user_config_raw(config_path)

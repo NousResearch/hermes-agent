@@ -784,8 +784,8 @@ def save_config_value(key_path: str, value: any) -> bool:
     try:
         from hermes_constants import mkdir_under_hermes_home
         mkdir_under_hermes_home(config_path.parent)
-        from utils import atomic_roundtrip_yaml_update
-        atomic_roundtrip_yaml_update(config_path, key_path, value)
+        from hermes_cli.config_backend import write_config_key
+        write_config_key(config_path, key_path, value)
         try:  # owner-only: config files contain API keys
             os.chmod(config_path, 0o600)
         except (OSError, NotImplementedError):
@@ -1085,14 +1085,15 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
 
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
+        from hermes_cli.config_backend import config_exists
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
         terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
 
         config_path = _hermes_home / 'config.yaml'
-        if not config_path.exists():
+        if not config_exists(config_path):
             config_path = Path(__file__).parent / 'cli-config.yaml'
-        config_status = "(loaded)" if config_path.exists() else "(not found)"
+        config_status = "(loaded)" if config_exists(config_path) else "(not found)"
 
         # ``api_key`` may be a callable (Entra ID bearer provider): never invoke it. Prefer the
         # LIVE agent's key: the constructor seeds self.api_key from env before provider

@@ -15,7 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv  # noqa: F401
-from utils import atomic_replace, load_yaml_file_readonly
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +455,13 @@ def load_hermes_dotenv(
             if os.environ.get(name) != value:
                 os.environ[name] = value
 
+    # The config backend is selected here — after the .env files, before the first config.yaml read
+    # (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
+    # process before any reader could fall back to defaults (config-config design §4.4, D11/D32).
+    from hermes_cli.config_backend import get_config_backend
+
+    get_config_backend()
+
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing
     # that env on Windows, and a fresh retry after a deferred dependency install would otherwise make the
@@ -619,8 +626,10 @@ def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope:
 
 def _load_secrets_config(home_path: Path) -> dict:
     """Read just the ``secrets:`` section of config.yaml, isolated so a malformed config can't break dotenv."""
+    from hermes_cli.config_backend import config_exists, read_config_doc_readonly
+
     config_path = home_path / "config.yaml"
-    if not config_path.exists():
+    if not config_exists(config_path):
         return {}
     # Prefer the shared raw-config cache: this is the first config.yaml read of a normal startup, so
     # populating it lets main.py's early bridge and hermes_logging reuse one parse instead of 3-4.
@@ -634,7 +643,7 @@ def _load_secrets_config(home_path: Path) -> dict:
             pass
     # Routed profiles re-enter their scope on every poll/turn; only re-parse after the file changed.
     try:
-        data = load_yaml_file_readonly(config_path) or {}
+        data = read_config_doc_readonly(config_path) or {}
     except Exception:  # noqa: BLE001
         return {}
     return data.get("secrets") or {}

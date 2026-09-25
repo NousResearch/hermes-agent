@@ -2648,10 +2648,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int, replace_existing: bool = False) -> None:
         """Save a newly created thread_id back into config.yaml so it survives restarts."""
+        from hermes_cli.config_backend import config_exists
         try:
             from hermes_constants import get_hermes_home
             config_path = get_hermes_home() / "config.yaml"
-            if not config_path.exists():
+            if not config_exists(config_path):
                 logger.warning("[%s] Config file not found at %s, cannot persist thread_id", self.name, config_path)
                 return
             from hermes_cli.config import atomic_config_write, read_user_config_raw

@@ -97,6 +97,35 @@ def test_core_quarantine_covers_core_packages_and_not_plugin_ones(layout, locked
 
 
 
+def test_two_profile_copies_with_same_project_name_lock_together(layout, locked_project):
+    """uv identifies members by declared name, not by the unique workspace path."""
+    import tomllib
+
+    tmp, core, _, _ = layout
+    _, uv, env = locked_project
+    copies = []
+    for profile in ("default", "other"):
+        plugin = tmp / profile / "plugins" / "hindsight"
+        plugin.mkdir(parents=True)
+        (plugin / "pyproject.toml").write_text(
+            '[project]\nname="hermes-plugin-hindsight"\nversion="1.0.1"\n'
+            'requires-python=">=3.11"\ndependencies=["member-dep==1.0"]\n'
+            '[tool.uv]\npackage=false\n', encoding="utf-8",
+        )
+        copies.append(plugin)
+
+    root = tmp / "workspace"
+    ws._generate_pyproject(copies, root, source=core)
+    members = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]["workspace"]["members"]
+    names = [tomllib.loads((root / member / "pyproject.toml").read_text())["project"]["name"]
+             for member in members]
+    assert len(set(names)) == len(copies)
+    assert all(name.startswith("hermes-plugin-hindsight-") for name in names)
+    subprocess.run([str(uv), "lock", "--python", sys.executable], cwd=root, env=env,
+                   check=True, capture_output=True, text=True)
+    assert (root / "uv.lock").is_file()
+
+
 # --- classified failures + staging surface (FINAL-RUNTIME-CONTRACT) ---
 
 

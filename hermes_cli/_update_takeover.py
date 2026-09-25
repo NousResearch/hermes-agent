@@ -2,9 +2,81 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
+import sysconfig
+
+
+#: Carried extras whose closure compiles C++ from source. ``matrix`` pulls
+#: ``python-olm`` (via ``mautrix[encryption]``), which builds vendored libolm
+#: with the managed interpreter's sysconfig ``CXX``.
+_NATIVE_CXX_EXTRAS = frozenset({"matrix"})
+
+
+def _build_python(root: Path) -> Path | None:
+    """Managed interpreter native builds run under, once tools are ensured."""
+    try:
+        from hermes_cli._launchers import resolve_store_python
+    except ImportError:
+        return None
+    try:
+        return resolve_store_python(root)
+    except Exception:
+        # A preflight probe must never break an update that would succeed.
+        return None
+
+
+def _sysconfig_cxx(python: Path | None) -> str | None:
+    """CXX of the build interpreter, else this process's own sysconfig."""
+    if python is not None:
+        try:
+            completed = subprocess.run(
+                [str(python), "-I", "-c",
+                 "import sysconfig; print(sysconfig.get_config_var('CXX') or '')"],
+                capture_output=True, text=True, timeout=60,
+            )
+        except (OSError, ValueError):
+            completed = None
+        if completed is not None and completed.returncode == 0 and completed.stdout.strip():
+            return completed.stdout.strip()
+    return sysconfig.get_config_var("CXX")
+
+
+def preflight_native_toolchain(root: Path, extras: list[str] | None) -> None:
+    """Fail early when a carried native extra cannot compile (#122402).
+
+    Only selections that actually need a C++ compiler are checked; pure
+    Python syncs never fail here. An explicit ``CXX`` override that resolves
+    satisfies the check. Otherwise the managed interpreter's sysconfig
+    ``CXX`` executable must exist on ``PATH`` — without it ``uv sync`` dies
+    late, after the checkout already moved.
+    """
+    native = sorted(_NATIVE_CXX_EXTRAS.intersection(extras or ()))
+    if not native:
+        return
+    override = os.environ.get("CXX", "").strip()
+    if override and shutil.which(override.split()[0]):
+        return
+    if override:
+        cxx, source = override, "CXX environment override"
+    else:
+        cxx, source = _sysconfig_cxx(_build_python(root)), "managed Python sysconfig CXX"
+    if not cxx:
+        # No configured C++ compiler (e.g. MSVC targets): nothing to verify.
+        return
+    executable = cxx.split()[0]
+    if shutil.which(executable):
+        return
+    wanted = ", ".join(repr(extra) for extra in native)
+    raise RuntimeError(
+        f"takeover cannot build carried extra {wanted}: C++ compiler "
+        f"{executable!r} ({source}={cxx!r}) was not found on PATH. "
+        f"Install it (Debian/Ubuntu: sudo apt install clang) or re-run the "
+        f"update with CC=gcc CXX=g++ to build with the GNU toolchain."
+    )
 
 
 def prepare(request: dict) -> tuple[Path, dict[str, str]]:
@@ -35,6 +107,11 @@ def prepare(request: dict) -> tuple[Path, dict[str, str]]:
         # Repair preserves the old stamp. Changed source inputs instead need
         # an ordinary sync, which builds and validates a fresh generation too.
         repair = repair_marker.is_file() and venv_is_current(project_root=root)
+        # A carried native extra compiles C++ with the managed interpreter's
+        # sysconfig CXX. Without that executable, uv sync dies late — after
+        # the checkout already moved. Fail here with the install-or-override
+        # hint instead. Repair replays a graph that already built on this host.
+        preflight_native_toolchain(root, None if repair else extras)
         # An update never fails because of a plugin: misfits are disabled and reported.
         sync_venv(None if repair else extras, explicit=True, project_root=root, repair=repair,
                   evict_incompatible_plugins=not repair)

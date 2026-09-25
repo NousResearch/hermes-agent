@@ -1211,6 +1211,7 @@ def _memory_provider_init_kwargs(agent, platform) -> Dict[str, Any]:
         "platform": platform or "cli",
         "hermes_home": str(get_hermes_home()),
         "agent_context": "primary",
+        "single_query_mode": agent.single_query_mode,
     }
     if kwargs["platform"] == "cli":
         kwargs["warning_callback"] = agent._emit_warning
@@ -2174,6 +2175,7 @@ _USAGE_STATE: Dict[str, Any] = {
 # Constructor params stored verbatim under the same name.
 _PASSTHROUGH_PARAMS = (
     "model", "max_iterations", "save_trajectories", "verbose_logging", "quiet_mode",
+    "single_query_mode",
     "tool_progress_mode", "ephemeral_system_prompt", "platform", "skip_context_files",
     "load_soul_identity", "pass_session_id", "log_prefix_chars",
     # OpenRouter provider preferences
@@ -2207,6 +2209,7 @@ def init_agent(
     args: list[str] | None = None, model: str = "", max_iterations: int = sys.maxsize,
     enabled_toolsets: List[str] = None, disabled_toolsets: List[str] = None,
     save_trajectories: bool = False, verbose_logging: bool = False, quiet_mode: bool = False,
+    single_query_mode: bool = False,
     tool_progress_mode: str = "all", ephemeral_system_prompt: str = None,
     log_prefix_chars: int = 100, log_prefix: str = "", providers_allowed: List[str] = None,
     providers_ignored: List[str] = None, providers_order: List[str] = None,

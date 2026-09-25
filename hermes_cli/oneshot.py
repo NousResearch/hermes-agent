@@ -563,6 +563,7 @@ def _run_agent(
             model=choice.model,
             enabled_toolsets=toolsets_list,
             quiet_mode=True,
+            single_query_mode=True,
             platform="cli",
             session_db=session_db,
             session_id=resume_sid,

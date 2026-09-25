@@ -281,6 +281,7 @@ class AIAgent(
         gateway_session_key: str = None,
         skip_context_files: bool = False, load_soul_identity: bool = False,
         skip_memory: bool = False, skip_background_review: bool = False,
+        single_query_mode: bool = False,
         session_db=None, parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None, run_budget_seconds: Optional[float] = None,
         fallback_model: Dict[str, Any] = None, credential_pool=None,

@@ -605,6 +605,100 @@ describe('saveOnboardingLocalEndpoint', () => {
     expect(calls).not.toContain('/api/model/set')
   })
 
+  it('saves a manually entered model when discovery returns an empty /v1/models listing (#47006)', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        // Endpoint is up but serves no /v1/models listing.
+        return { ok: true, reachable: true, message: '', models: [] }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'my-manual-model', base_url: 'http://127.0.0.1:8000/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', '', {
+      requestGateway: readyGateway()
+    }, 'my-manual-model')
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'my-manual-model',
+      base_url: 'http://127.0.0.1:8000/v1'
+    })
+
+    expect($desktopOnboarding.get().configured).toBe(true)
+  })
+
+  it('saves a manual model even when the probe fails entirely (endpoint without /v1/models)', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        throw new Error('probe blew up')
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'qwen2.5-7b', base_url: 'http://127.0.0.1:8000/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', '', {
+      requestGateway: readyGateway()
+    }, 'qwen2.5-7b')
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'qwen2.5-7b',
+      base_url: 'http://127.0.0.1:8000/v1'
+    })
+  })
+
+  it('prefers the manual model over the discovered listing when both are available', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    installApiMock(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        return { ok: true, reachable: true, message: '', models: ['llama-3.1-8b'] }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:8000/v1', '', {
+      requestGateway: readyGateway()
+    }, 'explicit-model')
+
+    expect(result.ok).toBe(true)
+
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({ model: 'explicit-model' })
+  })
+
   it('auto-discovers the model and persists provider=custom + base_url, then finishes', async () => {
     const calls: { body?: unknown; path: string }[] = []
 

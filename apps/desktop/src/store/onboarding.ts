@@ -1038,7 +1038,10 @@ export async function saveOnboardingApiKey(
   // Optional endpoint key — only meaningful for the "Local / custom endpoint"
   // option, whose primary `value` is the base URL. Ignored for plain API-key
   // providers (their key IS `value`).
-  endpointApiKey?: string
+  endpointApiKey?: string,
+  // Optional manual model name for the local-endpoint option, used when the
+  // endpoint doesn't expose /v1/models (#47006).
+  endpointManualModel?: string
 ) {
   ctx = captureContext(ctx)
   const generation = flowGeneration
@@ -1054,7 +1057,7 @@ export async function saveOnboardingApiKey(
   // base_url + model + api_key), not dropped into .env — runtime resolution
   // ignores OPENAI_BASE_URL.
   if (envKey === 'OPENAI_BASE_URL') {
-    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx)
+    return saveOnboardingLocalEndpoint(trimmed, endpointApiKey?.trim() ?? '', ctx, endpointManualModel)
   }
 
   // No key validation here on purpose: we previously live-probed the key and
@@ -1103,12 +1106,21 @@ export async function saveOnboardingApiKey(
 // re-assigns the model from /api/model/options WITHOUT a base_url, which would
 // wipe the base_url we just wrote. We have a concrete model already, so we
 // verify the runtime directly and finish.
-export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: string, ctx: OnboardingContext) {
+export async function saveOnboardingLocalEndpoint(
+  baseUrl: string,
+  apiKey: string,
+  ctx: OnboardingContext,
+  // Manual model name, used when the endpoint does not expose /v1/models
+  // (some OpenAI-compatible servers gate or omit the listing route). The
+  // runtime supports this via discover_models: false — see #47006.
+  manualModel?: string
+) {
   ctx = captureContext(ctx)
   const generation = flowGeneration
   flowScope = ctx.scope
   const url = baseUrl.trim()
   const key = apiKey.trim()
+  const manual = (manualModel ?? '').trim()
 
   if (!url) {
     return { ok: false, message: 'Enter the endpoint URL first.' }
@@ -1130,24 +1142,40 @@ export async function saveOnboardingLocalEndpoint(baseUrl: string, apiKey: strin
       return { ok: false }
     }
 
-    if (!probe.ok && probe.reachable) {
-      return { ok: false, message: probe.message || 'Could not reach that endpoint.' }
-    }
+    // A manual model name relaxes the probe requirements: some OpenAI-compatible
+    // servers don't expose /v1/models at all, so probe failure or an empty
+    // listing must not hard-block (#47006). We still persist the URL the probe
+    // resolved when it did answer, so chat/completions hits the right base.
+    if (manual) {
+      model = manual
+      resolvedUrl = probe.resolved_base_url?.trim() || url
+    } else {
+      if (!probe.ok && probe.reachable) {
+        return { ok: false, message: probe.message || 'Could not reach that endpoint.' }
+      }
 
-    if (!probe.reachable) {
-      return { ok: false, message: probe.message || `Could not reach ${url}.` }
-    }
+      if (!probe.reachable) {
+        return { ok: false, message: probe.message || `Could not reach ${url}.` }
+      }
 
-    model = (probe.models?.[0] ?? '').trim()
-    resolvedUrl = probe.resolved_base_url?.trim() || url
+      model = (probe.models?.[0] ?? '').trim()
+      resolvedUrl = probe.resolved_base_url?.trim() || url
+    }
   } catch {
-    return { ok: false, message: `Could not reach ${url}.` }
+    // Probe itself blew up. With a manual model we can still save — the
+    // endpoint may simply not implement /v1/models (#47006).
+    if (manual) {
+      model = manual
+      resolvedUrl = url
+    } else {
+      return { ok: false, message: `Could not reach ${url}.` }
+    }
   }
 
   if (!model) {
     return {
       ok: false,
-      message: `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again.`
+      message: `Connected to ${url}, but it advertised no models at /v1/models. Start a model on that endpoint and try again, or enter the model name manually.`
     }
   }
 

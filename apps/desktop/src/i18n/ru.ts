@@ -3462,6 +3462,7 @@ export const ru = defineLocale({
     replaceCurrent: 'Заменить текущее значение',
     pasteApiKey: 'Вставьте API-ключ',
     localApiKeyPlaceholder: 'API-ключ (необязательно — только если ваш endpoint его требует)',
+    localModelPlaceholder: 'Имя модели (необязательно — только если /v1/models недоступен)',
     couldNotSave: 'Не удалось сохранить учётные данные.',
     connecting: 'Подключение',
     update: 'Обновить',

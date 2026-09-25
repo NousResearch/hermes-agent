@@ -4150,6 +4150,7 @@ export const zh = defineLocale({
     replaceCurrent: '替换当前值',
     pasteApiKey: '粘贴 API 密钥',
     localApiKeyPlaceholder: 'API 密钥（可选 — 仅当端点需要时填写）',
+    localModelPlaceholder: '模型名称（可选 — 仅当 /v1/models 不可用时填写）',
     couldNotSave: '无法保存凭据。',
     connecting: '连接中',
     update: '更新',

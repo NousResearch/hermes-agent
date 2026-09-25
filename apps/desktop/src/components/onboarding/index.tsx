@@ -628,7 +628,8 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           canGoBack={hasOauth && !localEndpoint}
           initialEnvKey={localEndpoint ? 'OPENAI_BASE_URL' : apiKeyInitialEnv}
           onBack={() => setOnboardingMode('oauth')}
-          onSave={(envKey, value, name, apiKey) => saveOnboardingApiKey(envKey, value, name, ctx, apiKey)}
+          onSave={(envKey, value, name, apiKey, manualModel) =>
+            saveOnboardingApiKey(envKey, value, name, ctx, apiKey, manualModel)}
           options={apiKeyOptions}
         />
         {manual ? null : (
@@ -749,7 +750,10 @@ export function ApiKeyForm({
   isSet?: (envKey: string) => boolean
   onBack: () => void
   onClear?: (envKey: string) => void
-  onSave: (envKey: string, value: string, name: string, apiKey?: string) => Promise<{ message?: string; ok: boolean }>
+  onSave: (envKey: string, value: string, name: string, apiKey?: string, manualModel?: string) => Promise<{
+    message?: string
+    ok: boolean
+  }>
   options?: ApiKeyOption[]
   redactedValue?: (envKey: string) => null | string | undefined
 }) {
@@ -761,6 +765,10 @@ export function ApiKeyForm({
   // Optional endpoint API key, only used by the local / custom endpoint option
   // (whose `value` is the base URL). Cleared whenever the option changes.
   const [localKey, setLocalKey] = useState('')
+  // Optional manual model name for the local endpoint option: some
+  // OpenAI-compatible servers don't expose /v1/models, so discovery can't
+  // enumerate anything (#47006). When filled, it overrides auto-discovery.
+  const [localModel, setLocalModel] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
   // `options` can change at runtime when callers filter the catalog (e.g. the
@@ -771,6 +779,7 @@ export function ApiKeyForm({
       setOption(options[0])
       setValue('')
       setLocalKey('')
+      setLocalModel('')
       setError(null)
     }
   }, [option.envKey, options])
@@ -783,6 +792,7 @@ export function ApiKeyForm({
     setOption(o)
     setValue('')
     setLocalKey('')
+    setLocalModel('')
     setError(null)
     requestAnimationFrame(() => {
       entryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -808,11 +818,18 @@ export function ApiKeyForm({
 
     setSaving(true)
     setError(null)
-    const result = await onSave(option.envKey, value, option.name, isLocal ? localKey : undefined)
+    const result = await onSave(
+      option.envKey,
+      value,
+      option.name,
+      isLocal ? localKey : undefined,
+      isLocal ? localModel : undefined
+    )
 
     if (result.ok) {
       setValue('')
       setLocalKey('')
+      setLocalModel('')
     } else {
       setError(result.message ?? t.onboarding.couldNotSave)
     }
@@ -878,6 +895,17 @@ export function ApiKeyForm({
             placeholder={t.onboarding.localApiKeyPlaceholder}
             type="password"
             value={localKey}
+          />
+        ) : null}
+        {isLocal ? (
+          <Input
+            autoComplete="off"
+            className="font-mono"
+            onChange={e => setLocalModel(e.target.value)}
+            onKeyDown={e => isSubmitEnter(e) && void submit()}
+            placeholder={t.onboarding.localModelPlaceholder}
+            type="text"
+            value={localModel}
           />
         ) : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}

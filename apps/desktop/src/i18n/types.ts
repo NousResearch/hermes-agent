@@ -3671,6 +3671,7 @@ export interface Translations {
     replaceCurrent: string
     pasteApiKey: string
     localApiKeyPlaceholder: string
+    localModelPlaceholder: string
     couldNotSave: string
     connecting: string
     update: string

@@ -4783,6 +4783,7 @@ export const esOverrides = {
     replaceCurrent: 'Reemplazar valor actual',
     pasteApiKey: 'Pegar clave API',
     localApiKeyPlaceholder: 'Clave API (opcional; solo si tu endpoint la requiere)',
+    localModelPlaceholder: 'Nombre del modelo (opcional; solo si /v1/models no está disponible)',
     couldNotSave: 'No se pudo guardar la credencial.',
     connecting: 'Conectando',
     update: 'Actualizar',

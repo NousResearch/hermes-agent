@@ -6,11 +6,12 @@ Every read and write of a profile's user ``config.yaml`` goes through the backen
 the hermes home (profile): one multiplexed process serves N profiles, and every config cache
 already keys on the config path, so a backend keeps per-home state.
 
-:class:`FileBackend` is the only backend in this build and is today's behaviour byte for byte:
+:class:`FileBackend` (the default) is today's behaviour byte for byte:
 the version is the ``file_signature`` stat tuple, reads are ``open`` + ``fast_safe_load`` and raise
 exactly what those raise (``FileNotFoundError`` for an absent file, ``OSError``, YAML errors), and
 writes are the ruamel round-trip writers in ``utils``. Callers keep their own error handling, so a
-backend whose layer always exists simply never takes the "no file" branches.
+backend whose layer always exists simply never takes the "no file" branches. The remote backend
+(``HERMES_CONFIG_BACKEND=remote``) lives in ``plugins/config_backends/remote/``.
 
 The managed scope (``/etc/hermes``) is NOT a backend concern: it stays an overlay applied on top of
 whatever user layer the backend returns.
@@ -78,11 +79,58 @@ class ConfigBackend(Protocol):
         ``config edit``, last-known-good backups, ``migrate_config`` write-back) may run."""
         ...
 
+    def honors_managed_config(self) -> bool:
+        """Whether the managed ``/etc/hermes/config.yaml`` overlay applies (D18: not in remote mode)."""
+        ...
+
+    def boot(self, home: Path) -> None:
+        """Called once per ``load_hermes_dotenv`` after the ``.env`` loads and before the first
+        config read (design §4.4): a backend that fetches config does it here, failing closed."""
+        ...
+
+    def protected_env_names(self) -> frozenset:
+        """Env names no external secret source may supply (the plane credential, D32)."""
+        ...
+
+    def apply_in_memory(self, home: Path, doc: dict) -> None:
+        """Replace the user layer in memory only (in-memory migration, D12). Only called for a
+        backend without file tooling; nothing is sent or written."""
+        ...
+
+    def describe(self, home: Path) -> str:
+        """One line naming where the user layer comes from and its state (status line, doctor)."""
+        ...
+
 
 class ConfigBackendUnavailable(SystemExit):
     """The selected backend cannot serve config. A ``SystemExit`` on purpose: many config readers
     fail open with ``except Exception`` → defaults, and serving defaults instead of the selected
     backend's config is exactly the silent failure this must not become."""
+
+
+class ConfigWriteError(RuntimeError):
+    """A config write the backend refused or could not complete; nothing was changed. ``code`` is
+    a machine code (the plane's ``error`` for a remote refusal)."""
+
+    def __init__(self, message: str, *, code: str = "config_write_failed") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class ConfigLockedError(ConfigWriteError):
+    """The write touches a path locked by an upper level (D7, D10)."""
+
+    def __init__(self, path: str, locked_by: str, message: Optional[str] = None) -> None:
+        super().__init__(message or f"{path} is locked by the {locked_by} level", code="config_key_locked")
+        self.path = path
+        self.locked_by = locked_by
+
+
+class ConfigValueError(ConfigWriteError):
+    """A value the backend cannot store (a YAML-only type, a secret literal); nothing was sent."""
+
+    def __init__(self, message: str, *, code: str = "config_value_invalid") -> None:
+        super().__init__(message, code=code)
 
 
 class FileBackend:
@@ -144,6 +192,21 @@ class FileBackend:
     def supports_file_tooling(self) -> bool:
         return True
 
+    def honors_managed_config(self) -> bool:
+        return True
+
+    def boot(self, home: Path) -> None:
+        return None
+
+    def protected_env_names(self) -> frozenset:
+        return frozenset()
+
+    def apply_in_memory(self, home: Path, doc: dict) -> None:
+        raise NotImplementedError("the file backend persists migrations to config.yaml")
+
+    def describe(self, home: Path) -> str:
+        return str(self.config_path(home))
+
 
 _FILE_BACKEND = FileBackend()
 
@@ -158,10 +221,11 @@ def get_config_backend() -> ConfigBackend:
     if kind == "file":
         return _FILE_BACKEND
     if kind == "remote":
-        raise ConfigBackendUnavailable(
-            f"{BACKEND_ENV}=remote: the remote config backend is not available in this build of "
-            "Hermes. Unset it to use the local config.yaml.")
-    raise ConfigBackendUnavailable(f"{BACKEND_ENV}={kind!r} is not a config backend (expected 'file').")
+        # Imported directly, never through the general plugin loader (which reads config, D11).
+        from plugins.config_backends.remote import get_remote_backend
+        return get_remote_backend()
+    raise ConfigBackendUnavailable(
+        f"{BACKEND_ENV}={kind!r} is not a config backend (expected 'file' or 'remote').")
 
 
 def _route(config_path: PathLike) -> Tuple[Any, Path, bool]:

@@ -1,0 +1,120 @@
+{
+  "fixtureVersion": 1,
+  "name": "dotted-key-segment",
+  "description": "Proves path-grammar, rule-3: A key that contains dots is one escaped segment (service\\.name) in locks, provenance and writes; the unescaped form names a different path.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "monitoring": {
+          "gateway_health_export": {
+            "resource_attributes": {
+              "service.name": "hermes",
+              "deployment.environment.name": "prod"
+            }
+          }
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": [
+        "monitoring.gateway_health_export.resource_attributes.service\\.name"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "monitoring": {
+          "gateway_health_export": {
+            "resource_attributes": {
+              "service.name": "acme",
+              "deployment.environment.name": "staging"
+            }
+          }
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "monitoring": {
+        "gateway_health_export": {
+          "resource_attributes": {
+            "service.name": "hermes",
+            "deployment.environment.name": "staging"
+          }
+        }
+      }
+    },
+    "provenance": {
+      "monitoring.gateway_health_export.resource_attributes.service\\.name": "global",
+      "monitoring.gateway_health_export.resource_attributes.deployment\\.environment\\.name": "profile"
+    },
+    "locks": [
+      {
+        "path": "monitoring.gateway_health_export.resource_attributes.service\\.name",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "monitoring.gateway_health_export.resource_attributes.service\\.name",
+      "value": "acme-2",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "monitoring.gateway_health_export.resource_attributes.service\\.name",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "monitoring.gateway_health_export.resource_attributes.service.name",
+      "value": "acme-3",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "monitoring.gateway_health_export.resource_attributes",
+      "value": {
+        "service.name": "acme-4"
+      },
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "monitoring.gateway_health_export.resource_attributes.service\\.name",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "monitoring.gateway_health_export.resource_attributes.deployment\\.environment\\.name",
+      "value": "dev",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

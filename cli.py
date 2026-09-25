@@ -1058,6 +1058,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if not config_exists(config_path):
             config_path = Path(__file__).parent / 'cli-config.yaml'
         config_status = _t("cli.config.loaded") if config_exists(config_path) else _t("cli.config.not_found")
+        from hermes_cli.config_backend import get_config_backend
+        if not get_config_backend().supports_file_tooling():  # no local file: name where config comes from
+            config_path, config_status = get_config_backend().describe(_hermes_home), ""
 
         # ``api_key`` may be a callable bearer provider (Entra ID, Vertex OAuth, key_cmd, ...):
         # label it by its tagged source and never invoke it (that would mint a token just to mask

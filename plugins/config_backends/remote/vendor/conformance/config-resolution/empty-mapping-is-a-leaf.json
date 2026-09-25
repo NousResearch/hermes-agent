@@ -1,0 +1,84 @@
+{
+  "fixtureVersion": 1,
+  "name": "empty-mapping-is-a-leaf",
+  "description": "Proves r8, rule-5: An empty mapping is a leaf for provenance; merged over a non-empty mapping it changes nothing, over a scalar it replaces it.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "a": {
+          "x": 1
+        },
+        "b": 5
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {
+        "c": {}
+      },
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "a": {},
+        "b": {}
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": {
+        "x": 1
+      },
+      "b": {},
+      "c": {}
+    },
+    "provenance": {
+      "a.x": "global",
+      "b": "profile",
+      "c": "agent"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "b",
+      "value": {},
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ],
+  "defaultsMerge": {
+    "defaults": {
+      "b": {
+        "y": 2
+      }
+    },
+    "expect": {
+      "b": {
+        "y": 2
+      },
+      "a": {
+        "x": 1
+      },
+      "c": {}
+    }
+  }
+}

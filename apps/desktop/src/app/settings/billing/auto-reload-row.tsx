@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
-import { ListRow, Pill } from '../primitives'
+import { LIST_ROW_COLUMNS, ListRow, Pill } from '../primitives'
 
 import { RowValue } from './account-row-value'
 import type { BillingRefusal } from './api'
@@ -168,7 +168,7 @@ export function AutoReloadRow({
   // panes. The form is `invisible` + `aria-hidden` when not editing.
   return (
     <div className="@container">
-      <div className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-start">
+      <div className={cn('grid gap-3 py-3 @2xl:items-start', LIST_ROW_COLUMNS)}>
         <div className="min-w-0">
           <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
             {row.title}

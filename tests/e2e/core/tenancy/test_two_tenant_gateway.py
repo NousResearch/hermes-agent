@@ -35,9 +35,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
+import hermes_yaml as yaml
 
 from . import _helpers as H
+
+# The api_server platform's aiohttp ships in a PM runtime extra the test env does not carry.
+pytest.importorskip("aiohttp")
 
 # The gateway child is spawned and reaped by this module (fake HOME, no systemd bus in its env).
 pytestmark = pytest.mark.spawns_gateway_lookalike
@@ -46,13 +49,25 @@ NAMES = ("default", "alpha", "beta")
 
 
 class MultiplexGateway:
-    def __init__(self, root: Path, port: int) -> None:
-        self.root, self.home, self.port = root, root / "home", port
+    def __init__(self, root: Path, port: int, config: Path) -> None:
+        self.root, self.home, self.port, self.config = root, root / "home", port, config
         self.log_path = root / "gateway.log"
         self.proc: subprocess.Popen | None = None
         self.pids: list[int] = []
 
     def start(self) -> None:
+        # free_port() only reserves the port until its probe socket closes; under a parallel run another
+        # process can take it before the gateway binds (it then exits 78 "already in use"). Re-pick.
+        for _ in range(3):
+            offset = self.log_path.stat().st_size if self.log_path.exists() else 0
+            self._spawn()
+            H.poll(lambda: self.healthy() or self._died(), 120, "multiplexed gateway /health")
+            if self.proc.poll() is None or "already in use" not in self.tail(offset=offset):
+                break
+            self._rebind(H.free_port())
+        assert self.proc.poll() is None, f"gateway exited rc={self.proc.returncode}: {self.tail()}"
+
+    def _spawn(self) -> None:
         log = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 - handed to the child
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "hermes_cli.main", "gateway", "run"], cwd=str(self.home),
@@ -61,8 +76,11 @@ class MultiplexGateway:
         )
         log.close()
         self.pids.append(self.proc.pid)
-        H.poll(lambda: self.healthy() or self._died(), 120, "multiplexed gateway /health")
-        assert self.proc.poll() is None, f"gateway exited rc={self.proc.returncode}: {self.tail()}"
+
+    def _rebind(self, port: int) -> None:
+        cfg = yaml.safe_load(self.config.read_text(encoding="utf-8"))
+        cfg["platforms"]["api_server"]["extra"]["port"] = self.port = port
+        self.config.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding="utf-8")
 
     def _died(self) -> bool:
         return self.proc is not None and self.proc.poll() is not None
@@ -97,8 +115,12 @@ class MultiplexGateway:
             self.proc.wait(timeout=10)
         H.kill_group(self.proc)
 
-    def tail(self, n: int = 3000) -> str:
-        return self.log_path.read_text(encoding="utf-8", errors="replace")[-n:] if self.log_path.exists() else ""
+    def tail(self, n: int = 3000, offset: int = 0) -> str:
+        if not self.log_path.exists():
+            return ""
+        with open(self.log_path, "rb") as fh:
+            fh.seek(offset)
+            return fh.read().decode("utf-8", errors="replace")[-n:]
 
 
 def prefix(name: str) -> str:
@@ -123,7 +145,7 @@ def fleet(tmp_path_factory: pytest.TempPathFactory):
             "platforms": {"api_server": {"enabled": True, "extra": {"host": "127.0.0.1", "port": port}}},
         }
         H.write_tenant_home(t, extra)
-    gw = MultiplexGateway(root, port)
+    gw = MultiplexGateway(root, port, tenants["default"].home / "config.yaml")
     try:
         yield root, tenants, gw
     finally:

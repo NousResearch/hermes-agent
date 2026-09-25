@@ -262,6 +262,24 @@ describe('resetTileRuntimeBindings', () => {
   })
 })
 
+function runtimeBindingDelegate(
+  dropRuntimeBindings: (storedSessionIds: ReadonlySet<string>) => void,
+  invalidateRuntimeBindings: (preserveStoredSessionIds?: ReadonlySet<string>) => void
+): SessionTileDelegate {
+  return {
+    archiveSession: vi.fn(),
+    branchSession: vi.fn(),
+    deleteSession: vi.fn(),
+    executeSlash: vi.fn(),
+    interruptSession: vi.fn(),
+    resumeTile: vi.fn(),
+    submitToSession: vi.fn(),
+    updateSession: vi.fn(),
+    dropRuntimeBindings,
+    invalidateRuntimeBindings
+  }
+}
+
 describe('resetRouteOwnedTileRuntimeBindings', () => {
   afterEach(() => {
     $sessionTiles.set([])
@@ -270,7 +288,7 @@ describe('resetRouteOwnedTileRuntimeBindings', () => {
   it('drops only tiles owned by the reopened route and leaves ambient tiles bound', () => {
     const invalidateRuntimeBindings = vi.fn()
     const dropRuntimeBindings = vi.fn()
-    setSessionTileDelegate({ dropRuntimeBindings, invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    setSessionTileDelegate(runtimeBindingDelegate(dropRuntimeBindings, invalidateRuntimeBindings))
     $sessionTiles.set([
       {
         ownerRoute: { connectionId: 'local', mode: 'local', profile: 'writer', targetProfile: 'writer' },
@@ -302,7 +320,7 @@ describe('resetRouteOwnedTileRuntimeBindings', () => {
   it('is a no-op when no open tile belongs to the reopened route', () => {
     const invalidateRuntimeBindings = vi.fn()
     const dropRuntimeBindings = vi.fn()
-    setSessionTileDelegate({ dropRuntimeBindings, invalidateRuntimeBindings } as unknown as SessionTileDelegate)
+    setSessionTileDelegate(runtimeBindingDelegate(dropRuntimeBindings, invalidateRuntimeBindings))
     const tiles = [{ runtimeId: 'runtime-ambient', storedSessionId: 'stored-ambient' }]
     $sessionTiles.set(tiles)
 

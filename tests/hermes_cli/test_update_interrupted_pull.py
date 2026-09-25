@@ -28,13 +28,16 @@ _MULTI = "top = 1\nx = 0\ny = 0\nz = 0\nend = 1\n"
 
 
 # Runs an entry module with the repair replaced by a probe that lists the checkout modules imported so
-# far (the entry module, its packages and what hermes_bootstrap needs excluded), then stops.
+# far (the entry module, its package's __init__ and what hermes_bootstrap needs excluded: those run
+# before any code in the entry can), then stops.
 _ENTRY_SPY = """
 import importlib, json, os, sys
 import hermes_bootstrap
 from hermes_cli import _early_recovery as er
 
-before, venv, entry = set(sys.modules), os.path.realpath(sys.prefix), sys.argv[1]
+venv, entry = os.path.realpath(sys.prefix), sys.argv[1]
+importlib.import_module(entry.rpartition(".")[0] or "hermes_cli")
+before = set(sys.modules)
 
 def probe():
     loaded = (n for n in set(sys.modules) - before if not f"{entry}.".startswith(n + "."))
@@ -67,6 +70,8 @@ def checkout(tmp_path, monkeypatch):
     (origin / "gone.py").unlink()
     (origin / "newpkg").mkdir()
     (origin / "newpkg" / "__init__.py").write_text("from utils import NEW\n", encoding="utf-8", newline="")
+    (origin / "newpkg" / "sub").mkdir()
+    (origin / "newpkg" / "sub" / "mod.py").write_text("m = 1\n", encoding="utf-8", newline="")
     _git(origin, "add", "-A")
     _git(origin, "update-index", "--chmod=+x", "tool.sh")
     _git(origin, "commit", "-qm", "B")
@@ -95,6 +100,7 @@ def test_killed_pull_is_restored_on_next_launch_and_update_reruns(checkout, monk
             (root / "half.py").write_bytes(b"h = 2  # long")  # a multi-page write cut short
             (root / "newpkg").mkdir()
             (root / "newpkg" / "__init__.py").write_text("from utils import NEW\n", encoding="utf-8", newline="")
+            (root / "newpkg" / "sub").mkdir()  # created for its next file, which the kill cut off
             (root / ".git" / "index.lock").touch()
             raise KeyboardInterrupt  # SIGKILL: nothing after this line of the updater runs
         return real(git_cmd, args, *rest, **kw)
@@ -123,6 +129,14 @@ def test_killed_pull_is_restored_on_next_launch_and_update_reruns(checkout, monk
 
     # A retry in a container gets the killed updater's pid: our own pid is never a live owner.
     marker.write_text(recorded, encoding="utf-8", newline="")
+    if sys.platform != "win32":  # a git dir that cannot lock (NFS without lockd) still repairs, unguarded
+        import errno
+        import fcntl
+
+        def no_locks(*_a):
+            raise OSError(errno.ENOLCK, "No locks available")
+
+        monkeypatch.setattr(fcntl, "flock", no_locks)
     assert er.restore_interrupted_pull(root) is True, "restored files mean the caller must relaunch"
 
     assert _git(root, "rev-parse", "HEAD") == a
@@ -137,13 +151,13 @@ def test_killed_pull_is_restored_on_next_launch_and_update_reruns(checkout, monk
     # Every console script (`hermes`, `hermes-agent`, `hermes-acp`) repairs before its entry module imports
     # any other checkout module past hermes_bootstrap: any of them may be a half-written file.
     repo = os.path.realpath(Path(er.__file__).parent.parent)
-    for entry in ("hermes_cli.main", "run_agent", "acp_adapter.entry"):
+    for entry in ("hermes_cli.main", "agent.legacy_cli", "run_agent", "acp_adapter.entry"):
         run = subprocess.run([sys.executable, "-c", _ENTRY_SPY, entry], cwd=repo, capture_output=True, text=True,
                              encoding="utf-8", env={**os.environ, "PYTHONPATH": repo}, timeout=120)
         assert run.stdout.strip().splitlines()[-1:] == ["[]"], (entry, run.stdout[-500:], run.stderr[-2000:])
 
 
-def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout):
+def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout, capsys, monkeypatch):
     """sys.exit on a merge conflict is not a kill, and a marker git never acted on restores nothing."""
     root, a, b = checkout
     _git(root, "config", "user.email", "t@example.invalid")
@@ -165,8 +179,12 @@ def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout):
     assert (root / ".git" / "MERGE_HEAD").exists(), merge.stdout + merge.stderr
     (root / "utils.py").write_text("OLD = 1  # resolved by hand\n", encoding="utf-8", newline="")
     before = _git(root, "status", "--porcelain", "--untracked-files=all")
-    assert er.restore_interrupted_pull(root) is False
+    monkeypatch.setattr(er, "_merge_advice_shown", False, raising=False)
+    capsys.readouterr()
+    assert er.restore_interrupted_pull(root) is False and er.restore_interrupted_pull(root) is False
     assert _git(root, "status", "--porcelain", "--untracked-files=all") == before
+    # MERGE_HEAD is the update's own target: say how to get out of it, once per launch.
+    assert capsys.readouterr().err.count(f"git -C {root} merge --abort") == 1
     _git(root, "reset", "-q", "--hard")  # the user gives up on the merge
     (root / "utils.py").write_text("OLD = 1  # my stash, re-applied\n", encoding="utf-8", newline="")
     # tool.sh only changes mode upstream and git never reached it: nothing to restore, no relaunch.
@@ -194,3 +212,61 @@ def test_restore_never_touches_user_work_when_git_wrote_nothing(checkout):
     assert er.restore_interrupted_pull(root) is True
     assert _git(root, "rev-parse", "HEAD") == pre and not marker.exists()
     assert _git(root, "status", "--porcelain", "--untracked-files=all") == "M other.py"
+
+
+_RACER = """
+import sys
+from pathlib import Path
+from hermes_cli import _early_recovery as er
+print("ready", flush=True)
+sys.stdin.readline()
+print(er.restore_interrupted_pull(Path(sys.argv[1])))
+"""
+
+
+def test_concurrent_launches_take_turns_and_all_rerun_from_the_restored_tree(tmp_path):
+    """Launches racing on one torn checkout (a restarting gateway next to the user's CLI) restore once.
+
+    None may break another's git (index.lock), print recovery advice while another is restoring or
+    has finished, or carry on importing from a tree that changed under it.
+    """
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "t@example.invalid")
+    _git(origin, "config", "user.name", "t")
+    names = [f"m{i}.py" for i in range(300)]  # enough work that the launches overlap
+    for i, name in enumerate(names):
+        (origin / name).write_text(f"V = 'old {i}'\n" * 50, encoding="utf-8", newline="")
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-qm", "A")
+    for i, name in enumerate(names):
+        (origin / name).write_text(f"V = 'new {i}'\n" * 50, encoding="utf-8", newline="")
+    _git(origin, "commit", "-qam", "B")
+    root = tmp_path / "install"
+    _git(tmp_path, "clone", "-q", str(origin), str(root))
+    _git(root, "reset", "-q", "--hard", "HEAD~1")
+    pre, target = _git(root, "rev-parse", "HEAD"), _git(root, "rev-parse", "origin/main")
+    for i, name in enumerate(names[:150]):  # git got halfway
+        (root / name).write_text(f"V = 'new {i}'\n" * 50, encoding="utf-8", newline="")
+    (root / names[-1]).write_text("user edit\n", encoding="utf-8", newline="")
+    marker = er.interrupted_pull_marker(root)
+    marker.write_text(f"pid=0\npre={pre}\ntarget={target}\nstash=\n", encoding="utf-8", newline="")
+
+    repo = os.path.realpath(Path(er.__file__).parent.parent)
+    launches = [subprocess.Popen([sys.executable, "-c", _RACER, str(root)], cwd=repo, text=True, encoding="utf-8",
+                                 env={**os.environ, "PYTHONPATH": repo}, stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE) for _ in range(3)]
+    for launch in launches:
+        assert launch.stdout.readline().strip() == "ready"
+    for launch in launches:  # release them together
+        launch.stdin.write("go\n")
+        launch.stdin.flush()
+    results = [(launch.communicate(timeout=120), launch.returncode) for launch in launches]
+
+    for (out, err), code in results:
+        assert code == 0 and out.split()[-1:] == ["True"], (out, err)
+        assert "Could not" not in err and "reset --hard" not in err, err
+    assert _git(root, "status", "--porcelain", "--untracked-files=all") == f"M {names[-1]}"
+    assert (root / names[-1]).read_text(encoding="utf-8") == "user edit\n"
+    assert not marker.exists()

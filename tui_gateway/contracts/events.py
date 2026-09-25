@@ -191,6 +191,7 @@ class MessageCompletePayload(Payload):
     reasoning: str | None = None
     warning: str | None = None
     response_previewed: bool | None = None
+    response_transformed: bool | None = None
     billing: BillingBlock | None = None
     failure_reason: str | None = None
     rendered: str | None = None

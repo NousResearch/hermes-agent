@@ -43,7 +43,7 @@ import { PanelEmpty } from '../overlays/panel'
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
 import { ModelSelect, withActive } from './model-select'
-import { ListRow, Pill, SectionHeading } from './primitives'
+import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
@@ -70,22 +70,10 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
 
       {(subpage === undefined || subpage === 'auxiliary' || subpage === 'moa') && (
         <section>
-          <div className="mb-2.5 flex items-center gap-2 pt-2">
-            <Skeleton className="size-4" />
-            <Skeleton className="h-4 w-36" />
-          </div>
+          <SectionHeadingSkeleton />
           <div className="grid gap-1">
             {[0, 1, 2, 3].map(row => (
-              <div
-                className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center"
-                key={row}
-              >
-                <div className="min-w-0 space-y-1.5">
-                  <Skeleton className="h-3.5 w-32" />
-                  <Skeleton className="h-3 w-52 max-w-full" />
-                </div>
-                <Skeleton className="h-8 w-full @2xl:justify-self-end @2xl:w-56" />
-              </div>
+              <ListRowSkeleton key={row} />
             ))}
           </div>
         </section>
@@ -670,15 +658,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     const lower = slug.toLowerCase()
 
     if (lower === 'custom' || lower === 'local' || lower.startsWith('custom:')) {
-      startManualLocalEndpoint()
+      startManualLocalEndpoint(null, scopeProfile)
     } else if (rowSlug) {
-      startManualProviderOAuth(rowSlug)
+      startManualProviderOAuth(rowSlug, scopeProfile)
     } else {
       // An absent row has no trustworthy auth metadata. Open the generic
       // provider picker instead of deep-linking an unknown or stale slug.
-      startManualOnboarding()
+      startManualOnboarding(undefined, scopeProfile)
     }
-  }, [selectedProvider, selectedProviderRow])
+  }, [scopeProfile, selectedProvider, selectedProviderRow])
 
   const applyMainModel = useCallback(async () => {
     if (!selectedProvider || !selectedModel) {

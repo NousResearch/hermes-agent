@@ -39,7 +39,7 @@ and finally paths can write the result, remove the marker, and relaunch Desktop.
 So the contract is: bounded when a descendant holds the pipe open, never slower
 than the step can write, and bounded when the step itself remains alive without
 observable progress. All arms live in the script's own
-``-SelfTestPipeDrain`` fixture, which is ``windows_only`` because Linux CI
+``-SelfTestPipeDrain`` fixture, which is ``platforms("windows")`` because Linux CI
 cannot execute the PowerShell hand-off.
 """
 
@@ -56,9 +56,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 WINDOWS_PS1 = REPO_ROOT / "scripts" / "desktop-update" / "windows.ps1"
 
 
-
-
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
     tmp_path: Path,
 ) -> None:
@@ -112,7 +110,8 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
         # how long the leaking grandchild lives. hold >> grace is what makes a
         # regression measurable rather than lucky.
         "HERMES_UPDATE_PIPE_DRAIN_SECONDS": "3",
-        "HERMES_UPDATE_STEP_IDLE_SECONDS": "3",
+        # Cold PowerShell children can take more than three seconds to emit.
+        "HERMES_UPDATE_STEP_IDLE_SECONDS": "15",
         "HERMES_SELFTEST_HOLD_SECONDS": "45",
     }
 
@@ -136,14 +135,9 @@ def test_update_step_survives_pipe_leak_flood_and_live_child_stall(
         cwd=str(REPO_ROOT),
     )
 
-    assert "PIPE-DRAIN SELF-TEST: PASS" in result.stdout, (
-        "The Windows update hand-off's step drain regressed: it either waited "
-        "on a descendant holding the pipe open (the Desktop parks on 'Updating "
-        "Hermes' forever) or metered a chatty step (backpressure on the running "
-        f"update). Fixture diagnosis follows.\n--- stdout ---\n{result.stdout}\n"
-        f"--- stderr ---\n{result.stderr}"
-    )
-    assert result.returncode == 0, (
-        f"-SelfTestPipeDrain exited {result.returncode}.\n"
-        f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
-    )
+    # Keep the real flood output on disk instead of flooding the CI log on failure.
+    (tmp_path / "pipe-drain.stdout.log").write_text(result.stdout, encoding="utf-8")
+    (tmp_path / "pipe-drain.stderr.log").write_text(result.stderr, encoding="utf-8")
+    diagnosis = result.stdout[-6000:] + result.stderr[-6000:]
+    if "PIPE-DRAIN SELF-TEST: PASS" not in result.stdout or result.returncode != 0:
+        pytest.fail(diagnosis, pytrace=False)

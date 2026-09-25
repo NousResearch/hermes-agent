@@ -355,7 +355,7 @@ def _aiohttp_socks_connector(proxy_url: str):
     except ImportError:
         if proxy_url.lower().startswith("socks"):
             logger.warning("aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                           "Run: pip install aiohttp-socks", proxy_url)
+                           "Use an HTTP proxy instead.", proxy_url)
         return None
 
 
@@ -2922,7 +2922,6 @@ class BasePlatformAdapter(ABC):
         (Signal). Returns success when at least one image was delivered — the outcome
         the turn-level delivery tracker records; every override must return the same
         aggregate, or a media-only turn on that platform reports FAILURE (#106153)."""
-        from urllib.parse import unquote as _unquote
         delivered = False
         for image_url, alt_text in images:
             if human_delay > 0:
@@ -2931,7 +2930,8 @@ class BasePlatformAdapter(ABC):
                 logger.info("[%s] Sending image: %s (alt=%s)", self.name,
                             safe_url_for_log(image_url), alt_text[:30] if alt_text else "")
                 if image_url.startswith("file://"):
-                    sender, url_kw = self.send_image_file, {"image_path": _unquote(image_url[7:])}
+                    from urllib.request import url2pathname
+                    sender, url_kw = self.send_image_file, {"image_path": url2pathname(image_url[7:])}
                 elif self._is_animation_url(image_url):
                     sender, url_kw = self.send_animation, {"animation_url": image_url}
                 else:
@@ -4037,10 +4037,26 @@ class BasePlatformAdapter(ABC):
                 return
         if self._busy_session_handler is not None:
             try:
-                if await self._busy_session_handler(event, session_key):
-                    return
+                handled = await self._busy_session_handler(event, session_key)
             except Exception as e:
                 logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
+                # It may have stored the event before raising: queuing or starting it again below
+                # would run it twice.
+                handled = event._gateway_accepted is True
+            # The handler awaits (profile scope load, compression-lock read). If the owner task
+            # finished meanwhile, it found the slot empty and released the guard, so nothing would
+            # drain what the handler queued: start that now. If the handler left this event to the
+            # base path instead (returned False, or raised before storing it) and nothing is
+            # queued, start this event.
+            if session_key not in self._active_sessions:
+                orphan = self._pending_messages.pop(session_key, None)
+                if orphan is not None:
+                    self._start_session_processing(orphan, session_key)
+                elif not handled:
+                    event._gateway_accepted = self._start_session_processing(event, session_key)
+                    return
+            if handled:
+                return
         # Without a runner FIFO, do not merge a wake into an occupied human slot
         # (or collapse distinct wakes into one turn). Its caller can retry admission.
         if event.internal and session_key in self._pending_messages:

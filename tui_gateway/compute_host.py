@@ -3,6 +3,12 @@
 
 from __future__ import annotations
 
+# First, like every entry point: stdio, import-path and environ-lifetime fixes (hermes_bootstrap).
+# Only as ``python -m``: tests import this module, and the bootstrap's TMPDIR/scratch exports
+# must not fire in a library importer.
+if __name__ == "__main__":
+    import hermes_bootstrap  # noqa: F401
+
 import argparse
 import concurrent.futures
 import contextlib
@@ -516,9 +522,15 @@ def _default_workers() -> int:
 
 def run_host(stdin: Any = None, stdout: Any = None) -> None:
     os.environ["HERMES_COMPUTE_HOST_CHILD"] = "1"
-    stdin = stdin or sys.stdin
+    # JSONL framing is byte-oriented; avoid text-stream read-ahead on Windows pipes.
+    stdin = stdin if stdin is not None else getattr(sys.stdin, "buffer", sys.stdin)
     host = ComputeHost(stdout=stdout or sys.stdout)
     shutting_down = threading.Event()
+    # No client is connected to this process: session-less broadcasts (``broadcast_plugin_event``
+    # from a plugin tool/hook running in the isolated turn) ride the host pipe to the parent
+    # gateway, which fans them out to its clients (compute_host_bridge._relay_compute_host_rpc).
+    from tui_gateway import server
+    server.register_live_transport(host._transport)
 
     def _signal_handler(_signum, _frame) -> None:
         if shutting_down.is_set():
@@ -558,6 +570,7 @@ def run_host(stdin: Any = None, stdout: Any = None) -> None:
             if not reader.is_alive():
                 break
     finally:
+        server.unregister_live_transport(host._transport)
         host.shutdown(reason="stdin_closed", wait=2.0)
 
 
@@ -576,7 +589,6 @@ if __name__ == "__main__":  # pragma: no cover
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).
 # The whole block is removed by reverting the commit that added it.
 from dataclasses import field  # noqa: F401,E402
-from dataclasses import dataclass  # noqa: F401,E402
 from dataclasses import dataclass  # noqa: F401,E402
 from dataclasses import field  # noqa: F401,E402
 

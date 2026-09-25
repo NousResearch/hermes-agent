@@ -4,9 +4,6 @@ from unittest.mock import patch
 
 from tui_gateway import server
 
-
-
-
 def test_plugins_manage_install_missing_identifier():
     resp = server.handle_request(
         {
@@ -17,7 +14,6 @@ def test_plugins_manage_install_missing_identifier():
     )
 
     assert "error" in resp
-
 
 def test_plugins_manage_install_failure():
     with patch(
@@ -38,9 +34,6 @@ def test_plugins_manage_install_failure():
     assert "error" in resp
     assert "Git clone failed" in resp["error"]["message"]
 
-
-
-
 def test_plugins_manage_update_requires_catalog_sidecar(tmp_path, monkeypatch):
     """Non-catalog installs are refused — their update flows stay CLI-owned."""
     import hermes_cli.plugins_cmd as plugins_cmd
@@ -58,7 +51,6 @@ def test_plugins_manage_update_requires_catalog_sidecar(tmp_path, monkeypatch):
     )
 
     assert "error" in resp
-
 
 def test_plugins_manage_list_reports_desktop_half(tmp_path):
     """A unified package (plugin.yaml + desktop/plugin.js) is reported with ``has_desktop_half`` so the
@@ -82,5 +74,3 @@ def test_plugins_manage_list_reports_desktop_half(tmp_path):
     assert by_name["media"]["has_desktop_half"] is True
     assert by_name["snap"]["has_desktop_half"] is False
     assert by_name["snap"]["servers"] == []
-
-

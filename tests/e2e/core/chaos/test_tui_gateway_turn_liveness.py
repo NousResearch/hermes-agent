@@ -290,9 +290,9 @@ def _assert_heartbeat(scn: Scenario, hb: Heartbeat, stats: dict[str, Any], turn_
 
 class ToolOutlivedGateway(Exception):
     """The in-flight tool outlived the gateway's exit: its process tree survives and/or its
-    tool_call was left with no result in state.db. Deliberately NOT an AssertionError: the
-    known-bug xfail matches only this, so an RPC failure, a crash or any other broken invariant
-    (heartbeat, exit deadline, integrity) still fails the test."""
+    tool_call was left with no result in state.db. Deliberately NOT an AssertionError: a
+    ``known_failure(..., raises=ToolOutlivedGateway)`` gate for this bug accepts only it, so an RPC
+    failure, a crash or any other broken invariant (heartbeat, exit deadline, integrity) still fails."""
 
 
 def _exit_mid_turn(scn: Scenario, gw: TuiGatewayProcess, hb: Heartbeat, tag: str,
@@ -456,12 +456,7 @@ def scenario_futures(request: pytest.FixtureRequest, tmp_path_factory: pytest.Te
                 fut.cancel()
 
 
-KNOWN_BUGS: dict = {}
-
-
-@pytest.mark.parametrize("scn", [
-    pytest.param(s, id=s.id, marks=[KNOWN_BUGS[s.id]] if s.id in KNOWN_BUGS else [])
-    for s in SCENARIOS])
+@pytest.mark.parametrize("scn", [pytest.param(s, id=s.id) for s in SCENARIOS])
 def test_tui_gateway_turn_stays_live_under_fault(scn: Scenario, scenario_futures) -> None:
     stats = scenario_futures[scn.id].result(timeout=WARMUP_DEADLINE_S + 3 * TURN_DEADLINE_S + 120)
     print(json.dumps(stats))

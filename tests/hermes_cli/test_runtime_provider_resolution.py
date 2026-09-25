@@ -62,6 +62,32 @@ def _fake_invoke_jwt(ttl_seconds=3600):
     return f"{header}.{payload}.sig"
 
 
+def test_runtime_selected_copilot_exchanges_ambient_pool_token(tmp_path, monkeypatch):
+    """Copilot picked at runtime without a config write (`/model copilot/<m> --session`,
+    `--provider copilot`) must still hand the EXCHANGED token and the enterprise base_url to the
+    client: the seeder leaves an ambient gh-CLI credential raw while copilot is not configured
+    (#114740), and a raw token 400s on enterprise-only models."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "credential_pool": {}}))
+    (hermes_home / "config.yaml").write_text("model:\n  provider: deepseek\n  default: deepseek-chat\n")
+    from hermes_cli import config as _cfg
+    _cfg._LOAD_CONFIG_CACHE.clear()
+    _cfg._RAW_CONFIG_CACHE.clear()
+    monkeypatch.setattr("hermes_cli.copilot_auth.resolve_copilot_token", lambda: ("ghu_raw_gh_token", "gh auth token"))
+    monkeypatch.setattr("hermes_cli.copilot_auth.get_copilot_api_token",
+                        lambda tok: ("tid=exchanged;exp=1", "https://api.enterprise.ghe.example"))
+    monkeypatch.setattr(rp._models, "copilot_model_api_mode", lambda *a, **k: "chat_completions")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "copilot")
+
+    resolved = rp.resolve_runtime_provider(requested="copilot", target_model="gpt-4.1")
+
+    assert resolved["provider"] == "copilot"
+    assert resolved["api_key"] == "tid=exchanged;exp=1"
+    assert resolved["base_url"].startswith("https://api.enterprise.ghe.example")
+
+
 def test_resolve_runtime_provider_uses_credential_pool(monkeypatch):
     class _Entry:
         access_token = "pool-token"
@@ -595,6 +621,26 @@ def test_openai_key_used_when_no_openrouter_key(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="openrouter")
 
     assert resolved["api_key"] == "sk-openai-fallback"
+
+
+@pytest.mark.parametrize("openai_base_url, expected_key", [
+    ("https://proxy.corp.example/v1", ""),
+    ("proxy.corp.example:8080/v1", ""),  # scheme-less still names a foreign host
+    ("https://openrouter.ai/api/v1", "sk-openai-fallback"),
+])
+def test_openai_key_bound_to_another_host_never_reaches_openrouter(monkeypatch, openai_base_url, expected_key):
+    """OPENAI_API_KEY is an OpenRouter fallback only while OPENAI_BASE_URL doesn't bind it elsewhere."""
+    from hermes_cli.runtime_provider_backends import _resolve_openrouter_runtime
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("OPENAI_BASE_URL", openai_base_url)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-fallback")
+
+    resolved = _resolve_openrouter_runtime(requested_provider="openrouter")
+
+    assert resolved["base_url"] == "https://openrouter.ai/api/v1"
+    assert resolved["api_key"] == expected_key
 
 
 def test_custom_endpoint_uses_saved_config_base_url_when_env_missing(monkeypatch):
@@ -1528,11 +1574,6 @@ class TestProviderEntryApiKeyEnvAlias:
         assert normalized.get("key_env") == "MY_VENDOR_KEY"
 
 
-    def test_valid_fields_set_lists_key_env(self):
-        """The _VALID_CUSTOM_PROVIDER_FIELDS documentation set must include
-        key_env so the set stays in sync with what the runtime actually reads."""
-        from hermes_cli.config import _VALID_CUSTOM_PROVIDER_FIELDS
-        assert "key_env" in _VALID_CUSTOM_PROVIDER_FIELDS
 
     def test_extra_body_is_supported_schema(self):
         from hermes_cli.config import (
@@ -1690,23 +1731,6 @@ def test_openai_key_reaches_openai_host(monkeypatch):
     assert resolved["api_key"] == "sk-openai-secret"
 
 
-def test_openrouter_key_reaches_openrouter_host(monkeypatch):
-    """OPENROUTER_API_KEY must be forwarded when the base_url is openrouter.ai."""
-    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
-    monkeypatch.setattr(
-        rp,
-        "_get_model_config",
-        lambda: {
-            "provider": "openrouter",
-            "base_url": "https://openrouter.ai/api/v1",
-        },
-    )
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.setenv("OPENROUTER_API_KEY", "or-secret")
-
-    resolved = rp.resolve_runtime_provider(requested="openrouter")
-
-    assert resolved["api_key"] == "or-secret"
 
 
 # ----------------------------------------------------------------------

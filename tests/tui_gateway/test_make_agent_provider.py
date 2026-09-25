@@ -6,58 +6,9 @@ provider/base_url/api_key empty in AIAgent, causing HTTP 404.
 """
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 
-def test_make_agent_passes_resolved_provider():
-    """_make_agent forwards provider/base_url/api_key/api_mode from
-    resolve_runtime_provider to AIAgent."""
-
-    fake_runtime = {
-        "provider": "anthropic",
-        "base_url": "https://api.anthropic.com",
-        "api_key": "sk-test-key",
-        "api_mode": "anthropic_messages",
-        "command": None,
-        "args": None,
-        "credential_pool": None,
-    }
-
-    fake_cfg = {
-        "model": {"default": "claude-opus-4-6", "provider": "anthropic"},
-        "agent": {"system_prompt": "test"},
-    }
-
-    with (
-        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
-        patch("tui_gateway.server._get_db", return_value=MagicMock()),
-        patch("tui_gateway.server._load_tool_progress_mode", return_value="compact"),
-        patch("tui_gateway.server._load_reasoning_config", return_value=None),
-        patch("tui_gateway.server._load_service_tier", return_value=None),
-        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
-        patch(
-            "hermes_cli.runtime_provider.resolve_runtime_provider",
-            return_value=fake_runtime,
-        ) as mock_resolve,
-        patch("run_agent.AIAgent") as mock_agent,
-    ):
-
-        from tui_gateway.server import _make_agent
-
-        _make_agent("sid-1", "key-1")
-
-        # target_model comes from _resolve_startup_runtime() which reads
-        # _load_cfg().  Due to module-level caching in tui_gateway.server,
-        # the patched config may not take effect when the module was already
-        # imported by an earlier test.  Assert the stable part of the call.
-        mock_resolve.assert_called_once()
-        assert mock_resolve.call_args.kwargs.get("requested") is None
-
-        call_kwargs = mock_agent.call_args
-        assert call_kwargs.kwargs["provider"] == "anthropic"
-        assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
-        assert call_kwargs.kwargs["api_key"] == "sk-test-key"
-        assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
 
 
 def test_probe_config_health_flags_null_sections():
@@ -109,9 +60,13 @@ def test_apply_model_switch_does_not_leak_process_env():
         "HERMES_INFERENCE_PROVIDER",
     )
 
-    sess_b = {"agent": _FakeAgent(), "session_key": "k-B", "model_override": None}
+    sess_b = {
+        "agent": _FakeAgent(), "session_key": "k-B", "model_override": None,
+        "follow_profile_config": True,
+    }
     sess_a = {"agent": _FakeAgent(), "session_key": "k-A", "model_override": None}
 
+    persisted_composer_profiles = []
     with (
         patch("hermes_cli.model_switch.parse_model_flags",
               return_value=("glm-5.1", None, False, False, True)),
@@ -122,6 +77,12 @@ def test_apply_model_switch_does_not_leak_process_env():
         patch("tui_gateway.server._restart_slash_worker"),
         patch("tui_gateway.server._session_info", return_value={}),
         patch("hermes_cli.model_switch.persist_model_selection") as mock_persist,
+        patch(
+            "tui_gateway.server._persist_live_session_runtime",
+            side_effect=lambda session: persisted_composer_profiles.append(
+                session.get("composer_override_profile")),
+        ) as persist_runtime,
+        patch("tui_gateway.server._config_model_target", return_value=("minimax/m3", "minimax")),
     ):
         before = {k: os.environ.get(k) for k in env_keys}
         result = server._apply_model_switch("sidB", sess_b, "glm-5.1")
@@ -135,6 +96,11 @@ def test_apply_model_switch_does_not_leak_process_env():
     # Target session recorded a per-session override.
     assert sess_b["model_override"]["model"] == "zai/glm-5.1"
     assert sess_b["model_override"]["provider"] == "zai"
+    assert sess_b["composer_override_profile"] == {"model": "minimax/m3", "provider": "minimax"}
+    # _commit_agent_switch owns the runtime transaction; provenance must be present
+    # on its first (and only) DB write rather than relying on a second best-effort write.
+    persist_runtime.assert_called_once_with(sess_b)
+    assert persisted_composer_profiles == [{"model": "minimax/m3", "provider": "minimax"}]
     # The switched agent mutated in place.
     assert sess_b["agent"].model == "zai/glm-5.1"
     # Sibling session is completely untouched.

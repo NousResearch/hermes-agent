@@ -309,11 +309,13 @@ def _import_pillow_for_resize():
         from PIL import Image
     except ImportError:
         try:
-            from tools.lazy_deps import ensure as _ensure_dep
-            # prompt=False: never raise a blocking input() prompt mid-session. Under the interactive CLI
-            # prompt_toolkit owns stdin, so a bare input() deadlocks the terminal (#40490). The install is
-            # already gated by security.allow_lazy_installs, so reaching here is opt-in.
-            _ensure_dep("tool.vision", prompt=False)
+            # pm-era wiring: never raise a blocking input() prompt mid-session. Under the
+            # interactive CLI prompt_toolkit owns stdin, so a bare input() deadlocks the
+            # terminal (#40490). The install is already gated by security.allow_lazy_installs,
+            # so reaching here is opt-in.
+            from pm import ensure_import
+
+            ensure_import("vision")
             from PIL import Image
         except Exception:
             return None
@@ -457,27 +459,33 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return False
 
 
+def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
+    """One gate for both native lanes — the ``vision_analyze`` fast path and the ``computer_use`` capture route
+    (#115248): the profile's ``supports_vision_tool_messages=False`` veto first, then either the provider's tool
+    results are known to carry media or the capability lookup (config override → catalog → probes → profile)
+    attests the model as vision-capable."""
+    if _profile_rejects_tool_media(provider, model):
+        return False
+    if _supports_media_in_tool_results(provider, model):
+        return True
+    from agent.image_routing import _lookup_supports_vision
+    return _lookup_supports_vision(provider, model, cfg) is True
+
+
 def _should_use_native_vision_fast_path() -> bool:
     """True when image routing resolves to ``native`` AND the provider accepts images in tool
     results, or the user set the ``model.supports_vision`` override (escape hatch for
     custom/local providers). Any failure → False."""
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
-        from agent.image_routing import decide_image_input_mode, _lookup_supports_vision
+        from agent.image_routing import decide_image_input_mode
         from hermes_cli.config import load_config
         provider = _read_main_provider()
         model = _read_main_model()
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
-        # The profile veto applies ahead of the capability lookup too: a
-        # model marked vision-capable by models.dev / custom_providers must
-        # not re-open the multimodal-envelope route the profile rejects.
-        if _profile_rejects_tool_media(provider, model):
-            return False
-        return (
-            _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True)
+        return _accepts_tool_result_images(provider, model, cfg)
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False
@@ -574,8 +582,8 @@ async def _prepare_image(
 def _too_large_message(image_data_url: str) -> str:
     return (
         f"Image too large for vision API: base64 payload is {len(image_data_url) / (1024 * 1024):.1f} MB "
-        f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) even after resizing. Install Pillow "
-        f"(`pip install Pillow`) for better auto-resize, or compress the image manually.")
+        f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) even after resizing. Run `hermes pm repair` "
+        f"to restore Pillow for auto-resize, or compress the image manually.")
 
 
 async def _resize_prepared(prepared: _PreparedImage, scale_info: dict, **kwargs) -> str:

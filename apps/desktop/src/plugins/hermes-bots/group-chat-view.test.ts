@@ -288,4 +288,43 @@ describe('disband', () => {
 
     expect(envelope.deleted?.['name:Gone']).toBeGreaterThan(0)
   })
+
+  it('outlives a gateway mirror that missed the tombstone push (#105275)', async () => {
+    const room = await loadRoom()
+    room.chat.$groupChats.set({
+      Build: {
+        log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'b1', text: 'go' }],
+        roomId: 'room-1',
+        syncRevision: 4,
+        watermarks: {}
+      }
+    } as unknown as Record<string, GroupChat>)
+
+    await room.view.disbandGroupChat('Build', [])
+
+    // The disband is remembered durably, not only in the in-flight sync job.
+    expect(room.gateway.storage.get('group-chat-tombstones')).toEqual({ 'id:room-1': 5 })
+
+    // A lagging mirror (its tombstone push failed) still projects the room
+    // with a higher CAS revision and no tombstone. Pulling it must not
+    // resurrect the room — and the durable room map must stay clean.
+    room.gateway.uiMeta['hermes-bots-groups'] = {
+      rooms: {
+        'id:room-1': {
+          log: [{ at: 1, from: { kind: 'user', name: 'You' }, id: 'b1', text: 'go' }],
+          members: [],
+          name: 'Build',
+          revision: 9,
+          roomId: 'room-1'
+        }
+      },
+      updatedAt: 2,
+      version: 3
+    }
+
+    await room.chat.pullGroupChatServerState()
+
+    expect('Build' in room.chat.$groupChats.get()).toBe(false)
+    expect('Build' in durable(room)).toBe(false)
+  })
 })

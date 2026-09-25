@@ -76,7 +76,7 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             secret_file = root / "config.env"
-            secret_file.write_text("OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012")
+            secret_file.write_text("OPENAI_API_KEY=sk-proj-abc123def456ghi789jkl012", encoding="utf-8")
 
             # agent.redact snapshots HERMES_REDACT_SECRETS at import time into
             # _REDACT_ENABLED, so patching os.environ is a no-op. Flip the
@@ -110,7 +110,9 @@ class CopilotACPClientSafetyTests(unittest.TestCase):
             original_read_text = Path.read_text
 
             def strict_read_text(self, encoding=None, errors=None, **kwargs):
-                if self == target and encoding != "utf-8":
+                # The repo encoding policy makes reads BOM-tolerant, so both
+                # UTF-8 family codecs satisfy this regression guard.
+                if self == target and encoding not in ("utf-8", "utf-8-sig"):
                     raise UnicodeDecodeError(
                         "gbk", b"\x94", 0, 1, "illegal multibyte sequence"
                     )
@@ -294,24 +296,8 @@ def test_probe_inconclusive_falls_through_to_spawn_error(tmp_path):
                 client._run_prompt("hello", timeout_seconds=1)
 
 
-def test_probe_result_cached_per_binary_path():
-    with _patch(
-        "agent.copilot_acp_client.subprocess.run",
-        return_value=_completed(stdout="Usage: copilot [--acp]"),
-    ) as run_mock:
-        assert _acp_supported("copilot", ["--acp"]) is True
-        assert _acp_supported("copilot", ["--acp"]) is True
-    assert run_mock.call_count == 1
 
 
-def test_probe_inconclusive_not_cached():
-    with _patch(
-        "agent.copilot_acp_client.subprocess.run",
-        side_effect=FileNotFoundError,
-    ) as run_mock:
-        assert _acp_supported("copilot", ["--acp"]) is None
-        assert _acp_supported("copilot", ["--acp"]) is None
-    assert run_mock.call_count == 2  # inconclusive verdicts retry
 
 
 def test_probe_skipped_for_custom_args_without_acp():

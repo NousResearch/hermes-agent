@@ -46,6 +46,28 @@ def _hermes_home_scope(path) -> Any:
         reset_hermes_home_override(token)
 
 
+def serving_profile_name() -> str:
+    """This process's OWN profile name — but only when that name provably resolves back
+    to the process home.
+
+    The dashboard SPA needs an explicit scope for requests it fires before the profile
+    switcher has resolved: a destructive route now 400s on an unnamed profile as soon as
+    the host serves more than one, and "" would otherwise mean "whichever home this
+    process launched with" anyway. Naming it is only safe if the name cannot resolve
+    ELSEWHERE, so a custom HERMES_HOME outside ``profiles/`` (``get_active_profile_name()``
+    answers ``"custom"``) returns "" and keeps the old unnamed behaviour rather than
+    risking a wrong-profile write.
+    """
+    from hermes_cli import profiles as profiles_mod
+    try:
+        name = (profiles_mod.get_active_profile_name() or "").strip()
+        if not name or name == "custom":
+            return ""
+        return name if profiles_mod.profile_matches_home(name, get_process_hermes_home()) else ""
+    except Exception:
+        return ""
+
+
 def _is_other_profile(profile: Optional[str]) -> bool:
     """True when ``profile`` names a profile other than this process's own."""
     if _is_current_profile(profile):
@@ -291,7 +313,7 @@ def _config_profile_scope(profile: Optional[str]):
         # and an unscoped launch request would then raise ``UnscopedSecretError`` on its next read.
         secrets = launch_secret_scope(process_home)
     with (_hermes_home_scope(profile_dir) if profile_dir is not None else nullcontext()):
-        token = set_secret_scope(secrets)
+        token = set_secret_scope(secrets, profile_home=str(profile_dir or process_home))
         try:
             yield scoped
         finally:

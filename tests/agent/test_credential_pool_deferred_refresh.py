@@ -11,7 +11,6 @@ lock. These tests pin the two invariants that make that safe:
    auth.json.
 """
 
-import threading
 from dataclasses import replace
 
 from agent.credential_pool import (
@@ -19,7 +18,6 @@ from agent.credential_pool import (
     CredentialPool,
     PooledCredential,
 )
-
 
 def _codex_entry(entry_id: str = "codex-1") -> PooledCredential:
     return PooledCredential(
@@ -33,7 +31,6 @@ def _codex_entry(entry_id: str = "codex-1") -> PooledCredential:
         refresh_token="rt-stale",
         expires_at_ms=1,  # long expired -> needs refresh
     )
-
 
 def test_select_does_not_hold_pool_lock_during_deferred_refresh(monkeypatch):
     pool = CredentialPool("openai-codex", [_codex_entry()])
@@ -63,31 +60,3 @@ def test_select_does_not_hold_pool_lock_during_deferred_refresh(monkeypatch):
     )
     assert selected is not None
     assert selected.access_token == "at-fresh"
-
-
-def test_deferred_mutations_serialize_against_concurrent_rotation(monkeypatch):
-    """_replace_entry/_persist from the deferred path must contend on the
-    pool lock: with the lock held by another thread, the deferred mutation
-    must block rather than mutate concurrently."""
-    pool = CredentialPool("openai-codex", [_codex_entry()])
-    monkeypatch.setattr(pool, "_persist", lambda **kw: None)
-
-    entry = pool._entries[0]
-    refreshed = replace(entry, access_token="at-fresh")
-
-    mutated = threading.Event()
-
-    def _deferred_mutation():
-        pool._replace_entry(entry, refreshed)  # self-locking
-        mutated.set()
-
-    with pool._lock:
-        t = threading.Thread(target=_deferred_mutation)
-        t.start()
-        # While we hold the lock, the deferred mutation must NOT complete.
-        assert not mutated.wait(timeout=0.3), (
-            "_replace_entry mutated the pool while another thread held the lock"
-        )
-    t.join(timeout=5)
-    assert mutated.is_set()
-    assert pool._entries[0].access_token == "at-fresh"

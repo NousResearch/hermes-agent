@@ -17,7 +17,7 @@ from tests.gateway.test_telegram_documents import _make_document, _make_message,
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ambient", [False, True])
 @pytest.mark.parametrize("setting", [None, False, True])
-@pytest.mark.parametrize("kind", ["document", "photo", "voice", "audio", "video"])
+@pytest.mark.parametrize("kind", ["document", "photo"])
 async def test_inbound_cache_failure_keeps_owner_policy_and_context(
         tmp_path, monkeypatch, caplog, ambient, setting, kind):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)

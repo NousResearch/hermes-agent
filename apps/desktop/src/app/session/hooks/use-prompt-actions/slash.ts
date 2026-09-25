@@ -20,6 +20,7 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning-slash'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
+import { markCompressDeferred } from '@/store/compaction'
 import { setComposerDraft } from '@/store/composer'
 import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
@@ -428,12 +429,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           await handleDispatch(dispatch)
         } catch (err) {
-          // "not a quick/plugin/skill command" just means the fallback had
-          // nothing to add — the slash.exec failure (worker timeout, crash) is
+          // "not a quick/plugin/bundle/skill command" (older gateways: without
+          // "bundle/") just means the fallback had nothing to add — the slash.exec failure (worker timeout, crash) is
           // the real error, so don't bury it under the routing noise.
           const dispatchMessage = err instanceof Error ? err.message : String(err)
 
-          if (slashExecError && /not a quick\/plugin\/skill command/i.test(dispatchMessage)) {
+          if (slashExecError && /not a quick\/plugin\/(?:bundle\/)?skill command/i.test(dispatchMessage)) {
             const original = slashExecError instanceof Error ? slashExecError.message : String(slashExecError)
             renderSlashOutput(`error: /${name} failed: ${original}`)
 
@@ -676,6 +677,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             // running there; it pushes session.info + a `compacted` status edge
             // when the host finishes. Not an error (#97948).
             if (result?.status === 'pending') {
+              // Hand the completion off to the status edge: this reply carries
+              // no summary and the host is still working, so nothing below
+              // runs for a deferred compress.
+              markCompressDeferred(sessionId)
+
               const pendingMessage = result.message || 'compression still running in the background'
               notify({ durationMs: 8_000, id: noticeId, kind: 'info', message: pendingMessage })
 

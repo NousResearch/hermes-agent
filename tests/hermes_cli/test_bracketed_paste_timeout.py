@@ -4,46 +4,11 @@ Verifies the production helper in cli.py monkey-patches prompt_toolkit's
 Vt100Parser.feed() so the parser auto-escapes from bracketed-paste mode when
 the ESC[201~ end mark is never received.
 """
-import ast
 import importlib
-import logging
 import time
-from pathlib import Path
 from unittest.mock import MagicMock
 
-from prompt_toolkit.keys import Keys
-
-
-ROOT = Path(__file__).resolve().parents[2]
-CLI_PATH = ROOT / "cli.py"
-
-
-def _load_production_patch_helper():
-    """Load cli._apply_bracketed_paste_timeout_patch without importing cli.
-
-    Importing cli.py pulls optional runtime deps that aren't required for this
-    parser-level regression.  AST-loading the exact helper keeps the test tied
-    to production code while avoiding unrelated import side effects.  If the
-    production helper is removed, this test fails.
-    """
-    source = CLI_PATH.read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    helper_node = next(
-        (
-            node
-            for node in tree.body
-            if isinstance(node, ast.FunctionDef)
-            and node.name == "_apply_bracketed_paste_timeout_patch"
-        ),
-        None,
-    )
-    assert helper_node is not None, (
-        "cli.py must define _apply_bracketed_paste_timeout_patch()"
-    )
-    helper_source = ast.get_source_segment(source, helper_node)
-    namespace = {"time": time, "logger": logging.getLogger("test.cli")}
-    exec(helper_source, namespace)
-    return namespace["_apply_bracketed_paste_timeout_patch"]
+from hermes_cli.cli_terminal_input import _apply_bracketed_paste_timeout_patch
 
 
 def _reset_and_apply_production_patch():
@@ -55,7 +20,7 @@ def _reset_and_apply_production_patch():
     # does not redefine, so clear Hermes' sentinel before re-applying.
     if hasattr(vt100_mod, "_hermes_bp_timeout_patched"):
         delattr(vt100_mod, "_hermes_bp_timeout_patched")
-    _load_production_patch_helper()()
+    _apply_bracketed_paste_timeout_patch()
     assert getattr(vt100_mod, "_hermes_bp_timeout_patched", False)
     return vt100_mod
 

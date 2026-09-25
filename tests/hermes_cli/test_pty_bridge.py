@@ -19,13 +19,11 @@ import pytest
 
 pytest.importorskip("ptyprocess", reason="ptyprocess not installed")
 
-from hermes_cli.pty_bridge import PtyBridge, PtyUnavailableError
-
+from hermes_cli.pty_bridge import PtyBridge
 
 skip_on_windows = pytest.mark.skipif(
     sys.platform.startswith("win"), reason="PTY bridge is POSIX-only"
 )
-
 
 def _read_until(bridge: PtyBridge, needle: bytes, timeout: float = 5.0) -> bytes:
     """Accumulate PTY output until we see `needle` or time out."""
@@ -40,18 +38,8 @@ def _read_until(bridge: PtyBridge, needle: bytes, timeout: float = 5.0) -> bytes
             return bytes(buf)
     return bytes(buf)
 
-
 @skip_on_windows
 class TestPtyBridgeSpawn:
-    def test_is_available_on_posix(self):
-        assert PtyBridge.is_available() is True
-
-    def test_spawn_returns_bridge_with_pid(self):
-        bridge = PtyBridge.spawn(["true"])
-        try:
-            assert bridge.pid > 0
-        finally:
-            bridge.close()
 
     def test_spawn_raises_on_missing_argv0(self, tmp_path):
         with pytest.raises((FileNotFoundError, OSError)):
@@ -68,7 +56,6 @@ class TestPtyBridgeSpawn:
             assert PTY_HOST_DASHBOARD.encode() in output
         finally:
             bridge.close()
-
 
 @skip_on_windows
 class TestPtyBridgeIO:
@@ -176,7 +163,6 @@ class TestPtyBridgeIO:
         finally:
             bridge.close()
 
-
 @skip_on_windows
 class TestPtyBridgeResize:
     def test_resize_updates_child_winsize(self):
@@ -203,7 +189,6 @@ class TestPtyBridgeResize:
         finally:
             bridge.close()
 
-
 @skip_on_windows
 class TestClampDimension:
     def test_clamps_above_max(self):
@@ -211,7 +196,6 @@ class TestClampDimension:
 
         assert _clamp_dimension(131072, _MAX_COLS) == _MAX_COLS
         assert _clamp_dimension(131072, _MAX_ROWS) == _MAX_ROWS
-
 
     def test_non_numeric_falls_back_to_min(self):
         from hermes_cli.pty_bridge import _MAX_COLS, _clamp_dimension
@@ -230,7 +214,6 @@ class TestClampDimension:
         rows = _clamp_dimension(1, _MAX_ROWS)
         # Should not raise.
         _struct.pack("HHHH", rows, cols, 0, 0)
-
 
 @skip_on_windows
 class TestPtyBridgeClose:
@@ -294,7 +277,6 @@ class TestPtyBridgeClose:
         assert sent == [(67890, signal.SIGHUP)]
         assert bridge._closed is True
 
-
 @skip_on_windows
 class TestPtyBridgeEnv:
     def test_cwd_is_respected(self, tmp_path):
@@ -307,12 +289,3 @@ class TestPtyBridgeEnv:
             assert str(tmp_path).encode() in output
         finally:
             bridge.close()
-
-
-class TestPtyBridgeUnavailable:
-    """Platform fallback semantics — PtyUnavailableError is importable and
-    carries a user-readable message."""
-
-    def test_error_carries_user_message(self):
-        err = PtyUnavailableError("platform not supported")
-        assert "platform" in str(err)

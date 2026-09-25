@@ -1882,7 +1882,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `auth_mcp_server` | moved-lazy | `hermes_cli.web_routers.mcp` |
 | `base64` | import | `base64` |
 | `binascii` | import | `binascii` |
-| `build_cron_model_impact` | moved-lazy | `hermes_cli.config` |
 | `bulk_delete_sessions_endpoint` | moved-lazy | `hermes_cli.web_routers.sessions` |
 | `cancel_oauth_session` | moved-lazy | `hermes_cli.web_routers.oauth` |
 | `cancel_telegram_onboarding` | moved-lazy | `hermes_cli.web_routers.messaging` |
@@ -2086,7 +2085,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `replace_mcp_servers` | moved-lazy | `hermes_cli.web_routers.mcp` |
 | `rescan_dashboard_plugins` | moved-lazy | `hermes_cli.web_routers.dashboard_ui` |
 | `reset_memory` | moved-lazy | `hermes_cli.web_routers.ops` |
-| `resolve_cron_model_drift_defaults` | moved-lazy | `hermes_cli.config` |
 | `resolve_gateway_liveness` | moved-lazy | `gateway.status` |
 | `restart_gateway` | moved-lazy | `hermes_cli.web_routers.actions` |
 | `resume_cron_job` | moved-lazy | `hermes_cli.web_routers.cron` |
@@ -2426,13 +2424,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `normalize_reference_images` | moved-lazy | `agent.image_gen_provider` |
 | `save_b64_image` | moved-lazy | `agent.image_gen_provider` |
 | `save_url_image` | moved-lazy | `agent.image_gen_provider` |
-
-### `plugins.memory.hindsight`
-
-| name | kind | new location |
-|---|---|---|
-| `dataclass` | import | `dataclasses` |
-| `importlib` | import | `importlib` |
 
 ### `plugins.memory.honcho`
 
@@ -2962,7 +2953,6 @@ to the public equivalent or the new module. Test monkeypatch seams are likewise 
 | `shutil` | import | `shutil` |
 | `signal` | import | `signal` |
 | `timezone` | import | `datetime` |
-| `warm_agent_browser_npx_cache` | moved-lazy | `tools.browser_tool_install` |
 | `windows_hide_flags` | moved-lazy | `hermes_cli._subprocess_compat` |
 
 ### `tools.clarify_gateway`

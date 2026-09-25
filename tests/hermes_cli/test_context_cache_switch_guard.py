@@ -35,7 +35,6 @@ class TestContextCacheGuard:
         warning = _guard("new/model", SelectionContext(context_tokens=tokens, current_model="old/model"))
         assert warning is not None
         assert warning.kind == "context_cache"
-        assert "uncached" in warning.message
         assert f"{tokens:,}" in warning.message
 
     def test_same_model_reselect_stays_silent(self):

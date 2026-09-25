@@ -26,7 +26,7 @@ def _get_exa_client() -> Any:
         client.headers["x-exa-integration"] = "hermes-agent"
         return client
 
-    return cached_sdk_client("_exa_client", "EXA_API_KEY", _MISSING_KEY, "search.exa", _factory)
+    return cached_sdk_client("_exa_client", "EXA_API_KEY", _MISSING_KEY, "exa", _factory)
 
 
 class ExaWebSearchProvider(BaseWebSearchProvider):

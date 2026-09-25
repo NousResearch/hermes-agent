@@ -8,6 +8,7 @@ Document URL (CIMD) when the server supports it, else RFC 7591 DCR. ``mcp_server
 (all optional): client_id, client_secret, scope, redirect_port, redirect_uri (proxy callback),
 redirect_host, client_name, client_metadata_url, cimd, user_agent, timeout."""
 
+from pm import install_hint
 import asyncio
 import contextlib
 import contextvars
@@ -387,7 +388,7 @@ def _read_json(path: Path) -> dict | None:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning("Failed to read %s: %s", path, exc)
         return None
@@ -1019,6 +1020,21 @@ def token_request_user_agent(cfg: dict) -> str | None:
     return ua.strip() if isinstance(ua, str) and ua.strip() else None
 
 
+def login_connect_timeout(config: dict) -> float:
+    """Connect bound for an interactive OAuth login probe (CLI ``hermes mcp login``, dashboard and
+    Desktop re-auth): the server's ``connect_timeout`` or its ``oauth.timeout`` callback window
+    (default 300 s) plus 15 s headroom for the token exchange, whichever is longer. A fixed 315 s
+    floor here made raising ``oauth.timeout`` alone a no-op — the probe timed out first (#116278)."""
+    def _seconds(value, default: float) -> float:
+        try:
+            return max(0.0, float(value))
+        except (TypeError, ValueError):
+            return default
+    oauth_cfg = config.get("oauth") or {}
+    return max(_seconds(config.get("connect_timeout"), 0.0),
+               _seconds(oauth_cfg.get("timeout"), 300.0) + 15.0)
+
+
 def _configure_callback_port(cfg: dict, storage: "HermesTokenStorage | None" = None) -> int:
     """Resolve the callback port into ``cfg['_resolved_port']`` (0 = non-loopback URI). Precedence:
     dashboard flow / cached https redirect URI → CIMD pinned port (sets ``cfg['_cimd_url']``) →
@@ -1211,7 +1227,8 @@ def build_oauth_auth(server_name: str, server_url: str, oauth_config: dict | Non
     uses :func:`tools.mcp_oauth_manager.get_manager` so state is shared across config-time, runtime and reconnect paths."""
     global HermesOAuthClientProvider
     if not _OAUTH_AVAILABLE or _sdk_class("OAuthClientProvider") is None:
-        logger.warning("MCP OAuth requested for '%s' but SDK auth types are not available. Install with: pip install 'mcp>=1.26.0'", server_name)
+        logger.warning("MCP OAuth requested for '%s' but SDK auth types are not available. Run: "
+                       f"{install_hint('mcp')}", server_name)
         return None
     from tools.mcp_oauth_provider import build_provider_kwargs, prepare_oauth_config
 

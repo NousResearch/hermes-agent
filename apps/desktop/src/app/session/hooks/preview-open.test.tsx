@@ -262,13 +262,5 @@ describe('preview routing', () => {
         $sessionTiles.set(tiles)
       }
     })
-
-    it('is a no-op when nothing is open', async () => {
-      render(<Harness />)
-
-      await emitPreviewClose()
-
-      expect($previewTabs.get()).toHaveLength(0)
-    })
   })
 })

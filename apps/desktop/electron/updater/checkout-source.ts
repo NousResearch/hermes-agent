@@ -25,9 +25,6 @@ export interface SourceUpdateProbe {
 
 const execute: typeof execFile.__promisify__ = promisify(execFile)
 
-export const SOURCE_PROBE_RECOVERY: string =
-  'This checkout predates desktop source-channel checks. Run `hermes update --help` in this installation, then choose the intended branch or channel explicitly before updating.'
-
 export function sourceUpdateEnvironment(updateRoot: string, hermesHome: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,

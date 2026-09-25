@@ -100,20 +100,26 @@ def recover_publication(project: Path) -> None:
         if row.get("kind") == "plugin":
             _recover_plugin_publication(project, row, journal)
             return
-        config = Path(row["config"])
-        if config.name != "config.yaml" or not config.resolve().is_relative_to(dependency_home_root().resolve()):
-            raise ValueError("config path is outside Hermes state")
-        previous = base64.b64decode(row["previous"], validate=True) if row["previous"] is not None else None
+        # One row may carry several configs (a plugin eviction edits every home that enables it).
+        entries = row["configs"] if "configs" in row else [row]
+        configs = []
+        for entry in entries:
+            config = Path(entry["config"])
+            if config.name != "config.yaml" or not config.resolve().is_relative_to(dependency_home_root().resolve()):
+                raise ValueError("config path is outside Hermes state")
+            previous = base64.b64decode(entry["previous"], validate=True) if entry["previous"] is not None else None
+            configs.append((config, previous, entry.get("config_after")))
         if not row.get("committed") and _digest(runtime_facts_path(project)) == row["facts_before"]:
-            current = _digest(config)
-            prior = hashlib.sha256(previous).hexdigest() if previous is not None else None
-            if current not in (prior, row.get("config_after")):
-                raise ValueError("config changed after publication began; preserve it for manual recovery")
+            for config, previous, after in configs:
+                prior = hashlib.sha256(previous).hexdigest() if previous is not None else None
+                if _digest(config) not in (prior, after):
+                    raise ValueError("config changed after publication began; preserve it for manual recovery")
             # No selection was published. Roll back before any plugin is loaded.
-            if previous is None:
-                config.unlink(missing_ok=True)
-            else:
-                _atomic_bytes(config, previous)
+            for config, previous, _after in configs:
+                if previous is None:
+                    config.unlink(missing_ok=True)
+                else:
+                    _atomic_bytes(config, previous)
         journal.unlink()
     except (ValueError, KeyError, TypeError, OSError) as exc:
         raise RuntimeError(f"cannot recover dependency publication: {journal}: {exc}") from exc

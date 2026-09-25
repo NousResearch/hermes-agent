@@ -264,7 +264,7 @@ def step_provision_runtimes() -> dict:
     for name in problems:
         try:
             if name == "venv":
-                pm.sync_venv(explicit=True)
+                pm.sync_venv(explicit=True, evict_incompatible_plugins=True)
             else:
                 pm.ensure(name, explicit=True)
             refreshed.append(name)

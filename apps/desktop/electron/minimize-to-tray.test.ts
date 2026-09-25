@@ -53,6 +53,7 @@ class Window extends EventEmitter {
   minimized = false
   destroyed = false
   skipped = false
+  focused = false
   webContents = { send: vi.fn() }
   isDestroyed() {
     return this.destroyed
@@ -68,7 +69,15 @@ class Window extends EventEmitter {
   }
   hide() {
     this.visible = false
+    this.focused = false
     this.emit('hide')
+  }
+  show() {
+    this.visible = true
+    this.emit('show')
+  }
+  focus() {
+    this.focused = true
   }
   showInactive() {
     this.visible = true
@@ -133,6 +142,68 @@ function setup() {
   }
 }
 
+function flushDeferredHide() {
+  return new Promise<void>(resolve => setImmediate(resolve))
+}
+
+const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
+
+function setPlatform(platform: string) {
+  Object.defineProperty(process, 'platform', { value: platform })
+}
+
+function restorePlatform() {
+  if (originalPlatform) {
+    Object.defineProperty(process, 'platform', originalPlatform)
+  }
+}
+
+test('tray hide defers past the minimize dispatch (#119252)', async () => {
+  const { controller, main } = setup()
+  await controller.start()
+  await controller.setEnabled(true)
+
+  // Hiding synchronously inside the minimize dispatch wedges the native
+  // minimized flag on Windows; hide must run after dispatch returns.
+  main.minimize()
+  expect(main.visible).toBe(true)
+  await flushDeferredHide()
+  expect(main.visible).toBe(false)
+})
+
+test('Windows restore re-activates the window instead of showInactive (#119252)', async () => {
+  setPlatform('win32')
+
+  try {
+    const { controller, main } = setup()
+    await controller.start()
+    await controller.setEnabled(true)
+
+    main.minimize()
+    await flushDeferredHide()
+    controller.restore()
+    expect(main.visible).toBe(true)
+    expect(main.minimized).toBe(false)
+    expect(main.skipped).toBe(false)
+    expect(main.focused).toBe(true)
+  } finally {
+    restorePlatform()
+  }
+})
+
+test('a restore before the deferred hide fires cancels the stale hide', async () => {
+  const { controller, main } = setup()
+  await controller.start()
+  await controller.setEnabled(true)
+
+  main.minimize()
+  // User restores (taskbar/shortcut) before the deferred hide fires.
+  main.restore()
+  await flushDeferredHide()
+  expect(main.visible).toBe(true)
+  expect(main.minimized).toBe(false)
+})
+
 test('opt-in minimize and primary Close preserve windows while explicit Quit still exits', async () => {
   const { controller, main, peer } = setup()
   expect(await controller.start()).toEqual({ enabled: false, available: false })
@@ -142,6 +213,7 @@ test('opt-in minimize and primary Close preserve windows while explicit Quit sti
   await native.ipc.get('hermes:minimize-to-tray:set')!(null, true)
   expect(native.ipc.get('hermes:minimize-to-tray:get')!()).toEqual({ enabled: true, available: true })
   main.minimize()
+  await flushDeferredHide()
   expect(main.destroyed).toBe(false)
   expect(main.visible).toBe(false)
   expect(peer.visible).toBe(true)
@@ -151,6 +223,7 @@ test('opt-in minimize and primary Close preserve windows while explicit Quit sti
   }
 
   peer.minimize()
+  await flushDeferredHide()
   expect(peer.visible).toBe(false)
 
   if (process.platform === 'darwin') {
@@ -173,6 +246,7 @@ test('opt-in minimize and primary Close preserve windows while explicit Quit sti
   // A cancelled guard doesn't call beginQuit; hide remains enabled.
   controller.restore()
   main.minimize()
+  await flushDeferredHide()
   expect(main.destroyed).toBe(false)
   expect(main.visible).toBe(false)
   // X/Alt+F4 hides the primary, but an accepted explicit quit closes it.

@@ -18,7 +18,7 @@ import {
   wrapHandoffForDetachedConsole
 } from '../updater-process'
 
-import { SOURCE_PROBE_RECOVERY, type SourceUpdate, sourceUpdateEnvironment } from './checkout-source'
+import { type SourceUpdate, sourceUpdateEnvironment } from './checkout-source'
 
 import type { UpdaterApplyResultWire, UpdaterMechanism, UpdaterStatusWire, UpdaterStrategy } from './index'
 
@@ -77,10 +77,13 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
   async function check(opts: { force?: boolean } = {}): Promise<UpdaterStatusWire> {
     const root: string = deps.resolveUpdateRoot()
 
+    // A checkout without the source probe predates source channels, so it can
+    // only be on the git line: move it to main. Its update pulls the probe in.
     const status: UpdaterStatusWire = (await deps.readSourceUpdate(root, opts)) ?? {
-      supported: false,
-      reason: 'source-probe-unavailable',
-      message: SOURCE_PROBE_RECOVERY,
+      supported: true,
+      updateAvailable: true,
+      behind: null,
+      branch: deps.defaultUpdateBranch,
       hermesRoot: root
     }
 
@@ -100,16 +103,6 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
 
   async function applyBody(): Promise<UpdaterApplyResultWire> {
     const status: UpdaterStatusWire = await check({ force: true })
-
-    if (status.reason === 'source-probe-unavailable') {
-      return {
-        ok: true,
-        manual: true,
-        command: 'hermes update --help',
-        message: status.message,
-        hermesRoot: status.hermesRoot
-      }
-    }
 
     if (!status.supported || status.error) {
       return { ok: false, error: status.error ?? status.reason, message: status.message }
@@ -247,9 +240,10 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
 
       // A bare detached+hidden powershell spawn silently dies before -File
       // processing (console-subsystem init failure — see
-      // wrapHandoffForDetachedConsole). Route through `cmd start` so the
-      // script gets its own minimized console and survives our exit. The
-      // wrapper cmd.exe exits immediately, so child.pid is NOT the script's
+      // wrapHandoffForDetachedConsole). Spawn the cmd wrapper non-detached
+      // so windowsHide gives it a hidden console that `start /b` shares with
+      // PowerShell; the script still outlives us. The wrapper cmd.exe exits
+      // immediately, so child.pid is NOT the script's
       // pid — the script claims the update marker itself with its own $PID
       // as its first action, and a relaunched Desktop parks on that.
       const wrappedArgs: string[] = [
@@ -276,7 +270,7 @@ export function createCheckoutStrategy(deps: CheckoutStrategyDeps): UpdaterStrat
           ...sourceUpdateEnvironment(updateRoot, deps.hermesHome),
           HERMES_UPDATE_STARTED_AT: String(updateStartedAt)
         },
-        detached: true,
+        detached: wrapped.detached,
         stdio: 'ignore'
       })
 

@@ -391,19 +391,18 @@ def prune_stale_shallow_grafts(repo_root: Path) -> int:
 
 
 def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
-    """Turn a shallow checkout into a treeless partial clone of ``origin``.
+    """Refresh release tags and fill shallow history before publishing identity.
 
-    Version identity is the nearest reachable release tag plus the commit count since
-    it, and a shallow boundary hides both. Only commits (and the tags that follow
-    them) are fetched; trees and blobs stay on demand, so this costs a fraction of a
-    full unshallow. Returns False when the checkout was not shallow; raises
-    ``subprocess.CalledProcessError`` / ``TimeoutExpired`` when the fetch fails.
+    A full commit graph does not imply current tags, especially after a --no-tags
+    clone. Fetch version tags explicitly without fetching every remote branch or
+    replacing existing tags. Trees and blobs stay on demand. Returns whether the
+    checkout was unshallowed; fetch failures raise subprocess errors.
     """
-    if _shallow_file_path(repo_root) is None:
-        return False
+    shallow = _shallow_file_path(repo_root) is not None
     subprocess.run(
-        ["git", "fetch", "--quiet", "--unshallow", "--filter=tree:0", "origin"],
+        ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
+         "--filter=tree:0", "--no-tags", "origin", "refs/tags/v*:refs/tags/v*"],
         cwd=str(repo_root), check=True, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
     )
-    return True
+    return shallow

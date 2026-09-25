@@ -55,7 +55,8 @@ import {
   normalizeProfileKey,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
-import { $projectScope, resolveNewSessionCwd } from '@/store/projects'
+import { $projectScope } from '@/store/project-scope'
+import { resolveNewSessionCwd } from '@/store/projects'
 import { receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {
@@ -364,6 +365,39 @@ interface FreshSessionDraftOptions {
   preserveRoute?: boolean
   replaceRoute?: boolean
   workspaceTarget?: NewChatWorkspaceTarget
+}
+
+/** Drop the pre-hydration request-id row without copying the other messages.
+ *  A copied clarify row looks like a concurrent edit and hydration keeps both. */
+function withoutEarlyClarifyProjection(messages: ChatMessage[], requestId: string): ChatMessage[] {
+  let changed = false
+  const next: ChatMessage[] = []
+
+  for (const message of messages) {
+    const parts = message.parts.filter(
+      part =>
+        !(
+          part.type === 'tool-call' &&
+          part.toolName === 'clarify' &&
+          part.result === undefined &&
+          part.toolCallId === requestId
+        )
+    )
+
+    if (parts.length === message.parts.length) {
+      next.push(message)
+
+      continue
+    }
+
+    changed = true
+
+    if (parts.length > 0) {
+      next.push({ ...message, parts })
+    }
+  }
+
+  return changed ? next : messages
 }
 
 /** Session-state patch for a restored blocking prompt row; the first non-null projection is used. */
@@ -1437,6 +1471,25 @@ export function useSessionActions({
               // Once the attached transport reports a later terminal event,
               // that live state is authoritative and must not be overwritten
               // by the older `running` value after the REST request resolves.
+              // The activate snapshot is enough to answer a still-pending clarify.
+              // Publish that row in the same view update as needsInput, before
+              // transcript REST. An armed hold still hides unproven history, so
+              // the question rides a new row the hold cannot swallow by grafting
+              // it onto a cutoff assistant. Hydration strips that synthetic id
+              // and re-derives one authoritative row.
+              const clarifyPayload = pendingClarify ? pendingClarifyToolPayload(pendingClarify) : null
+
+              const earlyClarifyProjection = clarifyPayload
+                ? restorePendingClarifyToolCall(suppressUnprovenWarmTranscript ? [] : activatedMessages, clarifyPayload)
+                : null
+
+              const projectedTail = earlyClarifyProjection?.messages.at(-1)
+
+              const earlyClarifyMessages =
+                earlyClarifyProjection && suppressUnprovenWarmTranscript && projectedTail
+                  ? [...activatedMessages, projectedTail]
+                  : earlyClarifyProjection?.messages
+
               const activatedLivenessState = updateSessionState(
                 cachedRuntimeId,
                 state => ({
@@ -1456,7 +1509,13 @@ export function useSessionActions({
                   // without ever having received its prompt, so the settle
                   // path must not take the "I saw it all" shortcut.
                   adoptedRunningTurn: state.adoptedRunningTurn || running,
-                  turnStartedAt: running ? (activatedTurnStartedAt ?? state.turnStartedAt ?? Date.now()) : null
+                  turnStartedAt: running ? (activatedTurnStartedAt ?? state.turnStartedAt ?? Date.now()) : null,
+                  ...(earlyClarifyProjection
+                    ? {
+                        messages: earlyClarifyMessages ?? state.messages,
+                        ...livePromptStreamId(null, earlyClarifyProjection)
+                      }
+                    : {})
                 }),
                 storedSessionId
               )
@@ -1549,9 +1608,16 @@ export function useSessionActions({
                     activated
                   )
 
+                  const latestCachedMessages = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages
+
+                  const cachedWithoutEarlyClarify =
+                    latestCachedMessages && pendingClarify
+                      ? withoutEarlyClarifyProjection(latestCachedMessages, pendingClarify.requestId)
+                      : latestCachedMessages
+
                   const currentLiveTurn = reconcilePersistedLiveTurn(
                     persistedMessages,
-                    sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages ?? previousMessages,
+                    cachedWithoutEarlyClarify ?? previousMessages,
                     persisted.messages,
                     liveProjection
                   )
@@ -1567,13 +1633,21 @@ export function useSessionActions({
 
               const currentMessages = sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages
 
+              // The early publish may have appended a synthetic request-id row so
+              // the hold could not hide the question. Drop it before overlaying
+              // concurrent edits; the projection below re-derives one row.
+              const currentForOverlay =
+                currentMessages && pendingClarify
+                  ? withoutEarlyClarifyProjection(currentMessages, pendingClarify.requestId)
+                  : currentMessages
+
               // The occurrence-aware path already read the latest cache. An
               // additional identity overlay would restore its consumed tools.
-              if (currentMessages && !reconciledCurrentLiveTurn) {
+              if (currentForOverlay && !reconciledCurrentLiveTurn) {
                 activatedMessages = overlayConcurrentMessageChanges(
                   activatedMessages,
                   cachedViewState.messages,
-                  currentMessages
+                  currentForOverlay
                 )
               }
 
@@ -2902,6 +2976,44 @@ export function useSessionActions({
     ]
   )
 
+  // The Archived view reuses the sidebar row menu; its already-archived rows
+  // dispatch here through the same archive verb (#98813). Mirrors the Settings
+  // → Archived Chats restore (sessions-settings.tsx): flip the persisted flag
+  // back off, drop the archived-view row, and resurface the session in the
+  // sidebar without waiting for a full refresh.
+  const unarchiveSession = useCallback(
+    async (storedSessionId: string) => {
+      clearNotifications()
+
+      const archived = $archivedSessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
+      const profile = archived?.profile?.trim() || undefined
+
+      try {
+        await setSessionArchived(storedSessionId, false, profile)
+
+        // Drop the archived-view row first so the view reflects the restore
+        // even when the session cannot be re-listed below (e.g. it belongs to
+        // a profile the current query does not cover).
+        $archivedSessions.set(
+          $archivedSessions.get().filter(session => !sessionMatchesStoredId(session, storedSessionId))
+        )
+
+        if (archived) {
+          // Lift any optimistic eviction so the grouped tree shows it again,
+          // and re-list through the slice router so a messaging/cron row lands
+          // back in its own list, not the sessions one.
+          untombstoneSessions([storedSessionId, archived._lineage_root_id])
+          restoreListedSession({ ...archived, archived: false })
+        }
+
+        notify({ durationMs: 2_000, kind: 'success', message: copy.restored })
+      } catch (err) {
+        notifyError(err, copy.unarchiveFailed)
+      }
+    },
+    [copy]
+  )
+
   return {
     archiveSession,
     branchCurrentSession,
@@ -2913,6 +3025,7 @@ export function useSessionActions({
     removeSession,
     resumeSession,
     selectSidebarItem,
-    startFreshSessionDraft
+    startFreshSessionDraft,
+    unarchiveSession
   }
 }

@@ -98,11 +98,37 @@ export function workspaceSessionUsesDraftTitle(
   return !hasStoredSession && !scope?.workspaceTabTitle?.trim()
 }
 
+/** The main pane is the canonical relationship surface while Bot Mode owns
+ * the workspace. Its selected stored id can be a compression-lineage alias
+ * that is absent from the hidden-chat scope map, so owner state — not an
+ * exact session-id cache hit — is the durable fallback for presentation. */
+export function workspaceMainSessionScope(
+  sessionScope: { workspaceMode?: WorkspaceMode; workspaceOwnerKey?: string; workspaceTabTitle?: string } | undefined,
+  workspaceMode: WorkspaceMode,
+  workspaceOwnerKey: null | string
+): { workspaceMode?: WorkspaceMode; workspaceOwnerKey?: string; workspaceTabTitle?: string } | undefined {
+  if (sessionScope || workspaceMode !== 'bots' || !workspaceOwnerKey) {
+    return sessionScope
+  }
+
+  return { workspaceMode: 'bots', workspaceOwnerKey, workspaceTabTitle: 'Bot Chat' }
+}
+
 /** Canonical Bot Chat titles are registry keys, not user-facing labels. */
 export function workspaceSessionRenamable(
   scope: { workspaceMode?: WorkspaceMode; workspaceTabTitle?: string } | undefined
 ): boolean {
   return scope?.workspaceMode !== 'bots' || scope.workspaceTabTitle !== 'Bot Chat'
+}
+
+/** Bot Mode's main pane is the canonical relationship chat even when its
+ * lineage-tip id missed the exact-id scope cache. Never offer a rename that
+ * would mutate the backend registry key (and fail for hidden aliases). */
+export function workspaceMainSessionRenamable(
+  workspaceMode: WorkspaceMode,
+  scope: { workspaceMode?: WorkspaceMode; workspaceTabTitle?: string } | undefined
+): boolean {
+  return workspaceMode !== 'bots' && workspaceSessionRenamable(scope)
 }
 
 /** One key for window-local active-pane memory. Owner keys stay opaque. */

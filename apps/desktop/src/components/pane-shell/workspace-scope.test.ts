@@ -11,6 +11,8 @@ import {
   resolveRememberedActivePane,
   setWorkspaceOwnerLabel,
   setWorkspaceScope,
+  workspaceMainSessionRenamable,
+  workspaceMainSessionScope,
   workspaceOwnerTitle,
   workspaceSessionRenamable,
   workspaceSessionTitle,
@@ -87,6 +89,30 @@ describe('workspace owner title', () => {
     expect(workspaceSessionUsesDraftTitle(true, undefined)).toBe(false)
     expect(workspaceSessionRenamable(botChat)).toBe(false)
     expect(workspaceSessionRenamable(undefined)).toBe(true)
+  })
+
+  it('falls back to the active Bot owner when a hidden lineage tip misses the exact-id scope cache', () => {
+    setWorkspaceOwnerLabel('bot:wallstreetscout', 'Wallstreetscout')
+
+    const scope = workspaceMainSessionScope(undefined, 'bots', 'bot:wallstreetscout')
+
+    expect(scope).toEqual({
+      workspaceMode: 'bots',
+      workspaceOwnerKey: 'bot:wallstreetscout',
+      workspaceTabTitle: 'Bot Chat'
+    })
+    expect(workspaceSessionTitle(null, 'New session', scope)).toBe('Wallstreetscout')
+    expect(workspaceSessionUsesDraftTitle(false, scope)).toBe(false)
+    expect(workspaceMainSessionRenamable('bots', undefined)).toBe(false)
+  })
+
+  it('keeps an ordinary Sessions main draft titled and renamable as before', () => {
+    const scope = workspaceMainSessionScope(undefined, 'sessions', null)
+
+    expect(scope).toBeUndefined()
+    expect(workspaceSessionTitle(null, 'New session', scope)).toBe('New session')
+    expect(workspaceSessionUsesDraftTitle(false, scope)).toBe(true)
+    expect(workspaceMainSessionRenamable('sessions', scope)).toBe(true)
   })
 })
 

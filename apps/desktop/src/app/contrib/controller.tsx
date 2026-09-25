@@ -35,7 +35,10 @@ import {
   toggleTargetZoneTabStrip
 } from '@/components/pane-shell/tree/store'
 import {
+  $workspaceMode,
+  $workspaceOwnerKey,
   $workspaceOwnerLabels,
+  workspaceMainSessionScope,
   workspaceSessionTitle,
   workspaceSessionUsesDraftTitle
 } from '@/components/pane-shell/workspace-scope'
@@ -492,7 +495,12 @@ watchUnreadWriteGuard()
 const syncWorkspaceTitle = () => {
   const selected = $selectedStoredSessionId.get()
   const stored = selected ? $sessions.get().find(s => sessionMatchesStoredId(s, selected)) : null
-  const botScope = selected ? $botChatScopes.get()[selected] : undefined
+
+  const botScope = workspaceMainSessionScope(
+    selected ? $botChatScopes.get()[selected] : undefined,
+    $workspaceMode.get(),
+    $workspaceOwnerKey.get()
+  )
 
   registry.register({
     id: 'workspace',
@@ -538,6 +546,8 @@ const syncWorkspaceTitle = () => {
 $selectedStoredSessionId.listen(syncWorkspaceTitle)
 $sessions.listen(syncWorkspaceTitle)
 $botChatScopes.listen(syncWorkspaceTitle)
+$workspaceMode.listen(syncWorkspaceTitle)
+$workspaceOwnerKey.listen(syncWorkspaceTitle)
 $workspaceOwnerLabels.listen(syncWorkspaceTitle)
 $workspaceIsPage.listen(syncWorkspaceTitle)
 registry.subscribeArea(WORKSPACE_PAGE_HEADER_AREA, syncWorkspaceTitle)

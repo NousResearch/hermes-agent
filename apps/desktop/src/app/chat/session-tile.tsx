@@ -30,7 +30,9 @@ import { CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
 import { $layoutTree, closeTreePane, moveTreePane, setTreeGroupTabStrip } from '@/components/pane-shell/tree/store'
 import {
+  $workspaceMode,
   $workspaceOwnerLabels,
+  workspaceMainSessionRenamable,
   workspaceOwnerTitle,
   workspaceSessionRenamable
 } from '@/components/pane-shell/workspace-scope'
@@ -844,6 +846,7 @@ export function SessionTabMenu({
 export function WorkspaceTabMenu({ children }: { children: React.ReactElement }) {
   const selected = useStore($selectedStoredSessionId)
   const botChatScopes = useStore($botChatScopes)
+  const workspaceMode = useStore($workspaceMode)
 
   const hideTabBar = () => {
     const tree = $layoutTree.get()
@@ -862,7 +865,7 @@ export function WorkspaceTabMenu({ children }: { children: React.ReactElement })
     <SessionTabMenu
       onClose={() => closeTreePane('workspace')}
       onHideTabBar={hideTabBar}
-      renamable={workspaceSessionRenamable(botChatScopes[selected])}
+      renamable={workspaceMainSessionRenamable(workspaceMode, botChatScopes[selected])}
       storedSessionId={selected}
       tabPaneId="workspace"
     >

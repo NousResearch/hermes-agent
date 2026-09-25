@@ -405,6 +405,10 @@ type BotsMessages = {
     otherControls: string
     agentControls: string
     controlTaken: string
+    /** Titlebar button (screen-titlebar.tsx): the always-available Screen entry. */
+    openPanel: string
+    collapsePanel: string
+    openFailed: string
   }
 
   /** Bot-scoped scheduled jobs. Generic scheduling chrome (weekday names,
@@ -837,7 +841,10 @@ const en: BotsMessages = {
     youControl: 'You are in control',
     otherControls: 'Another viewer is in control',
     agentControls: 'Bot is in control',
-    controlTaken: 'Another viewer took control. Watching only.'
+    controlTaken: 'Another viewer took control. Watching only.',
+    openPanel: 'Open Screen panel',
+    collapsePanel: 'Collapse Screen panel',
+    openFailed: 'Could not open the Screen panel.'
   },
   cron: {
     untitled: 'Untitled job',
@@ -1270,7 +1277,10 @@ const ja: BotsMessages = {
     youControl: 'あなたが操作中',
     otherControls: '別のビューアが操作中',
     agentControls: 'ボットが操作中',
-    controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。'
+    controlTaken: '別のビューアが操作を引き継ぎました。閲覧のみ。',
+    openPanel: '画面パネルを開く',
+    collapsePanel: '画面パネルを閉じる',
+    openFailed: '画面パネルを開けませんでした。'
   },
   cron: {
     untitled: '無題のジョブ',
@@ -1687,7 +1697,10 @@ const zh: BotsMessages = {
     youControl: '你正在控制',
     otherControls: '另一位查看者正在控制',
     agentControls: '机器人正在控制',
-    controlTaken: '另一位查看者已接管控制。仅可观看。'
+    controlTaken: '另一位查看者已接管控制。仅可观看。',
+    openPanel: '打开屏幕面板',
+    collapsePanel: '收起屏幕面板',
+    openFailed: '无法打开屏幕面板。'
   },
   cron: {
     untitled: '未命名任务',
@@ -2104,7 +2117,10 @@ const zhHant: BotsMessages = {
     youControl: '你正在控制',
     otherControls: '另一位檢視者正在控制',
     agentControls: '機器人正在控制',
-    controlTaken: '另一位檢視者已接手控制。僅可觀看。'
+    controlTaken: '另一位檢視者已接手控制。僅可觀看。',
+    openPanel: '開啟螢幕面板',
+    collapsePanel: '收合螢幕面板',
+    openFailed: '無法開啟螢幕面板。'
   },
   cron: {
     untitled: '未命名工作',

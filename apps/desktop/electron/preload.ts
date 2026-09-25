@@ -387,6 +387,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     }
   },
   setDisableF12: blocked => ipcRenderer.send('hermes:devtools:disable-f12', blocked),
+  setHideWindowControls: hidden => ipcRenderer.send('hermes:window-controls:hide', hidden),
   setF12ShortcutActive: active => ipcRenderer.send('hermes:f12ShortcutActive', Boolean(active)),
   onF12Shortcut: callback => {
     const listener = (_event, input) => callback(input)

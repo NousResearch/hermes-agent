@@ -1256,11 +1256,27 @@ function getWindowBackgroundColor() {
 // to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
 const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
 
+const HIDE_WINDOW_CONTROLS_CONFIG_PATH = path.join(app.getPath('userData'), 'hide-window-controls.json')
+
+function readPersistedHideWindowControls() {
+  try {
+    return JSON.parse(fs.readFileSync(HIDE_WINDOW_CONTROLS_CONFIG_PATH, 'utf8')).on === true
+  } catch {
+    return false
+  }
+}
+
+const hideWindowControls = readPersistedHideWindowControls()
+
 // WSLg returns false: the RDP host paints nothing for a frameless window and
 // Electron's own overlay drifts its hit-region under RAIL, so the renderer
 // paints its own min/max/close (wslg-window-controls.tsx) over the
 // hermes:window-control IPC channel. See titleBarOverlayOptions.
 function getTitleBarOverlayOptions() {
+  if (hideWindowControls && !IS_MAC) {
+    return false
+  }
+
   return titleBarOverlayOptions({
     platform: IS_MAC ? 'mac' : IS_WINDOWS ? 'windows' : IS_WSL ? 'wslg' : 'linux',
     darwinMajor: DARWIN_MAJOR,
@@ -6254,7 +6270,7 @@ async function waitForHermes(
 }
 
 function getWindowButtonPosition(win = mainWindow) {
-  if (!IS_MAC) {
+  if (!IS_MAC || hideWindowControls) {
     return null
   }
 
@@ -6268,6 +6284,10 @@ function getWindowButtonPosition(win = mainWindow) {
 }
 
 function getNativeOverlayWidth() {
+  if (hideWindowControls) {
+    return 0
+  }
+
   return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL, isMac: IS_MAC })
 }
 
@@ -6279,7 +6299,7 @@ function getWindowState(win = mainWindow) {
     nativeOverlayWidth: getNativeOverlayWidth(),
     windowButtonPosition: getWindowButtonPosition(win),
     darwinMajor: IS_MAC ? DARWIN_MAJOR : 0,
-    ...windowControlState(win, !IS_WINDOWS && IS_WSL)
+    ...windowControlState(win, !IS_WINDOWS && IS_WSL && !hideWindowControls)
   }
 }
 
@@ -17511,6 +17531,19 @@ ipcMain.on('hermes:devtools:disable-f12', (_event, on) => {
     rememberLog(`[disable-f12] write failed: ${error.message}`)
   }
 })
+
+ipcMain.on('hermes:window-controls:hide', (_event, on) => {
+  try {
+    fs.mkdirSync(path.dirname(HIDE_WINDOW_CONTROLS_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(HIDE_WINDOW_CONTROLS_CONFIG_PATH, JSON.stringify({ on: Boolean(on) }, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[hide-window-controls] write failed: ${error.message}`)
+  }
+})
+
+if (IS_MAC && hideWindowControls) {
+  app.on('browser-window-created', (_event, win) => win.setWindowButtonVisibility(false))
+}
 
 ipcMain.handle('hermes:openExternal', async (_event, url) => {
   const result = await openExternalUrl(url)

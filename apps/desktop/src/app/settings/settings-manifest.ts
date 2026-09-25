@@ -101,6 +101,11 @@ export const SETTINGS_MANIFEST = {
       available: () => TRANSLUCENCY_SUPPORTED
     },
     backdrop: appearanceSetting('window-layout', ['background', 'blur'], 'backdrop'),
+    hideWindowControls: appearanceSetting(
+      'window-layout',
+      ['titlebar', 'minimize', 'maximize', 'close', 'traffic lights', 'buttons'],
+      'hideWindowControls'
+    ),
     composerPopout: appearanceSetting(
       'window-layout',
       ['composer', 'floating', 'drag', 'popout', 'dock', 'input'],

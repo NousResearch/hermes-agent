@@ -919,6 +919,8 @@ export interface Translations {
       }
       backdropTitle: string
       backdropDesc: string
+      hideWindowControlsTitle: string
+      hideWindowControlsDesc: string
       userBubbleTitle: string
       userBubbleDesc: string
       textDirectionTitle: string

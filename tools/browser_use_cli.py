@@ -569,6 +569,17 @@ def _run_cli_killing_process_group(cmd, code, env, timeout):
     return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
 
+def _is_cli_usage_text(stdout: str) -> bool:
+    """True when stdout looks like a legacy CLI's argparse usage, not harness output.
+
+    A non-harness browser-use prints its usage text and exits 0; without this
+    guard that reads as success: true and the agent burns turns on a dead tool
+    (#122292).
+    """
+    lines = (stdout or "").lstrip().splitlines()
+    return bool(lines) and lines[0].startswith("usage: browser-use")
+
+
 def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT_S,
                  task_id: Optional[str] = None, local: bool = False):
     """Run Python code through the browser-use CLI, and return its output"""
@@ -638,6 +649,13 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
             return dispatched["error_result"]
         return tool_result(dispatched)
     proc = dispatched["proc"]
+
+    if proc.returncode == 0 and _is_cli_usage_text(proc.stdout):
+        return tool_error(
+            "The resolved browser-use CLI printed usage text instead of running the harness — "
+            "it does not speak the harness protocol (stale or legacy install). "
+            "Run 'hermes tools' (Browser Automation → Browser Use) to install the managed CLI."
+        )
 
     # browser_vault_fill registers injected values with this forced model-egress
     # boundary. Preserve raw stdout only for screenshot-path detection below.

@@ -946,6 +946,14 @@ class TestBrowserExec:
         assert result["exit_code"] == 3
         assert "boom" in result["stderr"]
 
+    def test_usage_text_with_exit_zero_is_an_error_not_success(self, tmp_path, monkeypatch):
+        """A non-harness CLI prints argparse usage and exits 0 — never success (#122292)."""
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "usage: browser-use [-h] [--headed] ..."\nexit 0\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        result = json.loads(bu_cli.browser_exec("print(1)"))
+        assert "error" in result
+        assert "harness" in result["error"].lower()
+
 
 
 

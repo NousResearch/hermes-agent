@@ -1858,12 +1858,20 @@ class _BedrockCompletionsAdapter:
                 "BedrockAuxiliaryClient: stream=True requested for %s — returning a complete response "
                 "(Converse shim does not stream); caller downgrades to non-streaming.", model,
             )
+        # Same reasoning sources as the Anthropic shim: explicit per-call _reasoning_config, else the
+        # generic extra_body.reasoning _build_call_kwargs emits for profile-less providers (Bedrock).
+        # build_converse_kwargs forwards it only to models that take it (Bedrock-hosted OpenAI GPT).
+        reasoning_cfg = kwargs.get("_reasoning_config")
+        if reasoning_cfg is None:
+            extra_body = kwargs.get("extra_body")
+            reasoning_cfg = extra_body.get("reasoning") if isinstance(extra_body, dict) else None
         response = call_converse(
             region=self._region, model=model, messages=kwargs.get("messages", []), tools=kwargs.get("tools"),
             # Converse specifically defaults to the model maximum when omitted.
             # Truthiness mirrors the Anthropic shim: explicit 0 means omit.
             max_tokens=int(max_tokens) if max_tokens else None, temperature=kwargs.get("temperature"),
             top_p=kwargs.get("top_p"), stop_sequences=stop,
+            reasoning_config=reasoning_cfg if isinstance(reasoning_cfg, dict) else None,
         )
         # Converse is complete-response here: mark provider progress only after
         # return so TTFP reflects real Bedrock latency, not dispatch/setup.

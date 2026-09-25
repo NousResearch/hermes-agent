@@ -1382,11 +1382,12 @@ def _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config
     return _merge_nous_portal_messages_extra_body(agent, anthropic_kwargs)
 
 
-def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
-    # Bedrock Converse — the adapter converts messages/tools and calls boto3 directly.
+def _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config):
+    # Bedrock Converse — the adapter converts messages/tools and calls boto3 directly; the adapter
+    # decides which models take the reasoning config (Bedrock-hosted OpenAI GPT only).
     return agent._get_transport().build_kwargs(model=agent.model, messages=api_messages, tools=tools_for_api,
         max_tokens=agent.max_tokens, region=getattr(agent, "_bedrock_region", None) or "us-east-1",
-        guardrail_config=getattr(agent, "_bedrock_guardrail_config", None))
+        guardrail_config=getattr(agent, "_bedrock_guardrail_config", None), reasoning_config=reasoning_config)
 
 
 def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
@@ -1521,7 +1522,7 @@ def _build_api_kwargs_for_mode(agent, api_messages: list, tools_for_api: list | 
     if agent.api_mode == "anthropic_messages":
         return _build_anthropic_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides)
     if agent.api_mode == "bedrock_converse":
-        return _build_bedrock_kwargs(agent, api_messages, tools_for_api)
+        return _build_bedrock_kwargs(agent, api_messages, tools_for_api, reasoning_config)
     # Rotation-stable logical cache scope shared by every OpenAI-wire branch
     # (memoized on the agent); anthropic/bedrock above don't use it.
     cache_scope_id = _prompt_cache_scope_for_agent(agent)

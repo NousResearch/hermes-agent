@@ -1972,7 +1972,7 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
 _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
-    "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
+    "_config_context_length", "_ollama_num_ctx", "_reasoning_echo_flag", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
 )
 _MISSING = object()
@@ -2155,6 +2155,7 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
 def _resolve_switch_context_length(agent, snapshot):
     """Resolve the destination context length (LM Studio preload first); returns ``(custom_providers, effective_len)``."""
     custom_providers = None
+    switch_cfg = {}
     try:
         from hermes_cli.config import (
             get_compatible_custom_providers, get_custom_provider_context_length, load_config
@@ -2173,8 +2174,15 @@ def _resolve_switch_context_length(agent, snapshot):
             )
     except Exception:
         intent = None
-    from agent.agent_init import set_config_context_length
+    from agent.agent_init import set_config_context_length, _configure_ollama_num_ctx
     set_config_context_length(agent, intent)
+    # Reuse startup resolution against this destination's config, not the previous
+    # model's request window. Resolve before the compressor so both agree.
+    try:
+        _configure_ollama_num_ctx(agent, (switch_cfg or {}).get("model", {}), intent)
+    except Exception:
+        _restore_switch_snapshot(agent, snapshot)
+        raise
     runtime_len = None
     if hasattr(agent, "_ensure_lmstudio_runtime_loaded"):
         try:
@@ -2191,6 +2199,8 @@ def _resolve_switch_context_length(agent, snapshot):
     effective = intent
     if hasattr(agent, "_effective_lmstudio_context_length"):
         effective = agent._effective_lmstudio_context_length(intent, runtime_len)
+    if agent._ollama_num_ctx and agent._ollama_num_ctx > 0:
+        effective = min(effective, agent._ollama_num_ctx) if effective else agent._ollama_num_ctx
     return custom_providers, effective
 
 
@@ -2343,16 +2353,6 @@ def switch_model(
     )
     if hasattr(agent, "context_compressor") and agent.context_compressor:
         _update_switch_compressor(agent, custom_providers, effective_context_length, snapshot)
-    # ── Re-resolve Ollama num_ctx for the new model (#110239) ──
-    # _configure_ollama_num_ctx is only called at init; after /model switch the stale value
-    # is silently sent to Ollama, so per-model context_length overrides are ignored.
-    try:
-        from agent.agent_init import _configure_ollama_num_ctx
-        from hermes_cli.config import load_config as _sm_reload_cfg
-        _sm_model_cfg = (_sm_reload_cfg() or {}).get("model", {})
-        _configure_ollama_num_ctx(agent, _sm_model_cfg, agent._config_context_length)
-    except Exception as _num_ctx_err:
-        logger.debug("switch_model: could not re-resolve ollama_num_ctx: %s", _num_ctx_err)
     # Re-read the per-model reasoning_effort override so it applies immediately (per-model > global;
     # YAML False = disabled).
     try:

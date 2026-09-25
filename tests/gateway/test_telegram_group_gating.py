@@ -242,6 +242,16 @@ def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions
     asyncio.run(_run())
 
 
+def test_observed_group_prompt_announces_the_telegram_group_label():
+    """The gateway's platform-neutral split (shared with Teams channels) titles the context-only block from this
+    label: "Telegram group" keeps it "[Observed Telegram group context - ...]" (pinned in test_observed_group_context)."""
+    from gateway.platforms.base import observed_context_label, observed_context_prompt_line
+
+    prompt = _make_adapter()._telegram_group_observe_channel_prompt()
+    assert observed_context_prompt_line("Telegram group") in prompt
+    assert observed_context_label(prompt) == "Telegram group"
+
+
 def test_observed_group_context_preserves_slash_command_text_for_dispatch():
     from gateway.platforms.base import Platform, SessionSource
     from gateway.platforms.event import MessageEvent, MessageType

@@ -44,21 +44,25 @@ test('close/stop inventories owned PIDs after the tree kill and clears only unhe
   const cleared: string[] = []
   const alive = new Set([9001])
 
-  const result = finishWindowsCloseStop([4242, 9001], [
-    { path: 'gone.lock', holderPids: [4242] },
-    { path: 'still-held.lock', holderPids: [9001] },
-    { path: 'foreign-held.lock', holderPids: [7777], held: true },
-    { path: 'no-holder.lock', holderPids: [] }
-  ], {
-    killTree: pid => {
-      killed.push(pid)
-      alive.delete(pid === 4242 ? 4242 : -1)
-    },
-    isPidAlive: pid => alive.has(pid),
-    clearLock: path => {
-      cleared.push(path)
+  const result = finishWindowsCloseStop(
+    [4242, 9001],
+    [
+      { path: 'gone.lock', holderPids: [4242] },
+      { path: 'still-held.lock', holderPids: [9001] },
+      { path: 'foreign-held.lock', holderPids: [7777], held: true },
+      { path: 'no-holder.lock', holderPids: [] }
+    ],
+    {
+      killTree: pid => {
+        killed.push(pid)
+        alive.delete(pid === 4242 ? 4242 : -1)
+      },
+      isPidAlive: pid => alive.has(pid),
+      clearLock: path => {
+        cleared.push(path)
+      }
     }
-  })
+  )
 
   assert.deepEqual(killed, [4242, 9001], 'does not widen the tree-kill to foreign holders')
   assert.deepEqual(result.remainingPids, [9001])

@@ -1617,7 +1617,8 @@ class GatewayStartupMixin:
         # Services that fail to start are logged but do not abort gateway
         # startup — they can be retried after a config fix + restart.
         try:
-            await self._start_plugin_background_services()
+            from gateway.run_services import start_plugin_background_services
+            await start_plugin_background_services(self)
         except Exception as _e:
             logger.error("Plugin background services startup error: %s", _e, exc_info=True)
         logger.info("Press Ctrl+C to stop")

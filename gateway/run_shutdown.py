@@ -1944,7 +1944,8 @@ class GatewayShutdownMixin:
         # watchers) that deliver through the adapters, so quiescing them
         # first means no service polls into a world without adapters and
         # no event is picked up that can no longer be delivered.
-        await self._stop_plugin_background_services()
+        from gateway.run_services import stop_plugin_background_services
+        await stop_plugin_background_services(self)
         # Settle completion flush tasks while adapters are alive so every watcher gets a retryable result.
         cancel_completion_batches = getattr(self, "_cancel_process_completion_batch_tasks", None)
         if cancel_completion_batches is not None:

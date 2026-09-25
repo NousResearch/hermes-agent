@@ -879,6 +879,7 @@ class PluginContext:
 
     # -- background service registration ------------------------------------
 
+    @_serialized_replacement
     def register_background_service(
         self,
         name: str,
@@ -889,7 +890,7 @@ class PluginContext:
         required_env: list | None = None,
         install_hint: str = "",
         **entry_kwargs: Any,
-    ) -> None:
+    ) -> Optional[PluginRegistration]:
         """Register a long-running gateway background service.
 
         Background services differ from platform adapters: they observe an
@@ -900,9 +901,19 @@ class PluginContext:
 
         The ``service_factory`` callable receives ``(config_dict, gateway_runner)``
         and returns an instance exposing ``async start()`` and ``async stop()``
-        methods. See ``gateway.services.base.BaseService`` for the canonical
-        interface and the bundled service plugins under
-        ``plugins/services/`` for examples.
+        methods. The authoritative lifecycle contract (start reports success
+        by completing — ``return None`` counts as started, only ``return
+        False`` or a raised exception counts as failed; start is
+        transactional and both calls are bounded) lives in
+        ``gateway/run_services.py``; see the bundled service plugins under
+        ``plugins/services/`` for reference implementations.
+
+        Registrations follow the same profile-scoped ownership protocol as
+        :meth:`register_platform`: the entry is registered under this
+        manager's scope key, the displaced predecessor is snapshotted, and
+        the returned handle lets plugin unload/reload CAS-restore it. Two
+        profile scopes registering the same service name never overwrite
+        each other.
 
         After registration, the service is wired up by the gateway during
         startup whenever ``services.<name>.enabled`` is True in config.yaml.
@@ -925,6 +936,11 @@ class PluginContext:
                 (e.g. ``pip install httpx``).
             **entry_kwargs: forwarded to ``BackgroundServiceEntry`` for any
                 future fields (e.g. dashboard metadata).
+
+        Returns:
+            The ownership :class:`PluginRegistration` handle, or ``None``
+            when the registration did not land exactly (a concurrent writer
+            displaced it).
 
         Example::
 
@@ -952,12 +968,23 @@ class PluginContext:
             source="plugin",
             **entry_kwargs,
         )
-        service_registry.register(entry)
+        scope = self._manager.scope_key
+        previous = service_registry.snapshot_registration(name, scope=scope)
+        service_registry.register(entry, scope=scope)
+        current = service_registry.snapshot_registration(name, scope=scope)
+        if current[0] is not entry or current[1] is not None:
+            return None
+        self._manager._plugin_service_names.add(name)
+        handle = self._manager._track_scoped_registration(
+            self.manifest, "background_service", name, service_registry, current, previous,
+            finalize=lambda: self._manager._remove_service_name_if_unowned(name),
+        )
         logger.debug(
             "Plugin %s registered background service: %s",
             self.manifest.name,
             name,
         )
+        return handle
 
     @_serialized_replacement
     def register_auxiliary_task(
@@ -1289,6 +1316,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._middleware: Dict[str, List[Callable]] = {}
         self._plugin_tool_names: Set[str] = set()
         self._plugin_platform_names: Set[str] = set()
+        self._plugin_service_names: Set[str] = set()
         self._cli_commands: Dict[str, dict] = {}
         self._plugin_commands: Dict[str, dict] = {}
         self._system_prompt_sections: Dict[str, PluginSystemPromptSection] = {}

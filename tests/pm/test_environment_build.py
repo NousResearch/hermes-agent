@@ -787,3 +787,30 @@ def test_live_apply_keeps_selection_on_failed_union(locked_project, tmp_path, mo
     assert set(generations.iterdir()) == prior_generations
     assert (source / "uv.lock").read_bytes() == source_lock
     assert env == original_env
+
+
+def test_run_sets_cmake_policy_floor_for_uv_source_builds(tmp_path, monkeypatch):
+    """uv-driven source builds must survive cmake 4.x, which refuses
+    cmake_minimum_required below 3.5 (vendored libolm in python-olm declares
+    3.4, so a carried matrix extra used to die at the configure step, #122733).
+    The floor is a default: an explicit value on the build environment wins."""
+    from pm.environment import PythonEnvironment
+
+    captured = {}
+
+    def fake_run(command, *, env, **kwargs):
+        captured["env"] = env
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("pm.environment.subprocess.run", fake_run)
+
+    def environment(build_env):
+        return PythonEnvironment(uv=tmp_path / "uv", python=tmp_path / "python",
+                                 destination=tmp_path / "venv", cache=tmp_path / "cache",
+                                 env=build_env)
+
+    environment({})._run(["sync", "--frozen"], cwd=tmp_path, timeout=30)
+    assert captured["env"]["CMAKE_POLICY_VERSION_MINIMUM"] == "3.5"
+
+    environment({"CMAKE_POLICY_VERSION_MINIMUM": "3.9"})._run(["lock"], cwd=tmp_path, timeout=30)
+    assert captured["env"]["CMAKE_POLICY_VERSION_MINIMUM"] == "3.9"

@@ -292,9 +292,12 @@ curl -s -X PUT \
 
 **With gh:**
 
+Set `KEY_FILE` to the absolute path of the private deployment key you intend to store as the repository's `SSH_KEY` secret.
+
 ```bash
+KEY_FILE="/absolute/path/to/your/deployment-private-key"
 gh secret set API_KEY --body "your-secret-value"
-gh secret set SSH_KEY < ~/.ssh/id_rsa
+gh secret set SSH_KEY < "$KEY_FILE"
 gh secret list
 gh secret delete API_KEY
 ```

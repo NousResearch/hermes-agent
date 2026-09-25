@@ -62,6 +62,20 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class RouteDisplayOverrideAdapter(ProgressCaptureAdapter):
+    def display_settings_for_source(self, source):
+        if source.chat_id.startswith("direct:"):
+            return {
+                "tool_progress": "names",
+                "tool_progress_grouping": "separate",
+                "interim_assistant_messages": True,
+                "show_reasoning": False,
+                "thinking_progress": False,
+                "streaming": False,
+            }
+        return {}
+
+
 class DiscordProgressCaptureAdapter(ProgressCaptureAdapter):
     """Capture sends while exercising Discord's real preview formatter."""
 
@@ -486,6 +500,190 @@ def test_tool_progress_mode_reads_profile_scope_not_process_environ(monkeypatch,
         secret_scope.reset_secret_scope(token)
 
     assert disp.progress_mode == "all"
+
+
+def test_adapter_can_override_display_settings_for_one_route(monkeypatch, tmp_path):
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  show_reasoning: true\n  thinking_progress: true\n  platforms:\n"
+        "    telegram:\n      tool_progress: off\n",
+        encoding="utf-8",
+    )
+    adapter = RouteDisplayOverrideAdapter()
+    runner = _make_runner(adapter)
+
+    direct = SessionSource(platform=Platform.TELEGRAM, chat_id="direct:1")
+    channel = SessionSource(platform=Platform.TELEGRAM, chat_id="channel:1")
+
+    direct_display = runner._run_agent_display_settings(direct)
+    channel_display = runner._run_agent_display_settings(channel)
+
+    assert direct_display.progress_mode == "names"
+    assert direct_display.progress_grouping == "separate"
+    assert direct_display.tool_progress_enabled is True
+    assert direct_display.interim_assistant_messages_enabled is True
+    assert direct_display.show_reasoning_enabled is False
+    assert direct_display._thinking_enabled is False
+    assert direct_display.resolve_display_setting(
+        direct_display.user_config, direct_display.platform_key, "streaming"
+    ) is False
+    assert channel_display.progress_mode == "off"
+    assert channel_display.tool_progress_enabled is False
+    assert channel_display.show_reasoning_enabled is True
+    assert channel_display._thinking_enabled is True
+
+
+def test_route_display_override_tolerates_malformed_display_config(monkeypatch):
+    adapter = RouteDisplayOverrideAdapter(platform=Platform.SLACK)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {"display": "malformed"})
+
+    source = SessionSource(platform=Platform.SLACK, chat_id="direct:7", chat_type="dm")
+    assert runner._run_agent_display_settings(source).progress_mode == "names"
+
+
+def test_route_display_override_rejects_non_scalar_values_and_non_string_keys(monkeypatch):
+    class ExplosiveValue:
+        def __str__(self):
+            raise RuntimeError("must not stringify")
+
+    adapter = RouteDisplayOverrideAdapter(platform=Platform.SLACK)
+    monkeypatch.setattr(
+        type(adapter),
+        "display_settings_for_source",
+        lambda self, source: {1: "ignored", "tool_progress": ExplosiveValue(), "streaming": False},
+    )
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"platforms": {"slack": {"tool_progress": "off"}}}},
+    )
+
+    source = SessionSource(platform=Platform.SLACK, chat_id="direct:7", chat_type="dm")
+    display_settings = runner._run_agent_display_settings(source)
+    assert display_settings.progress_mode == "off"
+    assert display_settings.resolve_display_setting(
+        display_settings.user_config, display_settings.platform_key, "streaming") is False
+
+
+def test_malformed_scalar_route_override_preserves_privacy_mode(monkeypatch):
+    adapter = RouteDisplayOverrideAdapter(platform=Platform.SLACK)
+    monkeypatch.setattr(
+        type(adapter),
+        "display_settings_for_source",
+        lambda self, source: {"tool_progress": "malformed-mode"},
+    )
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"platforms": {"slack": {"tool_progress": "names"}}}},
+    )
+
+    source = SessionSource(platform=Platform.SLACK, chat_id="direct:7", chat_type="dm")
+    display_settings = runner._run_agent_display_settings(source)
+    assert display_settings.progress_mode == "names"
+
+
+def test_route_display_override_never_truth_tests_untrusted_return(monkeypatch):
+    class ExplosiveTruthValue:
+        def __bool__(self):
+            raise RuntimeError("must not truth-test adapter output")
+
+    adapter = RouteDisplayOverrideAdapter(platform=Platform.SLACK)
+    monkeypatch.setattr(
+        type(adapter),
+        "display_settings_for_source",
+        lambda self, source: ExplosiveTruthValue(),
+    )
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_config",
+        lambda: {"display": {"platforms": {"slack": {"tool_progress": "names"}}}},
+    )
+
+    source = SessionSource(platform=Platform.SLACK, chat_id="direct:7", chat_type="dm")
+    assert runner._run_agent_display_settings(source).progress_mode == "names"
+
+
+def test_final_reasoning_uses_turn_resolved_display_setting(monkeypatch):
+    adapter = RouteDisplayOverrideAdapter(platform=Platform.SLACK)
+    runner = _make_runner(adapter)
+    runner._show_reasoning = True
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(
+        gateway_run, "_load_gateway_config", lambda: {"display": {"show_reasoning": True}})
+    source = SessionSource(platform=Platform.SLACK, chat_id="direct:7", chat_type="dm")
+
+    response = runner._hmwa_prepend_reasoning(
+        {
+            "last_reasoning": "private chain of thought",
+            "_gateway_show_reasoning": False,
+            "_gateway_reasoning_style": "code",
+        },
+        "Public answer",
+        source,
+        False,
+    )
+
+    assert response == "Public answer"
+
+
+def test_names_progress_mode_never_renders_tool_arguments():
+    from gateway.run_turn_runner import TurnRunner
+
+    adapter = RouteDisplayOverrideAdapter(platform=Platform.SLACK)
+    runner = _make_runner(adapter)
+    ctx = SimpleNamespace(
+        source=SessionSource(platform=Platform.SLACK, chat_id="direct:7", chat_type="dm"),
+        progress_mode="names",
+        last_was_terminal_block=[False],
+    )
+    message = TurnRunner(runner, ctx)._progress_build_message(
+        "terminal", "curl -H 'Authorization: Bearer secret-token'", {
+            "command": "curl -H 'Authorization: Bearer secret-token' https://example.com"})
+
+    assert message
+    assert "secret-token" not in message
+    assert "Authorization" not in message
+
+
+def test_names_progress_mode_hides_arguments_from_live_status_and_native_cards():
+    import queue
+
+    from gateway.run_turn_runner import TurnRunner
+
+    statuses = []
+    status_adapter = SimpleNamespace(
+        set_status_text=lambda chat_id, text: statuses.append((chat_id, text)))
+    source = SessionSource(platform=Platform.SLACK, chat_id="direct:7", chat_type="dm")
+    ctx = SimpleNamespace(
+        source=source,
+        progress_mode="names",
+        _live_status_adapter=status_adapter,
+        _live_status_mode="full",
+        _run_still_current=lambda: True,
+        progress_queue=queue.Queue(),
+        agent_holder=[],
+    )
+    turn_runner = TurnRunner(_make_runner(RouteDisplayOverrideAdapter(platform=Platform.SLACK)), ctx)
+    secret_args = {"query": "private acquisition target codename ORCHID"}
+
+    turn_runner._progress_live_status("tool.started", "web_search", secret_args)
+    turn_runner.native_tool_start_callback("call-1", "web_search", secret_args)
+
+    assert statuses
+    assert "ORCHID" not in str(statuses)
+    card_event = ctx.progress_queue.get_nowait()
+    assert card_event["preview"] == ""
+    assert "ORCHID" not in str(card_event)
 
 
 def test_tool_progress_mode_follows_profile_through_the_real_scoping_seam(monkeypatch, tmp_path):
@@ -2139,6 +2337,21 @@ async def test_per_platform_streaming_does_not_override_global_disabled(monkeypa
 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
+
+
+def test_route_streaming_override_applies_to_proxy_consumer(monkeypatch):
+    adapter = RouteDisplayOverrideAdapter(platform=Platform.SLACK)
+    runner = _make_runner(adapter)
+    runner.config.streaming = StreamingConfig.from_dict({"enabled": True})
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    source = SessionSource(platform=Platform.SLACK, chat_id="direct:7", chat_type="dm")
+    display_settings = runner._run_agent_display_settings(source)
+
+    assert display_settings.resolve_display_setting(
+        display_settings.user_config, display_settings.platform_key, "streaming") is False
+    assert runner._proxy_stream_consumer(
+        source, None, None, lambda: True, display_settings) is None
 
 
 class TestSlackReplyInThreadProgressRouting:

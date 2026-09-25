@@ -2043,13 +2043,15 @@ class BasePlatformAdapter(ABC):
 
     def format_tool_event(self, event: Any, *, mode: str = "all", preview_max_len: int = 40) -> Optional[str]:
         """Rendered chrome for a ToolCallChunk, or None to eat it (adapters without editing/rich
-        text override to None). ``mode``: tool-progress mode ("all"/"new"/"verbose");
+        text override to None). ``mode``: tool-progress mode ("names"/"all"/"new"/"verbose");
         ``preview_max_len`` mirrors ``tool_preview_length`` (0 = no cap in verbose)."""
         from gateway.stream_events import ToolCallChunk
         if not isinstance(event, ToolCallChunk):
             return None
         from agent.display import get_tool_emoji, prepare_tool_preview
         head = f"{get_tool_emoji(event.tool_name, default='⚙️')} {event.tool_name}"
+        if mode == "names":
+            return head
         if mode == "verbose" and event.args:
             import json
             args_str = json.dumps(event.args, ensure_ascii=False, default=str)
@@ -2070,6 +2072,17 @@ class BasePlatformAdapter(ABC):
         """Platform-native formatting of a compact tool preview; rich-text adapters may use
         the preview's metadata (e.g. a URL shortened for display)."""
         return preview.text
+
+    def display_settings_for_source(self, source: Any) -> Dict[str, Any]:
+        """Optional per-conversation display overrides for one gateway turn.
+
+        A platform can expose materially different surfaces behind one adapter
+        (for example, an editable channel and a permanent direct-message
+        transcript). Return only keys supported by ``gateway.display_config``;
+        implementations must be synchronous and side-effect free. The default
+        preserves the profile's normal platform display settings.
+        """
+        return {}
 
     has_fatal_error = property(lambda self: self._fatal_error_message is not None)
     fatal_error_message = property(lambda self: self._fatal_error_message)

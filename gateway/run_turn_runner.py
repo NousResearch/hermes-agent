@@ -204,7 +204,11 @@ class TurnRunner:
         try:
             if event_type == "tool.started" and tool_name and ctx._run_still_current():
                 from agent.display import build_status_phrase
-                adapter.set_status_text(ctx.source.chat_id, build_status_phrase(tool_name, args if ctx._live_status_mode == "full" else None))
+                include_args = ctx._live_status_mode == "full" and ctx.progress_mode != "names"
+                adapter.set_status_text(
+                    ctx.source.chat_id,
+                    build_status_phrase(tool_name, args if include_args else None),
+                )
             elif event_type == "tool.completed":
                 # Between tools the model is genuinely "thinking" again — revert to the static default.
                 adapter.set_status_text(ctx.source.chat_id, None)
@@ -267,6 +271,10 @@ class TurnRunner:
             adapter = self._runner._delivery_adapter_for(ctx.source)
         except Exception:
             adapter = None
+        if ctx.progress_mode == "names":
+            ctx.last_was_terminal_block[0] = False
+            from agent.display import get_tool_verb
+            return f"{emoji} {get_tool_verb(tool_name) or tool_name}"
         code_full, code_short = self._progress_terminal_blocks(adapter, tool_name, args, emoji)
         verbose = ctx.progress_mode == "verbose"
         code = code_full if verbose else code_short
@@ -796,7 +804,10 @@ class TurnRunner:
         name = str(tool_name or "tool")
         self._ctx.progress_queue.put({
             "type": "tool.started", "tool_call_id": str(call_id or ""), "tool_name": name,
-            "preview": build_tool_preview(name, args or {}, max_len=64) or "",
+            "preview": (
+                "" if self._ctx.progress_mode == "names"
+                else build_tool_preview(name, args or {}, max_len=64) or ""
+            ),
         })
 
     def native_tool_complete_callback(self, call_id, tool_name, args, result):

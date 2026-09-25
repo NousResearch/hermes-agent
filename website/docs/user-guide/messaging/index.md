@@ -467,7 +467,7 @@ Control how much tool activity is displayed in `~/.hermes/config.yaml`:
 
 ```yaml
 display:
-  tool_progress: all    # off | new | all | verbose | log
+  tool_progress: all    # off | names | new | all | verbose | log
   tool_progress_command: false  # set to true to enable /verbose in messaging
   # How progress is grouped on platforms that support message editing:
   #   accumulate (default) — edit one bubble in place as tools run
@@ -475,6 +475,10 @@ display:
   # Only applies where tool_progress is already enabled.
   tool_progress_grouping: accumulate   # accumulate | separate
 ```
+
+Use `names` for permanent or privacy-sensitive transcripts: it emits one line per tool action
+without including argument or preview content. `new` and `all` include short argument-derived
+previews, while `verbose` can include full arguments.
 
 ### `log` mode — audit file instead of chat messages
 

@@ -1604,16 +1604,19 @@ class GatewayTurnMixin:
         """Prepend the last reasoning block when show_reasoning is on for this platform. Mattermost
         requires an explicit per-platform opt-in (scratch text, not final-answer content)."""
         from gateway.run import _load_gateway_config, _platform_config_key, _resolve_gateway_display_bool
-        try:
-            _show_reasoning_effective = _resolve_gateway_display_bool(
-                _load_gateway_config(), _platform_config_key(source.platform), "show_reasoning",
-                default=bool(getattr(self, "_show_reasoning", False)), platform=source.platform,
-                require_platform_override_for={Platform.MATTERMOST},
-            )
-        except Exception:
-            _show_reasoning_effective = (
-                False if source.platform == Platform.MATTERMOST else getattr(self, "_show_reasoning", False)
-            )
+        if "_gateway_show_reasoning" in agent_result:
+            _show_reasoning_effective = bool(agent_result["_gateway_show_reasoning"])
+        else:
+            try:
+                _show_reasoning_effective = _resolve_gateway_display_bool(
+                    _load_gateway_config(), _platform_config_key(source.platform), "show_reasoning",
+                    default=bool(getattr(self, "_show_reasoning", False)), platform=source.platform,
+                    require_platform_override_for={Platform.MATTERMOST},
+                )
+            except Exception:
+                _show_reasoning_effective = (
+                    False if source.platform == Platform.MATTERMOST else getattr(self, "_show_reasoning", False)
+                )
         last_reasoning = agent_result.get("last_reasoning")
         if not (_show_reasoning_effective and response and not _intentional_silence and last_reasoning):
             return response
@@ -1625,13 +1628,15 @@ class GatewayTurnMixin:
         else:
             display_reasoning = last_reasoning.strip()
         # Per-platform render style: Discord defaults to "-# " subtext, others keep the code block.
-        try:
-            from gateway.display_config import resolve_display_setting
-            _reasoning_style = resolve_display_setting(
-                _load_gateway_config(), _platform_config_key(source.platform), "reasoning_style", "code",
-            )
-        except Exception:
-            _reasoning_style = "code"
+        _reasoning_style = agent_result.get("_gateway_reasoning_style")
+        if not _reasoning_style:
+            try:
+                from gateway.display_config import resolve_display_setting
+                _reasoning_style = resolve_display_setting(
+                    _load_gateway_config(), _platform_config_key(source.platform), "reasoning_style", "code",
+                )
+            except Exception:
+                _reasoning_style = "code"
         _quote = self._REASONING_QUOTE_STYLES.get(_reasoning_style)
         if _quote:
             header, prefix, empty = _quote
@@ -2713,7 +2718,10 @@ class GatewayTurnMixin:
     def _proxy_error_result(text: str) -> Dict[str, Any]:
         return {"final_response": text, "messages": [], "api_calls": 0, "tools": []}
 
-    def _proxy_stream_consumer(self, source: "SessionSource", event_message_id, _thread_metadata, _run_still_current):
+    def _proxy_stream_consumer(
+        self, source: "SessionSource", event_message_id, _thread_metadata, _run_still_current,
+        display_settings: Optional["GatewayRunner._RunAgentDisplay"] = None,
+    ):
         """Platform stream consumer for the proxy path when streaming is enabled, else ``None``."""
         from gateway.run import _load_gateway_config, _platform_config_key
         _scfg = getattr(getattr(self, "config", None), "streaming", None)
@@ -2727,7 +2735,11 @@ class GatewayTurnMixin:
         if not _scfg.globally_enabled:
             return None
         from gateway.display_config import resolve_display_setting
-        _plat_streaming = resolve_display_setting(_load_gateway_config(), _platform_config_key(source.platform), "streaming")
+        _plat_streaming = resolve_display_setting(
+            display_settings.user_config if display_settings is not None else _load_gateway_config(),
+            display_settings.platform_key if display_settings is not None else _platform_config_key(source.platform),
+            "streaming",
+        )
         if not _scfg.enabled_for(_plat_streaming):
             return None
         try:
@@ -2752,6 +2764,7 @@ class GatewayTurnMixin:
         source: "SessionSource", session_id: str, session_key: str = None,
         run_generation: Optional[int] = None, event_message_id: Optional[str] = None,
         scheduled_heartbeat: bool = False,
+        display_settings: Optional["GatewayRunner._RunAgentDisplay"] = None,
     ) -> Dict[str, Any]:
         """Forward the message to a remote Hermes API server instead of running a local AIAgent.
 
@@ -2810,7 +2823,8 @@ class GatewayTurnMixin:
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
         _stream_consumer = (
             None if scheduled_heartbeat
-            else self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
+            else self._proxy_stream_consumer(
+                source, event_message_id, _thread_metadata, _run_still_current, display_settings)
         )
         stream_task = asyncio.create_task(_stream_consumer.run()) if _stream_consumer else None
 
@@ -2940,12 +2954,77 @@ class GatewayTurnMixin:
             _platform_config_key,
         )
         from agent.secret_scope import get_secret
-        from gateway.display_config import resolve_display_setting, resolve_tool_progress
+        from gateway.display_config import (
+            OVERRIDEABLE_KEYS,
+            normalise_adapter_display_override,
+            resolve_display_setting,
+            resolve_tool_progress,
+        )
         from gateway.status_phrases import choose_status_phrase, resolve_status_phrase_catalog
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
-        enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         adapter = self._delivery_adapter_for(source)
+        display_settings_resolver = (
+            getattr(type(adapter), "display_settings_for_source", None)
+            if adapter is not None
+            else None
+        )
+        try:
+            raw_surface_settings = (
+                display_settings_resolver(adapter, source)
+                if callable(display_settings_resolver)
+                else {}
+            )
+        except Exception:
+            logger.warning(
+                "[%s] Per-source display settings failed; using configured platform defaults",
+                platform_key,
+                exc_info=True,
+            )
+            raw_surface_settings = {}
+        if raw_surface_settings is not None:
+            if type(raw_surface_settings) is not dict:
+                logger.warning(
+                    "[%s] Ignoring non-mapping per-source display settings", platform_key
+                )
+            else:
+                surface_settings = {}
+                for key, value in raw_surface_settings.items():
+                    if type(key) is not str or key not in OVERRIDEABLE_KEYS:
+                        continue
+                    try:
+                        surface_settings[key] = normalise_adapter_display_override(key, value)
+                    except (TypeError, ValueError):
+                        continue
+                ignored_names = sorted(
+                    key for key in raw_surface_settings
+                    if type(key) is str and key not in surface_settings
+                )
+                ignored_count = len(raw_surface_settings) - len(surface_settings)
+                if ignored_count:
+                    logger.warning(
+                        "[%s] Ignoring %d unsupported per-source display setting(s)%s",
+                        platform_key,
+                        ignored_count,
+                        f": {', '.join(ignored_names)}" if ignored_names else "",
+                    )
+                if surface_settings:
+                    user_config = dict(user_config)
+                    configured_display = user_config.get("display")
+                    display_config = (
+                        dict(configured_display) if isinstance(configured_display, dict) else {})
+                    configured_platforms = display_config.get("platforms")
+                    platform_configs = (
+                        dict(configured_platforms)
+                        if isinstance(configured_platforms, dict) else {})
+                    configured_platform = platform_configs.get(platform_key)
+                    platform_config = (
+                        dict(configured_platform) if isinstance(configured_platform, dict) else {})
+                    platform_config.update(surface_settings)
+                    platform_configs[platform_key] = platform_config
+                    display_config["platforms"] = platform_configs
+                    user_config["display"] = display_config
+        enabled_toolsets, disabled_toolsets = self._resolve_turn_toolsets(user_config, source, platform_key)
         # Tool preview length (0 = no limit) and friendly tool labels (default on), per-platform.
         for _setter, _setting, _default, _cast in (
             ("set_tool_preview_max_len", "tool_preview_length", 0, lambda v: int(v) if v else 0),
@@ -3011,6 +3090,12 @@ class GatewayTurnMixin:
             "interim_assistant_messages", default=True, require_platform_override_for={Platform.MATTERMOST},
         )
         interim_assistant_messages_enabled = not is_webhook and interim_assistant_messages_mode != "off"
+        show_reasoning_enabled = _display_surface_mode(
+            "show_reasoning", default=bool(getattr(self, "_show_reasoning", False)),
+            require_platform_override_for={Platform.MATTERMOST},
+        ) != "off"
+        reasoning_style = resolve_display_setting(
+            user_config, platform_key, "reasoning_style", "code")
         _thinking_enabled = _display_surface_mode(
             "thinking_progress", default=False, require_platform_override_for={Platform.MATTERMOST},
         ) != "off"
@@ -3042,6 +3127,7 @@ class GatewayTurnMixin:
             _live_status_adapter=_live_status_adapter, log_mode_enabled=log_mode_enabled,
             log_queue=queue.Queue() if log_mode_enabled else None,
             interim_assistant_messages_enabled=interim_assistant_messages_enabled,
+            show_reasoning_enabled=show_reasoning_enabled, reasoning_style=reasoning_style,
             _thinking_enabled=_thinking_enabled, _native_slack_task_cards=_native_slack_task_cards,
             needs_progress_queue=tool_progress_enabled or _thinking_enabled or _native_slack_task_cards,
             _generic_status_phrase=_generic_status_phrase,
@@ -4231,16 +4317,21 @@ class GatewayTurnMixin:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
+        disp = self._run_agent_display_settings(source)
         if self._get_proxy_url():
-            return await self._run_agent_via_proxy(
+            response = await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
                 session_id=session_id, session_key=session_key, run_generation=run_generation,
                 event_message_id=event_message_id, scheduled_heartbeat=scheduled_heartbeat,
+                display_settings=disp,
             )
+            if isinstance(response, dict):
+                response["_gateway_show_reasoning"] = disp.show_reasoning_enabled
+                response["_gateway_reasoning_style"] = disp.reasoning_style
+            return response
 
         from run_agent import AIAgent
 
-        disp = self._run_agent_display_settings(source)
         if scheduled_heartbeat:
             # A heartbeat is proactive work: tool chrome, drafts, thinking and periodic
             # liveness notices would create a user-visible ping before its final result is known.
@@ -4297,6 +4388,8 @@ class GatewayTurnMixin:
             response = await self._run_agent_await_turn_worker(worker, turn_ctx, _interrupt_detected, interrupt_monitor)
             if isinstance(response, dict):
                 response["_notification_reply_muted"] = turn_ctx.mute_notification_reply
+                response["_gateway_show_reasoning"] = disp.show_reasoning_enabled
+                response["_gateway_reasoning_style"] = disp.reasoning_style
             self._run_agent_evict_on_fallback(turn_ctx)
 
             # Interrupted OR queued message (/queue)?

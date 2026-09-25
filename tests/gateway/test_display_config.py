@@ -1,5 +1,7 @@
 """Tests for gateway.display_config — per-platform display/verbosity resolver."""
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # Resolver: resolution order
 # ---------------------------------------------------------------------------
@@ -102,6 +104,47 @@ class TestYAMLNormalisation:
 
         config = {"display": {"tool_progress": False}}
         assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
+
+    def test_tool_progress_names_mode_is_preserved(self):
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"tool_progress": "names"}}
+        assert resolve_display_setting(config, "telegram", "tool_progress") == "names"
+
+    @pytest.mark.parametrize(
+        ("setting", "value", "expected"),
+        [
+            ("tool_progress", "names", "names"),
+            ("tool_progress_grouping", "separate", "separate"),
+            ("show_reasoning", False, False),
+            ("thinking_progress", False, False),
+            ("streaming", False, False),
+            ("long_running_notifications", "generic", "generic"),
+            ("tool_preview_length", 24, 24),
+        ],
+    )
+    def test_adapter_display_override_accepts_only_canonical_values(self, setting, value, expected):
+        from gateway.display_config import normalise_adapter_display_override
+
+        assert normalise_adapter_display_override(setting, value) == expected
+
+    @pytest.mark.parametrize(
+        ("setting", "value"),
+        [
+            ("tool_progress", "malformed-mode"),
+            ("tool_progress", 1),
+            ("show_reasoning", "false"),
+            ("streaming", 0),
+            ("tool_preview_length", -1),
+            ("tool_preview_length", 2.5),
+            ("unknown", "all"),
+        ],
+    )
+    def test_adapter_display_override_rejects_malformed_scalars(self, setting, value):
+        from gateway.display_config import normalise_adapter_display_override
+
+        with pytest.raises(ValueError):
+            normalise_adapter_display_override(setting, value)
 
     def test_only_long_running_visibility_accepts_generic_mode(self):
         from gateway.display_config import resolve_display_setting

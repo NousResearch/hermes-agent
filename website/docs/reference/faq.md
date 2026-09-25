@@ -734,10 +734,11 @@ See [Profiles](../user-guide/profiles.md) and [WhatsApp setup](../user-guide/mes
 
 ```yaml
 display:
-  tool_progress: "off"   # options: off, new, all, verbose
+  tool_progress: "off"   # options: off, names, new, all, verbose
 ```
 
 - **`off`** — Only the final response. No tool calls, no reasoning, no logs.
+- **`names`** — Shows each tool action without arguments or previews.
 - **`new`** — Shows new tool calls as they happen (brief one-liners).
 - **`all`** — Shows all tool activity including results.
 - **`verbose`** — Full detail including tool arguments and outputs.

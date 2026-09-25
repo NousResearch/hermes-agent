@@ -165,6 +165,13 @@ export function useModelControls({
     }
   }, [])
 
+  // Drop a sticky composer pick so new chats follow Settings → Model again,
+  // without making the user re-apply the default they already have (#107410).
+  const followDefaultModel = useCallback(() => {
+    setCurrentModelSource('default')
+    void refreshCurrentModel()
+  }, [refreshCurrentModel])
+
   // Returns whether the switch was applied so callers can await it before
   // applying follow-up changes. `true` means applied (or deferred/busy-queued
   // for the next turn). `false` means NOT applied — either pending
@@ -338,5 +345,5 @@ export function useModelControls({
     [cacheOwnerConnectionId, cacheProfile, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
-  return { applySavedMainModel, refreshCurrentModel, selectModel }
+  return { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel }
 }

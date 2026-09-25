@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
@@ -39,7 +39,8 @@ import {
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal()),
-  getLatestSessionMessages: vi.fn()
+  getLatestSessionMessages: vi.fn(),
+  getOlderSessionMessages: vi.fn()
 }))
 
 vi.mock('@/store/projects', async importOriginal => ({
@@ -47,7 +48,7 @@ vi.mock('@/store/projects', async importOriginal => ({
   refreshProjectTree: vi.fn(async () => undefined)
 }))
 
-const { getLatestSessionMessages } = await import('@/hermes')
+const { getLatestSessionMessages, getOlderSessionMessages } = await import('@/hermes')
 const { refreshProjectTree } = await import('@/store/projects')
 
 const ACTIVE_RUNTIME_ID = 'runtime-active'
@@ -496,6 +497,29 @@ describe('active transcript refresh', () => {
     })
 
     expect(updateSessionState).not.toHaveBeenCalled()
+  })
+
+  it('reads an older page so a long turn filling the newest page keeps the rendered prefix', async () => {
+    const row = (id: number) => ({ content: `row-${id}`, id, role: 'user' as const, timestamp: id })
+
+    const page = (ids: number[], offset: number) => ({
+      messages: ids.map(row),
+      pagination: { limit: ids.length, offset, order: 'latest' as const, returned: ids.length },
+      session_id: ACTIVE_STORED_ID
+    })
+
+    const fixture = makeRefresh()
+    const rendered = { ...fixture.state, messages: toChatMessages([row(1), row(2)]) }
+    fixture.states.set(ACTIVE_RUNTIME_ID, rendered)
+    publishSessionState(ACTIVE_RUNTIME_ID, rendered)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(page([4, 5], 0) as never)
+    vi.mocked(getOlderSessionMessages).mockResolvedValueOnce(page([2, 3], 2) as never)
+
+    await fixture.refresh()
+
+    expect(getOlderSessionMessages).toHaveBeenCalledTimes(1)
+    expect(getOlderSessionMessages).toHaveBeenCalledWith(ACTIVE_STORED_ID, expect.anything(), 2)
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.map(message => message.rowId)).toEqual([1, 2, 3, 4, 5])
   })
 
   it('refreshes a local/Desktop session when sessions.changed ticks', async () => {

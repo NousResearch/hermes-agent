@@ -1084,8 +1084,7 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     except (TypeError, ValueError):
         last_seq = -1
     q, replay = stream.attach(last_seq)
-    response = web.StreamResponse(status=200, headers={
-        "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    response = web.StreamResponse(status=200, headers=self._sse_headers(request))
 
     async def _write(data: bytes) -> None:
         try:
@@ -1105,6 +1104,11 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
     try:
         await response.prepare(request)
         prepared = True
+        # Flush the response head before waiting on the queue: aiohttp holds the headers
+        # until the first body write, so a subscriber that connects before the run's first
+        # event (e.g. before `approval.request`) sees no bytes and fetch()/EventSource never
+        # resolve. A comment frame is ignored by every conforming SSE consumer.
+        await _write(b": open\n\n")
         if replay and replay[0][0] > last_seq + 1:
             truncation = _run_event(
                 run_id,

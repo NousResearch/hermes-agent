@@ -37,6 +37,8 @@ def _make_agent(tmp_path, monkeypatch, config_body: str = "", **overrides):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / ".env").write_text("", encoding="utf-8")
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+    monkeypatch.delenv("HERMES_LOCAL_STREAM_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, config_body)
 
     from run_agent import AIAgent
@@ -167,6 +169,56 @@ def test_budget_without_started_clock_is_inert(monkeypatch, tmp_path):
     agent._run_budget_started_at = None
     base, _implicit = agent._resolved_api_call_stale_timeout_base()
     assert agent._compute_non_stream_stale_timeout({"input": "hi"}) == base
+
+
+@pytest.mark.parametrize(
+    "config_body,env_value,expected",
+    [
+        ("", None, 60.0),
+        ("providers:\n  openai:\n    stale_timeout_seconds: 1200\n", None, 1200.0),
+        ("", "900", 900.0),
+    ],
+)
+def test_cloud_stream_budget_preserves_explicit_deadlines(
+    monkeypatch, tmp_path, config_body, env_value, expected
+):
+    """Both stream owners cap implicit patience without changing explicit precedence."""
+    from agent import chat_completion_helpers as helpers
+
+    agent = _make_agent(
+        tmp_path,
+        monkeypatch,
+        config_body,
+        model="deepseek/deepseek-v4-pro",
+        run_budget_seconds=900,
+    )
+    if env_value is not None:
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", env_value)
+    monkeypatch.setattr(helpers.time, "time", lambda: 1000.0)
+    agent._run_budget_started_at = 1000.0 - 800
+    payload = {"model": agent.model, "messages": [{"role": "user", "content": "hi"}]}
+    call = helpers._StreamingCall(agent, payload, None)
+    call._resolve_stale_timeout()
+    assert call._stream_stale_timeout == expected
+
+
+def test_local_stream_patience_is_independent_of_run_budget(monkeypatch, tmp_path):
+    """A short remaining run budget does not shorten local model prefill grace."""
+    from agent import chat_completion_helpers as helpers
+
+    agent = _make_agent(
+        tmp_path,
+        monkeypatch,
+        base_url="http://127.0.0.1:11434/v1",
+        run_budget_seconds=900,
+    )
+    call = helpers._StreamingCall(agent, {"model": agent.model}, None)
+    call._resolve_stale_timeout()
+    without_clock = call._stream_stale_timeout
+    agent._run_budget_started_at = time.time() - 800
+    call._resolve_stale_timeout()
+    assert call._stream_stale_timeout == without_clock == 900.0
+
 
 # ── wrap-up injection one-time-ness ────────────────────────────────────────
 

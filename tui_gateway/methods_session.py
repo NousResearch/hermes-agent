@@ -134,6 +134,16 @@ def _denied_source(row: dict) -> bool:
     return (row.get("source") or "").strip().lower() in _LISTING_DENY_SOURCES
 
 
+def _auto_resume_denied_source(row: dict) -> bool:
+    """``_denied_source`` plus ``source='unknown'``: auto-resume must never land on a
+    token-accounting guard placeholder (#54320). The guard mints those rows when legacy
+    message rows lack a ``sessions`` row, and such a placeholder can outrank the session
+    the user actually opened. Human-facing listings keep showing them (they may be a
+    real session awaiting repair); only the pick-a-session-for-me paths skip them."""
+    source = (row.get("source") or "").strip().lower()
+    return source in _LISTING_DENY_SOURCES or source == "unknown"
+
+
 def _listing_rows(db, limit: int, **kwargs) -> list:
     """Human-facing ``list_sessions_rich`` rows (most recent first), deny-list applied."""
     rows = db.list_sessions_rich(source=None, limit=limit, order_by_last_active=True, compact_rows=True, **kwargs)
@@ -392,6 +402,12 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
         _register_session_cwd(_sessions[sid])
+    if session_model_override:
+        # A composer pick rides in as this override and beats model.default for the whole session;
+        # name both so agent.log alone explains which model a new chat runs, and why (#107410).
+        logger.info("session.create %s: model=%s provider=%s source=client override (profile default: %s)",
+                    key, session_model_override["model"], session_model_override.get("provider") or "-",
+                    _session_default_model(_sessions[sid]))
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"
@@ -503,11 +519,15 @@ def _(rid, params: dict, db) -> dict:
 
 @method("session.most_recent")
 def _(rid, params: dict) -> dict:
-    """Most recent human-facing session (session.list deny-list); errors fold into ``session_id: null``."""
+    """Most recent human-facing session, skipping auto-resume-denied rows (deny-list
+    plus ``source='unknown'`` guard placeholders, #54320); errors fold into ``session_id: null``."""
     with _profile_db(params) as db:
         try:
-            # Generous over-fetch: many ``tool`` rows must not yield a false "none".
-            for row in _listing_rows(db, 200)[:1] if db is not None else ():
+            # Generous over-fetch: many denied rows must not yield a false "none".
+            rows = ([row for row in _listing_rows(db, 200)
+                     if not _auto_resume_denied_source(row)]
+                    if db is not None else [])
+            for row in rows[:1]:
                 return _ok(rid, {"session_id": row.get("id"), "title": row.get("title") or "",
                                  "started_at": row.get("started_at") or 0, "source": row.get("source") or ""})
         except Exception:

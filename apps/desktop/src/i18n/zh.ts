@@ -3786,7 +3786,7 @@ export const zh = defineLocale({
       copyFailure: '复制条件到剪贴板失败',
       continuationFailed: '提交目标后续内容失败',
       continuationQueued: '目标已恢复 — 后续内容已排队，将在当前回合结束后发送',
-      continuationBusy: '目标已恢复 — 会话正忙，请 /interrupt 当前回合以继续',
+      continuationBusy: '目标已恢复 — 会话正忙，请先停止当前回复（Stop 按钮或 Esc）以继续',
       controlUnavailable: msg => `会话控制不可用: ${msg}`,
       dismissError: '关闭错误',
       add: '添加'
@@ -4216,6 +4216,7 @@ export const zh = defineLocale({
       search: '搜索模型',
       noModels: '未找到模型',
       editModels: '编辑模型…',
+      followDefault: '使用设置中的默认模型',
       refreshModels: '刷新模型',
       fast: '快速'
     },

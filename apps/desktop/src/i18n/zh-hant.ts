@@ -3090,7 +3090,7 @@ export const zhHant = defineLocale({
       copyFailure: '複製條件到剪貼板失敗',
       continuationFailed: '提交目標延續內容失敗',
       continuationQueued: '目標已恢復 — 延續內容已排隊，將在目前回合結束後送出',
-      continuationBusy: '目標已恢復 — 會話忙碌中，請 /interrupt 目前回合以繼續',
+      continuationBusy: '目標已恢復 — 會話忙碌中，請先停止目前回覆（Stop 按鈕或 Esc）以繼續',
       controlUnavailable: msg => `會話控制無法使用: ${msg}`,
       dismissError: '關閉錯誤',
       add: '新增'
@@ -3445,6 +3445,7 @@ export const zhHant = defineLocale({
       search: '搜尋模型',
       noModels: '找不到模型',
       editModels: '編輯模型…',
+      followDefault: '使用設定中的預設模型',
       refreshModels: '重新整理模型',
       fast: '快速'
     },

@@ -1322,6 +1322,10 @@ class GatewayTurnMixin:
                     task_id=session_entry.session_id or "default",
                 ),
             )
+            # Register the live worker with shutdown NOW, not only once it is deferred: the default
+            # executor is outside self._executor's quiesce, so an untracked in-flight summary would let
+            # stop() close/checkpoint state.db under its late write (mirrors run_codex_hygiene_compaction).
+            self._track_deferred_agent_worker(attempt.future, _hyg_agent)
             attempt.wait_started = time.monotonic()
             try:
                 _compressed = await self._hmwa_hygiene_wait_for_summary(attempt, hs, session_entry)

@@ -364,7 +364,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             renderSlashOutput(
               queued === 'queued'
                 ? 'session busy — message queued to send when the current turn finishes'
-                : 'session busy — /interrupt the current turn before sending this command'
+                : 'session busy — stop the current reply first (Stop button or Esc), then send this command'
             )
 
             return

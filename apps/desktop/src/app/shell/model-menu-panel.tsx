@@ -1,12 +1,15 @@
 import type { ModelOptionsResult } from '@hermes/shared'
+import { useStore } from '@nanostores/react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenuItem, dropdownMenuRow } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
+import { $currentModelSource } from '@/store/session'
 
 import { ModelCatalogMenu } from './model-catalog-menu'
 import { type ModelMenuHostProps, useModelMenuController } from './use-model-menu-controller'
@@ -14,17 +17,27 @@ import { type ModelMenuHostProps, useModelMenuController } from './use-model-men
 export { ModelMenuCloseContext } from './model-catalog-menu'
 export type { ModelSelection } from './use-model-menu-controller'
 
+interface ModelMenuPanelProps extends ModelMenuHostProps {
+  /** Drop the sticky composer pick so new chats follow Settings → Model. */
+  onFollowDefaultModel?: () => void
+}
+
 /**
  * The composer's model menu: `ModelCatalogMenu` (the shared renderer) plus the
  * controller that gives a selection its meaning HERE (`useModelMenuController`).
  */
-export function ModelMenuPanel(props: ModelMenuHostProps) {
+export function ModelMenuPanel({ onFollowDefaultModel, ...props }: ModelMenuPanelProps) {
   const { gateway, ownerConnectionId, profile = 'default', requestGateway } = props
   const { t } = useI18n()
   const copy = t.shell.modelMenu
   const [refreshing, setRefreshing] = useState(false)
   const queryClient = useQueryClient()
+  const view = useSessionView()
+  const modelSource = useStore($currentModelSource)
   const { activeSessionId, controller } = useModelMenuController(props)
+  // Same condition as the pill's pin dot: a draft whose next session.create
+  // ships the manual pick instead of the Settings default (#107410).
+  const pinnedDraft = view.kind === 'primary' && !activeSessionId && modelSource === 'manual'
 
   // Explicit "Refresh Models": re-fetch the catalog with refresh:true so the
   // backend busts its 1h provider-model disk cache and re-pulls each provider's
@@ -64,17 +77,28 @@ export function ModelMenuPanel(props: ModelMenuHostProps) {
     <ModelCatalogMenu
       controller={controller}
       footer={
-        <DropdownMenuItem
-          className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
-          disabled={refreshing}
-          onSelect={event => {
-            event.preventDefault()
-            void refreshModels()
-          }}
-        >
-          <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
-          {copy.refreshModels}
-        </DropdownMenuItem>
+        <>
+          {pinnedDraft && onFollowDefaultModel && (
+            <DropdownMenuItem
+              className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+              onSelect={onFollowDefaultModel}
+            >
+              <Codicon name="discard" size="0.75rem" />
+              {copy.followDefault}
+            </DropdownMenuItem>
+          )}
+          <DropdownMenuItem
+            className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
+            disabled={refreshing}
+            onSelect={event => {
+              event.preventDefault()
+              void refreshModels()
+            }}
+          >
+            <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+            {copy.refreshModels}
+          </DropdownMenuItem>
+        </>
       }
       gateway={gateway}
       includeMoa

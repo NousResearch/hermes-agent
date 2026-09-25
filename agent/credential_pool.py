@@ -1944,7 +1944,10 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
                 )
                 self._sync_device_code_entry_to_auth_store(entry)
                 token = entry.access_token or token
-            return bool(auth_mod._probe_codex_quota_restored(token, base_url=entry.base_url))
+            # The row keeps the canonical URL; a gateway key belongs to its route host (#121486).
+            from hermes_cli.auth_codex import _codex_pool_route_base_url
+            return bool(auth_mod._probe_codex_quota_restored(
+                token, base_url=_codex_pool_route_base_url(entry.base_url)))
         except Exception:
             logger.debug("Codex quota-restored probe failed", exc_info=True)
             return False

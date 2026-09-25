@@ -1443,6 +1443,64 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     $queuedPromptsBySession.set({})
   })
 
+  it('tells the user how to stop the reply when the busy kickoff cannot queue (#42093)', async () => {
+    // The queue key resolves blank (a stored id that is only whitespace, so
+    // `enqueueQueuedPrompt` trims it to null) — the one reachable 'busy'
+    // return. The refusal copy used to demand `/interrupt`, a slash command
+    // that does not exist on any surface; it must name the controls the user
+    // actually has (Stop button / Esc) instead.
+    $queuedPromptsBySession.set({})
+    publishSessionState(RUNTIME_SESSION_ID, {
+      ...createClientSessionState('   '),
+      busy: true
+    })
+
+    const states: Record<string, unknown>[] = []
+    const busyRef = { current: true }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set (20-turn budget): keep going',
+          message: 'keep going'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        onSeedState={s => states.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal keep going')
+
+    const renderedText = states
+      .flatMap(state => {
+        const messages = Array.isArray(state.messages)
+          ? (state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+          : []
+
+        return messages.flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      })
+      .join('\n')
+
+    // Actionable controls, not the non-existent /interrupt dead end.
+    expect(renderedText).toContain('Stop button')
+    expect(renderedText).not.toContain('/interrupt')
+
+    dropSessionState(RUNTIME_SESSION_ID)
+    $queuedPromptsBySession.set({})
+  })
+
   it('gates the busy queue on the TARGET session, not the foreground busy flag', async () => {
     // `busyRef` is the FOREGROUND view's busy flag; a slash command runs against
     // the session `resolveTargetSessionId` picked, which is frequently not the

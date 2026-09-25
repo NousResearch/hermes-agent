@@ -554,6 +554,21 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('custom:local')
   })
 
+  it('drops a sticky manual pick back to the Settings default on request (#107410)', async () => {
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({ model: 'deepseek-v4-flash', provider: 'custom:relay' })
+    setCurrentModel('claude-sonnet-4-6')
+    setCurrentProvider('anthropic')
+    setCurrentModelSource('manual')
+
+    const { result } = renderHook(() => useModelControls({ queryClient: new QueryClient(), requestGateway: vi.fn() }))
+
+    result.current.followDefaultModel()
+
+    await waitFor(() => expect($currentModel.get()).toBe('deepseek-v4-flash'))
+    expect($currentProvider.get()).toBe('custom:relay')
+    expect(getCurrentModelSource()).toBe('default')
+  })
+
   it('keeps a sticky manual pick even when its provider row does not list the model', async () => {
     // Rows are hints: a custom endpoint serves ids the picker row lacks. The
     // pick is the user's selection and must not be reseeded to the default.

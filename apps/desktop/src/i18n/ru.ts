@@ -3112,7 +3112,7 @@ export const ru = defineLocale({
       copyFailure: 'Не удалось скопировать критерий в буфер обмена',
       continuationFailed: 'Не удалось отправить продолжение цели',
       continuationQueued: 'Цель возобновлена — продолжение поставлено в очередь до конца текущего хода',
-      continuationBusy: 'Цель возобновлена — сессия занята, выполните /interrupt, чтобы продолжить',
+      continuationBusy: 'Цель возобновлена — сессия занята; сначала остановите текущий ответ (кнопка Stop или Esc), чтобы продолжить',
       controlUnavailable: msg => `Управление сессией недоступно: ${msg}`,
       dismissError: 'Скрыть ошибку',
       add: 'Добавить'
@@ -3477,6 +3477,7 @@ export const ru = defineLocale({
       search: 'Поиск моделей',
       noModels: 'Модели не найдены',
       editModels: 'Изменить модели…',
+      followDefault: 'Использовать модель по умолчанию из настроек',
       refreshModels: 'Обновить модели',
       fast: 'Быстрая'
     },

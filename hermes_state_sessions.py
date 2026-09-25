@@ -18,8 +18,8 @@ from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_CHILD_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
-    _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id, escape_like as _escape_like,
-    _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
+    _sql_in_window, _sql_json_extract, _sql_session_last_active, _sql_session_last_active_by_id,
+    escape_like as _escape_like, _SQL_IN_CHUNK, _id_chunks, _placeholders as _session_ids_placeholders,
 )
 
 # caplog tests pin the "hermes_state" logger name.
@@ -1323,7 +1323,7 @@ class SessionSessionsMixin:
                     GROUP BY root_id
                 )
                 {select_head}{_sql_session_last_active("s")} AS last_active,
-                    COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
+                    COALESCE(cm.effective_last_active, {_sql_in_window("s.started_at")}) AS _effective_last_active
                 FROM sessions s
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {prompt_join}

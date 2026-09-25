@@ -441,7 +441,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({ activeSessionIdRef })
 
-  const { applySavedMainModel, refreshCurrentModel, selectModel } = useModelControls({
+  const { applySavedMainModel, followDefaultModel, refreshCurrentModel, selectModel } = useModelControls({
     cacheOwnerConnectionId: activeConnectionId || undefined,
     cacheProfile: activeGatewayProfile,
     queryClient,
@@ -1188,6 +1188,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       triggerAndRefreshCronJobs(jobId, profileScope === ALL_PROFILES ? 'all' : profileScope)
         .then(() => undefined)
         .catch(() => undefined),
+    followDefaultModel,
     getGateway: () => gatewayRef.current,
     openAgents,
     openCommandCenterSection,

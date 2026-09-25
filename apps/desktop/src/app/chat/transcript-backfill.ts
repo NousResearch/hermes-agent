@@ -15,9 +15,15 @@
  * drift on the next page.
  */
 
-import { getOlderSessionMessages } from '@/hermes'
+import { getOlderSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import { recordTranscriptBackfillPage, type TranscriptProfileScope, transcriptTailState } from '@/store/transcript-tail'
+import {
+  recordTranscriptBackfillPage,
+  tailStateFromPage,
+  type TranscriptProfileScope,
+  transcriptTailState
+} from '@/store/transcript-tail'
+import type { SessionMessagesResponse } from '@/types/hermes'
 
 /** Older rows likely exist beyond what the in-memory store holds. */
 export function transcriptBackfillAvailable(
@@ -112,28 +118,225 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
  * pages. Background refreshes and post-turn rehydrates re-read only the
  * newest page; replacing the store with that page outright would silently
  * drop everything "Show earlier" already loaded. Find where the refreshed
- * tail begins inside the previous transcript and keep the older prefix.
- * When no anchor is found (compaction rewrite, different session), the
- * refreshed tail is authoritative — same behavior as before backfill existed.
+ * tail begins inside the previous transcript and keep the older prefix when
+ * that prefix is actually earlier. An anchor on the first on-screen row is a
+ * real match: the page replaces the window from there. A page that already
+ * contains every on-screen row replaces the window. When the page overlaps
+ * the screen but that splice would put an older stored id after a newer one,
+ * merge by stored id. The fresh page wins where both sides share an id, and
+ * a row with no stored id stays at the end. A page that shares no stored id
+ * is the transcript now on screen — a compaction rewrite or a different
+ * session — and replaces the window.
  */
+function pageCoversWindow(previous: ChatMessage[], refreshedIds: Set<string>, refreshedRowIds: Set<number>): boolean {
+  return previous.every(
+    message => (message.rowId !== undefined && refreshedRowIds.has(message.rowId)) || refreshedIds.has(message.id)
+  )
+}
+
+function durableRowIds(messages: ChatMessage[]): Set<number> {
+  return new Set(messages.flatMap(message => (message.rowId === undefined ? [] : [message.rowId])))
+}
+
+function sharesDurableRow(first: ChatMessage[], second: ChatMessage[]): boolean {
+  const rowIds = durableRowIds(first)
+
+  return second.some(message => message.rowId !== undefined && rowIds.has(message.rowId))
+}
+
+interface StoredRowSlot {
+  message: ChatMessage
+  /** Rows without a stored id (e.g. a page-local tool fold) that precede this row. */
+  leading: ChatMessage[]
+}
+
+/**
+ * Stored-id merge for a page that overlaps the window but does not anchor in
+ * front of it. A row with no stored id travels with the next stored row after
+ * it, so a page-local fold stays in front of the row it preceded. Rows with no
+ * stored id after the last stored row stay at the end (page first, then live).
+ */
+function mergeOverlappingTail(previous: ChatMessage[], refreshedTail: ChatMessage[]): ChatMessage[] {
+  // Compaction, rewind, or a different session arrives as new stored ids.
+  // This function is the path that puts that page on screen.
+  if (!sharesDurableRow(previous, refreshedTail)) {
+    return refreshedTail
+  }
+
+  const refreshedIds = new Set(refreshedTail.map(message => message.id))
+  const byRowId = new Map<number, StoredRowSlot>()
+
+  const place = (messages: ChatMessage[], fresh: boolean): ChatMessage[] => {
+    let pending: ChatMessage[] = []
+
+    for (const message of messages) {
+      if (message.rowId === undefined) {
+        // The fresh page's copy of an unstored row wins over the window's.
+        if (fresh || !refreshedIds.has(message.id)) {
+          pending.push(message)
+        }
+
+        continue
+      }
+
+      const existing = byRowId.get(message.rowId)
+
+      if (!fresh && existing) {
+        pending = []
+
+        continue
+      }
+
+      // The fresh page replaces the row; keep the window's leading rows when
+      // the page brought none of its own for it.
+      const leading = fresh && existing && pending.length === 0 ? existing.leading : pending
+      byRowId.set(message.rowId, { message, leading })
+      pending = []
+    }
+
+    return pending
+  }
+
+  const previousTrailing = place(previous, false)
+  const refreshedTrailing = place(refreshedTail, true)
+
+  const stored = [...byRowId.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .flatMap(([, { leading, message }]) => [...leading, message])
+
+  return [...stored, ...refreshedTrailing, ...previousTrailing]
+}
+
 export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
   if (refreshedTail.length === 0 || previous.length === 0) {
     return refreshedTail
   }
 
-  const first = refreshedTail[0]
+  // The first rendered message can be a page-local tool fold whose id is not
+  // durable. Anchor on the first shared persisted row anywhere in the page.
+  const refreshedRowIds = durableRowIds(refreshedTail)
 
-  const anchor = previous.findIndex(
-    message =>
-      (first.rowId !== undefined && message.rowId !== undefined && message.rowId === first.rowId) ||
-      message.id === first.id
-  )
+  const firstDurable = refreshedTail.find(message => message.rowId !== undefined)
 
-  if (anchor <= 0) {
+  const anchor = firstDurable === undefined ? -1 : previous.findIndex(message => message.rowId === firstDurable.rowId)
+
+  const anchorRowId = firstDurable?.rowId
+
+  // A hit on the first row, or a hit after a prefix whose stored ids are all
+  // earlier, is the backfill anchor. A hit further down on a row that was
+  // glued on late is not: the prefix is newer than the match.
+  const prefixIsEarlier =
+    anchor > 0 &&
+    anchorRowId !== undefined &&
+    previous.slice(0, anchor).every(message => message.rowId === undefined || message.rowId < anchorRowId)
+
+  if (anchor === 0) {
     return refreshedTail
   }
 
-  return [...previous.slice(0, anchor), ...refreshedTail]
+  if (prefixIsEarlier) {
+    return [...previous.slice(0, anchor), ...refreshedTail]
+  }
+
+  const refreshedIds = new Set(refreshedTail.map(message => message.id))
+
+  // The page already contains everything on screen, including a live row the
+  // tail really did cover. Take the page. This is what keeps a finished reply
+  // through a long tool turn.
+  if (pageCoversWindow(previous, refreshedIds, refreshedRowIds)) {
+    return refreshedTail
+  }
+
+  return mergeOverlappingTail(previous, refreshedTail)
+}
+
+const REFRESH_OVERLAP_PAGE_LIMIT = 4
+
+/**
+ * Reader for the pages older than a refreshed newest page. Paging follows the
+ * transcript-tail rules: it starts at the page's own offset and stops once a
+ * page comes back short, or without pagination metadata (a legacy backend
+ * already returned everything).
+ */
+export function olderPageReader(
+  storedSessionId: string,
+  scope: ProfileScope,
+  page: null | Pick<SessionMessagesResponse, 'messages' | 'pagination'> | undefined
+): () => Promise<ChatMessage[]> {
+  let state = page ? tailStateFromPage(page) : undefined
+
+  return async () => {
+    if (!state?.possiblyTruncated) {
+      return []
+    }
+
+    const older = await getOlderSessionMessages(storedSessionId, scope, state.nextOffset)
+    state = tailStateFromPage(older)
+
+    return toChatMessages(older.messages)
+  }
+}
+
+/**
+ * A refresh begins at the newest persisted row. A tool-heavy turn can fill
+ * that page entirely, putting its first durable row after the rendered
+ * transcript. Read a small, bounded number of older pages until one shares a
+ * durable row, so graftRefreshedTailOntoBackfill can retain the live prefix.
+ * Stored ids only grow, so once a page reaches below the oldest rendered id
+ * no older page can overlap.
+ */
+export async function extendRefreshPageToOverlap(
+  refreshedTail: ChatMessage[],
+  previous: ChatMessage[],
+  readOlderPage: () => Promise<ChatMessage[]>
+): Promise<ChatMessage[]> {
+  if (!refreshedTail.length || !previous.length) {
+    return refreshedTail
+  }
+
+  const previousRowIds = durableRowIds(previous)
+
+  // Streamed or optimistic rows carry no stored id: nothing can overlap.
+  if (previousRowIds.size === 0) {
+    return refreshedTail
+  }
+
+  const sharesPrevious = (messages: ChatMessage[]) =>
+    messages.some(message => message.rowId !== undefined && previousRowIds.has(message.rowId))
+
+  if (sharesPrevious(refreshedTail)) {
+    return refreshedTail
+  }
+
+  const oldestPrevious = Math.min(...previousRowIds)
+  let extended = refreshedTail
+
+  for (let page = 0; page < REFRESH_OVERLAP_PAGE_LIMIT; page += 1) {
+    let older: ChatMessage[]
+
+    try {
+      older = await readOlderPage()
+    } catch {
+      // A refresh failure must retain today's newest-page behavior.
+      return refreshedTail
+    }
+
+    if (!older.length) {
+      return refreshedTail
+    }
+
+    extended = [...older, ...extended]
+
+    if (sharesPrevious(older)) {
+      return extended
+    }
+
+    if (older.some(message => message.rowId !== undefined && message.rowId < oldestPrevious)) {
+      return refreshedTail
+    }
+  }
+
+  return refreshedTail
 }
 
 export interface BackfillRequest {

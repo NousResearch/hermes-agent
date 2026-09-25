@@ -40,6 +40,45 @@ def test_drain_honors_background_process_notifications_off(monkeypatch, mode, ex
     if expect_injected:
         assert cli._pending_input.get_nowait() is not None
 
+
+def test_off_mutes_process_wakes_but_subagent_results_still_land(monkeypatch):
+    """``off`` is about background PROCESSES: a finished ``delegate_task(background=true)`` is a
+    result the user asked for, never a notification to opt out of."""
+    delegation = {"type": "async_delegation", "delegation_id": "d1", "session_key": "display-session",
+                  "results": [{"status": "completed", "summary": "done", "goal": "audit"}]}
+    events = [_event("proc_a", 0), {**_event("proc_b", 0), "type": "heartbeat", "seq": 1, "output": "line"}, delegation]
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "display-session"
+    cli._pending_input = queue.Queue()
+    monkeypatch.setattr("tools.process_registry.process_registry", _registry(events))
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
+    monkeypatch.setattr("cli.CLI_CONFIG", {"display": {"background_process_notifications": "off"}})
+    cli._drain_process_notifications("cli-post-turn")
+    queued = cli._pending_input.get_nowait()
+    assert cli._pending_input.empty()
+    assert queued.display_kind == "async_delegation_complete"
+
+
+def test_heartbeat_wake_paints_one_line_and_persists_hidden(monkeypatch):
+    """The model gets the output delta; the human gets a one-line receipt, and the persisted row is
+    typed ``hidden`` so Desktop/TUI never paint the wake as a user bubble."""
+    from tools.process_registry_notifications import HEARTBEAT_DISPLAY_KIND, heartbeat_display_text
+    beat = {**_event("proc_hb", None), "type": "heartbeat", "seq": 3, "elapsed": 422, "interval": 60,
+            "output": "web tsc=0\nSECRET_OUTPUT_LINE"}
+    cli = HermesCLI.__new__(HermesCLI)
+    cli.session_id = "display-session"
+    cli._pending_input = queue.Queue()
+    monkeypatch.setattr("tools.process_registry.process_registry", _registry([beat]))
+    monkeypatch.setattr("tools.async_delegation.claim_event_delivery", lambda *a: "claimed")
+    monkeypatch.setattr("tools.async_delegation.complete_event_delivery", lambda *a: None)
+    cli._drain_process_notifications("cli-idle")
+    queued = cli._pending_input.get_nowait()
+    assert queued == format_process_notification(beat)
+    assert queued.display_kind == HEARTBEAT_DISPLAY_KIND == "hidden"
+    assert queued.display_text == heartbeat_display_text(beat)
+    assert "SECRET_OUTPUT_LINE" not in queued.display_text and "long-build.sh" in queued.display_text
+
 def test_process_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, capsys, tmp_path):
     events = [_event("proc_1", 0)]
     payload = format_process_notification(events[0])

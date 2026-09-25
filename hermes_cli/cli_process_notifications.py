@@ -37,7 +37,8 @@ class CLIProcessNotificationsMixin:
         from tools.process_registry import process_registry
         from tools.async_delegation import claim_event_delivery, complete_event_delivery
         from tools.process_registry_notifications import (
-            ProcessNotificationBatch, TimelineNotification, group_process_notifications)
+            HEARTBEAT_DISPLAY_KIND, ProcessNotificationBatch, TimelineNotification, group_process_notifications,
+            heartbeat_display_text)
 
         claimed = []
         for event, text in process_registry.drain_notifications(
@@ -49,13 +50,17 @@ class CLIProcessNotificationsMixin:
             claimed.append((event, text))
             complete_event_delivery(event, claim)
         if self._background_notifications_suppressed():
-            return
+            # Subagent results are not process notifications: they still land.
+            claimed = [(event, text) for event, text in claimed if event.get("type") == "async_delegation"]
         for notifications in group_process_notifications(claimed):
             event, text = notifications[0]
-            if event.get("type", "completion") == "completion":
+            evt_type = event.get("type", "completion")
+            if evt_type == "completion":
                 pending = ProcessNotificationBatch(notifications)
+            elif evt_type == "heartbeat":
+                pending = TimelineNotification(text, heartbeat_display_text(event), HEARTBEAT_DISPLAY_KIND)
             else:
-                pending = TimelineNotification.for_delegation(text, event) if event.get("type") == "async_delegation" else text
+                pending = TimelineNotification.for_delegation(text, event) if evt_type == "async_delegation" else text
                 from agent.notification_presentation import diagnostic_process_event
                 if diagnostic_process_event(event) and not isinstance(pending, TimelineNotification):
                     pending = TimelineNotification(text, text, "internal_notification", "diagnostic")

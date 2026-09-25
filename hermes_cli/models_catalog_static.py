@@ -272,7 +272,8 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Static fallback when live discovery (ListFoundationModels + ListInferenceProfiles) is
     # unavailable. Inference-profile IDs (us.*) because most models require them.
     "bedrock": [
-        "us.anthropic.claude-opus-5-5", "us.anthropic.claude-sonnet-5", "us.anthropic.claude-sonnet-4-6",
+        # [0] is the provider default (get_default_model_for_provider) — keep the cheaper Sonnet there.
+        "us.anthropic.claude-sonnet-5", "us.anthropic.claude-opus-5-5", "us.anthropic.claude-sonnet-4-6",
         "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
         "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",

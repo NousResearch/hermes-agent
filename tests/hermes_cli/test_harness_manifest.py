@@ -64,6 +64,29 @@ def test_stale_overlay_is_inactive_and_explained(tmp_path, monkeypatch):
     assert explained["sources"] == []
 
 
+def test_reauthoring_one_key_does_not_reactivate_stale_siblings(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(harness, "stock_revision", lambda: "revision-a")
+    harness.set_value("compression.threshold", 0.9, overlay="trial", reason="revision A trial")
+    harness.set_value("agent.max_turns", 500, overlay="trial", reason="revision A trial")
+
+    monkeypatch.setattr(harness, "stock_revision", lambda: "revision-b")
+    stale = harness.show_state()
+    assert stale["overlays"][0]["active"] is False
+    assert stale["values"]["compression.threshold"] == 0.50
+    assert stale["values"]["agent.max_turns"] is None
+
+    harness.set_value("agent.max_turns", 600, overlay="trial", reason="revision B trial")
+    current = harness.load_manifest()
+    overlay = current["overlays"][0]
+    assert overlay["id"] == "trial"
+    assert overlay["reason"] == "revision B trial"
+    assert overlay["authored_against"] == "revision-b"
+    assert overlay["values"] == {"agent.max_turns": 600}
+    assert harness.effective_values(current, "revision-b")["agent.max_turns"] == 600
+    assert harness.effective_values(current, "revision-b")["compression.threshold"] == 0.50
+
+
 def test_loaders_apply_same_active_overlay(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     (tmp_path / "config.yaml").write_text("display:\n  skin: test\n", encoding="utf-8")

@@ -332,6 +332,10 @@ def set_value(key_path: str, value: Any, *, overlay: str, reason: str, manifest_
         }
         manifest["overlays"].append(target)
     elif target["authored_against"] != revision:
+        # A stock revision change is an explicit invalidation boundary. Reusing
+        # an old overlay id must not silently reactivate sibling values that
+        # were never re-authored against the new revision.
+        target["values"] = {}
         target["authored_against"] = revision
         target["created_at"] = _now()
     manifest["stock_revision"] = revision

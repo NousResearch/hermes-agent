@@ -1126,6 +1126,12 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Always-on skill index in the system prompt: "full" (default) lists every
+  # skill with its description; "names_only" lists names per category, which
+  # saves thousands of prompt tokens on small local models. skills_list and
+  # skill_view(name) keep working either way.
+  # index_descriptions: full
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

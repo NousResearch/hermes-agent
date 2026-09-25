@@ -296,6 +296,33 @@ class TestBuildSkillsSystemPrompt:
         full = build_skills_system_prompt()
         assert "Write threads" in full
 
+    @pytest.mark.parametrize("setting", ["full", "names_only"])
+    def test_index_descriptions_knob(self, monkeypatch, tmp_path, setting):
+        """skills.index_descriptions: names_only lists every category by name only,
+        with a note that is not tied to the coding context; full is unchanged."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            f"skills:\n  index_descriptions: {setting}\n", encoding="utf-8"
+        )
+        for category, name, desc in (("research", "arxiv", "Search arXiv papers"),
+                                     ("devops", "deploy", "Ship the service")):
+            d = tmp_path / "skills" / category / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {desc}\n---\n")
+
+        result = build_skills_system_prompt()
+
+        assert "arxiv" in result and "deploy" in result
+        assert "coding context" not in result
+        if setting == "names_only":
+            assert "Search arXiv papers" not in result and "Ship the service" not in result
+            assert "research [names only]: arxiv" in result
+            assert "devops [names only]: deploy" in result
+            assert "omitted from this index by configuration" in result
+        else:
+            assert "Search arXiv papers" in result and "Ship the service" in result
+            assert "[names only]" not in result
+
 
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):

@@ -310,6 +310,12 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     return disabled - ESSENTIAL_SKILLS
 
 
+def skill_index_names_only() -> bool:
+    """``skills.index_descriptions: names_only``: list every category of the always-on skill
+    index by name only (default ``full``). Skills still load via skill_view / skills_list."""
+    return str(_skills_cfg_get("index_descriptions") or "full").strip().lower() == "names_only"
+
+
 def parse_config_string_list(value) -> List[str]:
     """Normalize a config value that may hold a JSON-array string into a list.
     ``hermes config set`` stores lists as quoted JSON/Python-literal strings;

@@ -73,7 +73,7 @@ def _wire_key(key: Any, path: Path) -> str:
 
 @lru_cache(maxsize=1)
 def _secret_rules() -> Dict[str, Any]:
-    data = json.loads(SECRET_KEYS_FIXTURE.read_text(encoding="utf-8"))
+    data = json.loads(SECRET_KEYS_FIXTURE.read_text(encoding="utf-8-sig"))
     return {
         "secret_keys": frozenset(data["secretKeys"]),
         "secret_suffixes": tuple(data["secretKeySuffixes"]),

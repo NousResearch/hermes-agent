@@ -224,6 +224,7 @@ def fetch_models_with_pricing(
     ...}}``, cached per *base_url* and per credential so one caller's catalog never answers
     another's read. *include_sale_original* (Nous Portal only) copies the gateway's pre-discount
     ``pricing.original`` rates through as a nested ``original`` dict for sale chrome."""
+    from hermes_cli.chat_catalog import catalog_item_is_generation
     from hermes_cli.models import _HERMES_USER_AGENT, _openrouter_model_supports_tools
     url_root = (base_url or "").rstrip("/")
     cache_key = url_root + _pricing_auth_fingerprint(api_key)
@@ -262,6 +263,9 @@ def fetch_models_with_pricing(
             # Nous Portal-only: on-sale rows join the picker, which must not offer a tool-less model.
             if include_sale_original and not _openrouter_model_supports_tools(item):
                 entry["tools"] = False
+            # ...nor an image/video generation model (the chat-catalog rule, applied to the row itself).
+            if include_sale_original and catalog_item_is_generation(item):
+                entry["generation"] = True
             result[mid] = entry
 
     return _cache_catalog(cache_key, result, cache_ttl_seconds)

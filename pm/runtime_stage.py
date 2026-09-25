@@ -2,12 +2,30 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 
 from pm.package import InstallError
+
+
+def _locked_artifacts(lock: Path) -> dict[tuple[str, str], set[str]]:
+    """Read the pinned graph and artifact digests from uv's small PM lock."""
+    packages: dict[tuple[str, str], set[str]] = {}
+    for block in lock.read_text(encoding="utf-8").split("[[package]]")[1:]:
+        name = re.search(r'^name = "([^"]+)"$', block, re.MULTILINE)
+        version = re.search(r'^version = "([^"]+)"$', block, re.MULTILINE)
+        if not name or not version:
+            raise InstallError("pm-runtime", "invalid PM lock package entry")
+        key = (name.group(1), version.group(1))
+        if key in packages:
+            raise InstallError("pm-runtime", "duplicate PM lock package entry")
+        packages[key] = set(re.findall(r'\bhash = "(sha256:[0-9a-f]+)"', block))
+    if not packages:
+        raise InstallError("pm-runtime", "empty PM lock")
+    return packages
 
 
 def stage_runtime(uv: Path, python: Path, destination: Path, *,
@@ -37,6 +55,18 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
             shutil.copyfile(project / name, snapshot / name)
         environment.create()
         if wheelhouse is None:
+            # uv considers registry identity part of --locked. Resolve only
+            # in the disposable snapshot; retain the pinned graph and bytes.
+            from pm.index_config import _UV_INDEX_KNOBS
+            if any(env.get(key) for key in _UV_INDEX_KNOBS):
+                original = _locked_artifacts(snapshot / "uv.lock")
+                environment.lock(snapshot, timeout=600)
+                mirrored = _locked_artifacts(snapshot / "uv.lock")
+                if original.keys() != mirrored.keys() or any(
+                    not hashes or not hashes <= original[key]
+                    for key, hashes in mirrored.items() if key != ("hermes-pm-runtime", "0.0.0")
+                ):
+                    raise InstallError("pm-runtime", "mirror changed the pinned PM dependency graph or artifacts")
             environment.sync(snapshot, locked=True, no_default_groups=True,
                              no_install_project=True, timeout=600)
         else:

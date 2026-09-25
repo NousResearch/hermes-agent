@@ -1278,7 +1278,9 @@ class GatewayTurnMixin:
             session_id=session_entry.session_id, session_db=_hyg_session_db,
         )
         _seed_hygiene_system_prompt(_hyg_agent, _hyg_session_row)
-        # A rebuilt (not retained) prompt is deliberately stale for every real gateway surface.
+        # The stamp only marks this agent as no real surface. Since #104414 Platform is not a
+        # restore-identity field, so it no longer forces the next live turn to rebuild; the seed's
+        # retain flag is what keeps the reduced-toolset build out of the session row (#122822).
         _hyg_agent.platform = _GATEWAY_HYGIENE_PLATFORM
         return _hyg_agent, _hyg_session_db
 

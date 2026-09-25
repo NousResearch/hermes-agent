@@ -68,6 +68,14 @@ def record_nous_rate_limit(
     ``default_cooldown``. The body wins: a welcome-tier refusal says when to retry (410 s), while the
     hourly bucket's reset header is that window's end (about an hour) even with requests left in it.
     """
+    from agent.redact import has_volatile_sensitive_text
+
+    if has_volatile_sensitive_text():
+        # Provider-controlled headers/body can echo arbitrary request fragments,
+        # including coordinates encoded as numeric reset values. Preserve breaker
+        # behavior with a local default while keeping the shared file untainted.
+        headers = None
+        error_context = None
     now = time.time()
     reset_at = None
     if isinstance(error_context, dict):

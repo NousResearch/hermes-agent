@@ -239,7 +239,7 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
 # The runner routes any token starting with ``-`` that isn't one of its own
 # options (``-j``/``--jobs``, ``--paths``, ``--slice``, ``--file-timeout``,
 # ``--generate-slices``, ``--files``, ``--include-integration``,
-# ``--files-from``) straight
+# ``--exclude``, ``--files-from``) straight
 # through to each per-file pytest invocation — no ``--`` separator required.
 # Before this, a bare ``-q`` errored out with "unrecognized arguments",
 # forcing a retry on every run. These tests are behavior contracts, not
@@ -521,6 +521,68 @@ def test_files_from_dash_reads_the_list_from_stdin(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stdout
     assert "Running 1 test files" in proc.stdout, proc.stdout
     assert "✓2" in proc.stdout or "2 passed" in proc.stdout, proc.stdout
+
+
+# ── --exclude: a suite that owns its own CI job ──────────────────────────────
+#
+# tests/e2e/core/upgrade runs in the dedicated e2e-upgrade job (bubblewrap, full
+# history + tags, a 3000 s per-file budget). Inside the e2e lane its files burn
+# the whole 900 s cap and collect nothing — the lane's own logs show three of
+# them eating half of its total file time. The lane states that with
+# --exclude instead of assembling a file list in shell, which took discovery
+# (and with it --generate-slices and the duration cache) out of the loop.
+
+
+def _discovered(root: Path, *args: str) -> set[str]:
+    """The repo-root-relative files the runner would run for these args."""
+    proc = subprocess.run(
+        [sys.executable, "scripts/run_tests_parallel.py",
+         *args, "--generate-slices", "1"],
+        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    matrix = json.loads(proc.stdout.strip().splitlines()[-1])
+    return set(matrix["slice"][0]["files"].split(":"))
+
+
+def _probe_lane(root: Path) -> None:
+    """A lane root holding one kept file and one dedicated-job file."""
+    core = root / "tests" / "e2e" / "core"
+    upgrade = core / "upgrade"
+    upgrade.mkdir(parents=True, exist_ok=True)
+    (core / "test_keep.py").write_text("def test_keep():\n    assert True\n")
+    (upgrade / "test_own_job.py").write_text("def test_own_job():\n    assert True\n")
+
+
+def test_exclude_drops_a_suite_that_owns_its_own_ci_job(tmp_path: Path) -> None:
+    """--exclude removes the dedicated job's files from the lane's discovery."""
+    root = _probe_root(tmp_path)
+    _probe_lane(root)
+
+    lane = _discovered(root, "--include-integration", "tests/e2e",
+                       "--exclude", "tests/e2e/core/upgrade")
+
+    assert "tests/e2e/core/test_keep.py" in lane
+    assert "tests/e2e/core/upgrade/test_own_job.py" not in lane
+
+
+def test_exclude_matches_whole_path_components(tmp_path: Path) -> None:
+    """Excluding a directory must not swallow a sibling whose name starts with
+    it, and the dedicated job that names that directory as its root keeps
+    every file it owns."""
+    root = _probe_root(tmp_path)
+    _probe_lane(root)
+    sibling = root / "tests" / "e2e" / "core" / "upgrade-extra"
+    sibling.mkdir()
+    (sibling / "test_sibling.py").write_text("def test_sibling():\n    assert True\n")
+
+    lane = _discovered(root, "--include-integration", "tests/e2e",
+                       "--exclude", "tests/e2e/core/upgrade")
+    assert "tests/e2e/core/upgrade-extra/test_sibling.py" in lane
+
+    owned = _discovered(root, "--include-integration", "tests/e2e/core/upgrade")
+    assert "tests/e2e/core/upgrade/test_own_job.py" in owned
 
 
 def test_scratch_root_is_per_user(tmp_path: Path, monkeypatch) -> None:

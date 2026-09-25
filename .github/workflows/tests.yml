@@ -178,10 +178,13 @@ jobs:
         # One subprocess per file, in parallel: the core suites spawn real
         # processes (serve, gateway, tui_gateway, MCP servers, SQLite writers)
         # and must not share interpreter state.
-        # tests/e2e/core/upgrade runs in its own job (e2e-upgrade) below.
+        # tests/e2e/core/upgrade runs in its own job (e2e-upgrade) below — it
+        # needs bubblewrap, full history + tags and a 3000 s per-file budget,
+        # and here each of its files would burn the whole 900 s and collect
+        # nothing (measured: 3 files × 900 s = half of this lane's file time).
         run: |
-          mapfile -t files < <(find tests/e2e -name 'test_*.py' -not -path 'tests/e2e/core/upgrade/*' | sort)
-          scripts/run_tests.sh --include-integration "${files[@]}"
+          scripts/run_tests.sh --include-integration tests/e2e \
+            --exclude tests/e2e/core/upgrade
         env:
           # An e2e file is a process tree, not one CPU-bound pytest worker. With
           # 32 files at once the hosted run starved live children before their

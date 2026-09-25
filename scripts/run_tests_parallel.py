@@ -321,6 +321,37 @@ def _discover_files(roots: List[Path]) -> List[Path]:
     return sorted(out)
 
 
+def _apply_exclusions(
+    files: List[Path], excludes: List[Path]
+) -> tuple[List[Path], List[Path]]:
+    """Drop the files at or under any excluded path.
+
+    A suite can belong to a lane *and* to its own dedicated CI job — the
+    upgrade suite needs bubblewrap, full history and a 3000 s per-file
+    budget, so the e2e lane must not pay its 900 s timeouts twice. The
+    lane states that with ``--exclude tests/e2e/core/upgrade`` instead of
+    assembling a file list in shell, which kept discovery (and therefore
+    ``--generate-slices`` and the duration cache) out of the loop.
+
+    Matching is component-wise (``Path.relative_to``), never a string
+    prefix: excluding ``tests/e2e/core/upgrade`` must not drop
+    ``tests/e2e/core/upgrade-extra/test_x.py``. Returns the kept files and
+    the dropped ones so the caller can say what it removed.
+    """
+    if not excludes:
+        return files, []
+    resolved = [exclude.resolve() for exclude in excludes]
+    kept: List[Path] = []
+    dropped: List[Path] = []
+    for path in files:
+        real = path.resolve()
+        if any(real == exclude or real.is_relative_to(exclude) for exclude in resolved):
+            dropped.append(path)
+        else:
+            kept.append(path)
+    return kept, dropped
+
+
 def _kill_tree(proc: "subprocess.Popen", pgid: int | None = None) -> None:
     """Kill the pytest subprocess and every descendant it spawned.
 
@@ -1005,6 +1036,19 @@ def main() -> int:
         help="Don't skip integration/ e2e/ during discovery",
     )
     parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "Drop discovered files at or under PATH (repeatable; a file or a "
+            "directory, relative to the repo root or absolute). Use it when a "
+            "suite belongs to its own CI job: the e2e lane runs "
+            "``tests/e2e --exclude tests/e2e/core/upgrade`` because the "
+            "e2e-upgrade job owns that suite's bubblewrap + 3000 s budget."
+        ),
+    )
+    parser.add_argument(
         "--file-timeout",
         type=float,
         default=float(
@@ -1103,7 +1147,8 @@ def main() -> int:
     # (``-k=expr``, ``--tb=long``) are self-contained and need no lookahead.
     OUR_FLAGS = {
         "-h", "--help", "-j", "--jobs", "--paths", "--include-integration",
-        "--file-timeout", "--file-retries", "--slice", "--generate-slices", "--files",
+        "--exclude", "--file-timeout", "--file-retries", "--slice",
+        "--generate-slices", "--files",
         "--files-from",
     }
     # pytest short flags that consume the NEXT token as their value.
@@ -1248,6 +1293,14 @@ def main() -> int:
             _SKIP_PARTS = set()
 
         files = _discover_files(roots)
+
+    files, excluded = _apply_exclusions(files, [repo_root / e for e in args.exclude])
+    if excluded:
+        # stderr, not stdout: --generate-slices emits machine-readable JSON there.
+        print(
+            f"excluded {len(excluded)} file(s) under: {', '.join(args.exclude)}",
+            file=sys.stderr,
+        )
 
     if not files:
         print("No test files to run", file=sys.stderr)

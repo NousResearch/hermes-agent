@@ -1,5 +1,6 @@
 """SDK import fallback uses the real import system and exact PM feature mapping."""
 import importlib
+import json
 import sys
 from contextlib import nullcontext
 from unittest.mock import MagicMock
@@ -67,3 +68,45 @@ def test_mistral_stt_fallback_reads_audio_and_requires_key(tmp_path, monkeypatch
     monkeypatch.setattr(transcription_tools, "_resolve_provider_key", lambda *a: "")
     assert "MISTRAL_API_KEY not set" in transcription_tools._transcribe_mistral(str(audio), "fixture-model")["error"]
     assert len(calls) == 1
+
+
+_RESTART = "edge-tts installed; restart Hermes to activate the new dependency environment"
+
+
+def _missing_sdk(monkeypatch, module, reason):
+    """``module`` does not import, and pm's first-use install raises ``reason``."""
+    root = module.split(".")[0]
+    for name in list(sys.modules):
+        if name == root or name.startswith(root + "."):
+            monkeypatch.delitem(sys.modules, name)
+    monkeypatch.setitem(sys.modules, root, None)
+    monkeypatch.setattr(pm, "ensure_import", MagicMock(side_effect=pm.InstallError("venv", reason) if reason else None))
+
+
+def test_edge_first_use_install_reports_pm_reason_not_generic_hint(monkeypatch):
+    _missing_sdk(monkeypatch, "edge_tts", _RESTART)
+    monkeypatch.setattr(tts_tool, "_check_neutts_available", lambda: False)
+    engine, error = tts_tool._select_builtin_engine("edge")
+    assert engine == "edge"
+    message = json.loads(error)["error"]
+    assert message == f"Edge TTS is not ready: {_RESTART}"
+
+
+def test_edge_install_reason_still_falls_back_to_neutts(monkeypatch):
+    _missing_sdk(monkeypatch, "edge_tts", _RESTART)
+    monkeypatch.setattr(tts_tool, "_check_neutts_available", lambda: True)
+    assert tts_tool._select_builtin_engine("edge") == ("neutts", None)
+
+
+def test_edge_missing_without_install_reason_keeps_generic_hint(monkeypatch):
+    _missing_sdk(monkeypatch, "edge_tts", None)
+    monkeypatch.setattr(tts_tool, "_check_neutts_available", lambda: False)
+    _engine, error = tts_tool._select_builtin_engine("edge")
+    assert json.loads(error)["error"].startswith("No TTS provider available.")
+
+
+def test_dispatch_provider_reports_pm_reason(monkeypatch):
+    _missing_sdk(monkeypatch, "elevenlabs.client", "tts-premium installed; restart Hermes to activate")
+    engine, error = tts_tool._select_builtin_engine("elevenlabs")
+    assert engine == "elevenlabs"
+    assert json.loads(error)["error"] == "ElevenLabs is not ready: tts-premium installed; restart Hermes to activate"

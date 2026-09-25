@@ -1832,6 +1832,49 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # ownership, so leave them for the owner.
         return not (is_async_delegation and evt.get("restored"))
 
+    def purge_notifications(self, session_key: str = "", owns_event=None) -> int:
+        """Discard this owner's current notification backlog, not running work or output.
+
+        Reuse drain routing. Terminal process consumption suppresses requeued copies;
+        durable delegation results are claim-scoped drops, never successful deliveries.
+        Only inspect the queue's starting size so new completions remain notifications.
+        """
+        from tools.async_delegation import claim_event_delivery, drop_completion_delivery
+
+        requeue = []
+        purged = 0
+        try:
+            for _ in range(self.completion_queue.qsize()):
+                try:
+                    event = self.completion_queue.get_nowait()
+                except queue.Empty:
+                    break
+                is_delegation = event.get("type") == "async_delegation"
+                if not self._owns_event(event, session_key, owns_event, is_delegation):
+                    requeue.append(event)
+                    continue
+                try:
+                    claim = claim_event_delivery(event, "notification-purge")
+                    if claim is None:
+                        requeue.append(event)
+                        continue
+                    if claim and not drop_completion_delivery(str(event["delegation_id"]), claim):
+                        requeue.append(event)
+                        continue
+                except Exception:
+                    requeue.append(event)
+                    raise
+                if not is_delegation and event.get("type", "completion") == "completion":
+                    if sid := event.get("session_id"):
+                        with self._lock:
+                            self._completion_consumed.add(sid)
+                            self._poll_observed.add(sid)
+                purged += 1
+        finally:
+            for event in requeue:
+                self.completion_queue.put(event)
+        return purged
+
     def drain_notifications(
         self, session_key: str = "", owns_event=None, *, skip_poll_observed: bool = True,
     ) -> "list[tuple[dict, str]]":

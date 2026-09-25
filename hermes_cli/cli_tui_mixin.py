@@ -1029,6 +1029,7 @@ class CLITuiMixin:
                 return
             self._last_ctrl_c_time = now
             print("\n⚡ Interrupting agent... (press Ctrl+C again to force exit)")
+            self._purge_interrupt_notifications()
             request_hard_interrupt(self.agent)
         else:
             self._tui_clear_or_exit(event)

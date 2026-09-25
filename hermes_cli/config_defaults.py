@@ -839,6 +839,7 @@ DEFAULT_CONFIG = {
         # failures append an output tail) | "all" (running updates + final raw output) | "result"
         # (final raw only) | "error" (raw only on non-zero exit) | "off".
         "background_process_notifications": "concise",
+        "ctrl_c_purge_notifications": True,  # First Ctrl+C discards pending reports, not running work/output.
         "streaming": False,
         "timestamps": False,      # message timestamps (CLI labels, TUI rows, desktop transcript)
         "timestamp_format": "%H:%M",  # strftime format, e.g. "%b-%d %H:%M"

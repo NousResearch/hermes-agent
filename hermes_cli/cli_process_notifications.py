@@ -19,6 +19,26 @@ class CLIProcessNotificationsMixin:
             resolved_key = event_key
         return str(resolved_key) == current_key
 
+    def _purge_interrupt_notifications(self) -> None:
+        """A first Ctrl+C explicitly discards this session's pending reports only."""
+        from cli import CLI_CONFIG
+        from tools.process_registry import process_registry
+
+        if not (CLI_CONFIG.get("display") or {}).get("ctrl_c_purge_notifications", True):
+            return
+        try:
+            count = process_registry.purge_notifications(
+                session_key=getattr(self, "session_id", "") or "",
+                owns_event=self._owns_process_notification,
+            )
+        except Exception:
+            # A failed ledger operation must never prevent the requested interrupt.
+            import logging
+            logging.getLogger(__name__).warning("Could not discard pending notifications", exc_info=True)
+            return
+        if count:
+            print(f"Discarded {count} pending background notification(s); output remains available.")
+
     def _drain_process_notifications(self, consumer: str) -> None:
         from tools.process_registry import process_registry
         from tools.async_delegation import claim_event_delivery, complete_event_delivery

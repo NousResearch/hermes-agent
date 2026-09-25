@@ -153,20 +153,26 @@ _BROWSERS = (
     # BrowserOS neo (https://www.browseros.com/, formerly "BrowserClaw") — a
     # Y Combinator-backed, AGPL-3.0, open-source Chromium fork built for AI agents
     # (github.com/browseros-ai/BrowserOS). macOS + Windows only (no Linux build of
-    # the "neo" agent product). mac_support and the macOS LaunchServices bundle id
-    # are confirmed from the project's own Homebrew cask zap block and a filed crash
-    # report naming the running app's bundle id. win_install is confirmed from a
-    # third-party Windows uninstall-info listing. mac_app's executable filename and
-    # win_profile's "User Data" folder name are NOT independently confirmed for this
-    # product — they are inferred from Chromium's own install-mode convention (the
-    # profile dir is always a "User Data" sibling of "Application" under the same
-    # per-product folder) and from this file's own naming convention (every other
-    # mac_app here is "<AppBundleName>.app/Contents/MacOS/<AppBundleName>"); flagged
-    # for manual verification against a real install.
+    # the "neo" agent product). mac_app, the macOS LaunchServices bundle id, and
+    # mac_support are all independently VERIFIED against a real install: BrowserOS
+    # neo v0.50.5 via ``brew install --cask browseros-neo`` on macOS. The installed
+    # bundle is "/Applications/BrowserOS neo.app" (note the space before "neo") with
+    # CFBundleExecutable "BrowserOS neo" and CFBundleIdentifier "com.browseros.BrowserClaw"
+    # (mixed case at rest; _classify_default() lowercases before matching, same as every
+    # other entry here, so the table stores the lowercased form). The real profile dir
+    # after first launch, confirmed via ``ls ~/Library/Application Support``, is
+    # "BrowserClaw" — the OLDER, non-agentic "BrowserOS" product (a different app
+    # entirely) owns the separate "~/Library/Application Support/BrowserOS" dir; do not
+    # conflate the two or this would read/leak into the wrong browser's profile.
+    # win_install is confirmed from a third-party Windows uninstall-info listing.
+    # win_profile's "User Data" folder name is NOT independently confirmed on Windows —
+    # inferred from Chromium's own install-mode convention (the profile dir is always a
+    # "User Data" sibling of "Application" under the same per-product folder); flagged
+    # for manual verification against a real Windows install.
     _Browser(
         "browseros-neo", "/Applications/BrowserOS neo.app/Contents/MacOS/BrowserOS neo",
         ("BrowserClaw",), ("BrowserClaw.exe",),
-        ((("BrowserClaw", "Application", "BrowserClaw.exe"),)),
+        (("BrowserClaw", "Application", "BrowserClaw.exe"),),
         ("BrowserClaw", "User Data"),
         (), (), ""),
 )

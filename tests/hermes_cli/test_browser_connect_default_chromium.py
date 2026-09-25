@@ -205,3 +205,31 @@ class TestLinuxProfileDir:
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("XDG_CONFIG_HOME", "/home/t/.config")
         assert bc.real_profile_data_dir("edge", "Linux") == "/home/t/.config/microsoft-edge"
+
+
+class TestBrowserOSNeoMacProfileDir:
+    """Regression: BrowserOS neo's real macOS profile dir is "BrowserClaw" (the legacy
+    product name retained internally), NOT "BrowserOS" — that name belongs to a separate,
+    older non-agentic product with its own distinct ``~/Library/Application Support``
+    directory. Verified against a real ``brew install --cask browseros-neo`` (v0.50.5)
+    install: CFBundleIdentifier ``com.browseros.BrowserClaw`` and a post-first-launch
+    ``~/Library/Application Support/BrowserClaw`` directory. Resolving to the "BrowserOS"
+    dir instead would read/leak into the wrong browser's profile."""
+
+    def test_mac_profile_dir_is_browserclaw_not_browseros(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/Users/example")
+        path = bc.real_profile_data_dir("browseros-neo", "Darwin")
+        assert path == "/Users/example/Library/Application Support/BrowserClaw"
+        assert path.endswith("BrowserClaw")
+        assert not path.endswith("BrowserOS")
+
+    def test_mac_app_bundle_path_has_space_before_neo(self):
+        b = bc._BROWSER_BY_KEY["browseros-neo"]
+        assert b.mac_app == "/Applications/BrowserOS neo.app/Contents/MacOS/BrowserOS neo"
+
+    def test_mac_bundle_id_maps_to_browseros_neo(self):
+        with patch.object(
+            bc.subprocess, "run",
+            return_value=type("_Proc", (), {"stdout": _ls_dump(_handler("https", "com.browseros.BrowserClaw"))})(),
+        ):
+            assert bc._detect_default_darwin() == "browseros-neo"

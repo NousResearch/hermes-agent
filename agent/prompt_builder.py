@@ -1367,8 +1367,8 @@ def _render_skills_index(
     # model's project memory and it won't rediscover them via skills_list. Nested categories follow their parent.
     if names_only:
         demoted = frozenset(skills_by_category)
-        hidden_note = ("\n(Skill descriptions are omitted from this index by configuration — the skills "
-                       "work normally and load with skill_view(name) as usual.)")
+        hidden_note = ("\n(Skill descriptions are omitted from this index by configuration only — "
+                       "skill_view(name) still loads the skill's full SKILL.md.)")
     else:
         demoted = frozenset(cat for cat in skills_by_category
                             if cat.split("/", 1)[0] in (compact_categories or frozenset()))

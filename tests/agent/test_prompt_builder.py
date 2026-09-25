@@ -318,7 +318,8 @@ class TestBuildSkillsSystemPrompt:
             assert "Search arXiv papers" not in result and "Ship the service" not in result
             assert "research [names only]: arxiv" in result
             assert "devops [names only]: deploy" in result
-            assert "omitted from this index by configuration" in result
+            assert "omitted from this index by configuration only" in result
+            assert "skill_view(name) still loads the skill's full SKILL.md" in result
         else:
             assert "Search arXiv papers" in result and "Ship the service" in result
             assert "[names only]" not in result

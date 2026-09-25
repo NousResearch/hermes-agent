@@ -1,9 +1,11 @@
 """Two lifecycle invariants, using real SQLite and a local GitHub HTTP contract."""
 import json
 import os
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -24,8 +26,27 @@ def github(tmp_path, monkeypatch):
                     "headRefOid": sha, "baseRefName": "main", "state": "OPEN",
                     "baseRef": {"branchProtectionRule": {"requiredStatusChecks": [
                         {"context": "required", "app": {"databaseId": 1}}]}}}}}}
+                if state.get("plan_limited"):
+                    value["data"]["repository"]["pullRequest"]["baseRef"]["branchProtectionRule"] = None
+                if state.get("merged"):
+                    value["data"]["repository"]["pullRequest"]["state"] = "MERGED"
             elif "/rules/branches/" in self.path:
                 value = [[]]
+            elif "/protection/required_status_checks" in self.path:
+                if state.get("plan_limited"):
+                    self.send_response(state.get("protection_error_status", 403))
+                    self.end_headers()
+                    self.wfile.write(b'{"message":"Upgrade to GitHub Pro or make this repository public to enable this feature."}')
+                    return
+                value = {"contexts": ["required"]}
+            elif "/actions/jobs/" in self.path:
+                skipped = self.path.endswith("/3")
+                value = {"check_run_url": "https://api.github.com/repos/acme/repo/check-runs/56" if skipped else
+                         "https://api.github.com/repos/acme/repo/check-runs/55",
+                         "conclusion": "skipped" if skipped else "failure", "status": "completed",
+                         "head_sha": sha, "run_id": 8,
+                         "runner_name": "runner" if state.get("executed") else None,
+                         "steps": [{"conclusion": "failure"}] if state.get("executed") else []}
             elif "/check-runs" in self.path:
                 run = {"id": 42, "name": "required", "head_sha": sha,
                        "app": {"id": 1}, "status": "in_progress" if state["conclusion"] == "pending" else "completed", "conclusion": state["conclusion"],
@@ -33,17 +54,33 @@ def github(tmp_path, monkeypatch):
                 if state.get("stale"):
                     run["head_sha"] = "b" * 40
                 runs = [] if state.get("missing") else [run]
-                value = [{"total_count": 100 + len(runs), "check_runs": [
+                if state.get("plan_limited"):
+                    runs = [{"id": 55, "name": "action", "head_sha": sha, "status": "completed",
+                             "conclusion": "failure", "app": {"slug": "github-actions", "id": 2},
+                             "url": "https://api.github.com/repos/acme/repo/check-runs/55",
+                             "details_url": "https://github.com/acme/repo/actions/runs/8/job/2"},
+                            {"id": 56, "name": "dependent", "head_sha": sha, "status": "completed",
+                             "conclusion": "skipped", "app": {"slug": "github-actions", "id": 2},
+                             "url": "https://api.github.com/repos/acme/repo/check-runs/56",
+                             "details_url": "https://github.com/acme/repo/actions/runs/8/job/3"}]
+                optional_count = 0 if state.get("plan_limited") else 100
+                value = [{"total_count": optional_count + len(runs), "check_runs": [
                     {**run, "id": 1000 + i, "name": "optional", "conclusion": "skipped"}
-                    for i in range(100)]}, {"total_count": 100 + len(runs), "check_runs": runs}]
+                    for i in range(optional_count)]}, {"total_count": optional_count + len(runs), "check_runs": runs}]
                 if state.get("race"):
                     state["race"]()
                 if state.get("head_change"):
                     state["head"] = "b" * 40
             elif "/statuses" in self.path:
-                value = [[]]
+                value = [[{"id": 3, "context": "continuous-integration/jenkins/pr-merge",
+                           "state": state.get("jenkins", "success"),
+                           "sha": state.get("status_sha", sha),
+                           "target_url": "https://jenkins.example/job/PR-7/5/"}]] if state.get("plan_limited") else [[]]
             elif "/pulls/" in self.path:
-                value = {"head": {"sha": sha}, "base": {"ref": "main"}, "state": "open"}
+                value = {"head": {"sha": state.get("rest_head", sha)}, "base": {"ref": "main"},
+                         "state": "closed" if state.get("merged") else "open",
+                         "merged": bool(state.get("merged")),
+                         "merge_commit_sha": state.get("merge_sha", "b" * 40)}
             else:
                 self.send_error(404)
                 return
@@ -60,12 +97,17 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
+    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request,json\n"
                   f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+                  "try:\n"
+                  " data=json.loads(urllib.request.urlopen(u).read().decode())\n"
+                  " if \"--paginate\" in sys.argv: print(\"\\n\".join(json.dumps(p) for p in data))\n"
+                  " else: print(json.dumps(data))\n"
+                  "except urllib.error.HTTPError as e:\n print(e.read().decode()+f' (HTTP {e.code})',file=sys.stderr); sys.exit(1)\n")
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    state["home"] = tmp_path / "home"
     kb.init_db()
     try:
         yield state
@@ -129,3 +171,293 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")
+
+
+@pytest.mark.linux_only
+def test_plan_limited_fallback_requires_exact_authority_and_nonexecuted_actions(github, monkeypatch):
+    from hermes_cli import kanban_pr_acceptance as acceptance
+
+    Path(github["home"]).mkdir(exist_ok=True)
+    (github["home"] / "config.yaml").write_text(
+        "kanban:\n  pr_acceptance_authorities:\n    acme/repo:\n"
+        "      - continuous-integration/jenkins/pr-merge\n")
+    github.update(plan_limited=True, merged=True)
+    url = "https://github.com/acme/repo/pull/7"
+
+    def receipt():
+        return acceptance.collect_acceptance(url, url)
+
+    passed = receipt()
+    assert passed["ok"] and passed["authority_source"] == "configured-plan-limited"
+    assert {c["classification"] for c in passed["checks"]} == {
+        "success", "pre-runner-infra", "skipped-after-pre-runner"}
+    for changes, expected in [
+        ({"jenkins": "pending"}, "pending"), ({"jenkins": "failure"}, "failure"),
+        ({"status_sha": "b" * 40}, "stale"), ({"executed": True}, "failure"),
+        ({"rest_head": "b" * 40}, "stale"), ({"merge_sha": None}, "stale"),
+    ]:
+        github.update(plan_limited=True, merged=True)
+        github.update(changes)
+        result = receipt()
+        assert not result["ok"] and result["classification"] == expected, (changes, result)
+        for key in changes:
+            github.pop(key)
+
+    github["protection_error_status"] = 401
+    assert receipt()["classification"] == "infra"  # A matching message without HTTP 403 is not a plan limit.
+    github.pop("protection_error_status")
+
+    (github["home"] / "config.yaml").write_text("kanban:\n  pr_acceptance_authorities: {}\n")
+    assert not receipt()["ok"]
+    github.pop("plan_limited")
+    assert receipt()["ok"]  # Reachable required-check API never uses configured fallback.
+
+
+@pytest.mark.linux_only
+def test_archived_pr_restoration_preserves_contract_and_regates_children(github):
+    with connect() as conn:
+        parent = kb.create_task(conn, title="source", completion_contract="acme/repo")
+        child = kb.create_task(conn, title="release", parents=[parent])
+        assert kb.archive_task(conn, parent)
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? AND kind='archived'", (parent,),
+        ).fetchone()[0]
+        assert not kb.restore_archived_task(conn, parent, archive_event_id=event_id + 1,
+                                            completion_contract="acme/repo", reason="mistake")
+        assert not kb.restore_archived_task(conn, parent, archive_event_id=event_id,
+                                            completion_contract="local-only", reason="mistake")
+        assert kb.restore_archived_task(conn, parent, archive_event_id=event_id,
+                                        completion_contract="acme/repo", reason="mistake")
+        restored, gated = kb.get_task(conn, parent), kb.get_task(conn, child)
+        assert restored is not None and restored.status == "blocked"
+        assert gated is not None and gated.status == "todo"
+        assert not kb.restore_archived_task(conn, parent, archive_event_id=event_id,
+                                            completion_contract="acme/repo", reason="duplicate")
+        assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='archive_restored'",
+                            (parent,)).fetchone()[0] == 1
+
+
+@pytest.mark.linux_only
+def test_restoring_archived_ancestor_fences_done_intermediate_and_running_descendant(github):
+    with connect() as conn:
+        root = kb.create_task(conn, title="source", completion_contract="acme/repo")
+        intermediate = kb.create_task(conn, title="review", parents=[root])
+        unclaimed = kb.create_task(conn, title="release", parents=[intermediate])
+        running = kb.create_task(conn, title="verification", parents=[intermediate])
+        assert kb.archive_task(conn, root)
+        assert kb.complete_task(conn, intermediate, summary="review completed while source archived")
+        claimed = kb.claim_task(conn, running)
+        assert claimed is not None
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        try:
+            from hermes_cli import kanban_db_dispatch as dispatch
+            dispatch._set_worker_pid(conn, running, proc.pid)
+            event_id = conn.execute(
+                "SELECT id FROM task_events WHERE task_id=? AND kind='archived'", (root,),
+            ).fetchone()[0]
+            assert kb.restore_archived_task(conn, root, archive_event_id=event_id,
+                                            completion_contract="acme/repo", reason="acceptance missing")
+            assert proc.wait(timeout=10) is not None
+            assert kb.get_task(conn, unclaimed).status == "todo"
+            fenced = kb.get_task(conn, running)
+            assert fenced.status == "todo" and fenced.current_run_id is None
+            assert fenced.claim_lock is None and fenced.worker_pid is None
+            assert kb.latest_run(conn, running).outcome == "reclaimed"
+            assert any(e.kind == "archive_restore_worker_termination" and e.payload["terminated"]
+                       for e in kb.list_events(conn, running))
+            assert kb.unsatisfied_parents(conn, unclaimed) == [(root, "blocked")]
+            assert kb.claim_task(conn, unclaimed) is None
+            assert not kb.complete_task(conn, running, summary="cannot bypass source",
+                                        expected_run_id=claimed.current_run_id)
+            kb.recompute_ready(conn)
+            assert kb.get_task(conn, unclaimed).status == "todo"
+            assert kb.get_task(conn, running).status == "todo"
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+
+@pytest.mark.linux_only
+def test_archive_restore_never_signals_recycled_worker_pid(github):
+    with connect() as conn:
+        root = kb.create_task(conn, title="source", completion_contract="acme/repo")
+        child = kb.create_task(conn, title="worker", parents=[root])
+        assert kb.archive_task(conn, root)
+        claimed = kb.claim_task(conn, child)
+        assert claimed is not None
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+        try:
+            from hermes_cli import kanban_db_dispatch as dispatch
+            dispatch._set_worker_pid(conn, child, proc.pid)
+            conn.execute("UPDATE tasks SET worker_started_at = worker_started_at - 1000000 WHERE id=?",
+                         (child,))
+            event_id = conn.execute("SELECT id FROM task_events WHERE task_id=? AND kind='archived'",
+                                    (root,)).fetchone()[0]
+            assert kb.restore_archived_task(conn, root, archive_event_id=event_id,
+                                            completion_contract="acme/repo", reason="acceptance missing")
+            assert proc.poll() is None
+            assert kb.get_task(conn, child).status == "todo"
+            assert kb.latest_run(conn, child).outcome == "reclaimed"
+            assert any(e.kind == "archive_restore_worker_termination" and e.payload["pid_recycled"]
+                       for e in kb.list_events(conn, child))
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+
+@pytest.mark.linux_only
+def test_restore_between_spawn_and_registration_stops_unregistered_worker(github, all_assignees_spawnable):
+    from hermes_cli import kanban_db_dispatch as dispatch
+
+    with connect() as conn:
+        root = kb.create_task(conn, title="source", completion_contract="acme/repo")
+        child = kb.create_task(conn, title="release", assignee="forge", parents=[root])
+        assert kb.archive_task(conn, root)
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? AND kind='archived'", (root,),
+        ).fetchone()[0]
+        spawned = threading.Event()
+        release_spawn = threading.Event()
+        restore_started = threading.Event()
+        restoration = []
+        restored_marker = Path(os.environ["HERMES_HOME"]) / "restoration-returned"
+        marker = Path(os.environ["HERMES_HOME"]) / "unsafe-publish"
+        processes = []
+        try:
+            def spawn(task, workspace, board=None):
+                assert task.id == child and task.current_run_id is not None
+                proc = subprocess.Popen([sys.executable, "-c",
+                                         "import pathlib, sys, time\n"
+                                         "while not pathlib.Path(sys.argv[1]).exists(): time.sleep(0.01)\n"
+                                         "pathlib.Path(sys.argv[2]).write_text('published')",
+                                         str(restored_marker), str(marker)],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL)
+                processes.append(proc)
+                spawned.set()
+                assert release_spawn.wait(5)
+                return proc.pid
+
+            def restore():
+                with connect() as other:
+                    restore_started.set()
+                    restoration.append(kb.restore_archived_task(
+                        other, root, archive_event_id=event_id,
+                        completion_contract="acme/repo", reason="acceptance missing"))
+                    restored_marker.touch()
+
+            def dispatch_worker():
+                with connect() as other:
+                    dispatch.dispatch_once(other, spawn_fn=spawn)
+
+            dispatch_thread = threading.Thread(target=dispatch_worker)
+            dispatch_thread.start()
+            assert spawned.wait(5)
+            thread = threading.Thread(target=restore)
+            thread.start()
+            assert restore_started.wait(5)
+            # Hold PID registration past the restorer's entry. A return here
+            # lets the unregistered process publish before late CAS kills it.
+            assert not restored_marker.exists()
+            assert not marker.exists()
+            thread.join(timeout=2)
+            assert thread.is_alive(), "restoration returned before the unregistered spawn was reconciled"
+            assert not restoration
+            release_spawn.set()
+            dispatch_thread.join(timeout=10)
+            thread.join(timeout=10)
+            assert restoration == [True]
+            assert processes[0].wait(timeout=10) is not None
+            assert not marker.exists()
+            fenced = kb.get_task(conn, child)
+            assert fenced.status == "todo" and fenced.worker_pid is None
+            assert fenced.current_run_id is None and fenced.claim_lock is None
+            assert kb.latest_run(conn, child).outcome == "reclaimed"
+            assert kb.get_task(conn, root).status == "blocked"
+            assert any(e.kind == "spawned" for e in kb.list_events(conn, child))
+            assert any(e.kind == "archive_restore_worker_termination" and e.payload["terminated"]
+                       for e in kb.list_events(conn, child))
+        finally:
+            release_spawn.set()
+            for proc in processes:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+
+
+def test_restore_with_unknown_claimed_worker_fails_closed(github):
+    with connect() as conn:
+        root = kb.create_task(conn, title="source", completion_contract="acme/repo")
+        child = kb.create_task(conn, title="release", parents=[root])
+        assert kb.archive_task(conn, root)
+        assert kb.claim_task(conn, child) is not None
+        event_id = conn.execute(
+            "SELECT id FROM task_events WHERE task_id=? AND kind='archived'", (root,),
+        ).fetchone()[0]
+        with pytest.raises(RuntimeError, match="could not be stopped"):
+            kb.restore_archived_task(conn, root, archive_event_id=event_id,
+                                     completion_contract="acme/repo", reason="acceptance missing")
+        assert kb.get_task(conn, root).status == "blocked"
+        assert kb.get_task(conn, child).status == "todo"
+        assert kb.latest_run(conn, child).outcome == "reclaimed"
+        assert any(e.kind == "archive_restore_worker_termination"
+                   for e in kb.list_events(conn, child))
+
+
+def test_worker_launch_waits_for_durable_pid_registration(github, tmp_path):
+    """A rollback after OS launch must not let an unregistered worker publish."""
+    import time
+    from hermes_cli import kanban_db_dispatch as dispatch
+
+    marker = tmp_path / "published"
+    gate = Path(dispatch.__file__).with_name("kanban_worker_gate.py")
+    with connect() as conn:
+        task_id = kb.create_task(conn, title="release", assignee="forge")
+        claimed = kb.claim_task(conn, task_id)
+        assert claimed is not None
+        env = {**os.environ, "HERMES_KANBAN_DB": str(kb.kanban_db_path()),
+               "HERMES_KANBAN_TASK": task_id,
+               "HERMES_KANBAN_RUN_ID": str(claimed.current_run_id),
+               "HERMES_KANBAN_CLAIM_LOCK": claimed.claim_lock}
+        cmd = [sys.executable, str(gate), sys.executable, "-c",
+               "import pathlib,sys;pathlib.Path(sys.argv[1]).write_text('published')", str(marker)]
+        procs = []
+        proc = None
+        try:
+            with pytest.raises(RuntimeError, match="simulated COMMIT failure"):
+                with kb.write_txn(conn):
+                    proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL,
+                                            stderr=subprocess.DEVNULL)
+                    procs.append(proc)
+                    assert dispatch._set_worker_pid(
+                        conn, task_id, proc.pid, expected_run_id=claimed.current_run_id,
+                        expected_claim_lock=claimed.claim_lock, allow_nested=True)
+                    assert not marker.exists()
+                    raise RuntimeError("simulated COMMIT failure")
+            task = kb.get_task(conn, task_id)
+            assert task is not None and task.worker_pid is None
+            assert proc is not None
+            time.sleep(0.5)
+            assert proc.poll() is None and not marker.exists()
+            # A later durable registration releases a fresh gated worker.
+            proc.kill()
+            proc.wait(timeout=5)
+            proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            procs.append(proc)
+            assert dispatch._set_worker_pid(
+                conn, task_id, proc.pid, expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock)
+            assert proc.wait(timeout=5) == 0
+            assert marker.read_text() == "published"
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=5)

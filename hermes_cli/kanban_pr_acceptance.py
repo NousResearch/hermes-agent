@@ -8,10 +8,47 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from typing import Any
 from urllib.parse import quote
+
+from hermes_cli.config import load_config
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _PR = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)")
+_JOB = re.compile(r"https://github\.com/[^/]+/[^/]+/actions/runs/[0-9]+/job/([0-9]+)(?:\?.*)?")
+
+
+def _plan_limited(error: subprocess.CalledProcessError) -> bool:
+    # Do not interpret arbitrary 403s (bad credentials, insufficient scopes) as plan limits.
+    stderr = error.stderr or ""
+    return ("(HTTP 403)" in stderr and
+            "Upgrade to GitHub Pro or make this repository public to enable this feature." in stderr)
+
+
+def _authorities(repo: str) -> list[str]:
+    configured = load_config().get("kanban", {}).get("pr_acceptance_authorities", {})
+    contexts = configured.get(repo) if isinstance(configured, dict) else None
+    if not isinstance(contexts, list) or not contexts or any(
+        not isinstance(c, str) or not c.strip() or c != c.strip() for c in contexts
+    ) or len(set(contexts)) != len(contexts):
+        return []
+    return contexts
+
+
+def _unexecuted_job(run: dict, repo: str, sha: str) -> int | None:
+    if run.get("status") != "completed" or run.get("conclusion") not in {"failure", "skipped"}:
+        return None
+    if (run.get("app") or {}).get("slug") != "github-actions":
+        return None
+    match = _JOB.fullmatch(run.get("details_url") or "")
+    if not match or not (run.get("details_url") or "").startswith(f"https://github.com/{repo}/actions/"):
+        return None
+    job = _api(f"repos/{repo}/actions/jobs/{match[1]}")
+    if (job.get("check_run_url") == run.get("url") and job.get("head_sha") == sha and
+            job.get("conclusion") == run["conclusion"] and job.get("status") == "completed" and
+            not job.get("runner_name") and job.get("steps") == []):
+        return job.get("run_id")
+    return None
 
 
 def validate_contract(value: str | None) -> str:
@@ -27,10 +64,19 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:
-        command += ["--paginate", "--slurp"]
+        command += ["--paginate"]
     result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                             text=True, timeout=30, check=True)
-    value = json.loads(result.stdout)
+    if paginate:
+        decoder = json.JSONDecoder()
+        value: Any = []
+        text = result.stdout
+        while text.strip():
+            page, consumed = decoder.raw_decode(text.lstrip())
+            value.append(page)
+            text = text.lstrip()[consumed:]
+    else:
+        value = json.loads(result.stdout)
     if isinstance(value, dict) and value.get("errors"):
         raise ValueError("GitHub returned incomplete GraphQL evidence")
     return value
@@ -61,12 +107,32 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
             raise ValueError("PR is closed or current head is unavailable")
         protection = (pr.get("baseRef") or {}).get("branchProtectionRule") or {}
         required = {(r["context"], (r.get("app") or {}).get("databaseId")) for r in protection.get("requiredStatusChecks", [])}
-        rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        plan_limited = False
+        try:
+            rules = _api(f"repos/{repo}/rules/branches/{quote(branch, safe='')}?per_page=100", paginate=True)
+        except subprocess.CalledProcessError as error:
+            if not _plan_limited(error):
+                raise
+            plan_limited = True
+            rules = []
         for page in rules:
             for rule in page:
                 if rule["type"] == "required_status_checks":
                     required.update((r["context"], r.get("integration_id"))
                                     for r in rule["parameters"]["required_status_checks"])
+        # Branch protection can be hidden independently of repository rules. Probe it
+        # when GraphQL has no rule; a 403 is only a fallback trigger for this exact plan error.
+        if not required and not plan_limited:
+            try:
+                protection_api = _api(f"repos/{repo}/branches/{quote(branch, safe='')}/protection/required_status_checks")
+                required.update((c, None) for c in protection_api.get("contexts", []))
+            except subprocess.CalledProcessError as error:
+                if not _plan_limited(error):
+                    raise
+                plan_limited = True
+        if plan_limited and not required:
+            required = {(context, None) for context in _authorities(repo)}
+            receipt["authority_source"] = "configured-plan-limited"
         receipt["required"] = [{"context": c, "app_id": a} for c, a in sorted(required, key=str)]
         if not required:
             receipt["detail"] = "No repository-required checks are configured; explicitly use a local-only contract for non-CI tasks."
@@ -75,8 +141,32 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         runs = [run for page in pages for run in page["check_runs"]]
         if len({r["id"] for r in runs}) != pages[0]["total_count"]:
             raise ValueError("Incomplete check-run pagination")
-        statuses = [{**s, "sha": sha} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100", paginate=True) for s in page]
+        statuses = [{**s, "sha": s.get("sha", sha)} for page in _api(f"repos/{repo}/commits/{sha}/statuses?per_page=100", paginate=True) for s in page]
         outcomes = []
+        if receipt.get("authority_source") == "configured-plan-limited":
+            # A non-authoritative failure is ignorable ONLY when the GitHub job never
+            # acquired a runner and executed zero steps. Skipped dependents are ignorable
+            # only in the same workflow run as such a failure. Executed tests fail closed.
+            unexecuted = {r["id"]: _unexecuted_job(r, repo, sha) for r in runs
+                          if r.get("conclusion") in {"failure", "skipped"} and
+                          r.get("head_sha") == sha and not any(r["name"] == c for c, _ in required)}
+            failed_runs = {unexecuted[r["id"]] for r in runs
+                           if r.get("conclusion") == "failure" and r["id"] in unexecuted and
+                           unexecuted[r["id"]] is not None}
+            for run in runs:
+                if any(run["name"] == c for c, _ in required):
+                    continue
+                classification = _classify(run, sha, run.get("conclusion"), True)
+                if ((classification == "failure" and unexecuted.get(run["id"]) is not None) or
+                        (run.get("conclusion") == "skipped" and unexecuted.get(run["id"]) in failed_runs
+                         and unexecuted.get(run["id"]) is not None)):
+                    receipt["checks"].append({"name": run["name"], "id": run["id"],
+                        "head_sha": run.get("head_sha"), "classification":
+                        "pre-runner-infra" if classification == "failure" else "skipped-after-pre-runner"})
+                elif classification != "success":
+                    outcomes.append(classification)
+                    receipt["checks"].append({"name": run["name"], "id": run["id"],
+                        "head_sha": run.get("head_sha"), "classification": classification})
         for context, app_id in sorted(required, key=str):
             matching = [r for r in runs if r["name"] == context and
                         (app_id in (None, -1) or r["app"]["id"] == app_id)]
@@ -97,7 +187,9 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
                     "classification": classification, "conclusion": outcome})
         # Re-read after all pages: old-head successes are never transferable.
         current = _api(f"repos/{repo}/pulls/{number}")
-        if current["head"]["sha"] != sha or current["base"]["ref"] != branch or (current["state"] == "closed" and not current.get("merged")):
+        if (current["head"]["sha"] != sha or current["base"]["ref"] != branch or
+                (current["state"] == "closed" and not current.get("merged")) or
+                (pr["state"] == "MERGED" and not (current.get("merged") and current.get("merge_commit_sha")))):
             receipt.update(classification="stale", detail="PR head/base changed while collecting evidence; retry.")
             return receipt
         receipt["classification"] = next((x for x in outcomes if x != "success"), "missing" if not outcomes else "success")

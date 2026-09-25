@@ -494,7 +494,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
         _print_json({
             "task": _task_to_dict(task), "latest_summary": latest_summary, "parents": parents, "children": children,
             "comments": [_obj_dict(c, ("author", "body", "created_at")) for c in comments],
-            "events": [_obj_dict(e, ("kind", "payload", "created_at", "run_id")) for e in events],
+            "events": [_obj_dict(e, ("id", "kind", "payload", "created_at", "run_id")) for e in events],
             "runs": [_obj_dict(r, _SHOW_RUN_FIELDS) for r in runs],
         })
         return 0
@@ -1133,6 +1133,18 @@ def _cmd_archive(args: argparse.Namespace) -> int:
                            lambda tid: f"Archived {tid}", lambda tid: f"cannot archive {tid}")
 
 
+def _cmd_restore_archived(args: argparse.Namespace) -> int:
+    with kbc.connect_closing() as conn:
+        ok = kb.restore_archived_task(
+            conn, args.task_id, archive_event_id=args.archive_event_id,
+            completion_contract=args.completion_contract, reason=args.reason,
+        )
+    if not ok:
+        return _err("restore refused: status, archive event, or completion contract changed")
+    print(f"Restored {args.task_id} to blocked; acceptance still required")
+    return 0
+
+
 def _cmd_stats(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         stats = kb.board_stats(conn)
@@ -1329,7 +1341,8 @@ _HANDLERS = {
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
-    "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
+    "archive": _cmd_archive, "restore-archived": _cmd_restore_archived,
+    "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,
     "assignees": _cmd_assignees, "notify-subscribe": _cmd_notify_subscribe,

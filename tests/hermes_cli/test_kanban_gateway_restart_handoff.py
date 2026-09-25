@@ -83,7 +83,8 @@ def test_managed_gateway_worker_is_spawned_in_restart_safe_scope(
     assert captured_cmd[unit_index + 1] == "hermes-worker-kanban-t_candidate_restart-run-23"
     assert "MemoryMax=536870912" in captured_cmd
     separator = captured_cmd.index("--")
-    assert captured_cmd[separator + 1 : separator + 4] == ["hermes", "-p", "coder"]
+    assert captured_cmd[separator + 1 : separator + 5] == [
+        sys.executable, str(Path(kbd.__file__).with_name("kanban_worker_gate.py")), "hermes", "-p"]
     assert captured_cwd == str(workspace)
     assert captured_env["HERMES_KANBAN_TASK"] == task.id
     assert captured_env["HERMES_KANBAN_RUN_ID"] == "23"
@@ -140,7 +141,8 @@ def test_standalone_dispatcher_keeps_direct_worker_spawn(
     )
 
     assert kbd._default_spawn(task, str(workspace)) == 4243
-    assert captured_cmd[:3] == ["hermes", "-p", "coder"]
+    assert captured_cmd[:5] == [sys.executable, str(Path(kbd.__file__).with_name("kanban_worker_gate.py")),
+                                "hermes", "-p", "coder"]
 
 
 @pytest.mark.platforms("linux")
@@ -178,7 +180,7 @@ def test_oneshot_unit_dispatcher_scope_wraps_or_warns_never_dooms_silently(
     monkeypatch.setattr(process_registry, "_scope_degraded_warned", False)
     with caplog.at_level("WARNING", logger=process_registry.logger.name):
         kbd._default_spawn(task, str(workspace))
-    assert spawned[-1][:3] == ["hermes", "-p", "coder"]
+    assert spawned[-1][2:5] == ["hermes", "-p", "coder"]
     warned = [r.getMessage() for r in caplog.records if "KILLED when the unit exits" in r.getMessage()]
     assert len(warned) == 1 and "KillMode=process" in warned[0]
 
@@ -212,7 +214,19 @@ def test_real_user_systemd_scope_preserves_worker_context(
     monkeypatch.setenv("INVOCATION_ID", "managed-gateway-test")
     monkeypatch.setattr(process_registry, "_is_supervised_gateway_process", lambda: True)
 
-    pid = kbd._default_spawn(task, str(workspace))
+    from hermes_cli.kanban_db_connect import connect
+
+    with connect() as conn:
+        task.id = kb.create_task(conn, title="scope worker", assignee="coder")
+        claimed = kb.claim_task(conn, task.id)
+        assert claimed is not None
+        task.current_run_id = claimed.current_run_id
+        task.claim_lock = claimed.claim_lock
+        pid = kbd._default_spawn(task, str(workspace))
+        assert pid is not None
+        assert kbd._set_worker_pid(conn, task.id, pid,
+                                   expected_run_id=task.current_run_id,
+                                   expected_claim_lock=task.claim_lock)
     deadline = time.monotonic() + 15
     while not receipt.exists() and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -222,6 +236,6 @@ def test_real_user_systemd_scope_preserves_worker_context(
     assert payload["pid"] == pid
     assert payload["cwd"] == str(workspace)
     assert payload["task"] == task.id
-    assert payload["run"] == "23"
+    assert payload["run"] == str(task.current_run_id)
     assert ".scope" in payload["cgroup"]
     assert "hermes-gateway.service" not in payload["cgroup"]

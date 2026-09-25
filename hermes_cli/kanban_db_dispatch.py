@@ -1456,21 +1456,50 @@ def _record_task_failure(
         return True
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
+def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int, *,
+                    expected_run_id: Optional[int] = None,
+                    expected_claim_lock: Optional[str] = None,
+                    allow_nested: bool = False) -> bool:
     """Record the spawned child's pid + its restart-stable fingerprint (``_process_fingerprint``), and
     emit a ``spawned`` event carrying them. The fingerprint is what lets every later liveness/kill
     decision tell OUR worker from a process that recycled the PID after a reboot. A failed capture is
     persisted as ``UNVERIFIED_WORKER_FINGERPRINT``, never NULL: NULL is the legacy pre-fingerprint row
     whose bare-PID kill authority a new spawn must not inherit."""
     started_at = _process_fingerprint(int(pid)) or UNVERIFIED_WORKER_FINGERPRINT
-    with _kb.write_txn(conn):
-        conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
-                     (int(pid), started_at, task_id))
-        run_id = _kb._current_run_id(conn, task_id)
-        if run_id is not None:
-            conn.execute("UPDATE task_runs SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
-                         (int(pid), started_at, run_id))
-        _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
+    with _kb.write_txn(conn, allow_nested=allow_nested):
+        # Direct callers may omit the expected identity, but the dispatcher MUST pass
+        # the identity captured before spawn_fn released the database lock.
+        if expected_run_id is None and expected_claim_lock is None:
+            row = conn.execute("SELECT current_run_id, claim_lock FROM tasks WHERE id = ?",
+                               (task_id,)).fetchone()
+            if row:
+                expected_run_id, expected_claim_lock = row["current_run_id"], row["claim_lock"]
+        updated = conn.execute(
+            "UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ? "
+            "AND status = 'running' AND current_run_id = ? AND claim_lock = ? "
+            "AND worker_pid IS NULL",
+            (int(pid), started_at, task_id, expected_run_id, expected_claim_lock),
+        )
+        if updated.rowcount == 1:
+            conn.execute(
+                "UPDATE task_runs SET worker_pid = ?, worker_started_at = ? "
+                "WHERE id = ? AND task_id = ? AND ended_at IS NULL AND claim_lock = ?",
+                (int(pid), started_at, expected_run_id, task_id, expected_claim_lock),
+            )
+            _kb._append_event(conn, task_id, "spawned",
+                              {"pid": int(pid), "started_at": started_at}, run_id=expected_run_id)
+            return True
+    # Restoration may have revoked the claim while spawn_fn ran. Stop the
+    # just-created worker even though it was never registered in the task row.
+    termination = _terminate_reclaimed_worker(
+        int(pid), expected_claim_lock, started_at=started_at,
+    )
+    with _kb.write_txn(conn, allow_nested=allow_nested):
+        _kb._append_event(conn, task_id, "spawn_claim_lost",
+                          {"run_id": expected_run_id, **termination}, run_id=expected_run_id)
+    if not termination["terminated"]:
+        raise RuntimeError(f"Claim lost for {task_id}; spawned worker could not be stopped")
+    return False
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -2073,33 +2102,50 @@ def _dispatch_lane_task(
         # Force-load sdlc-review; the kanban lifecycle is already in every
         # worker's system prompt via KANBAN_GUIDANCE.
         claimed.skills = list(dict.fromkeys([*(claimed.skills or []), "sdlc-review"]))
-    try:
-        pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
-        if pid:
-            _set_worker_pid(conn, claimed.id, int(pid))
-        # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
-        _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
-        # consecutive_failures is deliberately NOT reset here: resetting on
-        # spawn would let a task that keeps timing out loop forever. Cleared
-        # only on successful completion (complete_task).
-        result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
-        _count_spawn(claimed.assignee)
-        return True
-    except Exception as exc:
+    # Restoration must never return successfully while a claimed worker has
+    # spawned but its PID is still unknown. Serialize spawn and registration
+    # against the restoration write transaction; the worker is visible to the
+    # restorer before it can commit, or restoration wins before spawn.
+    spawn_error = None
+    registered = True
+    with _kb.write_txn(conn):
+        try:
+            pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn,
+                                 claimed, str(workspace), board)
+        except Exception as exc:
+            spawn_error = exc
+            pid = None
+        if spawn_error is None and pid:
+            registered = _set_worker_pid(
+                conn, claimed.id, int(pid), expected_run_id=claimed.current_run_id,
+                expected_claim_lock=claimed.claim_lock, allow_nested=True,
+            )
+    if spawn_error is not None:
         from tools.process_registry import RestartSafeScopeUnavailable
 
-        # The host refused the spawn (no restart-safe scope): nothing about the
-        # card ran, so it must not spend the card's retry budget (#114720).
-        infrastructure = isinstance(exc, RestartSafeScopeUnavailable)
+        infrastructure = isinstance(spawn_error, RestartSafeScopeUnavailable)
         if infrastructure:
-            _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, exc)
+            _kb._log.warning("kanban dispatcher: spawn of %s deferred, host cannot place the worker: %s", claimed.id, spawn_error)
         if _record_task_failure(
-            conn, claimed.id, str(exc),
+            conn, claimed.id, str(spawn_error),
             outcome="spawn_failed", failure_limit=failure_limit, release_claim=True, end_run=True,
             infrastructure=infrastructure,
         ):
             result.auto_blocked.append(claimed.id)
         return False
+    if not registered:
+        return False
+    if not pid and _kb._current_run_id(conn, claimed.id) != claimed.current_run_id:
+        return False
+    # A lost claim is not a spawn failure and must not spend the task retry budget.
+    # This hook fires only after the PID (when reported) is durably persisted.
+    _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
+    # consecutive_failures is deliberately NOT reset here: resetting on
+    # spawn would let a task that keeps timing out loop forever. Cleared
+    # only on successful completion (complete_task).
+    result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
+    _count_spawn(claimed.assignee or "")
+    return True
 
 
 def _apply_default_assignee(
@@ -2871,6 +2917,10 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    # The child must not execute Hermes until PID registration commits. In
+    # particular, a dispatcher crash or failed COMMIT must leave an inert
+    # process that times out, not an untracked release worker.
+    cmd = [sys.executable, str(Path(__file__).with_name("kanban_worker_gate.py")), *cmd]
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.

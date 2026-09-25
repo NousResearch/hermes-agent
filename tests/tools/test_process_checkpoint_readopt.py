@@ -100,6 +100,28 @@ class TestCheckpointReadopt:
                 proc.kill()
                 proc.wait()
 
+    def test_kill_terminates_readopted_pid_when_start_probe_fails(
+        self, registry, monkeypatch
+    ):
+        """kill must reach a re-adopted live child with an unreadable start
+        time, not report already_exited and leave it running unsupervised."""
+        proc = _sleep_proc()
+        try:
+            start = ProcessRegistry._safe_host_start_time(proc.pid)
+            assert start is not None
+            session = _detach(registry, proc, sid="proc_kill_probe", start=start)
+            monkeypatch.setattr(ProcessRegistry, "_safe_host_start_time", staticmethod(lambda _pid: None))
+
+            result = registry.kill_process(session.id)
+
+            assert result["status"] == "killed", result
+            proc.wait(timeout=10)
+            assert session.exited is True
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
     def test_gone_pid_is_pruned_without_a_false_completion(self, registry):
         session = ProcessSession(
             id="proc_gone",

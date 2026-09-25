@@ -44,8 +44,8 @@ always checks the current username and home path even without it.
 python3 scripts/history_scan.py /path/to/repo
 
 # audit a directory of mirror clones
-git clone --mirror git@github.com:user/project.git /tmp/audit/project.git
-python3 scripts/history_scan.py /tmp/audit
+git clone --mirror git@github.com:user/project.git /path/to/audit/project.git
+python3 scripts/history_scan.py /path/to/audit
 
 # with an explicit personal-patterns file
 python3 scripts/history_scan.py --personal /path/to/patterns.txt /path/to/repo

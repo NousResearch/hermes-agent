@@ -18,17 +18,25 @@ The current user's username and home directory path are always checked.
 """
 import subprocess, re, sys, os, collections, threading
 
+# A value that is only a ~ or / path is not a secret (X_KEY_FILE=~/.config/svc/api_key,
+# SSH_KEY=/home/u/.ssh/id_ed25519, tls_key_file = /etc/ssl/key.pem) unless one segment is
+# opaque: 16+ chars, dotless, mixing upper, lower and digits (a base64 secret that starts with /).
+_OPAQUE = rb"(?-i:(?=[^/\s\"'.]{16,}(?:/|[\s\"']|$))(?=[^/\s\"']*[A-Z])(?=[^/\s\"']*[a-z])(?=[^/\s\"']*[0-9]))"
+_PATH_VALUE = rb"~?/(?:(?!" + _OPAQUE + rb")[^/\s\"']*/)*(?!" + _OPAQUE + rb")[^/\s\"']*(?=[\s\"']|$)"
+
 SECRET_PATTERNS = [
-    ("stripe-style sk_", rb"sk_[A-Za-z0-9]{16,}"),
+    # sk-/sk_ need a left boundary or every word ending in "sk" matches: desk-, task-, risk-, disk_.
+    # The tail must allow _ and - or real keys are missed: sk_live_<rest>, sk_test_<rest>.
+    ("stripe-style sk_", rb"(?<![A-Za-z0-9_\-])sk_[A-Za-z0-9_\-]{16,}"),
     ("google-api-key", rb"AIza[0-9A-Za-z_\-]{35}"),
     ("google-oauth-secret", rb"GOCSPX-[A-Za-z0-9_\-]{20,}"),
     ("github-token", rb"(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
     ("aws-key", rb"AKIA[0-9A-Z]{16}"),
-    ("openai-style sk-", rb"sk-[A-Za-z0-9_\-]{20,}"),
+    ("openai-style sk-", rb"(?<![A-Za-z0-9_\-])sk-[A-Za-z0-9_\-]{20,}"),
     ("xai-key", rb"xai-[A-Za-z0-9]{20,}"),
     ("huggingface-token", rb"hf_[A-Za-z0-9]{30,}"),
     ("npm-token", rb"npm_[A-Za-z0-9]{36}"),
-    ("agentmail-key", rb"\bam_[A-Za-z0-9]{20,}"),
+    ("agentmail-key", rb"\bam_(?:org_)?[A-Za-z0-9]{20,}"),
     ("telegram-bot-token", rb"\b[0-9]{8,10}:AA[A-Za-z0-9_\-]{33}\b"),
     ("slack-token", rb"xox[baprs]-[A-Za-z0-9\-]{10,}"),
     ("slack-webhook", rb"hooks\.slack\.com/services/T[A-Za-z0-9/]+"),
@@ -40,8 +48,19 @@ SECRET_PATTERNS = [
     # bare .env-style lines, any case: API_KEY=value, db_password=value, TOKEN=value.
     # The key word must stand alone or be joined by underscores (so keyUsage and
     # MAX_TOKENS don't match); the value must not look like a call.
-    ("env-assignment", rb"(?im)^(?:export[ \t]+)?(?:[A-Z0-9_]*_)?(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(?:_[A-Z0-9_]*)?[ \t]*=[ \t]*[^\s\"'#$(][^\s\"'()]{7,}(?=[\s\"']|$)"),
+    ("env-assignment", rb"(?im)^(?:export[ \t]+)?(?:[A-Z0-9_]*_)?(?:KEY|TOKEN|SECRET|CREDENTIALS?)(?:_[A-Z0-9_]*)?[ \t]*=[ \t]*(?!" + _PATH_VALUE + rb")[^\s\"'#$(][^\s\"'()]{7,}(?=[\s\"']|$)"),
+    # password keys keep masking paths: PASSWORD=/Abc123/xyz is a secret, not a file
+    ("env-assignment", rb"(?im)^(?:export[ \t]+)?(?:[A-Z0-9_]*_)?(?:PASSWORD|PASSWD)(?:_[A-Z0-9_]*)?[ \t]*=[ \t]*[^\s\"'#$(][^\s\"'()]{7,}(?=[\s\"']|$)"),
     ("solana-keypair-json", rb"\[(?:\s*\d{1,3}\s*,){63}\s*\d{1,3}\s*\]"),
+    # wallet keys behind a keyword: {"secret_key": "0x<64hex>"} (Hyperliquid SDK), PRIVATE_KEY="0x...",
+    # secret_key = "0x..." (py/toml), const privateKey = "0x..." (js), 86-88 char base58 (Solana).
+    # Keyword-anchored on purpose: bare hex/base58 of these lengths are tx signatures and market ids.
+    ("wallet-key-hex", rb"(?i)[\"']?(?:secret[_\-]?key|priv(?:ate)?[_\-]?key|privatekey|wallet[_\-]?key|signer[_\-]?key)[\"']?\s*[:=]\s*[\"']?(?:0x)?[0-9a-fA-F]{64}\b"),
+    ("wallet-key-b58", rb"(?i)[\"']?(?:secret[_\-]?key|priv(?:ate)?[_\-]?key|privatekey|wallet[_\-]?key|signer[_\-]?key)[\"']?\s*[:=]\s*[\"']?[1-9A-HJ-NP-Za-km-z]{86,88}\b"),
+    ("bs58-decode-literal", rb"(?:bs58|base58)\.decode\(\s*[\"'][1-9A-HJ-NP-Za-km-z]{86,88}[\"']"),
+    ("mnemonic", rb"(?i)(?:mnemonic|seed[_\-]?phrase)[\"']?\s*[:=]\s*[\"'](?:[a-z]{3,8} ){11,23}[a-z]{3,8}[\"']"),
+    # credential in a query string: ?api-key=<uuid> (Helius), ?key=..., ?token=...
+    ("url-credential", rb"(?i)[?&](?:api[_\-]?key|apikey|key|token|secret|access_token)=[A-Za-z0-9_\-]{20,}"),
 ]
 EMAIL = re.compile(rb"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 EMAIL_NOISE = re.compile(rb"(?i)(example\.com|users\.noreply\.github\.com|@2x|sentry|schema|\.png|\.jpg|@[0-9]+\.[0-9]+|node_modules|@babel|@types|@keyframes|@media)")

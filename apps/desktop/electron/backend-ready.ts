@@ -45,7 +45,7 @@ export const READY_IN_MERGED_OUTPUT_RE = /(?<!\w)HERMES_(?:BACKEND|DASHBOARD)_RE
  */
 function waitForDashboardPort(
   child,
-  timeoutMs = resolvePortAnnounceTimeoutMs(),
+  timeoutMs = resolvePortAnnounceTimeoutMs(process.env),
   describeOutputTail = () => '',
   bufferedOutput: () => string = () => ''
 ) {
@@ -146,7 +146,7 @@ function readDashboardReadyFile(readyFile: fs.PathOrFileDescriptor) {
 function waitForDashboardReadyFile(
   readyFile,
   child,
-  timeoutMs = resolvePortAnnounceTimeoutMs(),
+  timeoutMs = resolvePortAnnounceTimeoutMs(process.env),
   describeOutputTail = () => ''
 ) {
   return new Promise((resolve, reject) => {
@@ -222,7 +222,7 @@ function waitForDashboardPortAnnouncement(
     timeoutMs?: number
   } = {}
 ) {
-  const timeoutMs = options.timeoutMs ?? resolvePortAnnounceTimeoutMs()
+  const timeoutMs = options.timeoutMs ?? resolvePortAnnounceTimeoutMs(process.env)
   const describeOutputTail = options.describeOutputTail ?? (() => '')
 
   if (options.readyFile) {

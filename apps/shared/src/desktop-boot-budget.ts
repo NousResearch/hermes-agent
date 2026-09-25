@@ -8,9 +8,10 @@
  * backend then came up healthy.
  *
  * Both sides read this module so those deadlines cannot drift. The renderer
- * wait covers the announce deadline and stays finite: a dead child rejects
- * the IPC when it exits or when the announce deadline passes, and a wedged
- * round-trip still ends. This is one wait, not a retry interval.
+ * wait covers the announce deadline plus the health poll after it and stays
+ * finite: a dead child rejects the IPC when it exits or when a deadline
+ * passes, and a wedged round-trip still ends. This is one wait, not a retry
+ * interval.
  */
 
 export const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = 90_000
@@ -20,24 +21,27 @@ export const DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS = 90_000
 // kill-and-respawn loop (#50209).
 export const MIN_PORT_ANNOUNCE_TIMEOUT_MS = 45_000
 
+// Main's `waitForHermes` health-poll deadline after the port is announced
+// (electron/backend-health.ts re-exports it).
+export const DEFAULT_BACKEND_READY_TIMEOUT_MS = 45_000
+
+// Work outside those two deadlines: pre-spawn gating (release gate, runtime
+// resolution, pool claim) starts the renderer clock before main's announce
+// timer, and token adoption plus the first WS upgrade run after health. A
+// Windows cold start can stall that upgrade 12-28s (#96177).
+export const BOOT_CONNECT_MARGIN_MS = 30_000
+
 type AnnounceTimeoutEnv = {
   HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS?: string
-}
-
-// apps/shared is typechecked without Node types. Read the override off
-// globalThis so Electron's no-arg call still honors the env var.
-function defaultAnnounceEnv(): AnnounceTimeoutEnv {
-  const env = (globalThis as { process?: { env?: AnnounceTimeoutEnv } }).process?.env
-
-  return env ?? {}
 }
 
 /**
  * Port-announcement deadline. Honors `HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS`
  * for slow disks / aggressive AV, clamped to the warm-start floor so a bad
- * value can't make boot flakier than the historical default.
+ * value can't make boot flakier than the historical default. `env` is
+ * required: apps/shared has no Node types, so Electron passes `process.env`.
  */
-export function resolvePortAnnounceTimeoutMs(env: AnnounceTimeoutEnv = defaultAnnounceEnv()): number {
+export function resolvePortAnnounceTimeoutMs(env: AnnounceTimeoutEnv): number {
   const parsed = Number(env.HERMES_DESKTOP_PORT_ANNOUNCE_TIMEOUT_MS)
 
   if (Number.isFinite(parsed) && parsed > 0) {
@@ -50,15 +54,16 @@ export function resolvePortAnnounceTimeoutMs(env: AnnounceTimeoutEnv = defaultAn
 /**
  * Renderer connect timeout for a primary cold boot.
  *
- * Covers `announceTimeoutMs` so the IPC is still in flight when main's
- * port-announce wait ends. Non-finite or non-positive inputs fall back to the
- * default announce deadline — never 0 (an immediate fail that a caller could
- * spin on) and never Infinity (a dead backend with no recovery overlay).
+ * Covers main's whole cold-start chain: the port-announce wait, the health
+ * poll after it, and `BOOT_CONNECT_MARGIN_MS` for the work around them, so a
+ * backend that announces near the deadline and then turns healthy still
+ * reaches the renderer. Non-finite or non-positive announce inputs fall back
+ * to the default deadline, so the result is never an immediate fail and never
+ * Infinity (a dead backend with no recovery overlay).
  */
 export function resolveRendererBootWaitMs(announceTimeoutMs: number): number {
-  if (!Number.isFinite(announceTimeoutMs) || announceTimeoutMs <= 0) {
-    return DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS
-  }
+  const announce =
+    Number.isFinite(announceTimeoutMs) && announceTimeoutMs > 0 ? announceTimeoutMs : DEFAULT_PORT_ANNOUNCE_TIMEOUT_MS
 
-  return announceTimeoutMs
+  return announce + DEFAULT_BACKEND_READY_TIMEOUT_MS + BOOT_CONNECT_MARGIN_MS
 }

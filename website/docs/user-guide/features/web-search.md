@@ -31,6 +31,7 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Tavily** | `TAVILY_API_KEY` (optional) | ✔ | ✔ | ✔ Opt-in keyless when selected |
 | **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) | Paid (per-request Search API pricing) |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
+| **MrScraper** (plugin) | `MRSCRAPER_API_TOKEN` | ✔ | ✔ | Paid |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 | **OpenAI Native (Codex)** | `hermes auth add openai-codex` | ✔ | — | Requires a ChatGPT/Codex subscription |
 
@@ -332,6 +333,28 @@ PARALLEL_API_KEY=your-parallel-key-here
 ```
 
 Get access at [parallel.ai](https://parallel.ai).
+
+---
+
+### MrScraper (plugin) {#mrscraper-plugin}
+
+[MrScraper](https://mrscraper.com) adds Google SERP search and JavaScript-rendered page extraction to the standard `web_search` and `web_extract` tools. Its [standalone plugin](https://github.com/ai-mrscraper/hermes-mrscraper-plugin) also exposes focused tools for structured extraction, website crawling, scraper runs, and result retrieval.
+
+```bash
+hermes plugins install mrscraper
+hermes plugins enable mrscraper
+```
+
+The installer prompts for `MRSCRAPER_API_TOKEN` from the [MrScraper dashboard](https://app.mrscraper.com). Then select MrScraper under **Web Search & Extract** in `hermes tools`, or set the provider explicitly:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "mrscraper"
+  extract_backend: "mrscraper"
+```
+
+For targeted tasks, use `mrscraper_search_google_serp`, `mrscraper_crawl_website_urls`, `mrscraper_extract_page_by_prompt`, or `mrscraper_extract_structured_data`; `mrscraper_fetch_rendered_html` returns rendered HTML or Markdown from an individual URL. MrScraper API requests may consume account credits and send the URLs, prompts, and schemas you supply to MrScraper. Rendered extraction does not provide an interactive browser session; see [Browser Automation](browser.md#mrscraper-rendered-page-extraction) for the distinction.
 
 ---
 

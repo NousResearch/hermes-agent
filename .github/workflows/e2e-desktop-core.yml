@@ -24,7 +24,7 @@ concurrency:
 jobs:
   core:
     name: Desktop core E2E (Linux)
-    runs-on: ubuntu-latest-32-core
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

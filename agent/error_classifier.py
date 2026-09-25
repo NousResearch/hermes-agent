@@ -484,6 +484,11 @@ _V_ROLE_ALTERNATION = _v(_R.role_alternation, **_ABORT_FALLBACK)
 _V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=False)
 # A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
 _REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
+# Chinese relays (e.g. colabapi.com on glm-5.3) say this in Chinese; the English markers below
+# never match, so a disable gets no recovery and 400s forever. Match the semantic phrases directly.
+_ZH_REASONING_MANDATORY_MARKERS = (
+    "始终思考", "不支持关闭思考", "不能关闭思考", "无法关闭思考", "不支持关闭", "不可关闭思考",
+)
 
 # Generic markers a provider 400 puts next to the offending parameter name. Bedrock Converse
 # rejects sampling params for reasoning-first models with the contraction ("This model doesn't
@@ -534,6 +539,10 @@ def is_reasoning_required_rejection(error_msg: str) -> bool:
     reaction is to step the effort up to the lowest level rather than drop the field (a dropped field
     also works, but tells the caller nothing about the next call)."""
     msg = (error_msg or "").lower()
+    # Chinese relay wording (colabapi glm-5.3: "该模型始终思考，不支持关闭思考；请使用 low、high 或 max。"):
+    # no ASCII ``reasoning``/``thinking`` token is present, so the field-token scan below bails.
+    if any(m in msg for m in _ZH_REASONING_MANDATORY_MARKERS):
+        return True
     token = _REASONING_FIELD_TOKEN.search(msg)
     if token is None:
         return False
@@ -1160,7 +1169,8 @@ def _classify_400(c: _Ctx) -> Verdict:
     # OpenRouter) or a chat-only relay that does not accept ``reasoning_effort: none`` at all
     # (#114460). Deterministic for the request shape, but the only bad field is the disable — the
     # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
+    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg) \
+            or any(m in msg for m in _ZH_REASONING_MANDATORY_MARKERS):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

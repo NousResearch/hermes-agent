@@ -37,7 +37,11 @@ function renderCard() {
   return render(
     <I18nProvider configClient={null} initialLocale="en">
       <SessionViewProvider value={view()}>
-        <DelegateTool args={{ tasks: [{ goal: 'Inspect the delegate card' }] }} result={undefined} toolCallId="call-1" />
+        <DelegateTool
+          args={{ tasks: [{ goal: 'Inspect the delegate card' }] }}
+          result={undefined}
+          toolCallId="call-1"
+        />
       </SessionViewProvider>
     </I18nProvider>
   )

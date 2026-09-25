@@ -26,12 +26,14 @@ export function Masonry({ children, className, ...props }: ComponentProps<'div'>
       if (disposed || !node.clientWidth) {
         return
       }
+
       const style = getComputedStyle(node)
       const tracks = style.gridTemplateColumns.split(' ').map(Number.parseFloat)
 
       if (!tracks.length || tracks.some(width => !Number.isFinite(width))) {
         return
       }
+
       const gap = Number.parseFloat(style.columnGap) || 0
       const width = tracks[0]
       const widthValue = `${width}px`

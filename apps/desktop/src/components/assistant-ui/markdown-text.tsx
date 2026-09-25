@@ -363,7 +363,12 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 // This is split from the image path because that path is built on hooks: a
 // conditional return inside it would have to sit after every hook call, which
 // would still fire an image resolve for media we never render as an image.
-export function MarkdownImage(props: ComponentProps<'img'>) {
+export type MarkdownImageProps = ComponentProps<'img'> & {
+  allowOpenOnFailure?: boolean
+  resolveSrc?: (src: string) => Promise<string>
+}
+
+export function MarkdownImage({ resolveSrc, ...props }: MarkdownImageProps) {
   const rawSrc = typeof props.src === 'string' ? props.src : ''
   const kind = rawSrc ? mediaKind(rawSrc) : 'file'
 
@@ -371,7 +376,7 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
     return <MediaAttachment path={rawSrc} />
   }
 
-  return <MarkdownImageContent {...props} />
+  return <MarkdownImageContent resolveSrc={resolveSrc} {...props} />
 }
 
 // A cold frame is ~4:3 because that is the envelope an image can occupy here
@@ -382,6 +387,8 @@ export function MarkdownImage(props: ComponentProps<'img'>) {
 const COLD_IMAGE_RATIO = 4 / 3
 
 function MarkdownImageContent({
+  allowOpenOnFailure = true,
+  resolveSrc,
   className,
   src,
   alt,
@@ -391,9 +398,9 @@ function MarkdownImageContent({
   onError,
   style,
   ...props
-}: ComponentProps<'img'>) {
+}: MarkdownImageProps) {
   const rawSrc = typeof src === 'string' ? src : ''
-  const image = useMediaImage(rawSrc, COLD_IMAGE_RATIO, validImageDimensions(width, height))
+  const image = useMediaImage(rawSrc, COLD_IMAGE_RATIO, validImageDimensions(width, height), { resolveSrc })
   const { open, openFailed } = useOpenMediaFile(rawSrc)
   const name = mediaName(rawSrc || String(alt || 'image'))
 
@@ -407,10 +414,12 @@ function MarkdownImageContent({
     return (
       <span className="my-2 block text-sm text-muted-foreground" data-slot="aui_markdown-image">
         Couldn&apos;t load {name}.{' '}
-        <button className="ref font-medium text-foreground" onClick={open} type="button">
-          Open image
-        </button>
-        {openFailed && <OpenMediaFailedNote name={name} />}
+        {allowOpenOnFailure && (
+          <button className="ref font-medium text-foreground" onClick={open} type="button">
+            Open image
+          </button>
+        )}
+        {allowOpenOnFailure && openFailed && <OpenMediaFailedNote name={name} />}
       </span>
     )
   }

@@ -115,6 +115,48 @@ it.each(cases)('reserves $kind frames through cold decode, warm return and failu
   }
 })
 
+it('keeps scoped resolver images in the shared frame without unscoped reads or failure actions', async () => {
+  const resolveSrc = vi.fn(() => read())
+  const mounted = render(<MarkdownImage allowOpenOnFailure={false} resolveSrc={resolveSrc} src="/scoped/chart.svg" />)
+  expect(resolveSrc).toHaveBeenCalledWith('/scoped/chart.svg')
+  expect(window.hermesDesktop.readFileDataUrl).not.toHaveBeenCalledWith('/scoped/chart.svg')
+  expect(window.hermesDesktop.api).not.toHaveBeenCalled()
+  const reserved = frame(mounted.container).style.cssText
+  await decode(mounted.container, 88, 20)
+  expect(frame(mounted.container).style.cssText).toBe(reserved)
+  expect(mounted.container.querySelector('img')!.className).toContain('object-scale-down')
+  fireEvent.error(mounted.container.querySelector('img')!)
+  expect(mounted.container.textContent).toContain("Couldn't load")
+  expect(mounted.container.querySelector('button')).toBeNull()
+  expect(frame(mounted.container).style.aspectRatio).toBe('')
+})
+
+it('discards old pixels and late results when a same-path scoped resolver changes', async () => {
+  const a = vi.fn(() => read())
+  const b = vi.fn(() => read())
+  const view = (resolveSrc: typeof a) => (
+    <MarkdownImage allowOpenOnFailure={false} resolveSrc={resolveSrc} src="/scoped/switch.svg" />
+  )
+  const mounted = render(view(a))
+  expect(a).toHaveBeenCalledOnce()
+  await decode(mounted.container, 900, 600)
+  mounted.rerender(view(b))
+  expect(mounted.container.querySelector('img')).toBeNull()
+  expect(b).toHaveBeenCalledOnce()
+  mounted.rerender(view(a))
+  await act(async () => reads.shift()!.reject(new Error('retired scope')))
+  expect(mounted.container.textContent).not.toContain("Couldn't load")
+  await decode(mounted.container)
+  mounted.rerender(view(b))
+  mounted.rerender(view(a))
+  await act(async () => reads.shift()!.resolve('data:image/png;base64,c3RhbGU='))
+  expect(mounted.container.querySelector('img')).toBeNull()
+  await act(async () => reads.shift()!.resolve(''))
+  expect(mounted.container.textContent).toContain("Couldn't load")
+  expect(window.hermesDesktop.api).not.toHaveBeenCalled()
+  expect(read.mock.calls.every(args => args.length === 0)).toBe(true)
+})
+
 it('keeps the pending generated-image frame when its result arrives', async () => {
   const path = '/geometry/pending.svg'
   const mounted = render(<GeneratedImage aspectRatio="square" />)

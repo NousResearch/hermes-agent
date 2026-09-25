@@ -165,6 +165,11 @@ class TestReasoningEchoFamily:
         ("custom", None, "https://api.kimi.com/v1", "kimi"),
         ("custom", None, "https://api.moonshot.ai/v1", "kimi"),
         ("custom", None, "https://api.moonshot.cn/v1", "kimi"),
+        ("openrouter", "moonshotai/kimi-k3", "https://openrouter.ai/api/v1", "kimi"),
+        ("openrouter", "moonshotai/kimi-k2.5", "https://openrouter.ai/api/v1", "kimi"),
+        ("openrouter", "moonshotai/kimi-k3", "https://openrouter.ai.evil.example/v1", None),
+        ("custom", "moonshotai/kimi-k3", "https://api.other.example/v1", None),
+        ("openrouter", "other/kimi-k3", "https://openrouter.ai/api/v1", None),
         ("deepseek", "whatever", "https://x", "deepseek"),
         ("DeepSeek", "whatever", "https://x", "deepseek"),
         ("openrouter", "deepseek/deepseek-v3", "https://openrouter.ai", "deepseek"),
@@ -325,6 +330,31 @@ class TestPerProviderReasoningEcho:
         agent._needs_kimi_tool_reasoning = lambda: False
         agent._needs_mimo_tool_reasoning = lambda: False
         return agent
+
+    def test_openrouter_kimi_tool_replay_keeps_reasoning_on_wire(self):
+        from agent.transports import get_transport
+
+        agent = self._make_agent(provider="openrouter", model="moonshotai/kimi-k3",
+                                 base_url="https://openrouter.ai/api/v1")
+        del agent._needs_kimi_tool_reasoning  # exercise the production family predicate
+        assert agent._needs_thinking_reasoning_pad()
+        history = {"role": "assistant", "content": None, "reasoning_content": "prior thought",
+                   "tool_calls": [{"id": "call_1", "type": "function",
+                                   "function": {"name": "patch", "arguments": '{"path":"a"}'}}]}
+        replay = history.copy()
+        agent._copy_reasoning_content_for_api(history, replay)
+        wire = get_transport("chat_completions").build_kwargs(
+            agent.model, [{"role": "user", "content": "update a"}, replay,
+                          {"role": "tool", "tool_call_id": "call_1", "content": "error"}],
+            base_url=agent.base_url)["messages"]
+        assert wire[1]["reasoning_content"] == history["reasoning_content"]
+
+        agent.base_url = "https://api.other.example/v1"
+        agent._base_url_lower = agent.base_url
+        assert not agent._needs_thinking_reasoning_pad()
+        strict_replay = history.copy()
+        agent._copy_reasoning_content_for_api(history, strict_replay)
+        assert "reasoning_content" not in strict_replay
 
     def test_default_false_strips_for_custom_provider(self):
         """Default (flag=False): a custom gateway is NOT an echo family,

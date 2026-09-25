@@ -523,7 +523,7 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
 
 # -- reasoning_content policy: single owner of strip-vs-re-pad; adapters keep only SYNTAX --
 # Require side (echo-back enforced; replays 400 without the field): the families below. Kimi
-# is host-driven on purpose (aggregators re-exporting kimi reject it); DeepSeek V4 rejects
+# is host-driven on purpose (other aggregators re-exporting kimi may reject it); DeepSeek V4 rejects
 # empty-string pads → " ". Strict side (400/422 "Extra inputs are not permitted"): everyone
 # else — Mistral, Cerebras, Groq, SambaNova, … Strip the key entirely, even a one-space pad.
 
@@ -535,7 +535,8 @@ def uniquify_tool_call_ids(tool_calls: list) -> list:
 # functions; adapters keep only SYNTAX mapping (e.g. anthropic_adapter turning reasoning_content into a
 # thinking block). Direction table: require-side (echo-back enforced; replays 400 without the field): kimi
 # — provider kimi-coding/kimi-coding-cn, or host api.kimi.com / moonshot.ai / moonshot.cn. Host-driven on
-# purpose: aggregators re-exporting kimi models reject the echo. deepseek — provider "deepseek", model
+# purpose: other aggregators re-exporting kimi models may reject the echo. OpenRouter's
+# moonshotai/kimi models accept reasoning_content as an alias for reasoning. deepseek — provider "deepseek", model
 # contains "deepseek", or host api.deepseek.com (#15250; V4 rejects empty-string pads, hence the " "
 # single-space pad, #17341). mimo     — provider "xiaomi", model contains "mimo", or host *.xiaomimimo.com.
 # strict side (field rejected with 400/422 "Extra inputs are not permitted"): everyone else — Mistral,
@@ -556,6 +557,9 @@ def matches_reasoning_echo_family(family: str, provider: Any, model: Any, base_u
 
     _, raw_providers, lowered_providers, model_subs, hosts = _REASONING_ECHO_RULE_BY_FAMILY[family]
     model_lower = (model or "").lower()
+    if (family == "kimi" and model_lower.startswith("moonshotai/kimi-")
+            and base_url_host_matches(base_url, "openrouter.ai")):
+        return True
     return (
         provider in raw_providers or (provider or "").lower() in lowered_providers
         or any(sub in model_lower for sub in model_subs) or any(base_url_host_matches(base_url, host) for host in hosts)

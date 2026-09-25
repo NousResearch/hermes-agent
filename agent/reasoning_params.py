@@ -192,12 +192,11 @@ class ReasoningParamsMixin:
         except Exception:
             return False
 
-    # Echo families are host/provider-driven, not model-name-driven: aggregators re-exporting Kimi reject the
-    # echo. Rule table: ``message_sanitization._REASONING_ECHO_RULES``. Kimi deliberately passes the raw
-    # provider and no model (its rule matches exact provider ids + hosts only).
+    # Kimi is host/provider-driven except for OpenRouter's Moonshot/Kimi route, which
+    # accepts reasoning_content as an alias for reasoning. Other aggregators remain strict.
     def _needs_kimi_tool_reasoning(self) -> bool:
         """True when the current provider is Kimi / Moonshot thinking mode."""
-        return matches_reasoning_echo_family("kimi", self.provider, None, self.base_url)
+        return matches_reasoning_echo_family("kimi", self.provider, self.model, self.base_url)
 
     def _needs_deepseek_tool_reasoning(self) -> bool:
         """True when the current provider is DeepSeek thinking mode (omitting the echo is an HTTP 400).

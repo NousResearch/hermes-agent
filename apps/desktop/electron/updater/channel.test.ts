@@ -180,7 +180,9 @@ test.each(['NODE_OPTIONS', 'PATH', 'HERMES_PYTHON'])(
   async (key: string): Promise<void> => {
     const f = await fixture()
     f.manifest.request.bundleEnv[key] = null
-    expect((): void => { decodeChannelManifest(JSON.stringify(f.manifest)) }).toThrow('Invalid bundle environment name')
+    expect((): void => {
+      decodeChannelManifest(JSON.stringify(f.manifest))
+    }).toThrow('Invalid bundle environment name')
   }
 )
 
@@ -270,12 +272,14 @@ test.each(['rc.1-v0.21.5', 'rc.12-v1.0.0'] as const)(
     f.manifest.packages[0].artifact.key = `releases/tag/${attempt}/darwin/Hermes.zip`
     f.manifest.packages[0].feed.key = `releases/tag/${attempt}/darwin/stable-mac.yml`
     f.publish()
+
     const result = await new ChannelResolver({
       build: f.build,
       platform: 'darwin',
       arch: 'arm64',
       signer: 'ABCDE12345'
     }).resolve()
+
     expect(result.kind).toBe('active')
   }
 )
@@ -304,10 +308,12 @@ test('the protected archive prefix falls back closed to the bare release tag', a
 test('archiveRef parses the shared attempt-ref grammar or is refused', async (): Promise<void> => {
   const f = await fixture()
   const decode = (): unknown => decodeChannelManifest(JSON.stringify(f.manifest))
+
   for (const ref of ['rc.1-v0.21.5', 'rc.12-v1.0.0']) {
     f.manifest.request.archiveRef = ref
     expect(decode).not.toThrow()
   }
+
   for (const ref of [
     'v0.21.5-rc',
     'v0.21.5-rc.1',
@@ -320,6 +326,7 @@ test('archiveRef parses the shared attempt-ref grammar or is refused', async ():
     f.manifest.request.archiveRef = ref
     expect(decode).toThrow(/archiveRef/)
   }
+
   delete f.manifest.request.archiveRef
   expect(decode).not.toThrow()
 })

@@ -213,10 +213,22 @@ def _joined_output(r) -> str:
     return "\n".join(p for p in (r.stdout or "", r.stderr or "") if p).strip()
 
 
+def _session_scoped_toolsets(session) -> list[str] | None:
+    """The toolsets a session's RPC answers must reflect: the live agent's set when built, else the
+    pin/config the session's own home resolves (profile editor saves land there, and a foreign-profile
+    session served by one backend must not read the launch home). ``None`` = all toolsets."""
+    if session is not None and session.get("agent") is not None:
+        return getattr(session["agent"], "enabled_toolsets", None)
+    if session is None:
+        return _load_enabled_toolsets()
+    with _session_home_scope(session):
+        return _load_enabled_toolsets(_resolve_agent_platform(_session_source(session)))
+
+
 def _toolset_rows(params: dict, *, with_tools: bool) -> list[dict]:
     toolsets = _tools_mod("toolsets")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = set((getattr(session["agent"], "enabled_toolsets", []) if session else _load_enabled_toolsets()) or [])
+    enabled = set(_session_scoped_toolsets(session) or [])
     items = []
     for name in sorted(toolsets.get_all_toolsets().keys()):
         if info := toolsets.get_toolset_info(name):
@@ -1121,7 +1133,7 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     mt = _tools_mod("model_tools")
     session = _sessions.get(params.get("session_id", ""))
-    enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
+    enabled = _session_scoped_toolsets(session)
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
     tools = mt.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True, skip_tool_search_assembly=True)
     sections = {}

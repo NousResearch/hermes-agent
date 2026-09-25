@@ -31,6 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
 sys.path.insert(0, REPO)
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as _kbc
 assert home in str(kb.kanban_db_path()), kb.kanban_db_path()
 
 spec = importlib.util.spec_from_file_location("kp", os.path.join(HERE, "__init__.py"))
@@ -40,7 +41,7 @@ kp.ARTIFACT_STATE_FN = lambda url: {
     "detail": "state=OPEN reviewDecision=APPROVED (local fake transport)",
 }
 
-with kb.connect() as conn:
+with _kbc.connect() as conn:
     src = kb.create_task(conn, title="impl thing", assignee="software-engineer",
                          body="Opened https://github.com/VibeTechnologies/AgentPod/pull/4927")
     # a card whose title starts with pipeline: must NOT chain
@@ -53,7 +54,7 @@ kp._on_completed(task_id=src)   # idempotent
 kp._on_completed(task_id=loop)  # no chain
 kp._on_completed(task_id=nopr)  # no chain
 
-with kb.connect() as conn:
+with _kbc.connect() as conn:
     rows = conn.execute("select id,title,assignee,status,idempotency_key from tasks order by created_at").fetchall()
     for r in rows: print(tuple(r))
     titles = [r[1] for r in rows]

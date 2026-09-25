@@ -25,8 +25,9 @@ def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="handoff-repro-"))
     os.environ["HERMES_HOME"] = str(tmp)
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as _kbc
 
-    conn = kb.connect(tmp / "board.db")
+    conn = _kbc.connect(tmp / "board.db")
     ws = tmp / "shared-workspace"
     ws.mkdir()
     tid = kb.create_task(

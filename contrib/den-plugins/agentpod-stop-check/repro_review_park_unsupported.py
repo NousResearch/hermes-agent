@@ -30,8 +30,9 @@ if str(REPO) not in sys.path:
 def _board(tmp: Path):
     os.environ["HERMES_HOME"] = str(tmp)
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as _kbc
 
-    return kb, kb.connect(tmp / "board.db")
+    return kb, _kbc.connect(tmp / "board.db")
 
 
 def scenario_a(kb, conn) -> bool:

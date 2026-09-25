@@ -142,10 +142,16 @@ class DaytonaEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False, timeout: int = 120,
                   stdin_data: str | None = None):
         sandbox, lock = self._sandbox, self._lock
+        staged_stdin = {"path": None}
 
         def cancel():
-            with lock, contextlib.suppress(Exception):
-                sandbox.stop()
+            with lock:
+                remote_stdin = staged_stdin["path"]
+                if remote_stdin:
+                    with contextlib.suppress(Exception):
+                        sandbox.fs.delete_file(remote_stdin, request_timeout=5)
+                with contextlib.suppress(Exception):
+                    sandbox.stop()
 
         def exec_fn() -> tuple[str, int]:
             remote_stdin = None
@@ -153,15 +159,19 @@ class DaytonaEnvironment(BaseEnvironment):
             try:
                 command = cmd_string
                 if stdin_data is not None:
-                    remote_stdin = f"/tmp/.hermes-stdin-{uuid.uuid4().hex}"
+                    temp_dir = self.get_temp_dir().rstrip("/") or "/"
+                    remote_stdin = f"{temp_dir}/.hermes-stdin-{uuid.uuid4().hex}"
+                    staged_stdin["path"] = remote_stdin
                     with tempfile.NamedTemporaryFile(delete=False) as staged:
                         local_stdin = staged.name
-                        staged.write(stdin_data.encode("utf-8"))
+                        staged.write(stdin_data.encode("utf-8", "surrogateescape"))
                     sandbox.fs.upload_file(local_stdin, remote_stdin)
+                    sandbox.fs.set_file_permissions(remote_stdin, mode="600")
                     quoted_stdin = shlex.quote(remote_stdin)
                     command = (
-                        f"trap 'rm -f -- {quoted_stdin}' EXIT\n"
-                        f"{{\n{cmd_string}\n}} < {quoted_stdin}"
+                        f"exec 0< {quoted_stdin} || exit $?\n"
+                        f"rm -f -- {quoted_stdin} || exit $?\n"
+                        f"{cmd_string}"
                     )
                 shell_cmd = f"bash {'-l ' if login else ''}-c {shlex.quote(command)}"
                 response = sandbox.process.exec(shell_cmd, timeout=timeout)
@@ -172,7 +182,8 @@ class DaytonaEnvironment(BaseEnvironment):
                         os.unlink(local_stdin)
                 if remote_stdin:
                     with contextlib.suppress(Exception):
-                        sandbox.process.exec(f"rm -f -- {shlex.quote(remote_stdin)}")
+                        sandbox.fs.delete_file(remote_stdin, request_timeout=5)
+                    staged_stdin["path"] = None
 
         return _ThreadedProcessHandle(exec_fn, cancel_fn=cancel)
 

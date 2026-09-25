@@ -114,7 +114,7 @@ class TestModalBulkUpload:
         assert args[1] == "-c"
 
         # Reassemble the base64 payload from stdin chunks and verify tar contents
-        payload = "".join(stdin_mock._written_chunks)
+        payload = b"".join(stdin_mock._written_chunks)
         tar_data = base64.b64decode(payload)
         buf = io.BytesIO(tar_data)
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
@@ -150,7 +150,7 @@ class TestModalBulkUpload:
         assert len(stdin_mock._written_chunks) >= 2
 
         # Reassembled payload should still decode to valid tar
-        payload = "".join(stdin_mock._written_chunks)
+        payload = b"".join(stdin_mock._written_chunks)
         tar_data = base64.b64decode(payload)
         buf = io.BytesIO(tar_data)
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
@@ -161,14 +161,15 @@ class TestModalBulkUpload:
 class TestModalCommandStdin:
     def test_large_payload_uses_sdk_stdin_not_bash_argv(self, monkeypatch, tmp_path):
         env = _make_mock_modal_env(monkeypatch, tmp_path)
-        payload = "x" * (70 * 1024)
+        expected = (b"A" * (160 * 1024)) + b"\x00\xff\xfeTAIL"
+        payload = expected.decode("utf-8", "surrogateescape")
         exec_calls, _, stdin_mock = _wire_async_exec(env)
 
         handle = env._run_bash("cat > /tmp/payload.txt", stdin_data=payload)
 
         assert handle.wait(timeout=2) == 0
         assert modal_env.ModalEnvironment._stdin_mode == "payload"
-        assert "".join(stdin_mock._written_chunks) == payload
+        assert b"".join(stdin_mock._written_chunks) == expected
         assert len(exec_calls) == 1
         assert payload not in " ".join(str(part) for part in exec_calls[0])
         stdin_mock.write_eof.assert_called_once()

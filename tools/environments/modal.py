@@ -82,9 +82,10 @@ def _resolve_modal_image(image_spec: Any) -> Any:
 
 
 async def _stream_stdin(proc, payload: str, chunk_size: int) -> None:
-    """Write ``payload`` to ``proc.stdin`` in ``chunk_size`` pieces, draining after each, then EOF."""
-    for offset in range(0, len(payload), chunk_size):
-        proc.stdin.write(payload[offset:offset + chunk_size])
+    """Write byte-exact UTF-8 payload chunks to ``proc.stdin``, then EOF."""
+    data = payload.encode("utf-8", "surrogateescape")
+    for offset in range(0, len(data), chunk_size):
+        proc.stdin.write(data[offset:offset + chunk_size])
         await proc.stdin.drain.aio()
     proc.stdin.write_eof()
     await proc.stdin.drain.aio()

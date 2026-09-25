@@ -523,6 +523,36 @@ class TestExecute:
         assert args == ["-c", "echo done"]
         assert kwargs["cwd"] == "/vercel/sandbox"
 
+    def test_cancel_stops_without_dispatching_cleanup_command(
+        self, make_env, vercel_sdk
+    ):
+        env = make_env()
+        sandbox = vercel_sdk.current
+        sandbox.run_command_calls.clear()
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking_command(_cmd: str, _args: list[str], _kwargs: dict):
+            started.set()
+            release.wait(timeout=5)
+            return _FakeRunResult("")
+
+        sandbox.run_command_side_effects.append(blocking_command)
+        handle = env._run_bash("cat > /tmp/payload.txt", stdin_data="secret")
+        assert started.wait(timeout=1)
+
+        handle.kill()
+        release.set()
+
+        assert handle.wait(timeout=2) == 0
+        # kill() must not dispatch another potentially unbounded SDK command.
+        user_calls = [
+            (cmd, args) for cmd, args, _ in sandbox.run_command_calls
+            if cmd == "bash" and len(args) > 1 and "cat > /tmp/payload.txt" in args[1]
+        ]
+        assert len(user_calls) == 1
+        assert len(sandbox.stop_calls) == 1
+
     def test_large_stdin_is_staged_outside_command_argv(
         self, make_env, vercel_sdk
     ):
@@ -530,7 +560,8 @@ class TestExecute:
         sandbox = vercel_sdk.current
         sandbox.run_command_calls.clear()
         sandbox.write_files_calls.clear()
-        payload = "x" * (70 * 1024)
+        expected = (b"A" * (160 * 1024)) + b"\x00\xff\xfeTAIL"
+        payload = expected.decode("utf-8", "surrogateescape")
 
         handle = env._run_bash("cat > /tmp/payload.txt", stdin_data=payload)
 
@@ -538,13 +569,16 @@ class TestExecute:
         assert env._stdin_mode == "payload"
         assert sandbox.write_files_calls
         staged = sandbox.write_files_calls[0][0]
-        assert staged["content"] == payload.encode("utf-8")
+        assert staged["content"] == expected
+        assert staged["mode"] == 0o600
         command = next(
             args[1] for cmd, args, _ in sandbox.run_command_calls
             if cmd == "bash" and len(args) > 1 and "cat > /tmp/payload.txt" in args[1]
         )
         assert payload not in command
         assert ".hermes-stdin-" in command
+        assert command.index("exec 0<") < command.index("rm -f --")
+        assert command.index("rm -f --") < command.index("cat > /tmp/payload.txt")
 
 
 class TestSnapshotPersistence:

@@ -203,7 +203,7 @@ def inspect_runtime_activation(
     has its required secret; neither the DSN nor any connection is retained.
     """
     from hermes_constants import profile_name_for_home, reset_hermes_home_override, set_hermes_home_override
-    from state_store import postgresql_tenant_schema
+    from state_store import _resolve_postgresql_tenant_schema
 
     canonical_home = home.expanduser().resolve()
     raw_config = config if config is not None else _read_profile_config(canonical_home)
@@ -218,7 +218,7 @@ def inspect_runtime_activation(
         )
     token = set_hermes_home_override(str(canonical_home))
     try:
-        tenant_schema = postgresql_tenant_schema()
+        tenant_schema = _resolve_postgresql_tenant_schema().name
     finally:
         reset_hermes_home_override(token)
     return RuntimeActivationReport(
@@ -226,6 +226,7 @@ def inspect_runtime_activation(
         tenant_schema=tenant_schema,
         supported_capabilities=(
             "narrow-state-store", "profile-derived-tenant-schema",
+            "alembic-core-v25-catalog",
             "cli-fresh-resume-session-contract",
             "contextual-session-search-contract",
             "gateway-session-routing-transcript",

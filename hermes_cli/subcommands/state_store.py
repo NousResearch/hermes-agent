@@ -25,11 +25,23 @@ def build_state_store_parser(subparsers, *, cmd_state_store: Callable) -> None:
         help="Confirm writers are quiesced before taking the logical backup",
     )
     backup.set_defaults(func=cmd_state_store)
+    sqlite_import = commands.add_parser(
+        "sqlite-import",
+        help="Import an explicit SQLite rehearsal into a newly allocated owned PostgreSQL tenant",
+    )
+    sqlite_import.add_argument("--source", required=True, type=Path)
+    sqlite_import.add_argument("--snapshot-root", required=True, type=Path)
+    sqlite_import.add_argument("--evidence", type=Path)
+    sqlite_import.set_defaults(func=cmd_state_store)
 
 
 def run_state_store_command(args) -> int:
     """Run selected-PG maintenance and render sanitized JSON evidence."""
     from postgresql_state_store_operations import PostgreSQLSandboxOperationsError
+    from postgresql_state_store_sqlite_import import (
+        SQLiteImportTargetCleanup,
+        SQLitePostgreSQLImportError,
+    )
     from state_store_maintenance import StateStoreMaintenanceError, StateStoreMaintenanceOperations
 
     try:
@@ -52,7 +64,51 @@ def run_state_store_command(args) -> int:
                 "restore_verification": verification,
             }, sort_keys=True, indent=2))
             return 0
+        if args.state_store_action == "sqlite-import":
+            # Resolve the profile-scoped PostgreSQL secret through the maintenance
+            # boundary, but never use the selected tenant as a destination.
+            native = operations._postgresql_operations(None)
+            from postgresql_state_store_sqlite_import import import_into_allocated_target
+
+            result, target = import_into_allocated_target(
+                native._settings,
+                native._dsn,
+                args.source,
+                snapshot_root=args.snapshot_root,
+                evidence_path=args.evidence,
+            )
+            # A command-line rehearsal has no returned Python capability with
+            # which to later prove target ownership.  Tear the disposable target
+            # down before reporting success rather than leaving an inaccessible
+            # completed sandbox behind.
+            try:
+                cleanup = target.drop()
+            except SQLitePostgreSQLImportError as exc:
+                raise SQLitePostgreSQLImportError(
+                    "SQLite import completed but CLI target cleanup was not committed",
+                    cleanup=SQLiteImportTargetCleanup(
+                        "reconciliation-required", target.schema.name, str(exc)
+                    ),
+                ) from exc
+            print(json.dumps({
+                "import_id": result.import_id,
+                "status": result.status,
+                "source_fingerprint": result.source_fingerprint,
+                "object_counts": result.object_counts,
+                "target_schema": target.schema.name,
+                "cleanup": cleanup.as_dict(),
+            }, sort_keys=True, indent=2))
+            return 0
         raise ValueError(f"unknown state-store action: {args.state_store_action}")
-    except (StateStoreMaintenanceError, PostgreSQLSandboxOperationsError, ValueError) as exc:
-        print(f"state-store {args.state_store_action} failed: {exc}")
+    except (StateStoreMaintenanceError, PostgreSQLSandboxOperationsError, SQLitePostgreSQLImportError, ValueError) as exc:
+        cleanup = getattr(exc, "cleanup", None)
+        if cleanup is not None:
+            print(json.dumps({
+                "action": args.state_store_action,
+                "status": "failed",
+                "error": str(exc),
+                "cleanup": cleanup.as_dict(),
+            }, sort_keys=True, indent=2))
+        else:
+            print(f"state-store {args.state_store_action} failed: {exc}")
         return 2

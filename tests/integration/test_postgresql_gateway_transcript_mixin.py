@@ -7,6 +7,7 @@ to return the real store), and asserts zero state.db opens for the surface.
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -174,3 +175,16 @@ def test_advance_compression_session_cas_over_route(mixin, pg_mixin_home):
     # Advancing to the already-current tip is idempotent.
     assert shell.advance_compression_session(key, session_id, child).session_id == child
     assert opens == []
+
+
+@pytest.mark.parametrize("tenant_schema", (None, "", "   "))
+def test_route_store_rejects_missing_or_empty_resolver_tenant_schema(monkeypatch, tenant_schema):
+    from gateway.session import SessionStore
+
+    shell = object.__new__(SessionStore)
+    monkeypatch.setattr(
+        SessionStore, "_postgresql_state_store", lambda _self: SimpleNamespace(tenant_schema=tenant_schema),
+    )
+
+    with pytest.raises(RuntimeError, match="resolver-derived tenant namespace"):
+        shell._postgresql_route_store()

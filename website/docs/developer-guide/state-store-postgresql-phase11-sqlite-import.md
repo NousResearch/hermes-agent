@@ -6,12 +6,13 @@ This phase adds a **sandbox-only command** for importing the currently supported
 python -m postgresql_state_store_sqlite_import \
   --source /absolute/disposable/source.db \
   --snapshot-root /absolute/disposable/rehearsal-output \
-  --schema hermes_state_store_tenant_<32-lowercase-hex> \
   --dsn 'postgresql://…/hermes_state_store_test' \
   --evidence /absolute/disposable/rehearsal-output/import-manifest.json
 ```
 
-The command refuses the active default `HERMES_HOME/state.db`. The source and target must both be explicitly supplied sandbox artifacts. A PostgreSQL target must be a newly created, generated tenant schema; it is never the shared/default schema.
+The standalone importer has no `--schema` option. It refuses the active default `HERMES_HOME/state.db`; the source must be explicitly supplied, and the importer allocates its own newly created marker-owned PostgreSQL tenant schema. `hermes state-store sqlite-import` follows the same allocation rule while resolving the selected profile's PostgreSQL secret through the maintenance boundary. Neither command accepts an operator-selected destination schema, and neither ever imports into the selected runtime tenant or a historic `hermes_state_store_slice` schema.
+
+Each allocated target reaches the current non-topic head `state_store_v26_sqlite_import` through the only supported linear chain: **v25 immutable historic core baseline -> v26 non-topic sqlite import manifest head** (`state_store_v25_core` → `state_store_v26_sqlite_import`). **v26 is NOT historic session-topic v26**: it creates no `session_topics` relation and no `messages.topic_id` column. Session-topic DDL belongs only to the separate session-topic branch.
 
 ## Mapping and fail-closed policy
 
@@ -30,7 +31,7 @@ Unknown SQLite domain objects fail before PostgreSQL target writes. SQLite inter
 
 The importer creates a consistent read-only SQLite snapshot with `sqlite3.Connection.backup()`, which includes committed WAL content. It fingerprints that snapshot, records source counts/schema and target pre-import counts in the durable `sqlite_import_manifests` table, and imports in one PostgreSQL transaction.
 
-On interruption or invariant failure, PostgreSQL rows roll back and the durable manifest is marked `failed`; the schema remains isolated and must not be selected for runtime. A retry is allowed only when the same snapshot fingerprint is supplied and all supported target tables are empty. A completed retry is idempotent only when the destination counts still match the manifest. Changed source snapshots and target drift fail closed.
+`SQLitePostgreSQLSandboxImporter.import_source()` is the direct-library primitive: its caller supplied an ownership-validated target, so an interrupted import rolls back PostgreSQL rows, marks the durable manifest `failed`, and leaves that caller-owned isolated target available for an explicit retry or `target.drop()`. `import_into_allocated_target()` is the allocation helper: it marker-validates and drops its fresh target on an import failure. A command-line invocation has no returned ownership capability, so after a successful import both CLI entry points marker-validate and drop the target before emitting status `complete`; their JSON includes `cleanup.status: "dropped"` and the former `target_schema` only as audit evidence. If that final cleanup does not commit, the CLI reports failure rather than a successful rehearsal. A retry is allowed only when the same snapshot fingerprint is supplied and all supported target tables are empty. A completed retry is idempotent only when the destination counts still match the manifest. Changed source snapshots and target drift fail closed.
 
 Before a rehearsal is considered recoverable, run native PG doctor, then `PostgreSQLSandboxOperations.backup(..., quiesced=True)` and `restore_and_verify()` into its generated disposable database. That logical backup is the sandbox rollback/recovery proof; it is not a reverse migration or a production rollback.
 

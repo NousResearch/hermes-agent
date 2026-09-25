@@ -33,7 +33,7 @@ def pg18_schema(monkeypatch, postgresql_test_target):
     _SCHEMA, _TARGET = postgresql_test_target.schema, postgresql_test_target
     monkeypatch.setenv("HERMES_STATE_STORE_TEST_DSN", _DSN)
     import state_store
-    monkeypatch.setattr(state_store, "postgresql_tenant_schema", lambda *_args, **_kwargs: _SCHEMA)
+    monkeypatch.setattr(state_store, "_resolve_postgresql_tenant_schema", lambda *_args, **_kwargs: _SCHEMA)
     yield
     _TARGET = None
 
@@ -127,13 +127,8 @@ def test_pg18_namespace_isolation_release_fence_and_catalog_rollback():
                               "VALUES ('alpha', 'same', 'bad', 'invalid', 2, 0, 0)")
         assert store.begin_session_runtime_turn(successor, "after-rollback")
         with store._connection() as connection, connection.cursor() as cursor:
-            cursor.execute("SELECT version FROM schema_migrations ORDER BY version")
-            # The selected-PG compression facade adds the v20 atomic
-            # parent/child publication receipt migration.  Keep this direct
-            # ownership test coupled to the current catalog (the v25 gateway
-            # transcript migration is the latest here), not the v19 precursor
-            # that introduced the ownership tables.
-            assert [int(row[0]) for row in cursor.fetchall()][-1] == 25
+            cursor.execute("SELECT version_num FROM alembic_version")
+            assert cursor.fetchall() == [("state_store_v26_sqlite_import",)]
     finally:
         store.close()
 
@@ -141,7 +136,7 @@ def test_pg18_namespace_isolation_release_fence_and_catalog_rollback():
 def test_pg18_runtime_catalog_drift_fails_closed():
     store = _store(); store.close()
     _target().execute(f"DROP INDEX {_SCHEMA}.session_runtime_owners_expires")
-    with pytest.raises(Exception, match="missing index"):
+    with pytest.raises(Exception, match="index method"):
         _store()
 
 

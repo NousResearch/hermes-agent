@@ -54,7 +54,9 @@ session-dict shape `SessionDB.export_session()` emits.
 
 This is the reverse direction of the Phase 11 sandbox importer
 (`state-store-postgresql-phase11-sqlite-import.md`): instead of moving a
-consistent SQLite snapshot into a fresh PostgreSQL tenant, the exported payloads
+consistent SQLite snapshot into a fresh importer-allocated PostgreSQL tenant at
+the non-topic `state_store_v26_sqlite_import` head (following immutable historic
+`state_store_v25_core`), the exported payloads
 are adopted by a **separate, disposable SQLite candidate** — never the active
 `state.db`:
 
@@ -67,6 +69,9 @@ are adopted by a **separate, disposable SQLite candidate** — never the active
 - Process-local objects (gateway routing, leases, async-delegation rows) are not
   portable and are not synthesized. The fail-closed policy mirrors Phase 11:
   unsupported populated values reject the import rather than truncating it.
+- The forward/importer chain has no `session_topics` table or
+  `messages.topic_id` column. Session-topic DDL remains reserved for its separate
+  branch and is not created or reversed by this procedure.
 
 Verify imported counts and invariants against the Phase 10 manifest before
 proceeding: session/message counts must match, parents must resolve, and every

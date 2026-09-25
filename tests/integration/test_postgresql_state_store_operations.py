@@ -14,6 +14,7 @@ from gateway.delivery_ledger_postgresql import DeliveryLedgerPostgreSQLConfig, P
 from hermes_state_runtime_ownership import RuntimeOwner
 from postgresql_state_store_operations import PostgreSQLSandboxOperations, PostgreSQLSandboxOperationsError
 from state_store import PostgreSQLStateStoreConfig
+from state_store_alembic.runner import CURRENT_STATE_STORE_REVISION
 from state_store_postgresql import PostgreSQLStateStore
 from tests.integration.postgresql_test_target import OwnedPostgreSQLTestTarget
 
@@ -96,6 +97,7 @@ def test_pg18_doctor_backup_restore_isolated_and_reversible(sandbox, backup_root
     )
 
     status = operations.doctor(required_extensions=("pg_trgm", "vector"))
+    assert status["migration_revision"] == CURRENT_STATE_STORE_REVISION
     assert status["search"]["available"] is True
     assert status["ownership"]["active_leases"] == 1
     assert status["delivery_ledger"] == {
@@ -153,13 +155,25 @@ def test_pg18_backup_rejects_missing_explicit_quiescence(sandbox, backup_root: P
 def test_pg18_doctor_rejects_catalog_drift_without_migrating(sandbox):
     operations, store, _delivery, _state_target, _delivery_target = sandbox
     _state_target.execute(
-        f"DELETE FROM \"{store._schema}\".schema_migrations WHERE version=18"
+        f"DELETE FROM \"{store._schema}\".alembic_version WHERE version_num='{CURRENT_STATE_STORE_REVISION}'"
     )
-    with pytest.raises(PostgreSQLSandboxOperationsError, match="migration catalog"):
+    with pytest.raises(
+        PostgreSQLSandboxOperationsError,
+        match="PostgreSQL tenant Alembic/core catalog is unhealthy",
+    ):
         operations.doctor()
     with _psycopg().connect(_DSN) as connection, connection.cursor() as cursor:
-        cursor.execute(f"SELECT count(*) FROM {store._schema}.schema_migrations WHERE version=18")
+        cursor.execute(f"SELECT count(*) FROM {store._schema}.alembic_version WHERE version_num='{CURRENT_STATE_STORE_REVISION}'")
         assert cursor.fetchone()[0] == 0
+
+
+def test_pg18_doctor_rejects_semantic_catalog_drift_without_repairing(sandbox):
+    operations, store, _delivery, _state_target, _delivery_target = sandbox
+    _state_target.execute(
+        f"ALTER TABLE \"{store._schema}\".sessions ALTER COLUMN hidden SET DEFAULT true"
+    )
+    with pytest.raises(PostgreSQLSandboxOperationsError, match="Alembic/core catalog"):
+        operations.doctor()
 
 
 def _restored_databases() -> list[str]:

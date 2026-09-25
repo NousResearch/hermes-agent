@@ -22,18 +22,22 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from state_store import PostgreSQLStateStoreConfig
+from state_store_alembic.errors import BaselineMigrationContractError
+from state_store_alembic.migration_helpers import TrustedTenantSchema, require_trusted_tenant_schema
+from state_store_alembic.runner import CURRENT_STATE_STORE_REVISION
+from state_store_alembic.semantic_catalog import validate_current_catalog_cursor
 
 _MANIFEST_VERSION = 1
 _TARGET_DATABASE_RE = re.compile(r"^hermes_state_restore_[0-9a-f]{32}$")
 _RESTORE_MARKER_TABLE = "__hermes_owned_restore_target"
 _IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 _REQUIRED_TABLES = (
-    "schema_migrations", "sessions", "messages", "system_prompts", "session_model_usage",
-    "conversation_generations", "session_runtime_owners", "session_runtime_turns",
-    "compression_locks", "session_turn_leases",
+    "alembic_version", "sessions", "messages", "system_prompts", "session_model_usage",
+    "conversation_generations", "search_index_maintenance", "session_runtime_owners",
+    "session_runtime_turns", "compression_locks", "session_turn_leases",
+    "compression_rotation_receipts", "session_control_state", "rewind_receipts",
+    "foreign_import_receipts", "gateway_session_routes", "sqlite_import_manifests",
 )
-# Tracks the state_store_postgresql schema ledger through _GATEWAY_TRANSCRIPT_SCHEMA_VERSION (25).
-_REQUIRED_MIGRATIONS = tuple(range(1, 26))
 _OPTIMIZE_TABLES = _REQUIRED_TABLES
 _OPTIMIZE_STATEMENT_TIMEOUT_MS = 30_000
 _OPTIMIZE_LOCK_TIMEOUT_MS = 2_000
@@ -88,16 +92,23 @@ class PostgreSQLSandboxOperations:
         settings: PostgreSQLStateStoreConfig,
         dsn: str,
         *,
-        schema: str,
+        schema: TrustedTenantSchema,
         delivery_schema: str | None = None,
         profile_identity: Mapping[str, str] | None = None,
         command_runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     ) -> None:
-        if not _IDENTIFIER_RE.fullmatch(schema) or (delivery_schema is not None and not _IDENTIFIER_RE.fullmatch(delivery_schema)):
+        try:
+            schema = require_trusted_tenant_schema(schema)
+        except Exception as exc:
+            raise PostgreSQLSandboxOperationsError(
+                "PostgreSQL operational target requires a runtime-derived trusted tenant schema capability"
+            ) from exc
+        if delivery_schema is not None and not _IDENTIFIER_RE.fullmatch(delivery_schema):
             raise PostgreSQLSandboxOperationsError("PostgreSQL operational target received an invalid trusted schema")
         self._settings = settings
         self._dsn = dsn
-        self._schema = schema
+        self._tenant_schema = schema
+        self._schema = schema.name
         self._delivery_schema = delivery_schema
         self._profile_identity = dict(profile_identity or {})
         self._command_runner = command_runner
@@ -167,11 +178,17 @@ class PostgreSQLSandboxOperations:
             server_version = str(cursor.fetchone()[0])
             if not self._schema_exists(cursor, self._schema):
                 raise PostgreSQLSandboxOperationsError("PostgreSQL tenant schema is absent")
+            try:
+                validate_current_catalog_cursor(cursor, self._schema)
+            except BaselineMigrationContractError as exc:
+                raise PostgreSQLSandboxOperationsError(
+                    "PostgreSQL tenant Alembic/core catalog is unhealthy"
+                ) from exc
             cursor.execute("SELECT extname, extversion FROM pg_extension ORDER BY extname")
             extensions = {str(name): str(version) for name, version in cursor.fetchall()}
             missing_extensions = [name for name in required_extensions if name not in extensions]
-            cursor.execute(f"SELECT version FROM {_quote_identifier(self._schema)}.schema_migrations ORDER BY version")
-            migrations = [int(row[0]) for row in cursor.fetchall()]
+            cursor.execute(f"SELECT version_num FROM {_quote_identifier(self._schema)}.alembic_version ORDER BY version_num")
+            revisions = [str(row[0]) for row in cursor.fetchall()]
             table_counts: dict[str, int] = {}
             for table in _REQUIRED_TABLES:
                 cursor.execute(
@@ -197,8 +214,8 @@ class PostgreSQLSandboxOperations:
                 "WHERE expires_at > EXTRACT(EPOCH FROM clock_timestamp())"
             )
             active_leases = int(cursor.fetchone()[0])
-        if migrations != list(_REQUIRED_MIGRATIONS):
-            raise PostgreSQLSandboxOperationsError("PostgreSQL tenant migration catalog is unhealthy")
+        if revisions != [CURRENT_STATE_STORE_REVISION]:
+            raise PostgreSQLSandboxOperationsError("PostgreSQL tenant Alembic catalog is unhealthy")
         with connection.cursor() as cursor:
             cursor.execute(
                 "SELECT attgenerated='s' FROM pg_attribute "
@@ -228,7 +245,8 @@ class PostgreSQLSandboxOperations:
             "server_version_num": server_version_num,
             "extensions": extensions,
             "required_extensions": list(required_extensions),
-            "migration_versions": migrations,
+            "migration_authority": "alembic",
+            "migration_revision": revisions[0],
             "table_counts": table_counts,
             "search": {"available": True, "generated_document": "valid", "gin_index": "valid"},
             "ownership": {"active_leases": active_leases, "catalog_present": True},
@@ -278,10 +296,10 @@ class PostgreSQLSandboxOperations:
                 "search": {"generated_document": "unknown", "gin_index": "unknown", "healthy": False},
                 "leases": {"session_turn_leases": 0, "compression_locks": 0, "runtime_turns": 0, "active_total": 0},
             }
-        cursor.execute(f"SELECT version FROM {_quote_identifier(self._schema)}.schema_migrations ORDER BY version")
-        migrations = [int(row[0]) for row in cursor.fetchall()]
-        if migrations != list(_REQUIRED_MIGRATIONS):
-            issues.append("migration_catalog_unhealthy")
+        cursor.execute(f"SELECT version_num FROM {_quote_identifier(self._schema)}.alembic_version ORDER BY version_num")
+        revisions = [str(row[0]) for row in cursor.fetchall()]
+        if revisions != [CURRENT_STATE_STORE_REVISION]:
+            issues.append("alembic_catalog_unhealthy")
         present_tables: set[str] = set()
         for table in _OPTIMIZE_TABLES:
             cursor.execute(
@@ -341,7 +359,7 @@ class PostgreSQLSandboxOperations:
         leases["active_total"] = sum(leases.values())
         return {
             "backend": "postgresql", "schema": self._schema,
-            "catalog": {"healthy": not issues, "issues": issues, "migration_versions": migrations},
+            "catalog": {"healthy": not issues, "issues": issues, "migration_authority": "alembic", "migration_revision": revisions[0] if revisions else None},
             "search": {"generated_document": generated_document, "gin_index": gin_index, "healthy": search_healthy},
             "leases": leases,
         }
@@ -539,12 +557,12 @@ class PostgreSQLSandboxOperations:
             )
             restored_dsn = self._conninfo_module.make_conninfo(**{**self._conninfo, "dbname": database})
             restored = PostgreSQLSandboxOperations(
-                self._settings, restored_dsn, schema=self._schema, delivery_schema=self._delivery_schema,
+                self._settings, restored_dsn, schema=self._tenant_schema, delivery_schema=self._delivery_schema,
                 profile_identity=self._profile_identity, command_runner=self._command_runner,
             )
             snapshot = restored.doctor(required_extensions=manifest["tenant"]["required_extensions"])
             expected = manifest["tenant"]
-            for key in ("migration_versions", "table_counts", "search", "invariants", "delivery_ledger"):
+            for key in ("migration_authority", "migration_revision", "table_counts", "search", "invariants", "delivery_ledger"):
                 if snapshot[key] != expected[key]:
                     raise PostgreSQLSandboxOperationsError(f"PostgreSQL restore verification mismatch for {key}")
             return {"verified": True, "restored_database": database if keep_restored_target else None, "snapshot": snapshot}

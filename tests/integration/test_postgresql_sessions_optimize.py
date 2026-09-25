@@ -29,7 +29,7 @@ def pg_optimize(tmp_path, monkeypatch, postgresql_test_target):
     (home / ".env").write_text(f"HERMES_STATE_STORE_TEST_DSN={_DSN}\n", encoding="utf-8")
     import state_store
 
-    monkeypatch.setattr(state_store, "postgresql_tenant_schema", lambda *_args, **_kwargs: postgresql_test_target.schema)
+    monkeypatch.setattr(state_store, "_resolve_postgresql_tenant_schema", lambda *_args, **_kwargs: postgresql_test_target.schema)
     token = set_hermes_home_override(str(home))
     store = PostgreSQLStateStore(_SETTINGS, _DSN, schema=postgresql_test_target.schema)
     operations = PostgreSQLSandboxOperations(_SETTINGS, _DSN, schema=postgresql_test_target.schema)
@@ -75,16 +75,21 @@ def test_pg_optimize_refuses_live_turn_or_compression_leases_without_vacuum(pg_o
     assert diagnostic["leases"]["compression_locks"] == 1
 
 
-def test_pg_optimize_refuses_search_catalog_drift_and_existing_repair_restores_health(pg_optimize):
+def test_pg_optimize_refuses_search_catalog_drift_without_runtime_repair(pg_optimize):
     _home, store, operations, target = pg_optimize
     store.ensure_session("drift", source="integration")
     target.execute(f"DROP INDEX {target.schema}.messages_search_document_gin")
 
     with pytest.raises(PostgreSQLSandboxOperationsError, match="catalog or search index is unhealthy"):
         operations.optimize()
-    assert store.search_index_status()["gin_index"] == "missing"
-    assert store.rebuild_search_index()["rebuild"]["operation"] == "create"
-    assert operations.optimize()["after"]["search"]["healthy"] is True
+    with pytest.raises(Exception, match="Alembic-managed reinitialization"):
+        store.rebuild_search_index()
+    with operations._connect() as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=%s AND indexname='messages_search_document_gin')",
+            (target.schema,),
+        )
+        assert cursor.fetchone() == (False,)
 
 
 def test_pg_optimize_reports_a_real_tenant_lock_timeout(pg_optimize):

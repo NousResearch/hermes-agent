@@ -32,16 +32,14 @@ def _pg_home(tmp_path, monkeypatch, *, dsn_value: str):
     return home
 
 
-def _drop_schema(dsn: str, schema: str) -> None:
-    import psycopg as _psycopg
-
-    with _psycopg.connect(dsn, autocommit=True) as connection, connection.cursor() as cursor:
-        cursor.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
-
-
 @pytest.mark.integration
 def test_selected_pg_ledger_runtime_recovery_flow(postgresql_delivery_target, tmp_path, monkeypatch):
     _pg_home(tmp_path, monkeypatch, dsn_value=postgresql_delivery_target.dsn)
+    import gateway.delivery_ledger_postgresql as delivery_postgresql
+
+    # Exercise the runtime selector against the fixture's marker-owned tenant;
+    # no selector test creates or destroys a shared/root ledger schema.
+    monkeypatch.setattr(delivery_postgresql, "postgresql_delivery_ledger_schema", lambda: postgresql_delivery_target.schema)
 
     ledger = selected_delivery_ledger()
     assert ledger is not None
@@ -80,7 +78,6 @@ def test_selected_pg_ledger_runtime_recovery_flow(postgresql_delivery_target, tm
         assert all("not_before" in p for p in slack)
     finally:
         ledger.close()
-        _drop_schema(postgresql_delivery_target.dsn, ledger._schema)
 
 
 @pytest.mark.integration

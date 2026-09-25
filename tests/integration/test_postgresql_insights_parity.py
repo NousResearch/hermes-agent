@@ -20,7 +20,7 @@ def test_postgresql_insights_snapshot_flushes_and_matches_engine_contract(postgr
     """PG returns canonical rows (including decoded JSONB) without opening SQLite."""
     monkeypatch.setenv("HERMES_STATE_STORE_TEST_DSN", _DSN)
     import state_store
-    monkeypatch.setattr(state_store, "postgresql_tenant_schema", lambda *_args, **_kwargs: postgresql_test_target.schema)
+    monkeypatch.setattr(state_store, "_resolve_postgresql_tenant_schema", lambda *_args, **_kwargs: postgresql_test_target.schema)
     store = open_state_store(_CONFIG)
     try:
         session_id = "pg-insights-contract"

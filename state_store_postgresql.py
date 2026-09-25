@@ -26,9 +26,9 @@ from hermes_state_ids import new_session_id
 from hermes_state_runtime_ownership import RuntimeOwner, RuntimeOwnershipReceipt, SessionRuntimeOwnershipMixin, TurnState
 from state_store import MessageRecord, PostgreSQLStateStoreConfig, StateStoreConfigurationError
 from state_store_postgresql_search import compile_postgresql_search_expression
+from state_store_alembic.migration_helpers import TrustedTenantSchema, require_trusted_tenant_schema
 from token_usage_transport import TokenUsageTransport
 
-_LEGACY_ROOT_SCHEMA = "hermes_state_store_slice"
 _SCHEMA_PATTERN = re.compile(r"^hermes_state_store_tenant_[0-9a-f]{32}$")
 _SESSION_METADATA_SCHEMA_VERSION = 2
 _PARENT_SESSION_FOREIGN_KEY_SCHEMA_VERSION = 3
@@ -129,18 +129,23 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
         chars, collapse whitespace, normalize empty to None, ValueError past the cap."""
         return _sanitize_title(title)
 
-    def __init__(self, settings: PostgreSQLStateStoreConfig, dsn: str, *, schema: str) -> None:
+    def __init__(self, settings: PostgreSQLStateStoreConfig, dsn: str, *, schema: TrustedTenantSchema) -> None:
+        try:
+            schema = require_trusted_tenant_schema(schema)
+        except Exception as exc:
+            raise StateStoreConfigurationError(
+                "PostgreSQL State Store requires a runtime-derived trusted tenant schema capability"
+            ) from exc
         try:
             self._psycopg = importlib.import_module("psycopg")
         except ImportError as exc:
             raise StateStoreConfigurationError(
                 "PostgreSQL State Store requires the optional dependency: pip install 'hermes-agent[state-store]'"
             ) from exc
-        if schema != _LEGACY_ROOT_SCHEMA and not _SCHEMA_PATTERN.fullmatch(schema):
-            raise StateStoreConfigurationError("PostgreSQL State Store received an invalid trusted tenant schema")
         self._settings = settings
         self._dsn = dsn
-        self._schema = schema
+        self._tenant_schema = schema
+        self._schema = schema.name
         self._idle: queue.LifoQueue[Any] = queue.LifoQueue(maxsize=settings.pool_max_size)
         self._created = 1
         self._lock = threading.Lock()
@@ -173,593 +178,28 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
         connection.commit()
 
     def _probe_and_migrate(self, connection: Any) -> None:
-        """Apply and validate every migration in order in one locked transaction.
+        """Bootstrap the sole Alembic head, then validate every v1-v25 core contract.
 
-        A ledger row is evidence only after its corresponding catalog contract has
-        been validated. This rejects drift instead of silently treating a marker as
-        proof that an older or manually modified schema is usable.
+        Alembic owns schema evolution.  The legacy numeric ledger is rejected by
+        the bootstrap before mutation; validators remain separate proof that the
+        tenant catalog still satisfies every historical core invariant.
         """
         try:
-            with connection.cursor() as cursor:
-                cursor.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"{self._schema}:migration",))
-                cursor.execute("SHOW server_version_num")
-                version = int(cursor.fetchone()[0])
-                if version < 140000:
-                    raise StateStoreConfigurationError("PostgreSQL State Store requires PostgreSQL 14 or newer")
+            from state_store_alembic.runner import upgrade_new_tenant_to_current
 
-                cursor.execute(f"CREATE SCHEMA IF NOT EXISTS {self._schema}")
-                cursor.execute(f"CREATE TABLE IF NOT EXISTS {self._schema}.schema_migrations (version integer PRIMARY KEY, applied_at double precision NOT NULL)")
-                cursor.execute(f"SELECT version FROM {self._schema}.schema_migrations ORDER BY version")
-                applied = {int(row[0]) for row in cursor.fetchall()}
-                unsupported = sorted(version for version in applied if version < 1 or version > _GATEWAY_TRANSCRIPT_SCHEMA_VERSION)
-                if unsupported:
-                    raise StateStoreConfigurationError(f"Unsupported PostgreSQL State Store schema migration versions: {unsupported}")
-                migrations = (
-                    (1, self._apply_v1, self._validate_v1),
-                    (_SESSION_METADATA_SCHEMA_VERSION, self._apply_v2, self._validate_v2),
-                    (_PARENT_SESSION_FOREIGN_KEY_SCHEMA_VERSION, self._apply_v3, self._validate_v3),
-                    (_COMPATIBILITY_CHECKPOINT_SCHEMA_VERSION, self._apply_v4, self._validate_v4),
-                    (_SCHEMA_VERSION, self._apply_v5, self._validate_v5),
-                    (_VISIBILITY_SCHEMA_VERSION, self._apply_v6, self._validate_v6),
-                    (_MESSAGE_RECORD_SCHEMA_VERSION, self._apply_v7, self._validate_v7),
-                    (_RESUME_PROJECTION_SCHEMA_VERSION, self._apply_v8, self._validate_v8),
-                    (_SYSTEM_PROMPT_SCHEMA_VERSION, self._apply_v9, self._validate_v9),
-                    (_MODEL_USAGE_SCHEMA_VERSION, self._apply_v10, self._validate_v10),
-                    (_CONVERSATION_GENERATION_SCHEMA_VERSION, self._apply_v11, self._validate_v11),
-                    (_MODEL_CONFIG_LIFECYCLE_SCHEMA_VERSION, self._apply_v12, self._validate_v12),
-                    (_GIT_METADATA_GENERATION_SCHEMA_VERSION, self._apply_v13, self._validate_v13),
-                    (_SEARCH_DOCUMENT_SCHEMA_VERSION, self._apply_v14, self._validate_v14),
-                    (_SEARCH_INDEX_SCHEMA_VERSION, self._apply_v15, self._validate_v15),
-                    (_BOUNDED_BROWSE_SCHEMA_VERSION, self._apply_v16, self._validate_v16),
-                    (_SEARCH_HEALTH_SCHEMA_VERSION, self._apply_v17, self._validate_v17),
-                    (_SESSION_RUNTIME_OWNERSHIP_SCHEMA_VERSION, self._apply_v18, self._validate_v18),
-                    (_COMPRESSION_COORDINATION_SCHEMA_VERSION, self._apply_v19, self._validate_v19),
-                    (_COMPRESSION_ROTATION_SCHEMA_VERSION, self._apply_v20, self._validate_v20),
-                    (_SESSION_CONTROL_STATE_SCHEMA_VERSION, self._apply_v21, self._validate_v21),
-                    (_TRANSCRIPT_REWIND_SCHEMA_VERSION, self._apply_v22, self._validate_v22),
-                    (_FOREIGN_IMPORT_RECEIPT_SCHEMA_VERSION, self._apply_v23, self._validate_v23),
-                    (_GATEWAY_SESSION_ROUTE_SCHEMA_VERSION, self._apply_v24, self._validate_v24),
-                    (_GATEWAY_TRANSCRIPT_SCHEMA_VERSION, self._apply_v25, self._validate_v25),
-                )
-                for migration_version, apply, validate in migrations:
-                    if migration_version not in applied:
-                        apply(cursor)
-                        validate(cursor)
-                        cursor.execute(
-                            f"INSERT INTO {self._schema}.schema_migrations (version, applied_at) VALUES (%s, %s)",
-                            (migration_version, time.time()),
-                        )
-                    else:
-                        validate(cursor)
+            upgrade_new_tenant_to_current(connection, self._tenant_schema)
+            with connection.cursor() as cursor:
+                self._validate_core_v1_v25_catalog(cursor)
             connection.commit()
         except Exception:
             connection.rollback()
             raise
 
-    def _required_columns(self, cursor: Any, table: str, columns: set[str]) -> None:
-        cursor.execute(
-            "SELECT column_name FROM information_schema.columns WHERE table_schema = %s AND table_name = %s",
-            (self._schema, table),
-        )
-        missing = columns - {str(row[0]) for row in cursor.fetchall()}
-        if missing:
-            raise StateStoreConfigurationError(
-                f"PostgreSQL State Store schema drift: {self._schema}.{table} is missing columns {sorted(missing)}"
-            )
+    def _validate_core_v1_v25_catalog(self, cursor: Any) -> None:
+        """Read-only proof that Alembic's current catalog is exact."""
+        from state_store_alembic.semantic_catalog import validate_current_catalog_cursor
 
-    def _require_index(self, cursor: Any, name: str) -> None:
-        cursor.execute("SELECT 1 FROM pg_class WHERE relkind = 'i' AND relname = %s AND relnamespace = %s::regnamespace", (name, self._schema))
-        if cursor.fetchone() is None:
-            raise StateStoreConfigurationError(f"PostgreSQL State Store schema drift: missing index {self._schema}.{name}")
-
-    def _require_foreign_key(self, cursor: Any, name: str, table: str, target: str) -> None:
-        cursor.execute(
-            "SELECT 1 FROM pg_constraint WHERE conname = %s AND conrelid = %s::regclass "
-            "AND contype = 'f' AND confrelid = %s::regclass",
-            (name, f"{self._schema}.{table}", f"{self._schema}.{target}"),
-        )
-        if cursor.fetchone() is None:
-            raise StateStoreConfigurationError(f"PostgreSQL State Store schema drift: missing or invalid foreign key {self._schema}.{name}")
-
-    def _apply_v1(self, cursor: Any) -> None:
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.sessions ("
-            "id text PRIMARY KEY, source text NOT NULL, started_at double precision NOT NULL, "
-            "ended_at double precision, end_reason text)"
-        )
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.messages ("
-            "id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY, session_id text NOT NULL "
-            f"REFERENCES {self._schema}.sessions(id), role text NOT NULL, content text, created_at double precision NOT NULL)"
-        )
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS messages_session_id_id ON {self._schema}.messages (session_id, id)")
-
-    def _validate_v1(self, cursor: Any) -> None:
-        self._required_columns(cursor, "sessions", {"id", "source", "started_at", "ended_at", "end_reason"})
-        self._required_columns(cursor, "messages", {"id", "session_id", "role", "content", "created_at"})
-        self._require_index(cursor, "messages_session_id_id")
-        self._require_foreign_key(cursor, "messages_session_id_fkey", "messages", "sessions")
-
-    def _apply_v2(self, cursor: Any) -> None:
-        for column in _SESSION_METADATA_COLUMNS:
-            cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS {column} {_SESSION_METADATA_TYPES[column]}")
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS sessions_source_session_key ON {self._schema}.sessions (source, session_key)")
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS sessions_parent_session_id ON {self._schema}.sessions (parent_session_id)")
-
-    def _validate_v2(self, cursor: Any) -> None:
-        self._required_columns(cursor, "sessions", set(_SESSION_METADATA_COLUMNS))
-        self._require_index(cursor, "sessions_source_session_key")
-        self._require_index(cursor, "sessions_parent_session_id")
-
-    def _apply_v3(self, cursor: Any) -> None:
-        cursor.execute(
-            "SELECT 1 FROM pg_constraint WHERE conname = %s AND conrelid = %s::regclass "
-            "AND contype = 'f' AND confrelid = %s::regclass",
-            ("sessions_parent_session_id_fkey", f"{self._schema}.sessions", f"{self._schema}.sessions"),
-        )
-        if cursor.fetchone() is None:
-            cursor.execute(
-                f"ALTER TABLE {self._schema}.sessions ADD CONSTRAINT sessions_parent_session_id_fkey "
-                f"FOREIGN KEY (parent_session_id) REFERENCES {self._schema}.sessions(id) NOT VALID"
-            )
-
-    def _validate_v3(self, cursor: Any) -> None:
-        self._require_foreign_key(cursor, "sessions_parent_session_id_fkey", "sessions", "sessions")
-
-    def _apply_v4(self, cursor: Any) -> None:
-        # See the module-level constant: this records validation of the legacy,
-        # previously unledgered parent-key transition and intentionally has no DDL.
-        return None
-
-    def _validate_v4(self, cursor: Any) -> None:
-        self._validate_v1(cursor)
-        self._validate_v2(cursor)
-        self._validate_v3(cursor)
-
-    def _apply_v5(self, cursor: Any) -> None:
-        cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS title text")
-        cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS title_source text")
-        cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS hidden boolean NOT NULL DEFAULT false")
-        cursor.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS sessions_title_unique ON {self._schema}.sessions (title) WHERE title IS NOT NULL")
-
-    def _validate_v5(self, cursor: Any) -> None:
-        self._required_columns(cursor, "sessions", {"title", "title_source", "hidden"})
-        self._require_index(cursor, "sessions_title_unique")
-
-    def _apply_v6(self, cursor: Any) -> None:
-        cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS archived boolean NOT NULL DEFAULT false")
-        cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS pinned boolean NOT NULL DEFAULT false")
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS sessions_visibility_started_at ON {self._schema}.sessions (archived, hidden, started_at DESC)")
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS sessions_pinned_started_at ON {self._schema}.sessions (pinned, started_at DESC) WHERE pinned")
-
-    def _validate_v6(self, cursor: Any) -> None:
-        self._required_columns(cursor, "sessions", {"archived", "pinned"})
-        self._require_index(cursor, "sessions_visibility_started_at")
-        self._require_index(cursor, "sessions_pinned_started_at")
-
-    def _apply_v7(self, cursor: Any) -> None:
-        types = {
-            "tool_call_id": "text", "tool_calls": "jsonb", "tool_name": "text", "effect_disposition": "text",
-            "token_count": "bigint", "finish_reason": "text", "reasoning": "text", "reasoning_content": "text",
-            "reasoning_details": "text", "codex_reasoning_items": "text", "codex_message_items": "text",
-            "platform_message_id": "text", "observed": "boolean NOT NULL DEFAULT false",
-            "_compressed_summary": "boolean NOT NULL DEFAULT false", "active": "boolean NOT NULL DEFAULT true",
-            "compacted": "boolean NOT NULL DEFAULT false", "api_content": "text", "display_kind": "text",
-            "display_metadata": "jsonb", "display_identity": "text",
-        }
-        for column in _MESSAGE_RECORD_COLUMNS:
-            cursor.execute(f"ALTER TABLE {self._schema}.messages ADD COLUMN IF NOT EXISTS {column} {types[column]}")
-
-    def _validate_v7(self, cursor: Any) -> None:
-        self._required_columns(cursor, "messages", set(_MESSAGE_RECORD_COLUMNS))
-
-    def _apply_v8(self, cursor: Any) -> None:
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS messages_resume_projection ON {self._schema}.messages (session_id, active, id)")
-
-    def _validate_v8(self, cursor: Any) -> None:
-        self._validate_v7(cursor)
-        self._require_index(cursor, "messages_resume_projection")
-
-    def _apply_v9(self, cursor: Any) -> None:
-        cursor.execute(f"CREATE TABLE IF NOT EXISTS {self._schema}.system_prompts (hash text PRIMARY KEY, prompt text NOT NULL)")
-        cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS system_prompt_hash text")
-        cursor.execute(
-            "SELECT 1 FROM pg_constraint WHERE conname = %s AND conrelid = %s::regclass "
-            "AND contype = 'f' AND confrelid = %s::regclass",
-            ("sessions_system_prompt_hash_fkey", f"{self._schema}.sessions", f"{self._schema}.system_prompts"),
-        )
-        if cursor.fetchone() is None:
-            cursor.execute(
-                f"ALTER TABLE {self._schema}.sessions ADD CONSTRAINT sessions_system_prompt_hash_fkey "
-                f"FOREIGN KEY (system_prompt_hash) REFERENCES {self._schema}.system_prompts(hash)"
-            )
-
-    def _validate_v9(self, cursor: Any) -> None:
-        self._required_columns(cursor, "sessions", {"system_prompt_hash"})
-        self._required_columns(cursor, "system_prompts", {"hash", "prompt"})
-        self._require_foreign_key(cursor, "sessions_system_prompt_hash_fkey", "sessions", "system_prompts")
-
-    def _apply_v10(self, cursor: Any) -> None:
-        for column in _USAGE_SESSION_COLUMNS:
-            type_name = "bigint NOT NULL DEFAULT 0" if column in {*_USAGE_COUNTERS, "api_call_count"} else ("double precision" if column in {"estimated_cost_usd", "actual_cost_usd"} else "text")
-            cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS {column} {type_name}")
-        cursor.execute(f'''CREATE TABLE IF NOT EXISTS {self._schema}.session_model_usage (
-            session_id text NOT NULL REFERENCES {self._schema}.sessions(id) ON DELETE CASCADE,
-            model text NOT NULL, billing_provider text NOT NULL DEFAULT '', billing_base_url text NOT NULL DEFAULT '',
-            billing_mode text NOT NULL DEFAULT '', task text NOT NULL DEFAULT '', api_call_count bigint NOT NULL DEFAULT 0,
-            input_tokens bigint NOT NULL DEFAULT 0, output_tokens bigint NOT NULL DEFAULT 0,
-            cache_read_tokens bigint NOT NULL DEFAULT 0, cache_write_tokens bigint NOT NULL DEFAULT 0,
-            reasoning_tokens bigint NOT NULL DEFAULT 0, estimated_cost_usd double precision NOT NULL DEFAULT 0,
-            actual_cost_usd double precision NOT NULL DEFAULT 0, cost_status text, cost_source text,
-            first_seen double precision, last_seen double precision,
-            PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task))''')
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS session_model_usage_session ON {self._schema}.session_model_usage (session_id)")
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS session_model_usage_model ON {self._schema}.session_model_usage (model)")
-
-    def _validate_v10(self, cursor: Any) -> None:
-        self._required_columns(cursor, "sessions", set(_USAGE_SESSION_COLUMNS))
-        self._required_columns(cursor, "session_model_usage", {"session_id", "model", "billing_provider", "billing_base_url", "billing_mode", "task", "api_call_count", *_USAGE_COUNTERS, "estimated_cost_usd", "actual_cost_usd", "cost_status", "cost_source", "first_seen", "last_seen"})
-        self._require_index(cursor, "session_model_usage_session")
-        self._require_index(cursor, "session_model_usage_model")
-        self._require_foreign_key(cursor, "session_model_usage_session_id_fkey", "session_model_usage", "sessions")
-
-    def _apply_v11(self, cursor: Any) -> None:
-        """Create the non-prunable peer generation ledger.
-
-        This intentionally has no foreign key to sessions: deleting or pruning
-        session history must never reissue an affinity generation (ABA).
-        """
-        cursor.execute(f"""CREATE TABLE IF NOT EXISTS {self._schema}.conversation_generations (
-            source text NOT NULL,
-            session_key text NOT NULL,
-            generation bigint NOT NULL DEFAULT 0,
-            PRIMARY KEY (source, session_key))""")
-
-    def _validate_v11(self, cursor: Any) -> None:
-        self._required_columns(cursor, "conversation_generations", {"source", "session_key", "generation"})
-        cursor.execute(
-            "SELECT a.attname FROM pg_constraint c "
-            "JOIN unnest(c.conkey) WITH ORDINALITY AS key(attnum, ordinal) ON true "
-            "JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = key.attnum "
-            "WHERE c.conname = %s AND c.conrelid = %s::regclass AND c.contype = 'p' "
-            "ORDER BY key.ordinal",
-            ("conversation_generations_pkey", f"{self._schema}.conversation_generations"),
-        )
-        if [row[0] for row in cursor.fetchall()] != ["source", "session_key"]:
-            raise StateStoreConfigurationError(
-                f"PostgreSQL State Store schema drift: {self._schema}.conversation_generations primary key must be (source, session_key)")
-        cursor.execute(
-            "SELECT column_name, data_type, is_nullable, column_default "
-            "FROM information_schema.columns WHERE table_schema = %s AND table_name = %s",
-            (self._schema, "conversation_generations"),
-        )
-        columns = {row[0]: row[1:] for row in cursor.fetchall()}
-        expected = {
-            "source": ("text", "NO"), "session_key": ("text", "NO"), "generation": ("bigint", "NO"),
-        }
-        if any(columns.get(name, (None, None))[:2] != contract for name, contract in expected.items()):
-            raise StateStoreConfigurationError(
-                f"PostgreSQL State Store schema drift: {self._schema}.conversation_generations has invalid column contract")
-        if "0" not in str(columns["generation"][2] or ""):
-            raise StateStoreConfigurationError(
-                f"PostgreSQL State Store schema drift: {self._schema}.conversation_generations.generation must default to 0")
-        cursor.execute(
-            "SELECT 1 FROM pg_constraint WHERE conrelid = %s::regclass AND contype = 'f'",
-            (f"{self._schema}.conversation_generations",),
-        )
-        if cursor.fetchone() is not None:
-            raise StateStoreConfigurationError(
-                f"PostgreSQL State Store schema drift: {self._schema}.conversation_generations must not reference prunable session rows")
-
-    def _apply_v12(self, cursor: Any) -> None:
-        """Record the validated model/config mutation lifecycle contract; no new DDL."""
-        return None
-
-    def _validate_v12(self, cursor: Any) -> None:
-        self._validate_v2(cursor)
-        self._validate_v9(cursor)
-        self._validate_v10(cursor)
-        cursor.execute(
-            "SELECT data_type FROM information_schema.columns WHERE table_schema = %s "
-            "AND table_name = 'sessions' AND column_name = 'model_config'",
-            (self._schema,),
-        )
-        row = cursor.fetchone()
-        if row is None or row[0] != "jsonb":
-            raise StateStoreConfigurationError(
-                f"PostgreSQL State Store schema drift: {self._schema}.sessions.model_config must be jsonb")
-
-    def _apply_v13(self, cursor: Any) -> None:
-        cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS git_branch text")
-        cursor.execute(
-            f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS "
-            "git_metadata_generation bigint NOT NULL DEFAULT 0"
-        )
-
-    def _validate_v13(self, cursor: Any) -> None:
-        self._required_columns(cursor, "sessions", {"git_branch", "git_metadata_generation"})
-        cursor.execute(
-            "SELECT branch.data_type, branch.is_nullable, branch.column_default, generation.data_type, generation.is_nullable, generation.column_default "
-            "FROM information_schema.columns AS branch JOIN information_schema.columns AS generation "
-            "ON generation.table_schema = branch.table_schema AND generation.table_name = branch.table_name "
-            "WHERE branch.table_schema = %s AND branch.table_name = 'sessions' "
-            "AND branch.column_name = 'git_branch' AND generation.column_name = 'git_metadata_generation'",
-            (self._schema,),
-        )
-        row = cursor.fetchone()
-        if row is None or row[0] != "text" or row[1] != "YES" or row[2] is not None or row[3] != "bigint" or row[4] != "NO" or str(row[5] or "").strip() != "0":
-            raise StateStoreConfigurationError(
-                f"PostgreSQL State Store schema drift: {self._schema}.sessions Git metadata columns "
-                "must be git_branch text and git_metadata_generation bigint NOT NULL DEFAULT 0")
-
-    def _apply_v14(self, cursor: Any) -> None:
-        # ``simple`` is built into PostgreSQL.  Do not substitute vector similarity or
-        # require pg_trgm: neither is a lexical full-text contract.
-        cursor.execute(
-            f"ALTER TABLE {self._schema}.messages ADD COLUMN IF NOT EXISTS search_document tsvector "
-            "GENERATED ALWAYS AS (to_tsvector('simple', "
-            "coalesce(content, '') || ' ' || coalesce(tool_name, '') || ' ' || coalesce(tool_calls::text, ''))) STORED"
-        )
-
-    def _validate_v14(self, cursor: Any) -> None:
-        self._required_columns(cursor, "messages", {"search_document"})
-        cursor.execute(
-            "SELECT data_type, is_generated FROM information_schema.columns WHERE table_schema = %s "
-            "AND table_name = 'messages' AND column_name = 'search_document'",
-            (self._schema,),
-        )
-        row = cursor.fetchone()
-        if row is None or row[0] != "tsvector" or row[1] != "ALWAYS":
-            raise StateStoreConfigurationError(
-                f"PostgreSQL State Store schema drift: {self._schema}.messages.search_document must be a generated tsvector")
-
-    def _apply_v15(self, cursor: Any) -> None:
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS {_SEARCH_INDEX_NAME} ON {self._schema}.messages USING GIN (search_document)")
-
-    def _validate_v15(self, cursor: Any) -> None:
-        self._validate_v14(cursor)
-        self._require_index(cursor, _SEARCH_INDEX_NAME)
-
-    def _apply_v16(self, cursor: Any) -> None:
-        """Add the durable activity projection needed by bounded contextual browse.
-
-        Existing stores are backfilled from persisted message timestamps rather
-        than wall clock so an upgrade cannot reorder historical sessions.
-        """
-        cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS last_activity_at double precision")
-        cursor.execute(
-            f"UPDATE {self._schema}.sessions AS s SET last_activity_at = COALESCE("
-            f"(SELECT MAX(m.created_at) FROM {self._schema}.messages AS m WHERE m.session_id = s.id), s.started_at) "
-            "WHERE s.last_activity_at IS NULL"
-        )
-        cursor.execute(
-            f"CREATE INDEX IF NOT EXISTS sessions_effective_activity ON {self._schema}.sessions "
-            "(archived, hidden, last_activity_at DESC, started_at DESC, id DESC)"
-        )
-
-    def _validate_v16(self, cursor: Any) -> None:
-        self._required_columns(cursor, "sessions", {"last_activity_at"})
-        self._require_index(cursor, "sessions_effective_activity")
-
-    def _apply_v17(self, cursor: Any) -> None:
-        """Keep only maintenance outcomes; PostgreSQL has no deferred FTS backfill state."""
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.search_index_maintenance ("
-            "singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton), "
-            "last_success_at double precision, last_error text)"
-        )
-        cursor.execute(
-            f"INSERT INTO {self._schema}.search_index_maintenance (singleton) VALUES (true) "
-            "ON CONFLICT (singleton) DO NOTHING"
-        )
-
-    def _validate_v17(self, cursor: Any) -> None:
-        self._validate_v15(cursor)
-        self._required_columns(cursor, "search_index_maintenance", {"singleton", "last_success_at", "last_error"})
-
-    def _apply_v18(self, cursor: Any) -> None:
-        """Add the no-route, fenced runtime handoff evidence tables.
-
-        These tables intentionally have no foreign keys to prunable sessions and
-        no relationship to the StateStore migration ledger beyond this tenant's
-        catalog validation.  They are direct-test-only until a consumer can carry
-        the receipt through every effect boundary.
-        """
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.session_runtime_owners ("
-            "namespace text NOT NULL DEFAULT '', session_id text NOT NULL, "
-            "installation_id text NOT NULL, host text NOT NULL, process_generation text NOT NULL, "
-            "fence bigint NOT NULL CHECK (fence > 0), expires_at double precision NOT NULL, "
-            "updated_at double precision NOT NULL, PRIMARY KEY (namespace, session_id))"
-        )
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.session_runtime_turns ("
-            "namespace text NOT NULL DEFAULT '', session_id text NOT NULL, turn_id text NOT NULL, "
-            "state text NOT NULL CHECK (state IN ('running', 'indeterminate', 'settled')), "
-            "owner_fence bigint NOT NULL CHECK (owner_fence > 0), receipt_json jsonb, "
-            "created_at double precision NOT NULL, updated_at double precision NOT NULL, "
-            "PRIMARY KEY (namespace, session_id, turn_id))"
-        )
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS session_runtime_owners_expires ON {self._schema}.session_runtime_owners (expires_at)")
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS session_runtime_turns_state ON {self._schema}.session_runtime_turns (namespace, session_id, state)")
-
-    def _validate_v18(self, cursor: Any) -> None:
-        self._required_columns(cursor, "session_runtime_owners", {
-            "namespace", "session_id", "installation_id", "host", "process_generation", "fence", "expires_at", "updated_at",
-        })
-        self._required_columns(cursor, "session_runtime_turns", {
-            "namespace", "session_id", "turn_id", "state", "owner_fence", "receipt_json", "created_at", "updated_at",
-        })
-        self._require_index(cursor, "session_runtime_owners_expires")
-        self._require_index(cursor, "session_runtime_turns_state")
-
-    def _apply_v19(self, cursor: Any) -> None:
-        """Persist the non-destructive compression coordination state.
-
-        This migration deliberately does *not* advertise compression rotation:
-        a lease/cooldown without atomic parent/child publication would make a
-        lineage fork easier to create, not safer.  These rows support durable
-        observation and a future all-or-nothing publication transaction only.
-        """
-        session_columns = {
-            "last_activity_description": "text NOT NULL DEFAULT ''",
-            "last_activity_provenance": "text NOT NULL DEFAULT 'unknown'",
-            "compression_failure_cooldown_until": "double precision",
-            "compression_failure_error": "text",
-            "compression_fallback_streak": "bigint NOT NULL DEFAULT 0",
-            "compression_ineffective_count": "bigint NOT NULL DEFAULT 0",
-            "compression_recovery_deadline": "double precision",
-        }
-        for column, type_name in session_columns.items():
-            cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS {column} {type_name}")
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.compression_locks ("
-            f"session_id text PRIMARY KEY REFERENCES {self._schema}.sessions(id) ON DELETE CASCADE, "
-            "holder text NOT NULL, fence bigint NOT NULL CHECK (fence > 0), "
-            "expires_at double precision NOT NULL, updated_at double precision NOT NULL)"
-        )
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.session_turn_leases ("
-            "conversation_id text PRIMARY KEY, holder text NOT NULL, "
-            "fence bigint NOT NULL CHECK (fence > 0), expires_at double precision NOT NULL, "
-            "updated_at double precision NOT NULL)"
-        )
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS compression_locks_expires ON {self._schema}.compression_locks (expires_at)")
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS session_turn_leases_expires ON {self._schema}.session_turn_leases (expires_at)")
-
-    def _validate_v19(self, cursor: Any) -> None:
-        self._required_columns(cursor, "sessions", {
-            "last_activity_at", "last_activity_description", "last_activity_provenance",
-            "compression_failure_cooldown_until", "compression_failure_error",
-            "compression_fallback_streak", "compression_ineffective_count", "compression_recovery_deadline",
-        })
-        self._required_columns(cursor, "compression_locks", {"session_id", "holder", "fence", "expires_at", "updated_at"})
-        self._required_columns(cursor, "session_turn_leases", {"conversation_id", "holder", "fence", "expires_at", "updated_at"})
-        self._require_index(cursor, "compression_locks_expires")
-        self._require_index(cursor, "session_turn_leases_expires")
-
-    def _apply_v20(self, cursor: Any) -> None:
-        """Ledger every atomic compression publication before exposing rotation.
-
-        The receipt is deliberately tenant-local and records the holder/fence that
-        committed it.  A lost acknowledgement can therefore be classified by a
-        later read; callers never need to replay an indeterminate request.
-        """
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.compression_rotation_receipts ("
-            "request_id text PRIMARY KEY, parent_session_id text NOT NULL "
-            f"REFERENCES {self._schema}.sessions(id), child_session_id text NOT NULL "
-            f"REFERENCES {self._schema}.sessions(id), holder text NOT NULL, fence bigint NOT NULL CHECK (fence > 0), "
-            "committed_at double precision NOT NULL)"
-        )
-        cursor.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS compression_rotation_receipts_child_unique ON {self._schema}.compression_rotation_receipts (child_session_id)")
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS compression_rotation_receipts_parent ON {self._schema}.compression_rotation_receipts (parent_session_id, committed_at)")
-
-    def _validate_v20(self, cursor: Any) -> None:
-        self._validate_v19(cursor)
-        self._required_columns(cursor, "compression_rotation_receipts", {
-            "request_id", "parent_session_id", "child_session_id", "holder", "fence", "committed_at",
-        })
-        self._require_index(cursor, "compression_rotation_receipts_child_unique")
-        self._require_index(cursor, "compression_rotation_receipts_parent")
-        self._require_foreign_key(cursor, "compression_rotation_receipts_parent_session_id_fkey", "compression_rotation_receipts", "sessions")
-        self._require_foreign_key(cursor, "compression_rotation_receipts_child_session_id_fkey", "compression_rotation_receipts", "sessions")
-
-    def _apply_v21(self, cursor: Any) -> None:
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.session_control_state ("
-            f"session_id text NOT NULL REFERENCES {self._schema}.sessions(id) ON DELETE CASCADE, "
-            "control_kind text NOT NULL CHECK (control_kind IN ('goal', 'heartbeat', 'loop')), "
-            "status text NOT NULL, payload jsonb NOT NULL, revision bigint NOT NULL DEFAULT 1 CHECK (revision > 0), "
-            "updated_at double precision NOT NULL, PRIMARY KEY (session_id, control_kind))"
-        )
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS session_control_state_kind_status ON {self._schema}.session_control_state (control_kind, status)")
-
-    def _validate_v21(self, cursor: Any) -> None:
-        self._validate_v20(cursor)
-        self._required_columns(cursor, "session_control_state", {
-            "session_id", "control_kind", "status", "payload", "revision", "updated_at",
-        })
-        self._require_index(cursor, "session_control_state_kind_status")
-        self._require_foreign_key(cursor, "session_control_state_session_id_fkey", "session_control_state", "sessions")
-
-    def _apply_v22(self, cursor: Any) -> None:
-        """Receipt-backed transcript rewind; all consumer-visible effects wait for this commit."""
-        cursor.execute(f"ALTER TABLE {self._schema}.sessions ADD COLUMN IF NOT EXISTS rewind_count bigint NOT NULL DEFAULT 0")
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.rewind_receipts ("
-            "request_id text PRIMARY KEY, session_id text NOT NULL "
-            f"REFERENCES {self._schema}.sessions(id), conversation_root_id text NOT NULL, target_message_id bigint NOT NULL, "
-            "turn_holder text, turn_fence bigint, compression_holder text, compression_fence bigint, "
-            "replacement_message_id bigint, retired_count bigint NOT NULL, active_prefix_ids jsonb NOT NULL, committed_at double precision NOT NULL)"
-        )
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS messages_active_target ON {self._schema}.messages (session_id, id) WHERE active")
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS rewind_receipts_session_committed ON {self._schema}.rewind_receipts (session_id, committed_at)")
-
-    def _validate_v22(self, cursor: Any) -> None:
-        self._validate_v21(cursor)
-        self._required_columns(cursor, "sessions", {"rewind_count"})
-        self._required_columns(cursor, "rewind_receipts", {"request_id", "session_id", "conversation_root_id", "target_message_id", "turn_holder", "turn_fence", "compression_holder", "compression_fence", "replacement_message_id", "retired_count", "active_prefix_ids", "committed_at"})
-        self._require_index(cursor, "messages_active_target")
-        self._require_index(cursor, "rewind_receipts_session_committed")
-        self._require_foreign_key(cursor, "rewind_receipts_session_id_fkey", "rewind_receipts", "sessions")
-
-    def _apply_v23(self, cursor: Any) -> None:
-        """Store an idempotency receipt for one committed foreign transcript."""
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.foreign_import_receipts ("
-            "origin_fingerprint text PRIMARY KEY, session_id text NOT NULL "
-            f"REFERENCES {self._schema}.sessions(id), origin_json jsonb NOT NULL, committed_at double precision NOT NULL)"
-        )
-        cursor.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS foreign_import_receipts_session_unique ON {self._schema}.foreign_import_receipts (session_id)")
-
-    def _validate_v23(self, cursor: Any) -> None:
-        self._validate_v22(cursor)
-        self._required_columns(cursor, "foreign_import_receipts", {"origin_fingerprint", "session_id", "origin_json", "committed_at"})
-        self._require_index(cursor, "foreign_import_receipts_session_unique")
-        self._require_foreign_key(cursor, "foreign_import_receipts_session_id_fkey", "foreign_import_receipts", "sessions")
-
-    def _apply_v24(self, cursor: Any) -> None:
-        """Route authority only; gateway transcripts and delivery remain unported."""
-        cursor.execute(
-            f"CREATE TABLE IF NOT EXISTS {self._schema}.gateway_session_routes ("
-            "tenant_namespace text NOT NULL, session_key text NOT NULL, session_id text NOT NULL "
-            f"REFERENCES {self._schema}.sessions(id), generation bigint NOT NULL DEFAULT 1 CHECK (generation > 0), "
-            "flags jsonb NOT NULL DEFAULT '{}'::jsonb, metadata jsonb NOT NULL DEFAULT '{}'::jsonb, "
-            "created_at double precision NOT NULL, updated_at double precision NOT NULL, "
-            "PRIMARY KEY (tenant_namespace, session_key))"
-        )
-        cursor.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS gateway_session_routes_session_unique ON {self._schema}.gateway_session_routes (tenant_namespace, session_id)")
-
-    def _validate_v24(self, cursor: Any) -> None:
-        self._validate_v23(cursor)
-        self._required_columns(cursor, "gateway_session_routes", {"tenant_namespace", "session_key", "session_id", "generation", "flags", "metadata", "created_at", "updated_at"})
-        self._require_index(cursor, "gateway_session_routes_session_unique")
-        self._require_foreign_key(cursor, "gateway_session_routes_session_id_fkey", "gateway_session_routes", "sessions")
-
-    def _apply_v25(self, cursor: Any) -> None:
-        """Gateway transcript slice: durable platform-message identity and lookup support.
-
-        The ``messages`` table already carries ``platform_message_id`` (v7); this
-        migration adds the UNIQUE partial index that makes a platform message id
-        durable identity for exactly-once persistence (the transient-failure
-        dedupe guard), plus the per-session lookup partial index mirroring
-        SQLite's ``idx_messages_platform_msg_id``.
-        """
-        cursor.execute(
-            f"CREATE UNIQUE INDEX IF NOT EXISTS messages_platform_message_id_unique "
-            f"ON {self._schema}.messages (platform_message_id) WHERE platform_message_id IS NOT NULL"
-        )
-        cursor.execute(
-            f"CREATE INDEX IF NOT EXISTS messages_session_platform_message_id "
-            f"ON {self._schema}.messages (session_id, platform_message_id) WHERE platform_message_id IS NOT NULL"
-        )
-
-    def _validate_v25(self, cursor: Any) -> None:
-        self._validate_v24(cursor)
-        self._required_columns(cursor, "messages", {"platform_message_id"})
-        self._require_index(cursor, "messages_platform_message_id_unique")
-        self._require_index(cursor, "messages_session_platform_message_id")
+        validate_current_catalog_cursor(cursor, self._schema)
 
     @staticmethod
     def _route_payload(value: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1239,7 +679,7 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
 
     def _search_index_catalog(self, cursor: Any) -> tuple[str, str]:
         """Return generated-document and GIN catalog health without trusting an index name alone."""
-        self._validate_v14(cursor)
+        self._validate_core_v1_v25_catalog(cursor)
         cursor.execute(
             "SELECT i.indisvalid, i.indisready, i.indislive, am.amname, "
             "array_agg(a.attname ORDER BY key.ordinality) "
@@ -1284,7 +724,7 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
             "query_path_available": available,
             "generated_document": document,
             "gin_index": gin_index,
-            "rebuild": {"supported": True, "operation": "reindex_or_create", "in_progress": not acquired},
+            "rebuild": {"supported": False, "operation": "alembic_only", "in_progress": not acquired},
             "last_successful_rebuild_at": maintenance[0],
             "last_error": maintenance[1],
             "sqlite_fts_semantics": {
@@ -1294,54 +734,27 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
         }
 
     def rebuild_search_index(self) -> dict[str, Any]:
-        """Repair this trusted tenant's GIN catalog entry under one cross-process advisory lock.
+        """Refuse runtime search-index repair; Alembic owns this catalog object.
 
-        ``REINDEX ... CONCURRENTLY`` and ``CREATE INDEX CONCURRENTLY`` require autocommit;
-        this deliberately uses a dedicated connection, never a pooled transaction connection.
+        This compatibility method performs a read-only health observation only.
+        A healthy tenant receives an explicit unsupported result; a drifted
+        tenant is rejected by the same catalog validation path used at startup.
+        It never mutates a search index at runtime.
         """
-        connection = self._new_connection()
-        connection.autocommit = True
         try:
-            with connection.cursor() as cursor:
-                cursor.execute(f'SET search_path TO "{self._schema}", pg_catalog')
-                cursor.execute("SELECT pg_try_advisory_lock(hashtextextended(%s, 0))", (self._search_maintenance_lock_name(),))
-                acquired = bool(cursor.fetchone()[0])
-                if not acquired:
-                    result = self.search_index_status()
-                    result["rebuild"] = {**result["rebuild"], "operation": "already_running"}
-                    return result
-                try:
-                    _document, gin_index = self._search_index_catalog(cursor)
-                    if gin_index == "missing":
-                        cursor.execute(f"CREATE INDEX CONCURRENTLY {_SEARCH_INDEX_NAME} ON {self._schema}.messages USING GIN (search_document)")
-                        operation = "create"
-                    elif gin_index == "invalid":
-                        cursor.execute(f"DROP INDEX CONCURRENTLY {self._schema}.{_SEARCH_INDEX_NAME}")
-                        cursor.execute(f"CREATE INDEX CONCURRENTLY {_SEARCH_INDEX_NAME} ON {self._schema}.messages USING GIN (search_document)")
-                        operation = "replace_invalid"
-                    else:
-                        cursor.execute(f"REINDEX INDEX CONCURRENTLY {self._schema}.{_SEARCH_INDEX_NAME}")
-                        operation = "reindex"
-                    _document, repaired = self._search_index_catalog(cursor)
-                    if repaired != "valid":
-                        raise StateStoreConfigurationError(f"PostgreSQL State Store search-index repair did not restore {self._schema}.{_SEARCH_INDEX_NAME}")
-                    cursor.execute(
-                        f"UPDATE {self._schema}.search_index_maintenance SET last_success_at = %s, last_error = NULL WHERE singleton",
-                        (time.time(),),
-                    )
-                except Exception as exc:
-                    cursor.execute(
-                        f"UPDATE {self._schema}.search_index_maintenance SET last_error = %s WHERE singleton",
-                        (str(exc)[:1000],),
-                    )
-                    raise
-                finally:
-                    cursor.execute("SELECT pg_advisory_unlock(hashtextextended(%s, 0))", (self._search_maintenance_lock_name(),))
             result = self.search_index_status()
-            result["rebuild"] = {**result["rebuild"], "operation": operation}
-            return result
-        finally:
-            connection.close()
+        except Exception as exc:
+            raise StateStoreConfigurationError(
+                "PostgreSQL State Store search catalog drift requires Alembic-managed reinitialization; "
+                "runtime index repair is disabled"
+            ) from exc
+        if not result["available"]:
+            raise StateStoreConfigurationError(
+                "PostgreSQL State Store search catalog drift requires Alembic-managed reinitialization; "
+                "runtime index repair is disabled"
+            )
+        result["rebuild"] = {**result["rebuild"], "operation": "unsupported_alembic_only"}
+        return result
 
     def ensure_session(
         self, session_id: str, source: str = "unknown", *, metadata: Mapping[str, Any] | None = None,
@@ -2013,6 +1426,7 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
                 )
 
     def get_messages_as_conversation(self, session_id: str, include_inactive: bool = False,
+                                     repair_alternation: bool = False,
                                      include_row_ids: bool = False) -> list[dict[str, Any]]:
         """Load messages in OpenAI format, mirroring the SQLite oracle projection.
 
@@ -2069,7 +1483,11 @@ class PostgreSQLStateStore(SessionRuntimeOwnershipMixin):
                         if value is not None:
                             msg[column] = value
             messages.append(msg)
-        return _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
+        messages = _strip_stale_tool_call_markers(_strip_background_review_harness(messages))
+        if repair_alternation and messages:
+            from agent.agent_runtime_helpers import repair_message_sequence
+            repair_message_sequence(None, messages)
+        return messages
 
     def latest_message_row_id(self, session_id: str, *, role: str = "user", offset: int = 0,
                               require_text: bool = True) -> int | None:

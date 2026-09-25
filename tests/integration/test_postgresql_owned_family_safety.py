@@ -31,19 +31,26 @@ def _psycopg():
     return importlib.import_module("psycopg")
 
 
-def test_owned_family_migrations_do_not_touch_preexisting_shared_sentinel(monkeypatch):
-    """CLI/runtime/session/ledger constructors migrate only marker-owned UUID schemas."""
-    shared = "hermes_owned_family_shared_sentinel"
-    with _psycopg().connect(TEST_DSN, autocommit=True) as connection, connection.cursor() as cursor:
-        cursor.execute(f'CREATE SCHEMA "{shared}"')
-        cursor.execute(f'CREATE TABLE "{shared}".catalog_sentinel (id integer PRIMARY KEY, value text NOT NULL)')
-        cursor.execute(f'INSERT INTO "{shared}".catalog_sentinel VALUES (1, %s)', ("untouched",))
+def _public_catalog_fingerprint() -> list[tuple[str, str]]:
+    """Read-only shared-namespace sentinel; this test never creates shared DDL."""
+    with _psycopg().connect(TEST_DSN) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT relation.relname, relation.relkind FROM pg_catalog.pg_class AS relation "
+            "JOIN pg_catalog.pg_namespace AS namespace ON namespace.oid=relation.relnamespace "
+            "WHERE namespace.nspname='public' ORDER BY relation.relname, relation.relkind"
+        )
+        return list(cursor.fetchall())
+
+
+def test_owned_family_migrations_cleanup_only_owned_targets_and_leave_public_untouched(monkeypatch):
+    """CLI/runtime/session/ledger constructors mutate only allocated UUID targets."""
+    public_before = _public_catalog_fingerprint()
     target = OwnedPostgreSQLTestTarget(TEST_DSN).allocate()
     delivery = OwnedPostgreSQLTestTarget(TEST_DSN, prefix="hermes_delivery_ledger_tenant_").allocate()
     try:
         import state_store
         monkeypatch.setenv("HERMES_STATE_STORE_TEST_DSN", TEST_DSN)
-        monkeypatch.setattr(state_store, "postgresql_tenant_schema", lambda *_args, **_kwargs: target.schema)
+        monkeypatch.setattr(state_store, "_resolve_postgresql_tenant_schema", lambda *_args, **_kwargs: target.schema)
         config = {"state_store": {"backend": "postgresql", "postgresql": {"dsn_env": "HERMES_STATE_STORE_TEST_DSN"}}}
         store = open_state_store(config)
         store.close()
@@ -55,16 +62,17 @@ def test_owned_family_migrations_do_not_touch_preexisting_shared_sentinel(monkey
         ledger.close()
         target.verify()
         delivery.verify()
-        with _psycopg().connect(TEST_DSN) as connection, connection.cursor() as cursor:
-            cursor.execute(f'SELECT id, value FROM "{shared}".catalog_sentinel')
-            assert cursor.fetchall() == [(1, "untouched")]
-            cursor.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema = %s", (shared,))
-            assert cursor.fetchone() == (1,)
     finally:
         delivery.drop()
         target.drop()
-        with _psycopg().connect(TEST_DSN, autocommit=True) as connection, connection.cursor() as cursor:
-            cursor.execute(f'DROP SCHEMA "{shared}" CASCADE')
+    with _psycopg().connect(TEST_DSN) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT nspname FROM pg_catalog.pg_namespace "
+            "WHERE nspname IN (%s, %s, %s, %s) ORDER BY nspname",
+            (target.schema, target.ownership_schema, delivery.schema, delivery.ownership_schema),
+        )
+        assert cursor.fetchall() == []
+    assert _public_catalog_fingerprint() == public_before
 
 
 def _store_internal_line_numbers(source: str, tree: ast.AST) -> set[int]:

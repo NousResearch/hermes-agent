@@ -22,6 +22,7 @@ pyyaml = false
 maturin = false
 numpy = false
 pvporcupine = false
+psycopg = false
 google-auth = false
 aiohttp = false
 starlette = false
@@ -100,6 +101,7 @@ concurrent-log-handler = false
 cryptography = false
 pydantic = false
 agent-client-protocol = false
+alembic = false
 fire = false
 httpx2 = false
 google-auth-oauthlib = false
@@ -113,6 +115,7 @@ psutil = false
 python-telegram-bot = false
 jinja2 = false
 sounddevice = false
+sqlalchemy = false
 alibabacloud-dingtalk = false
 dingtalk-stream = false
 
@@ -323,6 +326,16 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/4e/8a/64761f4005f17809769d23e518d915db74e6310474e733e3593cfc854ef1/aiosqlite-0.22.1.tar.gz", hash = "sha256:043e0bd78d32888c0a9ca90fc788b38796843360c855a7262a532813133a0650", size = 14821, upload-time = "2025-12-23T19:25:43.997Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/00/b7/e3bf5133d697a08128598c8d0abc5e16377b51465a33756de24fa7dee953/aiosqlite-0.22.1-py3-none-any.whl", hash = "sha256:21c002eb13823fad740196c5a2e9d8e62f6243bd9e7e4a1f87fb5e44ecb4fceb", size = 17405, upload-time = "2025-12-23T19:25:42.139Z" },
+]
+
+[[package]]
+name = "alembic"
+version = "1.17.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mako" },
+    { name = "sqlalchemy" },
+    { name = "typing-extensions" },
 ]
 
 [[package]]
@@ -2507,7 +2520,9 @@ sms = [
     { name = "aiohttp" },
 ]
 state-store = [
+    { name = "alembic" },
     { name = "psycopg", extra = ["binary"] },
+    { name = "sqlalchemy" },
 ]
 stt-whisper = [
     { name = "faster-whisper", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin') or (platform_machine != 'ARM64' and sys_platform == 'win32') or (sys_platform != 'darwin' and sys_platform != 'win32')" },
@@ -2631,6 +2646,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'teams'", specifier = "==3.14.3" },
     { name = "aiohttp-socks", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.11.0" },
     { name = "aiosqlite", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.22.1" },
+    { name = "alembic", marker = "extra == 'state-store'", specifier = "==1.17.2" },
     { name = "alibabacloud-dingtalk", marker = "extra == 'dingtalk'", specifier = "==2.2.42" },
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = "==0.87.0" },
     { name = "asyncpg", marker = "sys_platform == 'linux' and extra == 'matrix'", specifier = "==0.31.0" },
@@ -2765,6 +2781,7 @@ requires-dist = [
     { name = "sounddevice", marker = "extra == 'voice'", specifier = "==0.5.5" },
     { name = "sounddevice", marker = "extra == 'wake'", specifier = "==0.5.5" },
     { name = "soundfile", marker = "(platform_machine != 'x86_64' and sys_platform == 'darwin' and extra == 'kittentts') or (platform_machine != 'ARM64' and sys_platform == 'win32' and extra == 'kittentts') or (sys_platform != 'darwin' and sys_platform != 'win32' and extra == 'kittentts')", specifier = "==0.14.0" },
+    { name = "sqlalchemy", marker = "extra == 'state-store'", specifier = "==2.0.51" },
     { name = "starlette", marker = "extra == 'computer-use'", specifier = "==1.3.1" },
     { name = "starlette", marker = "extra == 'mcp'", specifier = "==1.3.1" },
     { name = "starlette", marker = "extra == 'web'", specifier = "==1.3.1" },
@@ -3377,6 +3394,14 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/52/22/2e896cfba4e86b805eb8a3259cbdc1601971dc8fda5b1db2044ec2a3e6f0/lxml-6.1.2-pp311-pypy311_pp73-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:f93bc5e25992f5545709000d840c6cafdbd022781a7a0ed79d58a5633733a4e8", size = 4257333, upload-time = "2026-08-19T05:03:29.355Z" },
     { url = "https://files.pythonhosted.org/packages/b0/1d/9dbdbfa284ea96aee7c368e0ac73994f7e1375281070c355bcd85d4f7a77/lxml-6.1.2-pp311-pypy311_pp73-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:662432a6103e671d971e06e75ed146d9ff67f39d2c98c2f26613b6057f54eafc", size = 4410828, upload-time = "2026-08-19T05:03:31.948Z" },
     { url = "https://files.pythonhosted.org/packages/f9/f2/fea24b044219458c252e0a0a08074a27dc9e28edb85f83533e36e3ddb57d/lxml-6.1.2-pp311-pypy311_pp73-win_amd64.whl", hash = "sha256:ba0dfead73be5be9ad0b7fbf9f31ff29c1b1eae858816dfc8d85099d6e4af0d6", size = 3511278, upload-time = "2026-08-19T05:03:34.597Z" },
+]
+
+[[package]]
+name = "mako"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "markupsafe" },
 ]
 
 [[package]]

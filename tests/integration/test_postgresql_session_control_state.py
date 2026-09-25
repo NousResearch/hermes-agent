@@ -60,7 +60,7 @@ def test_selected_postgresql_controls_roundtrip_without_state_db(
     )
     monkeypatch.setenv("HERMES_STATE_STORE_TEST_DSN", _DSN)
     import state_store
-    monkeypatch.setattr(state_store, "postgresql_tenant_schema", lambda *_args, **_kwargs: postgresql_test_target.schema)
+    monkeypatch.setattr(state_store, "_resolve_postgresql_tenant_schema", lambda *_args, **_kwargs: postgresql_test_target.schema)
     token = set_hermes_home_override(str(home))
     try:
         with trap_state_db_opens(home) as opens:

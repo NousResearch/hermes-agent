@@ -183,7 +183,7 @@ def test_transaction_rollback_preserves_no_partial_dispatch(ledger, monkeypatch)
 
 
 # ── Runtime seam (selector) ─────────────────────────────────────────────────
-def _pg_home(tmp_path, monkeypatch, *, dsn_value: str):
+def _pg_home(tmp_path, monkeypatch, *, dsn_value: str, schema: str | None = None):
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "config.yaml").write_text(
@@ -192,6 +192,9 @@ def _pg_home(tmp_path, monkeypatch, *, dsn_value: str):
         encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv(_DSN_ENV, dsn_value)
+    if schema is not None:
+        import tools.async_delegation_ledger_postgresql as postgresql_ledger
+        monkeypatch.setattr(postgresql_ledger, "postgresql_async_delegation_schema", lambda: schema)
     from tools.async_delegation_ledger_adapter import _SELECTED_LEDGER_CACHE
     _SELECTED_LEDGER_CACHE.clear()
     return home
@@ -203,9 +206,13 @@ def test_selected_pg_routes_async_delegation_seam_without_state_db(
 ):
     from state_store_runtime_readiness import trap_state_db_opens
 
-    home = _pg_home(tmp_path, monkeypatch, dsn_value=postgresql_async_delegation_target.dsn)
+    home = _pg_home(
+        tmp_path, monkeypatch, dsn_value=postgresql_async_delegation_target.dsn,
+        schema=postgresql_async_delegation_target.schema,
+    )
     ledger = selected_async_delegation_ledger()
     assert isinstance(ledger, PostgreSQLAsyncDelegationLedger)
+    assert ledger._schema == postgresql_async_delegation_target.schema
     try:
         with trap_state_db_opens(home) as events:
             ad._persist_dispatch(_record("seam-1"))

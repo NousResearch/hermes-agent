@@ -532,7 +532,11 @@ all = [
   "hermes-agent[youtube]",
 ]
 state-store = [
+    # PostgreSQL state storage is opt-in. The Alembic runner lazy-imports these
+    # packages only after a trusted DSN connection and tenant schema are resolved.
     "psycopg[binary]==3.3.3",
+    "SQLAlchemy==2.0.51",
+    "alembic==1.17.2",
 ]
 
 [dependency-groups]
@@ -691,6 +695,8 @@ exclude-newer = "14 days"
 
 [tool.uv.exclude-newer-package]
 agent-client-protocol = false
+alembic = false
+ai-edge-litert = false
 aiohttp = false
 aiohttp-socks = false
 aiosqlite = false
@@ -754,6 +760,7 @@ pillow = false
 piper-tts = "2026-09-04T16:47:32Z"
 prompt-toolkit = false
 psutil = false
+psycopg = false
 pvporcupine = false
 pyasn1 = false
 pydantic = false
@@ -782,6 +789,7 @@ slack-sdk = false
 snowballstemmer = false
 sounddevice = false
 soundfile = "2026-06-06T08:58:48Z"
+sqlalchemy = false
 starlette = false
 supermemory = false
 tenacity = false
@@ -824,6 +832,8 @@ include = [
   "pm.*",
   "tools",
   "tools.*",
+  "state_store_alembic",
+  "state_store_alembic.*",
 ]
 
 [tool.setuptools.package-data]

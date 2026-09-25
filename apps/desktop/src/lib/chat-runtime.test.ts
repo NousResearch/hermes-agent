@@ -76,6 +76,7 @@ describe('optimisticAttachmentRef', () => {
 
   it('renders an OS-drop blob: preview as a markdown image (no IPC data URL)', () => {
     const blobUrl = 'blob:https://desktop/preview-1'
+
     const ref = optimisticAttachmentRef(
       attachment({ kind: 'image', label: 'Lattice.png', detail: 'C:\\shot.png', previewUrl: blobUrl })
     )

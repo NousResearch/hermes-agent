@@ -1116,6 +1116,7 @@ function connectionKey(conn: HermesConnection | null): string {
   if (conn?.mode !== 'remote') {
     return String(conn?.mode)
   }
+
   return conn.profile ? `remote:${conn.baseUrl}:${conn.profile}` : `remote:${conn.baseUrl}`
 }
 

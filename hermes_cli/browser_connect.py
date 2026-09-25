@@ -111,6 +111,64 @@ _BROWSERS = (
     _Browser(
         "comet", "/Applications/Comet.app/Contents/MacOS/Comet",
         ("Comet",), (), (), (), (), (), ""),
+    _Browser(
+        "vivaldi", "/Applications/Vivaldi.app/Contents/MacOS/Vivaldi",
+        ("Vivaldi",), ("vivaldi.exe", "vivaldi"),
+        ((("Vivaldi", "Application", "vivaldi.exe"),)),
+        ("Vivaldi", "User Data"),
+        ("vivaldi", "vivaldi-stable"),
+        ("/usr/bin/vivaldi", "/usr/bin/vivaldi-stable", "/snap/bin/vivaldi"),
+        "vivaldi"),
+    # Opera / Opera GX — mac_support and linux_config are well documented (Opera's own
+    # forum/support content), but the Windows profile lives under Roaming %APPDATA%
+    # (``Opera Software\Opera Stable`` / ``Opera Software\Opera GX Stable``), not the
+    # %LOCALAPPDATA% root every other entry here assumes (``real_profile_data_dir``
+    # only ever joins onto LOCALAPPDATA on Windows). win_profile is left empty rather
+    # than returning a wrong path; win_install still covers the per-user install dir
+    # for launch/debug purposes since that DOES live under LOCALAPPDATA.
+    _Browser(
+        "opera", "/Applications/Opera.app/Contents/MacOS/Opera",
+        ("com.operasoftware.Opera",), ("opera.exe",),
+        ((("Programs", "Opera", "launcher.exe"),)),
+        (),
+        ("opera",),
+        ("/usr/bin/opera",),
+        "opera"),
+    _Browser(
+        "opera-gx", "/Applications/Opera GX.app/Contents/MacOS/Opera GX",
+        ("com.operasoftware.OperaGX",), ("opera.exe",),
+        ((("Programs", "Opera GX", "launcher.exe"),)),
+        (),
+        ("opera-gx",),
+        ("/usr/bin/opera-gx",),
+        "opera-gx"),
+    _Browser(
+        "yandex", "/Applications/Yandex.app/Contents/MacOS/Yandex",
+        ("Yandex", "YandexBrowser"), ("browser.exe",),
+        ((("Yandex", "YandexBrowser", "Application", "browser.exe"),)),
+        ("Yandex", "YandexBrowser", "User Data"),
+        ("yandex-browser",),
+        ("/usr/bin/yandex-browser",),
+        "yandex-browser"),
+    # BrowserOS neo (https://www.browseros.com/, formerly "BrowserClaw") — a
+    # Y Combinator-backed, AGPL-3.0, open-source Chromium fork built for AI agents
+    # (github.com/browseros-ai/BrowserOS). macOS + Windows only (no Linux build of
+    # the "neo" agent product). mac_support and the macOS LaunchServices bundle id
+    # are confirmed from the project's own Homebrew cask zap block and a filed crash
+    # report naming the running app's bundle id. win_install is confirmed from a
+    # third-party Windows uninstall-info listing. mac_app's executable filename and
+    # win_profile's "User Data" folder name are NOT independently confirmed for this
+    # product — they are inferred from Chromium's own install-mode convention (the
+    # profile dir is always a "User Data" sibling of "Application" under the same
+    # per-product folder) and from this file's own naming convention (every other
+    # mac_app here is "<AppBundleName>.app/Contents/MacOS/<AppBundleName>"); flagged
+    # for manual verification against a real install.
+    _Browser(
+        "browseros-neo", "/Applications/BrowserOS neo.app/Contents/MacOS/BrowserOS neo",
+        ("BrowserClaw",), ("BrowserClaw.exe",),
+        ((("BrowserClaw", "Application", "BrowserClaw.exe"),)),
+        ("BrowserClaw", "User Data"),
+        (), (), ""),
 )
 _BROWSER_BY_KEY = {b.key: b for b in _BROWSERS}
 
@@ -146,7 +204,11 @@ _LINUX_DESKTOP_MAP = (
     # ORDER MATTERS: ``brave-origin.desktop`` contains the bare ``brave`` fragment,
     # so the substring scan must hit the Origin entry first (#95549).
     ("brave-origin", "brave-origin"), ("brave", "brave"),
-    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"))
+    ("microsoft-edge", "edge"), ("com.microsoft.edge", "edge"), ("msedge", "edge"),
+    ("vivaldi", "vivaldi"),
+    # ORDER MATTERS: ``opera-gx.desktop`` contains the bare ``opera`` fragment.
+    ("opera-gx", "opera-gx"), ("opera", "opera"),
+    ("yandex-browser", "yandex"))
 
 _LINUX_CHANNEL_FRAGMENTS = (
     "google-chrome-beta", "google-chrome-unstable", "google-chrome-canary",
@@ -168,7 +230,11 @@ _LINUX_SNAP_PROFILE_PARTS = {
 _DARWIN_BUNDLE_MAP = (
     ("com.google.chrome", "chrome"), ("com.microsoft.edgemac", "edge"),
     ("com.brave.browser", "brave"), ("com.brave.browser.origin", "brave-origin"),
-    ("org.chromium.chromium", "chromium"), ("ai.perplexity.comet", "comet"))
+    ("org.chromium.chromium", "chromium"), ("ai.perplexity.comet", "comet"),
+    ("com.vivaldi.vivaldi", "vivaldi"),
+    ("com.operasoftware.opera", "opera"), ("com.operasoftware.operagx", "opera-gx"),
+    ("ru.yandex.desktop.yandex-browser", "yandex"),
+    ("com.browseros.browserclaw", "browseros-neo"))
 
 _DARWIN_CHANNEL_BUNDLES = (
     "com.google.chrome.beta", "com.google.chrome.dev", "com.google.chrome.canary",

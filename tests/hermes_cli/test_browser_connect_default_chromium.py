@@ -102,6 +102,11 @@ class TestDetectDefaultDarwin:
             ("org.chromium.Chromium", "chromium"),
             ("com.brave.Browser.origin.beta", bc.UNSUPPORTED_CHANNEL),
             ("com.brave.Browser.origin.nightly", bc.UNSUPPORTED_CHANNEL),
+            ("com.vivaldi.Vivaldi", "vivaldi"),
+            ("com.operasoftware.Opera", "opera"),
+            ("com.operasoftware.OperaGX", "opera-gx"),
+            ("ru.yandex.desktop.yandex-browser", "yandex"),
+            ("com.browseros.BrowserClaw", "browseros-neo"),
         ],
     )
     def test_bundle_map(self, bundle, expected):
@@ -130,6 +135,10 @@ class TestDetectDefaultLinux:
             ("brave-origin-nightly.desktop", bc.UNSUPPORTED_CHANNEL),
             ("microsoft-edge.desktop", "edge"),
             ("com.microsoft.Edge.desktop", "edge"),
+            ("vivaldi-stable.desktop", "vivaldi"),
+            ("opera-gx.desktop", "opera-gx"),
+            ("opera.desktop", "opera"),
+            ("yandex-browser.desktop", "yandex"),
             ("firefox.desktop", None),
             ("org.mozilla.firefox.desktop", None),
             ("", None),
@@ -177,6 +186,20 @@ class TestLinuxProfileDir:
         # must return None rather than a generic path built from empty tuples.
         self._env(monkeypatch, tmp_path)
         assert bc.real_profile_data_dir("comet", "Linux") is None
+
+    def test_browseros_neo_has_no_linux_profile_table_entry(self, tmp_path, monkeypatch):
+        # BrowserOS neo ships macOS + Windows only (no Linux build) — resolution
+        # must fail closed rather than guessing a native ~/.config path.
+        self._env(monkeypatch, tmp_path)
+        assert bc.real_profile_data_dir("browseros-neo", "Linux") is None
+
+    def test_vivaldi_native_profile_dir(self, tmp_path, monkeypatch):
+        self._env(monkeypatch, tmp_path)
+        assert bc.real_profile_data_dir("vivaldi", "Linux") == str(tmp_path / ".config" / "vivaldi")
+
+    def test_yandex_native_profile_dir(self, tmp_path, monkeypatch):
+        self._env(monkeypatch, tmp_path)
+        assert bc.real_profile_data_dir("yandex", "Linux") == str(tmp_path / ".config" / "yandex-browser")
 
     def test_xdg_config_home_is_honoured(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path))

@@ -18,63 +18,50 @@ _ITEM_ENVELOPE_KEYS = ("item",)
 
 
 def _unwrap_item_envelope(value: Any) -> Tuple[Any, bool]:
-    """Unwrap a single-key dict whose only entry looks like ``{"item": <scalar>}``.
+    """Unwrap a single-key dict whose only entry is an ``item`` envelope key.
 
     Frontier LLMs (Anthropic/Codex/Responses-style tool-call parsing) occasionally emit a
     JSON-shaped response_item envelope where the schema declares a bare scalar or array
     element. That is the shape of a tool RESULT item, not of a tool-call argument.
+
+    Nested envelopes (``{"item": {"item": x}}``) collapse to the innermost value; the caller
+    bounds recursion by a depth limit rather than an id-set, because the unwrapped value is a
+    NEW object each step and an id-set would reject it as already-seen.
     """
     if not isinstance(value, dict) or len(value) != 1:
         return value, False
     [(key, inner)] = value.items()
     if key not in _ITEM_ENVELOPE_KEYS:
         return value, False
-    if isinstance(inner, dict) and len(inner) == 1 and next(iter(inner)) in _ITEM_ENVELOPE_KEYS:
-        return value, False
     return inner, True
 
 
-def _repair_item_envelopes(value: Any, _seen: Optional[set] = None) -> Tuple[Any, bool]:
-    """Recursively unwrap ``{"item": <x>}`` envelopes inside arrays and scalars.
+_MAX_ENVELOPE_DEPTH = 32
 
-    Idempotent, cycle-safe, and narrow: only fires when the shape is unambiguously malformed.
-    """
-    if _seen is None:
-        _seen = set()
-    oid = id(value)
-    if oid in _seen:
-        return value, False
-    _seen.add(oid)
-    changed = False
+
+def _strip_envelopes(value: Any, depth: int = 0) -> Any:
+    """Iteratively collapse ``{"item": <x>}`` at this level, innermost first."""
+    if depth >= _MAX_ENVELOPE_DEPTH:
+        return value
+    if isinstance(value, dict) and len(value) == 1:
+        unwrapped, did = _unwrap_item_envelope(value)
+        if did:
+            return _strip_envelopes(unwrapped, depth + 1)
     if isinstance(value, dict):
-        out = {}
-        for key, val in value.items():
-            new_val, child_changed = _repair_item_envelopes(val, _seen)
-            if not child_changed:
-                unwrapped, did = _unwrap_item_envelope(val)
-                if did:
-                    new_val = unwrapped
-                    changed = True
-            elif child_changed:
-                changed = True
-            out[key] = new_val
-        return (out if changed else value), changed
+        return {k: _strip_envelopes(v, depth + 1) for k, v in value.items()}
     if isinstance(value, list):
-        any_changed = False
-        repaired: List[Any] = []
-        for item in value:
-            if isinstance(item, dict):
-                unwrapped, did = _unwrap_item_envelope(item)
-                if did:
-                    repaired.append(unwrapped)
-                    any_changed = True
-                    continue
-            new_item, child_changed = _repair_item_envelopes(item, _seen)
-            if child_changed:
-                any_changed = True
-            repaired.append(new_item)
-        return (repaired if any_changed else value), any_changed
-    return value, False
+        return [_strip_envelopes(v, depth + 1) for v in value]
+    return value
+
+
+def _repair_item_envelopes(value: Any) -> Any:
+    """Recursively unwrap every ``{"item": <x>}`` envelope in a tool-call payload.
+
+    Depth-bounded (not id-bounded): the unwrap produces fresh objects each step, so a seen-id
+    set would treat legitimate nested envelopes as already visited. Self-referential input is
+    caught by the depth limit.
+    """
+    return _strip_envelopes(value)
 
 
 def _flatten_single_envelope_lists(value: Any) -> Any:
@@ -186,10 +173,10 @@ def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str
         # Repair {"item": <x>} response-item envelopes before jsonschema validation so a
         # valid call matches the registered schema (upstream issue #99270, PR #115020).
         try:
-            repaired_args, _changed = _repair_item_envelopes(candidate_args)
-            if _changed:
-                # Unwrapping an array argument's envelope can leave [[...]] behind.
-                repaired_args = _flatten_single_envelope_lists(repaired_args)
+            repaired_args = _flatten_single_envelope_lists(
+                _repair_item_envelopes(candidate_args)
+            )
+            if repaired_args != candidate_args:
                 logger.debug(
                     "tool_call to %r: repaired item-envelope args %r -> %r",
                     name, candidate_args, repaired_args,

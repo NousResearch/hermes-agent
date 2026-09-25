@@ -471,6 +471,43 @@ class TestSteerInjection:
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
         assert messages[-1]["content"] == "output"  # unchanged
 
+    def test_aborting_turn_requeues_steer_instead_of_delivering(self):
+        """A hard stop racing the batch boundary must not consume the steer.
+
+        The turn exits at its next interrupt check, so a delivered row would sit in
+        the transcript unanswered and the surface (voice barge-in) waited for a manual
+        resend. The text stays pending; the finalizer's leftover handoff turns it into
+        a clean next user turn."""
+        agent = _bare_agent()
+        agent._interrupt_requested = True
+        agent.steer("müssten eigentlich mehr sein, oder")
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "a"}]},
+            {"role": "tool", "content": "output", "tool_call_id": "a"},
+        ]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        # Nothing appended — no delivered-and-ignored row.
+        assert messages[-1]["role"] == "tool"
+        assert len(messages) == 2
+        # The text is back in the pending slot for the leftover handoff.
+        assert agent._pending_steer == "müssten eigentlich mehr sein, oder"
+
+    def test_redirect_in_flight_still_delivers(self):
+        """A redirect keeps the same logical turn running (rebuild consumes the
+        steer), so an interrupt flag with a live redirect must not requeue."""
+        agent = _bare_agent()
+        agent._interrupt_requested = True
+        agent.steer("please also check auth.log")
+        agent._pending_redirect = "no, use the other endpoint"
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "a"}]},
+            {"role": "tool", "content": "output", "tool_call_id": "a"},
+        ]
+        agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+        assert messages[-1]["role"] == "user"
+        assert "please also check auth.log" in messages[-1]["content"]
+        assert agent._pending_steer is None
+
 
 
     def test_persisted_steer_row_is_never_merged_with_the_next_prompt(self):
@@ -673,6 +710,110 @@ class TestSteerSurvivesRedirectRebuild:
         # Fully consumed: nothing left for the finalizer's leftover handoff.
         assert result.get("pending_steer") is None
         assert result["completed"] is True
+
+
+class TestRequestActiveNoDeltaInterruptKeepsAtLeastOnce:
+    """A steer whose request was cancelled with zero output comes back on purpose.
+
+    The delivered marker can sit *inside* the request that gets cancelled: the stop lands
+    after the provider call started, before the first streamed delta. That request produced
+    nothing for the correction — no answer, no tool action, no partial — so on the user
+    side the correction is unresolved, and re-posting it as the next user turn is the
+    deliberate at-least-once contract here. Treating "the request crossed the wire" as
+    proof of delivery would leave the correction answered only once the user speaks again:
+    the silent-drop failure this change removes (voice barge-in waited minutes on a manual
+    resend; agent.log 2026-09-23). The tail predicate therefore classifies "no materialized
+    response after the marker", not "never sent" — the one extra durable row is the price
+    the leftover handoff already documents. This test crosses the API boundary the
+    pre-request tests skip and asserts the marker really was in the cancelled request.
+    """
+
+    STEER_TEXT = "request-active steer must come back"
+
+    def _loop_agent(self):
+        from unittest.mock import MagicMock, patch
+
+        from run_agent import AIAgent
+
+        tool_schema = {
+            "type": "function",
+            "function": {
+                "name": _STEER_SURVIVAL_TOOL,
+                "description": "probe tool for the steer-survival regression test",
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        }
+        with (
+            patch("model_tools.get_tool_definitions", return_value=[tool_schema]),
+            patch("model_tools.check_toolset_requirements", return_value={}),
+            patch("agent.process_bootstrap.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        agent.client = MagicMock()
+        agent._disable_streaming = True
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        return agent
+
+    def test_no_delta_request_interrupt_still_requeues_the_delivered_steer(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from tests.agent.test_run_agent import _mock_response
+
+        agent = self._loop_agent()
+        payloads = []
+        marker_in_request = []
+
+        def model_call(api_kwargs):
+            payloads.append([dict(m) for m in api_kwargs["messages"]])
+            if len(payloads) == 1:
+                tool_call = SimpleNamespace(
+                    id="call_1", type="function",
+                    function=SimpleNamespace(name=_STEER_SURVIVAL_TOOL, arguments="{}"),
+                )
+                # The correction arrives while the batch runs; the batch boundary
+                # delivers it (no interrupt set yet), so it becomes a marker row.
+                assert agent.steer(self.STEER_TEXT) is True
+                return _mock_response(
+                    content=None, finish_reason="tool_calls", tool_calls=[tool_call]
+                )
+            # Second request: the marker IS on the wire ...
+            marker_in_request.append(
+                any(
+                    self.STEER_TEXT in str(m.get("content") or "")
+                    for m in api_kwargs["messages"]
+                )
+            )
+            # ... and the stop lands before any streamed delta.
+            agent._interrupt_requested = True
+            raise InterruptedError("barge-in cancelled the request that carried the steer")
+
+        agent._interruptible_api_call = model_call
+
+        with (
+            patch.object(agent, "_flush_messages_to_session_db"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("start something")
+
+        # The test cannot silently degrade into the (already covered) pre-request case:
+        # the cancelled request really contained the marker.
+        assert marker_in_request == [True]
+        # Cancelled with no output -> correction unresolved -> handed back for re-post.
+        assert result["interrupted"] is True
+        assert result["pending_steer"] == self.STEER_TEXT
 
 
 class TestPreApiCallSteerDrain:

@@ -194,3 +194,43 @@ def test_interrupted_turn_with_diagnostic_text_is_not_completed():
     assert result["interrupted"] is True
     assert result["completed"] is False
     assert result["failed"] is False
+
+
+def test_unanswered_steer_tail_is_handed_back_on_interrupt():
+    """A steer delivered into the live request but never seen is recovered, not lost.
+
+    Voice barge-in races a hard stop into the batch boundary: the stop ends the turn at
+    its next interrupt check before any API call runs, so the appended steer row is the
+    transcript tail having never reached the model — and the surface sat waiting for a
+    manual resend. The finalizer hands the inner text back through result["pending_steer"]
+    so the surface's post-turn follow-up delivers it as the next user turn."""
+    from agent.prompt_builder import steer_user_row
+
+    agent = _StubAgent()
+    messages = _interrupted_tool_tail()
+    messages.append(steer_user_row("müssten eigentlich mehr sein, oder"))
+    result = _finalize(agent, messages, interrupted=True, final_response=None)
+    assert result["pending_steer"] == "müssten eigentlich mehr sein, oder"
+
+
+def test_answered_steer_tail_is_not_resurrected():
+    """A steer the loop consumed (an assistant row follows it) must NOT be re-posted —
+    the tail match is exact so normal consumption never trips the recovery."""
+    from agent.prompt_builder import steer_user_row
+
+    agent = _StubAgent()
+    messages = _interrupted_tool_tail()
+    messages.append(steer_user_row("check the other log"))
+    messages.append({"role": "assistant", "content": "on it"})
+    result = _finalize(agent, messages, interrupted=True, final_response="on it")
+    assert "pending_steer" not in result
+
+
+def test_non_interrupted_turn_never_recovers_steer_tail():
+    agent = _StubAgent()
+    from agent.prompt_builder import steer_user_row
+
+    messages = _interrupted_tool_tail()
+    messages.append(steer_user_row("note this"))
+    result = _finalize(agent, messages, interrupted=False, final_response="done")
+    assert "pending_steer" not in result

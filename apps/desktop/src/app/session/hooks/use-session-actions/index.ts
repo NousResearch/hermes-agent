@@ -134,6 +134,7 @@ import { $archivedSessions } from '@/store/sidebar-archive'
 import { restoreSessionTodosFromSnapshot } from '@/store/todos'
 import { dropTranscriptTail, dropTranscriptTailEverywhere, saveTranscriptTail } from '@/store/transcript-tail-cache'
 import { isWatchWindow } from '@/store/windows'
+import { sessionWorkspaceRow } from '@/store/workspace-cwd'
 import type { SessionCreateResponse, SessionMessage, SessionResumeResult, UsageStats } from '@/types/hermes'
 
 import { navigateToWorkspacePage, NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../../routes'
@@ -1250,7 +1251,7 @@ export function useSessionActions({
         const cachedState = warmHit.state
 
         const stored =
-          $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+          sessionWorkspaceRow(storedSessionId) ?? storedForProfile
 
         let cachedViewState =
           !cachedState.model && stored?.model != null
@@ -1799,7 +1800,7 @@ export function useSessionActions({
       setSessionStartedAt(Date.now())
 
       const stored =
-        $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId)) ?? storedForProfile
+        sessionWorkspaceRow(storedSessionId) ?? storedForProfile
 
       applyStoredSessionPreviewRuntimeInfo(stored, storedSessionId)
 

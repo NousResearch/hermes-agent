@@ -2008,3 +2008,55 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+def test_complete_task_persists_relative_scratch_artifacts_against_task_workspace(
+    kanban_home, tmp_path, monkeypatch
+):
+    """A relative artifact path resolves against the task workspace, not the caller's cwd.
+
+    Out-of-process workers and bridge runners declare task-relative paths
+    ("out/chart.png") because the path is written relative to the workspace they
+    were handed. Resolving such a path against the calling process's cwd makes it
+    fail the workspace containment check, and the staging loop then skips the
+    deliverable silently -- no copy, no attachment row, no warning -- so it is
+    lost when the scratch workspace is cleaned up.
+    """
+    caller_cwd = tmp_path / "caller-cwd"
+    caller_cwd.mkdir()
+    monkeypatch.chdir(caller_cwd)
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="render chart")
+        task = kb.get_task(conn, t)
+        ws = kbw.resolve_workspace(task)
+        kbw.set_workspace_path(conn, t, ws)
+        artifact = ws / "out" / "chart.png"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(b"png-bytes")
+        assert artifact.is_relative_to(ws)
+
+        assert kb.complete_task(
+            conn,
+            t,
+            result="ok",
+            metadata={"artifacts": ["out/chart.png"]},
+        )
+
+        completed = [e for e in kb.list_events(conn, t) if e.kind == "completed"][-1]
+        persisted = Path(completed.payload["artifacts"][0])
+        run = kb.latest_run(conn, t)
+
+    assert not ws.exists(), "scratch workspace should still be cleaned up"
+    assert persisted.exists(), "relative artifact should have been staged before cleanup"
+    assert persisted.parent == kb.task_attachments_dir(t)
+    assert persisted.name == "chart.png"
+    assert persisted.read_bytes() == b"png-bytes"
+    assert str(persisted) != str(artifact)
+    assert run is not None
+    assert run.metadata["artifacts"] == [str(persisted)]
+    with kbc.connect() as conn:
+        attachments = kb.list_attachments(conn, t)
+    assert [(a.filename, a.stored_path) for a in attachments] == [
+        ("chart.png", str(persisted.resolve()))
+    ]

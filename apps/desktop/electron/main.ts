@@ -944,7 +944,18 @@ const HERMES_HOME: string = resolveDesktopHermesHome({
     void 0 // first run: no config yet → Chromium defaults
   }
 
-  for (const planned of planLaunchSwitches(readDesktopLaunchConfig(desktopLaunchYaml), process.argv.slice(1))) {
+  const desktopLaunchConfig = readDesktopLaunchConfig(desktopLaunchYaml)
+
+  // `desktop.renderer_accessibility: false` must reach packaged launches too,
+  // not only the `hermes desktop` launcher's env bridge (#118271).
+  if (
+    desktopLaunchConfig.rendererAccessibility === false &&
+    process.env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY === undefined
+  ) {
+    process.env.HERMES_DESKTOP_RENDERER_ACCESSIBILITY = '0'
+  }
+
+  for (const planned of planLaunchSwitches(desktopLaunchConfig, process.argv.slice(1))) {
     if (planned.value === undefined) {
       app.commandLine.appendSwitch(planned.name)
     } else {

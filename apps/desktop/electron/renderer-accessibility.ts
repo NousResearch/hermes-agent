@@ -13,9 +13,10 @@
  * the composer being reachable by every accessibility-driven input method is
  * the point of the bug fix; the tree's rendering cost is the price. A
  * perf-sensitive setup can opt out with `desktop.renderer_accessibility:
- * false` in config.yaml, which the `hermes desktop` launcher bridges as
- * HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0 (same shape as desktop.disable_gpu);
- * the Electron side also honors that variable when set directly.
+ * false` in config.yaml, which becomes HERMES_DESKTOP_RENDERER_ACCESSIBILITY=0
+ * — bridged by the `hermes desktop` launcher and, for packaged launches, by
+ * main.ts's pre-ready config read (readDesktopLaunchConfig). Setting the
+ * variable directly works too.
  *
  * Extracted dependency-free — the Electron app object is injected — so the
  * platform/env decision is unit-testable per branch without booting Electron,

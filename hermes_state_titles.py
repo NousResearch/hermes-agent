@@ -20,6 +20,11 @@ _TITLE_INVISIBLE_RE = re.compile(r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufef
 _NUMBERED_TITLE_RE = re.compile(r'^(.*?) #(\d+)$')
 
 
+def fit_title(title: str, limit: int) -> str:
+    """``title`` cut to ``limit`` characters, the cut marked with an ellipsis."""
+    return title if len(title) <= limit else title[: limit - 1].rstrip() + "…"
+
+
 class SessionTitlesMixin:
     """Sanitizing, ranking auto/user titles, lineage-aware lookups."""
 
@@ -195,4 +200,14 @@ class SessionTitlesMixin:
             return base
         # The unnumbered original counts as #1.
         numbers = [int(m.group(2)) for m in (_NUMBERED_TITLE_RE.match(row["title"]) for row in rows) if m]
-        return f"{base} #{max([1, *numbers]) + 1}"
+        n = max([1, *numbers]) + 1
+        while True:
+            suffix = f" #{n}"
+            if len(base) + len(suffix) <= self.MAX_TITLE_LENGTH:
+                return base + suffix
+            # Past the cap the title writer would refuse it: shorten the base. That spelling escapes
+            # the LIKE above, so step over numbers it already holds.
+            candidate = fit_title(base, self.MAX_TITLE_LENGTH - len(suffix)) + suffix
+            if self._read_one("SELECT 1 FROM sessions WHERE title = ?", (candidate,)) is None:
+                return candidate
+            n += 1

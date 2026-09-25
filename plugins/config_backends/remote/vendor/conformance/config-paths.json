@@ -1,0 +1,136 @@
+{
+  "fixtureVersion": 1,
+  "valid": [
+    {
+      "segments": [
+        "terminal",
+        "timeout"
+      ],
+      "encoded": "terminal.timeout"
+    },
+    {
+      "segments": [
+        "monitoring",
+        "gateway_health_export",
+        "resource_attributes",
+        "service.name"
+      ],
+      "encoded": "monitoring.gateway_health_export.resource_attributes.service\\.name"
+    },
+    {
+      "segments": [
+        "x",
+        "a\\b"
+      ],
+      "encoded": "x.a\\\\b"
+    },
+    {
+      "segments": [
+        "mcp_servers",
+        "github",
+        "env",
+        "GITHUB_TOKEN"
+      ],
+      "encoded": "mcp_servers.github.env.GITHUB_TOKEN"
+    },
+    {
+      "segments": [
+        "platforms",
+        "discord",
+        "extra",
+        "channel_prompts",
+        "1180000000000000001"
+      ],
+      "encoded": "platforms.discord.extra.channel_prompts.1180000000000000001"
+    },
+    {
+      "segments": [
+        "mcp_servers",
+        "x",
+        "headers",
+        "X-API-Key"
+      ],
+      "encoded": "mcp_servers.x.headers.X-API-Key"
+    },
+    {
+      "segments": [
+        "a."
+      ],
+      "encoded": "a\\."
+    },
+    {
+      "segments": [
+        "\\."
+      ],
+      "encoded": "\\\\\\."
+    },
+    {
+      "segments": [
+        "display",
+        "personalities",
+        "ペルソナ"
+      ],
+      "encoded": "display.personalities.ペルソナ"
+    },
+    {
+      "segments": [
+        "k",
+        "with space"
+      ],
+      "encoded": "k.with space"
+    }
+  ],
+  "invalid": [
+    "",
+    ".a",
+    "a.",
+    "a..b",
+    "a\\",
+    "a\\x",
+    "__proto__.x",
+    ".",
+    "\\",
+    "a.__proto__",
+    "a\u0001b",
+    "a.b",
+    "s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s.s",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+  ],
+  "covers": [
+    {
+      "lock": "terminal",
+      "path": "terminal.timeout",
+      "covers": true
+    },
+    {
+      "lock": "terminal",
+      "path": "terminal",
+      "covers": true
+    },
+    {
+      "lock": "terminal",
+      "path": "terminal_extra",
+      "covers": false
+    },
+    {
+      "lock": "a\\.b",
+      "path": "a.b",
+      "covers": false
+    },
+    {
+      "lock": "a",
+      "path": "a\\.b",
+      "covers": false
+    },
+    {
+      "lock": "terminal.timeout",
+      "path": "terminal",
+      "covers": false
+    },
+    {
+      "lock": "a\\.b",
+      "path": "a\\.b.c",
+      "covers": true
+    }
+  ]
+}

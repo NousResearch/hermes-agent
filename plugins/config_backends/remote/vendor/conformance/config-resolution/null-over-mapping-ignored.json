@@ -1,0 +1,79 @@
+{
+  "fixtureVersion": 1,
+  "name": "null-over-mapping-ignored",
+  "description": "Proves rule-5: null at a lower level over an upper mapping is ignored: the upper mapping and its provenance stay.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "display": {
+          "personality": "kawaii",
+          "compact": true
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "display": null
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "display": {
+        "personality": "kawaii",
+        "compact": true
+      }
+    },
+    "provenance": {
+      "display.personality": "global",
+      "display.compact": "global"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "display",
+      "value": null,
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ],
+  "defaultsMerge": {
+    "defaults": {
+      "display": {
+        "personality": "",
+        "compact": false,
+        "skin": "default"
+      }
+    },
+    "expect": {
+      "display": {
+        "personality": "kawaii",
+        "compact": true,
+        "skin": "default"
+      }
+    }
+  }
+}

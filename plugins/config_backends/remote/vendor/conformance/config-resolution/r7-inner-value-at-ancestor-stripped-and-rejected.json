@@ -1,0 +1,128 @@
+{
+  "fixtureVersion": 1,
+  "name": "r7-inner-value-at-ancestor-stripped-and-rejected",
+  "description": "Proves r7: An inner non-mapping value of a set at a strict ancestor of a lock is refused; on read it is stripped and a mapping emptied by stripping is removed.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "a": {
+          "b": {
+            "c": 1
+          }
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": [
+        "a.b.c"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "a": {
+          "b": 5
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "a": {
+          "b": {
+            "c": 2,
+            "d": 3
+          }
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "a": {
+        "b": {
+          "c": 1,
+          "d": 3
+        }
+      }
+    },
+    "provenance": {
+      "a.b.c": "global",
+      "a.b.d": "profile"
+    },
+    "locks": [
+      {
+        "path": "a.b.c",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "a",
+      "value": {
+        "b": 5
+      },
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "a.b.c",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "a",
+      "value": {
+        "b": [
+          1
+        ]
+      },
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "a.b.c",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "a",
+      "value": {
+        "b": {
+          "d": 4
+        }
+      },
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "a.b.c.x",
+      "value": 1,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "a.b.c",
+        "lockedBy": "tenant"
+      }
+    }
+  ]
+}

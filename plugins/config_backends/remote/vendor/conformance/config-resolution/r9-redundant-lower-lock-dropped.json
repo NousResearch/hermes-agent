@@ -1,0 +1,88 @@
+{
+  "fixtureVersion": 1,
+  "name": "r9-redundant-lower-lock-dropped",
+  "description": "Proves r9: A lower lock already covered by an upper lock is omitted from the effective lock list, so lock errors name the upper level.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "terminal": {
+          "timeout": 180
+        }
+      },
+      "locks": [
+        "terminal"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": [
+        "model",
+        "terminal",
+        "terminal.timeout"
+      ]
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "terminal": {
+        "timeout": 180
+      }
+    },
+    "provenance": {
+      "terminal.timeout": "tenant"
+    },
+    "locks": [
+      {
+        "path": "terminal",
+        "level": "tenant"
+      },
+      {
+        "path": "model",
+        "level": "agent"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal.timeout",
+      "value": 5,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "model.default",
+      "value": "hermes-4-70b",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "model",
+        "lockedBy": "agent"
+      }
+    }
+  ]
+}

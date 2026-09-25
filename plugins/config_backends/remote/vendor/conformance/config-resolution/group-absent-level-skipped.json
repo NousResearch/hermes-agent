@@ -1,0 +1,67 @@
+{
+  "fixtureVersion": 1,
+  "name": "group-absent-level-skipped",
+  "description": "Proves rule-0: When the owner has no mapped group the group level is skipped: no group values or locks apply.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "display": {
+          "personality": "verbose"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "display": {
+        "personality": "verbose"
+      }
+    },
+    "provenance": {
+      "display.personality": "principal"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "display.personality",
+      "value": "technical",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "display.skin",
+      "value": "ares",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

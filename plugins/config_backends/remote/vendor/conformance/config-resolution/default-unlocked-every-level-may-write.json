@@ -1,0 +1,105 @@
+{
+  "fixtureVersion": 1,
+  "name": "default-unlocked-every-level-may-write",
+  "description": "Proves rule-1: With no locks anywhere every level may set, unset, lock and unlock any path.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "x": {
+          "y": 0
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-support",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "x": {
+        "y": 0
+      }
+    },
+    "provenance": {
+      "x.y": "global"
+    },
+    "locks": []
+  },
+  "writes": [
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "x.y",
+      "value": 1,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "group",
+      "op": "unset",
+      "path": "x",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "principal",
+      "op": "lock",
+      "path": "x",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "unlock",
+      "path": "x",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "x.y",
+      "value": 2,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "unset",
+      "path": "x.y",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+{
+  "fixtureVersion": 1,
+  "name": "group-present-lock-binds-principal",
+  "description": "Proves rule-0, rule-3: When the owner has a mapped group, the group level's values apply and its locks bind principal, agent and profile.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "group",
+      "groupId": "g-support",
+      "values": {
+        "display": {
+          "personality": "concise"
+        }
+      },
+      "locks": [
+        "display"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "display": {
+          "personality": "verbose"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {},
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "display": {
+        "personality": "concise"
+      }
+    },
+    "provenance": {
+      "display.personality": "group"
+    },
+    "locks": [
+      {
+        "path": "display",
+        "level": "group"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "principal",
+      "op": "set",
+      "path": "display.personality",
+      "value": "technical",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "display",
+        "lockedBy": "group"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "set",
+      "path": "display.skin",
+      "value": "ares",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "display",
+        "lockedBy": "group"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "display.personality",
+      "value": "kawaii",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

@@ -1,0 +1,125 @@
+{
+  "fixtureVersion": 1,
+  "name": "lock-freezes-inherited-value-with-no-value-at-locking-level",
+  "description": "Proves rule-3: A tenant lock on a leaf it does not set freezes the global value; lower values under it are ignored and lower writes refused; the tenant itself may still write it.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "terminal": {
+          "backend": "local",
+          "timeout": 60
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": [
+        "terminal.timeout"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "terminal": {
+          "timeout": 5
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "terminal": {
+          "timeout": 10,
+          "backend": "docker"
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "terminal": {
+        "backend": "docker",
+        "timeout": 60
+      }
+    },
+    "provenance": {
+      "terminal.backend": "profile",
+      "terminal.timeout": "global"
+    },
+    "locks": [
+      {
+        "path": "terminal.timeout",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal.timeout",
+      "value": 30,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal.timeout",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "agent",
+      "op": "unset",
+      "path": "terminal.timeout",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal.timeout",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal.backend",
+      "value": "ssh",
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "tenant",
+      "op": "set",
+      "path": "terminal.timeout",
+      "value": 90,
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ],
+  "defaultsMerge": {
+    "defaults": {
+      "terminal": {
+        "backend": "local",
+        "timeout": 60,
+        "persistent": false
+      }
+    },
+    "expect": {
+      "terminal": {
+        "backend": "docker",
+        "timeout": 60,
+        "persistent": false
+      }
+    }
+  }
+}

@@ -101,6 +101,25 @@ def _quote_fts_tokens(raw_query: str) -> str:
     )
 
 
+def _uppercase_interior_operators(query: str) -> str:
+    """Uppercase a bare ``and``/``or`` that sits between two terms: FTS5 only honours the
+    uppercase spelling and matches ``python or rust`` as the literal word "or". Lowercase ``not``
+    stays a word (``tests do not pass`` must not exclude "pass"); leading, trailing and stacked
+    operators are left alone."""
+    tokens = query.split()
+    is_op = [tok.upper() in _FTS_OPERATORS for tok in tokens]
+    interior = [
+        i
+        for i in range(1, len(tokens) - 1)
+        if tokens[i].upper() in ("AND", "OR") and not is_op[i - 1] and not is_op[i + 1]
+    ]
+    if not any(tokens[i] != tokens[i].upper() for i in interior):
+        return query
+    for i in interior:
+        tokens[i] = tokens[i].upper()
+    return " ".join(tokens)
+
+
 def _like_params(term: str) -> List[str]:
     """One ``%term%`` bind per column of ``_LIKE_ANY_COLUMN_SQL``."""
     return [f"%{_escape_like(term)}%"] * 3
@@ -815,9 +834,11 @@ class SessionSearchMixin:
         # 3. Collapse repeated * and drop leading * (prefix needs a char).
         sanitized = re.sub(r"\*+", "*", sanitized)
         sanitized = re.sub(r"(^|\s)\*", r"\1", sanitized)
-        # 4. Drop dangling boolean operators at start/end (syntax errors).
+        # 4. Drop dangling boolean operators at start/end (syntax errors); uppercase interior
+        # ones (quoted phrases are still placeholders here, so their words are untouched).
         sanitized = re.sub(r"(?i)^(AND|OR|NOT)\b\s*", "", sanitized.strip())
         sanitized = re.sub(r"(?i)\s+(AND|OR|NOT)\s*$", "", sanitized.strip())
+        sanitized = _uppercase_interior_operators(sanitized)
         # 5. Quote dotted/hyphenated/underscored terms in ONE pass (sequential passes
         # double-quote ``my-app.config``).
         sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)

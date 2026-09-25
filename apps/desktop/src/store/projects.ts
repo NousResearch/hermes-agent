@@ -15,7 +15,6 @@ import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesk
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRestEndpoint, isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { isUnderPath } from '@/lib/path-compare'
-import { persistentAtom } from '@/lib/persisted'
 import { revealFile } from '@/store/file-actions'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { $sidebarShowAllSessions, setSidebarAgentsGrouped } from '@/store/layout'
@@ -27,6 +26,7 @@ import {
   normalizeProfileKey,
   requestFreshSession
 } from '@/store/profile'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
 import {
   $currentCwd,
   $selectedStoredSessionId,
@@ -80,22 +80,6 @@ function projectsStaleBackendError(): Error {
 // True while the disk scan is in flight (drives the "finding repos" hint).
 export const $reposScanning = atom(false)
 
-// ── Project scope (the "you're inside a project" view, mirroring profile scope)─
-// The sidebar's grouped view is a project switcher: ALL_PROJECTS shows the
-// project overview (a list you drill into), and a concrete id means you've
-// "entered" that project so only its worktrees/branches/sessions show. This is
-// pure view state (localStorage), distinct from the durable active-project
-// pointer in projects.db — though entering a project also makes it active so new
-// chats land there, exactly as selecting a profile does.
-export const ALL_PROJECTS = '__all_projects__'
-
-const PROJECT_SCOPE_KEY = 'hermes.desktop.projectScope'
-
-export const $projectScope = persistentAtom<string>(PROJECT_SCOPE_KEY, ALL_PROJECTS, {
-  decode: raw => raw || ALL_PROJECTS,
-  encode: value => value || ALL_PROJECTS
-})
-
 // Enter a project: scope the sidebar to it and make it the active project
 // (best-effort — the durable pointer is nice-to-have, the view scope is the
 // point). Never opens a session.
@@ -108,10 +92,6 @@ export function enterProject(id: string): void {
   if (id.startsWith('p_')) {
     void setActiveProject(id).catch(() => undefined)
   }
-}
-
-export function exitProjectScope(): void {
-  $projectScope.set(ALL_PROJECTS)
 }
 
 // A project's working root: its primary folder, else the first repo that has

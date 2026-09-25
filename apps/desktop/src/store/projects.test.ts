@@ -7,18 +7,16 @@ import { $activeGatewayProfile, $profileScope, ALL_PROFILES, setShowAllProfiles 
 import { $currentCwd, $selectedStoredSessionId, $sessions, applyConfiguredDefaultProjectDir } from '@/store/session'
 import type { ProjectInfo } from '@/types/hermes'
 
+import { $projectScope, ALL_PROJECTS, exitProjectScope } from './project-scope'
 import {
   $activeProjectId,
   $projects,
-  $projectScope,
   $projectsRpcAvailable,
   $projectTree,
   addProjectFolder,
-  ALL_PROJECTS,
   createProject,
   deleteProject,
   enterProject,
-  exitProjectScope,
   fetchProjectSessions,
   openProjectCreate,
   pickProjectFolder,

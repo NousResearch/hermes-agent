@@ -55,7 +55,8 @@ import {
   normalizeProfileKey,
   resolveNewChatOwnerRoute
 } from '@/store/profile'
-import { $projectScope, resolveNewSessionCwd } from '@/store/projects'
+import { $projectScope } from '@/store/project-scope'
+import { resolveNewSessionCwd } from '@/store/projects'
 import { receiveApprovalRequest, replayPendingApproval } from '@/store/prompts'
 import { clearStoredTranscriptReadOnly, markStoredTranscriptReadOnly } from '@/store/read-only-transcript'
 import {

@@ -352,6 +352,7 @@ import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { mintGatewayWsTicket as mintOauthGatewayWsTicket, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
+import { openLocalFile } from './open-local-file'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { bundledPayload, installIdForRoot, type PayloadInfo } from './payload-backend'
@@ -2024,18 +2025,14 @@ async function openExternalFile(rawUrl: string) {
     return
   }
 
-  try {
-    const error = await shell.openPath(localPath)
-
-    if (!error) {
-      return
-    }
-
-    rememberLog(`[file] openPath failed: ${error}; revealing in folder instead`)
-    shell.showItemInFolder(localPath)
-  } catch (error) {
-    rememberLog(`[file] openPath rejected: ${error instanceof Error ? error.message : String(error)}`)
-  }
+  // Dispatch to the OS default handler; on macOS, a failed PDF open (typically a
+  // stale LaunchServices association) falls back to Preview before revealing the
+  // file in the system file manager. See open-local-file.ts.
+  await openLocalFile(localPath, {
+    openPath: target => shell.openPath(target),
+    showItemInFolder: target => shell.showItemInFolder(target),
+    log: rememberLog
+  })
 }
 
 // An open failure is surfaced to the renderer as a modal carrying the URL, so

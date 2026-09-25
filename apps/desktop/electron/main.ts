@@ -6032,7 +6032,14 @@ async function waitForRemoteHermes(remote) {
   }
 }
 
-async function waitForHermes(baseUrl, token, signal?, authMode?, headers = {}) {
+async function waitForHermes(
+  baseUrl: string,
+  token: string | null | undefined,
+  signal?: AbortSignal,
+  authMode?: string | null,
+  headers: Record<string, string> = {},
+  { alreadyBound = false }: { alreadyBound?: boolean } = {}
+): Promise<void> {
   const { probeHealth, probeIsCredentialed } = await buildReadinessHealthProbe(baseUrl, authMode, token)
 
   return waitForHermesReady(baseUrl, {
@@ -6043,7 +6050,8 @@ async function waitForHermes(baseUrl, token, signal?, authMode?, headers = {}) {
       ? (url, _token, options = {}) => probeHealth(url, requestOptionsWithHeaders(options, headers))
       : fetchJson,
     probeHealth: (url, options = {}) => probeHealth(url, requestOptionsWithHeaders(options, headers)),
-    probeIsCredentialed
+    probeIsCredentialed,
+    alreadyBound
   })
 }
 
@@ -12080,7 +12088,7 @@ function startAttachedBackendMonitor(attached: AttachedBackend) {
   stopAttachedBackendMonitor()
 
   attachedBackendMonitor = setInterval(() => {
-    void waitForHermes(attached.baseUrl, attached.token, undefined, 'token', {}).catch(() => {
+    void waitForHermes(attached.baseUrl, attached.token, undefined, 'token', {}, { alreadyBound: true }).catch(() => {
       stopAttachedBackendMonitor()
       rememberLog(`[attach] attached backend on ${attached.baseUrl} (pid ${attached.pid}) is gone; recovering`)
       invalidatePrimaryConnection()
@@ -12142,7 +12150,11 @@ function hostBackendAttachDeps() {
         }
       ),
     resolveServedToken: (baseUrl: string) => resolveServedDashboardToken(baseUrl, ''),
-    waitForReady: (baseUrl: string, token: string) => waitForHermes(baseUrl, token, undefined, 'token', {})
+    // A ledger record is written only after its backend binds, so a refused
+    // port is a dead record (a hard-killed backend leaves both the record and
+    // its published token behind), not one still starting.
+    waitForReady: (baseUrl: string, token: string) =>
+      waitForHermes(baseUrl, token, undefined, 'token', {}, { alreadyBound: true })
   }
 }
 

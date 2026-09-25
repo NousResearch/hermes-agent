@@ -3693,51 +3693,56 @@ function collectCloseStopLocks(): RuntimeLock[] {
   return locks
 }
 
-function collectOwnedBackendPids(): number[] {
-  const pids: number[] = []
-  const primary = backendConnectionState.getProcess()
+// Captured before teardown drops the handles. Node keeps each process handle
+// open until exit is observed, so a PID read from a still-running child here
+// cannot have been reused by an unrelated process.
+function collectOwnedBackendChildren(): ChildProcess[] {
+  const children = [backendConnectionState.getProcess(), ...[...backendPool.values()].map(entry => entry?.process)]
 
-  if (primary && Number.isInteger(primary.pid) && primary.pid > 0) {
-    pids.push(primary.pid)
-  }
-
-  for (const entry of backendPool.values()) {
-    const pid = entry?.process?.pid
-
-    if (Number.isInteger(pid) && pid > 0) {
-      pids.push(pid)
-    }
-  }
-
-  return pids
+  return children.filter(
+    (child): child is ChildProcess => Boolean(child) && Number.isInteger(child.pid) && child.pid > 0
+  )
 }
 
-// Close/stop: same tree-kill as forceKillProcessTree, then inventory the
-// owned PIDs and clear only locks no live holder still owns. A taskkill
-// failure is logged and, when an owned PID is still alive, thrown.
-function windowsCloseStopOwnedBackends() {
+// Close/stop, after the graceful teardown, pool stop and straggler reap: the
+// same tree-kill for any owned child that is still running, an inventory of
+// those PIDs, and a clear of only the locks no live holder owns. Never throws;
+// returns the failure for the caller to surface once cleanup is done.
+function windowsCloseStopOwnedBackends(children: ChildProcess[]): Error | null {
   if (!IS_WINDOWS) {
-    return
+    return null
   }
 
-  const result = finishWindowsCloseStop(collectOwnedBackendPids(), collectCloseStopLocks(), {
-    killTree: forceKillProcessTree,
-    isPidAlive: isPidAliveWindows,
-    clearLock: lockPath => {
-      fs.rmSync(lockPath, { force: true })
+  try {
+    const running = children.filter(child => child.exitCode === null && child.signalCode === null)
+
+    const result = finishWindowsCloseStop(
+      running.map(child => child.pid as number),
+      collectCloseStopLocks(),
+      {
+        killTree: forceKillProcessTree,
+        isPidAlive: isPidAliveWindows,
+        clearLock: lockPath => {
+          fs.rmSync(lockPath, { force: true })
+        }
+      }
+    )
+
+    for (const failure of result.taskkillFailures) {
+      rememberLog(`[close-stop] taskkill PID ${failure.pid} failed: ${failure.error}`)
     }
-  })
 
-  for (const failure of result.taskkillFailures) {
-    rememberLog(`[close-stop] taskkill PID ${failure.pid} failed: ${failure.error}`)
-  }
+    for (const failure of result.lockErrors) {
+      rememberLog(`[close-stop] could not clear unheld lock ${failure.path}: ${failure.error}`)
+    }
 
-  if (result.clearedLocks.length) {
-    rememberLog(`[close-stop] cleared unheld lock(s): ${result.clearedLocks.join(', ')}`)
-  }
+    if (result.clearedLocks.length) {
+      rememberLog(`[close-stop] cleared unheld lock(s): ${result.clearedLocks.join(', ')}`)
+    }
 
-  if (result.liveFailure) {
-    throw new Error(closeStopFailureMessage(result))
+    return result.liveFailure ? new Error(closeStopFailureMessage(result)) : null
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error))
   }
 }
 
@@ -12098,10 +12103,7 @@ function reapInstallRootedStragglers(excludePids: number[]): void {
 }
 
 const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void> => {
-  // Before teardown drops the process handles: inventory those owned PIDs
-  // after the same tree-kill, and refuse to pretend close succeeded.
-  windowsCloseStopOwnedBackends()
-
+  const ownedChildren = IS_WINDOWS ? collectOwnedBackendChildren() : []
   const localShutdown = localBackendLifecycle.shutdown()
   const primary = backendConnectionState.getProcess()
   const primaryStop = teardownPrimaryBackendAndWait()
@@ -12115,6 +12117,15 @@ const backendShutdown = createBackendShutdownCoordinator(async (): Promise<void>
   await waitForTeardown([localShutdown, primaryStop, pooledStops], 7_000)
 
   reapInstallRootedStragglers(Number.isInteger(primary?.pid) ? [primary.pid] : [])
+
+  // Verify last, so a surviving child cannot skip the teardown above.
+  const closeStopFailure = windowsCloseStopOwnedBackends(ownedChildren)
+
+  if (closeStopFailure) {
+    rememberLog(`[close-stop] ${closeStopFailure.message}`)
+
+    throw closeStopFailure
+  }
 })
 
 const quitTeardown = createQuitTeardownCoordinator(() => app.quit())
@@ -12140,7 +12151,12 @@ async function teardownSshForQuit(): Promise<void> {
 }
 
 async function exitAfterBackendShutdown(code) {
-  await backendShutdown.run()
+  try {
+    await backendShutdown.run()
+  } catch {
+    // Already logged by backendShutdown; the exit must still happen.
+  }
+
   app.exit(code)
 }
 

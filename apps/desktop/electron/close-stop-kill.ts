@@ -36,7 +36,9 @@ export interface CloseStopKillResult {
   /** Owned PIDs still enumerable after the tree kill. */
   remainingPids: number[]
   clearedLocks: string[]
+  /** Held locks, plus unheld ones whose removal failed (see lockErrors). */
   retainedLocks: string[]
+  lockErrors: { path: string; error: string }[]
   /**
    * True when a taskkill failure left an owned PID alive, or any owned PID
    * is still enumerable. An already-gone taskkill error is recorded but is
@@ -81,15 +83,24 @@ export function finishWindowsCloseStop(
   const alive = new Set(remainingPids)
   const clearedLocks: string[] = []
   const retainedLocks: string[] = []
+  const lockErrors: { path: string; error: string }[] = []
 
   for (const lock of locks) {
     if (lockIsHeld(lock, pid => alive.has(pid) || deps.isPidAlive(pid))) {
       retainedLocks.push(lock.path)
+
       continue
     }
 
-    deps.clearLock(lock.path)
-    clearedLocks.push(lock.path)
+    // An open handle (msvcrt byte lock) makes the delete fail: keep the lock
+    // and report it rather than aborting the rest of close/stop.
+    try {
+      deps.clearLock(lock.path)
+      clearedLocks.push(lock.path)
+    } catch (error) {
+      retainedLocks.push(lock.path)
+      lockErrors.push({ path: lock.path, error: errorText(error) })
+    }
   }
 
   const failedWhileAlive = new Set(taskkillFailures.map(failure => failure.pid))
@@ -100,6 +111,7 @@ export function finishWindowsCloseStop(
     remainingPids,
     clearedLocks,
     retainedLocks,
+    lockErrors,
     liveFailure
   }
 }

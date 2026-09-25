@@ -13,6 +13,7 @@ function killThatThrows(message: string) {
 test('close/stop surfaces a taskkill failure and does not clear a lock a live holder still owns', () => {
   const killed: number[] = []
   const cleared: string[] = []
+
   const locks: RuntimeLock[] = [
     { path: 'C:\\Users\\me\\.hermes\\gateway.lock', holderPids: [4242], held: true },
     { path: 'C:\\Users\\me\\.hermes\\profiles\\other\\gateway.lock', holderPids: [], held: false }
@@ -70,6 +71,36 @@ test('close/stop inventories owned PIDs after the tree kill and clears only unhe
   assert.equal(result.liveFailure, true)
   assert.deepEqual(cleared.sort(), ['gone.lock', 'no-holder.lock'].sort())
   assert.deepEqual(result.retainedLocks.sort(), ['foreign-held.lock', 'still-held.lock'].sort())
+})
+
+test('a lock whose delete fails is kept and reported, and the remaining locks still clear', () => {
+  const cleared: string[] = []
+
+  const result = finishWindowsCloseStop(
+    [],
+    [
+      { path: 'open.lock', holderPids: [] },
+      { path: 'stale.lock', holderPids: [] }
+    ],
+    {
+      killTree: () => {},
+      isPidAlive: () => false,
+      clearLock: path => {
+        if (path === 'open.lock') {
+          throw new Error('EBUSY: resource busy or locked')
+        }
+
+        cleared.push(path)
+      }
+    }
+  )
+
+  assert.deepEqual(cleared, ['stale.lock'])
+  assert.deepEqual(result.clearedLocks, ['stale.lock'])
+  assert.deepEqual(result.retainedLocks, ['open.lock'])
+  assert.equal(result.lockErrors.length, 1)
+  assert.match(result.lockErrors[0].error, /EBUSY/)
+  assert.equal(result.liveFailure, false)
 })
 
 test('a taskkill error is not discarded when the owned PID is already gone', () => {

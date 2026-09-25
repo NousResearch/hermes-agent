@@ -1,10 +1,12 @@
 import { type ThreadMessage } from '@assistant-ui/react'
-import { cleanup, render, screen } from '@testing-library/react'
+import type { GatewayEvent } from '@hermes/shared'
+import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { renderMessageStream } from '@/app/session/hooks/use-message-stream/test-harness'
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '@/components/assistant-ui/test-utils'
 import { Thread } from '@/components/assistant-ui/thread'
-import { type GatewayEventPayload, upsertToolPart } from '@/lib/chat-messages'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $showReasoning } from '@/store/reasoning-disclosure'
 import { $activeSessionId } from '@/store/session'
@@ -12,6 +14,7 @@ import { $activeSessionId } from '@/store/session'
 stubThreadEnvironment()
 stubThreadViewportSize()
 
+const SID = 'sess-1'
 const createdAt = new Date('2026-06-03T00:00:00.000Z')
 
 function answerOnlyMessage(): ThreadMessage {
@@ -75,46 +78,30 @@ function Harness() {
   )
 }
 
-// Feed real gateway payloads through the store's event-to-part mapping
-// (upsertToolPart), the same path `handleToolEvent` drives on tool.complete —
-// instead of hand-setting isError on the part, which skips the mapping.
-function toolCompleteMessage(...payloads: GatewayEventPayload[]): ThreadMessage {
-  const content = payloads.reduce(
-    (acc, payload) => upsertToolPart(acc, payload, 'complete', 3),
-    [] as ReturnType<typeof upsertToolPart>
+// Drive the gateway's own tool.complete event through the message stream (the
+// store Desktop renders from), then render what it produced. Answer-only
+// suppresses tool.start, so the completion arrives on its own, and its failure
+// sits inside `result`: nothing hand-sets isError on the part.
+function completionHarness(payload: Record<string, unknown>) {
+  const stream = renderMessageStream(SID)
+
+  const send = (type: GatewayEvent['type'], body: Record<string, unknown> = {}) =>
+    act(() => stream.handleEvent({ payload: body, session_id: SID, type }))
+
+  send('message.start')
+  send('tool.complete', payload)
+  send('message.complete', { text: 'done' })
+
+  return (
+    <ThreadRuntime messages={stream.state(SID).messages.map(toRuntimeMessage)}>
+      <Thread />
+    </ThreadRuntime>
   )
-
-  return {
-    id: 'assistant-tool-complete',
-    role: 'assistant',
-    content: [
-      ...content,
-      {
-        type: 'text',
-        text: 'done'
-      }
-    ],
-    status: { type: 'complete', reason: 'stop' },
-    createdAt,
-    metadata: {
-      unstable_state: null,
-      unstable_annotations: [],
-      unstable_data: [],
-      steps: [],
-      custom: {}
-    }
-  } as unknown as ThreadMessage
 }
-
-const completionHarness = (payload: GatewayEventPayload) => (
-  <ThreadRuntime messages={[toolCompleteMessage(payload)]}>
-    <Thread />
-  </ThreadRuntime>
-)
 
 beforeEach(() => {
   clearAllPrompts()
-  $activeSessionId.set('sess-1')
+  $activeSessionId.set(SID)
   $showReasoning.set(true)
 })
 
@@ -128,7 +115,7 @@ afterEach(() => {
 describe('answer-only display policy', () => {
   it('hides reasoning and non-essential tool chrome without requiring reasoning_effort none', async () => {
     $showReasoning.set(false)
-    setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'dangerous command', sessionId: 'sess-1' })
+    setApprovalRequest({ command: 'rm -rf /tmp/x', description: 'dangerous command', sessionId: SID })
 
     const { container } = render(<Harness />)
 
@@ -186,9 +173,10 @@ describe('answer-only display policy', () => {
 
     const { container } = render(
       completionHarness({
-        name: 'write_file',
-        tool_id: 'write-fail-1',
-        args: { path: '/repo/out.txt' },
+        // Not a card tool: file edits stay visible anyway, so they can't prove the failure path.
+        name: 'web_extract',
+        tool_id: 'extract-fail-1',
+        args: { urls: ['https://example.test'] },
         result: { success: false }
       })
     )

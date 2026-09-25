@@ -62,3 +62,4 @@ def test_switch_refreshes_ollama_request_window(tmp_path, monkeypatch, detected,
         agent.switch_model("model-c", "custom", api_key="fixture", base_url=url)
     assert agent.model == "model-b"
     assert agent._ollama_num_ctx == expected
+    assert agent.context_compressor._config_context_length == 130000

@@ -1993,7 +1993,11 @@ def _restore_switch_snapshot(agent, snapshot: Dict[str, Any]) -> None:
         if value is _MISSING:
             continue  # attribute did not exist before the swap; don't fabricate it
         with contextlib.suppress(Exception):
-            setattr(agent, name, value)
+            if name == "_config_context_length":
+                from agent.agent_init import set_config_context_length
+                set_config_context_length(agent, value)
+            else:
+                setattr(agent, name, value)
 
 
 def _resolve_switch_destination(agent, new_model, new_provider, base_url, api_mode, capabilities, old_norm, new_norm):

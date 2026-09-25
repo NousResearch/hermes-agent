@@ -22,6 +22,37 @@ def _gw():
     return gateway
 
 
+def _read_bundled_env_from_launchd_plist(text: str) -> dict[str, str]:
+    """Parse already-propagated ``HERMES_BUNDLED_*`` pointers from an on-disk plist.
+
+    Uses ``plistlib`` so XML entities are unescaped robustly; returns ``{}`` for a malformed/absent
+    ``EnvironmentVariables`` dict rather than raising."""
+    import plistlib
+
+    try:
+        data = plistlib.loads(text.encode("utf-8"))
+    except Exception:
+        return {}
+    env = data.get("EnvironmentVariables") if isinstance(data, dict) else None
+    if not isinstance(env, dict):
+        return {}
+    found: dict[str, str] = {}
+    for name in _gw()._BUNDLED_RESOURCE_ENV_VARS:
+        raw = env.get(name)
+        if isinstance(raw, str) and raw.strip():
+            found[name] = raw.strip()
+    return found
+
+
+def _prior_bundled_launchd_env() -> dict[str, str]:
+    """``HERMES_BUNDLED_*`` pointers from the installed plist, or ``{}``."""
+    path = _gw().get_launchd_plist_path()
+    with contextlib.suppress(OSError):
+        if path.exists():
+            return _read_bundled_env_from_launchd_plist(path.read_text(encoding="utf-8"))
+    return {}
+
+
 def get_launchd_label() -> str:
     """Return the launchd service label, scoped per profile."""
     suffix = _gw()._profile_suffix()
@@ -355,6 +386,16 @@ def generate_launchd_plist() -> str:
         f"<string>{escape(part)}</string>" for part in launchd_program_arguments(command, stdout_log, stderr_log)
     )
 
+    # Propagate the wrapper's bundled-resource pointers into the plist so the launchd-supervised
+    # gateway (which starts the venv python directly, not the wrapper) can still find bundled
+    # plugins/skills/locales. Empty → no-op. See #85357. Rendered as extra <key>/<string> pairs
+    # inside EnvironmentVariables. Carry forward any pointers already in the on-disk plist so an
+    # ordinary start from a non-wrapper environment doesn't strip them.
+    bundled_env_xml = "".join(
+        f"\n        <key>{name}</key>\n        <string>{escape(value)}</string>"
+        for name, value in _gw()._bundled_resource_env_pairs(_prior_bundled_launchd_env())
+    )
+
     # Persist the configured RLIMIT_NOFILE floor: launchd defaults to soft 256, and every plist
     # rewrite would otherwise strip a manual limit and reintroduce EMFILE crashes.
     nofile_block = ""
@@ -395,7 +436,7 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
         <key>HERMES_SUPERVISED_CHILD</key>
-        <string>1</string>
+        <string>1</string>{bundled_env_xml}
     </dict>
 
     <key>LimitLoadToSessionType</key>

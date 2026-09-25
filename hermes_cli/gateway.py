@@ -2848,6 +2848,59 @@ def legacy_launchd_labels_for_install(exclude=()) -> list[str]:
     return sorted(labels)
 
 
+# Resource-pointer env vars the ``hermes`` wrapper exports so packaged installs (Homebrew, Nix)
+# can locate bundled plugins/skills/locales/TUI assets that live outside site-packages (e.g.
+# ``<prefix>/share/hermes-agent/plugins``). launchd and systemd start the venv python directly,
+# bypassing the wrapper, so these must be baked into the generated service definition — otherwise
+# the supervised gateway falls back to the in-repo ``plugins/`` path, discovers zero bundled
+# platform manifests, and logs "No adapter available for <platform>". See #85357.
+_BUNDLED_RESOURCE_ENV_VARS = (
+    "HERMES_BUNDLED_PLUGINS",
+    "HERMES_BUNDLED_SKILLS",
+    "HERMES_BUNDLED_LOCALES",
+    "HERMES_OPTIONAL_SKILLS",
+    "HERMES_TUI_DIR",
+)
+
+
+def _bundled_resource_env_pairs(fallback: dict[str, str] | None = None) -> list[tuple[str, str]]:
+    """Return ``(name, value)`` for each bundled-resource env var to bake into a service unit.
+
+    The live wrapper environment wins; for any var the wrapper did not export, fall back to
+    ``fallback`` — the pointers parsed from the unit already on disk. ``generate_*`` runs on every
+    ordinary start (via the ``refresh_*_if_needed`` / ``*_is_current`` chokepoints), not just first
+    install, so without this a Homebrew/Nix user who installs through the wrapper (vars present) and
+    later starts the gateway from a context where the wrapper isn't in the environment — venv python
+    invoked directly, a GUI/desktop launch, a supervised restart — would get the unit rewritten with
+    the ``HERMES_BUNDLED_*`` pointers silently stripped, and #85357 comes back with no error.
+    Carrying the on-disk values forward makes regeneration idempotent for those pointers instead.
+
+    Empty on a standard pip/uv install with no prior unit, so the generated unit is byte-for-byte
+    unchanged for those deployments.
+    """
+    fallback = fallback or {}
+    pairs: list[tuple[str, str]] = []
+    for name in _BUNDLED_RESOURCE_ENV_VARS:
+        value = os.environ.get(name, "").strip() or fallback.get(name, "").strip()
+        if value:
+            pairs.append((name, value))
+    return pairs
+
+
+def _prior_bundled_systemd_env(system: bool = False) -> dict[str, str]:
+    """``HERMES_BUNDLED_*`` pointers already baked into the installed systemd unit, or ``{}``.
+
+    Reads them back through ``_unit_environment_value`` (the same parser refresh/compare use), which
+    undoes systemd's ``\\"``/``\\\\``/``%%`` quoting, so a value we previously wrote round-trips."""
+    path = get_systemd_unit_path(system=system)
+    found: dict[str, str] = {}
+    for name in _BUNDLED_RESOURCE_ENV_VARS:
+        value = _unit_environment_value(path, name)
+        if value and value.strip():
+            found[name] = value.strip()
+    return found
+
+
 def get_python_path() -> str:
     from hermes_cli._launchers import resolve_store_python
 
@@ -3178,6 +3231,13 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
                               python=python_path, home=hermes_home)
     stop_mark = installation_command(project_root, module="gateway.systemd_stop_mark",
                                 python=python_path, home=hermes_home)
+    # Propagate the wrapper's bundled-resource pointers as extra ``Environment=`` lines (empty →
+    # no-op). Carry forward any already in the on-disk unit so an ordinary start from a non-wrapper
+    # environment doesn't strip them (see #85357). ``_systemd_env_line`` handles the quoting.
+    bundled_env_block = "".join(
+        _systemd_env_line(name, value)
+        for name, value in _bundled_resource_env_pairs(_prior_bundled_systemd_env(system=system))
+    )
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
@@ -3192,7 +3252,7 @@ WorkingDirectory={working_dir}
 
 Environment="HERMES_HOME={hermes_home}"
 Environment="HERMES_SUPERVISED_CHILD=1"
-Restart=always
+{bundled_env_block}Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}

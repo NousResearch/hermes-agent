@@ -1169,7 +1169,7 @@ def _normalize_codex_response(
     scan = _OutputScan(response_status)
     scan.scan(output, issuer_kind, issuer_model)
     tool_calls, reasoning_parts = scan.tool_calls, scan.reasoning_parts
-    final_text = "\n".join(scan.content_parts).strip()
+    final_text = "\n\n".join(scan.content_parts).strip()
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):
         out_text = getattr(response, "output_text", "")
         final_text = out_text.strip() if isinstance(out_text, str) else final_text

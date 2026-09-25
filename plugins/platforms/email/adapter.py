@@ -423,7 +423,7 @@ class EmailAdapter(BasePlatformAdapter):
         # Originals by Message-ID so parallel mails from one sender quote the right one; the per-sender entry
         # covers mails without a Message-ID. Only populated while quoting is on.
         self._original_by_msg_id: "OrderedDict[str, Dict[str, str]]" = OrderedDict()
-        self._last_original_by_sender: Dict[str, Dict[str, str]] = {}
+        self._last_original_by_sender: "OrderedDict[str, Dict[str, str]]" = OrderedDict()
         self._quote_lock = threading.Lock()  # sends run concurrently in executor threads
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
@@ -673,7 +673,9 @@ class EmailAdapter(BasePlatformAdapter):
         return isinstance(behavior, str) and behavior.strip().lower() in {"pair", "decline"}
 
     def _sender_accepted(self, sender_addr: str, msg_data: Dict[str, Any]) -> bool:
-        """Pre-dispatch sender gate: self, automated, authorization, From: authentication."""
+        """Pre-dispatch sender gate: self, automated, authorization, From: authentication.
+
+        Records the authorization verdict as ``msg_data["sender_granted"]`` (False for pair/decline answers)."""
         if sender_addr == self._address.lower():
             return False
         if _is_automated_sender(sender_addr, {}):
@@ -700,6 +702,7 @@ class EmailAdapter(BasePlatformAdapter):
             granted = verdict if verdict is not None else (not allowed_raw and self._allow_all_senders())
         # Drop senders the gateway would neither authorize nor answer (pair/decline) before a MessageEvent (and thread
         # context) exists — otherwise a dispatch/authorization race can send a reply even though the handler returned None.
+        msg_data["sender_granted"] = granted
         if not granted and not self._answers_unknown_senders():
             logger.debug("[Email] Dropping unauthorized sender at dispatch (unknown senders are ignored): %s", sender_addr)
             return False
@@ -731,8 +734,11 @@ class EmailAdapter(BasePlatformAdapter):
         # of message_type, but document-context injection gates strictly on MessageType.DOCUMENT — so DOCUMENT surfaces both.
         kinds = {att["type"] for att in attachments}
         self._thread_context[sender_addr] = {"subject": subject, "message_id": msg_data["message_id"]}
-        if self._quote_original:  # after _sender_accepted: pairing replies to unknown senders never quote
-            self._remember_original(msg_data)
+        if self._quote_original:  # pair/decline replies to not-granted senders never quote
+            if msg_data.get("sender_granted"):
+                self._remember_original(msg_data)
+            else:
+                self._forget_sender_original(sender_addr)
         name = msg_data["sender_name"] or sender_addr
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
@@ -756,6 +762,14 @@ class EmailAdapter(BasePlatformAdapter):
                 while len(self._original_by_msg_id) > _QUOTE_LOOKUP_MAX:
                     self._original_by_msg_id.popitem(last=False)
             self._last_original_by_sender[msg_data["sender_addr"]] = record
+            self._last_original_by_sender.move_to_end(msg_data["sender_addr"])
+            while len(self._last_original_by_sender) > _QUOTE_LOOKUP_MAX:
+                self._last_original_by_sender.popitem(last=False)
+
+    def _forget_sender_original(self, sender_addr: str) -> None:
+        """Drop the per-sender fallback so a reply to a not-granted mail cannot quote an earlier one."""
+        with self._quote_lock:
+            self._last_original_by_sender.pop(sender_addr, None)
 
     def _claim_quote(self, to_addr: str, body: str, reply_to_msg_id: Optional[str]) -> Tuple[str, Optional[Dict[str, str]]]:
         """``(body with quote, claimed record)``; the record is ``None`` when nothing was quoted.
@@ -840,8 +854,8 @@ class EmailAdapter(BasePlatformAdapter):
     def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
         body, quoted = self._claim_quote(to_addr, body, reply_to_msg_id)
-        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
         try:
+            msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
             self._smtp_send(msg)
         except BaseException:
             self._settle_quote(quoted, sent=False)

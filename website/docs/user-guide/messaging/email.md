@@ -162,6 +162,7 @@ platforms:
 or set `EMAIL_QUOTE_ORIGINAL=true` (and optionally `EMAIL_QUOTE_MAX_CHARS`) in `~/.hermes/.env`. The environment variables take precedence over `config.yaml`.
 
 - The quote is added only to replies to a received email, never to cron jobs or other proactive messages.
+- Senders who are not authorized are never quoted, including the pairing code or decline reply sent with `unauthorized_dm_behavior: pair` / `decline`.
 - Each received email is quoted once: when a response is split into several emails, only the first one that is sent successfully carries the quote. A failed send releases it, so the retry quotes again.
 - The quote is shortened (or left out) so the email stays within the 50,000-character limit; the agent's answer is never shortened.
 - Replies stay plain text; attachments and HTML formatting of the original are not quoted.

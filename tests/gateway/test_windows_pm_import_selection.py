@@ -37,7 +37,7 @@ def test_unmanaged_gateway_still_activates_existing_venv(tmp_path, monkeypatch):
     site_packages.mkdir(parents=True)
     monkeypatch.setattr("hermes_cli._launchers.resolve_store_python", lambda root: None)
     monkeypatch.setenv("VIRTUAL_ENV", str(venv))
-    monkeypatch.setattr(gateway_run.sys, "path", list(sys.path))
+    monkeypatch.setattr(gateway_run.sys, "path", [str(tmp_path)])
 
     gateway_run._ensure_windows_gateway_venv_imports()
 

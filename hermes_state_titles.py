@@ -33,9 +33,15 @@ _TITLE_INVISIBLE_RE = re.compile(r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufef
 _NUMBERED_TITLE_RE = re.compile(r'^(.*?) #(\d+)$')
 
 
+def fit_title(title: str, limit: int) -> str:
+    """``title`` cut to ``limit`` characters, the cut marked with an ellipsis."""
+    return title if len(title) <= limit else title[: limit - 1].rstrip() + "…"
+
+
 def next_title_in_lineage(conn, base_title: str) -> str:
     """Next title in a lineage ("my session" -> "my session #2") as seen by *conn*: strip any
     " #N" suffix, then increment the highest existing number."""
+    from hermes_state import SessionDB
     match = _NUMBERED_TITLE_RE.match(base_title)
     base = match.group(1) if match else base_title
     rows = conn.execute(
@@ -45,7 +51,17 @@ def next_title_in_lineage(conn, base_title: str) -> str:
         return base
     # The unnumbered original counts as #1.
     numbers = [int(m.group(2)) for m in (_NUMBERED_TITLE_RE.match(row[0]) for row in rows) if m]
-    return f"{base} #{max([1, *numbers]) + 1}"
+    n = max([1, *numbers]) + 1
+    while True:
+        suffix = f" #{n}"
+        if len(base) + len(suffix) <= SessionDB.MAX_TITLE_LENGTH:
+            return base + suffix
+        # Past the cap the title writer would refuse it: shorten the base. That spelling escapes
+        # the LIKE above, so step over numbers it already holds.
+        candidate = fit_title(base, SessionDB.MAX_TITLE_LENGTH - len(suffix)) + suffix
+        if conn.execute("SELECT 1 FROM sessions WHERE title = ?", (candidate,)).fetchone() is None:
+            return candidate
+        n += 1
 
 
 class SessionTitlesMixin:

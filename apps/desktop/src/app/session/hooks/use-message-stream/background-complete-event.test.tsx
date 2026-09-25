@@ -1,7 +1,6 @@
+import type { GatewayEvent } from '@hermes/shared'
 import { act, cleanup } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-
-import type { GatewayEvent } from '@hermes/shared'
 
 import { type MessageStreamHarness, renderMessageStream } from './test-harness'
 

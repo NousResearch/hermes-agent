@@ -106,6 +106,41 @@ def test_turn_report_is_written_before_the_exit_linger_and_the_path_is_not_inher
     except SystemExit as exc:
         assert exc.code == 0
     assert seen["env_during_turn"] is None and seen["report_during_turn"] is False
-    assert seen["report_at_linger"] == {"pid": os.getpid(), "exit_code": 0, "error": ""}
+    assert seen["report_at_linger"] == {"pid": os.getpid(), "exit_code": 0, "error": "", "reply": "ok"}
     # Another process's record is not this child's report.
     assert qsq.read_turn_report(str(report), os.getpid() + 1) is None
+
+
+def test_a_follow_up_turn_rewrites_the_report_with_the_answer_it_displaces(monkeypatch, tmp_path):
+    """The report says what this run will print. When a teammate's reply during the linger runs a
+    follow-up turn whose answer displaces the first (the quiet run's final-answer contract), the
+    report is rewritten with it, so a relay booking the child at its cap relays that answer (#114980)."""
+    from hermes_cli import quiet_single_query as qsq
+
+    monkeypatch.delenv("HERMES_KANBAN_GOAL_MODE", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    report = tmp_path / "turn.json"
+    monkeypatch.setenv(qsq.TURN_REPORT_FILE_ENV, str(report))
+    answers = iter(["asking the teammate", "teammate says: done"])
+    seen = {}
+
+    def run_conversation(**kwargs):
+        return {"final_response": next(answers), "messages": []}
+
+    def linger_then_follow_up(session_id, run_turn, **kwargs):
+        seen["report_before_follow_up"] = qsq.read_turn_report(str(report), os.getpid())["reply"]
+        return run_turn("teammate: done")
+
+    monkeypatch.setattr(qsq, "continue_quiet_notify_completions", linger_then_follow_up)
+    monkeypatch.setattr("tools.process_registry.process_registry.wait_for_pending_completions",
+                        lambda *a, **k: {"waited": [], "completed": [], "timed_out": []})
+    agent = SimpleNamespace(run_conversation=run_conversation, session_id="s-1")
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(a))
+    try:
+        cli._run_quiet_single_query(SimpleNamespace(agent=agent, conversation_history=[], session_id="s-1"), "hello")
+    except SystemExit as exc:
+        assert exc.code == 0
+    assert seen["report_before_follow_up"] == "asking the teammate"
+    assert qsq.read_turn_report(str(report), os.getpid())["reply"] == "teammate says: done"
+    assert ("teammate says: done",) in printed, "the report and stdout name the same answer"

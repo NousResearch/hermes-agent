@@ -2,7 +2,7 @@
 
 Run from the repo with a clean environment and a temporary HERMES_HOME:
   .venv/bin/python evals/heartbeat_idle_wire.py
-Pass --base-poller /tmp/run_goals_base.py to compare the old poller. No network.
+Pass --base-poller <path>/run_goals_base.py to compare the old poller. No network.
 """
 
 import argparse

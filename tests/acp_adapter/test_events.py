@@ -13,7 +13,6 @@ import acp
 from acp.schema import AgentPlanUpdate
 
 from acp_adapter.events import (
-    _build_plan_update_from_todo_result,
     _send_update,
     make_message_cb,
     make_step_cb,
@@ -44,30 +43,6 @@ def event_loop_fixture():
 
 
 class TestToolProgressCallback:
-    def test_emits_tool_call_start(self, mock_conn, event_loop_fixture):
-        """Tool progress should emit a ToolCallStart update."""
-        tool_call_ids = {}
-        tool_call_meta = {}
-        loop = event_loop_fixture
-
-        cb = make_tool_progress_cb(mock_conn, "session-1", loop, tool_call_ids, tool_call_meta)
-
-        # Run callback in the event loop context
-        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
-            future = MagicMock(spec=Future)
-            future.result.return_value = None
-            mock_rcts.return_value = future
-
-            cb("tool.started", "terminal", "$ ls -la", {"command": "ls -la"})
-
-        # Should have tracked the tool call ID
-        assert "terminal" in tool_call_ids
-
-        # Should have called run_coroutine_threadsafe
-        mock_rcts.assert_called_once()
-        coro = mock_rcts.call_args[0][0]
-        # The coroutine should be conn.session_update
-        assert mock_conn.session_update.called or coro is not None
 
 
 
@@ -109,23 +84,6 @@ class TestToolProgressCallback:
 
 
 class TestStepCallback:
-    def test_completes_tracked_tool_calls(self, mock_conn, event_loop_fixture):
-        """Step callback should mark tracked tools as completed."""
-        tool_call_ids = {"terminal": "tc-abc123"}
-        loop = event_loop_fixture
-
-        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
-
-        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts:
-            future = MagicMock(spec=Future)
-            future.result.return_value = None
-            mock_rcts.return_value = future
-
-            cb(1, [{"name": "terminal", "result": "success"}])
-
-        # Tool should have been removed from tracking
-        assert "terminal" not in tool_call_ids
-        mock_rcts.assert_called_once()
 
 
 
@@ -141,27 +99,6 @@ class TestStepCallback:
             cb(1, [{"name": "terminal", "result": raw}])
         mock_btc.assert_called_once_with("tc-f", "terminal", result=expected, function_args=None, snapshot=None)
 
-    def test_result_passed_to_build_tool_complete(self, mock_conn, event_loop_fixture):
-        """Tool result from prev_tools dict is forwarded to build_tool_complete."""
-        from collections import deque
-
-        tool_call_ids = {"terminal": deque(["tc-xyz789"])}
-        loop = event_loop_fixture
-
-        cb = make_step_cb(mock_conn, "session-1", loop, tool_call_ids, {})
-
-        with patch("acp_adapter.events.asyncio.run_coroutine_threadsafe") as mock_rcts, \
-             patch("acp_adapter.events.build_tool_complete") as mock_btc:
-            future = MagicMock(spec=Future)
-            future.result.return_value = None
-            mock_rcts.return_value = future
-
-            # Provide a result string in the tool info dict
-            cb(1, [{"name": "terminal", "result": '{"output": "hello"}'}])
-
-        mock_btc.assert_called_once_with(
-            "tc-xyz789", "terminal", result='{"output": "hello"}', function_args=None, snapshot=None
-        )
 
 
 

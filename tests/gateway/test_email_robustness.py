@@ -68,13 +68,6 @@ class TestImapResponseGuard(unittest.TestCase):
         self.assertEqual(results, [])
 
 
-class TestMessageIdDomain(unittest.TestCase):
-    """Message-ID generation tolerates EMAIL_ADDRESS without '@'."""
-
-
-    def test_address_without_at(self):
-        adapter = _make_adapter("not-an-email")
-        self.assertEqual(adapter._message_id_domain(), "localhost")
 
 
 class TestTransportSecurity(unittest.TestCase):

@@ -262,6 +262,18 @@ def _links_for(conn: sqlite3.Connection, task_id: str) -> dict[str, list[str]]:
     return {"parents": _ids("parent_id", "child_id"), "children": _ids("child_id", "parent_id")}
 
 
+def _link_tasks(conn: sqlite3.Connection, links: dict[str, list[str]]) -> list[dict]:
+    """One {id, title, status} row per linked task, so UIs can render titles
+    instead of raw ids. Dropped/foreign rows are simply absent — callers fall
+    back to the id."""
+    rows = []
+    for task_id in dict.fromkeys([*links["parents"], *links["children"]]):
+        task = kanban_db.get_task(conn, task_id)
+        if task:
+            rows.append({"id": task.id, "title": task.title, "status": task.status})
+    return rows
+
+
 # --- GET /board -------------------------------------------------------------
 
 def get_board(
@@ -306,7 +318,13 @@ def get_board(
             _attach_diagnostics(d, diagnostics_per_task.get(t.id))
             columns[t.status if t.status in columns else "todo"].append(d)
 
-        # Per-column ordering (priority DESC, created_at ASC) comes from list_tasks.
+        # Queue lanes keep the list_tasks dispatch order; the done column is
+        # history, so order it newest-completed-first. Two stable sorts compose
+        # into the "completed_at DESC NULLS LAST, id DESC" SQL key.
+        columns["done"].sort(key=lambda d: d["id"], reverse=True)
+        columns["done"].sort(key=lambda d: (d["completed_at"] is None, -(d["completed_at"] or 0)))
+
+        # Queue columns keep list_tasks' dispatch order (priority DESC, created_at ASC).
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
         assignees = [r["assignee"] for r in conn.execute(
             "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL AND status != 'archived' ORDER BY assignee")]
@@ -362,6 +380,7 @@ def get_task(
             "events": [asdict(e) for e in kanban_db.list_events(conn, task_id)],
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
             "links": links,
+            "link_tasks": _link_tasks(conn, links),
             "child_results": [
                 {"id": c.id, "title": c.title, "status": c.status, "latest_summary": child_summaries.get(c.id), "result": c.result}
                 for c in children],
@@ -572,13 +591,7 @@ def _apply_status(conn, task_id: str, s: str, p, unknown_detail: str) -> bool:
 
 
 def _set_priority(conn, task_id: str, priority: int, board: Optional[str]) -> None:
-    with kanban_db.write_txn(conn):
-        conn.execute("UPDATE tasks SET priority = ? WHERE id = ?", (int(priority), task_id))
-        conn.execute(
-            "INSERT INTO task_events (task_id, kind, payload, created_at) VALUES (?, 'reprioritized', ?, ?)",
-            (task_id, json.dumps({"priority": int(priority)}), int(time.time())))
-    # Mutation-boundary observer (post-commit): this direct-SQL write bypasses every kanban_db mutator.
-    kanban_db.notify_task_updated(conn, task_id, ("priority",), board=board)
+    kanban_db.edit_task(conn, task_id, priority=int(priority), board=board)
 
 
 def _apply_model_override(conn, task_id: str, p) -> bool:
@@ -605,7 +618,7 @@ def _patch_status(conn, task_id: str, payload: UpdateTaskBody, review_assignee_d
     if s == "archived":
         ok = kanban_db.archive_task(conn, task_id)
     else:
-        with _map_errors(400, _StatusRejected):
+        with _map_errors(400, _StatusRejected, ValueError):
             ok = _apply_status(conn, task_id, s, payload, f"unknown status: {s}")
         if s == "review" and ok and review_assignee_deferred and not payload.assignee:
             ok = kanban_db.assign_task(conn, task_id, None)
@@ -1653,11 +1666,21 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
 _EVENT_POLL_SECONDS = 0.3
 
 
-def _int_param(ws: WebSocket, name: str) -> int:
+def _since_param(ws: WebSocket) -> Optional[int]:
+    """The client's event cursor, or None when it sent none (or garbage).
+
+    None starts the stream at the board's current tail. Only an explicit
+    ``since`` replays history — including ``since=0``. A client that just
+    opened the board already holds the snapshot; replaying every
+    ``task_events`` row (200 per 300 ms) turned each open into a refetch storm.
+    """
+    raw = ws.query_params.get("since")
+    if raw is None or not str(raw).strip():
+        return None
     try:
-        return int(ws.query_params.get(name, "0"))
-    except ValueError:
-        return 0
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return None
 
 
 def _ws_board(raw: Optional[str]) -> Optional[str]:
@@ -1676,6 +1699,15 @@ class _EventTail:
         self._board = board
         self._conn: Optional[sqlite3.Connection] = None
         self._executor: Optional[ThreadPoolExecutor] = None
+
+    def _latest(self) -> int:
+        """The board's current tail: the cursor a client without one starts from."""
+        if self._conn is None:
+            self._conn = kbc.connect(board=self._board)
+        rows = self._conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS m FROM task_events", ()
+        ).fetchall()
+        return int(rows[0]["m"]) if rows else 0
 
     def _fetch(self, cursor: int) -> tuple[int, list[dict]]:
         if self._conn is None:
@@ -1698,10 +1730,16 @@ class _EventTail:
             self._conn.close()
             self._conn = None
 
-    async def poll(self, cursor: int) -> tuple[int, list[dict]]:
+    def _run(self, fn, *args):
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kanban-events")
-        return await asyncio.get_running_loop().run_in_executor(self._executor, self._fetch, cursor)
+        return asyncio.get_running_loop().run_in_executor(self._executor, fn, *args)
+
+    async def latest(self) -> int:
+        return await self._run(self._latest)
+
+    async def poll(self, cursor: int) -> tuple[int, list[dict]]:
+        return await self._run(self._fetch, cursor)
 
     async def shutdown(self) -> None:
         if self._executor is None:
@@ -1723,8 +1761,12 @@ async def stream_events(ws: WebSocket):
     # Board is pinned at the handshake; the UI opens a new WS on board change
     # rather than reconciling two cursors mid-stream.
     tail = _EventTail(_ws_board(ws.query_params.get("board")))
-    cursor = _int_param(ws, "since")
+    since = _since_param(ws)
     try:
+        # Capture the tail at accept, before the first wait, so an event that
+        # lands in that window is still delivered. A missing cursor must not
+        # mean 0 — that replays the whole history.
+        cursor = since if since is not None else await tail.latest()
         while True:
             # Race receive() against the poll interval so a disconnect is detected even when no
             # events flow (else idle boards leak poll tasks). Other client messages are ignored.

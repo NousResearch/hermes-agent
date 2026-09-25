@@ -56,9 +56,10 @@ def iter_plugin_dirs(root: Path) -> List[Path]:
 def read_plugin_description(plugin_dir: Path) -> str:
     """Return ``description`` from ``plugin.yaml`` (empty string if absent/unreadable)."""
     try:
-        import yaml
+        from utils import fast_safe_load
+
         with open(plugin_dir / "plugin.yaml", encoding="utf-8-sig") as f:
-            meta = yaml.safe_load(f) or {}
+            meta = fast_safe_load(f) or {}
         return meta.get("description", "")
     except Exception:
         return ""
@@ -120,6 +121,8 @@ def load_plugin_module(module_name: str, plugin_dir: Path, *, parents: Tuple[str
         sub_mod = _new_module(full_sub_name, sub_file)
         if _exec(sub_mod, logger):
             loaded_submodules.append((sub_file.stem, sub_mod))
+        else:
+            sys.modules.pop(full_sub_name, None)
     if not _exec(mod, logger):
         sys.modules.pop(module_name, None)
         return None

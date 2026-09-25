@@ -60,7 +60,8 @@ _RECOVERY_ENV = "HERMES_UPDATE_RESTART_RECOVERY"
 _GATEWAY_MARKERS = ("_HERMES_GATEWAY", "HERMES_GATEWAY", "HERMES_GATEWAY_MODE")
 _PROFILE_RESTART_TIMEOUT = 90
 _VERIFY_TIMEOUT = 15
-_PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+from hermes_constants import PROFILE_ID_RE as _PROFILE_ID_RE
+
 _SUPERVISOR_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _UNIT_RE = re.compile(r"^hermes-serve(-[a-z0-9][a-z0-9_-]{0,63})?\.service$")
 _SERVE_UNIT_PATTERN = "hermes-serve*"
@@ -108,14 +109,24 @@ def _child_environment(profile: str | None = None) -> dict[str, str]:
     this process's authorization gates (``DISCORD_ALLOWED_CHANNELS``, ``GATEWAY_ALLOW_ALL_USERS`` ...)
     and enforce them as its own — its ``.env`` only overwrites the keys it defines (#113270). Gates are
     dropped when *profile* is not the launch profile; a same-profile child keeps an operator export.
+
+    Restarting the host multiplexer from a named profile does not copy this process's environ: the
+    child is ``host_gateway_child_env`` (``served_profile_child_env`` for the default root) so the
+    launching profile's platform credentials never become the primary adapter's.
     """
-    env = os.environ.copy()
+    launch = _launch_profile()
+    target = profile if profile is not None else launch
+    if target == "default" and launch != "default":
+        from tools.environments.local import host_gateway_child_env
+        env = host_gateway_child_env()
+    else:
+        env = os.environ.copy()
+        if profile is not None and profile != launch:
+            from tools.environments.local_env_policy import strip_profile_gate_env
+            strip_profile_gate_env(env)
     for marker in _GATEWAY_MARKERS:
         env.pop(marker, None)
     env[_RECOVERY_ENV] = "1"
-    if profile is not None and profile != _launch_profile():
-        from tools.environments.local_env_policy import strip_profile_gate_env
-        strip_profile_gate_env(env)
     return env
 
 
@@ -148,17 +159,90 @@ def _systemd_verified_active(profile: str, *, run: Callable[..., Any]) -> bool:
     )
 
 
+def _host_state_dir() -> str:
+    """The path ``gateway.host_rendezvous.host_state_dir()`` resolves, computed locally.
+
+    This module imports no Hermes code at runtime — importing the freshly pulled tree is exactly
+    what aborted the phase that calls us — so the rule is duplicated here rather than shared.
+    """
+    override = os.environ.get("HERMES_GATEWAY_LOCK_DIR")
+    if override:
+        return override
+    state_home = os.environ.get("XDG_STATE_HOME") or ""
+    if not os.path.isabs(state_home):
+        state_home = os.path.join(os.path.expanduser("~"), ".local", "state")
+    return os.path.join(state_home, "hermes", "gateway-locks")
+
+
+def _pid_is_live(pid: int) -> bool:
+    """Liveness of ``pid``: ``psutil`` when importable, else the POSIX signal-0 probe.
+
+    The signal probe is POSIX-only by construction — on Windows ``os.kill(pid, 0)`` sends a real
+    control event and can kill the target — so an unimportable psutil there means "cannot prove".
+    """
+    try:
+        import psutil
+
+        return bool(psutil.pid_exists(pid))
+    except Exception:
+        pass
+    if os.name == "nt":
+        return False
+    try:
+        os.kill(pid, 0)  # windows-footgun: ok — POSIX-only branch, guarded by os.name above
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _host_served_profiles() -> set[str]:
+    """Profiles the ONE live host gateway multiplexes, from its rendezvous record.
+
+    Restarting any one of them restarts the same process, so they are a single restart target.
+    Empty (no collapsing, today's per-profile behaviour) when the record is absent, unreadable,
+    dead, or when liveness cannot be probed — a missed collapse costs an extra restart, a wrong
+    one would skip a profile that really has its own process.
+    """
+    try:
+        with open(os.path.join(_host_state_dir(), "host-gateway.json"), encoding="utf-8-sig") as handle:
+            record = json.load(handle)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return set()
+    if not isinstance(record, dict) or record.get("role") != "gateway":
+        return set()
+    pid = record.get("pid")
+    profiles = record.get("profiles")
+    if not isinstance(pid, int) or pid <= 0 or not isinstance(profiles, list) or not _pid_is_live(pid):
+        return set()
+    return {name for name in profiles if isinstance(name, str) and name}
+
+
 def restart_profiles(
     profiles: Iterable[str], *, supervisors: Mapping[str, str] | None = None, run: Callable[..., Any] = subprocess.run
-) -> dict[str, list[str]]:
+) -> dict[str, Any]:
     """Restart the supplied profiles (only ones whose inventory identified a service supervisor).
+
+    Profiles served by the SAME host gateway process are one restart target: a host multiplexes
+    every profile, so N payload profiles meant N sequential ``gateway restart`` calls, each
+    killing the successor the previous pass had just verified. The group is restarted exactly
+    once through one representative and the rest are reported under ``covered`` with that
+    restart's outcome.
 
     A profile only lands in ``verified`` when its supervisor is systemd and ``systemctl --user is-
     active`` independently confirms the unit after the relaunch command succeeded.
     """
     supervisors = supervisors or {}
-    result: dict[str, list[str]] = {"verified": [], "relaunch_attempted": [], "failed": []}
-    for profile in sorted({p for p in profiles if isinstance(p, str) and p}):
+    result: dict[str, Any] = {"verified": [], "relaunch_attempted": [], "failed": []}
+    requested = sorted({p for p in profiles if isinstance(p, str) and p})
+    served = _host_served_profiles()
+    group = [profile for profile in requested if profile in served]
+    representative = group[0] if len(group) > 1 else None
+    covered = group[1:] if representative else []
+    for profile in requested:
+        if profile in covered:
+            continue
         if not _run_profile_restart(profile, run=run):
             bucket = "failed"
         elif supervisors.get(profile) == "systemd" and _systemd_verified_active(profile, run=run):
@@ -166,6 +250,10 @@ def restart_profiles(
         else:
             bucket = "relaunch_attempted"
         result[bucket].append(profile)
+        if profile == representative:
+            # One process: the representative's observed outcome IS these profiles' outcome.
+            result[bucket].extend(covered)
+    result["covered"] = {representative: covered} if representative else {}
     return result
 
 

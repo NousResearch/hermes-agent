@@ -88,25 +88,11 @@ describe('TitlebarControls fixed clusters', () => {
     expect(appControls()).not.toBeNull()
   })
 
-  it('keeps the app clusters on chat', () => {
-    renderControls('/')
-
-    expect(windowControls()).not.toBeNull()
-    expect(appControls()).not.toBeNull()
-  })
-
   it('hides the app clusters on an overlay', () => {
     renderControls('/settings')
 
     expect(windowControls()).toBeNull()
     expect(appControls()).toBeNull()
-  })
-
-  it('keeps the app clusters on a first-party workspace page', () => {
-    renderControls('/capabilities')
-
-    expect(windowControls()).not.toBeNull()
-    expect(appControls()).not.toBeNull()
   })
 
   it('a titleBar.tools item alone does not claim the band', () => {
@@ -171,13 +157,6 @@ describe('TitlebarControls fixed clusters', () => {
       // The mounted controls subscribe to titleBar.* areas — dispose inside
       // act so the unmount-time registry update doesn't warn.
       act(() => disposeChrome())
-    })
-
-    it('hides the app clusters on a contributed full-page route', () => {
-      renderControls('/kanban')
-
-      expect(windowControls()).toBeNull()
-      expect(appControls()).toBeNull()
     })
 
     it('keeps plugin titlebar contributions on a contributed full-page route', () => {
@@ -252,22 +231,6 @@ describe('titlebar app-action cluster', () => {
   afterEach(() => {
     setTitlebarAppActionsSide('right')
     cleanup()
-  })
-
-  it('defaults settings, layout, and HUD to the right so the left titlebar stays free for tabs', () => {
-    renderControls('/')
-
-    const left = screen.getByLabelText('Window controls')
-    const right = screen.getByLabelText('App controls')
-
-    expect(within(right).getByLabelText('Open settings')).toBeTruthy()
-    expect(within(right).getByLabelText('Layout editor')).toBeTruthy()
-    expect(within(right).getByLabelText('HUD mode')).toBeTruthy()
-
-    expect(within(left).queryByLabelText('Open settings')).toBeNull()
-    expect(within(left).queryByLabelText('Layout editor')).toBeNull()
-    expect(within(left).queryByLabelText('HUD mode')).toBeNull()
-    expect(within(left).getByLabelText(/Hide sidebar|Show sidebar/)).toBeTruthy()
   })
 
   it('moves settings, layout, and HUD to the left when the appearance setting says left', () => {

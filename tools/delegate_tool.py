@@ -29,7 +29,7 @@ from tools.delegate_tool_child_run import (  # noqa: F401
 )
 from tools.delegate_tool_config import (  # noqa: F401
     _DEFAULT_MAX_CONCURRENT_CHILDREN, _get_child_timeout, _get_max_async_children, _get_max_concurrent_children,
-    _get_max_spawn_depth, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
+    _get_max_spawn_depth, _get_oneshot_max_children, _get_orchestrator_enabled, _get_subagent_approval_callback, _get_worktree_isolation,
     _inherit_parent_capabilities, _load_config, _merge_request_overrides, _resolve_child_credential_pool,
     _resolve_child_runtime, _resolve_delegation_credentials,
     _subagent_auto_approve, _subagent_auto_deny,
@@ -237,6 +237,7 @@ def _build_child_agent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
+                side_agent=True,
                 skip_context_files=True, skip_memory=True, clarify_callback=None,
                 thinking_callback=(
                     (lambda text: _safe_progress(child_progress_cb, "_thinking", text) if text else None)
@@ -275,7 +276,9 @@ def _build_child_agent(
     if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
         child._session_init_model_config["_delegate_from"] = parent_sid
     # Shared pool lets children rotate credentials on rate limits.
-    child_pool = _resolve_child_credential_pool(rt["provider"], parent_agent, rt["base_url"])
+    child_pool = _resolve_child_credential_pool(
+        rt["provider"], parent_agent, rt["base_url"], effective_requested_provider=rt.get("requested_provider"),
+    )
     if child_pool is not None:
         child._credential_pool = child_pool
 
@@ -414,6 +417,26 @@ def _build_children(
     return children, None
 
 
+def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
+    """Charge *requested* children against the finite one-shot session's total (delegation.oneshot_max_children);
+    the error text tells the model to do the work inline. Interactive and gateway sessions are never charged."""
+    from agent.oneshot_footprint import is_single_query_session
+    if not is_single_query_session():
+        return None
+    cap = _get_oneshot_max_children()
+    if cap <= 0:
+        return None
+    spent = getattr(parent_agent, "_oneshot_children_spawned", 0)
+    if spent + requested > cap:
+        return (
+            f"Delegation budget for this one-shot run is exhausted ({spent}/{cap} subagents used; "
+            f"delegation.oneshot_max_children). Do the remaining work yourself in this session — reviewing "
+            f"your own diff and running the tests inline is expected here, not a delegated review."
+        )
+    parent_agent._oneshot_children_spawned = spent + requested
+    return None
+
+
 def delegate_task(
     goal: Optional[str] = None, context: Optional[str] = None, tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None, role: Optional[str] = None, background: Optional[bool] = None,
@@ -480,6 +503,9 @@ def delegate_task(
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
         task_images, err = _coerce_task_images(task_list, images)
+    if err:
+        return tool_error(err)
+    err = _oneshot_spawn_budget(parent_agent, len(task_list))
     if err:
         return tool_error(err)
 

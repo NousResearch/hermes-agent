@@ -23,7 +23,7 @@ from agent.conversation_compression import (
 from agent.error_classifier import FailoverReason
 from agent.message_sanitization import serialized_messages_bytes
 from agent.model_metadata import (
-    get_context_length_from_provider_error, is_output_cap_error,
+    get_context_length_from_provider_error, is_local_endpoint, is_output_cap_error,
     parse_available_output_tokens_from_error,
 )
 from agent.turn_failure_copy import site_copy, stamp_failure
@@ -378,11 +378,13 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     # fits) and would death-loop on the same 400. Fail fast.
     if is_output_cap_error(error_msg):
         return st.fail_turn(
-            "max_tokens exceeds the provider's output cap for this model. "
-            "Lower model.max_tokens in config.yaml.",
+            "The requested output length exceeds the provider's output cap for this model, "
+            "and the error did not state the allowed limit.",
             notices=(
-                "❌ The provider rejected the request because max_tokens exceeds its output cap for this model.",
-                "   💡 Lower model.max_tokens in your config.yaml to at or below the model's max-output limit. "
+                "❌ The provider rejected the request because the requested output length exceeds its "
+                "output cap for this model, and the error did not state the allowed limit.",
+                "   💡 Hermes has no user setting for the output cap — check the endpoint's default max output "
+                "(completion) tokens for this model on the server or proxy. "
                 "(This is an output-cap error, not a context overflow — compression cannot fix it.)",
             ),
             log=(
@@ -400,11 +402,14 @@ def _recover_context_length(st: _Recovery, _retry: TurnRetryState, error_msg: st
     # request — a background review from an earlier session — holds their context. Name that,
     # keep the turn retryable and transient: no "conversation too long", no gateway auto-reset.
     # Only when the server quoted NO measurement of its own: "prompt is too long: 233153 tokens
-    # > 200000" is the server's count and beats the local estimate.
+    # > 200000" is the server's count and beats the local estimate. Local endpoints only: a hosted
+    # route has no shared slot, so the same rejection means its real window is smaller than the one
+    # Hermes assumes, and "wait and /retry" would fail identically forever; compress instead.
     window = agent.context_compressor.context_length
     request_tokens = st.request_tokens() + max(0, int(getattr(agent, "max_tokens", 0) or 0))
     if (
-        not re.search(r"\d{4,}", error_msg)
+        is_local_endpoint(agent.base_url)
+        and not re.search(r"\d{4,}", error_msg)
         and isinstance(window, int) and window > 0
         and request_tokens < window * _UNEXPLAINED_REJECTION_FRACTION
     ):

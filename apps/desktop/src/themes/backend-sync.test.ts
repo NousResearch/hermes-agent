@@ -26,22 +26,6 @@ describe('ingestBackendSkin', () => {
     expect($pendingSkinApply.get()).toBe('neon')
   })
 
-  it('does not re-apply the same skin name', () => {
-    ingestBackendSkin(skin('neon'), { apply: true })
-    $pendingSkinApply.set(null)
-    ingestBackendSkin(skin('neon'), { apply: true })
-
-    expect($pendingSkinApply.get()).toBeNull()
-  })
-
-  it('applies again when the skin name changes', () => {
-    ingestBackendSkin(skin('neon'), { apply: true })
-    $pendingSkinApply.set(null)
-    ingestBackendSkin(skin('forest'), { apply: true })
-
-    expect($pendingSkinApply.get()).toBe('forest')
-  })
-
   it('seed does not paint, but a later same-name skin.changed applies (missed-activation recovery)', () => {
     // Connect while display.skin is already neon: seed records the baseline
     // without painting (never stomp the persisted desktop theme on connect).

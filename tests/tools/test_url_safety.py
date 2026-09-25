@@ -454,6 +454,46 @@ class TestIPv4MappedIPv6SSRF:
             assert is_safe_url(url) is False
 
 
+class TestIPv4TranslatedIPv6SSRF:
+    """IPv4 answers can arrive wrapped as ``::ffff:0:x.x.x.x`` (RFC 2765 IPv4-translated — on the
+    reporting macOS host, fake-IP TUN DNS returns it alongside the plain address).
+    ``IPv6Address.ipv4_mapped`` is None for that form, so declaration coverage, the connect-time
+    check and the metadata floor must all classify it by the IPv4 it wraps."""
+
+    @pytest.fixture
+    def declared(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"security": {"fake_ip_ranges": ["198.18.0.0/15"]}},
+        )
+        _reset_allow_private_cache()
+        yield
+        _reset_allow_private_cache()
+
+    def test_declared_sentinel_block_covers_the_translated_wrapper(self, declared):
+        # ::ffff:0:c612:58 wraps 198.18.0.88 — inside the declared block.
+        with _resolves_to("::ffff:0:c612:58"):
+            assert is_safe_url("https://example.com/") is True
+        with _resolves_to("::ffff:0:c612:58"):
+            assert _resolved_http_connect_ips("example.com", 443, "https") == ["::ffff:0:c612:58"]
+
+    def test_translated_metadata_wrapper_still_hits_the_floor(self, monkeypatch):
+        # ::ffff:0:a9fe:a9fe wraps 169.254.169.254; the floor ignores allow_private_urls.
+        _reset_allow_private_cache()
+        with _resolves_to("::ffff:0:a9fe:a9fe"):
+            assert is_always_blocked_url("http://evil.example/") is True
+        monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "true")
+        _reset_allow_private_cache()
+        with _resolves_to("::ffff:0:a9fe:a9fe"):
+            assert is_safe_url("http://evil.example/") is False
+        _reset_allow_private_cache()
+
+    def test_literal_translated_wrapper_hits_the_floor_without_dns(self):
+        # Attacker input need not come through DNS: the URL can carry the wrapper itself.
+        with patch("socket.getaddrinfo", side_effect=socket.gaierror("nope")):
+            assert is_always_blocked_url("http://[::ffff:0:a9fe:a9fe]/") is True
+
+
 class _FakeResponse:
     """Minimal stand-in for an httpx response as seen inside a response hook."""
 

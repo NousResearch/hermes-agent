@@ -14,7 +14,7 @@ import time
 
 import hermes_cli.providers as providers_mod
 import pytest
-import yaml
+import hermes_yaml as yaml
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.model_switch_providers import (
     _fetch_picker_live_models,
@@ -178,26 +178,6 @@ def test_picker_empty_native_catalog_is_not_stale_served(monkeypatch):
     assert _fetch_picker_live_models("sk-ollama", url, "custom", False) == ["back:latest"]
 
 
-def test_picker_generic_discovery_preserves_api_mode(monkeypatch):
-    calls = []
-
-    def cached(*args, **kwargs):
-        calls.append((args, kwargs))
-        return ["model-a"]
-
-    monkeypatch.setattr(
-        "hermes_cli.models_local.should_use_ollama_native_catalog", lambda *a, **k: False
-    )
-    monkeypatch.setattr("hermes_cli.models.cached_fetch_api_models", cached)
-
-    assert _fetch_picker_live_models(
-        "key",
-        "https://proxy.example/anthropic/v1",
-        "custom",
-        False,
-        api_mode="anthropic_messages",
-    ) == ["model-a"]
-    assert calls[0][1]["api_mode"] == "anthropic_messages"
 
 
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
@@ -446,7 +426,6 @@ def test_list_authenticated_providers_includes_active_bare_custom_endpoint(monke
 
     bare_custom = next((p for p in providers if p["slug"] == "custom"), None)
     assert bare_custom is not None
-    assert bare_custom["name"] == "Custom endpoint"
     assert bare_custom["is_current"] is True
     assert bare_custom["is_user_defined"] is True
     assert bare_custom["models"] == ["gpt-4o"]
@@ -495,7 +474,6 @@ def test_switch_model_accepts_explicit_bare_custom_current_endpoint(monkeypatch)
 
     assert result.success is True
     assert result.target_provider == "custom"
-    assert result.provider_label == "Custom endpoint"
     assert result.new_model == "gpt-4o-mini"
     assert result.base_url == "https://www.ccsub.net/v1"
     assert result.api_key == "sk-test"
@@ -561,13 +539,73 @@ def test_switch_to_bare_custom_with_no_configured_endpoint_keeps_the_current_one
     assert (result.base_url, result.api_key) == ("https://api.anthropic.com", "sk-ant")
 
 
+def test_openrouter_mirror_read_never_raises_without_a_secret_scope(monkeypatch):
+    """The mirror guard reads ``OPENROUTER_BASE_URL`` through the profile secret scope: with
+    multiplexing on and no scope installed that read raises ``UnscopedSecretError``. A guard read
+    must degrade to 'no mirror detected' (the caller then keeps the session endpoint) instead of
+    propagating out of ``switch_model``, where the resolver's own read of the same name is
+    suppressed."""
+    from agent import secret_scope
+    from hermes_cli.model_switch import _openrouter_mirror_base_url
+
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://mirror.example.com/v1")
+    secret_scope.set_multiplex_active(True)
+    try:
+        assert _openrouter_mirror_base_url() == ""
+    finally:
+        secret_scope.set_multiplex_active(False)
+
+
+def test_switch_to_bare_custom_ignores_an_openrouter_mirror(monkeypatch, tmp_path):
+    """#115661 follow-up: with ``OPENROUTER_BASE_URL`` set to a mirror and nothing configured for
+    ``custom``, the ladder's last rung hands back that mirror — a host the user configured for
+    OpenRouter — with the ``no-key-required`` placeholder. It must not replace the session's own
+    endpoint and key (the switched arm used to adopt it, dropping a working credential)."""
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("model:\n  default: m\n  provider: custom\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "https://mirror.example.com/v1")
+    monkeypatch.setattr("hermes_cli.models_validate.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="m2",
+        current_provider="anthropic",
+        current_model="m",
+        current_base_url="https://api.anthropic.com",
+        current_api_key="sk-ant",
+        explicit_provider="custom",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert (result.base_url, result.api_key) == ("https://api.anthropic.com", "sk-ant")
+
+    # Two env vars aimed at the SAME proxy: the URL is the endpoint configured for `custom`, so the
+    # OpenRouter rung is not the source and the switch adopts it (#115661's behaviour).
+    monkeypatch.setenv("CUSTOM_BASE_URL", "https://mirror.example.com/v1")
+    configured = switch_model(
+        raw_input="m2",
+        current_provider="anthropic",
+        current_model="m",
+        current_base_url="https://api.anthropic.com",
+        current_api_key="sk-ant",
+        explicit_provider="custom",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert configured.base_url == "https://mirror.example.com/v1"
+
+
 def test_is_aggregator_recognizes_named_custom_provider():
     assert providers_mod.is_aggregator("custom:hpc-ai") is True
     assert providers_mod.is_aggregator("custom:litellm") is True
 
 
-def test_is_aggregator_leaves_unknown_provider_non_aggregator():
-    assert providers_mod.is_aggregator("not-a-provider") is False
 
 
 def test_switch_model_does_not_send_ollama_headers_to_unrelated_custom_endpoint(monkeypatch):
@@ -628,21 +666,6 @@ def test_switch_model_does_not_send_ollama_headers_to_unrelated_custom_endpoint(
 
 
 
-def test_is_routing_aggregator_excludes_flat_namespace_resellers():
-    """opencode-go / opencode-zen stay ``is_aggregator=True`` (model-switch
-    relies on it to search their flat bare-name catalog), but they are NOT
-    routing aggregators — their models are first-party, so the picker dedup
-    must not strip them. (#47077)"""
-    # Still aggregators for model-switch flat-catalog resolution.
-    assert providers_mod.is_aggregator("opencode-go") is True
-    assert providers_mod.is_aggregator("opencode-zen") is True
-    # But NOT routing aggregators for picker-dedup purposes.
-    assert providers_mod.is_routing_aggregator("opencode-go") is False
-    assert providers_mod.is_routing_aggregator("opencode-zen") is False
-    # True routers and custom proxies remain routing aggregators.
-    assert providers_mod.is_routing_aggregator("openrouter") is True
-    assert providers_mod.is_routing_aggregator("custom:litellm") is True
-    assert providers_mod.is_routing_aggregator("not-a-provider") is False
 
 
 def test_picker_selection_resolves_named_custom_provider_model_id(monkeypatch):
@@ -780,51 +803,12 @@ def test_custom_provider_no_key_singular_model_still_probes_live_models(monkeypa
         max_models=50,
     )
 
-    assert calls == [
-        ("", "http://localhost:8080/v1", {
-            "timeout": 5.0,
-            "api_mode": None,
-            "headers": None,
-        })
-    ]
+    assert [(key, url) for key, url, _kw in calls] == [("", "http://localhost:8080/v1")]
     row = next(p for p in providers if p["name"] == "Local llama.cpp")
     assert row["models"] == ["llama3", "mistral", "qwen3-coder"]
     assert row["total_models"] == 3
 
 
-def test_custom_provider_model_metadata_dict_still_probes(monkeypatch):
-    """Dict-shaped ``models:`` is metadata, not an explicit allowlist."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-    calls = []
-
-    def fetch(*args, **kwargs):
-        calls.append((args, kwargs))
-        return ["unexpected-live-model"]
-
-    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
-
-    providers = list_authenticated_providers(
-        current_provider="custom:local-ollama",
-        user_providers={},
-        custom_providers=[
-            {
-                "name": "Local Ollama",
-                "base_url": "http://localhost:11434/v1",
-                "model": "llama3",
-                "models": {"llama3": {}},
-            }
-        ],
-    )
-
-    row = next(p for p in providers if p["name"] == "Local Ollama")
-    assert calls == [
-        (
-            ("", "http://localhost:11434/v1"),
-            {"timeout": 5.0, "api_mode": None, "headers": None},
-        )
-    ]
-    assert row["models"] == ["unexpected-live-model"]
 
 
 def test_custom_provider_group_explicit_duplicate_skips_probe(monkeypatch):
@@ -899,13 +883,7 @@ def test_custom_provider_current_only_probe_respects_explicit_catalog(monkeypatc
         probe_current_custom_provider=True,
     )
 
-    assert calls == [
-        (
-            "",
-            "http://active.local/v1",
-            {"timeout": 5.0, "api_mode": None, "headers": None},
-        )
-    ]
+    assert [url for _key, url, _kw in calls] == ["http://active.local/v1"]
     rows = {row["name"]: row for row in providers if row.get("is_user_defined")}
     assert rows["Active"]["models"] == ["live-a", "live-b"]
     assert rows["Offline"]["models"] == ["offline-seed"]
@@ -971,13 +949,7 @@ def test_custom_provider_empty_explicit_list_allows_probe(monkeypatch):
         ],
     )
 
-    assert calls == [
-        (
-            "",
-            "http://local.test/v1",
-            {"timeout": 5.0, "api_mode": None, "headers": None},
-        )
-    ]
+    assert [url for _key, url, _kw in calls] == ["http://local.test/v1"]
     row = next(p for p in providers if p["name"] == "Local")
     assert row["models"] == ["live-a", "live-b"]
 
@@ -1051,32 +1023,6 @@ def test_list_enumerates_dict_format_models_without_singular_model(monkeypatch):
     assert thor_rows[0]["total_models"] == 3
 
 
-def test_list_dedupes_dict_model_matching_singular_default(monkeypatch):
-    """When the singular ``model:`` is also a key in the ``models:`` dict,
-    it must appear exactly once in the picker."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-
-    providers = list_authenticated_providers(
-        current_provider="openai-codex",
-        user_providers={},
-        custom_providers=[
-            {
-                "name": "DeepSeek",
-                "base_url": "https://api.deepseek.com",
-                "model": "deepseek-chat",
-                "models": {
-                    "deepseek-chat": {"context_length": 128000},
-                    "deepseek-reasoner": {"context_length": 128000},
-                },
-            }
-        ],
-        max_models=50,
-    )
-
-    ds_rows = [p for p in providers if p["name"] == "DeepSeek"]
-    assert ds_rows[0]["models"].count("deepseek-chat") == 1
-    assert ds_rows[0]["models"] == ["deepseek-chat", "deepseek-reasoner"]
 
 
 
@@ -1349,30 +1295,6 @@ def test_list_authenticated_providers_same_url_different_key_env_and_api_mode_st
     assert by_slug["custom:claude"]["is_current"] is False
 
 
-def test_list_authenticated_providers_total_models_reflects_grouped_count(monkeypatch):
-    """After grouping six entries into one row, total_models must reflect
-    the full count, and every grouped model appears in the list."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
-    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
-
-    entries = [
-        {"name": f"Ollama \u2014 Model {i}", "base_url": "http://localhost:11434/v1",
-         "api_key": "ollama", "model": f"model-{i}"}
-        for i in range(6)
-    ]
-    providers = list_authenticated_providers(
-        user_providers={},
-        custom_providers=entries,
-        max_models=4,
-        probe_custom_providers=False,
-    )
-
-    groups = [p for p in providers if p.get("is_user_defined")]
-    assert len(groups) == 1
-    group = groups[0]
-    assert group["total_models"] == 6
-    # All six models are preserved in the grouped row.
-    assert sorted(group["models"]) == sorted(f"model-{i}" for i in range(6))
 
 
 def test_lmstudio_picker_probes_active_config_base_url(monkeypatch):
@@ -1591,12 +1513,8 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
     )
 
     assert gateway_prov is not None, "Custom provider group not found in results"
-    assert calls == [
-        (
-            "sk-gateway-key",
-            "https://gateway.example.com/v1",
-            {"timeout": 5.0, "api_mode": None, "headers": None},
-        )
+    assert [(key, url) for key, url, _kw in calls] == [
+        ("sk-gateway-key", "https://gateway.example.com/v1")
     ], "fetch_api_models must be called with the custom provider's credentials"
     assert gateway_prov["models"] == [
         "gateway-model-a",

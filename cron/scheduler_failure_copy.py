@@ -64,6 +64,11 @@ _PROVIDER_FAILURE_ACTION: dict[str, str] = {
         "`hermes cron run {job_id}` to retry."
     ),
     "model_not_found": "Pick another model with `hermes cron edit {job_id} --model <name>`.",
+    "upstream_blocked": (
+        "A firewall in front of the provider blocked the request (not your key): set a User-Agent "
+        "via `extra_headers` on the provider's custom_providers entry, or pin another provider with "
+        "`hermes cron edit {job_id} --provider <name>`."
+    ),
     "context_overflow": "Shorten the job's prompt with `hermes cron edit {job_id} --prompt <text>`.",
 }
 _PROVIDER_FAILURE_ACTION["auth_permanent"] = _PROVIDER_FAILURE_ACTION["auth"]
@@ -72,6 +77,10 @@ _PROVIDER_FAILURE_ACTION["payload_too_large"] = _PROVIDER_FAILURE_ACTION["contex
 _PROVIDER_FAILURE_ACTION["content_policy_blocked"] = (
     "Reword the job's prompt with `hermes cron edit {job_id} --prompt <text>`, or pick another "
     "model with `hermes cron edit {job_id} --model <name>`."
+)
+_PROVIDER_FAILURE_ACTION["provider_policy_blocked"] = (
+    "Retrying won't help: check the account's status and data/privacy settings with the provider, "
+    "or pin another model with `hermes cron edit {job_id} --model <name>`."
 )
 _DEFAULT_FAILURE_ACTION = "Run it again with `hermes cron run {job_id}`, or edit it with `hermes cron edit {job_id}`."
 

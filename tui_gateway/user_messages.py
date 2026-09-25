@@ -21,6 +21,7 @@ _TURN_ERROR_CODE_COPY: dict[str, tuple[str, str]] = {
     "billing_unverified": ("The model provider reports no credit left", "Top up the account or switch with /model."),
     "rate_limit": ("The model provider is rate-limiting requests", "Wait a moment, then /retry."),
     "upstream_rate_limit": ("The model provider is rate-limiting requests", "Wait a moment, then /retry."),
+    "upstream_blocked": ("A firewall/CDN in front of the model provider blocked the request", "Set a User-Agent via the provider's extra_headers, or switch with /model."),
     "overloaded": ("The model provider is overloaded", "Wait a moment, then /retry."),
     "server_error": ("The model provider had an internal error", "Wait a moment, then /retry."),
     "timeout": ("The model provider did not answer in time", "Try /retry; if it keeps happening, switch with /model."),

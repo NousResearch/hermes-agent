@@ -249,6 +249,75 @@ def test_completed_turn_still_clears_inflight(emits, turn_env):
     assert server._inflight_snapshot(session) is None
 
 
+@pytest.mark.parametrize("streamed_prefix", [None, "", "Earlier commentary. "])
+def test_returned_partial_error_keeps_final_response_text(emits, turn_env, monkeypatch, streamed_prefix):
+    """A partial answer survives both the terminal frame and a reconnect that missed it."""
+    text = "Hello! How can I help?"
+    error = "Response remained truncated after 4 continuation attempts"
+
+    def run(message, stream_callback=None, **kwargs):
+        if streamed_prefix is not None:
+            assert stream_callback is not None
+            stream_callback(streamed_prefix + text)
+        return {"final_response": text, "error": error, "failed": True, "partial": True}
+
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=run,
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "hello")
+
+    server._run_prompt_submit("rid", "sid", session, "hello")
+
+    completes = _events(emits, "message.complete")
+    assert len(completes) == 1
+    payload = completes[0]
+    assert payload["status"] == "error"
+    assert payload["partial"] is True
+    assert payload["text"] == text
+    assert payload["error"] == error
+
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    resumed = server._live_session_payload("sid", session)
+    assert resumed["running"] is False
+    assert resumed["inflight"]["assistant"] == (streamed_prefix or "") + text
+    assert resumed["inflight"]["user"] == "hello"
+    assert resumed["inflight"]["status"] == payload["status"]
+    assert resumed["inflight"]["error"] == payload["error"]
+    assert resumed["inflight"]["error_surface"] == payload["error_surface"]
+    assert resumed["inflight"]["streaming"] is False
+
+
+@pytest.mark.parametrize("result, status", [
+    ({"final_response": "answer", "error": "failure", "failed": True}, "error"),
+    ({"final_response": "", "error": "failure", "partial": True}, "error"),
+    ({"final_response": "  ", "error": "failure", "partial": True}, "error"),
+    ({"final_response": " failure \n", "error": "failure", "partial": True}, "error"),
+    ({"final_response": "answer", "partial": True}, "complete"),
+    ({"final_response": "answer", "error": "failure", "partial": True, "interrupted": True}, "interrupted"),
+])
+def test_only_partial_answers_on_failed_turns_set_flag(emits, turn_env, result, status):
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=lambda *a, **k: result,
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "do the thing")
+
+    server._run_prompt_submit("rid", "sid", session, "do the thing")
+
+    payload = _events(emits, "message.complete")[0]
+    assert payload["status"] == status
+    assert "partial" not in payload
+    if status == "error":
+        assert server._inflight_snapshot(session)["assistant"] == ""
+    else:
+        assert server._inflight_snapshot(session) is None
+
+
 # ── Exception path ─────────────────────────────────────────────────────
 
 

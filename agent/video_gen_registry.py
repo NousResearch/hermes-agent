@@ -25,7 +25,6 @@ _registry: ProviderRegistry[VideoGenProvider] = ProviderRegistry(
 )
 _registry.export(globals())
 
-
 def get_active_provider() -> Optional[VideoGenProvider]:
     """Resolve the currently-active provider (see module docstring)."""
     configured = configured_provider_name("video_gen", logger)

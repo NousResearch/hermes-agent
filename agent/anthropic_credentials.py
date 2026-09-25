@@ -25,6 +25,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
@@ -66,6 +67,29 @@ def _is_oauth_token(key: str) -> bool:
     return key.startswith(("sk-ant-", "eyJ", "cc-"))
 
 
+def anthropic_route_is_oauth(base_url: Any, credential: Any, *, provider: Optional[str] = None) -> bool:
+    """Claude Code OAuth identity for one Anthropic Messages route (#114967).
+
+    The route qualifies when it is the ``anthropic`` provider itself or its host is exactly
+    ``api.anthropic.com`` (an empty base_url is the native default) — a named custom provider
+    pointed at the native host carries the same identity, while third-party Anthropic-protocol
+    endpoints never do (Claude Code headers and tool-name transforms 401/403 there). ``credential``
+    is a static string or a ``key_cmd``/per-request callable token source; a callable is
+    materialized once for the shape test (``CommandTokenSource`` caches, so this never double-mints)
+    and a mint failure classifies as non-OAuth — the wire client surfaces the real error.
+    """
+    text = str(base_url or "").strip()
+    native_host = not text or (urlparse(text).hostname or "").lower().rstrip(".") == "api.anthropic.com"
+    if not (native_host or (provider or "").strip().lower() == "anthropic"):
+        return False
+    if callable(credential) and not isinstance(credential, str):
+        try:
+            credential = credential()
+        except Exception:  # noqa: BLE001 — classification must never raise
+            return False
+    return isinstance(credential, str) and _is_oauth_token(credential)
+
+
 class CredentialPersistError(RuntimeError):
     """A rotated single-use credential could not be durably committed. The refresh POST already spent the old
     refresh token, so a swallowed write failure leaves a consumed pair on disk that later replays as invalid_grant."""
@@ -80,7 +104,7 @@ def _load_json_if_exists(path: Path, what: str) -> Optional[Any]:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8-sig"))
     except (json.JSONDecodeError, OSError) as e:
         logger.debug("Failed to read %s: %s", what, e)
         return None
@@ -132,7 +156,9 @@ def _read_spent_rotation_sidecar(source_path: Optional[Path]) -> set:
     if source_path is None:
         return set()
     try:
-        raw = json.loads(_spent_rotation_sidecar_path(source_path).read_text(encoding="utf-8"))
+        raw = json.loads(
+            _spent_rotation_sidecar_path(source_path).read_text(encoding="utf-8-sig")
+        )
     except (OSError, ValueError):
         return set()
     fingerprints = raw.get("fingerprints") if isinstance(raw, dict) else None
@@ -515,7 +541,7 @@ def _write_claude_code_credentials(
     >=2.1.81 gates on ``"user:inference"`` being present."""
     cred_path = claude_code_credentials_path()
     try:
-        existing = json.loads(cred_path.read_text(encoding="utf-8")) if cred_path.exists() else {}
+        existing = json.loads(cred_path.read_text(encoding="utf-8-sig")) if cred_path.exists() else {}
     except (OSError, ValueError) as e:
         logger.error("Failed to write refreshed credentials to %s: %s", cred_path, e)
         raise CredentialPersistError(cred_path, e) from e
@@ -707,6 +733,17 @@ def _get_hermes_oauth_file() -> Path:
     return get_hermes_home() / ".anthropic_oauth.json"
 
 
+def _root_hermes_oauth_file() -> Optional[Path]:
+    """Global-root ``.anthropic_oauth.json`` inside a named profile (None in classic mode); used to commit a
+    rotation of a grant the profile borrowed via the pool's root fallback."""
+    try:
+        from hermes_constants import get_default_hermes_root
+        root = get_default_hermes_root()
+        return None if root.resolve(strict=False) == get_hermes_home().resolve(strict=False) else root / ".anthropic_oauth.json"
+    except Exception:
+        return None
+
+
 def _generate_pkce() -> tuple:
     """Generate PKCE code_verifier and code_challenge (S256)."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
@@ -776,13 +813,14 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
 
 
 def _write_hermes_oauth_credentials(
-    access_token: str, refresh_token: Optional[str], expires_at_ms: Optional[int],
+    access_token: str, refresh_token: Optional[str], expires_at_ms: Optional[int], *, target: Optional[Path] = None
 ) -> None:
-    """Commit refreshed hermes_pkce tokens to ``<HERMES_HOME>/.anthropic_oauth.json`` (``CredentialPersistError``
-    on failure); without it the next ``load_pool()`` re-seeds the stale (consumed) pair from the file over the
-    rotated pool entry."""
+    """Commit refreshed hermes_pkce tokens to ~/.hermes/.anthropic_oauth.json (``CredentialPersistError`` on failure).
+    ``target`` lets a named profile commit a grant it BORROWED from the global root back to the ROOT singleton
+    instead of forking a copy under its own HERMES_HOME; without this write-through the next ``load_pool()``
+    re-seeds the stale (consumed) pair from the file over the rotated pool entry."""
     _commit_private_json(
-        _get_hermes_oauth_file(),
+        target if target is not None else _get_hermes_oauth_file(),
         {"accessToken": access_token, "refreshToken": refresh_token, "expiresAt": expires_at_ms},
         "Hermes OAuth credentials",
     )

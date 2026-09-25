@@ -203,12 +203,7 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
             icon="globe"
             key="link-open-app"
             label={copy.link.openInApp}
-            onSelect={() =>
-              openPreview(
-                { kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl },
-                'explicit-link'
-              )
-            }
+            onSelect={() => openPreview({ kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl })}
           />
         ) : null,
         <Item
@@ -244,10 +239,12 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
             key="image-open-app"
             label={copy.link.openInApp}
             onSelect={() =>
-              openPreview(
-                { kind: 'url', label: hostPathLabel(target.imageUrl), source: target.imageUrl, url: target.imageUrl },
-                'explicit-link'
-              )
+              openPreview({
+                kind: 'url',
+                label: hostPathLabel(target.imageUrl),
+                source: target.imageUrl,
+                url: target.imageUrl
+              })
             }
           />
         ) : null,
@@ -403,12 +400,7 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
             icon="globe"
             key="guest-link-open-app"
             label={copy.link.openInApp}
-            onSelect={() =>
-              openPreview(
-                { kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl },
-                'explicit-link'
-              )
-            }
+            onSelect={() => openPreview({ kind: 'url', label: hostPathLabel(linkUrl), source: linkUrl, url: linkUrl })}
           />
         ) : null,
         <Item

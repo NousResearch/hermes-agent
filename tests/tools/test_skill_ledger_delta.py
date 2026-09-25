@@ -5,6 +5,7 @@ file in both lists is dead weight; a 4,000-file skill cost 1.5 MB of ledger per 
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -70,3 +71,101 @@ def test_compact_rewrites_legacy_full_manifests_in_place(ledger_home):
     assert {Path(i["path"]).name for i in by_id["abc123"]["before"]} == {"SKILL.md"}
     assert len(by_id["def456"]["before"]) == 50, "pre-rollback safety entries keep their full capture"
     assert "not json" in path.read_text(encoding="utf-8")
+
+
+def test_compact_leaves_an_undecodable_ledger_untouched(ledger_home, caplog):
+    """Compaction must not replace a ledger it could not decode (gate mutation M2)."""
+    from tools import skill_ledger
+    ledger = skill_ledger.ledger_path()
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"\xff")
+    assert skill_ledger.compact_ledger() == (0, 0, 0)
+    assert ledger.read_bytes() == b"\xff"
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+def test_list_entries_treats_an_undecodable_ledger_as_empty_and_warns(ledger_home, caplog):
+    """A ledger that exists but is not UTF-8 lists as empty (rollback then fails closed on
+    ``get_entry`` -> None) and, unlike a merely missing ledger, is warned about: corruption
+    would otherwise be indistinguishable from a fresh install with no history."""
+    from tools import skill_ledger
+    ledger = skill_ledger.ledger_path()
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"\xff")
+    assert skill_ledger.list_entries() == []
+    assert skill_ledger.get_entry("deadbeef") is None
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+def test_list_entries_is_silent_when_the_ledger_is_merely_missing(ledger_home, caplog):
+    from tools import skill_ledger
+    assert not skill_ledger.ledger_path().exists()
+    assert skill_ledger.list_entries() == []
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def _age_past_gc_grace(blob: Path) -> None:
+    """An unreferenced blob younger than the grace window may belong to an in-flight capture."""
+    from tools import skill_ledger
+    aged = blob.stat().st_mtime - 2 * skill_ledger._BLOB_GC_GRACE_SECS
+    os.utime(blob, (aged, aged))
+
+
+def test_gc_blobs_removes_only_unreferenced(ledger_home):
+    """The blob store was write-only (#107539): after compaction, blobs no entry references are
+    deleted; every referenced blob survives so any entry can still roll back."""
+    from tools import skill_ledger
+    skills = ledger_home / "skills"
+    kept = _manifest(skills, "s", **{"SKILL.md": "v1"})
+    skill_ledger.append_entry("create", "s", before=[], after=kept, actor="agent")
+    orphan = skill_ledger._store_blob(b"never referenced by any entry")
+    assert (skill_ledger.blobs_dir() / orphan).exists()
+    _age_past_gc_grace(skill_ledger.blobs_dir() / orphan)
+
+    deleted, freed = skill_ledger.gc_blobs()
+    assert (deleted, freed) == (1, len(b"never referenced by any entry"))
+    assert not (skill_ledger.blobs_dir() / orphan).exists()
+    assert skill_ledger.read_blob(kept[0]["sha256"]) == b"v1"
+
+    # A malformed line might hold references we cannot read: the sweep refuses rather than guesses.
+    with open(skill_ledger.ledger_path(), "a", encoding="utf-8") as fh:
+        fh.write("{broken\n")
+    _age_past_gc_grace(skill_ledger.blobs_dir() / skill_ledger._store_blob(b"orphan two"))
+    assert skill_ledger.gc_blobs() == (0, 0)
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "missing", "invalid-encoding", "malformed-json", "non-dict-row"])
+def test_gc_keeps_rollback_blobs_when_the_ledger_cannot_be_read(ledger_home, caplog, failure):
+    from tools import skill_ledger
+
+    skill = ledger_home / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir()
+    skill.write_text("original", encoding="utf-8")
+    before = skill_ledger.snapshot_paths(skill)
+    skill.write_text("edited", encoding="utf-8")
+    entry_id = skill_ledger.record_mutation("patch", "demo", before=before, after_root=skill)
+    ledger = skill_ledger.ledger_path()
+    saved = ledger.read_bytes()
+    blobs_before = {p.name: p.read_bytes() for p in skill_ledger.blobs_dir().iterdir()}
+    if failure == "unreadable":
+        # A directory at the ledger path fails read_text() with an OSError on every platform
+        # (IsADirectoryError on POSIX, PermissionError on Windows) without patching Path.
+        ledger.unlink()
+        ledger.mkdir()
+    elif failure == "missing":
+        ledger.unlink()
+    elif failure == "malformed-json":
+        ledger.write_bytes(saved + b"{broken\n")
+    elif failure == "non-dict-row":
+        ledger.write_bytes(saved + b"[]\n")
+    else:
+        ledger.write_bytes(b"\xff")
+    assert skill_ledger.gc_blobs() == (0, 0)
+    assert any(r.levelno >= logging.WARNING for r in caplog.records)
+    assert {p.name: p.read_bytes() for p in skill_ledger.blobs_dir().iterdir()} == blobs_before
+    if ledger.is_dir():
+        ledger.rmdir()
+    ledger.write_bytes(saved)
+    ok, message = skill_ledger.rollback_entry(entry_id)
+    assert ok, message
+    assert skill.read_text(encoding="utf-8") == "original"

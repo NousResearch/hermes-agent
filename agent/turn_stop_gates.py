@@ -122,6 +122,8 @@ def apply_stop_gates(
         return StopGateVerdict(
             continue_turn=True, final_response=None,
             pending_verification_response=final_response,
+            # Prefix semantics on purpose: the streamed prefix IS on screen here. The gateway
+            # interim verdict uses _interim_content_fully_streamed instead (#88954).
             pending_verification_response_previewed=agent._interim_content_was_streamed(
                 final_response or ""
             ),

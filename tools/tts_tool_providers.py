@@ -482,7 +482,7 @@ def _read_gemini_persona_prompt(gemini_config: Dict[str, Any]) -> str:
         except Exception:
             path = Path.cwd() / path
     try:
-        return path.read_text(encoding="utf-8").strip()
+        return path.read_text(encoding="utf-8-sig").strip()
     except (OSError, UnicodeDecodeError) as exc:
         logger.warning("Gemini TTS persona prompt file unavailable at %s: %s", path, exc)
         return ""
@@ -570,7 +570,7 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     from hermes_cli.config import get_env_value
     from agent.gemini_native_adapter import normalize_gemini_base_url
     base_url = normalize_gemini_base_url(
-        gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL, api_key,
+        gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
     )
     persona_prompt = _read_gemini_persona_prompt(gemini_config)
     tts_script = text
@@ -595,11 +595,10 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     headers = {"Content-Type": "application/json"}
     if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
         try:
-            import hermes_cli
-            version = str(hermes_cli.__version__)
+            from hermes_cli.version_info import get_version_info
+            headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
         except Exception:
-            version = "0.0.0"
-        headers["X-Goog-Api-Client"] = f"hermes-agent/{version}"  # partner-integration guidance
+            headers["X-Goog-Api-Client"] = "hermes-agent/0.0.0"
     response = _post_json(f"{base_url}/models/{model}:generateContent", payload, headers, params={"key": api_key})
     if response.status_code != 200:
         raise RuntimeError(f"Gemini TTS API error (HTTP {response.status_code}): {_gemini_error_detail(response)}")

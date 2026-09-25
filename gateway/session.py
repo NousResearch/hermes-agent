@@ -217,20 +217,27 @@ def _slack_tools_loaded() -> bool:
     except Exception:
         pass
 
-    # Profile secret scope, not bare env: under multiplex the env may hold another profile's token.
+    # Profile secret scope, not bare env: under multiplex the env may hold another
+    # profile's token. Only the unscoped default-profile path (UnscopedSecretError)
+    # reads the env; any other scoped-read failure fails closed rather than borrowing.
     try:
-        from agent.secret_scope import get_secret
+        from agent.secret_scope import UnscopedSecretError, get_secret
 
-        token = get_secret("SLACK_BOT_TOKEN") or ""
-    except Exception:  # includes UnscopedSecretError
-        token = os.environ.get("SLACK_BOT_TOKEN") or ""
+        try:
+            token = get_secret("SLACK_BOT_TOKEN") or ""
+        except UnscopedSecretError:
+            token = os.environ.get("SLACK_BOT_TOKEN") or ""
+    except Exception:
+        return False
     if not token.strip():
         return False
     try:
-        from hermes_cli.config import load_config
+        # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
+        # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.tools_config import _get_platform_tools
         # include_default_mcp_servers defaults True so a default-enabled Slack MCP counts too.
-        return "slack" in _get_platform_tools(load_config(), "slack")
+        return "slack" in _get_platform_tools(load_config_readonly(), "slack")
     except Exception:
         return False
 
@@ -240,12 +247,14 @@ def _discord_tools_loaded() -> bool:
     toolset enabled AND `DISCORD_BOT_TOKEN` set (the tool's `check_fn` gates on it)."""
     try:
         from agent.secret_scope import get_secret
-        from hermes_cli.config import load_config
+        # Read-only loader: this runs per turn via _ephemeral_change_key, and _get_platform_tools
+        # only reads the config. load_config()'s defensive deepcopy is ~half this probe's cost.
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.tools_config import _get_platform_tools
 
         if not (get_secret("DISCORD_BOT_TOKEN", "") or "").strip():
             return False
-        enabled = _get_platform_tools(load_config(), "discord", include_default_mcp_servers=False)
+        enabled = _get_platform_tools(load_config_readonly(), "discord", include_default_mcp_servers=False)
         return "discord" in enabled or "discord_admin" in enabled
     except Exception:
         return False
@@ -855,6 +864,8 @@ class SessionStore(
             )
             return True
 
+
+
     def has_any_sessions(self) -> bool:
         """Whether any session has ever been created. SQLite is the source of truth (ended sessions
         count); the current session is already in the DB when this runs, hence ``> 1``."""
@@ -1209,7 +1220,7 @@ class SessionStore(
                 return old_entry
             new_entry = self._replace_route_locked(
                 session_key, old_entry, target_session_id, _now(),
-                display_name=old_entry.display_name,
+                display_name=old_entry.display_name, model_override=old_entry.model_override,
             )
 
         if self._db_for_key(session_key) and old_entry.session_id:

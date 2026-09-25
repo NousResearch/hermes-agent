@@ -4,11 +4,13 @@ OpenAI-style internals. Auth: API keys (``sk-ant-api*``) -> x-api-key; OAuth set
 payload conversion and credentials live in ``agent/anthropic_{endpoints,message_convert,
 credentials}.py``; import them from there."""
 
+from pm import install_hint
 import logging
 import math
+import os
 import re
+import shutil
 import subprocess
-from collections.abc import Iterable
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
@@ -24,22 +26,28 @@ from agent.anthropic_endpoints import (
 from agent.anthropic_message_convert import (
     convert_messages_to_anthropic, convert_tools_to_anthropic, normalize_model_name,
 )
+from agent.errors import EmptyStreamError
 
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
 
 
 # ``import anthropic`` is deliberately NOT at module top: the SDK costs ~220 ms of imports and
 # every usage site is a cold user-triggered path. ``...`` = not yet tried; None = tried, missing.
 _anthropic_sdk: Any = ...
+# Why the lazy install did not make the SDK importable. A completed install that needs a restart
+# (PM activates a new dependency environment only at boot) must not be reported as "install it".
+_anthropic_install_error: Optional[Exception] = None
 
 
 def _get_anthropic_sdk():
     """Return the ``anthropic`` SDK module, importing lazily. None if not installed."""
-    global _anthropic_sdk
+    global _anthropic_sdk, _anthropic_install_error
     if _anthropic_sdk is ...:
-        with suppress(Exception):  # ImportError or FeatureUnavailable — fall through to the import below
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("provider.anthropic", prompt=False)
+        try:
+            from pm import ensure_import
+            ensure_import("anthropic")
+        except Exception as exc:  # the import below decides; exc explains a miss
+            _anthropic_install_error = exc
         try:
             import anthropic as _sdk
             _anthropic_sdk = _sdk
@@ -51,8 +59,12 @@ def _get_anthropic_sdk():
 def _require_sdk(purpose: str, verb: str = "Install it with"):
     """``_get_anthropic_sdk()`` or ImportError naming the feature that needs it."""
     sdk = _get_anthropic_sdk()
+    if sdk is None and _anthropic_install_error is not None:
+        raise ImportError(f"The 'anthropic' package is required for {purpose}: "
+                          f"{_anthropic_install_error}") from _anthropic_install_error
     if sdk is None:
-        raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: pip install 'anthropic>=0.39.0'")
+        raise ImportError(f"The 'anthropic' package is required for {purpose}. {verb}: "
+                          f"{install_hint('anthropic')}")
     return sdk
 
 
@@ -89,7 +101,6 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
 _MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
-_FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-8", "opus-4.8", "opus-5")
 
 
 def _is_claude_model(model: str | None) -> bool:
@@ -193,11 +204,11 @@ def _forbids_sampling_params(model: str) -> bool:
 
 
 def _supports_fast_mode(model: str) -> bool:
-    """True for models accepting ``speed: "fast"`` (Opus 4.8 / Opus 5, Claude API only). Explicit
-    allowlist, not a version floor: Opus 4.6 had fast mode and lost it (requests silently run and
-    bill at standard speed), Opus 4.7 hard-400s on the param. Dedicated ``...-fast`` ids select
-    fast inference via the model field and must NOT also receive the speed parameter."""
-    return "-fast" not in model and any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
+    """True for models accepting ``speed: "fast"`` (Opus 4.8 / Opus 5 / Opus 5.5, Claude API only).
+    The list lives in ``agent.model_metadata`` so the wire gate and the ``/fast`` toggle agree."""
+    from agent.model_metadata import is_anthropic_fast_mode_model
+
+    return is_anthropic_fast_mode_model(model)
 
 
 # Beta headers safe on ordinary/native Anthropic requests. GA on Claude 4.6+ (harmless no-op
@@ -219,10 +230,44 @@ _OAUTH_ONLY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"]
 _CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 _claude_code_version_cache: Optional[str] = None
 
+# Install prefixes probed in addition to PATH. GUI launches (the Electron desktop app, macOS
+# LaunchAgents) inherit the bare ``/usr/bin:/bin:/usr/sbin:/sbin``, which carries none of these,
+# so a PATH-only lookup finds nothing there even with the CLI installed — detection then returns
+# the stale fallback and Anthropic 400s with "Claude Code X does not support this model".
+# These are additive: on Windows none resolve to a file and detection falls back to the PATH
+# lookup (which handles PATHEXT), leaving current behaviour there unchanged.
+_CLAUDE_CODE_PREFIXES = (
+    "~/.local/bin", "~/.claude/local", "~/bin", "~/.npm-global/bin", "~/.bun/bin",
+    "~/.volta/bin", "/opt/homebrew/bin", "/usr/local/bin",
+)
+
+
+_CLAUDE_CODE_NAMES = ("claude", "claude-code")
+
+
+def _claude_code_candidates() -> List[str]:
+    """Executable paths to try, deduped and filtered to files that exist.
+
+    Two passes: every PATH hit first (what the user's shell would run), then the
+    well-known install prefixes. A single nested loop would probe a stale prefix
+    ``claude`` before a current PATH ``claude-code``.
+    """
+    seen: Dict[str, None] = {}
+    for name in _CLAUDE_CODE_NAMES:
+        hit = shutil.which(name)
+        if hit:
+            seen.setdefault(hit)
+    for prefix in _CLAUDE_CODE_PREFIXES:
+        for name in _CLAUDE_CODE_NAMES:
+            path = os.path.join(os.path.expanduser(prefix), name)
+            if os.path.isfile(path):
+                seen.setdefault(path)
+    return list(seen)
+
 
 def _detect_claude_code_version() -> str:
     """Installed Claude Code version (``claude --version``), else the static fallback."""
-    for cmd in ("claude", "claude-code"):
+    for cmd in _claude_code_candidates():
         with suppress(Exception):
             result = subprocess.run(
                 [cmd, "--version"],
@@ -299,7 +344,7 @@ def _attribution_headers() -> Dict[str, str]:
     """Same client-attribution set sent to OpenRouter / Vercel AI Gateway / Fireworks."""
     return {
         "HTTP-Referer": "https://hermes-agent.nousresearch.com", "X-Title": "Hermes Agent",
-        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+        "User-Agent": f"HermesAgent/{get_version_info().base_version}",
     }
 
 
@@ -339,12 +384,24 @@ def _build_anthropic_client_with_bearer_hook(
     normalized_base_url, kwargs = _base_client_kwargs(base_url, timeout)
     kwargs["http_client"] = build_bearer_http_client(token_provider, timeout=kwargs["timeout"])
     kwargs["auth_token"] = "entra-id-bearer-via-http-hook"
-    headers = _beta_header(_common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta))
-    return _new_sdk_client(sdk, kwargs, headers)
+    betas = _common_betas_for_base_url(normalized_base_url, drop_context_1m_beta=drop_context_1m_beta)
+    from agent.anthropic_credentials import anthropic_route_is_oauth
+    if anthropic_route_is_oauth(base_url, token_provider):
+        # key_cmd-sourced Claude Code OAuth on the native host: a bare bearer without the Claude Code
+        # identity is answered with 429 rate_limit_error "Error" (#114967) — same headers as the
+        # static "oauth" style in build_anthropic_client.
+        headers = _beta_header(betas + _OAUTH_ONLY_BETAS)
+        headers["user-agent"] = f"claude-code/{_get_claude_code_version()} (external, cli)"
+        headers["x-app"] = "cli"
+    else:
+        headers = _beta_header(betas)
+    return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 
-def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
+def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str], route: str = None):
     """``sdk.Anthropic(**kwargs)`` with ``headers`` attached, sending exactly ONE credential.
+    ``route`` is the caller's un-normalized base_url (the ``/v1`` form ``custom_providers`` entries are
+    keyed by; ``kwargs["base_url"]`` has it stripped) for the per-provider ``extra_headers`` lookup.
 
     The SDK fills whichever of ``api_key`` / ``auth_token`` we left unset from ANTHROPIC_API_KEY /
     ANTHROPIC_AUTH_TOKEN in the environment (both loaded from ~/.hermes/.env) and then sends dual
@@ -357,9 +414,26 @@ def _new_sdk_client(sdk, kwargs: Dict[str, Any], headers: Dict[str, str]):
         merged["Authorization"] = sdk.Omit()
     elif "auth_token" in kwargs and "api_key" not in kwargs:
         merged["X-Api-Key"] = sdk.Omit()
+    # Per-provider ``custom_providers[].extra_headers`` last: the most specific config level wins
+    # over the SDK User-Agent and the attribution/beta sets above, on every builder path (init,
+    # /model switch, rebuild, auxiliary) — the OpenAI-wire clients already do this (#24293, #9721).
+    merged.update(_custom_provider_extra_headers(route or kwargs.get("base_url")))
     if merged:
         kwargs["default_headers"] = merged
     return sdk.Anthropic(**kwargs)
+
+
+def _custom_provider_extra_headers(base_url) -> Dict[str, str]:
+    """``extra_headers`` of the ``custom_providers`` entry routed at *base_url*, else ``{}``.
+    SECURITY: values routinely carry credentials (Cloudflare Access tokens) — never log them."""
+    if not base_url:
+        return {}
+    try:
+        from hermes_cli.config import get_custom_provider_extra_headers
+        return get_custom_provider_extra_headers(str(base_url))
+    except Exception:
+        logger.debug("custom-provider extra_headers skipped for Anthropic client", exc_info=True)
+        return {}
 
 
 def _auth_style(api_key, base_url, normalized_base_url) -> str:
@@ -410,7 +484,7 @@ def build_anthropic_client(api_key, base_url: str = None, timeout: float = None,
         # get these from profile.default_headers, but this route never sees the profile.
         for k, v in _attribution_headers().items():
             headers.setdefault(k, v)
-    return _new_sdk_client(sdk, kwargs, headers)
+    return _new_sdk_client(sdk, kwargs, headers, route=base_url)
 
 
 def build_anthropic_bedrock_client(region: str):
@@ -423,7 +497,7 @@ def build_anthropic_bedrock_client(region: str):
     from agent.bedrock_adapter import bedrock_guardrail_headers, scoped_aws_session_kwargs
     sdk = _require_sdk("the Bedrock provider")
     if not hasattr(sdk, "AnthropicBedrock"):
-        raise ImportError("anthropic.AnthropicBedrock not available. Upgrade with: pip install 'anthropic>=0.39.0'")
+        raise ImportError("anthropic.AnthropicBedrock not available. Run: hermes pm repair")
     # Routed multiplex profile: its own AWS_* from the secret scope (the SDK would otherwise read the
     # launch profile's process env); unscoped passes nothing and keeps the default chain.
     scoped = scoped_aws_session_kwargs()
@@ -646,10 +720,54 @@ def buffer_anthropic_tool_input(api_kwargs: dict[str, Any], base_url: str | None
         tool["eager_input_streaming"] = False
 
 
+class _UsageNormalizingStream:
+    """Raw SSE iterator proxy that fills ``usage: null`` before the SDK accumulates it (#60683)."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+    def __iter__(self):
+        # Lazy: the SDK import is deliberately kept off module import (see _anthropic_sdk).
+        from anthropic.types import MessageDeltaUsage, Usage
+        output_tokens = 0
+        for event in self._inner:
+            etype = getattr(event, "type", None)
+            if etype == "message_start":
+                message = getattr(event, "message", None)
+                usage = getattr(message, "usage", None)
+                if message is not None and usage is None:
+                    message.usage = Usage(input_tokens=0, output_tokens=0)
+                elif usage is not None:
+                    output_tokens = getattr(usage, "output_tokens", 0) or 0
+            elif etype == "message_delta" and getattr(event, "usage", None) is None:
+                # accumulate_event() assigns delta output_tokens unconditionally; carry
+                # message_start's count forward instead of clobbering it with 0.
+                event.usage = MessageDeltaUsage(output_tokens=output_tokens)
+            yield event
+
+
+def normalize_stream_usage(message_stream: Any) -> Any:
+    """Patch ``usage: null`` on raw SSE events before the SDK accumulates them.
+
+    Anthropic-compatible providers (MiniMax) send ``usage: null`` on message_start and/or
+    message_delta; the SDK's accumulate_event() then dies on ``usage.output_tokens`` mid-
+    iteration (#60683). Wraps ``MessageStream._raw_stream`` in place; no-op for other shapes."""
+    raw = getattr(message_stream, "_raw_stream", None)
+    if raw is None or not hasattr(raw, "__iter__"):
+        return message_stream
+    message_stream._raw_stream = _UsageNormalizingStream(raw)
+    return message_stream
+
+
 def _is_stream_unavailable_error(exc: Exception) -> bool:
     """True when an Anthropic stream call should fall back to create()."""
     err_lower = str(exc).lower()
     if "stream" in err_lower and "not supported" in err_lower:
+        return True
+    if "unexpected event order" in err_lower:
         return True
     if "invokemodelwithresponsestream" not in err_lower:
         return False
@@ -660,6 +778,7 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
 def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on_response):
     """``messages.stream()`` -> final Message, ticking the best-effort callbacks."""
     with stream_fn(**{k: v for k, v in api_kwargs.items() if k != "stream"}) as stream:
+        stream = normalize_stream_usage(stream)  # MiniMax usage:null (#60683), same as the main turn
         if callable(on_response):
             try:
                 on_response(getattr(stream, "response", None))
@@ -670,9 +789,12 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
         # has given up, so abandon the stream (``with`` closes it) instead of streaming an answer
         # nobody reads.
         # Some SDK versions drop optional message_delta metadata from the final snapshot.
-        # Non-iterable shims (get_final_message-only) skip straight to the snapshot.
+        # The stream must end in message_stop; anything else is a retryable incomplete response.
         stop_details = None
-        for event in (stream if isinstance(stream, Iterable) else ()):
+        saw_message_stop = False
+        for event in stream:
+            if getattr(event, "type", None) == "message_stop":
+                saw_message_stop = True
             if getattr(event, "type", None) == "message_delta":
                 details = getattr(getattr(event, "delta", None), "stop_details", None)
                 if details is not None:
@@ -688,6 +810,10 @@ def _stream_final_message(stream_fn, api_kwargs, log_prefix, on_stream_event, on
                 raise
             except Exception:
                 logger.debug("%son_stream_event callback failed", log_prefix, exc_info=True)
+        if not saw_message_stop:
+            raise EmptyStreamError(
+                "Anthropic Messages stream ended before message_stop (possible upstream stream drop)."
+            )
         message = stream.get_final_message()
         if stop_details is not None:
             message.stop_details = stop_details

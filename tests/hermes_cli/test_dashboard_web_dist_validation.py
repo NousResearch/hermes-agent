@@ -9,6 +9,7 @@ the dist has no index.html, and proceed when it does.
 Design credit: PR #17845 (@Caelier).
 """
 
+import os
 import sys
 import types
 
@@ -140,11 +141,41 @@ def test_skip_build_missing_dist_attempts_one_recovery_build(
 # ---------------------------------------------------------------------------
 
 
+def test_desktop_child_dashboard_drops_packaged_renderer(main_mod, monkeypatch):
+    """#116107: every desktop-spawned process inherits HERMES_DESKTOP=1 with the
+    packaged dist; a browser `hermes dashboard` from it must not keep serving the
+    IPC-only desktop renderer."""
+    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
+    monkeypatch.setenv("HERMES_SERVE_HEADLESS", "1")
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
+
+    assert "HERMES_WEB_DIST" not in os.environ
+    assert "HERMES_SERVE_HEADLESS" not in os.environ
 
 
+def test_desktop_headless_serve_keeps_packaged_renderer(main_mod, monkeypatch):
+    """The real Desktop backend remains distinguished by the `serve` entry path."""
+    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
+
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=True)
+
+    assert os.environ["HERMES_WEB_DIST"] == packaged
 
 
+def test_desktop_owned_fallback_dashboard_keeps_packaged_renderer(main_mod, monkeypatch):
+    """The Desktop's own legacy `dashboard --no-open` fallback spawn (serve probe
+    timed out) is not headless but carries the per-spawn session token; stripping
+    its dist would send a packaged install into `_build_web_ui(fatal=True)`."""
+    packaged = "/Applications/Hermes.app/Contents/Resources/app.asar.unpacked/dist"
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+    monkeypatch.setenv("HERMES_WEB_DIST", packaged)
 
+    main_mod._dashboard_sanitize_desktop_env(headless_backend=False)
 
-
-
+    assert os.environ["HERMES_WEB_DIST"] == packaged

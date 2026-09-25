@@ -389,7 +389,9 @@ def _cmd_ledger(args) -> int:
     from tools import skill_ledger
     if getattr(args, "compact", False):
         entries, before, after = skill_ledger.compact_ledger()
-        print(f"curator: ledger compacted — {entries} entries, {before / 2**20:.1f} MB → {after / 2**20:.1f} MB")
+        blobs, freed = skill_ledger.gc_blobs()
+        print(f"curator: ledger compacted — {entries} entries, {before / 2**20:.1f} MB → {after / 2**20:.1f} MB; "
+              f"{blobs} unreferenced blob(s) removed ({freed / 2**20:.1f} MB)")
         return 0
     rows = skill_ledger.list_entries(
         skill=getattr(args, "skill", None), limit=getattr(args, "limit", None) or 20)

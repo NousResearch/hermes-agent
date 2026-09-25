@@ -27,6 +27,7 @@ from unittest.mock import patch
 import pytest
 
 import cron.scheduler as scheduler_mod
+from hermes_constants import hermes_home_key
 
 
 @pytest.fixture()
@@ -42,7 +43,7 @@ def executions(monkeypatch, tmp_path):
 @pytest.fixture(autouse=True)
 def _fresh_reap_window(monkeypatch):
     """Each test starts with the reap throttle open."""
-    monkeypatch.setattr(scheduler_mod, "_last_dead_owner_reap_at", None)
+    monkeypatch.setattr(scheduler_mod, "_last_dead_owner_reap_at", {})
 
 
 def _dead_pid() -> int:
@@ -129,7 +130,8 @@ class TestTickReapsDeadOwnerClaims:
         monkeypatch.setattr(
             scheduler_mod,
             "_last_dead_owner_reap_at",
-            time.monotonic() - scheduler_mod._DEAD_OWNER_REAP_INTERVAL_SECONDS - 1,
+            {hermes_home_key(scheduler_mod._get_hermes_home()):
+             time.monotonic() - scheduler_mod._DEAD_OWNER_REAP_INTERVAL_SECONDS - 1},
         )
         _run_tick()
         assert len(calls) == 2, "an expired throttle window must reap again"
@@ -203,3 +205,28 @@ class TestOneShotCliRunIsSynchronous:
             {"id": "job-x", "name": "job-x"}, session_id="sess-1"
         )
         assert result is None
+
+
+def test_reap_throttle_is_profile_scoped(monkeypatch, tmp_path):
+    """In multiplex mode each profile's tick must get its own reap scan: the
+    first profile in a cycle must not consume a process-global throttle slot
+    that starves every other profile."""
+    import cron.executions as executions_mod
+
+    calls = []
+    monkeypatch.setattr(
+        executions_mod, "recover_interrupted_executions", lambda: calls.append(1) or 0
+    )
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    home_a.mkdir()
+    home_b.mkdir()
+    monkeypatch.setattr(scheduler_mod, "_last_dead_owner_reap_at", {})
+    monkeypatch.setattr(scheduler_mod, "_get_hermes_home", lambda: home_a)
+    scheduler_mod._maybe_reap_dead_owners()
+    monkeypatch.setattr(scheduler_mod, "_get_hermes_home", lambda: home_b)
+    scheduler_mod._maybe_reap_dead_owners()
+    assert len(calls) == 2, (
+        "each profile must get its own dead-owner scan per cycle, "
+        f"got {len(calls)} scan(s) for 2 profiles"
+    )

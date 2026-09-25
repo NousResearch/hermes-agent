@@ -47,7 +47,7 @@ def load_state() -> Dict[str, Any]:
     }
     path = _state_file()
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read curator state: %s", e)
         return base
@@ -107,19 +107,39 @@ def is_enabled() -> bool:  # default ON when no config says otherwise
 
 
 def get_interval_hours() -> int:
-    return _config_number("interval_hours", DEFAULT_INTERVAL_HOURS, int)
+    # < 1 would make should_run_now() true on every idle tick (a review pass each time), so floor it the same way.
+    return _bounded_count("interval_hours", DEFAULT_INTERVAL_HOURS)
 
 
 def get_min_idle_hours() -> float:
     return _config_number("min_idle_hours", DEFAULT_MIN_IDLE_HOURS, float)
 
 
+_warned_bad_values: set = set()
+
+
+def _bounded_count(key: str, default: int) -> int:
+    """*key* (a ``curator.<key>`` day/hour count), floored at 1 like ``curator prune --days`` already
+    refuses (hermes_cli/curator.py::_cmd_prune). A value < 1 collapses stale_cutoff/archive_cutoff
+    onto or past "now" in apply_automatic_transitions(), mass-transitioning every skill with any
+    past activity on the next automatic pass — unlike the manual prune path this runs unconfirmed,
+    so it falls back to the default instead of acting on the bad value."""
+    value = _config_number(key, default, int)
+    if value < 1:
+        # Warn once per (key, bad value): the dashboard status endpoint polls these getters.
+        if (key, value) not in _warned_bad_values:
+            _warned_bad_values.add((key, value))
+            logger.warning("curator.%s must be >= 1 (got %d); using the default of %d", key, value, default)
+        return default
+    return value
+
+
 def get_stale_after_days() -> int:
-    return _config_number("stale_after_days", DEFAULT_STALE_AFTER_DAYS, int)
+    return _bounded_count("stale_after_days", DEFAULT_STALE_AFTER_DAYS)
 
 
 def get_archive_after_days() -> int:
-    return _config_number("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS, int)
+    return _bounded_count("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS)
 
 
 def get_consolidate() -> bool:
@@ -213,6 +233,12 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             _u.seed_record_if_missing(name)
             counts["seeded"] += 1
             continue
+        # A bundled skill's telemetry record predates the curator's first sight of it; anchor the clock here, once.
+        if (row.get("provenance") == "bundled" and int(row.get("use_count", 0) or 0) == 0
+                and not _parse_iso(row.get("last_activity_at")) and not row.get("first_seen_at")):
+            _u.reanchor_clock(name)
+            counts["seeded"] += 1
+            continue
         # Never-active skills anchor on created_at so they don't self-archive.
         anchor = _parse_iso(row.get("last_activity_at")) or _parse_iso(row.get("created_at")) or now
         if anchor.tzinfo is None:
@@ -281,7 +307,10 @@ CURATOR_REVIEW_PROMPT = (
     "(imperative + one clause of why), the same lesson stated twice becomes "
     "one rule, and incident narration, PR/issue numbers, dates and quoted "
     "chatter are dropped — the rule must stand without the story. Moving a "
-    "file unchanged under references/ is filing, not consolidating.\n\n"
+    "file unchanged under references/ is filing, not consolidating. A SKILL.md "
+    "body over ~24k chars is a consolidation target on its own: skill_view loads "
+    "all of it into context for the rest of the session, so distill it to the "
+    "always-on rules and push topic depth into references/.\n\n"
     "Hard rules — do not violate:\n"
     "1. DO NOT touch bundled, hub-installed, or external-dir skills "
     "(`skills.external_dirs`). The candidate list below is already filtered "
@@ -520,7 +549,7 @@ def _parse_structured_summary(llm_final: str) -> Dict[str, List[Dict[str, str]]]
     data = None
     if match:
         try:
-            import yaml  # type: ignore
+            import hermes_yaml as yaml
             data = yaml.safe_load(match.group(1))
         except Exception:
             pass
@@ -1005,7 +1034,7 @@ def _resolve_review_provider() -> tuple:
     explicit provider/model hits an auto-resolution path that fails for OAuth-only providers and pooled credentials
     (HTTP 400 "No models provided"). Never raises."""
     rp: Dict[str, Any] = {}
-    overrides, provider, model_name = {}, None, ""
+    overrides, provider, model_name, binding = {}, None, "", None
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.runtime_provider import resolve_runtime_provider
@@ -1020,7 +1049,8 @@ def _resolve_review_provider() -> tuple:
         if isinstance(rp.get("model"), str) and rp["model"].strip():
             model_name = rp["model"].strip()
     except Exception as e:
-        logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
+        logger.warning("curator: auxiliary.curator.provider '%s' (model '%s') could not be resolved: %s — the review "
+                       "runs on the main model instead", getattr(binding, "provider", None), model_name, e)
     return rp, model_name, provider, overrides
 
 
@@ -1041,10 +1071,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         acp_command = rp.get("command")
         if isinstance(acp_command, str) and acp_command:
             agent_kwargs.update(acp_command=acp_command, acp_args=list(rp.get("args") or []))
+        from hermes_cli.config import load_config_readonly
+        from hermes_constants import resolve_reasoning_config
+
         review_agent = AIAgent(
             model=model_name, provider=provider, api_key=rp.get("api_key"), base_url=rp.get("base_url"),
             api_mode=rp.get("api_mode"), credential_pool=rp.get("credential_pool"),
             request_overrides=request_overrides, **agent_kwargs,
+            # Same chokepoint as every other surface: without it ``agent.reasoning_effort`` never reaches
+            # the review fork and the transport applies its default effort (a 400 on non-reasoning models).
+            reasoning_config=resolve_reasoning_config(load_config_readonly(), model_name),
             # No ``terminal``: a shell mv/cp/rm under the skills tree writes bytes
             # with NO ledger entry, so rollback would restore a hollow skill. Every
             # mutation goes through ledgered skill_manage; dropping the toolset

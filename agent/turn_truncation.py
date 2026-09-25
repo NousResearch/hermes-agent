@@ -26,7 +26,10 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID
 
 logger = logging.getLogger("agent.conversation_loop")
 
-_CONTINUABLE_MODES = {"chat_completions", "bedrock_converse", "anthropic_messages"}
+# codex_responses only reaches ``finish_reason == "length"`` for a tool call cut off by
+# max_output_tokens (turn_response_check.py::_derive_finish_reason); text truncation stays on
+# the Codex incomplete continuation, so the text branch below never double-continues it.
+_CONTINUABLE_MODES = {"chat_completions", "bedrock_converse", "anthropic_messages", "codex_responses"}
 _THINK_TAG_RE = re.compile(r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>', re.IGNORECASE)
 _TRUNCATED_FINAL = site_copy("truncated")
 _FIRST_TRUNCATED_FINAL = _TRUNCATED_FINAL
@@ -39,6 +42,56 @@ _CONTEXT_OVERFLOW_PARTIAL_FINAL = (
     "chats are reset automatically)."
 )
 
+def collapse_continuation_trail(
+    agent: Any, messages: List[Dict[str, Any]], current_turn_user_idx: Any, *,
+    finish_reason: str, parts: Optional[List[str]] = None,
+) -> str:
+    """Drop this turn's ``_length_continuation_fragment``/``_nudge`` rows and append one
+    assistant row holding the joined, think-stripped partial; returns that text ("" none).
+
+    ``parts=None`` (retry exhaustion, #119001): the text comes from the fragment rows and
+    nothing happens without a valid turn index or a trail — an unanswered synthetic nudge
+    must never be persisted, and an earlier turn's rows must never be read. Explicit
+    ``parts`` (the continuation ceiling) always appends, scanning from 0 without an index.
+    """
+    idx = current_turn_user_idx
+    valid_idx = isinstance(idx, int) and idx >= 0
+    if parts is None and not (valid_idx and idx < len(messages)):
+        return ""
+    turn_start = idx + 1 if valid_idx else 0
+    fragment_parts: List[str] = []
+    retained: List[Any] = []
+    found_trail = False
+    for message in messages[turn_start:]:
+        if isinstance(message, dict) and (
+            message.get("_length_continuation_fragment") or message.get("_length_continuation_nudge")
+        ):
+            found_trail = True
+            content = message.get("content")
+            if message.get("_length_continuation_fragment") and isinstance(content, str) and content:
+                fragment_parts.append(content)
+            continue
+        retained.append(message)
+    if parts is None and not found_trail:
+        return ""
+    messages[turn_start:] = retained
+    from agent.conversation_loop import _join_truncated_parts
+    raw = fragment_parts if parts is None else parts
+    join_parts = []
+    for item in raw:
+        if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
+            join_parts.append(item)
+        elif isinstance(item, str) and item:
+            join_parts.append((item, False))
+    partial = agent._strip_think_blocks(
+        _join_truncated_parts(join_parts)
+    ).strip()
+    if partial:
+        append_message(messages, {"role": "assistant", "content": partial, "finish_reason": finish_reason})
+    agent._session_messages = messages
+    return partial
+
+
 _THINKING_EXHAUSTED = (
     "💭 Reasoning exhausted the output token budget — no visible response was produced.",
     "⚠️ **Thinking Budget Exhausted**\n\nThe model used all its output tokens on reasoning "
@@ -48,14 +101,23 @@ _THINKING_EXHAUSTED = (
     "Model used all output tokens on reasoning with none left "
     "for the response. Try lowering reasoning effort or increasing max_tokens.",
 )
-_REPETITION_DOMINATED = (
-    "🔁 Response dominated by repeated text — stopping instead of continuing a degenerate response.",
-    "⚠️ **Response Stopped — Repetition Detected**\n\nThe model fell into a repetition loop while "
-    "writing this response, so continuing would only produce more repeated text. The partial response "
-    "was discarded.\n\n→ Switch to a different model with `/model`\n"
-    "→ Or resend your message (your conversation history is preserved)",
-    "Model output entered a repetition loop and was truncated mid-loop; refusing to continue a "
-    "degenerate response.",
+
+def repetition_copy(stopping: str, outcome: str, refusal: str) -> Tuple[str, str, str]:
+    """(log line, user copy, error) for a repetition-dominated abort; only the clauses naming
+    where the turn stopped differ between the length path and the stop path."""
+    return (
+        f"🔁 Response dominated by repeated text — stopping {stopping}.",
+        "⚠️ **Response Stopped — Repetition Detected**\n\nThe model fell into a repetition loop while "
+        f"writing this response, {outcome}\n\n→ Switch to a different model with `/model`\n"
+        "→ Or resend your message (your conversation history is preserved)",
+        f"Model output entered a repetition loop{refusal} degenerate response.",
+    )
+
+
+_REPETITION_DOMINATED = repetition_copy(
+    "instead of continuing a degenerate response",
+    "so continuing would only produce more repeated text. The partial response was discarded.",
+    " and was truncated mid-loop; refusing to continue a",
 )
 _CEILING_NO_TEXT = (
     "⚠️ **No visible answer was produced.** The model hit its output-token limit on every "
@@ -128,7 +190,7 @@ class TruncationVerdict:
     result: Optional[Dict[str, Any]]
     messages: List[Dict[str, Any]]
     length_continue_retries: int
-    truncated_response_parts: List[str]
+    truncated_response_parts: List[Tuple[str, bool]]
     truncated_tool_call_retries: int
     retry_count: int
     compression_attempts: int
@@ -254,7 +316,7 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         interim_msg = agent._build_assistant_message(assistant_message, st.finish_reason)
         interim_msg["_length_continuation_fragment"] = True  # ceiling exit drops these
         append_message(messages, interim_msg)
-        st.truncated_response_parts.append(_interim_content)
+        st.truncated_response_parts.append((_interim_content, st.is_stub))
 
     filled = st.window_filled
     if n < 4 and filled is None:
@@ -276,7 +338,11 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         _retry.restart_with_length_continuation = True
         return st.done("break")
 
-    partial_response = agent._strip_think_blocks(_join_truncated_parts(st.truncated_response_parts)).strip()
+    # Unanswered continue nudges made every later turn re-truncate: drop the trail.
+    partial_response = collapse_continuation_trail(
+        agent, messages, st.current_turn_user_idx, finish_reason="length",
+        parts=st.truncated_response_parts,
+    )
     # The one-shot reasoning-off override must not leak into the next turn.
     agent._ephemeral_reasoning_off = False
     agent._vprint(
@@ -287,20 +353,6 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
            else "no visible text was produced."),
         force=True, diagnostic=True,
     )
-    # Unanswered continue nudges made every later turn re-truncate: drop the trail.
-    idx = st.current_turn_user_idx
-    _turn_start = idx + 1 if isinstance(idx, int) and idx >= 0 else 0
-    messages[_turn_start:] = [
-        m for m in messages[_turn_start:]
-        if not (isinstance(m, dict) and (
-            m.get("_length_continuation_fragment") or m.get("_length_continuation_nudge")
-        ))
-    ]
-    if partial_response:
-        append_message(messages, {
-            "role": "assistant", "content": partial_response, "finish_reason": "length"
-        })
-    agent._session_messages = messages
     if filled is not None:
         notice = _WINDOW_FILLED.format(prompt=filled[0], ctx=filled[1])
         return st.end_turn(
@@ -311,6 +363,33 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
         partial_response or _CEILING_NO_TEXT,
         "Response remained truncated after 4 continuation attempts",
     )
+
+
+def _model_output_limit(agent: Any) -> Optional[int]:
+    """The model's real max output tokens when Hermes knows it, else None."""
+    if getattr(agent, "api_mode", None) != "anthropic_messages":
+        return None
+    # Local: only Anthropic-Messages turns need the adapter module.
+    from agent.anthropic_adapter import _get_anthropic_max_output
+    return _get_anthropic_max_output(getattr(agent, "model", None) or "")
+
+
+def boosted_output_cap(agent: Any, requested_cap: Optional[int], n: int, base: Optional[int] = None) -> int:
+    """Output budget for truncation retry ``n`` (1-based): ``base·2ⁿ``, never below the
+    failed request's cap, at most ``max(32768, 2×cap)``, and never above the model's
+    known output limit. ``base`` defaults to max_tokens, else the cap actually sent.
+
+    A ceiling equal to the requested cap would re-send the same budget (#72770); a
+    ceiling past the model limit only buys a provider 400 (#79715).
+    """
+    if base is None:
+        base = agent.max_tokens or requested_cap or 4096
+    anchor = requested_cap or base
+    limit = _model_output_limit(agent)
+    if limit and anchor >= limit:
+        return anchor  # already at the model ceiling: doubling cannot help
+    boost = min(max(base * (2 ** n), requested_cap or 0), max(32768, anchor * 2))
+    return min(boost, limit) if limit else boost
 
 
 def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict:
@@ -325,11 +404,9 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             agent._buffer_vprint(f"⚠️  Stream interrupted mid tool-call — retrying ({n}/4)...")
         else:
             agent._buffer_vprint(f"⚠️  Truncated tool call detected — retrying API call ({n}/4)...")
-        _tc_boost = (agent.max_tokens if agent.max_tokens else 4096) * (2 ** n)
-        _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
-        if _tc_requested_cap is not None:
-            _tc_boost = max(_tc_boost, _tc_requested_cap)
-        agent._ephemeral_max_output_tokens = min(_tc_boost, max(32768, _tc_requested_cap or 0))
+        agent._ephemeral_max_output_tokens = boosted_output_cap(
+            agent, agent._requested_output_cap_from_api_kwargs(api_kwargs), n
+        )
         return st.done("continue")  # don't append the broken response
     agent._flush_status_buffer()
     if st.is_stub:
@@ -357,7 +434,7 @@ def recover_from_truncation(
     agent: Any, response: Any, finish_reason: str, _retry: TurnRetryState, *,
     messages: List[Dict[str, Any]], conversation_history: Any, api_kwargs: Any, api_call_count: int,
     effective_task_id: Any, current_turn_user_idx: Any, length_continue_retries: int,
-    truncated_response_parts: List[str], truncated_tool_call_retries: int, retry_count: int,
+    truncated_response_parts: List[Tuple[str, bool]], truncated_tool_call_retries: int, retry_count: int,
     compression_attempts: int,
 ) -> TruncationVerdict:
     """Recover from a truncated response. Order is load-bearing: thinking exhaustion and
@@ -447,11 +524,15 @@ _CODEX_REPLAY_KEYS = (
     "codex_reasoning_items", "codex_message_items",
 )
 
+# Third return value of ``continue_codex_incomplete``: the reasoning-only stall was handed to a
+# fallback provider — the caller re-syncs the system prompt identity and continues the turn.
+CODEX_FALLBACK_ACTIVATED = "codex_fallback_activated"
+
 
 def continue_codex_incomplete(
     agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, response: Any = None,
-) -> Optional[Dict[str, Any]]:
+) -> Optional[Any]:
     """Codex Responses ``status=incomplete`` continuation (max 3 per turn).
 
     Appends the interim assistant message (deduped on visible content only — opaque
@@ -459,7 +540,17 @@ def continue_codex_incomplete(
     overwritten, because the earlier response holds the only native-compaction
     checkpoint) and, when a bare retry would be byte-identical, a user-role nudge — only
     after an assistant row, to preserve role alternation. Returns ``None`` to continue
-    the turn loop, or the terminal ``partial`` result once retries are exhausted.
+    the turn loop, ``CODEX_FALLBACK_ACTIVATED`` when a reasoning-only stall was handed to
+    the next fallback provider, or the terminal ``partial`` result once retries are exhausted.
+
+    Reasoning-only stall ladder (#67321): a response with neither visible text nor a tool
+    call advances ``_codex_reasoning_only_streak`` (a visible partial resets it; the aggregate
+    ``_codex_incomplete_retries`` stays the cap for partials). Encrypted reasoning replays
+    byte-for-byte, so after replay (1) and nudge (2) the third consecutive reasoning-only
+    response goes to the configured fallback with the semantic ``incomplete_response`` reason
+    instead of ending on the sentinel; when that response consumed the last iteration the
+    fallback gets exactly one grace call (``_budget_grace_call`` is consumed by the next
+    iteration, and the streak restarts from 0, so a second grace call is unreachable).
 
     When ``response`` hit ``max_output_tokens`` with no visible text (reasoning ate the
     whole budget), the next attempt goes out with reasoning off and a doubled output
@@ -477,6 +568,9 @@ def continue_codex_incomplete(
     interim_has_reasoning = isinstance(_reasoning, str) and bool(_reasoning.strip())
     interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
     interim_has_codex_message_items = bool(interim_msg.get("codex_message_items"))
+    reasoning_only = not interim_has_content and not getattr(assistant_message, "tool_calls", None)
+    agent._codex_reasoning_only_streak = agent._codex_reasoning_only_streak + 1 if reasoning_only else 0
+    streak = agent._codex_reasoning_only_streak
 
     if interim_has_content or interim_has_reasoning or interim_has_codex_reasoning or interim_has_codex_message_items:
         last_msg = messages[-1] if messages else None
@@ -510,7 +604,26 @@ def continue_codex_incomplete(
             append_message(messages, interim_msg)
             agent._emit_interim_assistant_message(interim_msg)
 
-    if n < 3:
+    if reasoning_only and streak >= 3:
+        if agent._try_activate_fallback(reason=FailoverReason.incomplete_response):
+            # The trigger may have consumed the turn budget; without a grace call the loop
+            # exits before the fallback is ever asked.
+            if api_call_count >= agent.max_iterations or agent.iteration_budget.remaining <= 0:
+                agent._budget_grace_call = True
+            agent._codex_incomplete_retries = 0
+            agent._codex_reasoning_only_streak = 0
+            if not agent.quiet_mode:
+                agent._vprint(
+                    f"{agent.log_prefix}↻ Codex reasoning-only stall after {streak} attempts — "
+                    f"switching to fallback {agent.model} ({agent.provider})", diagnostic=True,
+                )
+            agent._emit_diagnostic_wait("↻ model stuck on internal reasoning — switching to fallback provider")
+            agent._session_messages = messages
+            return CODEX_FALLBACK_ACTIVATED
+        # No fallback left: fall through to the terminal sentinel.
+    elif n < 3 or reasoning_only:
+        # A reasoning-only streak below 3 continues even once partials used up the aggregate
+        # cap, so the mixed partial-then-stall variant reaches the ladder above.
         # If the interim has nothing the Responses converter will replay, a bare retry is
         # byte-identical; a replayable interim holding only a ``compaction`` checkpoint
         # ALSO re-sends identically. One bare retry, then always nudge.
@@ -530,8 +643,9 @@ def continue_codex_incomplete(
             # output_tokens IS that ceiling, so seed the escalation from it (else 4096).
             usage = getattr(response, "usage", None)
             observed = getattr(usage, "output_tokens", None) if not isinstance(usage, dict) else usage.get("output_tokens")
-            base = agent.max_tokens or int(observed or 0) or 4096
-            agent._ephemeral_max_output_tokens = min(base * (2 ** n), max(32768, base))
+            agent._ephemeral_max_output_tokens = boosted_output_cap(
+                agent, None, n, base=agent.max_tokens or int(observed or 0) or 4096
+            )
         if not agent.quiet_mode:
             agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({n}/3)", diagnostic=True)
         # Spinner/heartbeat notice: these retries can take minutes and otherwise look
@@ -551,6 +665,7 @@ def continue_codex_incomplete(
         return None
 
     agent._codex_incomplete_retries = 0
+    agent._codex_reasoning_only_streak = 0
     agent._persist_session(messages, conversation_history)
     return partial_result(
         messages, api_call_count, "Codex response remained incomplete after 3 continuation attempts"

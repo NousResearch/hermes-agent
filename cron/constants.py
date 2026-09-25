@@ -11,3 +11,7 @@ FIRE_CLAIM_TTL_SECONDS = 300
 # ``next_run_at`` (the fire scheduler's clock runs ahead of ours). Claims that early still own
 # the slot; only claims further ahead are off-tick manual/dashboard fires.
 FIRE_CLAIM_SKEW_SECONDS = 60
+# Multiplier over HERMES_CRON_TIMEOUT for claim TTLs: the timeout is an *inactivity* limit, not a
+# wall-clock cap, so healthy runs may legitimately exceed it and a TTL of exactly the timeout
+# would expire live claims.
+CLAIM_TTL_INACTIVITY_HEADROOM = 3

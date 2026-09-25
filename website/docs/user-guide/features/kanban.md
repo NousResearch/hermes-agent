@@ -114,7 +114,15 @@ ensure the aggregate cannot turn skipped/failing tests green.
 
 Acceptance requires a same-repository PR, the latest workflow run/attempt for its
 current head and base, every configured check successful, and matching workflow,
-app, check-suite, run, and job identities. It reads each checkout job's GitHub log,
+app, check-suite, run, and job identities. Freshness is not run-ID order: a lower-ID
+run can be rerun later. All matching runs must be completed, with valid UTC
+`run_started_at` and `updated_at` timestamps. The selected attempt must start
+strictly after every other run's last update; missing, tied, overlapping or
+inconsistent chronology fails closed. This intentionally rejects ambiguous
+concurrent attempts rather than assuming a green result supersedes them. The same
+selection is repeated at the final evidence fence.
+
+It reads each checkout job's GitHub log,
 then independently compares the tested commit's Git tree with the current PR head.
 A PR synthetic merge is accepted only when it is the current merge, binds the
 current head/base parents, and has the exact same tree as the head. The workflow

@@ -28,6 +28,7 @@ def evidence(tmp_path, monkeypatch):
            "workflow_id": 12, "path": POLICY["workflow_path"], "check_suite_id": 91,
            "repository": {"full_name": REPO}, "head_repository": {"full_name": REPO},
            "status": "completed", "conclusion": "success",
+           "run_started_at": "2026-09-25T10:00:00Z", "updated_at": "2026-09-25T10:05:00Z",
            "pull_requests": [{"number": 3, "url": f"https://api.github.com/repos/{REPO}/pulls/3",
                               "head": {"sha": HEAD}, "base": {"sha": "e" * 40}}]}
     jobs = [{"id": i, "name": name, "run_id": 42, "run_attempt": 1,
@@ -163,6 +164,46 @@ def test_policy_receipt_and_terminal_state_are_persisted(evidence):
             assert payload["policy_source"] == "explicit_named_checks"
             assert payload["workflow_run_id"] == 42
             assert payload["ok"] is success
+
+
+@pytest.mark.parametrize("scenario", ["failed", "pending", "queued_old_time", "racing", "tie", "overlap", "missing_time", "bad_time", "superseded"])
+def test_attempt_chronology_not_run_identity(evidence, monkeypatch, scenario):
+    other = {**copy.deepcopy(evidence["run"]), "id": 41, "run_attempt": 2,
+             "run_started_at": "2026-09-25T11:00:00Z", "updated_at": "2026-09-25T11:05:00Z",
+             "conclusion": "failure"}
+    if scenario in {"pending", "queued_old_time", "racing"}:
+        other.update(status="queued", conclusion=None)
+    if scenario in {"superseded", "queued_old_time", "overlap"}:
+        other["run_started_at"] = "2026-09-25T09:00:00Z"
+        other["updated_at"] = "2026-09-25T09:05:00Z"
+    if scenario == "overlap":
+        other["updated_at"] = "2026-09-25T10:01:00Z"
+    if scenario == "tie":
+        other["run_started_at"] = evidence["run"]["run_started_at"]
+    if scenario == "missing_time":
+        other.pop("run_started_at")
+    if scenario == "bad_time":
+        other["run_started_at"] = "not a timestamp"
+    original_api = gate._api
+    reads = 0
+
+    def api(endpoint, **kwargs):
+        nonlocal reads
+        if "/workflows/12/runs?" in endpoint:
+            reads += 1
+            runs = [evidence["run"]]
+            if scenario != "racing" or reads > 1:
+                runs.append(other)
+            return [{"total_count": len(runs), "workflow_runs": copy.deepcopy(runs)}]
+        return original_api(endpoint, **kwargs)
+
+    monkeypatch.setattr(gate, "_api", api)
+    result = gate.collect_acceptance(REPO, URL)
+    assert result["ok"] is (scenario == "superseded"), result
+    if scenario == "failed":
+        assert result["classification"] == "failure"
+        assert result["workflow_run_id"] == other["id"]
+        assert result["run_attempt"] == other["run_attempt"]
 
 
 def test_empty_policy_fails_closed(evidence, monkeypatch):

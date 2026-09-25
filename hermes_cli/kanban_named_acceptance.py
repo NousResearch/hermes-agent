@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import subprocess
+from datetime import datetime
 from urllib.parse import quote
 
 _SHA = re.compile(r"[0-9a-f]{40}")
@@ -101,14 +102,33 @@ def collect_named(repo, number, policy, receipt, api):
         runs = _items(api(f"{prefix}/actions/workflows/{policy['workflow_id']}/runs?head_sha={head}&event=pull_request&per_page=100", paginate=True), "workflow_runs")
         if not runs:
             raise ValueError("No workflow run for the current head")
-        # Do not filter successes: a new red/pending attempt supersedes old green.
-        return max(runs, key=lambda r: (r["id"], r["run_attempt"]))
+        # Run IDs order creation, NOT reruns. Require a strictly later attempt
+        # interval; ties/overlaps cannot prove which result supersedes the other.
+        intervals = []
+        for item in runs:
+            if item["status"] != "completed":
+                raise ValueError("Workflow attempt is still pending")
+            times = []
+            for field in ("run_started_at", "updated_at"):
+                value = item[field]
+                if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", value):
+                    raise ValueError("Missing or invalid attempt chronology")
+                times.append(datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ"))
+            start, end = times
+            if end < start:
+                raise ValueError("Inconsistent attempt chronology")
+            intervals.append((start, end, item))
+        selected = max(intervals, key=lambda entry: entry[0])
+        if any(end >= selected[0] for _, end, item in intervals if item is not selected[2]):
+            raise ValueError("Ambiguous workflow attempt chronology")
+        return selected[2]
 
     run = latest()
     run_id, attempt = run["id"], run["run_attempt"]
     if type(run_id) is not int or type(attempt) is not int or run_id <= 0 or attempt <= 0:
         raise ValueError("Invalid run identity")
     receipt.update(workflow_run_id=run_id, run_attempt=attempt,
+                   run_started_at=run["run_started_at"], run_updated_at=run["updated_at"],
                    workflow_run_url=f"https://github.com/{repo}/actions/runs/{run_id}/attempts/{attempt}")
     if (run["head_sha"] != head or run["event"] != "pull_request" or
         run["repository"]["full_name"] != repo or run["head_repository"]["full_name"] != repo or

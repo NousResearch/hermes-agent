@@ -3681,6 +3681,13 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return False
     if not pool or not pool.has_credentials():
         return False
+    if not failed_api_key:
+        logger.warning(
+            "Auxiliary client: cannot attribute %s failure to a %s pool entry; "
+            "skipping rotation instead of exhausting the current credential",
+            type(exc).__name__, normalized,
+        )
+        return False
     status_code = getattr(exc, "status_code", None)
 
     def _rotate(fallback_status: int) -> bool:
@@ -3697,7 +3704,7 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         return True
 
     if _is_auth_error(exc):
-        if pool.try_refresh_current() is not None:
+        if pool.try_refresh_matching(api_key_hint=failed_api_key) is not None:
             _evict_cached_clients(normalized)
             return True
         return _rotate(401)
@@ -3752,23 +3759,43 @@ def _prepare_same_provider_retry(
     return retry_client, retry_kwargs
 
 
+_FAILED_API_KEY_ATTR = "_hermes_failed_api_key"
+
+
+def _attach_failed_api_key(exc: Exception, client: Any) -> None:
+    """Carry the retry request's credential into the ladder's exception handler."""
+    api_key = str(getattr(client, "api_key", "") or "")
+    if api_key:
+        with contextlib.suppress(Exception):
+            setattr(exc, _FAILED_API_KEY_ATTR, api_key)
+
+
 def _retry_same_provider_sync(*, resolved_provider: str, resolved_api_mode: Optional[str], task: Optional[str], **prep) -> Any:
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=False, **prep,
     )
-    return _validate_llm_response(
-        _relay_sync_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task,
-    )
+    try:
+        return _validate_llm_response(
+            _relay_sync_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode), task,
+        )
+    except Exception as exc:
+        _attach_failed_api_key(exc, retry_client)
+        raise
 
 
 async def _retry_same_provider_async(*, resolved_provider: str, resolved_api_mode: Optional[str], task: Optional[str], **prep) -> Any:
     retry_client, retry_kwargs = _prepare_same_provider_retry(
         task=task, resolved_provider=resolved_provider, resolved_api_mode=resolved_api_mode, async_mode=True, **prep,
     )
-    return _validate_llm_response(
-        await _relay_async_completion(retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
-        task,
-    )
+    try:
+        return _validate_llm_response(
+            await _relay_async_completion(
+                retry_client, retry_kwargs, provider=resolved_provider, api_mode=resolved_api_mode),
+            task,
+        )
+    except Exception as exc:
+        _attach_failed_api_key(exc, retry_client)
+        raise
 
 
 def _creds_have_api_key(creds: Dict[str, Any]) -> bool:
@@ -7591,7 +7618,12 @@ def _ladder_credential_rungs(
                 _LadderStep("call", (client, kwargs)), _credential_rung_accepts)
             if recovery_err is None:
                 return resp, None
-        if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+        failed_api_key = str(
+            getattr(recovery_err, _FAILED_API_KEY_ATTR, "") or _client_api_key
+        )
+        if _recover_provider_pool(
+            pool_provider, recovery_err, failed_api_key=failed_api_key,
+        ):
             logger.info("Auxiliary %s%s: recovered %s via credential-pool rotation after %s",
                         task or "call", tag, pool_provider, type(recovery_err).__name__)
             try:
@@ -7602,7 +7634,10 @@ def _ladder_credential_rungs(
                 # then fall through to the provider fallback.
                 if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
                         or _is_rate_limit_error(retry2_err)):
-                    _recover_provider_pool(pool_provider, retry2_err)
+                    _recover_provider_pool(
+                        pool_provider, retry2_err,
+                        failed_api_key=str(getattr(retry2_err, _FAILED_API_KEY_ATTR, "") or ""),
+                    )
                     first_err = retry2_err
                 else:
                     raise

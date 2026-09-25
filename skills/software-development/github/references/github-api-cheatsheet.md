@@ -163,5 +163,7 @@ curl -s -X DELETE \
   https://api.github.com/repos/$GH_OWNER/$GH_REPO/issues/42/labels/bug
 
 # Parse JSON response with python3
-curl -s ... | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['field'])"
+GH_AUTH="Authorization: token $GITHUB_TOKEN"
+GH_USER_JSON=$(curl -s -H "$GH_AUTH" https://api.github.com/user)
+printf '%s' "$GH_USER_JSON" | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['login'])"
 ```

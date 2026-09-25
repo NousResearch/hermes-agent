@@ -27,7 +27,8 @@ if [ "$AUTH" = "gh" ]; then
   GH_USER=$(gh api user --jq '.login')
 else
   GH_AUTH="Authorization: token $GITHUB_TOKEN"
-  GH_USER=$(curl -s -H "$GH_AUTH" https://api.github.com/user | python -c "import sys,json; print(json.load(sys.stdin)['login'])")
+  GH_USER_JSON=$(curl -s -H "$GH_AUTH" https://api.github.com/user)
+  GH_USER=$(printf '%s' "$GH_USER_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin)['login'])")
 fi
 ```
 

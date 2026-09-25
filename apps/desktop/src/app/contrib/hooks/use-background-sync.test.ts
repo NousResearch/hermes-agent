@@ -1199,6 +1199,7 @@ describe('an empty persisted page over a populated runtime', () => {
 
     const hydrated = hydrateStoredSessionTranscript({
       attempts: 2,
+      completedTurnHydrationGuardsRef: { current: new Map() },
       storedSessionId: ACTIVE_STORED_ID,
       runtimeSessionId: ACTIVE_RUNTIME_ID,
       storedProfile: 'default',

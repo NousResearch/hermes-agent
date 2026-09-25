@@ -48,8 +48,10 @@ interface MessageStreamOptions {
   hydrateFromStoredSession: (
     attempts?: number,
     storedSessionId?: string | null,
-    runtimeSessionId?: string | null
+    runtimeSessionId?: string | null,
+    expectedFinalAssistantRowId?: number
   ) => Promise<void>
+  rememberCompletedTurn?: (storedSessionId: string, runtimeSessionId: string, finalAssistantRowId: number) => void
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
@@ -78,6 +80,7 @@ export function useMessageStream({
   activeGatewayProfile = 'default',
   activeSessionIdRef,
   hydrateFromStoredSession,
+  rememberCompletedTurn,
   queryClient,
   refreshHermesConfig,
   refreshSessions,
@@ -930,6 +933,18 @@ export function useMessageStream({
         notifyError(new Error(diskFullSignal), translateNow('notifications.errors.diskFull'))
       }
 
+      const finalAssistantRowId =
+        persistedTurn?.complete === true &&
+        typeof persistedTurn.final_assistant_row_id === 'number' &&
+        Number.isSafeInteger(persistedTurn.final_assistant_row_id) &&
+        persistedTurn.final_assistant_row_id > 0
+          ? persistedTurn.final_assistant_row_id
+          : undefined
+
+      if (completedState.storedSessionId && finalAssistantRowId !== undefined) {
+        rememberCompletedTurn?.(completedState.storedSessionId, sessionId, finalAssistantRowId)
+      }
+
       scheduleSessionsRefresh()
 
       if (completedState.storedSessionId) {
@@ -944,7 +959,11 @@ export function useMessageStream({
       }
 
       if (shouldHydrate) {
-        void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
+        if (finalAssistantRowId !== undefined) {
+          void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId, finalAssistantRowId)
+        } else {
+          void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
+        }
       }
 
       dispatchNativeNotification({
@@ -954,7 +973,7 @@ export function useMessageStream({
         title: translateNow('notifications.native.turnDoneTitle')
       })
     },
-    [hydrateFromStoredSession, scheduleSessionsRefresh, updateSessionState]
+    [hydrateFromStoredSession, rememberCompletedTurn, scheduleSessionsRefresh, updateSessionState]
   )
 
   const failAssistantMessage = useCallback(

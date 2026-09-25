@@ -2,6 +2,11 @@ import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import {
+  type CompletedTurnHydrationGuards,
+  registerCompletedTurnHydrationGuard,
+  storedTranscriptCanReplaceCompletedTurn
+} from '@/app/session/completed-turn-hydration-guard'
 import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { getLatestSessionMessages, type ProfileScope } from '@/hermes'
 import { type ChatMessage, preserveLocalAssistantErrors, sealOpenToolParts, toChatMessages } from '@/lib/chat-messages'
@@ -88,6 +93,7 @@ export function resolveActiveTranscriptSession(
 export interface ActiveTranscriptRefreshDeps {
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
+  completedTurnHydrationGuardsRef?: MutableRefObject<CompletedTurnHydrationGuards>
   requestSequenceRef: MutableRefObject<number>
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   resolveSession: (storedSessionId: string, runtimeSessionId: string) => ActiveTranscriptSession | null | undefined
@@ -168,11 +174,13 @@ function tileTranscriptSignatureKey(tile: TileTranscriptTarget): string {
  * tick re-reads from storage anyway.
  */
 export async function reconcileTileTranscripts({
+  completedTurnHydrationGuardsRef,
   requestSequenceRef,
   signatureRef,
   updateSessionState,
   tiles: tilesOverride
 }: {
+  completedTurnHydrationGuardsRef?: MutableRefObject<CompletedTurnHydrationGuards>
   requestSequenceRef: MutableRefObject<number>
   signatureRef: MutableRefObject<Map<string, string>>
   tiles?: TileTranscriptTarget[]
@@ -272,6 +280,18 @@ export async function reconcileTileTranscripts({
         continue
       }
 
+      if (
+        completedTurnHydrationGuardsRef &&
+        !storedTranscriptCanReplaceCompletedTurn(
+          latest.messages,
+          completedTurnHydrationGuardsRef.current,
+          storedSessionId,
+          runtimeSessionId
+        )
+      ) {
+        continue
+      }
+
       const signature = sessionMessagesSignature(latest.messages)
 
       if (signatureRef.current.get(signatureKey) === signature) {
@@ -305,17 +325,30 @@ export async function reconcileTileTranscripts({
 /** Best-effort post-turn fallback when the live stream did not carry an answer. */
 export async function hydrateStoredSessionTranscript({
   attempts,
+  completedTurnHydrationGuardsRef,
+  expectedFinalAssistantRowId,
   storedSessionId,
   runtimeSessionId,
   storedProfile,
   updateSessionState
 }: {
   attempts: number
+  completedTurnHydrationGuardsRef: MutableRefObject<CompletedTurnHydrationGuards>
+  expectedFinalAssistantRowId?: number
   storedSessionId: string
   runtimeSessionId: string
   storedProfile: ProfileScope
   updateSessionState: ActiveTranscriptRefreshDeps['updateSessionState']
 }): Promise<void> {
+  if (expectedFinalAssistantRowId !== undefined) {
+    registerCompletedTurnHydrationGuard(
+      completedTurnHydrationGuardsRef.current,
+      storedSessionId,
+      runtimeSessionId,
+      expectedFinalAssistantRowId
+    )
+  }
+
   const replay = pendingSessionReplay(runtimeSessionId)
 
   if (replay && !(await replay)) {
@@ -357,6 +390,23 @@ export async function hydrateStoredSessionTranscript({
         continue
       }
 
+      // message.complete can arrive before the same committed row is visible
+      // through the transcript reader. Publishing that older non-empty page
+      // would erase the completed reply the gateway just rendered (#79050).
+      // The terminal persistence receipt is authoritative identity; wait until
+      // the page contains its exact final row instead of comparing prose.
+      if (
+        !storedTranscriptCanReplaceCompletedTurn(
+          latest.messages,
+          completedTurnHydrationGuardsRef.current,
+          storedSessionId,
+          runtimeSessionId,
+          expectedFinalAssistantRowId
+        )
+      ) {
+        continue
+      }
+
       const messages = toChatMessages(latest.messages)
       updateSessionState(
         runtimeSessionId,
@@ -389,6 +439,7 @@ export async function hydrateStoredSessionTranscript({
 export async function reconcileActiveTranscript({
   activeSessionIdRef,
   busyRef,
+  completedTurnHydrationGuardsRef,
   requestSequenceRef,
   resolveSession,
   selectedStoredSessionIdRef,
@@ -468,6 +519,18 @@ export async function reconcileActiveTranscript({
     // branch. Bail before the signature write so the next usable page is not
     // deduped away.
     if (emptyPageOverPopulatedTranscript(latest.messages, current, storedSessionId)) {
+      return
+    }
+
+    if (
+      completedTurnHydrationGuardsRef &&
+      !storedTranscriptCanReplaceCompletedTurn(
+        latest.messages,
+        completedTurnHydrationGuardsRef.current,
+        storedSessionId,
+        runtimeSessionId
+      )
+    ) {
       return
     }
 
@@ -740,6 +803,7 @@ interface BackgroundSyncParams {
   activeIsMessaging: boolean
   activeSessionId: null | string
   activeStoredSessionId: null | string
+  completedTurnHydrationGuardsRef?: MutableRefObject<CompletedTurnHydrationGuards>
   freshDraftReady: boolean
   gatewayState: string
   refreshActiveTranscript: () => Promise<unknown> | unknown
@@ -813,6 +877,7 @@ export function useBackgroundSync({
   activeIsMessaging,
   activeSessionId,
   activeStoredSessionId,
+  completedTurnHydrationGuardsRef,
   freshDraftReady,
   gatewayState,
   refreshActiveTranscript,
@@ -1087,6 +1152,7 @@ export function useBackgroundSync({
       // (#93942 scenario A). Signature-gated per tile, so no-change ticks
       // cost nothing.
       void reconcileTileTranscripts({
+        completedTurnHydrationGuardsRef,
         requestSequenceRef: tileRequestSequenceRef,
         signatureRef: tileSignatureRef,
         updateSessionState
@@ -1149,6 +1215,7 @@ export function useBackgroundSync({
     }
   }, [
     changeEventsAvailable,
+    completedTurnHydrationGuardsRef,
     gatewayState,
     refreshMessagingSessions,
     refreshSessions,

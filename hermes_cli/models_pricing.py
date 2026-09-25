@@ -407,6 +407,11 @@ def _fetch_novita_pricing_for_provider(*, force_refresh: bool = False) -> dict[s
     return _fetch_novita_pricing(force_refresh=force_refresh)
 
 
+def _fetch_ionet_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
+    _remember_provider_cache_key("io-net", _ionet_pricing_scope())
+    return _fetch_ionet_pricing(force_refresh=force_refresh)
+
+
 def _fetch_fireworks_pricing_for_provider(*, force_refresh: bool = False) -> dict[str, dict[str, Any]]:
     _remember_provider_cache_key("fireworks", _FIREWORKS_PRICING_KEY)
     return _fireworks_pricing_from_models_dev(force_refresh=force_refresh)
@@ -433,6 +438,10 @@ def _novita_pricing_scope() -> str:
     return (os.getenv("NOVITA_BASE_URL", "").strip() or "https://api.novita.ai/openai/v1").rstrip("/")
 
 
+def _ionet_pricing_scope() -> str:
+    return (os.getenv("IONET_BASE_URL", "").strip() or "https://api.intelligence.io.solutions/api/v1").rstrip("/")
+
+
 def get_cached_nous_inference_base_url() -> str:
     """The profile's persisted Nous endpoint (bare origin, no ``/v1``) without refreshing auth."""
     try:
@@ -452,6 +461,7 @@ _STATIC_PRICING_SCOPES = {
     "openrouter": lambda: _OPENROUTER_PRICING_BASE,
     "ai-gateway": _ai_gateway_pricing_scope,
     "novita": _novita_pricing_scope,
+    "io-net": _ionet_pricing_scope,
     "fireworks": lambda: _FIREWORKS_PRICING_KEY,
 }
 
@@ -501,7 +511,7 @@ def get_pricing_for_provider(
     provider: str, *, force_refresh: bool = False, cached_only: bool = False
 ) -> dict[str, dict[str, str]]:
     """Return live pricing for providers that support it (openrouter, nous, ai-gateway, novita,
-    deepinfra, fireworks); ``{}`` for everything else. ``cached_only`` never starts provider I/O:
+    io-net, deepinfra, fireworks); ``{}`` for everything else. ``cached_only`` never starts provider I/O:
     normal picker opens use it so cold endpoints cannot hold the response path, while a background
     prewarm fills the same caches for later opens."""
     from hermes_cli.models import normalize_provider
@@ -575,6 +585,42 @@ def _fetch_novita_pricing(timeout: float = 8.0, *, force_refresh: bool = False) 
     return _cache_catalog(cache_key, result)
 
 
+def _fetch_ionet_pricing(timeout: float = 8.0, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
+    """IO Intelligence (io.net) /models pricing (per-token dollar floats → per-token strings),
+    cached on the resolved base URL so menu renders don't re-hit the network."""
+    from hermes_cli.models import _HERMES_USER_AGENT
+    api_key = (os.getenv("IONET_API_KEY", "").strip() or os.getenv("IOINTELLIGENCE_API_KEY", "").strip())
+    if not api_key:
+        return {}
+
+    cache_key = _ionet_pricing_scope()
+    if not force_refresh:
+        cached = _cached_catalog(cache_key)
+        if cached is not None:
+            return cached
+
+    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json", "User-Agent": _HERMES_USER_AGENT}
+    payload = _get_json(cache_key + "/models", headers, timeout)
+    if payload is None:
+        return _cache_catalog(cache_key, {})
+
+    result: dict[str, dict[str, str]] = {}
+    for item in _catalog_items(payload):
+        mid = item.get("id")
+        inp, out = item.get("input_token_price"), item.get("output_token_price")
+        if not mid or (inp is None and out is None):
+            continue
+        entry = {
+            ours: str(float(item[theirs]))
+            for theirs, ours in (("input_token_price", "prompt"), ("output_token_price", "completion"),
+                                 ("cache_read_token_price", "input_cache_read"))
+            if item.get(theirs) is not None
+        }
+        result[str(mid)] = entry
+
+    return _cache_catalog(cache_key, result)
+
+
 def _fetch_deepinfra_pricing(timeout: float = 5.0, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
     """DeepInfra chat-model pricing: ``input_tokens`` / ``output_tokens`` / ``cache_read_tokens`` in
     $/MTok → per-token ``prompt`` / ``completion`` / ``input_cache_read`` (cached by the by-tag
@@ -601,6 +647,7 @@ _PRICING_FETCHERS = {
     "openrouter": _fetch_openrouter_pricing,
     "ai-gateway": _fetch_ai_gateway_pricing_for_provider,
     "novita": _fetch_novita_pricing_for_provider,
+    "io-net": _fetch_ionet_pricing_for_provider,
     "deepinfra": _fetch_deepinfra_pricing,
     "fireworks": _fetch_fireworks_pricing_for_provider,
     "nous": _fetch_nous_pricing_for_provider,

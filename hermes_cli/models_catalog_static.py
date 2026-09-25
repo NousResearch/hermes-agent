@@ -293,6 +293,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "moonshotai/kimi-k2.5", "minimax/minimax-m2.7", "zai-org/glm-5", "deepseek/deepseek-v3-0324",
         "deepseek/deepseek-r1-0528", "qwen/qwen3-235b-a22b-fp8",
     ],
+    # Offline fallback for the `hermes model` setup flow when the live /models probe is
+    # unreachable; mirrors the io-net profile's fallback_models (kept in sync by test).
+    "io-net": [
+        "deepseek-ai/DeepSeek-V4.1-Flash", "zai-org/GLM-5.3", "moonshotai/Kimi-K2.7-Code",
+        "Qwen/Qwen3-Next-80B-A3B-Instruct", "deepseek-ai/DeepSeek-R1-0528", "meta-llama/Llama-3.3-70B-Instruct",
+    ],
     # Bare ids derived from the picker snapshot so both stay in sync.
     "ai-gateway": [mid for mid, _ in VERCEL_AI_GATEWAY_MODELS],
 }
@@ -490,7 +496,8 @@ _PROVIDER_ALIASES = dict((
     ("kilo-gateway", "kilocode"), ("dashscope", "alibaba"), ("aliyun", "alibaba"), ("qwen", "alibaba"),
     ("alibaba-cloud", "alibaba"), ("qwen-portal", "qwen-oauth"), ("hf", "huggingface"),
     ("hugging-face", "huggingface"), ("huggingface-hub", "huggingface"), ("novita-ai", "novita"),
-    ("novitaai", "novita"), ("mimo", "xiaomi"), ("xiaomi-mimo", "xiaomi"), ("tencent", "tencent-tokenhub"),
+    ("novitaai", "novita"), ("ionet", "io-net"), ("io-intelligence", "io-net"), ("io_net", "io-net"),
+    ("mimo", "xiaomi"), ("xiaomi-mimo", "xiaomi"), ("tencent", "tencent-tokenhub"),
     ("tokenhub", "tencent-tokenhub"), ("tencent-cloud", "tencent-tokenhub"), ("tencentmaas", "tencent-tokenhub"),
     ("tokenplan", "tencent-tokenplan"), ("tencent-lkeap", "tencent-tokenplan"), ("aws", "bedrock"),
     ("aws-bedrock", "bedrock"), ("amazon-bedrock", "bedrock"), ("amazon", "bedrock"), ("grok", "xai"),

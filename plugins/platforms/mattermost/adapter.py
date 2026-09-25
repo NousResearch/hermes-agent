@@ -717,6 +717,11 @@ _is_connected = _env_is_connected("MATTERMOST_TOKEN", "MATTERMOST_URL")
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
+    from .session_binding_runtime import MattermostSessionBindingRuntime
+
+    binding_runtime = MattermostSessionBindingRuntime()
+    ctx.register_platform_handler("mattermost", binding_runtime.wire_mattermost)
+    ctx.register_platform_handler("api_server", binding_runtime.wire_api_server)
     ctx.register_platform(
         name="mattermost", label="Mattermost", adapter_factory=MattermostAdapter,
         check_fn=check_mattermost_requirements, validate_config=validate_mattermost_config,

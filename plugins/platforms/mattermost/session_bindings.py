@@ -190,6 +190,21 @@ class MattermostSessionBindingStore:
         finally:
             conn.close()
 
+    def list_bindings(self, *, limit: int = 100, offset: int = 0) -> list[SessionBinding]:
+        """Return bindings ordered by most recently replaced first."""
+        safe_limit = max(0, min(int(limit), 200))
+        safe_offset = max(0, int(offset))
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT session_id, channel_id, root_post_id, created_at, updated_at "
+                "FROM session_bindings ORDER BY updated_at DESC, session_id ASC LIMIT ? OFFSET ?",
+                (safe_limit, safe_offset),
+            ).fetchall()
+            return [binding for row in rows if (binding := self._from_row(row)) is not None]
+        finally:
+            conn.close()
+
     def delete(self, session_id: Any) -> bool:
         session = normalize_session_id(session_id)
         with transaction(self._connect(), immediate=True) as conn:

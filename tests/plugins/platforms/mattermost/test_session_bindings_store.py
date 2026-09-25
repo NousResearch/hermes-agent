@@ -46,6 +46,18 @@ def test_create_read_resolve_and_delete(tmp_path):
     assert store.get_by_session("session-1") is None
 
 
+def test_list_bindings_is_recent_first_and_paginated(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    times = iter((10.0, 20.0, 30.0))
+    monkeypatch.setattr("plugins.platforms.mattermost.session_bindings.time.time", lambda: next(times))
+    store.replace("session-a", "channel1", "root1")
+    store.replace("session-b", "channel2", "root2")
+    store.replace("session-c", "channel3", "root3")
+
+    assert [item.session_id for item in store.list_bindings(limit=2)] == ["session-c", "session-b"]
+    assert [item.session_id for item in store.list_bindings(limit=2, offset=2)] == ["session-a"]
+
+
 def test_replace_enforces_both_unique_relationships(tmp_path):
     store = _store(tmp_path)
     store.replace("session-a", "channel1", "root1")

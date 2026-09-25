@@ -443,6 +443,16 @@ def _ensure_windows_gateway_venv_imports() -> None:
             continue
         seen.add(venv_key)
 
+        # Only the running interpreter's own environment may be injected: prepending a leftover
+        # pre-PM in-tree venv (3.11) in front of a store python (3.14) puts a cp311 pydantic_core
+        # first on sys.path and restart-loops the gateway on the first extension import (#122324).
+        try:
+            running_env = Path(sys.prefix).resolve()
+        except OSError:
+            running_env = Path(sys.prefix)
+        if str(running_env).lower() != venv_key:
+            continue
+
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():
             continue

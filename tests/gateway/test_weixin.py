@@ -108,6 +108,67 @@ class TestWeixinChunking:
         assert chunks == ["第一行", "第二行", "第三行"]
 
 
+class TestWeixinEmojiDecoratedMarkers:
+    """Status-emoji-decorated marker headers (🟠【…】) must keep the short-chat guard.
+
+    The marker check inspects the first character of a line, so an emoji prefix used to
+    slip past it: an alert card whose header line starts with a status emoji was bubble-split
+    (one bubble per line) while the identical card without the emoji stayed a single message.
+    """
+
+    def test_emoji_decorated_marker_header_stays_single_bubble(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message(
+            "contrib-watch alert\n"
+            "\n"
+            "🟠【contrib 告警】09-25\n"
+            "本批 1 条事件经判断均无需即时推送。\n"
+            "（明细 1/1：own-PR #122462 红队核销收尾，三动作已批已入账；无需动作）"
+        )
+        chunks = adapter._split_text(content)
+
+        assert len(chunks) == 1
+
+    def test_same_card_without_emoji_also_stays_single_bubble(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message(
+            "contrib-watch alert\n"
+            "\n"
+            "【contrib 告警】09-25\n"
+            "本批 1 条事件经判断均无需即时推送。\n"
+            "（明细 1/1：own-PR #122462 红队核销收尾，三动作已批已入账；无需动作）"
+        )
+        chunks = adapter._split_text(content)
+
+        assert len(chunks) == 1
+
+    def test_decorated_genuine_chat_still_splits(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message("🟠 hey are you there\n🟠 just checking in")
+        chunks = adapter._split_text(content)
+
+        assert chunks == ["🟠 hey are you there", "🟠 just checking in"]
+
+    def test_decorated_cjk_chat_without_marker_still_splits(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message("🟠 今天天气怎么样\n🟠 出门记得带伞")
+        chunks = adapter._split_text(content)
+
+        assert chunks == ["🟠 今天天气怎么样", "🟠 出门记得带伞"]
+
+    def test_bare_list_lines_are_untouched(self):
+        adapter = _make_adapter()
+
+        content = adapter.format_message("观察到两点：\n- 留存下降 3%\n- 转化上涨 8%")
+        chunks = adapter._split_text(content)
+
+        assert chunks == ["观察到两点：\n- 留存下降 3%\n- 转化上涨 8%"]
+
+
 class TestWeixinConfig:
 
     def test_get_connected_platforms_includes_weixin_with_token(self):

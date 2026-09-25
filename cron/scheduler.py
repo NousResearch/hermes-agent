@@ -2466,11 +2466,73 @@ class _FireAudit:
 
 
 
+def _build_run_stats_section(
+    elapsed_seconds: float,
+    tokens: dict[str, int],
+    blocked_calls: Optional[dict[str, int]] = None,
+) -> str:
+    """Build a compact ``### Run Statistics`` line for cron output docs.
+
+    Collapses redundant fields (input≈prompt, output≈completion) and omits
+    zero-valued cache-write.  Cache-read and reasoning tokens appear inline
+    as parenthetical annotations with their percentage of total in/out.
+    """
+    _in = tokens.get("input_tokens", 0)
+    _out = tokens.get("output_tokens", 0)
+    _cache_read = tokens.get("cache_read_tokens", 0)
+    _reasoning = tokens.get("reasoning_tokens", 0)
+
+    _in_total = _in + _cache_read
+    _out_total = _out + _reasoning
+    _total = _in_total + _out_total
+
+    if _cache_read and _in_total:
+        _cache_pct = 100 * _cache_read / _in_total
+        _cache_str = f" ({_human_tok(_cache_read)}={_cache_pct:.0f}% cache)"
+    elif _cache_read:
+        _cache_str = f" ({_human_tok(_cache_read)} cache)"
+    else:
+        _cache_str = ""
+    if _reasoning and _out_total:
+        _reason_pct = 100 * _reasoning / _out_total
+        _reason_str = f" ({_human_tok(_reasoning)}={_reason_pct:.0f}% think)"
+    elif _reasoning:
+        _reason_str = f" ({_human_tok(_reasoning)} think)"
+    else:
+        _reason_str = ""
+
+    _blocked_parts = []
+    if blocked_calls:
+        _blocked_parts = [f"{count} {name}" for name, count in sorted(blocked_calls.items())]
+    _blocked_str = f" — blocked: {', '.join(_blocked_parts)}" if _blocked_parts else ""
+
+    return (
+        f"### Run Statistics\n"
+        f"{elapsed_seconds:.1f}s · {_human_tok(_total)} tok = "
+        f"in:{_human_tok(_in_total)}{_cache_str}, "
+        f"out:{_human_tok(_out_total)}{_reason_str}"
+        f"{_blocked_str}\n"
+    )
+
+
+def _human_tok(n: int) -> str:
+    """Format a token count for compact display: 0 → '0', 500 → '500', 15044 → '15k'."""
+    if n >= 1_000_000:
+        s = f"{n / 1_000_000:.1f}M"
+        return s.replace(".0M", "M")
+    if n >= 1_000:
+        s = f"{n / 1_000:.1f}k"
+        return s.replace(".0k", "k")
+    return str(n)
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None, extra_prompt: Optional[str] = None,
     cancel_event: Optional[_CancelEventLike] = None, execution_id: Optional[str] = None,
-) -> tuple[bool, str, str, Optional[str]]:
-    """Execute a single cron job. Returns (success, full_output_doc, final_response, error).
+) -> tuple[bool, str, str, Optional[str], Optional[dict]]:
+    """Execute a single cron job. Returns (success, full_output_doc, final_response, error, run_metadata).
+    ``run_metadata`` is the 5th element: a dict of run statistics (``duration_seconds`` + ``tokens``)
+    for agent runs, or None for script-only / short-circuit paths.
     ``defer_agent_teardown``: if a list, the live agent is appended instead of torn down; the caller
     MUST call ``_teardown_cron_agent(agent)`` AFTER delivery (a torn-down async client can't
     deliver). ``extra_prompt``: per-fire context, never persisted.
@@ -2490,7 +2552,7 @@ def run_job(
 
     early, prompt = _prepare_job_prompt(job, job_id, job_name, extra_prompt, cancel_event)
     if early is not None:
-        return early
+        return (*early, None)
     from run_agent import AIAgent
 
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
@@ -2502,6 +2564,7 @@ def run_job(
     _session_db = None
     _audit: Optional[_FireAudit] = None
     _worker_state: dict = {}
+    _job_start: Optional[float] = None  # set before the agent run; drives run-statistics timing
     scope = _CronRunScope(job, job_id, execution_id)
     try:
         scope.enter()
@@ -2514,7 +2577,7 @@ def run_job(
         model = jc.model
         setup = _resolve_cron_agent_setup(job, job_id, job_name, jc)
         if setup.blocked is not None:
-            return setup.blocked
+            return (*setup.blocked, None)
         model = setup.model
 
         # Open state.db only after every early-return gate has passed.
@@ -2524,6 +2587,7 @@ def run_job(
             session_db=_session_db)
         _audit = _FireAudit(job, job_id, model)
 
+        _job_start = time.time()
         result = _run_agent_with_watchdog(
             agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
             worker_state=_worker_state)
@@ -2535,10 +2599,58 @@ def run_job(
             final_response = f"{setup.fallback_notice}\n\n{final_response}"
         # Keep final_response clean for delivery logic (empty = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        output = _run_doc_header(job, job_name, job_id, prompt) + f"## Response\n\n{logged_response}\n"
+
+        # ── Collect run-time metrics: wall-clock duration and token usage ──
+        _job_elapsed = round(time.time() - _job_start, 1) if _job_start is not None else 0.0
+        _token_keys = (
+            "input_tokens", "output_tokens", "total_tokens",
+            "prompt_tokens", "completion_tokens",
+            "cache_read_tokens", "cache_write_tokens", "reasoning_tokens",
+        )
+        _job_tokens: dict[str, int] = {}
+        for _key in _token_keys:
+            _val = result.get(_key, 0)
+            _job_tokens[_key] = int(_val) if _val else 0
+        _blocked_calls = result.get("blocked_calls") or {}
+        # NOTE on subagent tokens: ``result`` token keys above come from the
+        # parent agent's session accumulators (see turn_finalizer.finalize_turn),
+        # which ALREADY include delegate_task child spend. Child tokens are
+        # folded into the parent's session_* counters at child completion time
+        # in tools/delegate_tool_results._finalize_child_results (same mechanism
+        # as the child cost rollup), covering every delegate path — sync, batch,
+        # background, async-pool fallback, lifecycle.
+        #
+        # We deliberately do NOT re-parse delegate results out of
+        # result["messages"] anymore. That approach silently dropped children:
+        # context compression rewrites old tool messages in place (summarizing
+        # non-tail tool results above min_prune_chars), so the large delegate
+        # result JSON often no longer parsed and only the surviving tail of the
+        # session's delegates got counted — ~33% of true subagent spend on
+        # delegate-heavy runs. Folding at completion is robust to compression
+        # because it touches the counters, not the message history. (See
+        # t_28ff025e.)
+
+        _stats_section = _build_run_stats_section(_job_elapsed, _job_tokens, _blocked_calls)
+        # Insert the stats block between the doc header fields and the prompt
+        # section (_run_doc_header always emits exactly one "\n\n## Prompt").
+        _output_head = _run_doc_header(job, job_name, job_id, prompt).replace(
+            "\n\n## Prompt", f"\n\n{_stats_section}## Prompt", 1)
+        output = _output_head + f"## Response\n\n{logged_response}\n"
+        # Compose statistics into the delivery payload. A silence marker ([SILENT] & co) keeps its
+        # whole-response contract: nothing is delivered for it, so the stats line would only
+        # dilute the sentinel upstream's filter matches on.
+        if final_response.strip() and not _is_cron_silence_response(final_response):
+            final_response = f"{final_response}\n\n{_stats_section}"
+
         logger.info("Job '%s' completed successfully", job_name)
         _audit.write(dict(result, response_silent=_is_cron_silence_response(final_response or "")), None)
-        return True, output, final_response, None
+        _success_metadata: dict = {
+            "duration_seconds": _job_elapsed,
+            "tokens": _job_tokens,
+        }
+        if _blocked_calls:
+            _success_metadata["blocked_calls"] = _blocked_calls
+        return True, output, final_response, None, _success_metadata
 
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
@@ -2561,12 +2673,28 @@ def run_job(
         # No audit row when we failed before the agent existed; the audit write must never raise.
         if _audit is not None:
             _audit.write({}, error_msg)
-        from cron.scheduler_diagnostics import format_run_error
-        output = (
-            _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
-            + format_run_error(e)
+        # ── Collect run stats for failure output (best-effort) ──
+        _fail_elapsed: Optional[float] = None
+        _fail_tokens: dict[str, int] = {}
+        if _job_start is not None:
+            _fail_elapsed = round(time.time() - _job_start, 1)
+            if agent is not None:
+                for _field in ("session_total_tokens", "session_input_tokens", "session_output_tokens"):
+                    _val = getattr(agent, _field, 0)
+                    _fail_tokens[_field.replace("session_", "")] = int(_val) if _val else 0
+        _fail_blocked = getattr(agent, "session_blocked_calls", None) or {}
+        _fail_stats = (
+            _build_run_stats_section(_fail_elapsed, _fail_tokens, _fail_blocked)
+            if _fail_elapsed is not None
+            else ""
         )
-        return False, output, "", error_msg
+        from cron.scheduler_diagnostics import format_run_error
+        _fail_header = _run_doc_header(job, f"{job_name} (FAILED)", job_id, prompt)
+        if _fail_stats:
+            _fail_header = _fail_header.replace(
+                "\n\n## Prompt", f"\n\n{_fail_stats}## Prompt", 1)
+        output = _fail_header + format_run_error(e)
+        return False, output, "", error_msg, None
 
     finally:
         from cron.scheduler_detached_worker import defer_teardown_to_running_worker
@@ -2938,6 +3066,7 @@ class _RunDelivery:
     incident_acked: bool = False
     failure_incident_id: Optional[str] = None
     side_effect_ownership_lost: bool = False
+    run_metadata: Optional[dict] = None
 
 
 def _save_compose_deliver(
@@ -3050,7 +3179,7 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
         from cron.jobs import update_job
         update_job(job["id"], {"last_delivery_queued": None})
         job["last_delivery_queued"] = None
-    mark_kwargs: dict = {"delivery_error": d.delivery_error}
+    mark_kwargs: dict = {"delivery_error": d.delivery_error, "run_metadata": d.run_metadata}
     if not d.success and job.pop("_model_unreachable", False):
         # Never-reached-the-model failure: schedule the Cowork-style bounded re-run
         # (cron/unreachable_retry.py) inside the same fenced store write.
@@ -3226,7 +3355,7 @@ def _run_one_job_body(
         if fence.cancel_event is not None:
             _run_kwargs["cancel_event"] = fence.cancel_event
         try:
-            success, output, final_response, error = run_job(job, **_run_kwargs)
+            success, output, final_response, error, run_metadata = run_job(job, **_run_kwargs)
         except BaseException:
             # run_job hands back the agent even when raising; tear down so a failed run never leaks.
             # BaseException so KeyboardInterrupt/SystemExit mid-run still trigger teardown.
@@ -3249,7 +3378,8 @@ def _run_one_job_body(
 
         # Agent is still live through delivery; wrap ALL of save/compose/deliver in try/finally so a
         # raise anywhere still tears the deferred agent down.
-        d = _RunDelivery(job=job, success=success, error=error, agent_declared=agent_declared)
+        d = _RunDelivery(job=job, success=success, error=error,
+                         agent_declared=agent_declared, run_metadata=run_metadata)
         try:
             _save_compose_deliver(
                 d, fence, final_response, output, adapters=adapters, loop=loop, verbose=verbose,

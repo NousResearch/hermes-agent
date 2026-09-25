@@ -348,7 +348,7 @@ def test_run_one_job_records_running_then_terminal(monkeypatch):
 
     def fake_run_job(job, *, defer_agent_teardown=None, execution_id=None, **_kw):
         run_execution_ids.append(execution_id)
-        return True, "output", "response", None
+        return True, "output", "response", None, None
 
     monkeypatch.setattr(scheduler, "run_job", fake_run_job)
     monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: None)

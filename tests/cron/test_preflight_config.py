@@ -102,7 +102,7 @@ def _run_job_patched(job, tmp_path, *, resolve=None, skill_view=None):
         with ExitStack() as stack:
             for p in patches:
                 stack.enter_context(p)
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, _ = run_job(job)
         agent_constructed = mock_agent_cls.called
     return success, output, final_response, error, agent_constructed
 
@@ -230,7 +230,7 @@ class TestHealthyJobUnaffected:
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")  # stats footer appended by run-stats patch
         assert agent_constructed is True
 
     def test_recovery_clears_alert_marker(self, tmp_path):

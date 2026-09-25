@@ -33,7 +33,7 @@ def _run(tmp_path, *, response: str, primary_fails: bool):
          patch("hermes_cli.runtime_provider.resolve_runtime_provider", side_effect=_resolve), \
          patch("run_agent.AIAgent") as agent_cls:
         agent_cls.return_value.run_conversation.return_value = {"final_response": response}
-        success, _output, final, error = run_job(dict(_JOB))
+        success, _output, final, error, _ = run_job(dict(_JOB))
     return success, final, error, agent_cls.call_args.kwargs
 
 
@@ -44,12 +44,12 @@ def test_fallback_run_prepends_the_switch_notice_to_the_delivered_report(tmp_pat
     assert "_fallback_notice" not in agent_kwargs
     first, _, rest = final.partition("\n\n")
     assert "openai-codex/gpt-5.6-sol" in first and "anthropic/claude-sonnet-5" in first
-    assert rest == "Morning brief: all green."
+    assert rest.startswith("Morning brief: all green.")  # run-stats footer appended
 
 
 def test_primary_run_and_silent_fallback_run_are_untouched(tmp_path):
     _s, final, _e, _k = _run(tmp_path, response="Morning brief: all green.", primary_fails=False)
-    assert final == "Morning brief: all green."
+    assert final.startswith("Morning brief: all green.")  # run-stats footer appended
     # [SILENT] keeps its whole-response contract so the delivery stays suppressed.
     _s, final, _e, _k = _run(tmp_path, response="[SILENT]", primary_fails=True)
     assert final == "[SILENT]"

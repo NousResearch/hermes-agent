@@ -101,13 +101,13 @@ def run_env(monkeypatch, tmp_path):
 
 def _failing_run_job(error="provider exploded"):
     def _fake(job, **_kw):
-        return (False, "raw output", "", error)
+        return (False, "raw output", "", error, None)
     return _fake
 
 
 def _succeeding_run_job(final="all good, here is the brief"):
     def _fake(job, **_kw):
-        return (True, "raw output", final, None)
+        return (True, "raw output", final, None, None)
     return _fake
 
 

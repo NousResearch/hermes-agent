@@ -55,6 +55,29 @@ def test_tooling_only_plugin_preserves_manifest_dependencies(tmp_path, alias):
     assert project.read_text(encoding="utf-8") == text
 
 
+@pytest.mark.parametrize("with_dependencies", [False, True])
+def test_enabled_selection_preserves_tooling_plugin_configuration(tmp_path, monkeypatch, with_dependencies):
+    from pm.workspace import enabled_member_dirs
+
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    plugin = home / "plugins" / "tooling"
+    plugin.mkdir(parents=True)
+    project = plugin / "pyproject.toml"
+    project.write_text("[tool.ruff]\n", encoding="utf-8")
+    manifest = "name: tooling\n"
+    if with_dependencies:
+        manifest += "python_dependencies: [fixturedep>=1]\n"
+    (plugin / "plugin.yaml").write_text(manifest, encoding="utf-8")
+    config = home / "config.yaml"
+    original = "plugins:\n  enabled: [tooling]\n"
+    config.write_text(original, encoding="utf-8")
+    assert enabled_member_dirs() == ([plugin] if with_dependencies else [])
+    assert config.read_text(encoding="utf-8") == original
+    assert project.read_text(encoding="utf-8") == "[tool.ruff]\n"
+
+
 def _lock_offline(root: Path):
     uv = shutil.which("uv")
     assert uv is not None, "real offline resolver required"

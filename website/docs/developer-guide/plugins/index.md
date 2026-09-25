@@ -313,6 +313,16 @@ this Hermes understands still loads with a warning.
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
 
+A plugin's `pyproject.toml` owns packaging when it declares `[project]` or
+`[build-system]`; a tooling-only file (for example, `[tool.ruff]`) does not
+replace `python_dependencies` / `pip_dependencies` in the manifest. Without
+manifest dependencies, that tooling-only plugin adds no Python workspace member.
+For a shared-runtime member, `project.requires-python` must include the Python
+version running the Hermes environment: both an overly high floor and a
+restrictive upper bound can prevent resolution. Do not copy the Python floor
+from a separate sidecar's lockfile. If the plugin genuinely owns a different
+interpreter, use `python_runtime: external` and manage that runtime separately.
+
 ```yaml
 # plugin.yaml — manifest v2 example
 name: my-plugin

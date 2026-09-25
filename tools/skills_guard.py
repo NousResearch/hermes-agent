@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import List, Tuple
 
 
-SCANNER_VERSION = "skills-guard-v5"
+SCANNER_VERSION = "skills-guard-v6"
 
 # NVIDIA-verified skills each ship a signed `skill.oms.sig` + governance `skill-card.md`.
 TRUSTED_REPOS = {"openai/skills", "anthropics/skills", "huggingface/skills", "NVIDIA/skills"}
@@ -110,14 +110,27 @@ _NO_TRANSFER = (r'(?!(?:\w+\s+){0,4}?(?:never|not|doesn\'?t|didn\'?t|won\'?t|isn
 # Real directives are short; unbounded filler let prose (output never enters your own context)
 # and feature descriptions match.
 _SHORT_FILLER = r'(?:\w+\s+){0,3}?'
-# Delegation guard: the recipient named right after the verb is the agent's own subagent/worker
-# ("Send subagents the minimum context they need") — an in-process handoff, not a transfer off
-# the machine. A URL or external service as the destination is still `send_to_url`.
-_NOT_DELEGATE = r'(?!(?:(?:the|your|each|every|all|to|a)\s+)?(?:sub-?agents?|sub-?tasks?|workers?|delegates?|children|child)\b)'
+# Delegation guard: skip only when the recipient is clearly the agent's own subagent or a
+# possessed worker ("Send subagents the minimum context they need", "Share each worker the
+# context of its own slice"). Bare "child"/"workers"/"delegates" after the verb is still
+# exfil ("Send child context to the operator"). A URL destination is still send_to_url.
+_NOT_DELEGATE = (
+    r'(?!(?:(?:the|your|each|every|all|to|a)\s+)?(?:sub-?agents?|sub-?tasks?)\b'
+    r'|(?:(?:the|your|each|every|all|to|a)\s+)(?:workers?|delegates?|children|child)\b)'
+)
 
 # POSIX shell names as one shared alternation, so every pipe-to-shell pattern below flags the
 # same set (the narrower `(ba)?sh` let `curl url | zsh` through while bash/sh were caught).
 _SHELL_NAMES_RE = r'(?:bash|sh|zsh|ksh|dash)'
+
+# Known credential-file paths as one shared alternation for the JavaScript and Python
+# read-secrets patterns (a private key, .env, credentials, .netrc, .pgpass, .npmrc, .pypirc;
+# a public key is not a secret).
+_CRED_FILE = r'(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)'
+# A literal string argument naming one of those files, optionally wrapped in
+# `os.path.expanduser(...)` (Python only).
+_CRED_FILE_LITERAL = r'["\'][^"\'\n]*' + _CRED_FILE + r'[^"\'\n]*["\']'
+_PY_CRED_FILE_ARG = r'(?:os\.path\.expanduser\s*\(\s*)?' + _CRED_FILE_LITERAL + r'\s*\)?'
 
 THREAT_PATTERNS = [
     # ── Exfiltration: shell commands leaking secrets ──
@@ -148,8 +161,20 @@ THREAT_PATTERNS = [
     # `cat <secrets-file>` reads credentials; `cat >`/`cat >>` WRITES one (setup heredocs) — not exfil.
     (r'cat\s+(?!>)[^\n]*(\.env|credentials|\.netrc|\.pgpass|\.npmrc|\.pypirc)',
      "read_secrets_file", "critical", "exfiltration", "reads known secrets file"),
-    (r'\b(?:readFile(?:Sync)?|readTextFile)\s*\(\s*["\'][^"\'\n]*(?:\.ssh[/\\]id_(?:rsa|ed25519|ecdsa|dsa)(?!\.pub)|\.env\b|credentials\b|\.netrc\b|\.pgpass\b|\.npmrc\b|\.pypirc\b)[^"\'\n]*["\']',
+    (r'\b(?:readFile(?:Sync)?|readTextFile)\s*\(\s*' + _CRED_FILE_LITERAL,
      "js_read_secrets_file", "critical", "exfiltration", "JavaScript reads a known credential file"),
+    # Python twin of js_read_secrets_file: `open(...)` on a literal credential path (optionally
+    # `os.path.expanduser(...)`-wrapped), or the `Path(...).read_text/_bytes/lines/line(...)` chain
+    # — the shapes that read a known secrets file's content in Python without going through the
+    # shell `cat` pattern above. `open()`, unlike readFile/read_text, is also how a plugin WRITES
+    # its own .env/credentials/.npmrc during setup, so (mirroring the shell `cat`'s `(?!>)`)
+    # exclude a write/append/exclusive mode — a literal 2nd-arg string containing w/a/x, or a
+    # `mode=` kwarg with the same, tolerating the expanduser wrapper's own `)` — from the
+    # `open(...)` branch; `Path(...).read_*()` has no mode argument, so needs no exclusion.
+    (r'\bopen\s*\(\s*' + _PY_CRED_FILE_ARG
+     + r'(?!\s*\)?\s*,\s*["\'][^"\']*[wax][^"\']*["\'])(?![^\n]*\bmode\s*=\s*["\'][^"\']*[wax])'
+     + r'|\bPath\s*\(\s*' + _PY_CRED_FILE_ARG + r'\s*\)\.(?:read_text|read_bytes|readlines|readline)\s*\(',
+     "py_read_secrets_file", "critical", "exfiltration", "Python reads a known credential file"),
     # ── Exfiltration: programmatic env access ──
     (r'printenv|env\s*\|', "dump_all_env", "high", "exfiltration", "dumps all environment variables"),
     # Bare `os.environ` (dump/iteration) is suspicious; ANY `.get("<name>")` form is exempt — plain config
@@ -359,7 +384,14 @@ THREAT_PATTERNS = [
     (r'\.claude/settings|\.codex/config',
      "other_agent_config_ref", "low", "persistence", "references other agent configuration files (informational; only modification intent is scored)"),
     # ── Hardcoded secrets (credentials embedded in the skill itself) ──
-    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}',
+    # A value that is itself an env-var NAME (SHOUTY_SNAKE, ≥2 underscore-separated
+    # segments) references where the credential lives instead of embedding it
+    # (#116221). Scoped case-sensitive — the table compiles with IGNORECASE and a
+    # lowercase snake value is the passphrase shape; requiring an underscore
+    # segment keeps underscore-free all-caps credentials (AWS AKIA…, base32) matched.
+    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']'
+     r'(?!(?-i:[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)["\'])'
+     r'[A-Za-z0-9+/=_-]{20,}',
      "hardcoded_secret", "critical", "credential_exposure", "possible hardcoded API key, token, or secret"),
     (r'-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----',
      "embedded_private_key", "critical", "credential_exposure", "embedded private key"),
@@ -567,7 +599,7 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     if file_path.suffix.lower() not in SCANNABLE_EXTENSIONS and file_path.name != "SKILL.md":
         return []
     try:
-        lines = file_path.read_text(encoding='utf-8').split('\n')
+        lines = file_path.read_text(encoding='utf-8-sig').split('\n')
     except (UnicodeDecodeError, OSError):
         return []
     findings = []
@@ -647,7 +679,7 @@ def scan_skill_cached(skill_path: Path, source: str = "community", *, source_url
                 "source_url": source_url}
     cached = None
     with suppress(OSError, json.JSONDecodeError):
-        cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        cached = json.loads(cache_file.read_text(encoding="utf-8-sig"))
     if isinstance(cached, dict) and all(cached.get(k) == v for k, v in expected.items()):
         result = ScanResult(skill_path.name, source, cached["trust_level"], cached["verdict"],
                             [Finding(**item) for item in cached.get("findings", [])], cached["scanned_at"],
@@ -754,7 +786,7 @@ def _load_skill_ignore(skill_dir: Path):
     for ig in (skill_dir / name for name in _SKILL_IGNORE_FILENAMES):
         with suppress(UnicodeDecodeError, OSError):
             if ig.is_file():
-                patterns.extend(s for s in map(str.strip, ig.read_text(encoding="utf-8").splitlines())
+                patterns.extend(s for s in map(str.strip, ig.read_text(encoding="utf-8-sig").splitlines())
                                 if s and not s.startswith("#"))
 
     def ignore(rel: str) -> bool:

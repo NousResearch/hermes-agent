@@ -129,6 +129,42 @@ def _persist_lock(agent):
     return nullcontext() if lock is None else lock
 
 
+def adopt_unanswered_turn(history: List[Dict[str, Any]], query: Any, agent: Any) -> bool:
+    """Re-stage the transcript's unanswered tail row as THIS turn's user message; True when adopted.
+
+    A dispatcher's re-run of a failed delivery turn resumes the DM its first attempt already persisted
+    instead of appending it again. Rows loaded from the store are born durable (``_rows_to_conversation``),
+    so handing the tail row back as ``agent._pending_cli_user_message`` makes ``_stage_turn_user_message``
+    reuse it as this turn's user dict and the flush writes no second row. What differs per lane is only HOW
+    the dispatcher knows the DM is unanswered:
+
+    * ``hermes_cli.quiet_single_query.adopt_unanswered_turn`` — the delivery lanes' re-run is a fresh CLI
+      process, told so through ``tools.bot_relay.RESUME_UNANSWERED_TURN_ENV``.
+    * ``gateway.platforms.api_server`` — the peer-DM lane re-runs the turn in-process and calls this
+      directly on the agent it just built for the re-run (#115325).
+
+    The DM is not always the literal tail: a turn that died mid-way persisted its tool scaffolding — assistant
+    ``tool_calls`` rows and their ``tool`` results — behind the DM before the failure text was built, and the
+    dispatcher retries that too. The DM is still unanswered while nothing after it is a plain assistant reply,
+    so it is adopted and the failed attempt's scaffolding leaves the in-memory transcript: the re-run starts
+    the turn over from the DM (the rows stay in the DB as the record of the failed attempt; the re-run's
+    answer lands after them as a valid continuation). Anything else declines — no user row at the tail, or a
+    different text there — so a person's deliberate re-send of the same text is never swallowed.
+    """
+    idx = next((i for i in range(len(history) - 1, -1, -1)
+                if isinstance(history[i], dict) and history[i].get("role") == "user"), None)
+    if idx is None or history[idx].get("content") != query:
+        return False
+    if not all(isinstance(row, dict) and (row.get("role") == "tool" or (row.get("role") == "assistant" and row.get("tool_calls")))
+               for row in history[idx + 1:]):
+        return False
+    tail = history[idx]
+    del history[idx:]
+    tail[_DB_PERSISTED_MARKER] = True
+    agent._pending_cli_user_message = tail
+    return True
+
+
 # --- flush phases (module-level so the flush also works bound onto duck-typed agents) ---
 
 def _db_flush_seed_ids(agent) -> set:
@@ -285,6 +321,7 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
     return False
 
 
+
 class SessionPersistenceMixin:
     """Session DB flush and trajectory persistence (see module docstring)."""
 
@@ -317,6 +354,9 @@ class SessionPersistenceMixin:
         """
         from agent.agent_runtime_helpers import note_turn_persisted
         with _persist_lock(self):
+            # Only the scaffolding goes here. Closing a tool tail this uncovers is the exit
+            # owner's job (``_close_transcript_tail``, ``abort_turn_on_interrupt``): only it knows
+            # the reason to record.
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._flush_messages_to_session_db(messages, conversation_history)
@@ -326,25 +366,14 @@ class SessionPersistenceMixin:
             note_turn_persisted(self)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
-        """Pop empty-response retry scaffolding from the tail, then (only if any was present) rewind the
-        tool-result / assistant(tool_calls) pair the failed iteration left hanging — otherwise the next user
-        turn lands as ``...tool, user`` and providers return empty content forever."""
+        """Pop empty-response retry scaffolding from the tail. The
+        assistant(tool_calls) / tool rows before it stay: they were saved before the tools ran, so
+        dropping them from the live history only makes the model repeat a side effect the durable
+        transcript already records."""
         def tail(*keys: str) -> bool:
             return bool(messages) and isinstance(messages[-1], dict) and any(messages[-1].get(k) for k in keys)
 
-        def tail_role(role: str) -> bool:
-            return bool(messages) and isinstance(messages[-1], dict) and messages[-1].get("role") == role
-
-        dropped_scaffolding = False
         while tail("_empty_recovery_synthetic", "_empty_terminal_sentinel"):
-            messages.pop()
-            dropped_scaffolding = True
-        if not dropped_scaffolding:
-            return
-        while tail_role("tool"):
-            messages.pop()
-        # Providers reject a dangling assistant(tool_calls) whose results were just popped.
-        if tail_role("assistant") and tail("tool_calls"):
             messages.pop()
 
     _repair_message_sequence = _forward("agent.agent_runtime_helpers", "repair_message_sequence")

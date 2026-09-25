@@ -1,24 +1,34 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { SidebarSessionsResponse } from './sessions'
+
 vi.mock('@/lib/gateway-rpc', () => ({ isMissingRestEndpoint: () => false }))
 vi.mock('@/store/transcript-tail', () => ({ recordTranscriptTail: vi.fn() }))
 vi.mock('./client', () => ({
   capabilityScoped: vi.fn(),
   getApiRequestConnection: vi.fn(() => 'prometheus'),
+  getApiRequestProfile: vi.fn(() => null),
   hermesApi: vi.fn(),
   profileScoped: vi.fn(() => ({}))
 }))
 
 const client = await import('./client')
 
-const { deleteSession, getSession, setSessionArchived, setSessionPinnedRemote, setSessionUnreadRemote, listSidebarSessions } =
-  await import('./sessions')
+const {
+  deleteSession,
+  getSession,
+  setSessionArchived,
+  setSessionPinnedRemote,
+  setSessionUnreadRemote,
+  listSidebarSessions
+} = await import('./sessions')
 
 const hermesApi = vi.mocked(client.hermesApi)
 
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(client.getApiRequestConnection).mockReturnValue('prometheus')
+  vi.mocked(client.getApiRequestProfile).mockReturnValue(null)
 })
 
 describe('deleteSession profile scoping', () => {
@@ -118,10 +128,28 @@ describe('setSessionArchived profile scoping', () => {
     })
   })
 
-  it('omits the profile from the body when none is given', async () => {
+  it('falls back to the ACTIVE profile in the body when no owner is given', async () => {
+    // Multiplex-only: the PATCH handler resolves its state.db from
+    // `body.profile` and there is no per-profile backend whose HERMES_HOME
+    // could stand in. An unnamed owner therefore has to mean "the profile I am
+    // looking at" — otherwise the archive lands on the shared backend's own
+    // state.db and silently no-ops.
     hermesApi.mockResolvedValue({ ok: true } as never)
+    vi.mocked(client.getApiRequestProfile).mockReturnValue('beta')
 
     await setSessionArchived('sess-b', false)
+
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      profile: 'beta',
+      body: { archived: false, profile: 'beta' }
+    })
+  })
+
+  it('omits the profile from the body only when there is no active profile at all', async () => {
+    hermesApi.mockResolvedValue({ ok: true } as never)
+
+    await setSessionArchived('sess-b2', false)
 
     const req = hermesApi.mock.calls[0][0] as { body: Record<string, unknown> }
     expect(req).toMatchObject({ method: 'PATCH', body: { archived: false } })
@@ -156,14 +184,17 @@ describe('setSessionPinnedRemote / setSessionUnreadRemote profile scoping', () =
     })
   })
 
-  it('omits the profile from the body when none is given', async () => {
+  it('falls back to the ACTIVE profile in the body when no owner is given', async () => {
     hermesApi.mockResolvedValue({ ok: true } as never)
+    vi.mocked(client.getApiRequestProfile).mockReturnValue('beta')
 
     await setSessionPinnedRemote('sess-p2', false)
 
-    const req = hermesApi.mock.calls[0][0] as { body: Record<string, unknown> }
-    expect(req).toMatchObject({ method: 'PATCH', body: { pinned: false } })
-    expect(req.body).not.toHaveProperty('profile')
+    expect(hermesApi.mock.calls[0][0]).toMatchObject({
+      method: 'PATCH',
+      profile: 'beta',
+      body: { pinned: false, profile: 'beta' }
+    })
   })
 })
 
@@ -187,5 +218,32 @@ describe('listSidebarSessions remote ownership', () => {
     })
 
     expect(result.recents.sessions[0]).toMatchObject({ connection_id: 'prometheus', id: 'remote-session' })
+  })
+})
+
+describe('listSidebarSessions storage health', () => {
+  it('passes the backend corrupt-store map through so the sidebar can say why it is empty', async () => {
+    const response = {
+      cron: { sessions: [] },
+      errors: [{ error: 'database disk image is malformed', profile: 'default' }],
+      messaging: { sessions: [] },
+      recents: { sessions: [] },
+      storage: { default: 'corrupt' }
+    } satisfies SidebarSessionsResponse
+
+    // SAFETY: vi cannot infer a concrete return from the generic hermesApi signature;
+    // `satisfies` above checks the exact endpoint contract before it crosses the mock boundary.
+    hermesApi.mockResolvedValue(response as never)
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'all',
+      recentsLimit: 40,
+      recentsExclude: [],
+      cronLimit: 20,
+      messagingLimit: 40,
+      messagingExclude: []
+    })
+
+    expect(result.storage).toEqual({ default: 'corrupt' })
   })
 })

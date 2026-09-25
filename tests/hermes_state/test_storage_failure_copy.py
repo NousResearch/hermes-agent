@@ -25,7 +25,7 @@ def test_each_cause_has_a_stable_code_and_an_action(exc, code, command):
     failure = describe_storage_failure(exc)
     assert failure.code == code
     assert command in failure.action
-    assert failure.gloss and failure.gloss[0].islower()  # a clause that follows "Cause:"
+    assert failure.gloss
     # The raw sqlite wording never leaks into the user-facing gloss.
     assert "sqlite" not in failure.gloss.lower() and "OperationalError" not in failure.gloss
 

@@ -15,13 +15,13 @@ Author in-repo SKILL.md files: frontmatter and structure.
 | | |
 |---|---|
 | Source | Bundled (installed by default) |
-| Path | `skills/software-development\hermes-agent-skill-authoring` |
+| Path | `skills/software-development/hermes-agent-skill-authoring` |
 | Version | `2.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `skills`, `authoring`, `hermes-agent`, `conventions`, `skill-md` |
-| Related skills | [`requesting-code-review`](./software-development-requesting-code-review.md) |
+| Related skills | [`requesting-code-review`](../../bundled/software-development/software-development-requesting-code-review.md) |
 
 ## Reference: full SKILL.md
 
@@ -177,11 +177,12 @@ A skill exists to make the agent's process more predictable — the agent reliab
 3. **Draft** with `write_file` to `skills/<category>/<name>/SKILL.md` (or `optional-skills/...`).
 4. **Validate locally**:
    ```python
-   import yaml, re, pathlib
+   import re, pathlib
+   from ruamel.yaml import YAML
    content = pathlib.Path("skills/<category>/<name>/SKILL.md").read_text()
    assert content.startswith("---")
    m = re.search(r'\n---\s*\n', content[3:])
-   fm = yaml.safe_load(content[3:m.start()+3])
+   fm = YAML(typ="safe").load(content[3:m.start()+3])
    assert "name" in fm and "description" in fm
    assert len(fm["description"]) <= 60, f"description {len(fm['description'])} chars — hardline is 60"
    assert fm["description"].endswith(".")

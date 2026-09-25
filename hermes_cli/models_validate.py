@@ -121,9 +121,141 @@ def _validate_moa(req: _Request) -> dict[str, Any]:
 
 
 def _reject_whitespace(req: _Request) -> Optional[dict[str, Any]]:
-    if any(ch.isspace() for ch in req.requested):
+    # Cloud catalogs never contain spaces. Self-hosted servers and a user-configured
+    # base_url do (VLLM "My Custom Model", a local router's "Go reasoning"). The
+    # step stays here — later branches must not see a cloud id the catalog cannot serve.
+    if any(ch.isspace() for ch in req.requested) and not _whitespace_allowed(req):
         return _reject("Model names cannot contain spaces.")
     return None
+
+
+_SELF_HOSTED_PROVIDERS = frozenset({
+    "lmstudio", "ollama", "local", "vllm", "llamacpp", "llama.cpp", "llama-cpp",
+})
+
+
+def _provider_token(provider: Optional[str]) -> str:
+    return str(provider or "").strip().lower()
+
+
+def _is_self_hosted_provider(provider: Optional[str]) -> bool:
+    """Local servers and the custom endpoint bucket, including aliases that normalize to it."""
+    raw = _provider_token(provider)
+    if not raw:
+        return False
+    if raw == "custom" or raw.startswith("custom:"):
+        return True
+    from hermes_cli import models as _m
+
+    normalized = _m.normalize_provider(raw)
+    if normalized == "custom" or normalized.startswith("custom:"):
+        return True
+    return raw in _SELF_HOSTED_PROVIDERS or normalized in _SELF_HOSTED_PROVIDERS
+
+
+def _non_public_host(host: str) -> bool:
+    """Loopback, LAN, and single-label hosts are a user's endpoint, never a vendor catalog."""
+    host = (host or "").lower().rstrip(".")
+    if not host or host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"} or host.endswith(".localhost"):
+        return bool(host)
+    if host.endswith((".local", ".lan", ".internal", ".home", ".localdomain")):
+        return True
+    if "." not in host:
+        return True
+    parts = host.split(".")
+    if len(parts) == 4 and all(part.isdigit() for part in parts):
+        octets = [int(part) for part in parts]
+        if octets[0] in {10, 127} or (octets[0] == 192 and octets[1] == 168):
+            return True
+        if octets[0] == 172 and 16 <= octets[1] <= 31:
+            return True
+    return False
+
+
+def _stock_host(provider: str) -> str:
+    """Vendor host for *provider*, offline. Empty when this install cannot name one.
+
+    ``get_provider`` can answer with a different id (``openai`` → the OpenRouter
+    overlay when models.dev is cold). A foreign row is not this provider's stock
+    endpoint — using it would exempt the real cloud host.
+    """
+    from hermes_cli.providers import get_provider
+    from utils import base_url_hostname
+
+    token = _provider_token(provider)
+    if not token:
+        return ""
+    try:
+        pdef = get_provider(token, allow_network=False)
+    except Exception:
+        return ""
+    if pdef is None or _provider_token(pdef.id) != token:
+        return ""
+    return base_url_hostname(pdef.base_url or "")
+
+
+def provider_allows_model_whitespace(provider: Optional[str], base_url: Optional[str] = None) -> bool:
+    """True when a spaced id is a real selection, not a cloud-catalog typo.
+
+    Self-hosted providers always qualify. A base_url qualifies when the user
+    configured it: a non-public host, or a public host that is not this
+    provider's own stock endpoint. A public host with no stock to compare
+    against stays rejected, so a cloud URL cannot slip through a cold catalog.
+    """
+    if _is_self_hosted_provider(provider):
+        return True
+    url = str(base_url or "").strip()
+    if not url:
+        return False
+    from utils import base_url_hostname
+
+    host = base_url_hostname(url)
+    if not host:
+        return False
+    if _non_public_host(host):
+        return True
+    raw = _provider_token(provider)
+    from hermes_cli import models as _m
+
+    normalized = _m.normalize_provider(raw) if raw else ""
+    stock = _stock_host(normalized or raw)
+    return bool(stock) and host != stock
+
+
+def _whitespace_allowed(req: _Request) -> bool:
+    # The openrouter→custom rewrite lives on ``normalized``; aliases live on the raw value.
+    if _is_self_hosted_provider(req.normalized) or _is_self_hosted_provider(req.provider):
+        return True
+    return provider_allows_model_whitespace(req.provider or req.normalized, req.base_url)
+
+
+def offered_model_ids(models, provider: Optional[str], base_url: Optional[str] = None) -> list:
+    """Ids a picker may show. Drops whitespace the validator will refuse; keeps the rest."""
+    ids = list(models or [])
+    if provider_allows_model_whitespace(provider, base_url):
+        return ids
+    return [model_id for model_id in ids if not (isinstance(model_id, str) and any(ch.isspace() for ch in model_id))]
+
+
+def drop_unofferable_model_ids(rows: list) -> None:
+    """In-place: picker rows must not offer an id ``validate_requested_model`` will refuse for whitespace."""
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        provider = row.get("slug")
+        base_url = row.get("api_url") or row.get("base_url")
+        models = row.get("models")
+        if isinstance(models, list):
+            filtered = offered_model_ids(models, provider, base_url)
+            removed = len(models) - len(filtered)
+            if removed:
+                row["models"] = filtered
+                total = row.get("total_models")
+                if isinstance(total, int):
+                    row["total_models"] = max(0, total - removed)
+        featured = row.get("featured_models")
+        if isinstance(featured, list):
+            row["featured_models"] = offered_model_ids(featured, provider, base_url)
 
 
 def _parse_openrouter_preset(req: _Request) -> Optional[dict[str, Any]]:
@@ -437,16 +569,47 @@ def _nous_portal_recommended_names() -> set[str]:
         return set()
 
 
-def _profile_owns_catalog(normalized: str) -> bool:
-    """True when the registered profile's catalog is not the generic ``{base_url}/models`` listing —
-    it overrides ``fetch_models`` or points ``models_url`` elsewhere — so that listing is not
-    authoritative for it (a relay may 200 with a different product catalog, #101705)."""
+def _validate_managed_local(req: _Request) -> Optional[dict[str, Any]]:
+    """The managed llama.cpp runtime: the staged library on disk is the source of truth, not the
+    live listing. The router's model list is spawn-only (a GGUF landed after its start is
+    invisible to GET /models until a bounce), so validating a freshly downloaded model against
+    the live listing rejects the very file the user just staged — the Local Models "Use" flow
+    and the composer picker could never succeed for a non-catalog model. A staged id accepts
+    (case-insensitive: typing matches the file name, the router registers the preset id);
+    anything else falls through to the live listing, which stays authoritative for ids that
+    were never downloaded here."""
+    from hermes_cli.local_runtime.bootstrap import staged_model_ids
+
+    staged = {sid.lower() for sid in staged_model_ids()}
+    if req.lookup.strip().lower() in staged:
+        return _accept_with_note(
+            f"Note: `{req.requested}` was not found in the live /v1/models listing "
+            "but is downloaded in the managed local-models library — accepted."
+        )
+    return None
+
+
+def _profile_catalog(normalized: str) -> tuple[list[str], bool]:
+    """``(catalog, authoritative)`` for a profile whose catalog is not the generic
+    ``{base_url}/models`` listing — it overrides ``fetch_models`` or points ``models_url``
+    elsewhere — so that listing is not authoritative for it (a relay may 200 with a different
+    product catalog, #101705). The catalog is *authoritative* (a miss is a reject, never an
+    acceptance by the generic listing, #116667) when the profile serves it from an endpoint of
+    its own and it is available; a bare ``fetch_models`` override may just re-shape the generic
+    listing, and an unavailable/empty catalog keeps the generic listing as the validator.
+    ``([], False)`` for profiles without a catalog of their own."""
     from providers import get_provider_profile
     from providers.base import ProviderProfile
 
     profile = get_provider_profile(normalized)
-    return profile is not None and (
-        type(profile).fetch_models is not ProviderProfile.fetch_models or bool(profile.models_url))
+    if profile is None:
+        return [], False
+    generic = (profile.base_url or "").rstrip("/") + "/models"
+    own_endpoint = bool(profile.models_url) and profile.models_url.rstrip("/") != generic
+    if not own_endpoint and type(profile).fetch_models is ProviderProfile.fetch_models:
+        return [], False
+    catalog = _static_catalog(normalized)
+    return catalog, own_endpoint and bool(catalog)
 
 
 def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
@@ -455,8 +618,17 @@ def _validate_live_listing(req: _Request) -> Optional[dict[str, Any]]:
     against that catalog (``provider_model_ids`` — the picker's list) before the generic listing."""
     from hermes_cli import models as _m
 
-    if _profile_owns_catalog(req.normalized) and _match_in_catalog(req.lookup, _static_catalog(req.normalized)).exact:
-        return _accept()
+    catalog, authoritative = _profile_catalog(req.normalized)
+    if catalog:
+        match = _match_in_catalog(req.lookup, catalog, suggest_query=req.requested)
+        if match.exact:
+            return _accept()
+        if authoritative:
+            # The catalog endpoint the profile declares decides: a miss there is a reject, never
+            # an acceptance by the generic listing, which for such relays lists a different
+            # product line.
+            return _reject(
+                f"Model `{req.requested}` was not found in this provider's catalog.{match.suggestion_text}")
     api_models = _m.fetch_api_models(req.api_key, req.base_url)
     if api_models is None:
         return None
@@ -519,6 +691,27 @@ def _validate_bedrock(req: _Request) -> Optional[dict[str, Any]]:
         return None
 
 
+def _validate_external_process(req: _Request) -> Optional[dict[str, Any]]:
+    """Process providers have no HTTP listing: the picker's list (``provider_model_ids`` — the
+    CLI's live catalog merged with the declared one) plus the profile's short aliases is the whole
+    truth, so a listed id is accepted outright and an unlisted one gets the catalog verdict without
+    the misleading "endpoint was unreachable" note."""
+    from providers import get_provider_profile
+
+    profile = get_provider_profile(req.normalized)
+    if profile is None or profile.auth_type != "external_process":
+        return None
+    if req.lookup.lower() in {k.lower() for k in profile.model_aliases}:
+        return _accept()
+    catalog = _static_catalog(req.normalized) or list(profile.fallback_models)
+    match = _match_in_catalog(req.lookup, catalog, case_insensitive=True)
+    if match.exact:
+        return _accept()
+    return match.verdict(req) or _soft_accept(
+        f"Note: `{req.requested}` is not declared by {profile.display_name or profile.name}."
+        f"{match.suggestion_text}\n  The model may still work if the local client accepts it.")
+
+
 def _validate_catalog_fallback(req: _Request) -> dict[str, Any]:
     """/models unreachable: validate against the curated ``provider_model_ids()`` list so gateway
     /model switches keep working while a provider's endpoint is down (otherwise switch_model() would
@@ -556,9 +749,10 @@ def _for(*providers: str) -> Callable[[_Request], bool]:
 
 
 # (gate, branch): the branch runs when the gate passes; the first non-None verdict wins. ORDER IS
-# BEHAVIOR: moa → whitespace → OpenRouter preset parse → LM Studio → Ollama native → custom →
-# codex/xai static → MiniMax → Anthropic native → Anthropic Messages → live listing → Bedrock →
-# curated-catalog fallback (always decides).
+# BEHAVIOR: moa → whitespace (skipped only for self-hosted providers and a user-configured
+# base_url) → OpenRouter preset parse → LM Studio → Ollama native → custom →
+# codex/xai static → MiniMax → managed local (staged library) → Anthropic native →
+# Anthropic Messages → external process → live listing → Bedrock → curated-catalog fallback (always decides).
 _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[dict[str, Any]]]], ...] = (
     (_for("moa"), _validate_moa),
     (lambda req: True, _reject_whitespace),
@@ -568,8 +762,10 @@ _LADDER: tuple[tuple[Callable[[_Request], bool], Callable[[_Request], Optional[d
     (_is_custom, _validate_custom),
     (_for("openai-codex", "xai-oauth"), _validate_static_catalog),
     (_for("minimax", "minimax-cn"), _validate_minimax),
+    (_for("llamacpp", "llama.cpp", "llama-cpp"), _validate_managed_local),
     (_for("anthropic"), _validate_anthropic),
     (lambda req: req.api_mode == "anthropic_messages", _validate_anthropic_messages),
+    (lambda req: True, _validate_external_process),
     (lambda req: True, _validate_live_listing),
     # API unreachable — accept and persist, but warn so typos don't silently break things.
     (_for("bedrock"), _validate_bedrock),

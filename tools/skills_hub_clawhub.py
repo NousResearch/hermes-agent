@@ -13,7 +13,7 @@ from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_hub import _guarded_http_stream
 from tools.skills_hub_models import (
     GuardedFetchMixin, SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _get_json,
-    _validate_bundle_rel_path,
+    _validate_bundle_rel_path, hub,
 )
 
 logger = logging.getLogger("tools.skills_hub")
@@ -381,7 +381,7 @@ class ClawHubSource(GuardedFetchMixin, SkillSource):
         for attempt in range(max_attempts):
             delay = 2.0 * (2 ** attempt)
             try:
-                resp = httpx.get(url, timeout=20)
+                resp = hub()._skills_hub_http_get(url, timeout=20)
             except (httpx.HTTPError, OSError):
                 reason = "transport error"
             else:

@@ -455,8 +455,10 @@ class CLIInfoMixin:
             return False
 
     def _should_handle_steer_command_inline(self, text: str, has_images: bool = False) -> bool:
-        """Return True when /steer should be dispatched immediately while the agent is running."""
-        return self._busy_inline_command(text, has_images, ("steer",))
+        """Return True when /steer or /queue should be dispatched immediately while the agent is
+        running. Queued raw, ``/queue <prompt>`` only re-enqueued itself after the turn and
+        ``/queue list|rm|edit`` could not inspect the queue until it had already drained."""
+        return self._busy_inline_command(text, has_images, ("steer", "queue"))
 
     def _should_handle_background_command_inline(
         self, text: str, has_images: bool = False) -> bool:
@@ -833,7 +835,7 @@ class CLIInfoMixin:
         cache** (the next message re-sends the full input prefix, expensive on long-context / high-reasoning
         models). See #1474.
         """
-        import yaml as _yaml
+        import hermes_yaml as _yaml
 
         now = time.monotonic()
         if now - self._last_config_check < CONFIG_WATCH_INTERVAL:
@@ -853,7 +855,7 @@ class CLIInfoMixin:
 
         self._config_sig = sig
         try:
-            with open(cfg_path, encoding="utf-8") as f:
+            with open(cfg_path, encoding="utf-8-sig") as f:
                 new_cfg = _yaml.safe_load(f) or {}
         except Exception:
             return

@@ -5,6 +5,7 @@ control-plane model discovery. OpenAI-format messages/tools are converted to Con
 and responses normalized back to OpenAI-shaped objects.
 """
 
+from pm import install_hint
 import base64
 import importlib
 import json
@@ -20,20 +21,9 @@ from urllib.parse import urlparse
 
 import httpx
 
+from agent.errors import EmptyStreamError
+
 logger = logging.getLogger(__name__)
-
-# boto3 is not in the [all] extras; lazy_deps installs it on demand.
-try:
-    # --------------------------------------------------------------------------- Ensure boto3/botocore are
-    # installed before any code in this module runs. Upstream removed boto3 from [all] extras (PRs #24220,
-    # #24515); lazy_deps handles on-demand installation so the Bedrock provider still works in the EKS
-    # deployment without baking boto3 into the base image.
-    # ---------------------------------------------------------------------------
-    from tools.lazy_deps import ensure
-    ensure("provider.bedrock", prompt=False)
-except Exception:
-    pass  # let downstream imports surface the real error
-
 
 _bedrock_runtime_client_cache: Dict[str, Any] = {}
 _bedrock_control_client_cache: Dict[str, Any] = {}
@@ -53,13 +43,34 @@ def scoped_aws_session_kwargs() -> Dict[str, str]:
 
     Under a HERMES_HOME override the process env holds the LAUNCH profile's ``AWS_*`` (or nothing), so
     every Bedrock client for a served profile must be built from that profile's own ``.env`` values.
-    """
+    Under multiplexing a profile that sets none of its own must NOT get ``{}`` — ``boto3.Session()``
+    would then resolve the ambient default chain (process env, ~/.aws, instance metadata), i.e. the
+    launch context's identity, exactly the borrow the Entra adapter refuses. ``AWS_PROFILE`` counts as
+    an explicit per-profile choice (it names an entry in the shared AWS config, like the Entra
+    ``AZURE_CLIENT_ID``-only managed-identity opt-in)."""
     from hermes_constants import get_hermes_home_override
     if get_hermes_home_override() is None:
         return {}
-    from agent.secret_scope import current_secret_scope
+    from agent.secret_scope import current_secret_scope, is_multiplex_active
     scope = current_secret_scope() or {}
-    return {kw: scope[var].strip() for kw, var in _AWS_SCOPED_CREDENTIAL_VARS if (scope.get(var) or "").strip()}
+    kwargs = {kw: scope[var].strip() for kw, var in _AWS_SCOPED_CREDENTIAL_VARS
+              if (scope.get(var) or "").strip()}
+    # Under multiplexing a partial set is not enough: boto3 fills whatever is missing from the
+    # ambient chain (process env, ~/.aws, instance metadata), i.e. the launch context's identity —
+    # the same borrow the Entra adapter refuses. Require a COMPLETE credential: the key pair, or
+    # AWS_PROFILE naming an entry in the shared AWS config (an explicit per-profile choice, like
+    # the Entra AZURE_CLIENT_ID-only managed-identity opt-in).
+    complete = ("aws_access_key_id" in kwargs and "aws_secret_access_key" in kwargs) \
+        or "profile_name" in kwargs
+    if not complete and is_multiplex_active():
+        raise RuntimeError(
+            "Bedrock auth is refused for this profile: it sets no complete AWS credential of its "
+            "own, and under multiplexed profiles the ambient default chain (process env, ~/.aws, "
+            "instance metadata) would sign this profile's calls with the LAUNCH context's identity. "
+            "Set AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY in this profile's own config, or "
+            "AWS_PROFILE to name a shared AWS config profile."
+        )
+    return kwargs
 
 # Bedrock-hosted GPT-5.x models are served from the Bedrock Mantle OpenAI-compatible endpoint, not
 # Converse. Narrow allowlist so GPT-OSS models stay on the native path.
@@ -77,12 +88,19 @@ _MIN_BOTO3_VERSION = (1, 34, 59)
 def _require_boto3():
     """Import boto3; converse_stream() needs >= 1.34.59 (a system boto3 can shadow the venv pin)."""
     try:
+        # boto3 left [all] (PRs #24220, #24515); PM installs the [bedrock] extra on first use. This
+        # runs at the first client build, never at import: an import-time sync would rebuild the
+        # dependency environment of whatever process happens to import this module.
+        try:
+            from pm import ensure_import
+            ensure_import("bedrock")
+        except Exception as exc:  # the import below reports the real failure
+            logger.warning("boto3 lazy install did not complete: %s", exc)
         import boto3
     except ImportError:
         raise ImportError(
             "The 'boto3' package is required for the AWS Bedrock provider. "
-            "Install it with: pip install boto3\n"
-            "Or install Hermes with Bedrock support: pip install -e '.[bedrock]'"
+            f"Run: {install_hint('bedrock')}"
         )
     try:
         version = tuple(int(x) for x in boto3.__version__.split(".")[:3])
@@ -91,7 +109,7 @@ def _require_boto3():
     if version < _MIN_BOTO3_VERSION:
         raise RuntimeError(
             f"boto3 {boto3.__version__} does not support converse_stream "
-            f"(minimum 1.34.59 required). Upgrade with: pip install --upgrade boto3"
+            f"(minimum 1.34.59 required). Run: hermes pm repair"
         )
     return boto3
 
@@ -108,8 +126,10 @@ def _cached_client(cache: Dict[str, Any], service: str, region: str):
     key = (hermes_home_key(), service, region)
     client = _bedrock_clients_by_home.get(key)
     if client is None:
-        boto3 = _require_boto3()
-        client = boto3.Session(**scoped_aws_session_kwargs()).client(service, region_name=region)
+        # Scope check first: a cred-less multiplex profile must hit the ambient-chain
+        # refusal, not a boto3 ImportError on hosts that lack the package.
+        kwargs = scoped_aws_session_kwargs()
+        client = _require_boto3().Session(**kwargs).client(service, region_name=region)
         _bedrock_clients_by_home[key] = client
     return client
 
@@ -178,9 +198,17 @@ def is_bedrock_openai_base_url(base_url: str) -> bool:
 
 
 def resolve_bedrock_bearer_token(env: Optional[Dict[str, str]] = None) -> str:
-    """Return AWS_BEARER_TOKEN_BEDROCK when Bedrock API-key auth is configured."""
-    env = env if env is not None else os.environ
-    return (env.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
+    """Return AWS_BEARER_TOKEN_BEDROCK when Bedrock API-key auth is configured.
+
+    Under a HERMES_HOME override the read goes through the profile secret scope so a
+    served profile never inherits the launch profile's bearer from the process env."""
+    if env is not None:
+        return (env.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override() is not None:
+        from agent.secret_scope import get_secret
+        return (get_secret("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
+    return (os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "") or "").strip()
 
 
 class BedrockOpenAISigV4Auth(httpx.Auth):
@@ -195,7 +223,8 @@ class BedrockOpenAISigV4Auth(httpx.Auth):
     def auth_flow(self, request):  # pragma: no cover - exercised by live call
         from botocore.auth import SigV4Auth
         from botocore.awsrequest import AWSRequest
-        credentials = _require_boto3().Session(**scoped_aws_session_kwargs()).get_credentials()
+        kwargs = scoped_aws_session_kwargs()
+        credentials = _require_boto3().Session(**kwargs).get_credentials()
         if credentials is None:
             raise RuntimeError(
                 "No AWS credentials available for Bedrock OpenAI Responses. "
@@ -893,7 +922,8 @@ def stream_converse_with_callbacks(
     current_tool: Optional[Dict] = None
     current_text_buffer: List[str] = []
     has_tool_use = False
-    stop_reason = "end_turn"
+    stop_reason = None
+    interrupted = False
     usage_data: Dict[str, int] = {}
 
     def block_index(payload: Dict[str, Any], *, new_block: bool = False) -> int:
@@ -914,6 +944,7 @@ def stream_converse_with_callbacks(
             with suppress(Exception):
                 on_event()
         if on_interrupt_check and on_interrupt_check():
+            interrupted = True
             break
         if "contentBlockStart" in event:
             start_event = event["contentBlockStart"]
@@ -960,8 +991,10 @@ def stream_converse_with_callbacks(
         elif "metadata" in event:
             meta_usage = event["metadata"].get("usage", {})
             usage_data = {key: meta_usage.get(key, 0) for key in ("inputTokens", "outputTokens", "cacheReadInputTokens", "cacheWriteInputTokens")}
+    if stop_reason is None and not interrupted:
+        raise EmptyStreamError("Bedrock Converse stream ended before messageStop; response is incomplete")
     flush_text()
-    return parts.build([stream_blocks[i] for i in sorted(stream_blocks)], usage_data, stop_reason, "")
+    return parts.build([stream_blocks[i] for i in sorted(stream_blocks)], usage_data, stop_reason or "end_turn", "")
 
 
 # --- High-level API: call Bedrock Converse ---

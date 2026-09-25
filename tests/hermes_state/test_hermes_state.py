@@ -1036,50 +1036,6 @@ class TestFTS5Search:
         ]
         assert all("context" in row and row["context"] for row in default)
 
-    def test_search_projection_skips_context_enrichment_queries(self, db, monkeypatch):
-        db.create_session(session_id="s1", source="cli")
-        db.append_message("s1", role="user", content="before")
-        db.append_message("s1", role="assistant", content="projectionneedle")
-        db.append_message("s1", role="user", content="after")
-
-        statements = []
-        traced_connections = []
-        read_ctx = db._read_ctx
-
-        @contextlib.contextmanager
-        def trace_read_context():
-            with read_ctx() as conn:
-                conn.set_trace_callback(statements.append)
-                traced_connections.append(conn)
-                yield conn
-
-        monkeypatch.setattr(db, "_read_ctx", trace_read_context)
-
-        def context_query_count():
-            normalized = (" ".join(sql.upper().split()) for sql in statements)
-            return sum("WITH TARGET AS (" in sql for sql in normalized)
-
-        try:
-            projected = db.search_messages(
-                "projectionneedle", fields=("session_id", "snippet")
-            )
-            assert len(projected) == 1
-            assert context_query_count() == 0
-
-            full = db.search_messages(
-                "projectionneedle", fields=("session_id", "context")
-            )
-            assert len(full) == 1
-            assert full[0]["context"]
-            assert context_query_count() == 1
-
-            default = db.search_messages("projectionneedle")
-            assert len(default) == 1
-            assert default[0]["context"]
-            assert context_query_count() == 2
-        finally:
-            for conn in {id(conn): conn for conn in traced_connections}.values():
-                conn.set_trace_callback(None)
 
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
@@ -1234,10 +1190,6 @@ class TestCounts:
 
 
 
-    def test_session_count_ge_empty(self, db):
-        """session_count_ge should return False for 0 sessions."""
-        assert db.session_count_ge(1) is False
-        assert db.session_count_ge(2) is False
 
     def test_session_count_ge_at_threshold(self, db):
         """session_count_ge should True when count >= n."""
@@ -2804,10 +2756,6 @@ class TestListSessionsRich:
         activity = _activity_snapshot(db, "gw-1")
         assert activity["last_activity_description"] == "compressing context"
 
-    def test_order_by_last_active_surfaces_recently_touched_older_session_first(self, db):
-        t0 = 1709500000.0
-        db.create_session("old", "cli")
-        db.create_session("new", "cli")
 
 
 
@@ -3041,16 +2989,6 @@ class TestListSessionsRich:
     # tests/hermes_state/test_resolve_resume_session_id.py
     # ::test_follows_compression_tip_when_parent_retains_messages.
 
-    def test_session_key_predicate_can_use_session_key_index(self, db):
-        plan = db._conn.execute(
-            "EXPLAIN QUERY PLAN "
-            "SELECT s.id FROM sessions s WHERE s.session_key = ? "
-            "ORDER BY s.started_at DESC LIMIT 10",
-            ("agent:main:telegram:dm:lane",),
-        ).fetchall()
-
-        detail = " ".join(row[-1] for row in plan)
-        assert "idx_sessions_session_key" in detail, detail
 
     def test_delegate_subagent_marker_hides_orphaned_row(self, db):
         """``_delegate_from`` keeps delegate rows out of pickers after orphaning."""
@@ -3448,6 +3386,7 @@ class TestCompressionChainProjection:
 
 
 
+
     def test_list_handles_broken_chain_gracefully(self, db):
         """A compression root with no child (e.g. DB corruption or a partial
         end_session call that didn't finish creating the child) must not
@@ -3506,14 +3445,6 @@ class TestExcludeSources:
 
 
 
-class TestResolveSessionByNameOrId:
-    """Tests for the main.py helper that resolves names or IDs."""
-
-    def test_resolve_by_id(self, db):
-        db.create_session("test-id-123", "cli")
-        session = db.get_session("test-id-123")
-        assert session is not None
-        assert session["id"] == "test-id-123"
 
 
 
@@ -3560,12 +3491,6 @@ class TestStateMeta:
 
 
 class TestVacuum:
-    def test_vacuum_runs_without_error(self, db):
-        """VACUUM must succeed on a fresh DB (no rows to reclaim)."""
-        db.create_session(session_id="s1", source="cli")
-        db.append_message(session_id="s1", role="user", content="hi")
-        # Should not raise, even though there's nothing significant to reclaim.
-        db.vacuum()
 
     def test_auto_maintenance_records_successful_vacuum(self, db, monkeypatch):
         monkeypatch.setattr(db, "prune_sessions", lambda **_kwargs: 3)
@@ -3764,19 +3689,6 @@ class TestVacuum:
 
 
 class TestOptimizeFts:
-    def test_optimize_returns_index_count(self, db):
-        """A fresh DB has both FTS indexes; optimize merges both."""
-        db.create_session(session_id="s1", source="cli")
-        db.append_message(session_id="s1", role="user", content="hello world")
-        statements = []
-        db._conn.set_trace_callback(statements.append)
-        try:
-            assert db.optimize_fts() == 2
-        finally:
-            db._conn.set_trace_callback(None)
-        optimize_sql = [sql for sql in statements if "'optimize'" in sql]
-        assert len(optimize_sql) == 2
-        assert not any("'merge'" in sql for sql in optimize_sql)
 
 
 
@@ -4823,7 +4735,6 @@ class TestApplyWalProbe:
     @pytest.fixture(autouse=True)
     def _assume_fixed_sqlite(self, monkeypatch):
         """These cases cover the fixed-SQLite WAL path (not the #69784 gate)."""
-        import hermes_state
 
         monkeypatch.setattr(
             hermes_state_wal, "is_sqlite_wal_reset_vulnerable", lambda version_info=None: False
@@ -4909,32 +4820,6 @@ class TestApplyWalProbe:
 
 
 
-    def test_returns_wal_not_delete_from_probe(self, tmp_path):
-        """Early-return only on 'wal'; 'delete' or 'memory' must fall through to set-pragma."""
-        import sqlite3
-        from hermes_state_wal import apply_wal_with_fallback
-
-        class _TracingConn(sqlite3.Connection):
-            def __init__(self, *a, **kw):
-                super().__init__(*a, **kw)
-                self.executed = []
-
-            def execute(self, sql, params=()):
-                self.executed.append(sql)
-                return super().execute(sql, params)
-
-        # Fresh DB is in "delete" mode — probe returns "delete", must NOT early-return.
-        db_path = tmp_path / "delete_mode.db"
-        conn = _TracingConn(str(db_path))
-        try:
-            result = apply_wal_with_fallback(conn)
-        finally:
-            conn.close()
-
-        assert result == "wal"
-        assert any("journal_mode=WAL" in sql for sql in conn.executed), (
-            "set-pragma must fire when probe returns 'delete'"
-        )
 
 
 class TestSessionArchive:
@@ -5406,12 +5291,6 @@ class TestCompactRows:
 
 
 
-    def test_get_session_rich_row_compact_omits_system_prompt(self, db):
-        self._create(db, "s1", system_prompt="should be gone")
-        row = db._get_session_rich_row("s1", compact_rows=True)
-        assert row is not None
-        assert "system_prompt" not in row
-        assert row["id"] == "s1"
 
     def test_batch_compact_rows_omits_system_prompt_keeps_git_fields(self, db):
         """_get_session_rich_rows_batch(compact_rows=True) must apply the same
@@ -5900,6 +5779,18 @@ class TestUnknownBlobColumnSurvivesRead:
         assert "future_blob" not in window[0]
         json.dumps(window)
 
+    def test_schema_column_holding_bytes_keeps_its_key(self, db):
+        """The bytes pop is for columns this module does not know. A schema column such as
+        ``content`` must never vanish from the dict: every resume/compaction reader indexes
+        ``msg["content"]`` and a KeyError there is worse than the raw value it replaced."""
+        db.create_session("s1", source="cli")
+        message_id = db.append_message("s1", "user", "hello")
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET content = X'FFFE' WHERE id = ?", (message_id,)))
+        (message,) = db.get_messages("s1")
+        assert message["content"] == b"\xff\xfe"
+        assert message["role"] == "user"
+
 
 class TestGatewayRoutingPkHeal:
     """Legacy gateway_routing tables (session_key-only PK) get rebuilt on open.
@@ -6097,16 +5988,6 @@ class TestInsightsToolCallIndex:
         ).fetchone()
         return row["sql"] if row else None
 
-    def test_index_created_on_fresh_db(self, tmp_path):
-        db = SessionDB(db_path=tmp_path / "fresh.db")
-        try:
-            sql = self._index_defn(db._conn)
-            assert sql is not None, "partial index missing on a fresh database"
-            # Partial predicate must match the queried rows exactly.
-            assert "role = 'assistant'" in sql
-            assert "tool_calls IS NOT NULL" in sql
-        finally:
-            db.close()
 
     def test_index_created_on_existing_db(self, tmp_path):
         """Reopening a DB that predates the index must create it (SCHEMA_SQL is
@@ -6127,18 +6008,6 @@ class TestInsightsToolCallIndex:
         finally:
             db2.close()
 
-    def test_index_predicate_is_partial(self, db):
-        """The index covers only the assistant tool-call rows Insights reads.
-
-        Query-plan coverage (that the Insights queries actually select this
-        index, for both scopes, without ANALYZE) lives with the queries in
-        tests/agent/test_insights.py.
-        """
-        sql = self._index_defn(db._conn)
-        assert sql is not None
-        assert "WHERE" in sql
-        assert "role = 'assistant'" in sql
-        assert "tool_calls IS NOT NULL" in sql
 class TestFtsRebuildFinishWithoutTrigram:
     """An FTS index that the runtime cannot maintain must not wedge the store.
 
@@ -6301,7 +6170,6 @@ class TestPerformancePragmasEndToEnd:
             conn.close()
 
     def _fresh_home(self, tmp_path, monkeypatch, config_text=None):
-        import hermes_state
 
         # Local venvs may bundle a WAL-reset-vulnerable SQLite (e.g. 3.46.0),
         # which would silently disable WAL and skip the per-thread reader

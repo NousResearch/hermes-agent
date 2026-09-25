@@ -74,6 +74,24 @@ export interface RendererBundleDeps {
   existsSync?: (file: string) => boolean
 }
 
+/** The readable `index.html` candidates, deduped, in order. Probed by reading, never by stat:
+ * statting a path inside app.asar goes through Electron's asar shim, which constructs the
+ * deprecated fs.Stats and prints DEP0180 on every packaged launch (#96857). */
+export function presentRendererIndexes(
+  candidates: readonly string[],
+  { readFileSync = fs.readFileSync }: RendererBundleDeps = {}
+): string[] {
+  return [...new Set(candidates)].filter(candidate => {
+    try {
+      readFileSync(candidate, 'utf8')
+
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
 /** Vite's build-time graph avoids opening megabytes of lazy chunks at startup.
  * Only trust a manifest paired with this index's entry and preload generation.
  * Old builds, malformed manifests and interrupted replacements retain the
@@ -87,12 +105,16 @@ function manifestAssetRefs(
   try {
     const manifest = JSON.parse(readFileSync(path.join(path.dirname(indexPath), 'renderer-manifest.json'), 'utf8'))
 
-    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {return null}
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+      return null
+    }
 
     const entry = manifest['index.html']
     const normalize = (ref: string) => ref.replace(/^\.?\//, '')
 
-    if (!entry?.isEntry || !bootRefs.map(normalize).includes(entry.file)) {return null}
+    if (!entry?.isEntry || !bootRefs.map(normalize).includes(entry.file)) {
+      return null
+    }
 
     const refs = new Set<string>()
 
@@ -100,7 +122,9 @@ function manifestAssetRefs(
       typeof ref === 'string' && ref.length > 0 && !/^[a-z]+:|^[/\\]/i.test(ref) && !ref.split(/[/\\]/).includes('..')
 
     for (const chunk of Object.values(manifest) as Record<string, unknown>[]) {
-      if (!chunk || typeof chunk !== 'object' || !localRef(chunk.file)) {return null}
+      if (!chunk || typeof chunk !== 'object' || !localRef(chunk.file)) {
+        return null
+      }
 
       refs.add(chunk.file)
 
@@ -115,13 +139,19 @@ function manifestAssetRefs(
       for (const key of ['css', 'assets']) {
         const assets = chunk[key] ?? []
 
-        if (!Array.isArray(assets) || !assets.every(localRef)) {return null}
+        if (!Array.isArray(assets) || !assets.every(localRef)) {
+          return null
+        }
 
-        for (const ref of assets) {refs.add(ref)}
+        for (const ref of assets) {
+          refs.add(ref)
+        }
       }
     }
 
-    if (!bootRefs.every(ref => refs.has(normalize(ref)))) {return null}
+    if (!bootRefs.every(ref => refs.has(normalize(ref)))) {
+      return null
+    }
 
     return [...refs]
   } catch {

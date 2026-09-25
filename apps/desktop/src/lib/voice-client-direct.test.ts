@@ -4,7 +4,6 @@ import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 
 import {
   clearVoiceClientConfigCache,
-  cutSentences,
   type DirectTtsConfig,
   fetchVoiceClientConfig,
   synthesizeSpeechClientDirect,
@@ -365,47 +364,5 @@ describe('transcriptFromOpenAiMultipartBody', () => {
 
   it('leaves a non-envelope JSON object intact', () => {
     expect(transcriptFromOpenAiMultipartBody('{"error":"nope"}')).toBe('{"error":"nope"}')
-  })
-})
-
-describe('cutSentences', () => {
-  it('emits complete sentences and holds the incomplete tail', () => {
-    const { sentences, rest } = cutSentences('This is the first full sentence. And then it keeps goi', false)
-
-    expect(sentences).toEqual(['This is the first full sentence.'])
-    expect(rest).toBe('And then it keeps goi')
-  })
-
-  it('buffers too-short fragments instead of firing per abbreviation', () => {
-    const { sentences, rest } = cutSentences('e.g. it continues', false)
-
-    expect(sentences).toEqual([])
-    expect(rest).toBe('e.g. it continues')
-  })
-
-  it('flush drains everything including the tail', () => {
-    const { sentences, rest } = cutSentences('First complete sentence right here. tail bit', true)
-
-    expect(sentences).toEqual(['First complete sentence right here.', 'tail bit'])
-    expect(rest).toBe('')
-  })
-
-  it('handles CJK terminators', () => {
-    const { sentences } = cutSentences(
-      '这是一个完整的中文句子，它的长度足够超过最小句子门槛，所以会被切分出来。 下一句',
-      true
-    )
-
-    expect(sentences[0]).toContain('。')
-    expect(sentences).toHaveLength(2)
-  })
-
-  it('cuts a short CJK opener alone when the backend sends tts.streaming.min_len', () => {
-    const text = '记得，叫团团。 然后我们再说第二句话，这一句要长一些才行。 '
-
-    // Historical 24-char floor (older backend, no key): the opener rides with sentence two.
-    expect(cutSentences(text, false).sentences).toEqual(['记得，叫团团。 然后我们再说第二句话，这一句要长一些才行。'])
-    // tts.streaming.min_len = 6 (the CJK voice setup from #96927): spoken on its own.
-    expect(cutSentences(text, false, 6).sentences).toEqual(['记得，叫团团。', '然后我们再说第二句话，这一句要长一些才行。'])
   })
 })

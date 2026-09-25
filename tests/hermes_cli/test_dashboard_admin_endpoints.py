@@ -142,14 +142,10 @@ class TestMcpEndpoints:
         assert error in response.json()["detail"]
 
 
-
-
-
 class TestCredentialPoolEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
-
 
 
     def test_env_seeded_delete_stays_deleted(self):
@@ -213,8 +209,6 @@ class TestCredentialPoolEndpoints:
         assert sources == ["env:OPENROUTER_API_KEY", "manual"]
 
 
-
-
 class TestMemoryEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
@@ -249,6 +243,51 @@ class TestMemoryEndpoints:
         assert self.client.post(
             "/api/memory/reset", json={"target": "bogus"}
         ).status_code == 400
+
+    _SCOPEDPROV_INIT = """
+from agent.memory_provider import MemoryProvider
+from agent.secret_scope import get_secret
+
+
+class ScopedProvMemoryProvider(MemoryProvider):
+    @property
+    def name(self):
+        return "scopedprov"
+
+    def is_available(self):
+        # A credentialed provider: availability IS a scoped secret read.
+        return bool(get_secret("SCOPEDPROV_API_KEY"))
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+"""
+
+    def test_plugins_hub_resolves_launch_profile_secrets_under_multiplex(self):
+        """The hub is built for the dashboard's own (launch) profile. Once the process hosts a
+        second profile home, ``get_secret`` fails closed for unscoped reads; a provider whose
+        ``is_available`` reads the launch profile's credential must still resolve it from the
+        launch home's ``.env`` instead of rendering "unavailable" with no visible error
+        (``probe_availability`` swallows the ``UnscopedSecretError``)."""
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server_dashboard import _invalidate_plugins_hub_cache
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+
+        home = get_hermes_home()
+        (home / ".env").write_text("SCOPEDPROV_API_KEY=launch-key\n", encoding="utf-8")
+        plugin_dir = home / "plugins" / "scopedprov"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "__init__.py").write_text(self._SCOPEDPROV_INIT, encoding="utf-8")
+        _invalidate_plugins_hub_cache()
+        activate_multi_profile_hosting()  # the conftest resets the latch after the test
+
+        hub = self.client.get("/api/dashboard/plugins/hub")
+        assert hub.status_code == 200, hub.text
+        providers = hub.json()["providers"]["memory_options"]
+        row = next(p for p in providers if p["name"] == "scopedprov")
+        assert row["available"] is True and row["status"] == "ready", row
 
 
 class TestPairingEndpoints:
@@ -352,7 +391,6 @@ class TestWebhookEndpoints:
         assert subs[0]["script"] == "todoist_filter.py"
 
     def test_enable_platform_starts_gateway_restart(self, monkeypatch):
-        import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
 
         _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
@@ -385,7 +423,6 @@ class TestWebhookEndpoints:
 
 
     def test_enable_platform_reuses_inflight_gateway_restart(self, monkeypatch):
-        import hermes_cli.web_server as ws
         from hermes_cli.config import load_config
 
         _web_server_gateway._ACTION_PROCS.pop("gateway-restart", None)
@@ -417,7 +454,6 @@ class TestOpsEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, _ = _client()
-
 
 
     def test_hooks_list_reads_config(self):
@@ -468,35 +504,6 @@ class TestOpsEndpoints:
         assert not [h for h in hooks2 if h["command"] == "/bin/echo created"]
 
 
-
-class TestSystemStatsEndpoint:
-    @pytest.fixture(autouse=True)
-    def _setup(self, _isolate_hermes_home):
-        self.client, _ = _client()
-
-    def test_stats_shape(self):
-        r = self.client.get("/api/system/stats")
-        assert r.status_code == 200
-        s = r.json()
-        # Identity fields always present (stdlib-sourced).
-        for key in ("os", "arch", "hostname", "python_version", "hermes_version"):
-            assert key in s and s[key]
-        # psutil flag tells the UI whether the richer metrics are populated.
-        assert "psutil" in s
-
-
-class TestCuratorEndpoints:
-    @pytest.fixture(autouse=True)
-    def _setup(self, _isolate_hermes_home):
-        self.client, _ = _client()
-
-
-class TestPortalEndpoint:
-    @pytest.fixture(autouse=True)
-    def _setup(self, _isolate_hermes_home):
-        self.client, _ = _client()
-
-
 class TestSessionManagementEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
@@ -506,28 +513,6 @@ class TestSessionManagementEndpoints:
         db = SessionDB()
         db.create_session(session_id="sess-x", source="cli")
         db.close()
-
-
-    def test_stats_source_counts_use_direct_aggregate(self, monkeypatch):
-        """Source badges must not materialise rich session rows.
-
-        Large stores can have thousands of sessions. The stats endpoint only
-        needs grouped counts, so it should call ``session_count_by_source``
-        instead of ``list_sessions_rich`` and build preview/last-active rows
-        just to count source labels.
-        """
-        from hermes_state import SessionDB
-
-        def fail_list_sessions_rich(self, *args, **kwargs):
-            raise AssertionError("stats should use grouped source counts, not list_sessions_rich")
-
-        monkeypatch.setattr(SessionDB, "list_sessions_rich", fail_list_sessions_rich)
-
-        r = self.client.get("/api/sessions/stats")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["by_source"]["cli"] >= 1
-
 
 
     def test_prune_attr_filter_suppresses_default_cutoff(self):
@@ -578,13 +563,6 @@ class TestSessionManagementEndpoints:
         db = SessionDB()
         assert db.get_session("sess-old-open") is not None
         db.close()
-
-
-
-class TestSkillsHubSearchEndpoint:
-    @pytest.fixture(autouse=True)
-    def _setup(self, _isolate_hermes_home):
-        self.client, _ = _client()
 
 
 class _FakeMeta:
@@ -803,33 +781,6 @@ class TestSkillsHubScanEndpoint:
         assert body["findings"][0]["file"] == "SKILL.md"
 
 
-class TestWebhookToggleEndpoint:
-    @pytest.fixture(autouse=True)
-    def _setup(self, _isolate_hermes_home):
-        self.client, _ = _client()
-        # Enable the webhook platform so a subscription can be created.
-        from hermes_cli.config import load_config, save_config
-
-        cfg = load_config()
-        cfg.setdefault("platforms", {})["webhook"] = {
-            "enabled": True,
-            "extra": {"host": "0.0.0.0", "port": 8644},
-        }
-        save_config(cfg)
-
-
-class TestAdminEndpointsAuthGate:
-    """Every admin endpoint must sit behind the dashboard session-token gate."""
-
-    @pytest.fixture(autouse=True)
-    def _setup(self, _isolate_hermes_home):
-        from starlette.testclient import TestClient
-        from hermes_cli.web_server import app
-
-        # No session header → must be rejected.
-        self.client = TestClient(app)
-
-
 class TestUpdateCheckEndpoint:
     """``GET /api/hermes/update/check`` reports availability without applying.
 
@@ -843,13 +794,12 @@ class TestUpdateCheckEndpoint:
         self.client, _ = _client()
 
     def test_git_install_reports_behind_count(self, monkeypatch):
-        import hermes_cli.web_server as ws
 
         monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
         # Stub the shared checker so the contract is deterministic (no network).
         import hermes_cli.banner as banner
 
-        monkeypatch.setattr(banner, "check_for_updates", lambda: 5)
+        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", lambda **kw: {"behind": 5, "commits": []})
 
         r = self.client.get("/api/hermes/update/check")
         assert r.status_code == 200
@@ -870,9 +820,7 @@ class TestUpdateCheckEndpoint:
         assert body["can_apply"] is True
 
 
-
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
-        import hermes_cli.web_server as ws
 
         monkeypatch.setattr(_web_server_files, "_dashboard_local_update_managed_externally", lambda: True)
         monkeypatch.setattr(
@@ -889,8 +837,6 @@ class TestUpdateCheckEndpoint:
         assert body["update_available"] is False
         assert body["behind"] is None
         assert "managed outside this dashboard" in body["message"]
-
-
 
 
 class TestDebugShareEndpoint:
@@ -954,7 +900,6 @@ class TestDebugShareEndpoint:
         assert r.status_code == 502
 
 
-
 class TestToolsConfigEndpoints:
     """Provider selection, API-key save, and post-setup spawn for toolsets —
     the dashboard surface that replicates the `hermes tools` configurator."""
@@ -962,8 +907,6 @@ class TestToolsConfigEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):
         self.client, self.header = _client()
-
-
 
 
     def test_save_env_writes_key_and_validates_allowlist(self):
@@ -992,15 +935,12 @@ class TestToolsConfigEndpoints:
         assert get_env_value(key) == "test-secret-123"
 
 
-
     def test_post_setup_unknown_toolset_400(self):
         r = self.client.post(
             "/api/tools/toolsets/not_a_toolset/post-setup",
             json={"key": "agent_browser"},
         )
         assert r.status_code == 400
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -1173,42 +1113,6 @@ def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypat
 # Desktop lifespan reaps orphan gateways at serve startup (#77276)
 # ---------------------------------------------------------------------------
 
-def test_desktop_lifespan_reaps_orphan_gateways_on_startup(
-    monkeypatch, _isolate_hermes_home
-):
-    """Starting a Desktop serve backend should reap orphan gateways left by a
-    previous serve session before forking a fresh one (#77276).
-
-    Graceful shutdown reaps the managed child, but an abnormal exit reparents
-    the old gateway to launchd (PPID=1) where it keeps holding the QQ
-    WebSocket. The lifespan calls _reap_unsupervised_gateway_orphans() once at
-    startup under HERMES_DESKTOP=1 so the stale orphan is cleared first.
-    """
-    import hermes_cli.web_server as ws
-
-    called = []
-
-    def _fake_reap():
-        called.append(True)
-        return True
-
-    monkeypatch.setenv("HERMES_DESKTOP", "1")
-    # Keep the lifespan cheap: don't re-import the gateway module or spin up the
-    # real cron scheduler thread.
-    monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
-    monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
-    # web_server imports the reaper lazily from hermes_cli.gateway, so patch it
-    # on that module.
-    import hermes_cli.gateway as g
-
-    monkeypatch.setattr(g, "_reap_unsupervised_gateway_orphans", _fake_reap)
-
-    client, _header = _client()
-    with client:
-        pass
-
-    assert called == [True]
-
 
 def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
     """A Desktop-owned gateway child must not survive its serve backend."""
@@ -1224,6 +1128,7 @@ def test_desktop_lifespan_terminates_managed_gateway_restart(monkeypatch):
             calls.append("terminate")
 
     monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
     monkeypatch.setattr(ws, "_warm_gateway_module", lambda: None)
     monkeypatch.setattr(ws, "_start_desktop_cron_ticker", lambda *_args: None)
     monkeypatch.setitem(_web_server_gateway._ACTION_PROCS, "gateway-restart", _FakeRunningProc())

@@ -87,12 +87,16 @@ def resolve_copilot_token() -> tuple[str, str]:
 
 
 def _gh_cli_candidates() -> list[str]:
-    """Candidate ``gh`` binary paths, including common Homebrew installs."""
-    candidates: list[str] = [c for c in (shutil.which("gh"),) if c]
-    candidates += [
-        c for c in ("/opt/homebrew/bin/gh", "/usr/local/bin/gh", str(Path.home() / ".local/bin/gh"))
-        if c not in candidates and os.path.isfile(c) and os.access(c, os.X_OK)]
-    return candidates
+    """Every present ``gh`` in probe order: PATH first, then Homebrew and ``~/.local/bin``."""
+    from hermes_platform.resolver import locate_command
+    from hermes_platform.resolver.known_dirs import homebrew_dirs, user_local_bin
+
+    res = locate_command("gh", known_dirs=(*homebrew_dirs(), *user_local_bin()))
+    seen: list[str] = []
+    for cand in res.present:
+        if cand.value not in seen:
+            seen.append(cand.value)
+    return seen
 
 
 # ``gh auth token`` cache (misses too). With no credential store the probe blocks its full 5s on
@@ -264,7 +268,7 @@ def _read_jwt_store(path: Path) -> Optional[dict]:
             logger.debug("Persisted Copilot JWT store exceeds %d bytes; ignoring",
                          _JWT_DISK_MAX_BYTES)
             return None
-        loaded = json.loads(path.read_text(encoding="utf-8"))
+        loaded = json.loads(path.read_text(encoding="utf-8-sig"))
         return loaded if isinstance(loaded, dict) else None
     except Exception as exc:
         logger.debug("Failed to read persisted Copilot JWT store: %s", exc)

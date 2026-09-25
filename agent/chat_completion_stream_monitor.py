@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from agent import chat_completion_wait_notice as wn
 from agent.model_metadata import is_local_endpoint
+from agent.stream_liveness import describe_silence
 
 
 class StreamingWaitMonitor:
@@ -17,7 +18,8 @@ class StreamingWaitMonitor:
         from agent.chat_completion_helpers import _managed_local_load_notice
 
         m = self._mon
-        if now - self.last_chunk_time["t"] < 2.0 or now - m.last_load_poll < 1.0:
+        awake_secs, _ = self.stream_liveness.silence()
+        if awake_secs < 2.0 or now - m.last_load_poll < 1.0:
             return False
         m.last_load_poll = now
         _load_notice = _managed_local_load_notice(self.agent, self.api_kwargs)
@@ -36,31 +38,33 @@ class StreamingWaitMonitor:
                 self.agent._emit_wait_notice("")
         return False
 
-    def _heartbeat(self, waiting_secs: int) -> None:
-        """Gateway inactivity heartbeat: the start-to-first-chunk gap (thinking,
-        local prefill) can exceed the gateway timeout."""
-        if waiting_secs >= 60.0:
+    def _heartbeat(self, awake_secs: float, suspend_secs: float = 0.0) -> None:
+        """Gateway inactivity heartbeat, excluding host-suspend time."""
+        elapsed = describe_silence(awake_secs, suspend_secs)
+        if awake_secs >= 60.0:
             # No chunks for 60s+: say WHAT the wait is and WHEN recovery kicks in —
             # once per silence, not every heartbeat (#92550).
             stale = self._stream_stale_timeout
-            watchdog = ("stream stale", stale - waiting_secs) if stale is not None and stale != float("inf") else None
+            watchdog = ("stream stale", stale - awake_secs) if stale is not None and stale != float("inf") else None
             diag = getattr(getattr(self, "clients", None), "diag", None)
             phase = "post_chunk" if isinstance(diag, dict) and diag.get("first_chunk_at") else "first_chunk"
             if not self._mon.wait_notice.should_emit(phase, watchdog):
-                self.agent._touch_activity(f"waiting for stream response ({waiting_secs}s, {phase})")
+                self.agent._touch_activity(f"waiting for stream response ({elapsed}, {phase})")
                 return
             self._mon.wait_notice_started_ts = self._mon.last_heartbeat
             self.agent._emit_wait_notice(wn.wait_notice_text(
-                self.api_kwargs.get('model', 'the provider'), waiting_secs, phase, watchdog))
+                self.api_kwargs.get('model', 'the provider'), awake_secs, phase, watchdog,
+                suspend_secs=suspend_secs))
         else:
             # Chunks are flowing — keep the tracker fresh, leave the display alone.
-            self.agent._touch_activity(f"waiting for stream response ({waiting_secs}s, no chunks yet)")
+            self.agent._touch_activity(f"waiting for stream response ({elapsed}, no chunks yet)")
 
     def _monitor_loop(self) -> None:
         _HEARTBEAT_INTERVAL = 30.0  # seconds between gateway activity touches
         self._mon = SimpleNamespace(
             last_heartbeat=time.time(), last_load_poll=0.0,
             load_notice_shown=False, load_notice_misses=0, wait_notice_started_ts=None,
+            stale_kill_stamp=None,
             wait_notice=wn.WaitNoticeState(),
         )
         _is_local_base = bool(self.agent.base_url) and is_local_endpoint(self.agent.base_url)
@@ -76,15 +80,22 @@ class StreamingWaitMonitor:
                 self.agent._emit_wait_notice("")
                 self._mon.wait_notice_started_ts = None
                 self._mon.wait_notice.reset()
+            awake_elapsed, suspend_elapsed = self.stream_liveness.silence()
+            if (self._mon.stale_kill_stamp is not None
+                    and self.last_chunk_time["t"] != self._mon.stale_kill_stamp):
+                self._mon.stale_kill_stamp = None
             if _hb_now - self._mon.last_heartbeat >= _HEARTBEAT_INTERVAL:
                 self._mon.last_heartbeat = _hb_now
-                self._heartbeat(int(_hb_now - self.last_chunk_time["t"]))
-            _stale_elapsed = time.time() - self.last_chunk_time["t"]
-            if _stale_elapsed > self._stream_stale_timeout:
+                if self._mon.stale_kill_stamp is None:
+                    self._heartbeat(awake_elapsed, suspend_elapsed)
+                else:
+                    self.agent._touch_activity("waiting for stream reconnect")
+            if awake_elapsed > self._stream_stale_timeout and self._mon.stale_kill_stamp is None:
                 self._mon.wait_notice_started_ts = None  # Reconnect status has its own owner.
                 self._mon.wait_notice.reset()
-                self._kill_stale_stream(_stale_elapsed)
+                self._mon.stale_kill_stamp = self.last_chunk_time["t"]
+                self._kill_stale_stream(awake_elapsed, suspend_elapsed)
             if self.agent._interrupt_requested:
-                self._abort_for_interrupt(_stale_elapsed)
+                self._abort_for_interrupt(awake_elapsed, suspend_elapsed)
                 return
 

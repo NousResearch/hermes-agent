@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from agent import chat_completion_helpers as h
+from agent.stream_liveness import StreamLiveness
 
 
 @pytest.mark.parametrize("local_loading,heartbeat_race", [(False, False), (True, False), (False, True)])
@@ -11,6 +12,9 @@ def test_resumed_chunks_clear_wait_without_erasing_local_load(monkeypatch, local
     call = h._StreamingCall.__new__(h._StreamingCall)
     notices, touches = [], []
     now = [1000.0]
+    monotonic_now = [1000.0]
+    monkeypatch.setattr(h.time, "time", lambda: now[0])
+    monkeypatch.setattr(h.time, "monotonic", lambda: monotonic_now[0])
     call.agent = SimpleNamespace(
         base_url="http://localhost:1234" if local_loading else "https://example.com",
         _interrupt_requested=False,
@@ -18,21 +22,22 @@ def test_resumed_chunks_clear_wait_without_erasing_local_load(monkeypatch, local
         _touch_activity=lambda text: touches.append((now[0], text)),
     )
     call.api_kwargs = {"model": "test-model"}
-    call.last_chunk_time = {"t": now[0]}
+    call.stream_liveness = StreamLiveness()
+    call.last_chunk_time = {"t": call.stream_liveness.touch()}
     call._stream_stale_timeout = 180.0
     loading = "Loading local model weights"
     monkeypatch.setattr(h, "_managed_local_load_notice",
                         lambda *args: loading if now[0] >= 1060.6 else None)
-    monkeypatch.setattr(h.time, "time", lambda: now[0])
 
     if heartbeat_race:
         heartbeat = call._heartbeat
 
-        def resume_before_notice(waiting_secs):
-            if waiting_secs >= 60:
+        def resume_before_notice(awake_secs, suspend_secs=0.0):
+            if awake_secs >= 60:
                 now[0] += 0.1
-                call.last_chunk_time["t"] = now[0]
-            heartbeat(waiting_secs)
+                monotonic_now[0] += 0.1
+                call.last_chunk_time["t"] = call.stream_liveness.touch()
+            heartbeat(awake_secs, suspend_secs)
 
         monkeypatch.setattr(call, "_heartbeat", resume_before_notice)
 
@@ -42,8 +47,9 @@ def test_resumed_chunks_clear_wait_without_erasing_local_load(monkeypatch, local
 
         def wait(self, timeout):
             now[0] = round(now[0] + timeout, 1)
+            monotonic_now[0] = round(monotonic_now[0] + timeout, 1)
             if not heartbeat_race and now[0] >= 1061.5:
-                call.last_chunk_time["t"] = now[0]
+                call.last_chunk_time["t"] = call.stream_liveness.touch()
 
     call._call_done = Done()
     call._monitor_loop()

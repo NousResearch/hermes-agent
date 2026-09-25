@@ -11,6 +11,8 @@ retry policy live with the watchdogs; this is presentation only.
 import math
 from typing import Optional
 
+from agent.stream_liveness import describe_silence
+
 NEAR_DEADLINE_SECS = 15.0
 
 
@@ -20,21 +22,23 @@ def _near_deadline(watchdog: Optional[tuple[str, float]]) -> bool:
 
 _PHASE_TEXT = {
     # Codex Responses (non-stream request path)
-    "first_event": "{n}s waiting for the first provider event",
-    "reconnect": "{n}s waiting for the first provider event after reconnect",
-    "pre_progress": "provider stream open; {n}s without substantive model progress",
-    "post_event": "provider stream active; {n}s without stream events",
+    "first_event": "{n} waiting for the first provider event",
+    "reconnect": "{n} waiting for the first provider event after reconnect",
+    "pre_progress": "provider stream open; {n} without substantive model progress",
+    "post_event": "provider stream active; {n} without stream events",
     # Chat-completions streaming path
-    "first_chunk": "{n}s waiting for the first stream chunk",
-    "post_chunk": "stream open; {n}s without stream output",
+    "first_chunk": "{n} waiting for the first stream chunk",
+    "post_chunk": "stream open; {n} without stream output",
 }
 
 
 def wait_notice_text(model: str, silence_secs: float, phase: str,
-                     watchdog: Optional[tuple[str, float]] = None) -> str:
+                     watchdog: Optional[tuple[str, float]] = None,
+                     suspend_secs: float = 0.0) -> str:
     """One neutral status line. ``watchdog`` is ``(label, seconds_until_it_fires)``."""
     lead = "still waiting on" if _near_deadline(watchdog) else "waiting on"
-    text = f"⏳ {lead} {model} — " + _PHASE_TEXT[phase].format(n=int(silence_secs))
+    silence = describe_silence(silence_secs, suspend_secs)
+    text = f"⏳ {lead} {model} — " + _PHASE_TEXT[phase].format(n=silence)
     if watchdog is not None:
         label, remaining = watchdog
         text += f" (auto-reconnect: {label} watchdog in {max(0, int(remaining))}s)"

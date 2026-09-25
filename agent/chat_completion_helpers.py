@@ -32,6 +32,7 @@ from agent.error_classifier import (
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_stream_monitor import StreamingWaitMonitor
+from agent.stream_liveness import StreamLiveness, describe_silence
 from agent.transports.chat_completions import is_router_timeout_shim, router_timeout_shim_may_follow
 from agent.fast_mode import effective_request_overrides
 from agent.turn_context import substitute_api_content
@@ -568,37 +569,39 @@ def _reset_stale_streak(agent) -> None:
 _INTERRUPTED_WAIT_STALE_SECONDS = 30.0
 
 
-def _record_interrupted_provider_wait(agent, elapsed: float, *, response_started: bool) -> bool:
+def _record_interrupted_provider_wait(agent, elapsed: float, *, response_started: bool,
+    suspend_secs: float = 0.0) -> bool:
     """Count a user-aborted pre-response stall toward the stale breaker: past the
     wait-notice interval an interrupt is evidence of an unresponsive attempt.
     Mid-response and early interrupts stay neutral."""
     if response_started or elapsed < _INTERRUPTED_WAIT_STALE_SECONDS:
         return False
     _bump_stale_streak(agent)
-    logger.warning("Interrupted provider wait counted as stale after %.0fs with no output; "
-        "consecutive stale attempts=%d.", elapsed, _stale_streak(agent))
+    logger.warning("Interrupted provider wait counted as stale after %s with no output; "
+        "consecutive stale attempts=%d.", describe_silence(elapsed, suspend_secs), _stale_streak(agent))
     return True
 
 
 def _report_stale_nonstream_kill(agent, api_kwargs: dict, elapsed: float, stale_timeout: float, *,
-    inline: bool = False, hint: Optional[str] = None) -> None:
+    suspend_secs: float = 0.0, inline: bool = False, hint: Optional[str] = None) -> None:
     """Log + status message for a stale non-streaming kill, shared by the worker
     poll loop and the inline ``direct_api_call`` watchdog (their kill/state
     sequences differ deliberately: different locking models)."""
     model = api_kwargs.get("model", "unknown")
-    logger.warning("%son-streaming API call stale for %.0fs (threshold %.0fs). "
-        "model=%s context=~%s tokens. Killing connection.", "Inline n" if inline else "N", elapsed,
+    silence = describe_silence(elapsed, suspend_secs)
+    logger.warning("%son-streaming API call stale for %s (threshold %.0fs). "
+        "model=%s context=~%s tokens. Killing connection.", "Inline n" if inline else "N", silence,
         stale_timeout, model, f"{estimate_request_context_tokens(api_kwargs):,}")
     try:
         agent._buffer_diagnostic_status(
-            f"⚠️ No response from provider for {int(elapsed)}s (non-streaming, model: {model}). {hint or 'Aborting call.'}")
+            f"⚠️ No response from provider for {silence} (non-streaming, model: {model}). {hint or 'Aborting call.'}")
     except Exception:
         logger.debug("stale status buffering failed", exc_info=True)
 
 
-def _touch_stale_kill_activity(agent, elapsed: float) -> None:
+def _touch_stale_kill_activity(agent, elapsed: float, suspend_secs: float = 0.0) -> None:
     try:
-        agent._touch_activity(f"stale non-streaming call killed after {int(elapsed)}s")
+        agent._touch_activity(f"stale non-streaming call killed after {describe_silence(elapsed, suspend_secs)}")
     except Exception:
         logger.debug("stale activity touch failed", exc_info=True)
 
@@ -899,11 +902,15 @@ class _InlineRequest:
     unwind; ``cancelled`` lets an interrupt own the outcome so a racing timer can't
     misclassify the kill as staleness; ``stale`` is the one-shot transition."""
 
-    def __init__(self, agent, api_kwargs: dict, stale_timeout: float, call_start: float):
+    def __init__(self, agent, api_kwargs: dict, stale_timeout: float, call_start: float,
+        liveness: Optional[StreamLiveness] = None):
         self.agent = agent
         self.api_kwargs = api_kwargs
         self.stale_timeout = stale_timeout
         self.call_start = call_start
+        self.liveness = liveness if liveness is not None else StreamLiveness()
+        if liveness is None:
+            self.liveness.touch()
         self.client = None
         self.done = False
         self.stale = False
@@ -924,20 +931,32 @@ class _InlineRequest:
     def _on_stale(self) -> None:
         # Timer thread: aborts sockets only, never issues a request (keeps the no-worker
         # property). False = request finished or an interrupt owns the outcome; stay silent.
+        elapsed, suspend_secs = self.liveness.silence()
+        if elapsed < self.stale_timeout:
+            self._schedule_stale_watchdog(self.stale_timeout - elapsed)
+            return
         if not self.abort("stale_call_kill"):
             return
-        elapsed = time.time() - self.call_start
-        _report_stale_nonstream_kill(self.agent, self.api_kwargs, elapsed, self.stale_timeout, inline=True)
-        _touch_stale_kill_activity(self.agent, elapsed)
+        _report_stale_nonstream_kill(
+            self.agent, self.api_kwargs, elapsed, self.stale_timeout,
+            suspend_secs=suspend_secs, inline=True)
+        _touch_stale_kill_activity(self.agent, elapsed, suspend_secs)
+
+    def _schedule_stale_watchdog(self, delay: float) -> None:
+        with self.lock:
+            if self.done or self.cancelled or self.stale:
+                return
+            watchdog = threading.Timer(delay, self._on_stale)
+            watchdog.name = "direct-api-stale-watchdog"
+            watchdog.daemon = True
+            self._watchdog = watchdog
+            watchdog.start()
 
     def start_watchdogs(self) -> None:
         """Start the activity heartbeat and (for a finite budget) the stale timer."""
         self._hb.start()
         if math.isfinite(self.stale_timeout) and self.stale_timeout > 0:
-            self._watchdog = threading.Timer(self.stale_timeout, self._on_stale)
-            self._watchdog.name = "direct-api-stale-watchdog"
-            self._watchdog.daemon = True
-            self._watchdog.start()
+            self._schedule_stale_watchdog(self.stale_timeout)
 
     def stop_watchdogs(self) -> None:
         if self._watchdog is not None:
@@ -1021,14 +1040,15 @@ def direct_api_call(agent, api_kwargs: dict):
     agent._touch_activity("waiting for non-streaming API response")
     # Resolve the budget BEFORE the heartbeat starts: the resolver may raise
     # (fail-closed), and a leaked heartbeat thread would mask real stalls forever.
-    call_start = time.time()
+    call_liveness = StreamLiveness()
+    call_start = call_liveness.touch()
     stale_timeout = _resolve_direct_stale_timeout(agent, api_kwargs)
     # Never override an explicit per-call timeout; otherwise pin read=stale_timeout so a
     # no-op abort can't leave the read=None socket hanging until TCP dies (#85252).
     hard_timeout = _inline_nonstream_hard_timeout(stale_timeout)
     if hard_timeout is not None and "timeout" not in api_kwargs:
         api_kwargs = {**api_kwargs, "timeout": hard_timeout}
-    request = _InlineRequest(agent, api_kwargs, stale_timeout, call_start)
+    request = _InlineRequest(agent, api_kwargs, stale_timeout, call_start, liveness=call_liveness)
     request.start_watchdogs()
 
     # Only a clean return reports the reuse reason; errors/interrupts really
@@ -1044,8 +1064,9 @@ def direct_api_call(agent, api_kwargs: dict):
         if was_stale:
             # Our own abort caused the transport error: raise a retryable
             # TimeoutError, never InterruptedError ("the user wants to stop").
+            elapsed, suspend_secs = request.liveness.silence()
             raise TimeoutError(
-                f"Non-streaming API call timed out after {int(time.time() - call_start)}s with no response "
+                f"Non-streaming API call timed out after {describe_silence(elapsed, suspend_secs)} with no response "
                 f"(threshold: {int(stale_timeout)}s)") from None
         raise
     else:
@@ -2591,8 +2612,10 @@ class _BedrockStream:
         self.response_started = False
         # Liveness for the boto3 worker: ``for event in event_stream`` has NO read timeout,
         # so on_event stamps every event and the poll loop trips a watchdog on a long gap.
-        self.started_at = time.time()
-        self.last_event = self.started_at
+        self.started_liveness = StreamLiveness()
+        self.started_at = self.started_liveness.touch()
+        self.event_liveness = StreamLiveness()
+        self.last_event = self.event_liveness.touch()
         # Read (not popped): the worker's own pop inside _open_stream must
         # still resolve the same region.
         self.region = api_kwargs.get("__bedrock_region__", "us-east-1")
@@ -2648,7 +2671,7 @@ class _BedrockStream:
                 return token is None or stream_writer_is_current(agent, token)
 
             def _stamp_event() -> None:
-                self.last_event = time.time()
+                self.last_event = self.event_liveness.touch()
 
             try:
                 from agent.plugin_stream_hooks import has_reasoning_stream_observer_hooks
@@ -2686,21 +2709,23 @@ class _BedrockStream:
     def _raise_if_interrupted(self, message: str, worker=None) -> None:
         if not self.agent._interrupt_requested:
             return
+        elapsed, suspend_secs = self.started_liveness.silence()
         _record_interrupted_provider_wait(
-            self.agent, time.time() - self.started_at, response_started=self.response_started)
+            self.agent, elapsed, response_started=self.response_started, suspend_secs=suspend_secs)
         if worker is not None:
             # Let the worker unwind Relay scopes before raising (#81521).
             _join_worker_for_relay_teardown(worker, label="Bedrock streaming")
         raise InterruptedError(message)
 
-    def _on_stale(self, stale_elapsed: float) -> None:
+    def _on_stale(self, stale_elapsed: float, suspend_secs: float = 0.0) -> None:
         """No event past the stale timeout = wedged stream (the worker would
         block in the event loop forever)."""
         agent = self.agent
-        logger.warning("Bedrock stream stale for %.0fs (threshold %.0fs) — no events "
-            "received. region=%s model=%s. Aborting call.", stale_elapsed, self.stale_timeout, self.region,
+        silence = describe_silence(stale_elapsed, suspend_secs)
+        logger.warning("Bedrock stream stale for %s (threshold %.0fs) — no events "
+            "received. region=%s model=%s. Aborting call.", silence, self.stale_timeout, self.region,
             self._model())
-        agent._buffer_diagnostic_status(f"⚠️ No events from Bedrock for {int(stale_elapsed)}s (model: {self._model()}). Aborting...")
+        agent._buffer_diagnostic_status(f"⚠️ No events from Bedrock for {silence} (model: {self._model()}). Aborting...")
         _bump_stale_streak(agent)
         # Evict the region's cached client so the NEXT call gets a fresh pool.
         # This does NOT abort the in-flight botocore EventStream (no external
@@ -2711,12 +2736,12 @@ class _BedrockStream:
             invalidate_runtime_client(self.region)
         except Exception as _inval_exc:
             logger.debug("bedrock: stale client eviction failed: %s", _inval_exc)
-        self.last_event = time.time()
+        self.last_event = self.event_liveness.touch()
         # Raises RuntimeError past HERMES_STREAM_STALE_GIVEUP; otherwise end
         # THIS call with a TimeoutError and let the streak carry forward.
         _check_stale_giveup(agent)
         self.result["error"] = TimeoutError(
-            f"Bedrock stream produced no events for {int(stale_elapsed)}s (threshold {int(self.stale_timeout)}s) "
+            f"Bedrock stream produced no events for {silence} (threshold {int(self.stale_timeout)}s) "
             f"— aborting stalled stream so the retry/fallback path can recover.")
 
     def _poll(self):
@@ -2725,9 +2750,9 @@ class _BedrockStream:
         while t.is_alive():
             t.join(timeout=0.3)
             self._raise_if_interrupted("Agent interrupted during Bedrock API call", worker=t)
-            stale_elapsed = time.time() - self.last_event
+            stale_elapsed, suspend_secs = self.event_liveness.silence()
             if stale_elapsed > self.stale_timeout:
-                self._on_stale(stale_elapsed)
+                self._on_stale(stale_elapsed, suspend_secs)
                 break
         # The Bedrock callback returns a PARTIAL response on interrupt without raising
         # (on_interrupt_check), so the in-loop raise may never fire. Re-check (#59999 area).
@@ -2829,7 +2854,8 @@ class _StreamingCall(StreamingWaitMonitor):
         self.deltas_were_sent = {"yes": False}  # for the partial-delivery fallback
         self.provider_tool_in_flight = {"yes": False}
         # Last REAL chunk; the monitor detects SSE-ping-only connections with it.
-        self.last_chunk_time = {"t": time.time()}
+        self.stream_liveness = StreamLiveness()
+        self.last_chunk_time = {"t": self.stream_liveness.touch()}
         # Shared by the socket read timeout (``_stream_timeouts``) and the stale
         # detector (``_resolve_stale_timeout``); None until resolved.
         self._stream_stale_timeout = None
@@ -2965,7 +2991,7 @@ class _StreamingCall(StreamingWaitMonitor):
 
     def _count_chunk(self, diag, chunk) -> None:
         """Stamp liveness for a real chunk; diagnostics are best-effort."""
-        self.last_chunk_time["t"] = time.time()
+        self.last_chunk_time["t"] = self.stream_liveness.touch()
         self.agent._touch_activity("receiving stream response")
         with contextlib.suppress(Exception):
             diag["chunks"] = int(diag.get("chunks", 0)) + 1
@@ -3030,7 +3056,7 @@ class _StreamingCall(StreamingWaitMonitor):
             stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = self._attempt_request_client = self.clients.set_client(
             self.agent._create_request_openai_client(reason="chat_completion_stream_request", api_kwargs=stream_kwargs))
-        self.last_chunk_time["t"] = time.time()
+        self.last_chunk_time["t"] = self.stream_liveness.touch()
         self.agent._touch_activity("waiting for provider response (streaming)")
         # #93650: as above — the streaming path carries the same bulk
         # messages/tools payload and pays the same client-side walk.
@@ -3086,7 +3112,7 @@ class _StreamingCall(StreamingWaitMonitor):
             return False
         # Stamp BEFORE Relay processes the chunk so the watchdog can't cancel
         # a live stream mid-interceptor.
-        self.last_chunk_time["t"] = time.time()
+        self.last_chunk_time["t"] = self.stream_liveness.touch()
         return True
 
     def _writer_still_current(self, label: str) -> bool:
@@ -3397,7 +3423,7 @@ class _StreamingCall(StreamingWaitMonitor):
         # No message_stop -> EmptyStreamError; saw_stream_event only picks the message.
         saw_stream_event = False
         saw_message_stop = False
-        self.last_chunk_time["t"] = time.time()
+        self.last_chunk_time["t"] = self.stream_liveness.touch()
         _diag = self._new_diag()
         self._writer_token = self._attempt_stream_response = None
         self._attempt_request_client = request_client
@@ -3506,7 +3532,7 @@ class _StreamingCall(StreamingWaitMonitor):
             self.agent, jittered_backoff(attempt + 1, base_delay=1.0, max_delay=4.0, jitter_ratio=0.0))
         # The backoff is not the dead attempt's silence: restart the stale clock so the
         # stale monitor cannot kill (and strike) a stream that has not reopened yet.
-        self.last_chunk_time["t"] = time.time()
+        self.last_chunk_time["t"] = self.stream_liveness.touch()
 
     def _maybe_disable_streaming(self, e) -> None:
         """Flip to non-streaming for failures streaming itself cannot survive, or that
@@ -3804,19 +3830,20 @@ class _StreamingCall(StreamingWaitMonitor):
         except Exception:
             logger.debug("Stale stream socket shutdown failed", exc_info=True)
 
-    def _kill_stale_stream(self, elapsed: float) -> None:
+    def _kill_stale_stream(self, elapsed: float, suspend_secs: float = 0.0) -> None:
         """SSE pings but no chunks: cancel the attempt and abort the request-local
         client so the retry loop opens a fresh one. The shared client is never
         closed from this (stranger) thread — earlier stale-killed workers may
         still be unwinding SSL BIOs (FD-recycle corruption); the OpenAI primary
         is replaced lazily."""
+        silence = describe_silence(elapsed, suspend_secs)
         _est_ctx = estimate_request_context_tokens(self.api_kwargs)
         logger.warning(
-            "Stream stale for %.0fs (threshold %.0fs) — no chunks received. model=%s context=~%s tokens. Killing connection.",
-            elapsed, self._stream_stale_timeout, self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
+            "Stream stale for %s (threshold %.0fs) — no chunks received. model=%s context=~%s tokens. Killing connection.",
+            silence, self._stream_stale_timeout, self.api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
         )
         self.agent._buffer_diagnostic_status(
-            f"⚠️ No response from provider for {int(elapsed)}s (model: {self.api_kwargs.get('model', 'unknown')}, "
+            f"⚠️ No response from provider for {silence} (model: {self.api_kwargs.get('model', 'unknown')}, "
             f"context: ~{_est_ctx:,} tokens). Reconnecting...")
         # Captured BEFORE the cancel/abort: the pool sweep can miss a checked-out
         # connection, so shut down the killed attempt's own socket too — still
@@ -3827,17 +3854,18 @@ class _StreamingCall(StreamingWaitMonitor):
             self.clients.close_once("stale_stream_kill")
         self._shutdown_stale_attempt_socket(_killed_response)
         _bump_stale_streak(self.agent)  # circuit breaker, see ``_stale_streak()``
-        # Reset the timer so we don't kill repeatedly while the worker unwinds.
-        self.last_chunk_time["t"] = time.time()
-        self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {int(elapsed)}s — reconnecting...")
-        self.agent._touch_activity(f"stale stream detected after {int(elapsed)}s, reconnecting")
+        # A monitor-local latch suppresses repeat kills until the producer stamps new activity.
+        self.agent._emit_diagnostic_wait(f"⚠ no output from provider for {silence} — reconnecting...")
+        self.agent._touch_activity(f"stale stream detected after {silence}, reconnecting")
 
-    def _abort_for_interrupt(self, stale_elapsed: float) -> None:
+    def _abort_for_interrupt(self, stale_elapsed: float, suspend_secs: float = 0.0) -> None:
         """/stop seen by the monitor: mark cancelled, abort the request-local
         socket, wait for the worker, flag the interrupt."""
         # The stale branch already counted this iteration if its deadline won the race.
         if stale_elapsed <= self._stream_stale_timeout:
-            _record_interrupted_provider_wait(self.agent, stale_elapsed, response_started=self.deltas_were_sent["yes"])
+            _record_interrupted_provider_wait(
+                self.agent, stale_elapsed, response_started=self.deltas_were_sent["yes"],
+                suspend_secs=suspend_secs)
         # Mark cancelled BEFORE force-closing so the worker treats the forced
         # transport error as a cancel, not a network error (#6600).
         self._request_cancelled["value"] = True

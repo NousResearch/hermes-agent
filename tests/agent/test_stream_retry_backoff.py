@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from agent import chat_completion_helpers as cch
+from agent.stream_liveness import StreamLiveness
 
 
 def _bare_call(agent):
@@ -21,7 +22,8 @@ def _bare_call(agent):
     call.first_delta_fired = {"done": False}
     call.provider_tool_in_flight = {"yes": False}
     call._cancel_current_stream_attempt = MagicMock()
-    call.last_chunk_time = {"t": 0.0}
+    call.stream_liveness = StreamLiveness()
+    call.last_chunk_time = {"t": call.stream_liveness.touch()}
     return call
 
 

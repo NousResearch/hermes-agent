@@ -10,6 +10,7 @@ import sys
 import time
 from typing import Any
 
+from hermes_cli.timefmt import EPOCH_MAX, EPOCH_MIN
 from agent.skill_commands import SKILL_EXCERPT_JOINT, SKILL_SCAFFOLD_SQL_LIKE, describe_skill_invocation
 from agent.context_compressor import (LEGACY_SUMMARY_PREFIX, SUMMARY_PREFIX, _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER, _SUMMARY_END_MARKER)
@@ -218,10 +219,14 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
 
 def _sql_freshest_of(activity: str, session_id_expr: str, started: str) -> str:
     """Freshest of *activity* and the latest message timestamp for *session_id_expr*, else *started*.
-    Heartbeats are rate-limited (~60s) so ``last_activity_at`` can lag a newer message; never use it alone."""
-    msg_max = f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr})"
-    return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v), "
-        f"{started})")
+    Heartbeats are rate-limited (~60s) so ``last_activity_at`` can lag a newer message; never use it alone.
+    Cells outside the ``coerce_epoch`` window (garbage doubles salvaged from a damaged page, TEXT) are
+    skipped, or one bad message row pins the session's recency to ``5e+246`` (#91536)."""
+    in_window = f"BETWEEN {EPOCH_MIN!r} AND {EPOCH_MAX!r}"
+    msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr}"
+        f" AND _act_m.timestamp {in_window})")
+    return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v"
+        f" WHERE _act_v.v {in_window}), {started})")
 
 
 def _sql_session_last_active(alias: str = "s") -> str:

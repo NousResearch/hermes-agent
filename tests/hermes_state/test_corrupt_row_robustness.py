@@ -57,6 +57,29 @@ def test_list_export_and_insights_survive_corrupt_timestamp_rows(corrupt_db, cap
     assert any("bad-huge" in rec.getMessage() for rec in caplog.records)
 
 
+def test_last_active_skips_a_garbage_message_timestamp(tmp_path):
+    """The Desktop sessions pane reads ``last_active`` straight from ``list_sessions_rich`` and builds
+    ``new Date(last_active * 1000)``; one salvaged garbage double must not become the session's recency
+    (#91536)."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        db.create_session("recovered", "cli")
+        for text in ("first", "second", "third"):
+            db.append_message("recovered", "user", text)
+        good = max(row["timestamp"] for row in db.get_messages("recovered"))
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET timestamp = 5.4905047707024164e+246 WHERE session_id = 'recovered' "
+            "AND id = (SELECT MIN(id) FROM messages WHERE session_id = 'recovered')"))
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE sessions SET last_activity_at = 'not-a-timestamp' WHERE id = 'recovered'"))
+        rows = {r["id"]: r for r in db.list_sessions_rich(limit=10)}
+        tip_rows = {r["id"]: r for r in db.list_sessions_rich(limit=10, order_by_last_active=True)}
+    finally:
+        db.close()
+    assert rows["recovered"]["last_active"] == good
+    assert tip_rows["recovered"]["last_active"] == good
+
+
 def test_writers_never_persist_an_out_of_window_timestamp(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     try:

@@ -321,7 +321,12 @@ def run_oneshot(
         _write_usage_file(usage_file, result, failure=str(failure))
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
         real_stderr.flush()
-        return 1
+        # ``-z`` is a dispatcher spawn target too: a card whose ``--skills`` names all fail to
+        # resolve is a definition error the card's owner has to fix, so park it (78) rather than
+        # let the breaker count identical retries. Anything else stays a plain failure.
+        from hermes_cli.kanban_db import kanban_worker_failure_exit_code
+
+        return kanban_worker_failure_exit_code(failure)
 
     _write_usage_file(usage_file, result)
 

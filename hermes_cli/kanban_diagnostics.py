@@ -124,6 +124,21 @@ def _latest_gave_up_is_terminal_provider(events: Iterable[Any]) -> bool:
     return False
 
 
+def _is_definition_error(error: "str | None") -> bool:
+    """True when the recorded failure is the CLI's unresolvable-``--skills`` error.
+
+    A card *definition* error parks the card on the first spawn exactly like a terminal provider
+    error (both make the worker exit ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE``), but the operator's
+    fix is the card's skill list or the profile's installed skills — not its credentials. Diagnosis
+    copy has to say so, or the operator re-enters a working API key forever. The literal is shared
+    with the one-shot exit mapper (``kanban_db.UNRESOLVABLE_SKILL_RE``).
+    """
+    if not error:
+        return False
+    from hermes_cli.kanban_db import UNRESOLVABLE_SKILL_RE
+    return bool(UNRESOLVABLE_SKILL_RE.search(error))
+
+
 def _cli_hint(label: str, command: str, *, suggested: bool = False) -> DiagnosticAction:
     return DiagnosticAction(kind="cli_hint", label=label, payload={"command": command},
                             suggested=suggested)
@@ -389,6 +404,7 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     failures = failures or 0
     last_err = _first_field(task, "last_failure_error", "last_spawn_error")
     assignee = _task_field(task, "assignee")
+    definition_error = _is_definition_error(last_err)
 
     # Most recent failure outcome makes the title/action specific.
     most_recent_outcome = next(
@@ -398,6 +414,10 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     )
 
     actions: list[DiagnosticAction] = []
+    if definition_error and assignee:
+        # The card names skills the profile does not have: nothing about credentials is wrong.
+        skills = f"hermes -p {assignee} skills list"
+        actions.append(_cli_hint(f"Check the skills installed on {assignee}: {skills}", skills, suggested=True))
     if most_recent_outcome == "spawn_failed" and assignee and assignee != "default":
         # Spawn is failing specifically — profile setup issue.
         doctor, auth = f"hermes -p {assignee} doctor", f"hermes -p {assignee} auth"
@@ -413,7 +433,17 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
     severity = "critical" if failures >= threshold * 2 else "error"
     err_snippet = _error_snippet(last_err)
     outcome_label = _OUTCOME_LABELS.get(most_recent_outcome or "", "failure")
-    if terminal_trip:
+    if terminal_trip and definition_error:
+        title = "Card names skills this profile does not have — blocked after one attempt"
+        detail = (
+            f"The worker exited while starting up: none of the skills the card was created with "
+            f"resolve on `{assignee or 'the assignee profile'}`, and a retry reproduces the same "
+            f"error, so the dispatcher blocked the task instead of spending the "
+            f"{failure_limit}-attempt retry budget on it. Full last error:\n\n{err_snippet}\n\n"
+            f"Install those skills on the profile (or fix the card's skill list), then unblock the "
+            f"task. `hermes skills list` shows what a profile has."
+        )
+    elif terminal_trip:
         title = "Provider rejected this profile's credential or model — blocked after one attempt"
         detail = (
             f"The worker's provider call failed with an error a retry cannot fix (revoked or invalid "

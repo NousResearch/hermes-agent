@@ -1870,7 +1870,13 @@ def cmd_chat(args):
         cli_main(**kwargs)
     except ValueError as e:
         print(f"Error: {e}")
-        sys.exit(1)
+        # A dispatcher-spawned worker (``HERMES_KANBAN_TASK``) that dies because none of its
+        # ``--skills`` names resolve is a card *definition* error, not a runtime one — exit
+        # EX_CONFIG so the card parks on the first spawn instead of spending
+        # ``kanban.failure_limit`` spawns on the same ValueError. Anyone else keeps exit 1.
+        from hermes_cli.kanban_db import kanban_worker_failure_exit_code
+
+        sys.exit(kanban_worker_failure_exit_code(e))
     except ImportError as e:
         # Mixed-version installs (new cli.py, older hermes_cli.config) crash
         # here — e.g. missing resolve_turn_limit / split_model_config_default

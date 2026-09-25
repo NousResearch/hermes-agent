@@ -523,10 +523,8 @@ async def select_toolset_provider(
         with _profile_scope(body.profile or profile):
             with _CONFIG_MUTATION_LOCK:
                 config = load_config()
+                response_managed = False
                 if body.capability is not None:
-                    # Per-capability path writes web.<capability>_backend only —
-                    # web.backend is untouched so the other capability keeps
-                    # resolving through the shared fallback chain.
                     prov = _provider_row(config)
                     if prov is None:
                         raise _bad_request(
@@ -536,7 +534,26 @@ async def select_toolset_provider(
                         raise _bad_request(f"Provider {body.provider!r} has no web backend key")
                     if body.capability not in web_provider_capabilities(backend):
                         raise _bad_request(f"{body.provider} does not support {body.capability}")
-                    _dict_section(config, "web")[f"{body.capability}_backend"] = backend
+                    if prov.get("managed_nous_feature"):
+                        # A managed row cannot be expressed as a per-capability vendor pin:
+                        # the runtime reads ``web.<capability>_backend`` as a DIRECT vendor
+                        # selection ("a stored vendor selection never is" the managed
+                        # route), so writing the row's servicing vendor here demoted the
+                        # managed route to a direct keyless call. The managed route is the
+                        # toolset-level selection — promote it and clear both
+                        # per-capability overrides so both capabilities resolve through it.
+                        from hermes_cli.tools_config_providers import _select_into
+
+                        _select_into(config, "web", "backend", backend, True)
+                        web_cfg = _dict_section(config, "web")
+                        web_cfg.pop("search_backend", None)
+                        web_cfg.pop("extract_backend", None)
+                        response_managed = True
+                    else:
+                        # Per-capability path writes web.<capability>_backend only —
+                        # web.backend is untouched so the other capability keeps
+                        # resolving through the shared fallback chain.
+                        _dict_section(config, "web")[f"{body.capability}_backend"] = backend
                 else:
                     try:
                         apply_provider_selection(name, body.provider, config)
@@ -546,6 +563,7 @@ async def select_toolset_provider(
                 response: Dict[str, Any] = {"ok": True, "name": name, "provider": body.provider}
                 if body.capability is not None:
                     response["capability"] = body.capability
+                    response["managed"] = response_managed
 
             # Entitlement check for managed Nous rows (mirrors the CLI's
             # ensure_nous_portal_access gate).  Hits the Portal, so it runs AFTER

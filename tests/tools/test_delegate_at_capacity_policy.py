@@ -102,6 +102,7 @@ def test_at_capacity_sync_runs_the_batch_inline(full_pool, policy):
 
     assert child.ran
     assert "SYNCHRONOUSLY" in result["note"]
+    assert "delegation.at_capacity: reject" in result["note"]
     assert result["results"][0]["status"] == "completed"
 
 

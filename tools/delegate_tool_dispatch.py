@@ -228,7 +228,8 @@ _SYNC_FALLBACK_NOTES = {
     "at_capacity": (
         "The background delegation pool was at capacity (delegation.max_concurrent_children), so the subagent(s) ran "
         "SYNCHRONOUSLY and the result is included above. Raise "
-        "delegation.max_concurrent_children in config.yaml to allow more concurrent background delegations."
+        "delegation.max_concurrent_children in config.yaml to allow more concurrent background delegations, "
+        "or set delegation.at_capacity: reject to get a rejection instead of an inline run."
     ),
 }
 

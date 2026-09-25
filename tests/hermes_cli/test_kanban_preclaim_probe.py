@@ -192,7 +192,11 @@ def patched_static_resolve(monkeypatch):
 def test_live_probe_dead_child_releases_claim(kanban_home, monkeypatch, tmp_path, patched_static_resolve):
     """Layer 2 (real one-shot child, sealed via HERMES_BIN): a well-formed pin
     whose child exits non-zero (the 403/quota-wall shape) is caught before the
-    claim is spent."""
+    claim is spent — and released through the worker's rate-limit channel, NOT
+    the spawn-failure breaker: the run closes as ``rate_limited`` and
+    ``consecutive_failures`` stays untouched (the pre-claim twin of the
+    worker's EX_TEMPFAIL exit — a quota wall is transient, never the card's
+    fault)."""
     monkeypatch.setenv(
         "HERMES_BIN", _write_fake_hermes(tmp_path, 'echo "hermes -z: agent failed: 403 quota exceeded" >&2\nexit 1'),
     )
@@ -203,8 +207,88 @@ def test_live_probe_dead_child_releases_claim(kanban_home, monkeypatch, tmp_path
         task = kb.get_task(conn, tid)
     assert spawns == []
     assert res.preclaim_probe_failed == [tid]
+    assert res.rate_limited == [tid], "live-layer probe failure rides the rate-limit channel"
     assert task.status == "ready"
+    assert task.consecutive_failures == 0, "a quota wall must not count toward the breaker"
     assert "quota" in (task.last_failure_error or "")
+
+
+def test_quota_probe_failure_guard_and_breaker_interaction(kanban_home, monkeypatch, tmp_path, patched_static_resolve):
+    """Guard/breaker interaction for a quota-text probe failure (#122893
+    red-team): released as ``rate_limited``, the card is spaced by
+    ``rate_limit_cooldown`` on the following ticks — never parked by
+    ``blocker_auth`` on the stamped quota text, never breaker-tripped, no
+    matter how many ticks the quota window spans. Self-heals by design."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "9999")
+    monkeypatch.setenv(
+        "HERMES_BIN", _write_fake_hermes(tmp_path, 'echo "hermes -z: agent failed: 403 quota exceeded" >&2\nexit 1'),
+    )
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res1 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        task = kb.get_task(conn, tid)
+        run_outcomes = [
+            r["outcome"]
+            for r in conn.execute(
+                "SELECT outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC", (tid,),
+            ).fetchall()
+        ]
+        res2 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        res3 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        task_after = kb.get_task(conn, tid)
+    assert spawns == []
+    assert res1.preclaim_probe_failed == [tid]
+    assert res1.rate_limited == [tid]
+    assert run_outcomes == ["rate_limited"], "the probe release must close the run as rate_limited"
+    assert task.status == "ready"
+    assert task.consecutive_failures == 0
+    assert (tid, "rate_limit_cooldown") in res2.respawn_guarded, \
+        "stamped quota text must hit the rate-limit cooldown, not blocker_auth"
+    assert (tid, "rate_limit_cooldown") in res3.respawn_guarded
+    assert task_after.status == "ready", "a long quota window must never park or trip the card"
+    assert task_after.consecutive_failures == 0
+
+
+def test_transient_probe_failure_not_cached_recovers(kanban_home, monkeypatch, tmp_path, patched_static_resolve):
+    """Live-layer verdicts are never cached: a quota wall that heals between
+    ticks must recover on the very next claim. A cached transient verdict
+    would pin the card to a stale failure for the dispatcher's whole
+    lifetime — the exact burn the probe exists to prevent."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")  # next tick retries at once
+    monkeypatch.setenv(
+        "HERMES_BIN", _write_fake_hermes(tmp_path, 'echo "403 quota exceeded" >&2\nexit 1'),
+    )
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res1 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+        assert res1.rate_limited == [tid]
+        # Quota heals: the same pin now answers PROBE_OK.
+        monkeypatch.setenv("HERMES_BIN", _write_fake_hermes(tmp_path, "echo PROBE_OK"))
+        res2 = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert res1.preclaim_probe_failed == [tid]
+    assert res2.preclaim_probe_failed == [], "healed pin must re-probe, not replay a cached verdict"
+    assert spawns == [tid], "transient failure must recover on the next tick"
+    assert res2.spawned and res2.spawned[0][0] == tid
+
+
+def test_probe_internal_exception_fails_open(kanban_home, monkeypatch):
+    """The probe is a pre-flight optimization, never a new way to lose a
+    healthy card — or to kill the whole dispatch tick. An exception inside
+    the probe machinery itself fails OPEN: the claim proceeds to spawn and
+    the tick completes."""
+    def explode(*args, **kwargs):
+        raise RuntimeError("probe machinery blew up")
+
+    monkeypatch.setattr(kbd, "_preclaim_probe_verdict", explode)
+    with kbc.connect() as conn:
+        tid = _pinned_card(conn)
+        spawns, spawn_fn = _spawn_recorder()
+        res = kbd.dispatch_once(conn, spawn_fn=spawn_fn)
+    assert res.preclaim_probe_failed == []
+    assert spawns == [tid], "a broken probe must fail open — not spend the claim or the tick"
+    assert res.spawned and res.spawned[0][0] == tid
 
 
 def test_live_probe_timeout_fails_open(kanban_home, monkeypatch, tmp_path, patched_static_resolve):

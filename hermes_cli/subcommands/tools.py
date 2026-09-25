@@ -5,6 +5,26 @@ from __future__ import annotations
 from typing import Callable
 
 
+def _post_setup_keys_text() -> str:
+    """Comma-separated post-setup hook keys, single-sourced from the hook registry.
+
+    This runs while every CLI invocation assembles its argparse tree, so it reads the light
+    ``_POST_SETUP_HOOKS`` registry (already imported on the CLI startup path) rather than
+    ``valid_post_setup_keys()``, whose plugin-catalog import is far heavier. Any failure degrades
+    to a static list — help text must never break the CLI.
+    """
+    try:
+        from hermes_cli.tools_config_post_setup import _POST_SETUP_HOOKS
+
+        keys = sorted(_POST_SETUP_HOOKS)
+        if keys:
+            return ", ".join(keys)
+    except Exception:
+        pass
+    return ("agent_browser, browser_use_cli, browserbase, camofox, cua_driver, ddgs, faster_whisper, "
+            "kittentts, langfuse, lightpanda, openai_codex, piper, spotify, xai_grok")
+
+
 def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
     """Attach the ``tools`` subcommand to ``subparsers``."""
     tools_parser = subparsers.add_parser(
@@ -42,8 +62,7 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
             "needs extra dependencies (browser Chromium, Camofox, cua-driver,\n"
             "KittenTTS/Piper, ddgs, Spotify, Langfuse, xAI, Codex). Stable,\n"
             "non-interactive target the dashboard spawns to drive backend\n"
-            "setup. Keys: agent_browser, camofox, cua_driver, kittentts,\n"
-            "piper, ddgs, spotify, langfuse, xai_grok, openai_codex.")
+            f"setup. Keys: {_post_setup_keys_text()}.")
     tools_postsetup_p.add_argument(
         "post_setup_key", metavar="KEY",
         help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)")

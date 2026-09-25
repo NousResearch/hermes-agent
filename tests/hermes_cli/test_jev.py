@@ -19,6 +19,16 @@ from hermes_constants import (
 )
 
 
+def _build_cli_parser_for_test(monkeypatch):
+    """Import the CLI without probing recovery state in the operator checkout."""
+    from hermes_cli import _early_recovery
+
+    monkeypatch.setattr(_early_recovery, "restore_interrupted_pull", lambda: False)
+    from hermes_cli.main import _build_cli_parser
+
+    return _build_cli_parser()
+
+
 def _catalog_model(
     model_id: str,
     *,
@@ -194,9 +204,7 @@ def test_cmd_jev_posts_exact_contract_and_preserves_response(
 
     monkeypatch.setattr(httpx, "post", fake_post)
 
-    from hermes_cli.main import _build_cli_parser
-
-    parser, _ = _build_cli_parser()
+    parser, _ = _build_cli_parser_for_test(monkeypatch)
     args = parser.parse_args([
         "jev",
         '{"branch":"release","tests_green":true}',
@@ -490,9 +498,7 @@ def test_task_tier_does_not_imply_reasoning_requirement(monkeypatch):
             require_reasoning=True,
         )
 
-    from hermes_cli.main import _build_cli_parser
-
-    parser, _ = _build_cli_parser()
+    parser, _ = _build_cli_parser_for_test(monkeypatch)
     args = parser.parse_args([
         "jev",
         "classify-task",
@@ -772,9 +778,7 @@ def test_models_cli_emits_deterministic_orchestration_json(monkeypatch, capsys):
         lambda catalog, api_key: (_model_classifications(), [{"cost": 0.001}]),
     )
 
-    from hermes_cli.main import _build_cli_parser
-
-    parser, _ = _build_cli_parser()
+    parser, _ = _build_cli_parser_for_test(monkeypatch)
     argv = ["jev", "models", "--tier", "mid", "--require-reasoning"]
     first_args = parser.parse_args(argv)
     assert first_args.func(first_args) == 0
@@ -911,9 +915,7 @@ def test_models_cli_capability_flags_change_eligible_fallbacks(monkeypatch, caps
         "load_native_catalogs",
         lambda: {"openai-codex": [], "anthropic": []},
     )
-    from hermes_cli.main import _build_cli_parser
-
-    parser, _ = _build_cli_parser()
+    parser, _ = _build_cli_parser_for_test(monkeypatch)
 
     def fallback_ids(*flags):
         args = parser.parse_args([
@@ -980,9 +982,7 @@ def test_catalog_only_skips_jev_and_reports_deterministic_sources(monkeypatch, c
         "classify_model_metadata",
         lambda *args: (_ for _ in ()).throw(AssertionError("Jev must not be called")),
     )
-    from hermes_cli.main import _build_cli_parser
-
-    parser, _ = _build_cli_parser()
+    parser, _ = _build_cli_parser_for_test(monkeypatch)
     args = parser.parse_args(["jev", "models", "--catalog-only", "--tier", "mid"])
     assert args.func(args) == 0
 
@@ -1104,7 +1104,7 @@ def test_invalid_cache_is_a_miss_not_a_live_resolution_failure(
     assert result[2] == [{"cost": 0.25}]
 
 
-@pytest.mark.macos_only
+@pytest.mark.platforms("macos")
 def test_cache_permission_failures_fall_back_to_live_and_cache_mode_is_private(
     tmp_path, monkeypatch
 ):

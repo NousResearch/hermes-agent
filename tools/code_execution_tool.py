@@ -740,22 +740,38 @@ def execute_code(
     if _guard.get("user_approved"):
         from tools.interrupt import clear_current_thread_interrupt
         clear_current_thread_interrupt()
-    if env_type != "local":
-        return _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
-    from tools.interrupt import is_interrupted as _is_interrupted
-    # Session kernels are always on locally (one interpreter per conversation); the guards above
-    # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
-    from tools.code_kernel import execute_in_session_kernel
-    _cfg = _load_config()
-    _mode = _get_execution_mode()
-    return execute_in_session_kernel(
-        code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
-        child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
-        sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
-        timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
-        max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
-        reset=bool(reset), is_interrupted=_is_interrupted,
-    )
+    # Arbitrary Python can call open/os.replace/ctypes directly, so no source
+    # parser can reliably identify its write targets. Snapshot the config
+    # namespace entry and resolved target at the trusted parent boundary. This
+    # detects runtime-built paths without overwriting concurrent trusted edits.
+    from tools.security_config_guard import ActiveConfigSnapshot
+
+    _config_snapshot, _snapshot_error = ActiveConfigSnapshot.capture()
+    if _snapshot_error:
+        return _error_result(_snapshot_error)
+    _integrity_error = None
+    try:
+        if env_type != "local":
+            result = _execute_remote(code, task_id, enabled_tools, reset=bool(reset))
+        else:
+            from tools.interrupt import is_interrupted as _is_interrupted
+            # Session kernels are always on locally (one interpreter per conversation); the guards above
+            # already ran for this cell, and the kernel path shares env builder, RPC server and redaction.
+            from tools.code_kernel import execute_in_session_kernel
+            _cfg = _load_config()
+            _mode = _get_execution_mode()
+            result = execute_in_session_kernel(
+                code, task_id=task_id or "", mode=_mode, child_python=_resolve_child_python(_mode),
+                child_cwd=_resolve_child_cwd(_mode, "", task_id=task_id or ""),
+                sandbox_tools=frozenset(_sandbox_tools_for(enabled_tools)),
+                timeout=_cfg.get("timeout", DEFAULT_TIMEOUT),
+                max_tool_calls=_cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS),
+                reset=bool(reset), is_interrupted=_is_interrupted,
+            )
+    finally:
+        if _config_snapshot:
+            _integrity_error = _config_snapshot.mutation_error()
+    return _error_result(_integrity_error) if _integrity_error else result
 
 
 def _kill_process_group(proc, escalate: bool = False):

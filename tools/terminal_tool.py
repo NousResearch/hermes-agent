@@ -1332,6 +1332,17 @@ def terminal_tool(
             # Promotion implies notify_on_complete; watch_patterns is a background-only flag the
             # caller could not have meant for a foreground call, and the two are exclusive anyway.
             background, notify_on_complete, watch_patterns = True, True, None
+
+        # A long-lived background snapshot cannot identify which actor changed
+        # config.yaml, so it must never authorize rollback or blame at process
+        # exit. Bound mutation detection to synchronous host-reaching commands.
+        config_snapshot = None
+        if not background and (env_type == "local" or _docker_has_host_access(plan.config)):
+            from tools.security_config_guard import ActiveConfigSnapshot
+
+            config_snapshot, snapshot_error = ActiveConfigSnapshot.capture()
+            if snapshot_error:
+                return _error_json(snapshot_error)
         if background:
             result = spawn_background_process(
                 command=command, env=env, env_type=env_type, effective_task_id=effective_task_id,
@@ -1345,11 +1356,20 @@ def terminal_tool(
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
             return result
-        return _run_foreground(
+        result = _run_foreground(
             command, env, plan,
             task_id=task_id, session_id=session_id, session_key=session_key,
             workdir=workdir, approval_note=verdict.note, clear_interrupt=verdict.approved_run,
         )
+        try:
+            yielded = json.loads(result).get("status") == "yielded_to_background"
+        except (TypeError, json.JSONDecodeError):
+            yielded = False
+        if not yielded and config_snapshot is not None:
+            violation = config_snapshot.mutation_error()
+            if violation:
+                return _error_json(violation, exit_code=126)
+        return result
     except _Rejected as r:
         return r.result_json
     except EnvironmentConnectionError as e:

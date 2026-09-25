@@ -135,13 +135,23 @@ pub fn live_update_marker() -> Option<LiveUpdateMarker> {
     }
 }
 
-/// Ask the updater that published this marker's generation to exit.
+/// Ask the updater that published this marker's generation to stop.
 ///
 /// Never signals a PID. A missing, replaced, or unproved generation returns
 /// an error and leaves the marker in place. The only effect on a match is a
-/// loopback write of that generation to the port the owner published.
+/// loopback write of that generation to the port the owner published. `Ok`
+/// only once the owner answers that its update step has exited and the
+/// marker is released; anything short of that is an error the screen shows.
+/// Async because that answer can take a stage's SIGTERM grace to arrive, and
+/// a sync command would block the window's main thread.
 #[tauri::command]
-pub fn stop_live_updater() -> Result<(), String> {
+pub async fn stop_live_updater() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(stop_live_updater_blocking)
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn stop_live_updater_blocking() -> Result<(), String> {
     let marker = crate::paths::update_in_progress_marker();
     let observed = std::fs::read_to_string(&marker).unwrap_or_default();
     let reread = std::fs::read_to_string(&marker).unwrap_or_default();
@@ -151,7 +161,11 @@ pub fn stop_live_updater() -> Result<(), String> {
     let Some(generation) = marker_generation(&reread) else {
         return Err(stop_refused_message(&marker));
     };
-    send_loopback_cancel(port, &generation).map_err(|_| stop_refused_message(&marker))
+    match send_loopback_cancel(port, &generation, STOP_REPLY_TIMEOUT) {
+        Ok(CancelReply::Stopped) => Ok(()),
+        Ok(CancelReply::Stopping | CancelReply::Unconfirmed) => Err(stop_unconfirmed_message(&marker)),
+        Err(_) => Err(stop_refused_message(&marker)),
+    }
 }
 
 /// RAII guard that owns the "update in progress" marker (see
@@ -299,6 +313,17 @@ fn stop_refused_message(path: &Path) -> String {
     }
 }
 
+fn stop_unconfirmed_message(path: &Path) -> String {
+    match live_marker_owner(path) {
+        Some(owner) => format!(
+            "Updater PID {} is stopping, but its update step has not exited yet. \
+             Wait for it to finish before retrying.",
+            owner.pid
+        ),
+        None => "Another Hermes update may still be running. Wait for it to finish.".to_string(),
+    }
+}
+
 /// Cancel target only when both reads name the same non-empty generation and
 /// the same non-zero loopback port. A PID-only marker, a replaced generation,
 /// or a port that moved between the two reads is not a stop.
@@ -344,8 +369,29 @@ fn marker_generation(raw: &str) -> Option<String> {
     Some(proof.generation)
 }
 
-/// Write the generation to 127.0.0.1 only. This does not signal a process.
-fn send_loopback_cancel(port: u16, generation: &str) -> Result<(), std::io::Error> {
+/// The owner's one-line answer to an accepted cancel.
+const CANCEL_STOPPED: &str = "stopped";
+const CANCEL_STOPPING: &str = "stopping";
+
+/// What the owner said. Only `Stopped` means its update step has exited and
+/// the marker is released; a closed or silent connection proves nothing.
+#[derive(Debug, PartialEq, Eq)]
+enum CancelReply {
+    Stopped,
+    Stopping,
+    Unconfirmed,
+}
+
+/// Caller side. Longer than the owner's own settle wait, so its answer lands.
+const STOP_REPLY_TIMEOUT: Duration = Duration::from_secs(45);
+
+/// Write the generation to 127.0.0.1 only, then wait for the owner's answer.
+/// This does not signal a process.
+fn send_loopback_cancel(
+    port: u16,
+    generation: &str,
+    reply_timeout: Duration,
+) -> Result<CancelReply, std::io::Error> {
     if port == 0 || generation.is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
@@ -353,9 +399,206 @@ fn send_loopback_cancel(port: u16, generation: &str) -> Result<(), std::io::Erro
         ));
     }
     let mut stream = std::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port))?;
-    use std::io::Write;
+    use std::io::{BufRead, BufReader, Write};
     stream.write_all(format!("{generation}\n").as_bytes())?;
-    Ok(())
+    stream.set_read_timeout(Some(reply_timeout))?;
+    let mut reply = String::new();
+    let _ = BufReader::new(&stream).read_line(&mut reply);
+    Ok(match reply.trim() {
+        CANCEL_STOPPED => CancelReply::Stopped,
+        CANCEL_STOPPING => CancelReply::Stopping,
+        _ => CancelReply::Unconfirmed,
+    })
+}
+
+/// Why a stage ended early: an owned cancel was accepted.
+const STAGE_CANCELLED: &str = "Update stopped from another installer window.";
+/// SIGTERM first: git and uv remove their lock files on it, not on SIGKILL.
+const STAGE_TERM_GRACE: Duration = Duration::from_secs(10);
+/// How long the owner waits for its stage tree to exit before it answers
+/// "stopping" and keeps the marker.
+const STAGE_SETTLE_WAIT: Duration = Duration::from_secs(30);
+
+/// The update step `run_streamed` is driving, and whether a cancel was
+/// accepted. The `hermes update` child runs under this process's marker
+/// claim (HERMES_UPDATE_HANDOFF_PID), so releasing the marker or exiting while
+/// it still runs would leave it mutating the checkout with no lock. A cancel
+/// therefore stops new stages, terminates the running one's whole tree, and
+/// only then lets the marker go.
+struct StageControl {
+    slot: std::sync::Mutex<StageSlot>,
+    idle: std::sync::Condvar,
+    cancel: tokio::sync::watch::Sender<bool>,
+}
+
+#[derive(Default)]
+struct StageSlot {
+    cancelled: bool,
+    running: bool,
+}
+
+static STAGES: once_cell::sync::Lazy<StageControl> = once_cell::sync::Lazy::new(StageControl::new);
+
+impl StageControl {
+    fn new() -> Self {
+        Self {
+            slot: std::sync::Mutex::new(StageSlot::default()),
+            idle: std::sync::Condvar::new(),
+            cancel: tokio::sync::watch::channel(false).0,
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, StageSlot> {
+        self.slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Spawn under the lock, so an accepted cancel and a new stage cannot
+    /// interleave: after `cancel_and_wait` flips the flag nothing spawns.
+    fn spawn(
+        &self,
+        cmd: &mut Command,
+        on_err: impl FnOnce(std::io::Error) -> anyhow::Error,
+    ) -> Result<StageRun<'_>> {
+        let mut slot = self.lock();
+        if slot.cancelled {
+            return Err(anyhow!(STAGE_CANCELLED));
+        }
+        let child = cmd.spawn().map_err(on_err)?;
+        let pid = child
+            .id()
+            .ok_or_else(|| anyhow!("update step exited before it could be tracked"))?;
+        slot.running = true;
+        Ok(StageRun {
+            control: self,
+            child,
+            pid,
+        })
+    }
+
+    /// Accept a cancel. True once no stage is running (and none can start);
+    /// false when the running one has not exited within `wait`.
+    fn cancel_and_wait(&self, wait: Duration) -> bool {
+        let mut slot = self.lock();
+        slot.cancelled = true;
+        self.cancel.send_replace(true);
+        let (slot, _) = self
+            .idle
+            .wait_timeout_while(slot, wait, |slot| slot.running)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        !slot.running
+    }
+}
+
+/// A spawned stage. Dropping it marks the slot idle, so it must outlive the
+/// stage's whole process tree — `pump` guarantees that on the cancel path.
+struct StageRun<'a> {
+    control: &'a StageControl,
+    child: tokio::process::Child,
+    /// The child's pid (and, on unix, its process group). Held un-reaped
+    /// until `pump` returns, so it cannot name anything else.
+    pid: u32,
+}
+
+impl Drop for StageRun<'_> {
+    fn drop(&mut self) {
+        self.control.lock().running = false;
+        self.control.idle.notify_all();
+    }
+}
+
+impl StageRun<'_> {
+    /// Stream the stage to completion. An accepted cancel instead terminates
+    /// the stage and everything it started, and returns only once that tree
+    /// is gone.
+    async fn pump<FO, FE>(
+        &mut self,
+        on_stdout: FO,
+        on_stderr: FE,
+        drain_grace: Duration,
+        term_grace: Duration,
+    ) -> Result<crate::powershell::PumpOutcome>
+    where
+        FO: FnMut(&str),
+        FE: FnMut(&str),
+    {
+        let mut cancel = self.control.cancel.subscribe();
+        let mut no_cancel_rx = None;
+        let finished = {
+            let pump = pump_child(&mut self.child, on_stdout, on_stderr, &mut no_cancel_rx, drain_grace);
+            tokio::pin!(pump);
+            tokio::select! {
+                biased;
+                outcome = &mut pump => Some(outcome),
+                () = async { let _ = cancel.wait_for(|cancelled| *cancelled).await; } => None,
+            }
+        };
+        if let Some(outcome) = finished {
+            return outcome;
+        }
+        terminate_stage_tree(&mut self.child, self.pid, term_grace).await;
+        Err(anyhow!(STAGE_CANCELLED))
+    }
+}
+
+/// SIGTERM the stage's process group, SIGKILL it after `grace`, reap the
+/// leader, and wait until no member is left. The group id is the leader's
+/// pid: reserved while the leader is un-reaped, and while any member lives.
+/// A member that never dies keeps this waiting, so the marker stays held.
+#[cfg(unix)]
+async fn terminate_stage_tree(child: &mut tokio::process::Child, pid: u32, grace: Duration) {
+    let group = -(pid as libc::pid_t);
+    unsafe { libc::kill(group, libc::SIGTERM) };
+    if tokio::time::timeout(grace, child.wait()).await.is_err() {
+        unsafe { libc::kill(group, libc::SIGKILL) };
+        let _ = child.wait().await;
+    }
+    while process_group_alive(pid) {
+        unsafe { libc::kill(group, libc::SIGKILL) };
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[cfg(unix)]
+fn process_group_alive(pgid: u32) -> bool {
+    let rc = unsafe { libc::kill(-(pgid as libc::pid_t), 0) };
+    rc == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// `taskkill /T` walks the tree from the leader while this process still
+/// holds the leader's handle, so its pid cannot have been reused. A leader
+/// that already exited is not re-targeted by pid.
+#[cfg(windows)]
+async fn terminate_stage_tree(child: &mut tokio::process::Child, pid: u32, _grace: Duration) {
+    if child.id().is_some() {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let _ = Command::new(PathBuf::from(root).join("System32").join("taskkill.exe"))
+            .args(["/T", "/F", "/PID", &pid.to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(0x0800_0000)
+            .status()
+            .await;
+        let _ = child.start_kill();
+    }
+    let _ = child.wait().await;
+}
+
+/// Settle an accepted cancel: stop and reap the running stage, then release
+/// the marker. Returns the answer for the caller; `CANCEL_STOPPED` means the
+/// owner may exit. A stage that has not exited keeps the marker, so no second
+/// updater can start over it (the age ceiling self-heals a wedged one).
+fn settle_owned_cancel(
+    stages: &StageControl,
+    marker: &Path,
+    generation: &str,
+    wait: Duration,
+) -> &'static str {
+    if !stages.cancel_and_wait(wait) {
+        return CANCEL_STOPPING;
+    }
+    release_marker_if_generation(marker, generation);
+    CANCEL_STOPPED
 }
 
 /// Publish a generation the owner holds in memory, and a loopback port only
@@ -429,7 +672,9 @@ fn accept_owned_cancel(listener: std::net::TcpListener, generation: String, mark
         if !loopback {
             continue;
         }
-        use std::io::{BufRead, BufReader};
+        use std::io::{BufRead, BufReader, Write};
+        // A peer that connects and never writes must not wedge Stop.
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
         let mut line = String::new();
         if BufReader::new(&mut stream).read_line(&mut line).is_err() {
             continue;
@@ -437,8 +682,12 @@ fn accept_owned_cancel(listener: std::net::TcpListener, generation: String, mark
         if line.trim() != generation {
             continue;
         }
-        release_marker_if_generation(&marker, &generation);
-        std::process::exit(0);
+        let reply = settle_owned_cancel(&STAGES, &marker, &generation, STAGE_SETTLE_WAIT);
+        let _ = stream.write_all(format!("{reply}\n").as_bytes());
+        let _ = stream.flush();
+        if reply == CANCEL_STOPPED {
+            std::process::exit(0);
+        }
     }
 }
 
@@ -1063,31 +1312,32 @@ async fn run_streamed(
         // CREATE_NO_WINDOW = 0x08000000 — no flashing console behind the GUI.
         cmd.creation_flags(0x0800_0000);
     }
+    // Own process group, so an accepted Stop can end the stage's whole tree.
+    #[cfg(unix)]
+    cmd.process_group(0);
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| anyhow!("spawning {} {:?}: {e}", program.display(), args))?;
+    let mut run = STAGES.spawn(&mut cmd, |e| anyhow!("spawning {} {:?}: {e}", program.display(), args))?;
 
     // Same non-UTF-8-safe decode path as powershell::run_script (#67193), and
     // the same rule about pipe EOF: `hermes update` is precisely the shape that
     // leaves resident descendants holding an inherited stdout handle, and every
     // stage this drives sits downstream of the read.
     let stage_owned = stage.map(|s| s.to_string());
-    let outcome = pump_child(
-        &mut child,
-        |l| {
-            emit_log(app, stage_owned.as_deref(), LogStream::Stdout, l);
-            if stdout_tail.len() == STDOUT_TAIL_LINES {
-                stdout_tail.pop_front();
-            }
-            stdout_tail.push_back(l.to_string());
-        },
-        |l| emit_log(app, stage_owned.as_deref(), LogStream::Stderr, l),
-        &mut None,
-        DRAIN_GRACE,
-    )
-    .await
-    .map_err(|e| anyhow!("streaming {} {:?}: {e}", program.display(), args))?;
+    let outcome = run
+        .pump(
+            |l| {
+                emit_log(app, stage_owned.as_deref(), LogStream::Stdout, l);
+                if stdout_tail.len() == STDOUT_TAIL_LINES {
+                    stdout_tail.pop_front();
+                }
+                stdout_tail.push_back(l.to_string());
+            },
+            |l| emit_log(app, stage_owned.as_deref(), LogStream::Stderr, l),
+            DRAIN_GRACE,
+            STAGE_TERM_GRACE,
+        )
+        .await
+        .map_err(|e| anyhow!("streaming {} {:?}: {e}", program.display(), args))?;
 
     if outcome.abandoned {
         let note = format!(
@@ -2072,25 +2322,154 @@ mod tests {
         assert_eq!(cooperative_cancel_port(proved, replaced), None);
         assert_eq!(cooperative_cancel_port(pid_only, pid_only), None);
         assert_eq!(cooperative_cancel_port(proved, proved), Some(9));
-        assert!(send_loopback_cancel(0, "gen-a").is_err());
+        assert!(send_loopback_cancel(0, "gen-a", Duration::from_millis(10)).is_err());
+    }
+
+    /// Loopback owner stand-in: read the generation, answer `reply` (or
+    /// nothing), and hand back what it read.
+    fn fake_owner(reply: Option<&'static str>) -> (u16, std::thread::JoinHandle<String>) {
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let handle = std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Write};
+            let (mut stream, addr) = listener.accept().unwrap();
+            assert!(addr.ip().is_loopback());
+            let mut got = String::new();
+            BufReader::new(&mut stream).read_line(&mut got).unwrap();
+            if let Some(reply) = reply {
+                stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
+            }
+            got
+        });
+        (port, handle)
     }
 
     #[test]
     fn stop_writes_the_generation_to_loopback_and_does_not_exit() {
-        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let generation = "gen-current";
-        let handle = std::thread::spawn(move || {
-            use std::io::Read;
-            let (mut stream, addr) = listener.accept().unwrap();
-            assert!(addr.ip().is_loopback());
-            let mut got = String::new();
-            stream.read_to_string(&mut got).unwrap();
-            got
-        });
-        send_loopback_cancel(port, generation).unwrap();
-        assert_eq!(handle.join().unwrap().trim(), generation);
+        let (port, owner) = fake_owner(Some(CANCEL_STOPPED));
+        let reply = send_loopback_cancel(port, "gen-current", Duration::from_secs(5)).unwrap();
+        assert_eq!(owner.join().unwrap().trim(), "gen-current");
+        assert_eq!(reply, CancelReply::Stopped);
         assert!(pid_is_alive(std::process::id()));
+    }
+
+    /// A write the socket accepted proves nothing: only the owner's
+    /// "stopped" answer counts as a stop (#75422).
+    #[test]
+    fn stop_is_not_confirmed_until_the_owner_says_its_stage_exited() {
+        let (port, owner) = fake_owner(Some(CANCEL_STOPPING));
+        assert_eq!(
+            send_loopback_cancel(port, "gen-a", Duration::from_secs(5)).unwrap(),
+            CancelReply::Stopping
+        );
+        owner.join().unwrap();
+
+        let (port, owner) = fake_owner(None);
+        assert_eq!(
+            send_loopback_cancel(port, "gen-a", Duration::from_secs(5)).unwrap(),
+            CancelReply::Unconfirmed
+        );
+        owner.join().unwrap();
+    }
+
+    fn marker_with_generation(name: &str, generation: &str) -> (PathBuf, PathBuf) {
+        let dir = unique_tmp_dir(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join(".hermes-update-in-progress");
+        std::fs::write(&marker, format!("{}\n10\n{generation}\n9\n", std::process::id())).unwrap();
+        (dir, marker)
+    }
+
+    /// Stop while a stage (and a descendant it started) is mid-flight, the
+    /// way `run_streamed` drives `hermes update`. Both ignore SIGTERM, the
+    /// worst case. The owner must end the whole tree, reap it, and only then
+    /// release the marker; after that no second stage may start (#75422).
+    #[cfg(unix)]
+    async fn assert_stop_settles_the_stage_tree(name: &str, script: &str) {
+        let control: &'static StageControl = Box::leak(Box::new(StageControl::new()));
+        let (dir, marker) = marker_with_generation(name, "gen-a");
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .process_group(0);
+        let mut run = control.spawn(&mut cmd, |e| anyhow!(e)).unwrap();
+        let pgid = run.pid;
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let pump = tokio::spawn(async move {
+            run.pump(
+                move |line| {
+                    let _ = ready_tx.send(line.to_string());
+                },
+                |_| {},
+                Duration::from_secs(20),
+                Duration::from_millis(300),
+            )
+            .await
+            .map(|_| ())
+        });
+        // The descendant is running once the script has printed.
+        tokio::task::spawn_blocking(move || ready_rx.recv_timeout(Duration::from_secs(10)).unwrap())
+            .await
+            .unwrap();
+        assert!(process_group_alive(pgid));
+
+        let settle_marker = marker.clone();
+        let reply = tokio::task::spawn_blocking(move || {
+            settle_owned_cancel(control, &settle_marker, "gen-a", Duration::from_secs(20))
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(reply, CANCEL_STOPPED);
+        assert!(!process_group_alive(pgid), "stage tree outlived the stop");
+        assert!(!marker.exists(), "marker must be released once the tree is gone");
+        let err = pump.await.unwrap().unwrap_err();
+        assert!(err.to_string().contains(STAGE_CANCELLED));
+        let mut next = Command::new("true");
+        assert!(
+            control.spawn(&mut next, |e| anyhow!(e)).is_err(),
+            "a stopped updater must not start another stage"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_reaps_a_running_stage_tree_before_releasing_the_marker() {
+        assert_stop_settles_the_stage_tree(
+            "stop-running-stage",
+            "trap '' TERM; sleep 60 & echo started; wait",
+        )
+        .await;
+    }
+
+    /// The leader already exited but a descendant still holds its pipes
+    /// (`pump_child`'s drain phase): the descendant is still ours to stop.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_reaps_a_descendant_that_outlived_the_stage_leader() {
+        assert_stop_settles_the_stage_tree(
+            "stop-orphaned-descendant",
+            "trap '' TERM; sleep 60 & echo started; exit 0",
+        )
+        .await;
+    }
+
+    /// A stage that has not exited keeps the lock: answer "stopping", keep
+    /// the marker, and do not let the owner exit over it.
+    #[test]
+    fn stop_keeps_the_marker_while_the_stage_has_not_exited() {
+        let control = StageControl::new();
+        control.lock().running = true;
+        let (dir, marker) = marker_with_generation("stop-unsettled", "gen-a");
+
+        let reply = settle_owned_cancel(&control, &marker, "gen-a", Duration::from_millis(50));
+
+        assert_eq!(reply, CANCEL_STOPPING);
+        assert!(marker.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

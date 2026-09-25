@@ -32,6 +32,8 @@ export default function Failure({ bootstrap }: FailureProps) {
   const mode = useStore($mode)
   const liveUpdater = useStore($liveUpdater)
   const [stopNote, setStopNote] = useState<string | null>(null)
+  // Stop resolves only once the owner reports its update step exited.
+  const [stopping, setStopping] = useState(false)
   const isUpdate = mode === 'update'
   const decision = updateFailureRetryAction(isUpdate ? liveUpdater : null)
   const blockedPid = decision.kind === 'stop_or_wait' ? decision.pid : null
@@ -60,7 +62,8 @@ export default function Failure({ bootstrap }: FailureProps) {
 
   async function onStopUpdater() {
     setStopNote(null)
-    const message = await stopLiveUpdater()
+    setStopping(true)
+    const message = await stopLiveUpdater().finally(() => setStopping(false))
     const owner = await refreshLiveUpdater()
     const next = updateFailureRetryAction(owner)
 
@@ -95,7 +98,7 @@ export default function Failure({ bootstrap }: FailureProps) {
 
       <div className="flex items-center gap-3">
         {stopLabel ? (
-          <Button className="gap-1.5" onClick={() => void onStopUpdater()}>
+          <Button className="gap-1.5" disabled={stopping} onClick={() => void onStopUpdater()}>
             {stopLabel}
           </Button>
         ) : null}

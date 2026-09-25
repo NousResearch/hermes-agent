@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
+from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -114,9 +116,27 @@ def _generate_pyproject(plugin_dirs: list[Path] | Mapping[Path, Path], root: Pat
     core_pyproject = source / "pyproject.toml"
     core_text = core_pyproject.read_text(encoding="utf-8-sig")
 
-    members = [_workspace_member(source, root, identity=identity).relative_to(root).as_posix()
-               for identity, source in member_sources(plugin_dirs).items()
-               if _is_member_candidate(source)]
+    candidates = [(identity, plugin) for identity, plugin in member_sources(plugin_dirs).items()
+                  if _is_member_candidate(plugin)]
+    names = {identity: _declared_member_name(plugin, identity=identity) for identity, plugin in candidates}
+    collisions = {name for name, count in Counter(names.values()).items() if count > 1}
+    if collisions:
+        import tomllib
+
+        for _, plugin in candidates:
+            pyproject = read_python_declaration(plugin).pyproject
+            if pyproject is None:
+                continue
+            sources = tomllib.loads(pyproject.read_text(encoding="utf-8-sig")).get("tool", {}).get("uv", {}).get("sources", {})
+            for name, specs in sources.items():
+                variants = specs if isinstance(specs, list) else [specs]
+                if _normalized_name(name) in collisions and any(
+                    isinstance(spec, dict) and spec.get("workspace") is True for spec in variants
+                ):
+                    raise InstallError("venv", f"ambiguous workspace dependency {name}: multiple plugins declare this name")
+    members = [_workspace_member(plugin, root, identity=identity,
+                                 rename=names[identity] in collisions).relative_to(root).as_posix()
+               for identity, plugin in candidates]
 
     if members:
         import tomllib
@@ -210,14 +230,26 @@ def _member_key(identity: Path) -> str:
     """``<plugin dir name>-<sha256(path)[:16]>``: the hash keeps two same-named plugins from
     different homes apart; the name is what a user sees in uv's conflict text
     (``hermes-plugin-<key> depends on …``) — a bare hash told them nothing to disable."""
-    import re
-
     digest = hashlib.sha256(str(identity.resolve()).encode()).hexdigest()[:16]
     name = re.sub(r"[^a-z0-9._-]+", "-", identity.name.lower()).strip("-.") or "plugin"
     return f"{name}-{digest}"
 
 
-def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
+def _normalized_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _declared_member_name(plugin_dir: Path, *, identity: Path) -> str:
+    import tomllib
+
+    pyproject = read_python_declaration(plugin_dir).pyproject
+    if pyproject is not None:
+        document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
+        return _normalized_name(document["project"]["name"])
+    return _normalized_name(f"hermes-plugin-{_member_key(identity)}")
+
+
+def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path, rename: bool = False) -> Path:
     """Keep workspace members with their generation, not a temporary install clone."""
     import json
     import tomllib
@@ -231,7 +263,8 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
                         ignore=_member_ignored)
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
         # uv identifies workspace members by project name, not their directory.
-        document["project"]["name"] = f"hermes-plugin-{key}"
+        if rename:
+            document["project"]["name"] = f"hermes-plugin-{key}"
         if declaration.install_requirements != declaration.requirements:
             document["project"]["dependencies"] = list(declaration.install_requirements)
         for sources in document.get("tool", {}).get("uv", {}).get("sources", {}).values():

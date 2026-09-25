@@ -718,7 +718,7 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
     copied = recorded / relative / "pyproject.toml"
     copied_data = tomllib.loads(copied.read_text(encoding="utf-8-sig"))
     original_data = tomllib.loads(before_member.decode("utf-8-sig"))
-    assert copied_data["project"].pop("name") != original_data["project"].pop("name")
+    assert copied_data["project"].pop("name") == original_data["project"].pop("name")
     assert copied_data == original_data
     assert copied.resolve().is_relative_to(recorded.resolve())
     (original_member / "pyproject.toml").unlink()

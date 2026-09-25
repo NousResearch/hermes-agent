@@ -126,6 +126,57 @@ def test_two_profile_copies_with_same_project_name_lock_together(layout, locked_
     assert (root / "uv.lock").is_file()
 
 
+def test_distinct_members_keep_workspace_dependency_names(layout, locked_project):
+    """A member's workspace source must still refer to the other member's project name."""
+    import tomllib
+
+    tmp, core, _, _ = layout
+    _, uv, env = locked_project
+    provider = tmp / "plugins" / "provider"
+    hindsight = tmp / "plugins" / "hindsight"
+    for plugin in (provider, hindsight):
+        plugin.mkdir(parents=True)
+    (hindsight / "pyproject.toml").write_text(
+        '[project]\nname="hermes-plugin-hindsight"\nversion="1.0.1"\n'
+        'requires-python=">=3.11"\n[tool.uv]\npackage=false\n', encoding="utf-8")
+    (provider / "pyproject.toml").write_text(
+        '[project]\nname="plugin-provider"\nversion="1.0.0"\n'
+        'requires-python=">=3.11"\ndependencies=["hermes-plugin-hindsight==1.0.1"]\n'
+        '[tool.uv]\npackage=false\n'
+        '[tool.uv.sources]\nhermes-plugin-hindsight={workspace=true}\n', encoding="utf-8")
+
+    root = tmp / "workspace"
+    ws._generate_pyproject([provider, hindsight], root, source=core)
+    members = tomllib.loads((root / "pyproject.toml").read_text())["tool"]["uv"]["workspace"]["members"]
+    names = {tomllib.loads((root / member / "pyproject.toml").read_text())["project"]["name"]
+             for member in members}
+    assert names == {"plugin-provider", "hermes-plugin-hindsight"}
+    subprocess.run([str(uv), "lock", "--python", sys.executable], cwd=root, env=env,
+                   check=True, capture_output=True, text=True)
+    assert (root / "uv.lock").is_file()
+
+
+def test_ambiguous_workspace_source_refuses_colliding_members(layout):
+    from pm.package import InstallError
+
+    tmp, core, _, _ = layout
+    plugins = []
+    for profile in ("default", "other"):
+        plugin = tmp / profile / "hindsight"
+        plugin.mkdir(parents=True)
+        (plugin / "pyproject.toml").write_text(
+            '[project]\nname="hermes-plugin-hindsight"\nversion="1.0.1"\n', encoding="utf-8")
+        plugins.append(plugin)
+    provider = tmp / "provider"
+    provider.mkdir()
+    (provider / "pyproject.toml").write_text(
+        '[project]\nname="provider"\nversion="1.0.0"\n'
+        'dependencies=["hermes-plugin-hindsight==1.0.1"]\n'
+        '[tool.uv.sources]\nhermes-plugin-hindsight={workspace=true}\n', encoding="utf-8")
+    with pytest.raises(InstallError, match="ambiguous workspace dependency hermes-plugin-hindsight"):
+        ws._generate_pyproject([provider, *plugins], tmp / "workspace", source=core)
+
+
 # --- classified failures + staging surface (FINAL-RUNTIME-CONTRACT) ---
 
 

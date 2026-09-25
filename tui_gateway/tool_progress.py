@@ -452,20 +452,15 @@ def _progress_subagent(sid: str, name: str, preview, kw, event_type):
     _mirror_subagent_to_child(event_type, payload)
 
 
-def _progress_moa_aggregating(sid, name, preview, kw):
-    # Aggregation is the fan-out's tail: the same answer-only policy that drops
-    # moa.progress/moa.phase (status-bar counters) applies to this announcement.
-    if not _session_show_reasoning(sid):
-        return
-    _emit("moa.aggregating", sid, {"aggregator": str(name or "")})
-
-
 # event_type -> (handler, requires): `requires` names the arg that must be truthy for the row to be
 # emitted at all ("name" / "preview" / None).
 _PROGRESS_HANDLERS = {
     "tool.output_risk": (_progress_output_risk, "name"), "reasoning.available": (_progress_reasoning, "preview"),
     "moa.reference": (_progress_moa_reference, "name"),
-    "moa.aggregating": (_progress_moa_aggregating, None),
+    # Answer-only drops MoA content (references, progress/phase lines that land in the reasoning
+    # disclosure or activity log) but keeps this: a bare state transition both clients use only
+    # for the busy indicator. Same rule as subagent.thinking: frame kept, text dropped.
+    "moa.aggregating": (lambda sid, name, preview, kw: _emit("moa.aggregating", sid, {"aggregator": str(name or "")}), None),
     "moa.progress": (_progress_moa_progress, None), "moa.phase": (_progress_moa_phase, None),
 }
 

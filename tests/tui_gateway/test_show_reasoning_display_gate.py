@@ -121,7 +121,7 @@ def test_hidden_reasoning_drops_moa_reference_chrome(monkeypatch):
     assert events == []
 
 
-def test_hidden_reasoning_drops_moa_status_and_aggregating_chrome(monkeypatch):
+def test_hidden_reasoning_drops_moa_status_lines_but_keeps_aggregating(monkeypatch):
     events = _capture(monkeypatch)
     _session(monkeypatch, "hide-moa-status", show_reasoning=False, effort="high")
 
@@ -133,17 +133,9 @@ def test_hidden_reasoning_drops_moa_status_and_aggregating_chrome(monkeypatch):
     )
     server._on_tool_progress("hide-moa-status", "moa.aggregating", "aggregator-a", None, None)
 
-    assert events == []
-
-
-def test_shown_reasoning_still_emits_moa_aggregating(monkeypatch):
-    events = _capture(monkeypatch)
-    _session(monkeypatch, "show-moa-status", show_reasoning=True, effort="high")
-
-    server._on_tool_progress("show-moa-status", "moa.aggregating", "aggregator-a", None, None)
-
+    # progress/phase write lines into the reasoning disclosure (Desktop) and the
+    # activity log (TUI). aggregating is a bare busy-state transition, no content.
     assert [event[0] for event in events] == ["moa.aggregating"]
-    assert events[0][2]["aggregator"] == "aggregator-a"
 
 
 def test_hidden_reasoning_drops_subagent_thinking_text_on_parent(monkeypatch):

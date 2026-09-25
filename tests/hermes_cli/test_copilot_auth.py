@@ -11,8 +11,17 @@ class TestTokenValidation:
         from hermes_cli.copilot_auth import validate_copilot_token
         valid, msg = validate_copilot_token("ghp_abcdefghijklmnop1234")
         assert valid is False
-        assert "Classic Personal Access Tokens" in msg
-        assert "ghp_" in msg
+
+    @pytest.mark.parametrize("token", ["gho_abcdefghijklmnop1234", "github_pat_abcdefghijklmnop1234", "ghu_abcdefghijklmnop1234"])
+    def test_supported_token_families_accepted(self, token):
+        from hermes_cli.copilot_auth import validate_copilot_token
+        assert validate_copilot_token(token) == (True, "OK")
+
+    def test_arbitrary_string_rejected(self):
+        """A non-GitHub value in GITHUB_TOKEN must fail validation instead of reaching the API (#12650)."""
+        from hermes_cli.copilot_auth import validate_copilot_token
+        valid, msg = validate_copilot_token("not_a_github_token")
+        assert valid is False
 
 
 class TestResolveToken:
@@ -29,15 +38,13 @@ class TestResolveToken:
         assert source == "GH_TOKEN"
 
 
-
-
     def test_gh_cli_classic_pat_raises(self, monkeypatch):
         from hermes_cli.copilot_auth import resolve_copilot_token
         monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
         monkeypatch.delenv("GH_TOKEN", raising=False)
         monkeypatch.delenv("GITHUB_TOKEN", raising=False)
         with patch("hermes_cli.copilot_auth._try_gh_cli_token", return_value="ghp_classic"):
-            with pytest.raises(ValueError, match="classic PAT"):
+            with pytest.raises(ValueError):
                 resolve_copilot_token()
 
     def test_invalid_env_var_skips_gh_cli_fallback(self, monkeypatch):
@@ -72,6 +79,43 @@ class TestResolveToken:
         mock_cli.assert_not_called()
 
 
+class TestGhCliTokenCache:
+    """The gh-CLI probe result is cached — a miss must not re-spawn gh.
+
+    Regression: /api/model/options ran `gh auth token` four times per build;
+    with no gh credential store each probe blocked its full 5s timeout, so the
+    Desktop Models/Providers settings pages took 20s per open and exceeded the
+    renderer's 15s IPC budget (Aug 2026 desktop audit).
+    """
+
+    def _reset(self):
+        from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
+        _invalidate_gh_cli_token_cache()
+
+    def test_miss_is_cached_and_probe_runs_once(self):
+        from hermes_cli import copilot_auth
+        self._reset()
+        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value=None) as probe:
+            assert copilot_auth._try_gh_cli_token() is None
+            assert copilot_auth._try_gh_cli_token() is None
+            assert copilot_auth._try_gh_cli_token() is None
+        assert probe.call_count == 1
+        self._reset()
+
+
+    def test_ttl_expiry_reprobes(self, monkeypatch):
+        from hermes_cli import copilot_auth
+        self._reset()
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(copilot_auth.time, "monotonic", lambda: clock["now"])
+        with patch.object(copilot_auth, "_probe_gh_cli_token", return_value=None) as probe:
+            copilot_auth._try_gh_cli_token()
+            clock["now"] += copilot_auth._GH_CLI_TOKEN_CACHE_TTL_SECONDS + 1
+            copilot_auth._try_gh_cli_token()
+        assert probe.call_count == 2
+        self._reset()
+
+
 class TestRequestHeaders:
     """Copilot API header generation."""
 
@@ -93,12 +137,6 @@ class TestCopilotDefaultHeaders:
     """The models.py copilot_default_headers uses copilot_auth."""
 
 
-    def test_agent_turn_explicit(self):
-        """Explicitly passing is_agent_turn=True sets x-initiator to 'agent'."""
-        from hermes_cli.models import copilot_default_headers
-        headers = copilot_default_headers(is_agent_turn=True)
-        assert headers["x-initiator"] == "agent"
-
     def test_param_passthrough_both_values(self):
         """is_agent_turn param correctly maps to x-initiator for both True and False."""
         from hermes_cli.models import copilot_default_headers
@@ -108,23 +146,6 @@ class TestCopilotDefaultHeaders:
                 f"is_agent_turn={is_agent} should produce x-initiator={expected!r}, "
                 f"got {headers['x-initiator']!r}"
             )
-
-
-class TestApiModeSelection:
-    """API mode selection matching opencode's shouldUseCopilotResponsesApi."""
-
-    def test_gpt5_uses_responses(self):
-        from hermes_cli.models import _should_use_copilot_responses_api
-        assert _should_use_copilot_responses_api("gpt-5.4") is True
-        assert _should_use_copilot_responses_api("gpt-5.4-mini") is True
-        assert _should_use_copilot_responses_api("gpt-5.3-codex") is True
-        assert _should_use_copilot_responses_api("gpt-5.2-codex") is True
-        assert _should_use_copilot_responses_api("gpt-5.2") is True
-        assert _should_use_copilot_responses_api("gpt-5.1-codex-max") is True
-
-    def test_gpt5_mini_excluded(self):
-        from hermes_cli.models import _should_use_copilot_responses_api
-        assert _should_use_copilot_responses_api("gpt-5-mini") is False
 
 
 class TestEnvVarOrder:

@@ -1,0 +1,423 @@
+"""TTS engine lifecycle driven by speech-output toggles (issue #100881).
+
+Local engines load lazily on first synthesis, so the first spoken reply after
+"read replies aloud" / voice conversation turns on pays the model load as dead
+air. The toggles now hold *leases*: acquiring warms the configured provider
+into the SAME cache slot synthesis reads; releasing the last lease unloads
+resident local models once the keep-warm window passes (#118037).
+"""
+
+from __future__ import annotations
+
+import shlex
+import subprocess
+import threading
+
+import pytest
+
+from tools import tts_command_provider, tts_tool, tts_tool_lifecycle, tts_tool_local
+
+
+@pytest.fixture(autouse=True)
+def _clean_lifecycle(monkeypatch):
+    tts_tool_lifecycle._reset_tts_leases_for_tests()
+    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
+        cache.clear()
+    yield
+    tts_tool_lifecycle._reset_tts_leases_for_tests()
+    for cache in tts_tool_local._LOCAL_TTS_MODEL_CACHES.values():
+        cache.clear()
+
+
+class _FakePiperVoice:
+    loads = 0
+    synthesized: list = []
+
+    @classmethod
+    def load(cls, model_path, use_cuda=False):
+        cls.loads += 1
+        inst = cls()
+        inst.model_path = model_path
+        return inst
+
+    def synthesize_wav(self, text, wav_file, syn_config=None):
+        type(self).synthesized.append(text)
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(16000)
+        wav_file.writeframes(b"\x00\x00" * 160)
+
+
+@pytest.fixture
+def fake_piper(monkeypatch, tmp_path):
+    _FakePiperVoice.loads = 0
+    _FakePiperVoice.synthesized = []
+    monkeypatch.setattr(tts_tool, "_import_piper", lambda: _FakePiperVoice)
+    # Pretend the voice is already on disk so no download subprocess runs.
+    voices_dir = tmp_path / "voices"
+    voices_dir.mkdir()
+    (voices_dir / "en_US-test-medium.onnx").write_bytes(b"onnx")
+    (voices_dir / "en_US-test-medium.onnx.json").write_text("{}")
+    cfg = {"provider": "piper", "piper": {"voice": "en_US-test-medium", "voices_dir": str(voices_dir)}}
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
+    return cfg
+
+
+class _FakeTimer:
+    def __init__(self, interval, function, args=None, kwargs=None):
+        self.interval, self.function, self.args = interval, function, tuple(args or ())
+        self.started = self.cancelled = False
+        self.daemon = False
+
+    def start(self):
+        self.started = True
+
+    def cancel(self):
+        self.cancelled = True
+
+    def fire(self):
+        self.function(*self.args)
+
+
+@pytest.fixture
+def timers(monkeypatch):
+    created: list = []
+
+    def _factory(*args, **kwargs):
+        timer = _FakeTimer(*args, **kwargs)
+        created.append(timer)
+        return timer
+
+    monkeypatch.setattr(tts_tool_lifecycle, "_make_keep_warm_timer", _factory, raising=False)
+    return created
+
+
+def _pending(timers):
+    return [t for t in timers if t.started and not t.cancelled]
+
+
+# --------------------------------------------------------------------------
+# warm_tts_provider: warm-up populates the exact slot synthesis reads
+# --------------------------------------------------------------------------
+
+
+def test_warm_loads_piper_into_synthesis_cache(fake_piper, tmp_path):
+    result = tts_tool_lifecycle.warm_tts_provider(fake_piper)
+
+    assert result["warmed"] is True
+    assert result["action"] == "loaded"
+    assert result["provider"] == "piper"
+    assert _FakePiperVoice.loads == 1
+    assert len(tts_tool_local._piper_voice_cache) == 1
+
+    # The load that would have happened on the first reply is already done:
+    # synthesis reuses the warmed instance without loading again.
+    out = tts_tool._generate_piper_tts("hello", str(tmp_path / "out.wav"), fake_piper)
+    assert out.endswith(".wav")
+    assert _FakePiperVoice.loads == 1
+    assert _FakePiperVoice.synthesized == ["hello"]
+
+
+def test_warm_twice_is_a_cache_hit(fake_piper):
+    tts_tool_lifecycle.warm_tts_provider(fake_piper)
+    second = tts_tool_lifecycle.warm_tts_provider(fake_piper)
+
+    assert second["action"] == "cached"
+    assert _FakePiperVoice.loads == 1
+
+
+def test_warm_reads_configured_provider_when_none_given(fake_piper):
+    result = tts_tool_lifecycle.warm_tts_provider()
+    assert result["provider"] == "piper"
+    assert result["action"] == "loaded"
+
+
+def test_warm_never_raises_on_engine_failure(monkeypatch):
+    def _boom():
+        raise ImportError("No module named 'piper'")
+
+    monkeypatch.setattr(tts_tool, "_import_piper", _boom)
+    result = tts_tool_lifecycle.warm_tts_provider({"provider": "piper"})
+
+    assert result["warmed"] is False
+    assert result["action"] == "error"
+    assert "piper" in result["error"]
+    assert tts_tool_local._piper_voice_cache == {}
+
+
+def test_warm_is_noop_for_cloud_provider_without_lazy_sdk(monkeypatch):
+    result = tts_tool_lifecycle.warm_tts_provider({"provider": "openai"})
+    assert result == {"provider": "openai", "warmed": False, "action": "noop"}
+
+
+@pytest.mark.parametrize("installed", [True, False])
+def test_warm_sdk_uses_pm_availability_and_refuses_inactive_generation(tmp_path, monkeypatch, installed):
+    import pm
+    import pm.client
+    import pm.paths
+    import pm.extras
+    from pm.environments import runtime_facts_path
+
+    calls = []
+    root = tmp_path / "repo"
+    root.mkdir()
+    monkeypatch.setattr(pm.paths, "repo_root", lambda: root)
+    # The real anchor probe sees a real temporary module, or an absent anchor.
+    (tmp_path / "warm_sdk_probe.py").write_text("ready = True\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(pm.extras, "_anchors", lambda extra: ("warm_sdk_probe" if installed else "absent_warm_sdk_probe",))
+    candidate = runtime_facts_path(root).parent / "environments/new/venv"
+    candidate.mkdir(parents=True)
+    (candidate / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+
+    def prepare(extras):
+        calls.append(extras)
+        pm.Facts(runtime_facts_path(root)).record_state("venv", "new", extras, environment=candidate)
+
+    monkeypatch.setattr(pm.client, "sync_venv", prepare)
+    result = tts_tool_lifecycle.warm_tts_provider({"provider": "edge"})
+    assert result["warmed"] is installed
+    assert result["action"] == ("cached" if installed else "error")
+    assert calls == ([] if installed else [["edge-tts"]])
+    if not installed:
+        assert "restart" in result["error"]
+
+
+# --------------------------------------------------------------------------
+# release_tts_provider
+# --------------------------------------------------------------------------
+
+
+def test_release_drops_every_local_cache(fake_piper):
+    tts_tool_lifecycle.warm_tts_provider(fake_piper)
+    tts_tool_local._kittentts_model_cache["m"] = object()
+
+    assert tts_tool_lifecycle.release_tts_provider() == {"released": 2}
+    assert tts_tool_local._piper_voice_cache == {}
+    assert tts_tool_local._kittentts_model_cache == {}
+
+
+def test_release_scoped_to_one_provider(fake_piper):
+    tts_tool_lifecycle.warm_tts_provider(fake_piper)
+    tts_tool_local._kittentts_model_cache["m"] = object()
+
+    assert tts_tool_lifecycle.release_tts_provider("kittentts") == {"released": 1}
+    assert len(tts_tool_local._piper_voice_cache) == 1
+
+
+def test_release_with_nothing_resident_is_zero():
+    assert tts_tool_lifecycle.release_tts_provider() == {"released": 0}
+
+
+# --------------------------------------------------------------------------
+# Leases: warm on acquire, unload only when the LAST holder releases
+# --------------------------------------------------------------------------
+
+
+def test_acquire_warms_and_counts(fake_piper):
+    result = tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud")
+    assert result["leases"] == 1
+    assert result["action"] == "loaded"
+    assert tts_tool_lifecycle.tts_lease_holders() == ["desktop:read-aloud"]
+
+
+def test_last_release_unloads_but_earlier_release_does_not(fake_piper, timers):
+    tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud")
+    tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
+    assert len(tts_tool_local._piper_voice_cache) == 1
+
+    # One surface turning speech off must not pull the model from under the
+    # other surface that still speaks through this process.
+    first = tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
+    assert first == {"leases": 1, "released": 0}
+    assert len(tts_tool_local._piper_voice_cache) == 1
+    assert _pending(timers) == []
+
+    last = tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
+    assert last["leases"] == 0
+    [timer] = _pending(timers)
+    timer.fire()
+    assert tts_tool_local._piper_voice_cache == {}
+
+
+def test_reacquire_is_idempotent_and_reheals_cache(fake_piper):
+    tts_tool_lifecycle.acquire_tts_lease("cli:voice-tts")
+    tts_tool_lifecycle.release_tts_provider()  # something else dropped the model
+    result = tts_tool_lifecycle.acquire_tts_lease("cli:voice-tts")
+
+    assert result["leases"] == 1
+    assert result["action"] == "loaded"
+    assert _FakePiperVoice.loads == 2
+
+
+def test_release_unknown_lease_is_noop(fake_piper):
+    tts_tool_lifecycle.acquire_tts_lease("a")
+    assert tts_tool_lifecycle.release_tts_lease("never-acquired") == {"leases": 1, "released": 0}
+    assert len(tts_tool_local._piper_voice_cache) == 1
+
+
+def test_acquire_failure_still_registers_lease(monkeypatch):
+    def _boom():
+        raise RuntimeError("engine missing")
+
+    monkeypatch.setattr(tts_tool, "_import_piper", _boom)
+    result = tts_tool_lifecycle.acquire_tts_lease("desktop:conversation", {"provider": "piper"})
+    assert result["action"] == "error"
+    assert result["leases"] == 1
+    assert tts_tool_lifecycle.tts_lease_holders() == ["desktop:conversation"]
+
+
+# --------------------------------------------------------------------------
+# Registry invariant: every local engine cache is release-able
+# --------------------------------------------------------------------------
+
+
+def test_every_local_warmer_has_a_registered_cache():
+    warmers = tts_tool_lifecycle._local_tts_warmers()
+    assert set(warmers) == set(tts_tool_local._LOCAL_TTS_MODEL_CACHES)
+    assert tts_tool_local._LOCAL_TTS_MODEL_CACHES["piper"] is tts_tool_local._piper_voice_cache
+    assert tts_tool_local._LOCAL_TTS_MODEL_CACHES["kittentts"] is tts_tool_local._kittentts_model_cache
+
+
+# --------------------------------------------------------------------------
+# User-declared providers get the same signal (plugin warm()/release(),
+# command warm_command/release_command) so a local TTS server can preload
+# and unload on the speech toggles.
+# --------------------------------------------------------------------------
+
+
+def test_plugin_provider_warm_and_release_follow_the_lease(monkeypatch, timers):
+    from agent import tts_provider, tts_registry
+
+    calls: list = []
+
+    class _ServerBacked(tts_provider.TTSProvider):
+        @property
+        def name(self):
+            return "my-server"
+
+        def synthesize(self, text, output_path, **kw):
+            return output_path
+
+        def warm(self):
+            calls.append("warm")
+
+        def release(self):
+            calls.append("release")
+
+    tts_registry._reset_for_tests()
+    tts_registry.register_provider(_ServerBacked())
+    cfg = {"provider": "my-server"}
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.plugins._ensure_plugins_discovered", lambda force=False: None)
+    try:
+        assert tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud", cfg)["action"] == "warmed"
+        tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts", cfg)
+        tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
+        assert calls == ["warm", "warm"]  # still one holder — no release yet
+        tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
+        assert calls == ["warm", "warm"]  # parked for the keep-warm window
+        _pending(timers)[0].fire()
+        assert calls == ["warm", "warm", "release"]
+    finally:
+        tts_registry._reset_for_tests()
+
+
+def test_command_provider_runs_warm_and_release_commands(monkeypatch, timers):
+    import os
+
+    ran: list = []
+    done = threading.Event()
+
+    def _fake_run(command, timeout, env_passthrough=None):
+        ran.append(command)
+        done.set()
+
+    monkeypatch.setattr(tts_command_provider, "run_command_provider", _fake_run)
+    cfg = {
+        "provider": "srv",
+        "providers": {"srv": {
+            "command": "srv say {input_path} {output_path}",
+            "warm_command": "curl -s localhost:5002/load?model={model}",
+            "release_command": "curl -s localhost:5002/unload",
+            "model": "kokoro v1",
+        }},
+    }
+    monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
+
+    assert tts_tool_lifecycle.acquire_tts_lease("desktop:read-aloud", cfg)["action"] == "warmed"
+    assert done.wait(5)
+    done.clear()
+    tts_tool_lifecycle.release_tts_lease("desktop:read-aloud")
+    _pending(timers)[0].fire()
+    assert done.wait(5)
+    # The {model} placeholder is unquoted in the template, so the renderer
+    # shell-quotes it for the host platform (list2cmdline on Windows,
+    # shlex.quote elsewhere) — compute the expectation the same way.
+    quote = subprocess.list2cmdline([cfg["providers"]["srv"]["model"]]) if os.name == "nt" \
+        else shlex.quote(cfg["providers"]["srv"]["model"])
+    assert ran == [f"curl -s localhost:5002/load?model={quote}", "curl -s localhost:5002/unload"]
+
+
+# --------------------------------------------------------------------------
+# Keep-warm window (#118037): the last release schedules the unload on a
+# cancellable timer instead of dropping the model inline, so a wake-word loop
+# that re-acquires within ``tts.keep_warm_seconds`` reuses the loaded voice.
+# --------------------------------------------------------------------------
+
+
+def test_last_release_keeps_model_warm_for_configured_window(fake_piper, timers):
+    fake_piper["keep_warm_seconds"] = 30
+    tts_tool_lifecycle.acquire_tts_lease("desktop:conversation")
+
+    result = tts_tool_lifecycle.release_tts_lease("desktop:conversation")
+
+    assert result == {"leases": 0, "released": 0}
+    assert len(tts_tool_local._piper_voice_cache) == 1
+    [timer] = _pending(timers)
+    assert timer.interval == fake_piper["keep_warm_seconds"]
+    assert timer.daemon is True  # a parked unload never holds the process open
+
+    timer.fire()
+    assert tts_tool_local._piper_voice_cache == {}
+
+
+def test_reacquire_within_window_reuses_the_loaded_voice(fake_piper, timers):
+    tts_tool_lifecycle.acquire_tts_lease("desktop:conversation")
+    tts_tool_lifecycle.release_tts_lease("desktop:conversation")
+    [stale] = _pending(timers)
+
+    again = tts_tool_lifecycle.acquire_tts_lease("desktop:conversation")
+
+    assert again["action"] == "cached"
+    assert _FakePiperVoice.loads == 1
+    assert _pending(timers) == []
+    stale.fire()  # a timer that already woke up before the cancel must not unload
+    assert len(tts_tool_local._piper_voice_cache) == 1
+
+
+def test_release_during_warm_up_still_unloads_after_the_window(fake_piper, timers, monkeypatch):
+    """A release that lands mid-load finds an empty cache; the voice must not stay resident forever."""
+    real_load = _FakePiperVoice.load.__func__
+
+    def _load_then_release(cls, model_path, use_cuda=False):
+        tts_tool_lifecycle.release_tts_lease("tui:voice-tts")
+        return real_load(cls, model_path, use_cuda)
+
+    monkeypatch.setattr(_FakePiperVoice, "load", classmethod(_load_then_release))
+    tts_tool_lifecycle.acquire_tts_lease("tui:voice-tts")
+
+    assert tts_tool_lifecycle.tts_lease_holders() == []
+    assert len(tts_tool_local._piper_voice_cache) == 1
+    [timer] = _pending(timers)
+    timer.fire()
+    assert tts_tool_local._piper_voice_cache == {}
+
+
+def test_zero_keep_warm_unloads_inline(fake_piper, timers):
+    fake_piper["keep_warm_seconds"] = 0
+    tts_tool_lifecycle.acquire_tts_lease("cli:voice-tts")
+
+    assert tts_tool_lifecycle.release_tts_lease("cli:voice-tts") == {"leases": 0, "released": 1}
+    assert tts_tool_local._piper_voice_cache == {}
+    assert _pending(timers) == []

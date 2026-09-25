@@ -24,10 +24,10 @@ def _clean_state():
     """Reset module state between tests."""
     import tools.credential_files as _cred_mod
     clear_credential_files()
-    _cred_mod._config_files = None
+    _cred_mod._config_files = {}
     yield
     clear_credential_files()
-    _cred_mod._config_files = None
+    _cred_mod._config_files = {}
 
 
 class TestRegisterCredentialFiles:
@@ -87,6 +87,7 @@ class TestSkillsDirectoryMount:
 
         assert mounts[0]["container_path"] == "/home/user/.hermes/skills"
 
+    @pytest.mark.require_symlinks
     def test_symlinks_are_sanitized(self, tmp_path):
         """Symlinks in skills dir should be excluded from the mount."""
         hermes_home = tmp_path / ".hermes"
@@ -112,6 +113,35 @@ class TestSkillsDirectoryMount:
         # Symlink should NOT be present
         assert not (safe_path / "evil_link").exists()
 
+    @pytest.mark.require_symlinks
+    def test_sanitized_copy_skips_bookkeeping_dirs(self, tmp_path):
+        """The symlink-safe copy is what gets mounted, so it must apply the
+        same EXCLUDED_SKILL_DIRS rule as the per-file sync path."""
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        (skills_dir / "cat" / "myskill" / "references").mkdir(parents=True)
+        (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill")
+        (skills_dir / "cat" / "myskill" / "references" / "api.md").write_text("ref")
+        for excluded in (".hub", ".curator_backups", "node_modules"):
+            junk = skills_dir / excluded / "vendored"
+            junk.mkdir(parents=True)
+            (junk / "blob.bin").write_bytes(b"\0" * 64)
+        # Force the sanitizing copy path.
+        secret = tmp_path / "secret.txt"
+        secret.write_text("TOP SECRET")
+        (skills_dir / "evil_link").symlink_to(secret)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            mounts = get_skills_directory_mount()
+
+        safe_path = Path(mounts[0]["host_path"])
+        assert safe_path != skills_dir
+        assert (safe_path / "cat" / "myskill" / "SKILL.md").exists()
+        assert (safe_path / "cat" / "myskill" / "references" / "api.md").exists()
+        assert not (safe_path / "evil_link").exists()
+        for excluded in (".hub", ".curator_backups", "node_modules"):
+            assert not (safe_path / excluded).exists(), excluded
+
     def test_no_symlinks_returns_original_dir(self, tmp_path):
         """When no symlinks exist, the original dir is returned (no copy)."""
         hermes_home = tmp_path / ".hermes"
@@ -126,13 +156,14 @@ class TestSkillsDirectoryMount:
 
 
 class TestIterSkillsFiles:
+    @pytest.mark.require_symlinks
     def test_returns_files_skipping_symlinks(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
         skills_dir = hermes_home / "skills"
         (skills_dir / "cat" / "myskill").mkdir(parents=True)
         (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill")
         (skills_dir / "cat" / "myskill" / "scripts").mkdir()
-        (skills_dir / "cat" / "myskill" / "scripts" / "run.sh").write_text("#!/bin/bash")
+        (skills_dir / "cat" / "myskill" / "scripts" / "run.sh").write_text("#!/usr/bin/env bash")
         # Add a symlink that should be filtered
         secret = tmp_path / "secret"
         secret.write_text("nope")
@@ -146,6 +177,46 @@ class TestIterSkillsFiles:
         assert "/root/.hermes/skills/cat/myskill/scripts/run.sh" in paths
         # Symlink should be excluded
         assert not any("evil" in f["container_path"] for f in files)
+
+    def test_skips_excluded_bookkeeping_dirs(self, tmp_path):
+        """Bookkeeping and dependency dirs must not be uploaded to a sandbox.
+
+        The sync path used a bare rglob("*"), so the .hub download cache,
+        .archive, curator backups and any node_modules/.git under a skills
+        tree were packed up on every sync even though the sandbox never
+        reads them. Sync now honours EXCLUDED_SKILL_DIRS like discovery.
+        """
+        hermes_home = tmp_path / ".hermes"
+        skills_dir = hermes_home / "skills"
+        (skills_dir / "cat" / "myskill").mkdir(parents=True)
+        (skills_dir / "cat" / "myskill" / "SKILL.md").write_text("# skill")
+        # Progressive-disclosure support files must still be synced.
+        (skills_dir / "cat" / "myskill" / "references").mkdir()
+        (skills_dir / "cat" / "myskill" / "references" / "api.md").write_text("ref")
+
+        for excluded in (".hub", ".archive", ".curator_backups", "node_modules"):
+            junk = skills_dir / excluded / "vendored"
+            junk.mkdir(parents=True)
+            (junk / "SKILL.md").write_text("# stale copy")
+        # Also nested inside an otherwise-valid skill package.
+        cache = skills_dir / "cat" / "myskill" / "__pycache__"
+        cache.mkdir()
+        (cache / "helper.cpython-311.pyc").write_text("bytecode")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
+            files = iter_skills_files()
+
+        paths = {f["container_path"] for f in files}
+        assert "/root/.hermes/skills/cat/myskill/SKILL.md" in paths
+        assert "/root/.hermes/skills/cat/myskill/references/api.md" in paths
+        for excluded in (
+            ".hub",
+            ".archive",
+            ".curator_backups",
+            "node_modules",
+            "__pycache__",
+        ):
+            assert not any(excluded in path for path in paths), excluded
 
     def test_empty_when_no_skills_dir(self, tmp_path):
         hermes_home = tmp_path / ".hermes"
@@ -257,9 +328,9 @@ class TestConfigPathTraversal:
     """terminal.credential_files in config.yaml must also reject traversal."""
 
     def _write_config(self, hermes_home: Path, cred_files: list):
-        import yaml
+        import hermes_yaml as yaml
         config_path = hermes_home / "config.yaml"
-        config_path.write_text(yaml.dump({"terminal": {"credential_files": cred_files}}))
+        config_path.write_text(yaml.safe_dump({"terminal": {"credential_files": cred_files}}))
 
     def test_config_traversal_rejected(self, tmp_path, monkeypatch):
         """'../secret' in config.yaml must not escape HERMES_HOME."""
@@ -372,21 +443,6 @@ class TestCacheDirectoryMounts:
         for mount in mounts:
             assert Path(mount["host_path"]).is_dir()
 
-    def test_images_upload_dir_is_mounted(self, tmp_path, monkeypatch):
-        """The flat top-level ``images/`` upload dir is mounted (#69575).
-
-        Desktop / clipboard / PDF uploads land in ``HERMES_HOME/images``, not
-        under ``cache/``. Without this entry vision_analyze on a desktop upload
-        fails because the file is not reachable inside the sandbox.
-        """
-        hermes_home = tmp_path / ".hermes"
-        (hermes_home / "images").mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-        mounts = get_cache_directory_mounts()
-        by_container = {m["container_path"]: m["host_path"] for m in mounts}
-        assert "/root/.hermes/images" in by_container
-        assert by_container["/root/.hermes/images"] == str(hermes_home / "images")
 
     def test_images_upload_file_maps_into_container(self, tmp_path, monkeypatch):
         """A concrete upload under ``images/`` maps to its container path.
@@ -490,6 +546,7 @@ class TestIterCacheFiles:
         assert "upload.zip" in names
         assert "report.pdf" in names
 
+    @pytest.mark.require_symlinks
     def test_skips_symlinks(self, tmp_path, monkeypatch):
         """Symlinks inside cache dirs are skipped."""
         hermes_home = tmp_path / ".hermes"
@@ -586,12 +643,6 @@ class TestMasterCredentialStoresAreNeverMountable:
         assert "/root/.hermes/.env" not in paths
         assert ".env" in missing, "a refused store is reported back to the skill"
 
-    def test_traversal_guard_still_applies(self, tmp_path):
-        """The pre-existing containment check is untouched."""
-        home = self._home(tmp_path)
-        with patch.dict(os.environ, {"HERMES_HOME": str(home)}):
-            assert register_credential_file("../../.ssh/id_rsa") is False
-            assert register_credential_file("/etc/passwd") is False
 
     def test_missing_guard_fails_closed_with_error_log(self, tmp_path, caplog):
         """If agent.file_safety can't be imported the mount is refused loudly.

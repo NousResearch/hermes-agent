@@ -35,6 +35,7 @@ The important abstraction is `api_mode`.
 
 - Most providers use `chat_completions`.
 - Codex and Meta Model API (`api.meta.ai` — Muse Spark) use `codex_responses` (auto-sends `prompt_cache_retention: 24h` for prompt caching; `api.meta.ai` achieves 93–99% cache hits only on `/v1/responses`).
+- Ramp Router (`api.router.com`) also uses `codex_responses` — Responses is Router's native wire (`/v1/chat/completions` is only a minimal compatibility shim), and it validates `reasoning.effort` per model, which the router profile handles by declaring each model's vocabulary from the live catalog (`ProviderProfile.supported_reasoning_efforts`).
 - Anthropic uses `anthropic_messages`.
 - A new non-OpenAI protocol usually means adding a new adapter and a new `api_mode` branch.
 
@@ -65,7 +66,7 @@ Use this when the provider does not behave like OpenAI chat completions.
 
 Examples in-tree today:
 
-- `codex_responses` (OpenAI Codex, xAI Grok, and Meta Muse Spark via `api.meta.ai` — the latter auto-sends `prompt_cache_retention: 24h`)
+- `codex_responses` (OpenAI Codex, xAI Grok, Meta Muse Spark via `api.meta.ai` — the latter auto-sends `prompt_cache_retention: 24h` — and Ramp Router via `api.router.com`)
 - `anthropic_messages`
 
 This path includes everything from Path A plus:
@@ -125,7 +126,7 @@ When you add a plugin and it calls `register_provider()`, the following wire up 
 
 User plugins at `$HERMES_HOME/plugins/model-providers/<name>/` override bundled plugins of the same name (last-writer-wins in `register_provider()`) — so third parties can monkey-patch or replace any built-in profile without editing the repo.
 
-See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a template, and the full [Model Provider Plugin guide](/developer-guide/model-provider-plugin) for field reference, hook idioms, and end-to-end examples.
+See `plugins/model-providers/nvidia/` or `plugins/model-providers/gmi/` as a template, and the full [Model Provider Plugin guide](./model-provider-plugin.md) for field reference, hook idioms, and end-to-end examples.
 
 ## Full path: OAuth and complex providers
 
@@ -150,8 +151,8 @@ Examples from the repo:
 That same id should appear in:
 
 - `PROVIDER_REGISTRY` in `hermes_cli/auth.py`
-- `_PROVIDER_LABELS` in `hermes_cli/models.py`
-- `_PROVIDER_ALIASES` in both `hermes_cli/auth.py` and `hermes_cli/models.py`
+- `_PROVIDER_LABELS` in `hermes_cli/models_catalog_static.py` (re-exported by `hermes_cli/models.py`)
+- `_PROVIDER_ALIASES` in both `hermes_cli/auth.py` and `hermes_cli/models_catalog_static.py`
 - CLI `--provider` choices in `hermes_cli/main.py`
 - setup / model selection branches
 - auxiliary-model defaults
@@ -326,12 +327,12 @@ At minimum, touch the tests that guard provider wiring.
 Common places:
 
 - `tests/hermes_cli/test_runtime_provider_resolution.py`
-- `tests/cli/test_cli_provider_resolution.py`
+- `tests/hermes_cli/test_cli_provider_resolution.py`
 - `tests/hermes_cli/test_model_switch_custom_providers.py` (and adjacent `tests/hermes_cli/test_model_switch_*.py`)
 - `tests/hermes_cli/test_setup_model_provider.py`
-- `tests/run_agent/test_provider_parity.py`
-- `tests/run_agent/test_run_agent.py`
-- `tests/test_<provider>_adapter.py` for a native provider
+- `tests/agent/test_provider_parity.py`
+- `tests/agent/test_run_agent.py`
+- `tests/agent/test_<provider>_adapter.py` for a native provider
 
 For docs-only examples, the exact file set may differ. The point is to cover:
 
@@ -342,35 +343,37 @@ For docs-only examples, the exact file set may differ. The point is to cover:
 - provider:model parsing
 - any adapter-specific message conversion
 
-Run the targeted tests (or use `scripts/run_tests.sh`, which runs each file in its own subprocess):
+Prepare the [independent test environment](./contributing.md#manual-development-and-test-environment),
+then use the canonical runner, which isolates each file and scrubs credentials:
 
 ```bash
-source venv/bin/activate
-python -m pytest tests/hermes_cli/test_runtime_provider_resolution.py tests/cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/run_agent/test_provider_parity.py -q
+
+scripts/run_tests.sh tests/hermes_cli/test_runtime_provider_resolution.py tests/hermes_cli/test_cli_provider_resolution.py tests/hermes_cli/test_setup_model_provider.py tests/agent/test_provider_parity.py -q
 ```
 
 For deeper changes, run the full suite before pushing:
 
 ```bash
-source venv/bin/activate
-python -m pytest tests/ -n0 -q
+scripts/run_tests.sh tests/ -q
 ```
 
 ## Step 9: Live verification
 
-After tests, run a real smoke test.
+After tests, run a real smoke test from the checkout using the
+[PM developer workflow](../reference/package-management.md#developer-workflow) and
+its isolated development home. Leave any test venv before PM activation.
 
 ```bash
-source venv/bin/activate
-python -m hermes_cli.main chat -q "Say hello" --provider your-provider --model your-model
+source ./activate
+python hermes chat -q "Say hello" --provider your-provider --model your-model
 ```
 
 Also test the interactive flows if you changed menus:
 
 ```bash
-source venv/bin/activate
-python -m hermes_cli.main model
-python -m hermes_cli.main setup
+source ./activate
+python hermes model
+python hermes setup
 ```
 
 For native providers, verify at least one tool call too, not just a plain text response.

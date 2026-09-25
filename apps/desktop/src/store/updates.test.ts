@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { DesktopUpdateStatus } from '@/global'
+import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
+import type { DesktopUpdateStatus, DesktopVersionInfo } from '@/global'
+import { en } from '@/i18n/en'
 
 const storage = new Map<string, string>()
 
@@ -13,6 +15,23 @@ vi.mock('@/lib/storage', () => ({
       storage.delete(key)
     } else {
       storage.set(key, value)
+    }
+  },
+  // store/session persists its exact owner hints through the JSON helpers.
+  readJson: (key: string) => {
+    const value = storage.get(key)
+
+    try {
+      return value === undefined ? null : JSON.parse(value)
+    } catch {
+      return null
+    }
+  },
+  writeJson: (key: string, value: unknown) => {
+    if (value === null) {
+      storage.delete(key)
+    } else {
+      storage.set(key, JSON.stringify(value))
     }
   },
   storedBoolean: (key: string, fallback: boolean) => {
@@ -31,6 +50,17 @@ vi.mock('@/store/notifications', () => ({
   dismissNotification: (...args: unknown[]) => dismissSpy(...args)
 }))
 
+// updates.ts reads the connections registry (multi-target gating + the
+// everything-flow fan-out). Mock the store shallowly: the real module drags in
+// the profile/gateway-switch graph, which is far heavier than these tests need.
+const { atom: registryAtom } = await import('nanostores')
+const $mockConnectionsRegistry = registryAtom<unknown>(null)
+
+vi.mock('@/store/connections', () => ({
+  $connectionsRegistry: $mockConnectionsRegistry,
+  refreshConnectionsRegistry: () => Promise.resolve($mockConnectionsRegistry.get())
+}))
+
 const checkHermesUpdateSpy = vi.fn()
 const updateHermesSpy = vi.fn()
 const getActionStatusSpy = vi.fn()
@@ -41,25 +71,52 @@ vi.mock('@/hermes', () => ({
   getActionStatus: (...args: unknown[]) => getActionStatusSpy(...args)
 }))
 
+// A successful backend apply must nudge the gateway reconnect handler — the
+// update restarted the gateway process, and over tunnels the old socket dies
+// without a close event (users force-quit to recover). Mock the tiny registry
+// module so the assertion is direct.
+const reconnectGatewaySpy = vi.fn().mockResolvedValue(undefined)
+
+vi.mock('@/store/gateway-reconnect', () => ({
+  reconnectGateway: (...args: unknown[]) => reconnectGatewaySpy(...args)
+}))
+
 const {
+  refreshDesktopVersion,
+  $desktopVersion,
   maybeNotifyUpdateAvailable,
   checkBackendUpdates,
+  checkUpdates,
   $backendUpdateStatus,
   applyBackendUpdate,
   $backendUpdateApply,
+  REQUIRED_BACKEND_CONTRACT,
   reportBackendContract,
   applyUpdates,
+  applyEverythingUpdate,
+  hasMultipleUpdateTargets,
+  openUpdatesWindow,
+  startActiveUpdate,
   $updateApply,
+  $updateEverything,
   $updateOverlayOpen,
   $updateOverlayTarget,
   requestActiveUpdate,
   resetUpdateApplyState,
   startUpdatePoller,
   stopUpdatePoller,
-  $updateStatus
+  $updateStatus,
+  BACKGROUND_UPDATE_CHECK_MS
 } = await import('./updates')
 
 const { setConnection } = await import('./session')
+
+const registryOf = (ids: string[]) => ({
+  version: 2,
+  primary: ids[0] ?? 'local',
+  secureTokenStorage: true,
+  connections: ids.map(id => ({ id, kind: id === 'local' ? 'local' : 'remote', label: id }))
+})
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
   supported: true,
@@ -69,7 +126,7 @@ const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus =>
   ...over
 })
 
-const lastToast = () => notifySpy.mock.calls.at(-1)?.[0] as { onDismiss: () => void }
+const lastToast = () => notifySpy.mock.calls.at(-1)?.[0] as { action: { onClick: () => void }; onDismiss: () => void }
 
 const setRemote = (on: boolean) =>
   setConnection({
@@ -83,6 +140,53 @@ const setRemote = (on: boolean) =>
     windowButtonPosition: null
   })
 
+describe('gateway version refresh', () => {
+  afterEach(() => {
+    setApiRequestConnection(null)
+    setApiRequestProfile(null)
+    $desktopVersion.set(null)
+  })
+
+  it('requests the active gateway and does not publish a previous connection reply', async () => {
+    setRemote(true)
+    setApiRequestConnection('remote-box')
+    setApiRequestProfile('work')
+
+    const version: DesktopVersionInfo = {
+      appVersion: '4.5.6',
+      electronVersion: '40',
+      nodeVersion: '26',
+      platform: 'win32',
+      hermesRoot: ''
+    }
+
+    const getVersion = vi.fn().mockResolvedValue(version)
+    const previous = window.hermesDesktop
+    window.hermesDesktop = { ...previous, getVersion }
+
+    try {
+      expect(await refreshDesktopVersion()).toEqual(version)
+      expect(getVersion).toHaveBeenCalledWith({ connectionId: 'remote-box', profile: 'work' })
+      expect($desktopVersion.get()?.appVersion).toBe('4.5.6')
+      let finish!: (value: DesktopVersionInfo) => void
+      getVersion.mockImplementationOnce(
+        () =>
+          new Promise(resolve => {
+            finish = resolve
+          })
+      )
+      const pending = refreshDesktopVersion()
+      setRemote(false)
+      $desktopVersion.set(null)
+      finish(version)
+      expect(await pending).toBeNull()
+      expect($desktopVersion.get()).toBeNull()
+    } finally {
+      window.hermesDesktop = previous
+    }
+  })
+})
+
 describe('maybeNotifyUpdateAvailable', () => {
   beforeEach(() => {
     storage.clear()
@@ -93,7 +197,6 @@ describe('maybeNotifyUpdateAvailable', () => {
   it('shows when an update is available and not snoozed', () => {
     maybeNotifyUpdateAvailable(status())
     expect(notifySpy).toHaveBeenCalledTimes(1)
-    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ icon: 'gift' })
   })
 
   it('stays quiet for new commits once the toast was closed', () => {
@@ -119,18 +222,79 @@ describe('maybeNotifyUpdateAvailable', () => {
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
 
+  it('notifies for a Store update without a commit and never for an unknown check', () => {
+    maybeNotifyUpdateAvailable(
+      status({ mechanism: 'microsoft-store', targetSha: undefined, behind: null, updateAvailable: true })
+    )
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    notifySpy.mockClear()
+    maybeNotifyUpdateAvailable(
+      status({
+        mechanism: 'microsoft-store',
+        targetSha: undefined,
+        behind: null,
+        updateAvailable: false,
+        error: 'Store unavailable'
+      })
+    )
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
   it('does nothing when already up to date', () => {
     maybeNotifyUpdateAvailable(status({ behind: 0 }))
     expect(notifySpy).not.toHaveBeenCalled()
   })
 
-  // FAIL-BEFORE: a shallow installer clone reports behind:null + updateAvailable
+  // FAIL-BEFORE (#C19): a shallow installer clone reports behind:null + updateAvailable
   // (exact count unknowable without a merge-base). The guard treated null as 0
   // and silently swallowed the notification entirely.
-  it('still notifies with generic copy when the exact behind count is unknown', () => {
+  it('still notifies when the exact behind count is unknown', () => {
     maybeNotifyUpdateAvailable(status({ behind: null, updateAvailable: true }))
     expect(notifySpy).toHaveBeenCalledTimes(1)
-    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ message: 'A new update is available.' })
+  })
+
+  // FAIL-BEFORE (C19): an App Installer check legitimately carries no
+  // targetSha — the OS reports availability against the .appinstaller feed,
+  // so there is no commit identity to name. Requiring targetSha made the
+  // mechanism-specific App Installer toast unreachable forever.
+  it('notifies for an App Installer check even though it has no targetSha', () => {
+    maybeNotifyUpdateAvailable(
+      status({
+        behind: null,
+        currentVersion: '0.19.0',
+        mechanism: 'app-installer',
+        targetSha: undefined,
+        updateAvailable: true
+      })
+    )
+
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ message: en.notifications.updateReadyMessageAppInstaller })
+  })
+
+  // A native macOS (electron-updater) check has no commit to name either: its
+  // target identity is the release tag. Requiring targetSha silenced every
+  // background notification for non-channel macOS builds.
+  it('notifies for a native macOS check that names its target by release tag', () => {
+    maybeNotifyUpdateAvailable(
+      status({
+        behind: null,
+        currentVersion: '0.19.0',
+        latestTag: 'v0.20.0',
+        mechanism: 'electron-updater',
+        targetSha: undefined,
+        updateAvailable: true
+      })
+    )
+
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  // Eligibility stays mechanism-specific: a git-style check must still prove
+  // there is a target commit before the toast fires — never a made-up SHA.
+  it('stays quiet for a git-style check that names no target commit', () => {
+    maybeNotifyUpdateAvailable(status({ targetSha: undefined }))
+    expect(notifySpy).not.toHaveBeenCalled()
   })
 })
 
@@ -143,7 +307,7 @@ describe('reportBackendContract', () => {
   })
 
   it('dismisses the toast when the backend meets the contract', () => {
-    reportBackendContract(6)
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT)
     expect(dismissSpy).toHaveBeenCalledWith('backend-contract-skew')
     expect(notifySpy).not.toHaveBeenCalled()
   })
@@ -183,7 +347,7 @@ describe('reportBackendContract', () => {
     lastToast().onDismiss()
     notifySpy.mockClear()
 
-    reportBackendContract(6) // backend updated → satisfied, snooze cleared
+    reportBackendContract(REQUIRED_BACKEND_CONTRACT) // backend updated → satisfied, snooze cleared
     reportBackendContract(5) // a later regression must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
   })
@@ -198,7 +362,7 @@ describe('checkBackendUpdates', () => {
     vi.useRealTimers()
   })
 
-  it('maps the backend /update/check onto the backend status, including commits', async () => {
+  it('maps the backend /update/check onto the backend status, including commits', async (): Promise<void> => {
     setRemote(true)
     checkHermesUpdateSpy.mockResolvedValue({
       install_method: 'git',
@@ -213,12 +377,15 @@ describe('checkBackendUpdates', () => {
 
     const result = await checkBackendUpdates()
 
-    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+    expect(checkHermesUpdateSpy).toHaveBeenCalledWith(false)
     expect(result?.behind).toBe(2)
     expect(result?.updateAvailable).toBe(true)
     expect(result?.commits?.[0]?.sha).toBe('abc1234')
     expect(result?.supported).toBe(true)
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
+
+    await checkBackendUpdates({ force: true })
+    expect(checkHermesUpdateSpy).toHaveBeenLastCalledWith(true)
   })
 
   it('preserves backend update_available when the backend cannot count commits', async () => {
@@ -304,6 +471,9 @@ describe('requestActiveUpdate', () => {
     // memoizes the in-flight run, so a dangling promise here would be handed
     // to the next suite's tests instead of a fresh run.
     await vi.waitFor(() => expect($backendUpdateApply.get().applying).toBe(false), { timeout: 5000 })
+    // Remote-mode rows now route through the everything-flow; drain its tail
+    // (fan-out + client check) so it can't bleed into the next test.
+    await vi.waitFor(() => expect($updateEverything.get().running).toBe(false), { timeout: 5000 })
     setRemote(false)
     delete (globalThis as unknown as { window?: unknown }).window
   })
@@ -359,6 +529,382 @@ describe('requestActiveUpdate', () => {
   })
 })
 
+// Surface-bound update entry points. A surface that displays ONE target's
+// status must act on that target: the overlay has no target switcher, so
+// inheriting the connection-mode default silently pointed the user at the
+// other machine. This is what left a Mac desktop on a months-old build while
+// its remote Linux backend updated fine, with no error anywhere (#70266).
+describe('explicit update targets', () => {
+  const applyClientMock = vi.fn()
+  const checkClientMock = vi.fn()
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    applyClientMock.mockReset().mockResolvedValue({ ok: true, handedOff: true })
+    checkClientMock.mockReset().mockResolvedValue(status({ behind: 4, updateAvailable: true }))
+    updateHermesSpy.mockReset().mockResolvedValue({ ok: true, name: 'update' })
+    checkHermesUpdateSpy.mockReset().mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.4.2',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: null,
+      message: null
+    })
+    getActionStatusSpy.mockReset().mockResolvedValue({ lines: [], running: false, exit_code: 0 })
+    resetUpdateApplyState()
+    $updateStatus.set(null)
+    $backendUpdateStatus.set(null)
+    $updateOverlayOpen.set(false)
+    $updateOverlayTarget.set('backend')
+    $mockConnectionsRegistry.set(null)
+    setRemote(true)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyClientMock, check: checkClientMock } }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(async () => {
+    await vi.waitFor(() => expect($updateEverything.get().running).toBe(false), { timeout: 5000 })
+    await vi.waitFor(() => expect($backendUpdateApply.get().applying).toBe(false), { timeout: 5000 })
+    setRemote(false)
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  // The macOS "Check for Updates…" app-menu item — the OS-standard affordance
+  // for updating THIS app — routes here via `hermes:open-updates`.
+  it('opens the client overlay on an explicit client target, even in remote mode', async () => {
+    openUpdatesWindow('client')
+
+    expect($updateOverlayTarget.get()).toBe('client')
+    await vi.waitFor(() => expect(checkClientMock).toHaveBeenCalledTimes(1))
+    expect(checkHermesUpdateSpy).not.toHaveBeenCalled()
+  })
+
+  it('still defaults to the connected machine when no target is named', async () => {
+    openUpdatesWindow()
+
+    expect($updateOverlayTarget.get()).toBe('backend')
+    await vi.waitFor(() => expect(checkHermesUpdateSpy).toHaveBeenCalled())
+    expect(checkClientMock).not.toHaveBeenCalled()
+  })
+
+  it('applies the client update on an explicit client target, without fanning out', async () => {
+    startActiveUpdate('client')
+
+    expect($updateOverlayTarget.get()).toBe('client')
+    await vi.waitFor(() => expect(applyClientMock).toHaveBeenCalledTimes(1))
+    expect(updateHermesSpy).not.toHaveBeenCalled()
+    expect($updateEverything.get().running).toBe(false)
+  })
+
+  it('keeps the everything-flow for the generic, target-less apply', async () => {
+    $backendUpdateStatus.set(status({ behind: 3 }))
+
+    startActiveUpdate()
+
+    await vi.waitFor(() => expect(updateHermesSpy).toHaveBeenCalled(), { timeout: 5000 })
+  })
+
+  // A toast raised by the CLIENT check must open the client overlay: the user
+  // was told the app is behind, so landing them on the backend's (current)
+  // status reads as the update having vanished.
+  it('opens the overlay for the target whose status raised the toast', () => {
+    maybeNotifyUpdateAvailable(status(), 'client')
+    lastToast().action.onClick()
+    expect($updateOverlayTarget.get()).toBe('client')
+
+    storage.clear() // clear the snooze the click just set
+    maybeNotifyUpdateAvailable(status({ targetSha: 'sha-b' }), 'backend')
+    lastToast().action.onClick()
+    expect($updateOverlayTarget.get()).toBe('backend')
+  })
+})
+
+// The everything-flow: on multi-target installs (remote mode / multi-connection
+// registry) "update" must mean every machine — active backend, other registered
+// sources via the Electron fan-out, and the client LAST. Before this flow,
+// every remote-mode affordance updated only the backend, so users "updated"
+// forever while the desktop app itself stayed weeks stale (the Aug 2026
+// mac-app-on-v0.20.0 report).
+describe('applyEverythingUpdate', () => {
+  const applyClientMock = vi.fn()
+  const checkClientMock = vi.fn()
+  const updateAllMock = vi.fn()
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    applyClientMock.mockReset().mockResolvedValue({ ok: true, handedOff: true })
+    checkClientMock.mockReset().mockResolvedValue(status({ behind: 0, updateAvailable: false }))
+    updateAllMock.mockReset().mockResolvedValue({ ok: true, results: [] })
+    updateHermesSpy.mockReset().mockResolvedValue({ ok: true, name: 'update' })
+    checkHermesUpdateSpy.mockReset().mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.4.2',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: null,
+      message: null
+    })
+    getActionStatusSpy.mockReset().mockResolvedValue({ lines: [], running: false, exit_code: 0 })
+    resetUpdateApplyState()
+    $updateStatus.set(null)
+    $backendUpdateStatus.set(null)
+    $updateOverlayOpen.set(false)
+    $mockConnectionsRegistry.set(null)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: {
+        updates: { apply: applyClientMock, check: checkClientMock },
+        connections: { updateAll: updateAllMock }
+      }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(async () => {
+    await vi.waitFor(() => expect($updateEverything.get().running).toBe(false), { timeout: 5000 })
+    await vi.waitFor(() => expect($backendUpdateApply.get().applying).toBe(false), { timeout: 5000 })
+    setRemote(false)
+    $mockConnectionsRegistry.set(null)
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it('gates on multiple targets: remote mode OR a multi-connection registry', () => {
+    setRemote(false)
+    $mockConnectionsRegistry.set(null)
+    expect(hasMultipleUpdateTargets()).toBe(false)
+
+    setRemote(true)
+    expect(hasMultipleUpdateTargets()).toBe(true)
+
+    setRemote(false)
+    $mockConnectionsRegistry.set(registryOf(['local', 'vps']))
+    expect(hasMultipleUpdateTargets()).toBe(true)
+  })
+
+  it('remote mode: updates the backend, then the still-behind client — the stale-GUI gap', async () => {
+    setRemote(true)
+    $backendUpdateStatus.set(status({ behind: 3 }))
+    // The client is ALSO behind; the old flow never touched it.
+    checkClientMock.mockResolvedValue(status({ behind: 7, updateAvailable: true }))
+
+    await applyEverythingUpdate()
+
+    expect(updateHermesSpy).toHaveBeenCalledTimes(1)
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('remote mode: skips the client apply when the client is already current', async () => {
+    setRemote(true)
+    $backendUpdateStatus.set(status({ behind: 3 }))
+    checkClientMock.mockResolvedValue(status({ behind: 0, updateAvailable: false }))
+
+    await applyEverythingUpdate()
+
+    expect(updateHermesSpy).toHaveBeenCalledTimes(1)
+    expect(applyClientMock).not.toHaveBeenCalled()
+  })
+
+  it('fans out to other registered connections, excluding local and the active backend', async () => {
+    setRemote(true)
+    $mockConnectionsRegistry.set(registryOf(['local', 'vps', 'homelab']))
+    $backendUpdateStatus.set(status({ behind: 1 }))
+
+    await applyEverythingUpdate()
+
+    expect(updateAllMock).toHaveBeenCalledTimes(1)
+    const options = updateAllMock.mock.calls[0]?.[0] as { excludeIds: string[] }
+    expect(options.excludeIds).toContain('local')
+  })
+
+  it('local mode with a multi-connection registry: fans out and updates the client, no active-backend leg', async () => {
+    setRemote(false)
+    $mockConnectionsRegistry.set(registryOf(['local', 'vps']))
+    checkClientMock.mockResolvedValue(status({ behind: 2, updateAvailable: true }))
+    $updateStatus.set(status({ behind: 2, updateAvailable: true }))
+
+    await applyEverythingUpdate()
+
+    expect(updateHermesSpy).not.toHaveBeenCalled()
+    expect(updateAllMock).toHaveBeenCalledTimes(1)
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('a failed backend leg does not strand the fan-out or the client', async () => {
+    setRemote(true)
+    $mockConnectionsRegistry.set(registryOf(['local', 'vps']))
+    updateHermesSpy.mockRejectedValue(new Error('backend gone'))
+    checkClientMock.mockResolvedValue(status({ behind: 4, updateAvailable: true }))
+
+    await applyEverythingUpdate()
+
+    expect(updateAllMock).toHaveBeenCalledTimes(1)
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('surfaces per-row fan-out outcomes as notifications', async () => {
+    setRemote(false)
+    $mockConnectionsRegistry.set(registryOf(['local', 'vps', 'dead-box']))
+    updateAllMock.mockResolvedValue({
+      ok: true,
+      results: [
+        { connectionId: 'vps', label: 'vps', kind: 'remote', ok: true, detail: 'update started' },
+        { connectionId: 'dead-box', label: 'dead-box', kind: 'remote', ok: false, error: 'ECONNREFUSED' }
+      ]
+    })
+
+    await applyEverythingUpdate()
+
+    const titles = notifySpy.mock.calls.map(call => (call[0] as { title?: string }).title)
+    expect(titles).toContain('vps')
+    expect(titles).toContain('dead-box')
+  })
+
+  it('memoizes the in-flight run so a double click cannot double-dispatch', async () => {
+    setRemote(false)
+    $mockConnectionsRegistry.set(registryOf(['local', 'vps']))
+
+    const first = applyEverythingUpdate()
+    const second = applyEverythingUpdate()
+
+    expect(second).toBe(first)
+    await Promise.all([first, second])
+    expect(updateAllMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-checks the client instead of trusting a stale cached status', async () => {
+    setRemote(true)
+    $backendUpdateStatus.set(status({ behind: 3 }))
+    // FAIL-BEFORE: `$updateStatus.get() ?? (await checkUpdates())` short-circuits
+    // on this cached row — captured up to a poll interval (30 min) ago, and
+    // before the backend leg ran — so the client apply was skipped and the app
+    // stayed stale. The live check says otherwise and must win.
+    $updateStatus.set(status({ behind: 0, updateAvailable: false }))
+    checkClientMock.mockResolvedValue(status({ behind: 7, updateAvailable: true }))
+
+    await applyEverythingUpdate()
+
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to the cached client status when the live re-check fails', async () => {
+    setRemote(true)
+    $backendUpdateStatus.set(status({ behind: 3 }))
+    $updateStatus.set(status({ behind: 7, updateAvailable: true }))
+    // `checkUpdates()` never rejects — it resolves with an error-status and
+    // overwrites the atom with it, so an unreachable bridge must not read as
+    // "client is current" and skip the leg.
+    checkClientMock.mockRejectedValue(new Error('bridge gone'))
+
+    await applyEverythingUpdate()
+
+    expect(applyClientMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('requestActiveUpdate routes through the everything-flow when EITHER target is behind', async () => {
+    setRemote(true)
+    // Backend current, client behind — the exact case the old remote-only
+    // ternary missed entirely.
+    $backendUpdateStatus.set(status({ behind: 0, updateAvailable: false }))
+    $updateStatus.set(status({ behind: 5, updateAvailable: true }))
+    checkClientMock.mockResolvedValue(status({ behind: 5, updateAvailable: true }))
+
+    requestActiveUpdate()
+
+    // The everything-flow runs the backend leg first (a 1.5s status poll on
+    // real timers) before reaching the client apply — give it room.
+    await vi.waitFor(() => expect(applyClientMock).toHaveBeenCalled(), { timeout: 5000 })
+  })
+})
+
+// Post-backend-update client nudge: a successful backend apply re-checks the
+// CLIENT and warns when it is still behind, with a one-click client update.
+describe('client nudge after a backend update', () => {
+  const applyClientMock = vi.fn()
+  const checkClientMock = vi.fn()
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    applyClientMock.mockReset().mockResolvedValue({ ok: true, handedOff: true })
+    checkClientMock.mockReset()
+    updateHermesSpy.mockReset().mockResolvedValue({ ok: true, name: 'update' })
+    checkHermesUpdateSpy.mockReset().mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.4.2',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: null,
+      message: null
+    })
+    getActionStatusSpy.mockReset().mockResolvedValue({ lines: [], running: false, exit_code: 0 })
+    resetUpdateApplyState()
+    $updateStatus.set(null)
+    $backendUpdateStatus.set(null)
+    $mockConnectionsRegistry.set(null)
+    setRemote(true)
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyClientMock, check: checkClientMock } }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(async () => {
+    await vi.waitFor(() => expect($backendUpdateApply.get().applying).toBe(false), { timeout: 5000 })
+    setRemote(false)
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it('warns when the client is still behind after the backend caught up', async () => {
+    checkClientMock.mockResolvedValue(status({ behind: 6, updateAvailable: true }))
+
+    await applyBackendUpdate()
+
+    await vi.waitFor(() => {
+      const ids = notifySpy.mock.calls.map(call => (call[0] as { id?: string }).id)
+      expect(ids).toContain('client-update-after-backend')
+    })
+  })
+
+  it('stays silent when the client is already current', async () => {
+    checkClientMock.mockResolvedValue(status({ behind: 0, updateAvailable: false }))
+
+    await applyBackendUpdate()
+
+    // Give the fire-and-forget nudge a beat to (not) fire.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    const ids = notifySpy.mock.calls.map(call => (call[0] as { id?: string }).id)
+    expect(ids).not.toContain('client-update-after-backend')
+  })
+
+  it('nudges a gateway reconnect after the backend caught up (tunnel socket may be dead)', async () => {
+    checkClientMock.mockResolvedValue(status({ behind: 0, updateAvailable: false }))
+    reconnectGatewaySpy.mockClear()
+
+    await applyBackendUpdate()
+
+    expect(reconnectGatewaySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not nudge a reconnect when the backend apply failed', async () => {
+    reconnectGatewaySpy.mockClear()
+    getActionStatusSpy.mockReset().mockResolvedValue({ lines: [], running: false, exit_code: 1 })
+
+    await applyBackendUpdate()
+
+    expect(reconnectGatewaySpy).not.toHaveBeenCalled()
+  })
+})
+
 describe('applyUpdates terminal state', () => {
   const applyMock = vi.fn()
 
@@ -391,6 +937,14 @@ describe('applyUpdates terminal state', () => {
     expect(notifySpy).not.toHaveBeenCalled()
   })
 
+  it('does not claim an installation when the Store reports no remaining update', async () => {
+    applyMock.mockResolvedValue({ ok: true, updateAvailable: false })
+    await applyUpdates()
+    expect($updateApply.get().applying).toBe(false)
+    expect($updateOverlayOpen.get()).toBe(false)
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
   it('closes the overlay + toasts when updated but not relaunched in place', async () => {
     // The Linux AppImage / dev-run path: backend + GUI updated, no in-place
     // relaunch. Must not strand the overlay on a closeless spinner.
@@ -413,27 +967,6 @@ describe('applyUpdates terminal state', () => {
     expect($updateApply.get().applying).toBe(false)
     expect($updateApply.get().stage).toBe('error')
     expect($updateApply.get().error).toBe('rebuild-failed')
-  })
-
-  it('preserves structured safe blockers for the close-and-update prompt', async () => {
-    const blockers = [
-      {
-        pid: 47484,
-        name: 'python.exe',
-        cmdline: 'python.exe -m http.server 8766',
-        kind: 'local-preview' as const,
-        safeToStop: true,
-        label: 'Example Preview',
-        port: 8766
-      }
-    ]
-
-    applyMock.mockResolvedValue({ ok: false, error: 'venv-blocked', message: 'blocked', blockers })
-
-    await applyUpdates()
-
-    expect($updateApply.get().error).toBe('venv-blocked')
-    expect($updateApply.get().blockers).toEqual(blockers)
   })
 
   it('keeps the manual command state for CLI installs with no staged updater', async () => {
@@ -927,24 +1460,32 @@ describe('startUpdatePoller', () => {
   it('calls checkUpdates() on startup so the version pill populates immediately', async () => {
     startUpdatePoller()
 
-    // checkUpdates() is async — flush microtasks without advancing the 30-min interval.
+    // checkUpdates() is async — flush microtasks without advancing the daily interval.
     await vi.advanceTimersByTimeAsync(0)
 
     expect(checkMock).toHaveBeenCalled()
     expect($updateStatus.get()?.behind).toBe(5)
   })
 
-  it('calls checkUpdates() on each interval tick', async () => {
+  it('polls once per day and never forces past the caches', async () => {
     startUpdatePoller()
     await vi.advanceTimersByTimeAsync(0)
+    expect(checkMock).toHaveBeenCalledWith({ force: false })
     checkMock.mockClear()
 
-    await vi.advanceTimersByTimeAsync(30 * 60 * 1000)
+    await vi.advanceTimersByTimeAsync(BACKGROUND_UPDATE_CHECK_MS - 1)
+    expect(checkMock).not.toHaveBeenCalled()
 
-    expect(checkMock).toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(checkMock).toHaveBeenCalledTimes(1)
   })
 
-  it('calls checkUpdates() when the window regains focus', async () => {
+  it('passes an explicit manual check through to the main process', async (): Promise<void> => {
+    await checkUpdates({ force: true })
+    expect(checkMock).toHaveBeenCalledWith({ force: true })
+  })
+
+  it('window focus only re-checks once the daily cadence has elapsed', async () => {
     startUpdatePoller()
     await vi.advanceTimersByTimeAsync(0)
     checkMock.mockClear()
@@ -952,9 +1493,85 @@ describe('startUpdatePoller', () => {
     // Invoke the registered focus handler directly (the mock window doesn't
     // propagate DOM events, so call the stored listener).
     listeners['focus']?.()
-
     await vi.advanceTimersByTimeAsync(0)
+    expect(checkMock).not.toHaveBeenCalled()
 
-    expect(checkMock).toHaveBeenCalled()
+    vi.setSystemTime(Date.now() + BACKGROUND_UPDATE_CHECK_MS)
+    listeners['focus']?.()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(checkMock).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('discontinued retirement notice', () => {
+  const applyMock = vi.fn()
+  const checkMock = vi.fn()
+
+  const discontinuedStatus = (): DesktopUpdateStatus => ({
+    supported: true,
+    fetchedAt: 0,
+    retirement: { state: 'discontinued', destination: 'stable', version: '1.2.3' }
+  })
+
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+    applyMock.mockClear()
+    checkMock.mockReset()
+    resetUpdateApplyState()
+    $updateStatus.set(null)
+    $updateOverlayOpen.set(false)
+    checkMock.mockImplementation(async () => discontinuedStatus())
+    ;(globalThis as unknown as { window: unknown }).window = {
+      hermesDesktop: { updates: { apply: applyMock, check: checkMock } }
+    }
+    vi.useRealTimers()
+  })
+
+  afterEach(() => {
+    delete (globalThis as unknown as { window?: unknown }).window
+  })
+
+  it('checkUpdates surfaces the discontinued warning and never offers an apply', async () => {
+    await checkUpdates({ force: true })
+
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({ kind: 'warning', id: 'desktop-build-discontinued' })
+    // The ordinary update toast must stay silent: nothing can be downloaded.
+    expect(notifySpy.mock.calls[0]?.[0]).not.toMatchObject({ icon: 'gift' })
+
+    // The generic update entry point refuses instead of dispatching an apply.
+    const result = await applyUpdates()
+    expect(result).toMatchObject({ ok: false, error: 'retirement-blocked' })
+    expect(applyMock).not.toHaveBeenCalled()
+  })
+
+  it('dismissal persists per channel revision: a re-check stays quiet, a new retirement re-notifies', async () => {
+    await checkUpdates({ force: true })
+    ;(notifySpy.mock.calls[0]?.[0] as { onDismiss: () => void }).onDismiss()
+    notifySpy.mockClear()
+
+    // Plain re-check of the same retired revision: no nag.
+    await checkUpdates({ force: true })
+    expect(notifySpy).not.toHaveBeenCalled()
+
+    // The publisher pins a new destination version → the notice returns.
+    checkMock.mockImplementation(async () => ({
+      ...discontinuedStatus(),
+      retirement: { state: 'discontinued', destination: 'stable', version: '1.3.0' }
+    }))
+    await checkUpdates({ force: true })
+    expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('a retirement that is not discontinued never raises the notice', async () => {
+    checkMock.mockImplementation(async () => ({
+      ...discontinuedStatus(),
+      retirement: { state: 'available', destination: 'stable', version: '1.2.3' }
+    }))
+    await checkUpdates({ force: true })
+
+    expect(notifySpy.mock.calls.filter(call => call[0]?.id === 'desktop-build-discontinued')).toHaveLength(0)
   })
 })

@@ -8,13 +8,13 @@ forever" gap:
    to the sibling console ``python.exe`` so respawns and regenerated
    launchers use the hidden-console design (#54220/#56747) and don't die
    with ``RuntimeError: sys.stderr is None`` (#71671).
-2. ``hermes_cli.main._refresh_windows_gateway_launchers`` — ``hermes
+2. ``cli_main._refresh_windows_gateway_launchers`` — ``hermes
    update`` regenerates the installed Scheduled Task / Startup launcher
    scripts instead of leaving install-time artifacts stale forever.
 
 ``_resolve_detached_python`` is a pure path helper and runs on any host.
 ``windowless_gateway_restart_spec`` returns its argv unchanged off Windows,
-so the test that exercises the rewrite is ``windows_only`` rather than run
+so the test that exercises the rewrite is ``platforms("windows")`` rather than run
 against a faked ``sys.platform``.
 """
 
@@ -26,13 +26,10 @@ from unittest import mock
 import pytest
 
 import hermes_cli.gateway_windows as gateway_windows
-import hermes_cli.main as cli_main
-
 
 # ---------------------------------------------------------------------------
 # _resolve_detached_python: legacy pythonw normalization
 # ---------------------------------------------------------------------------
-
 
 def _make_venv(tmp_path: Path, *, with_console_python: bool) -> tuple[Path, Path]:
     scripts = tmp_path / "venv" / "Scripts"
@@ -44,7 +41,6 @@ def _make_venv(tmp_path: Path, *, with_console_python: bool) -> tuple[Path, Path
         python.write_text("", encoding="utf-8")
     return pythonw, python
 
-
 def test_resolve_detached_python_swaps_legacy_pythonw_for_console_sibling(tmp_path):
     pythonw, python = _make_venv(tmp_path, with_console_python=True)
 
@@ -54,16 +50,13 @@ def test_resolve_detached_python_swaps_legacy_pythonw_for_console_sibling(tmp_pa
     assert venv_dir == tmp_path / "venv"
     assert extra == []
 
-
-
-
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
     """A pre-rework Scheduled Task argv snapshot (leading pythonw.exe) must be
     respawned through the console python + hidden-console launch, with every
     argument after the interpreter preserved verbatim.
 
-    ``windows_only``: ``windowless_gateway_restart_spec`` returns the argv
+    ``platforms("windows")``: ``windowless_gateway_restart_spec`` returns the argv
     untouched off Windows, so the fake was the only thing making the rewrite
     (and its ``Scripts/``-layout venv derivation) run at all.
     """
@@ -80,15 +73,6 @@ def test_restart_spec_normalizes_legacy_pythonw_argv(tmp_path):
     assert cwd == str(tmp_path)
     assert env["VIRTUAL_ENV"] == str(tmp_path / "venv")
 
-
 # ---------------------------------------------------------------------------
 # _refresh_windows_gateway_launchers: hermes update regenerates launchers
 # ---------------------------------------------------------------------------
-
-
-
-
-
-
-
-

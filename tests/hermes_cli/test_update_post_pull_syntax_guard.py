@@ -14,79 +14,76 @@ command afterward.
 
 from __future__ import annotations
 
-from pathlib import Path
-from types import SimpleNamespace
-
-from hermes_cli import main as hermes_main
-
-
-# ---------------------------------------------------------------------------
-# _capture_head_sha
-# ---------------------------------------------------------------------------
-
-def test_capture_head_sha_returns_stripped_sha(monkeypatch, tmp_path):
-    def fake_run(cmd, **kwargs):
-        assert cmd[-2:] == ["rev-parse", "HEAD"]
-        return SimpleNamespace(stdout="deadbeefcafe\n", returncode=0)
-
-    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
-
-    assert hermes_main._capture_head_sha(["git"], tmp_path) == "deadbeefcafe"
+from hermes_cli import update_cmd
+from hermes_cli import main
+import pytest
+import subprocess
+import sys
 
 
 # ---------------------------------------------------------------------------
 # _validate_critical_files_syntax
 # ---------------------------------------------------------------------------
 
-def _populate_critical_tree(root: Path, *, broken_file: str | None = None) -> None:
-    """Create stub files for every entry in ``_UPDATE_CRITICAL_FILES``.
-
-    If ``broken_file`` is given, that file gets orphan merge-conflict markers
-    (the exact failure mode from PR #28452).
-    """
-    broken_payload = (
-        "x = {\n"
-        '    "a": 1,\n'
-        "<<<<<<< HEAD\n"
-        '    "b": 2,\n'
-        "=======\n"
-        '    "c": 0b6d673e7,\n'  # invalid binary literal — the actual error users saw
-        ">>>>>>> 0b6d673e7\n"
-        "}\n"
-    )
-    for relpath in hermes_main._UPDATE_CRITICAL_FILES:
-        path = root / relpath
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if relpath == broken_file:
-            path.write_text(broken_payload)
-        else:
-            path.write_text("# stub\n")
-
-
-
-
 def test_validate_critical_files_syntax_tolerates_missing_files(tmp_path):
     """A refactor may legitimately remove one of the critical files — the
     guard should skip missing files, not falsely flag the install as broken."""
     # Populate everything except hermes_constants.py
-    for relpath in hermes_main._UPDATE_CRITICAL_FILES:
+    for relpath in update_cmd._UPDATE_CRITICAL_FILES:
         if relpath == "hermes_constants.py":
             continue
         path = tmp_path / relpath
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("# stub\n")
 
-    ok, failing_path, error = hermes_main._validate_critical_files_syntax(tmp_path)
+    ok, failing_path, error = update_cmd._validate_critical_files_syntax(tmp_path)
 
     assert ok is True
     assert failing_path is None
     assert error is None
 
 
-# ---------------------------------------------------------------------------
-# Repo invariant — the production tree itself must always pass the guard.
-# This catches the case where ``main`` ships a syntax error before the next
-# release; if a future ``hermes update`` would brick users, this test fails
-# in CI first.
-# ---------------------------------------------------------------------------
+def test_pull_rolls_back_broken_critical_file_and_accepts_corrected_retry(tmp_path, monkeypatch, capsys):
+    def git(*args):
+        return subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
 
+    git("init", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "Test")
+    source = tmp_path / "hermes_constants.py"
+    source.write_text("print('runnable')\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "working")
+    previous = git("rev-parse", "HEAD")
+    monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
+    assert update_cmd._capture_head_sha(["git"], tmp_path) == previous
+    # Missing critical files are legitimate after refactors, not syntax failures.
+    assert update_cmd._validate_critical_files_syntax(tmp_path) == (True, None, None)
+
+    source.write_text("<<<<<<< HEAD\n", encoding="utf-8")
+    git("commit", "-am", "broken upstream")
+    git("update-ref", "refs/remotes/origin/main", "HEAD")
+    git("reset", "--hard", previous)
+
+    def pull():
+        return update_cmd._pull_updates(
+            ["git"], "main", None, prompt_for_restore=False, gw_input_fn=None,
+            discard_local_changes=False, keep_stash=False,
+        )
+
+    with pytest.raises(SystemExit) as failure:
+        pull()
+    assert failure.value.code == 1
+    assert "syntax error" in capsys.readouterr().out
+    assert git("rev-parse", "HEAD") == previous
+    assert subprocess.run([sys.executable, str(source)], capture_output=True, text=True, check=True).stdout == "runnable\n"
+
+    git("reset", "--hard", "origin/main")
+    source.write_text("print('corrected')\n", encoding="utf-8")
+    git("commit", "-am", "corrected upstream")
+    corrected = git("rev-parse", "HEAD")
+    git("update-ref", "refs/remotes/origin/main", corrected)
+    git("reset", "--hard", previous)
+    assert pull() == previous
+    assert git("rev-parse", "HEAD") == corrected
+    assert subprocess.run([sys.executable, str(source)], capture_output=True, text=True, check=True).stdout == "corrected\n"

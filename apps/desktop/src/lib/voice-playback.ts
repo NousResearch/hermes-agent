@@ -1,6 +1,9 @@
 import { resolveGatewayWsUrl } from '@hermes/shared'
 
-import { getApiRequestProfile, speakText } from '@/hermes'
+import type { OwnerScope } from '@/api/client'
+import { getApiRequestConnection, getApiRequestProfile, speakText } from '@/hermes'
+import { directTtsConfig, type DirectTtsConfig, synthesizeSpeechClientDirect } from '@/lib/voice-client-direct'
+import { RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import {
   $voicePlayback,
   setVoicePlaybackState,
@@ -8,7 +11,7 @@ import {
   type VoicePlaybackState
 } from '@/store/voice-playback'
 
-import { sanitizeTextForSpeech } from './speech-text'
+import { cutSentences, sanitizeTextForSpeech } from './speech-text'
 
 // Free Edge TTS occasionally hands back audio that never fires `playing`/`ended`
 // nor `error` — leaving voice mode stuck "speaking" forever. Reject if playback
@@ -19,6 +22,8 @@ const PLAYBACK_STALL_MS = 15_000
 let currentAudio: HTMLAudioElement | null = null
 let currentStop: (() => void) | null = null
 let sequence = 0
+let claimTurnKey: string | null = null
+let inFlight: { done: Promise<boolean>; turnKey: string } | null = null
 
 // A shared, lazily-created AudioContext used only to nudge the browser's
 // autoplay state out of "suspended". A wake-word-started voice turn has no
@@ -64,12 +69,22 @@ function currentState(
   }
 }
 
-export interface VoicePlaybackOptions {
+/** The speaking session's owner: a Bot chat synthesizes with its own
+ *  profile's TTS voice, minted against the Bot's own connection. Omitted
+ *  halves → the active (connection, profile). */
+export interface VoicePlaybackOptions extends OwnerScope {
   messageId?: string | null
+  /** Skip the client-direct/stream rungs and POST straight to /api/audio/speak.
+   *  For callers whose stream path (client-direct, else WS relay) already
+   *  answered `fallback` this reply; the relay may not have been probed. */
+  syncOnly?: boolean
   source: VoicePlaybackSource
+  /** Stable across a live-id rewrite. A second start of this turn must not stop the first. */
+  turnKey?: string
 }
 
 export function stopVoicePlayback() {
+  inFlight = null
   sequence += 1
   currentStop?.()
   currentStop = null
@@ -96,7 +111,9 @@ export function stopVoicePlayback() {
 // instead of after full synthesis + base64 transfer.
 // ---------------------------------------------------------------------------
 
-async function resolveSpeakStreamUrl(): Promise<null | string> {
+/** Exported for tests: the (connection, profile) routing contract below is
+ *  exactly what broke in the desktop-remote voice report — keep it pinned. */
+export async function resolveSpeakStreamUrl(owner?: OwnerScope): Promise<null | string> {
   const desktop = window.hermesDesktop
 
   if (!desktop?.getConnection) {
@@ -105,10 +122,49 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
 
   try {
     // Mint a fresh credential (single-use ticket in OAuth mode) for the
-    // ACTIVE profile's backend, then swap the gateway endpoint for the PCM
-    // one — auth is shared across WS routes.
-    const profile = getApiRequestProfile()
-    const wsUrl = await resolveGatewayWsUrl(desktop, await desktop.getConnection(profile))
+    // ACTIVE (connection, profile) backend, then swap the gateway endpoint
+    // for the PCM one — auth is shared across WS routes. A registry-scoped
+    // remote MUST resolve through the *For bridges (same seam as
+    // store/gateway's openSecondary): the bare getConnection/getGatewayWsUrl
+    // pair answers for the v1 primary backend, which — when a registry
+    // remote rides over a local install — is the LOCAL machine, so spoken
+    // replies would synthesize with the local (often unconfigured) TTS
+    // instead of the profile the user is actually talking to (#90051-adjacent
+    // desktop-remote voice report, Aug 2026).
+    const profile = owner?.profile || getApiRequestProfile()
+    const connectionId = owner?.connectionId || getApiRequestConnection()
+
+    // Both awaits below are IPC round-trips into the main process with no
+    // timeout of their own (#93454) — a wedged main-process round-trip
+    // otherwise hangs voice mode's "speaking" state forever instead of
+    // falling back to playSpeechText. Bound the same way
+    // store/gateway's openSecondary bounds the same *For/plain pair.
+    const conn =
+      connectionId && desktop.getConnectionFor
+        ? await withTimeout(
+            desktop.getConnectionFor({ connectionId, profile }),
+            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            `Timed out connecting to profile "${profile}"`
+          )
+        : await withTimeout(
+            desktop.getConnection(profile),
+            RECONNECT_ATTEMPT_TIMEOUT_MS,
+            `Timed out connecting to profile "${profile}"`
+          )
+
+    const wsDeps =
+      connectionId && desktop.getGatewayWsUrlFor
+        ? { getGatewayWsUrl: () => desktop.getGatewayWsUrlFor!({ connectionId, profile }) }
+        : connectionId
+          ? {}
+          : desktop
+
+    const wsUrl = await withTimeout(
+      resolveGatewayWsUrl(wsDeps, conn),
+      RECONNECT_ATTEMPT_TIMEOUT_MS,
+      `Timed out re-minting the gateway WebSocket URL for profile "${profile}"`
+    )
+
     const url = new URL(wsUrl)
 
     if (!url.pathname.endsWith('/api/ws')) {
@@ -118,8 +174,11 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
     url.pathname = url.pathname.replace(/\/api\/ws$/, '/api/audio/speak-stream')
 
     // The backend resolves the TTS provider chain from this profile's
-    // config/.env (same seam as /api/pty?profile=).
-    if (profile) {
+    // config/.env (same seam as /api/pty?profile=). A registry-minted URL may
+    // already carry the BACKEND-namespace profile (sharedRemote scoping, SSH
+    // remoteProfile aliasing) — never overwrite it with the desktop-side
+    // routing alias.
+    if (profile && !url.searchParams.has('profile')) {
       url.searchParams.set('profile', profile)
     }
 
@@ -132,6 +191,8 @@ async function resolveSpeakStreamUrl(): Promise<null | string> {
 export interface SpeechStreamSession {
   /** Feed more reply text as it streams in. Safe after `finish` (no-op). */
   append: (text: string) => void
+  /** Release a sealed bubble's tail without ending the turn (client-direct). */
+  flush?: () => void
   /** No more text coming — resolves `done` once the audio drains. */
   finish: () => void
   /**
@@ -140,6 +201,158 @@ export interface SpeechStreamSession {
    *             text through `playSpeechText` instead.
    */
   done: Promise<'done' | 'fallback'>
+}
+
+// ---------------------------------------------------------------------------
+// Client-direct path — synthesize on the DESKTOP with the profile's own TTS
+// provider (config + key fetched from the connected gateway). Reply text is
+// already streaming to the renderer over the chat socket, so the gateway
+// link carries no audio at all: text → provider → speaker, one hop.
+// Sentence-cut like the server pipeline; sequential playback; barge-in via
+// the same stopVoicePlayback() sequence bump.
+// ---------------------------------------------------------------------------
+
+function openClientDirectSpeechSession(tts: DirectTtsConfig, options: VoicePlaybackOptions): SpeechStreamSession {
+  let buffer = ''
+  let finished = false
+  let settled = false
+  let started = false
+  const queue: string[] = []
+  let synthesizing = false
+  let playing: HTMLAudioElement | null = null
+
+  let settle: (value: 'done' | 'fallback') => void = () => undefined
+
+  const done = new Promise<'done' | 'fallback'>(resolve => {
+    settle = value => {
+      if (settled) {
+        return
+      }
+
+      settled = true
+      currentStop = null
+
+      if (playing) {
+        playing.pause()
+        playing.src = ''
+        playing = null
+      }
+
+      resolve(value)
+    }
+  })
+
+  currentStop = () => settle(started ? 'done' : 'fallback')
+
+  const pump = async () => {
+    if (synthesizing || settled) {
+      return
+    }
+
+    synthesizing = true
+
+    try {
+      while (queue.length > 0 && !settled) {
+        const sentence = queue.shift()!
+
+        let bytes: ArrayBuffer
+
+        try {
+          bytes = await synthesizeSpeechClientDirect(tts, sentence)
+        } catch {
+          // Provider rejected mid-reply. Nothing played yet → let the caller
+          // fall back to the relay with the full text. Mid-playback → treat
+          // what played as the playback (replaying would stutter).
+          settle(started ? 'done' : 'fallback')
+
+          return
+        }
+
+        if (settled) {
+          return
+        }
+
+        if (!started) {
+          started = true
+          setVoicePlaybackState(currentState('speaking', options))
+        }
+
+        const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))
+
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const audio = new Audio(url)
+            playing = audio
+            audio.addEventListener('ended', () => resolve(), { once: true })
+            audio.addEventListener('error', () => reject(new Error('Playback failed')), { once: true })
+            void audio.play().catch(reject)
+          })
+        } catch {
+          settle(started ? 'done' : 'fallback')
+
+          return
+        } finally {
+          playing = null
+          URL.revokeObjectURL(url)
+        }
+      }
+
+      if (finished && queue.length === 0 && !settled) {
+        settle(started ? 'done' : 'fallback')
+      }
+    } finally {
+      synthesizing = false
+
+      // Deltas that arrived while the last sentence was playing.
+      if (!settled && queue.length > 0) {
+        void pump()
+      } else if (!settled && finished && queue.length === 0) {
+        settle(started ? 'done' : 'fallback')
+      }
+    }
+  }
+
+  const ingest = (flush: boolean) => {
+    const cut = cutSentences(buffer, flush, tts.min_len)
+    buffer = cut.rest
+
+    if (cut.sentences.length > 0) {
+      // Sanitize per sentence — same granularity as the server pipeline
+      // (markdown constructs can span delta boundaries, sentences can't).
+      for (const sentence of cut.sentences) {
+        const speakable = sanitizeTextForSpeech(sentence)
+
+        if (speakable) {
+          queue.push(speakable)
+        }
+      }
+
+      void pump()
+    } else if (flush && finished && queue.length === 0 && !synthesizing) {
+      settle(started ? 'done' : 'fallback')
+    }
+  }
+
+  return {
+    append: text => {
+      if (text && !finished && !settled) {
+        buffer += text
+        ingest(false)
+      }
+    },
+    flush: () => {
+      if (!finished && !settled) {
+        ingest(true)
+      }
+    },
+    finish: () => {
+      if (!finished && !settled) {
+        finished = true
+        ingest(true)
+      }
+    },
+    done
+  }
 }
 
 /**
@@ -317,12 +530,31 @@ function openSpeechStream(wsUrl: string, options: VoicePlaybackOptions): SpeechS
 
 /**
  * Live-speak an in-progress reply: open a session, then `append` deltas and
- * `finish` when generation completes. Resolves null when streaming is
- * unavailable (old backend / non-chunked provider) — the caller falls back to
- * whole-text `playSpeechText`.
+ * `finish` when generation completes. Ladder: client-direct synthesis with
+ * the profile's own TTS (lowest hops — reply text is already streaming here,
+ * audio goes provider → speaker without touching the gateway link) → the
+ * gateway speak-stream WS relay → null (caller falls back to whole-text
+ * `playSpeechText`).
  */
 export async function startSpeechStream(options: VoicePlaybackOptions): Promise<null | SpeechStreamSession> {
-  const wsUrl = await resolveSpeakStreamUrl()
+  const direct = await directTtsConfig(options).catch(() => null)
+
+  if (direct) {
+    stopVoicePlayback()
+    setVoicePlaybackState(currentState('preparing', options))
+
+    const session = openClientDirectSpeechSession(direct, options)
+
+    void session.done.then(outcome => {
+      if (outcome === 'done') {
+        setVoicePlaybackState(currentState('idle'))
+      }
+    })
+
+    return session
+  }
+
+  const wsUrl = await resolveSpeakStreamUrl(options)
 
   if (!wsUrl) {
     return null
@@ -356,7 +588,7 @@ async function playSpeechDataUrl(
   options: VoicePlaybackOptions,
   isCurrent: () => boolean
 ): Promise<boolean> {
-  const response = await speakText(speakableText)
+  const response = await speakText(speakableText, options)
 
   if (!isCurrent()) {
     return false
@@ -436,8 +668,36 @@ async function playSpeechDataUrl(
 }
 
 export async function playSpeechText(text: string, options: VoicePlaybackOptions): Promise<boolean> {
-  stopVoicePlayback()
+  if (options.turnKey && (claimTurnKey === options.turnKey || inFlight?.turnKey === options.turnKey)) {
+    return inFlight?.turnKey === options.turnKey ? inFlight.done : Promise.resolve(true)
+  }
 
+  const previousClaim = claimTurnKey
+  claimTurnKey = options.turnKey ?? null
+
+  try {
+    stopVoicePlayback()
+
+    const done = startSpeechText(text, options)
+
+    if (options.turnKey) {
+      inFlight = { done, turnKey: options.turnKey }
+      void done.finally(() => {
+        if (inFlight?.done === done) {
+          inFlight = null
+        }
+      })
+    }
+
+    return done
+  } finally {
+    if (claimTurnKey === (options.turnKey ?? null)) {
+      claimTurnKey = previousClaim
+    }
+  }
+}
+
+async function startSpeechText(text: string, options: VoicePlaybackOptions): Promise<boolean> {
   const speakableText = sanitizeTextForSpeech(text)
 
   if (!speakableText) {
@@ -450,9 +710,33 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
   setVoicePlaybackState(currentState('preparing', options))
 
   try {
-    // Streaming first; the POST data-URL path is the fallback for backends
-    // without the WS endpoint or providers without a chunked API.
-    const streamUrl = await resolveSpeakStreamUrl()
+    // Ladder: client-direct synthesis (profile's own TTS, no gateway audio
+    // hop) → streaming WS relay → POST data-URL fallback.
+    const direct = options.syncOnly ? null : await directTtsConfig(options).catch(() => null)
+
+    if (direct && isCurrent()) {
+      const session = openClientDirectSpeechSession(direct, options)
+      session.append(speakableText)
+      session.finish()
+
+      const outcome = await session.done
+
+      if (outcome === 'done') {
+        if (!isCurrent()) {
+          return false
+        }
+
+        setVoicePlaybackState(currentState('idle'))
+
+        return true
+      }
+    }
+
+    if (!isCurrent()) {
+      return false
+    }
+
+    const streamUrl = options.syncOnly ? null : await resolveSpeakStreamUrl(options)
 
     if (streamUrl && isCurrent()) {
       const outcome = await playSpeechStream(streamUrl, speakableText, options)

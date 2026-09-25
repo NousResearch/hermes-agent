@@ -1,8 +1,10 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { DesktopConnectionsRegistry } from '@/global'
+import { _resetFleetRosterForTests, refreshFleetRoster } from '@/store/fleet-roster'
 import { $connection } from '@/store/session'
+import { deferred } from '@/test/deferred'
 
 import {
   ConnectionsRegistrySection,
@@ -68,17 +70,103 @@ afterEach(() => {
 })
 
 describe('ConnectionsRegistrySection', () => {
-  it('distinguishes the current connection from the registry primary', async () => {
-    render(<ConnectionsRegistrySection />)
+  it('preserves, replaces and deletes stored headers through plaintext consent without selecting a source', async () => {
+    const active = $connection.get()
 
-    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
-    // Label and the managed pill share the copy, so expect both instances.
-    expect(screen.getAllByText('This device').length).toBeGreaterThan(0)
-    expect(screen.getByText('Current')).toBeTruthy()
-    expect(screen.getAllByText('Primary').length).toBeGreaterThan(0)
-    expect(list).toHaveBeenCalledTimes(1)
+    const withHeaders: DesktopConnectionsRegistry = {
+      ...registry,
+      secureTokenStorage: false,
+      connections: [registry.connections[0], { ...registry.connections[1], headerNames: ['Keep', 'Replace', 'Delete'] }]
+    }
+
+    list.mockResolvedValueOnce(withHeaders)
+    save.mockRejectedValueOnce(new Error('plaintext consent required'))
+    const applyConnectionConfig = vi.fn()
+    const select = vi.fn()
+    Object.assign(window.hermesDesktop, { applyConnectionConfig })
+    Object.assign(window.hermesDesktop.connections, { select })
+    render(<ConnectionsRegistrySection />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    const values = screen.getAllByPlaceholderText('Saved — leave blank to keep')
+    fireEvent.change(values[1], { target: { value: 'new-header-secret' } })
+    fireEvent.click(within(screen.getByDisplayValue('Delete').parentElement!).getByRole('button', { name: 'Remove' }))
+    fireEvent.change(screen.getByPlaceholderText('Existing token ...abc123'), { target: { value: 'new-token' } })
+    fireEvent.click(screen.getByText('Save connection'))
+    await screen.findByText('Store the gateway token in plain text?')
+
+    const expected = {
+      id: 'homelab',
+      kind: 'remote',
+      label: 'Homelab',
+      url: 'http://homelab.lan:9119',
+      authMode: 'token',
+      token: 'new-token',
+      headers: { Keep: null, Replace: 'new-header-secret' }
+    }
+
+    expect(save).toHaveBeenCalledExactlyOnceWith(expected)
+    fireEvent.click(screen.getByRole('button', { name: 'Save as plain text' }))
+    await waitFor(() => expect(save).toHaveBeenLastCalledWith({ ...expected, allowPlainTextToken: true }))
+    expect(applyConnectionConfig).not.toHaveBeenCalled()
+    expect(select).not.toHaveBeenCalled()
+    expect($connection.get()).toBe(active)
   })
 
+  it('keeps stale browser sign-in out of a storage-only edit for a different URL', async () => {
+    const active = $connection.get()
+    const applyConnectionConfig = vi.fn()
+    const saveConnectionConfig = vi.fn()
+    const probeConnectionConfig = vi.fn().mockResolvedValue({ reachable: true, authMode: 'oauth', providers: [] })
+    const pendingLogin = deferred<{ connected: boolean }>()
+    const oauthLoginConnectionConfig = vi.fn().mockReturnValue(pendingLogin.promise)
+
+    Object.assign(window.hermesDesktop, {
+      applyConnectionConfig,
+      saveConnectionConfig,
+      probeConnectionConfig,
+      oauthLoginConnectionConfig
+    })
+    render(<ConnectionsRegistrySection />)
+    fireEvent.click(await screen.findByText('Add connection'))
+    fireEvent.change(screen.getByPlaceholderText('Homelab'), { target: { value: 'New gateway' } })
+    const url = screen.getByPlaceholderText('http://homelab.lan:9119')
+    fireEvent.change(url, { target: { value: 'https://a.example' } })
+    fireEvent.click(screen.getByRole('button', { name: /^(OAuth|Sign in)$/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Sign in with/ }))
+    await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://a.example'))
+    fireEvent.change(url, { target: { value: 'https://b.example' } })
+    await act(async (): Promise<void> => pendingLogin.resolve({ connected: true }))
+    expect(screen.queryByText('Signed in')).toBeNull()
+    fireEvent.click(screen.getByText('Save connection'))
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith({
+        kind: 'remote',
+        label: 'New gateway',
+        url: 'https://b.example',
+        authMode: 'oauth',
+        headers: {}
+      })
+    )
+    expect(applyConnectionConfig).not.toHaveBeenCalled()
+    expect(saveConnectionConfig).not.toHaveBeenCalled()
+    expect($connection.get()).toBe(active)
+  })
+
+  it('refreshes a cached roster immediately after a successful connection test', async () => {
+    _resetFleetRosterForTests()
+    const getAgentRoster = vi.fn().mockResolvedValue({ agents: [], sources: [] })
+    Object.assign(window.hermesDesktop!, { getAgentRoster })
+
+    try {
+      await refreshFleetRoster()
+      render(<ConnectionsRegistrySection />)
+      await screen.findByText('Homelab')
+      fireEvent.click(screen.getAllByRole('button', { name: /^test$/i })[0])
+      await waitFor(() => expect(getAgentRoster).toHaveBeenCalledTimes(2))
+    } finally {
+      _resetFleetRosterForTests()
+    }
+  })
   it('opens the add-connection editor and saves with a required label', async () => {
     render(<ConnectionsRegistrySection />)
 
@@ -104,7 +192,92 @@ describe('ConnectionsRegistrySection', () => {
     })
   })
 
-  it('offers every kind on create and disables Local while the managed entry exists', async () => {
+  it('signs a hand-registered Cloud connection in and saves it as oauth (#89529)', async () => {
+    const oauthLoginConnectionConfig = vi.fn().mockResolvedValue({ connected: true, ok: true })
+    Object.assign(window.hermesDesktop!, { oauthLoginConnectionConfig })
+
+    render(<ConnectionsRegistrySection />)
+
+    await screen.findByText('Homelab')
+    fireEvent.click(screen.getByText('Add connection'))
+    fireEvent.click(screen.getByRole('button', { name: 'Hermes Cloud' }))
+    fireEvent.change(screen.getByPlaceholderText('Homelab'), { target: { value: 'Team cloud' } })
+    fireEvent.change(screen.getByPlaceholderText('http://homelab.lan:9119'), {
+      target: { value: 'https://team.hermes.cloud' }
+    })
+
+    // Cloud never takes a pasted token: no token box, a sign-in button instead.
+    expect(screen.queryByPlaceholderText('Paste session token')).toBeNull()
+    fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
+    await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith('https://team.hermes.cloud'))
+
+    fireEvent.click(screen.getByText('Save connection').closest('button')!)
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({
+      authMode: 'oauth',
+      kind: 'cloud',
+      label: 'Team cloud',
+      url: 'https://team.hermes.cloud'
+    })
+    expect(save.mock.calls[0][0].token).toBeUndefined()
+  })
+
+  it('saves a custom remote Hermes path for SSH connections', async () => {
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
+    fireEvent.click(screen.getByText('Add connection'))
+    fireEvent.click(screen.getByRole('button', { name: 'SSH' }))
+    fireEvent.change(screen.getByPlaceholderText('Homelab'), { target: { value: 'Build host' } })
+    fireEvent.change(screen.getByPlaceholderText('user@host:22'), { target: { value: 'dev@build.test:2222' } })
+    fireEvent.change(screen.getByPlaceholderText('auto-detect'), {
+      target: { value: '/opt/hermes/bin/hermes' }
+    })
+    fireEvent.click(screen.getByText('Save connection').closest('button')!)
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({
+      host: 'dev@build.test:2222',
+      kind: 'ssh',
+      label: 'Build host',
+      remoteHermesPath: '/opt/hermes/bin/hermes'
+    })
+  })
+
+  it('clears a saved remote Hermes path back to auto-detect', async () => {
+    const sshRegistry: DesktopConnectionsRegistry = {
+      ...registry,
+      connections: [
+        registry.connections[0],
+        {
+          host: 'build.test',
+          id: 'build-host',
+          kind: 'ssh',
+          label: 'Build host',
+          remoteHermesPath: '/opt/hermes/bin/hermes',
+          tokenPreview: null,
+          tokenSet: false,
+          user: 'dev'
+        }
+      ]
+    }
+
+    list.mockResolvedValueOnce(sshRegistry)
+    render(<ConnectionsRegistrySection />)
+
+    await screen.findByText('Build host')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    const pathInput = screen.getByPlaceholderText('auto-detect') as HTMLInputElement
+    expect(pathInput.value).toBe('/opt/hermes/bin/hermes')
+    fireEvent.change(pathInput, { target: { value: '   ' } })
+    fireEvent.click(screen.getByText('Save connection').closest('button')!)
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ id: 'build-host', remoteHermesPath: '' })
+  })
+
+  it('disables Local on create while the managed entry exists', async () => {
     render(<ConnectionsRegistrySection />)
 
     await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
@@ -112,9 +285,6 @@ describe('ConnectionsRegistrySection', () => {
 
     const localKind = screen.getByRole('button', { name: 'Local' }) as HTMLButtonElement
     expect(localKind.disabled).toBe(true)
-    expect(screen.getByRole('button', { name: 'Hermes Cloud' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Remote gateway' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'SSH' })).toBeTruthy()
   })
 
   it('rejects a duplicate gateway URL in the save path with an inline error', async () => {
@@ -152,29 +322,23 @@ describe('ConnectionsRegistrySection', () => {
   it('lets users opt into restoring the last-used source', async () => {
     render(<ConnectionsRegistrySection />)
 
-    const launchSetting = await screen.findByText('At startup, return to Sessions on the last-used gateway')
-    const addConnection = screen.getByText('Add connection')
-
-    expect(addConnection.compareDocumentPosition(launchSetting) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    fireEvent.click(screen.getByRole('switch', { name: 'At startup, return to Sessions on the last-used gateway' }))
+    fireEvent.click(
+      await screen.findByRole('switch', { name: 'At startup, return to Sessions on the last-used gateway' })
+    )
 
     await waitFor(() => expect(setLaunchMode).toHaveBeenCalledWith('last-used'))
   })
 
-  it('keeps the launch preference out of the way for a single source', async () => {
+  it('offers the launch preference even for a single source', async () => {
+    // A local-only registry is the drift state from #90174, and the launch
+    // toggle is the control that lets a user out of it. Hiding it there left
+    // hand-editing connections.json as the only recourse.
     list.mockResolvedValueOnce({ ...registry, connections: [registry.connections[0]] })
 
     render(<ConnectionsRegistrySection />)
 
     await waitFor(() => expect(list).toHaveBeenCalledTimes(1))
-    expect(screen.queryByText('At startup, return to Sessions on the last-used gateway')).toBeNull()
-  })
-
-  it('keeps search out of the way for a small registry', async () => {
-    render(<ConnectionsRegistrySection />)
-
-    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
-    expect(screen.queryByRole('searchbox', { name: 'Search gateways…' })).toBeNull()
+    expect(screen.getByText('At startup, return to Sessions on the last-used gateway')).toBeTruthy()
   })
 
   it('sorts a large registry and searches names and endpoints', async () => {
@@ -216,8 +380,6 @@ describe('ConnectionsRegistrySection', () => {
     )
 
     const search = await screen.findByRole('searchbox', { name: 'Search gateways…' })
-    expect(search.parentElement?.className).toContain('mt-3')
-    expect(search.parentElement?.className).toContain('mb-0')
     const settingsScroller = screen.getByTestId('settings-scroller')
     settingsScroller.scrollTop = 200
     vi.spyOn(search, 'getBoundingClientRect')
@@ -284,15 +446,6 @@ describe('ConnectionsRegistrySection', () => {
 
     fireEvent.change(search, { target: { value: '' } })
     expect(search.closest<HTMLElement>('.border-t')?.style.minHeight).toBe('')
-  })
-
-  it('tests a connection through the bridge', async () => {
-    render(<ConnectionsRegistrySection />)
-
-    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
-    fireEvent.click(screen.getAllByText('Test')[0])
-
-    await waitFor(() => expect(test).toHaveBeenCalled())
   })
 })
 

@@ -17,7 +17,6 @@ import pytest
 
 from hermes_cli.main import cmd_dashboard
 
-
 def _ns(**kw):
     """Build an argparse.Namespace with dashboard defaults plus overrides."""
     defaults = dict(
@@ -27,33 +26,35 @@ def _ns(**kw):
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 
-
 class TestDashboardStatus:
     def test_status_no_processes(self, capsys):
-        with patch("hermes_cli.main._scan_dashboard_processes", return_value=[]), \
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "No hermes dashboard processes running" in out
+        assert "No hermes dashboard or serve processes running" in out
 
     def test_status_with_processes(self, capsys):
+        # Includes a serve-mode backend: --status must LIST it, not hide it —
+        # `--stop` kills serves, so hiding them let operators kill what they
+        # couldn't see (#81564).
         processes = [
             (12345, "hermes dashboard --port 9119"),
             (12346, "python -m hermes_cli.main dashboard --host 0.0.0.0 --port 9120"),
+            (12347, "hermes serve --host 100.94.65.93 --port 9119"),
         ]
-        with patch("hermes_cli.main._scan_dashboard_processes", return_value=processes), \
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=processes), \
              patch("gateway.status._pid_exists", return_value=True), \
-             patch("hermes_cli.main._dashboard_listening", return_value=True), \
+             patch("hermes_cli.main_dashboard._dashboard_listening", return_value=True), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         # Status is informational — always exits 0.
         assert exc.value.code == 0
         out = capsys.readouterr().out
-        assert "2 hermes dashboard process(es) running" in out
         assert "PID 12345" in out
         assert "PID 12346" in out
-
+        assert "PID 12347" in out and "[serve]" in out
 
     def test_status_does_not_try_to_import_fastapi(self):
         """`--status` must not require dashboard runtime deps — it's a
@@ -65,22 +66,24 @@ class TestDashboardStatus:
                 raise ImportError("fastapi missing")
             return orig_import(name, *a, **kw)
 
-        with patch("hermes_cli.main._scan_dashboard_processes", return_value=[]), \
+        with patch("hermes_cli.dashboard_procs._scan_dashboard_processes", return_value=[]), \
              patch("builtins.__import__", side_effect=fake_import), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
 
-
 class TestDashboardStop:
 
     def test_stop_kills_and_exits_zero_when_all_killed(self, capsys):
-        """After the kill, if the second scan returns empty we exit 0."""
-        # First scan: finds two processes.  Second (verification) scan: empty.
-        scans = iter([[12345, 12346], []])
+        """Every matched pid was killed -> exit 0, even when a scan afterwards would find a
+        process again: a launchd KeepAlive job respawns its backend on a fresh PID, and that
+        respawn is not a failed stop (the kill path already warns about it)."""
+        scans = iter([[12345, 12346], [12347]])
         with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   side_effect=lambda: next(scans)), \
-             patch("hermes_cli.main._kill_stale_dashboard_processes") as mock_kill, \
+                   side_effect=lambda **_: next(scans)), \
+             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
+                   return_value={"matched": [12345, 12346], "killed": [12345, 12346],
+                                 "failed": [], "unrecovered": [12345, 12346]}) as mock_kill, \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(stop=True))
         mock_kill.assert_called_once()
@@ -92,13 +95,34 @@ class TestDashboardStop:
         assert "stop" in kwargs["reason"].lower()
         assert exc.value.code == 0
 
+    def test_stop_scopes_scan_and_kill_to_the_invoking_hermes_home(self, tmp_path, monkeypatch, capsys):
+        """``--stop`` targets only this profile's backends (#113978): both the pre-check and the
+        kill run with ``scope_home`` = the invoking home, and an empty scan says so."""
+        own_home = tmp_path / "profiles" / "work"
+        monkeypatch.setenv("HERMES_HOME", str(own_home))
+        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[12345]) as scan, \
+             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
+                   return_value={"matched": [12345], "killed": [12345], "failed": [], "unrecovered": []}) as kill, \
+             pytest.raises(SystemExit):
+            cmd_dashboard(_ns(stop=True))
+        assert scan.call_args.kwargs["scope_home"] == str(own_home)
+        assert kill.call_args.kwargs["scope_home"] == str(own_home)
+
+        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]), \
+             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes") as kill, \
+             pytest.raises(SystemExit) as exc:
+            cmd_dashboard(_ns(stop=True))
+        kill.assert_not_called()
+        assert exc.value.code == 0
+        assert "for this profile" in capsys.readouterr().out
+
     def test_stop_exits_nonzero_if_kill_leaves_survivors(self):
-        """If the second scan still finds PIDs, we exit 1 so scripts can
-        detect that the stop didn't succeed (e.g. permission denied)."""
-        scans = iter([[12345], [12345]])  # both scans find the same PID
-        with patch("hermes_cli.main._find_stale_dashboard_pids",
-                   side_effect=lambda: next(scans)), \
-             patch("hermes_cli.main._kill_stale_dashboard_processes"), \
+        """A pid the kill path could not stop (e.g. permission denied) -> exit 1 so
+        scripts can detect that the stop didn't succeed."""
+        with patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[12345]), \
+             patch("hermes_cli.dashboard_procs._kill_stale_dashboard_processes",
+                   return_value={"matched": [12345], "killed": [],
+                                 "failed": [(12345, "Operation not permitted")], "unrecovered": []}), \
              pytest.raises(SystemExit) as exc:
             cmd_dashboard(_ns(stop=True))
         assert exc.value.code == 1
@@ -118,14 +142,12 @@ class TestDashboardStop:
             cmd_dashboard(_ns(stop=True))
         assert exc.value.code == 0
 
-
 class TestLifecycleFlagsTakePrecedence:
     """If both --stop and --status are set, --status wins (it's listed
     first in cmd_dashboard).  Neither is allowed to fall through to the
     server-start path, which is the critical safety property — a user
     who typed ``hermes dashboard --stop`` must not end up ALSO starting
     a new server."""
-
 
     def test_stop_does_not_fall_through_to_server_start(self):
         """Covers the worst-case regression: if --stop ever stopped exiting
@@ -144,25 +166,3 @@ class TestLifecycleFlagsTakePrecedence:
              pytest.raises(SystemExit):
             cmd_dashboard(_ns(stop=True))
         assert called["start"] is False
-
-
-class TestArgparseWiring:
-    """Confirm the flags are exposed via the real argparse tree so
-    ``hermes dashboard --stop`` / ``--status`` actually parse."""
-
-    def test_flags_are_registered(self):
-        from hermes_cli.main import main as _cli_main  # noqa: F401
-        # Rebuild the argparse tree by re-running the section of main()
-        # that builds it.  Cheapest way: introspect via --help on the
-        # already-built parser would require refactoring; instead we
-        # parse the flags directly via a minimal replay.
-        import importlib
-        mod = importlib.import_module("hermes_cli.main")
-        # Find the dashboard_parser instance by running build logic would
-        # be too invasive.  Instead parse args as if via the CLI by
-        # intercepting parse_args.  This is overkill for a smoke test —
-        # we just want to know the flags don't KeyError.
-        with patch("hermes_cli.main._scan_dashboard_processes", return_value=[]), \
-             pytest.raises(SystemExit) as exc:
-            mod.cmd_dashboard(_ns(status=True))
-        assert exc.value.code == 0

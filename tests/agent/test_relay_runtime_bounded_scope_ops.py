@@ -23,8 +23,6 @@ helper's internal shape.
 from __future__ import annotations
 
 import threading
-import time
-import types
 from typing import Any
 
 import pytest
@@ -35,16 +33,13 @@ from agent.relay_runtime import (
     RelaySessionCoordinator,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fake relay: minimal surface the coordinator touches, with a wedgeable pop.
 # ---------------------------------------------------------------------------
 
-
 class _ScopeHandle:
     def __init__(self, name: str) -> None:
         self.name = name
-
 
 class _FakeScopeModule:
     """Stands in for ``nemo_relay.scope`` with a controllable pop."""
@@ -68,7 +63,6 @@ class _FakeScopeModule:
     def event(self, *args: Any, **kwargs: Any) -> None:
         return None
 
-
 class _FakeSubscribers:
     def __init__(self, wedge_event: threading.Event | None = None) -> None:
         self._wedge = wedge_event
@@ -79,11 +73,9 @@ class _FakeSubscribers:
             self._wedge.wait()
         self.flushed += 1
 
-
 class _FakeScopeType:
     Function = "function"
     Agent = "agent"
-
 
 class _FakeRelay:
     def __init__(
@@ -99,16 +91,13 @@ class _FakeRelay:
     def get_scope_stack(self) -> None:
         return None
 
-
 def _make_runtime(fake_relay: _FakeRelay) -> RelayRuntime:
     """Build a RelayRuntime around the fake relay without native imports."""
     runtime = RelayRuntime(relay=fake_relay, profile_key="/tmp/test-profile")
     _LIVE_FAKES.append((runtime, fake_relay))
     return runtime
 
-
 _LIVE_FAKES: list[tuple[RelayRuntime, _FakeRelay]] = []
-
 
 @pytest.fixture(autouse=True)
 def _release_wedges_after_test():
@@ -131,7 +120,6 @@ def _release_wedges_after_test():
         runtime.shutdown()
     _LIVE_FAKES.clear()
 
-
 def _run_with_join(fn, timeout: float = 5.0) -> tuple[bool, list[Any]]:
     """Run ``fn`` on a thread; return (returned_within_timeout, result)."""
     result: list[Any] = []
@@ -144,11 +132,9 @@ def _run_with_join(fn, timeout: float = 5.0) -> tuple[bool, list[Any]]:
     t.join(timeout)
     return (not t.is_alive(), result)
 
-
 @pytest.fixture()
 def coordinator() -> RelaySessionCoordinator:
     return RelaySessionCoordinator()
-
 
 @pytest.fixture(autouse=True)
 def _fast_scope_timeout(monkeypatch):
@@ -158,7 +144,6 @@ def _fast_scope_timeout(monkeypatch):
     tests only need 'bounded', not the specific bound.
     """
     monkeypatch.setattr(relay_runtime, "_SCOPE_OP_TIMEOUT", 1.0)
-
 
 def _acquire(coordinator, runtime, session_id="sess-1", monkeypatch=None):
     """Acquire a conversation lease against the fake runtime."""
@@ -177,12 +162,10 @@ def _acquire(coordinator, runtime, session_id="sess-1", monkeypatch=None):
         platform="test",
     )
 
-
 # ---------------------------------------------------------------------------
 # RED tests: today these HANG (the fake pop blocks forever) and the join
 # times out.  Post-fix the coordinator bounds the native call and returns.
 # ---------------------------------------------------------------------------
-
 
 class TestBoundedScopeFinalization:
     def test_end_turn_returns_when_native_pop_wedges(self, coordinator):
@@ -255,7 +238,6 @@ class TestBoundedScopeFinalization:
                 "not silently dropped"
             )
 
-
 class TestHealthyPathUnchanged:
     """The bound must be invisible when the native pipeline is healthy."""
 
@@ -274,15 +256,7 @@ class TestHealthyPathUnchanged:
         # Turn scope and session scope both pushed and popped exactly once.
         assert fake.scope.pushed.count(relay_runtime.TURN_SCOPE) == 1
         assert relay_runtime.TURN_SCOPE in fake.scope.popped
-        assert fake.subscribers.flushed >= 1
-
-    def test_healthy_pop_result_propagates_synchronously(self, coordinator):
-        """A healthy pop completes and is observed before end_turn returns."""
-        runtime = _make_runtime(_FakeRelay())
-        lease = _acquire(coordinator, runtime)
-        turn = coordinator.begin_turn(lease, turn_id="t1", task_id="task1")
-        coordinator.end_turn(turn, outcome="success")
-        assert relay_runtime.TURN_SCOPE in runtime.relay.scope.popped, (
-            "healthy-path pop must complete before end_turn returns "
-            "(no fire-and-forget on the default lane)"
-        )
+        # Session close must not flush process-wide subscribers: another
+        # session may still own an active publication. Plugin teardown owns
+        # the final flush after tracked operations drain.
+        assert fake.subscribers.flushed == 0

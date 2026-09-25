@@ -115,6 +115,42 @@ def _purge_teams_adapter_modules() -> None:
 
 
 class TestTeamsAdapterImportDoesNotLeakDotenv:
+    def test_adapter_import_without_sdk_does_not_raise(self, monkeypatch):
+        """Plugin import must not crash when microsoft_teams is absent.
+
+        ``find_spec("microsoft_teams.apps")`` raises ModuleNotFoundError on
+        3.11+ if the parent namespace is missing — that unregistered Teams.
+        """
+        for name in list(sys.modules):
+            if name == "microsoft_teams" or name.startswith("microsoft_teams."):
+                monkeypatch.delitem(sys.modules, name, raising=False)
+        _purge_teams_adapter_modules()
+
+        import plugins.platforms.teams.adapter as teams_adapter
+
+        # Import must succeed even when the parent namespace is absent
+        # (CI: no microsoft-teams-apps). Symbols stay unbound until connect.
+        assert teams_adapter.App is None
+
+    def test_namespace_without_apps_is_not_sdk_available(self, monkeypatch):
+        """A sibling microsoft_teams package must not count as the Teams SDK."""
+        # Drop any microsoft_teams.* stubs leaked into sys.modules by sibling
+        # test modules (test_teams.py installs them with setdefault at import
+        # time) — the probe falls back to a sys.modules check when specs are
+        # missing, so a leaked "microsoft_teams.apps" stub flips it to True.
+        for name in list(sys.modules):
+            if name == "microsoft_teams" or name.startswith("microsoft_teams."):
+                monkeypatch.delitem(sys.modules, name, raising=False)
+        ns = types.ModuleType("microsoft_teams")
+        ns.__path__ = []  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "microsoft_teams", ns)
+        _purge_teams_adapter_modules()
+
+        import plugins.platforms.teams.adapter as teams_adapter
+
+        assert teams_adapter.App is None
+        assert teams_adapter.TEAMS_SDK_AVAILABLE is False
+
     def test_adapter_import_does_not_load_cwd_dotenv(self, tmp_path, monkeypatch):
         _plant_cwd_dotenv(tmp_path, monkeypatch)
         _install_fake_teams_sdk(monkeypatch)
@@ -133,7 +169,7 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
         _install_fake_teams_sdk(monkeypatch)
         _purge_teams_adapter_modules()
 
-        from plugins.platforms.teams.adapter import TeamsSummaryWriter
+        from plugins.platforms.teams.summary_writer import TeamsSummaryWriter
 
         assert CANARY_KEY not in os.environ
         assert TeamsSummaryWriter is not None
@@ -171,7 +207,7 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
         monkeypatch.setattr(teams_adapter, "AIOHTTP_AVAILABLE", True)
 
         def _fake_ensure_and_bind(feature, importer, target_globals, **kwargs):
-            assert feature == "platform.teams"
+            assert feature == "teams"
             # Call dotenv the way microsoft_teams.apps.app does, but from inside
             # the importer which wraps SDK imports in _suppress_third_party_dotenv.
             # We inject the dotenv call by wrapping the importer.
@@ -187,7 +223,7 @@ class TestTeamsAdapterImportDoesNotLeakDotenv:
             return True
 
         monkeypatch.setattr(
-            "tools.lazy_deps.ensure_and_bind", _fake_ensure_and_bind
+            "pm.extras.ensure_and_bind", _fake_ensure_and_bind
         )
         assert teams_adapter.check_teams_requirements() is True
         assert CANARY_KEY not in os.environ

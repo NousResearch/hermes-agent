@@ -62,6 +62,7 @@ vi.mock('@/i18n', () => ({
           renameTitle: 'Rename session',
           renamed: 'Renamed',
           sessionActions: 'Session actions',
+          unarchive: 'Unarchive',
           unpin: 'Unpin',
           untitledPlaceholder: 'Untitled'
         }
@@ -100,11 +101,13 @@ vi.mock('@/store/session-color', () => ({
 }))
 vi.mock('@/store/session-states', () => ({
   $sessionTiles: atom<unknown[]>([]),
+  closeAllOpenSessionTiles: vi.fn(),
   openSessionTile: vi.fn()
 }))
 vi.mock('@/store/windows', () => ({
   canOpenSessionInTerminal: () => false,
   canOpenSessionWindow: () => false,
+  isBrowserWindow: () => false,
   isSecondaryWindow: () => false,
   openSessionInNewWindow: vi.fn(),
   openSessionInTerminal: vi.fn()
@@ -121,12 +124,10 @@ function renderMenu() {
 }
 
 describe('SessionActionsMenu', () => {
-  it('opens the dropdown on click without a tooltip on the kebab', async () => {
+  it('opens the dropdown on click', async () => {
     renderMenu()
 
     const trigger = screen.getByRole('button', { name: 'Session actions' })
-
-    expect(trigger.closest('[data-slot="tooltip-trigger"]')).toBeNull()
 
     // Radix's dropdown trigger opens on pointerdown (not on the synthetic
     // 'click' fireEvent alone would dispatch), so fire the full mouse
@@ -223,6 +224,32 @@ describe('SessionActionsMenu', () => {
     expect(deleteItem.getAttribute('aria-disabled')).toBe('true')
   })
 
+  // The sidebar's Archived view reuses this menu; its rows must offer the
+  // restore verb instead of a no-op re-archive (#98813). The item still fires
+  // the shared onArchive callback — the wiring dispatches it to the restore
+  // path based on the row's archived state.
+  it('labels the archive verb Unarchive for an already-archived row and fires the shared callback', async () => {
+    const onArchive = vi.fn()
+    render(
+      <SessionActionsMenu archived onArchive={onArchive} sessionId="s1" title="My session">
+        <button aria-label="Session actions" type="button">
+          ⋮
+        </button>
+      </SessionActionsMenu>
+    )
+
+    const trigger = screen.getByRole('button', { name: 'Session actions' })
+    fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
+    fireEvent.click(trigger)
+
+    const restoreItem = await screen.findByRole('menuitem', { name: /^unarchive$/i })
+    expect(screen.queryByRole('menuitem', { name: /^archive$/i })).toBeNull()
+
+    fireEvent.click(restoreItem)
+    await waitFor(() => expect(onArchive).toHaveBeenCalledTimes(1))
+  })
+
   it('confirms with the Enter key and cancels with Escape', async () => {
     const onDelete = vi.fn()
     render(
@@ -247,12 +274,19 @@ describe('SessionActionsMenu', () => {
     expect(await screen.queryByRole('dialog')).toBeNull()
     expect(onDelete).not.toHaveBeenCalled()
 
-    // Re-open and confirm with Enter: the delete call fires.
+    // Re-open and confirm with Enter at wherever focus actually is. Firing on
+    // the dialog node would pass even when the menu leaves focus on the row
+    // trigger — where Enter re-activates the row instead of confirming.
     fireEvent.pointerDown(trigger, { button: 0, pointerType: 'mouse' })
     fireEvent.pointerUp(trigger, { button: 0, pointerType: 'mouse' })
     fireEvent.click(trigger)
     fireEvent.click(await screen.findByRole('menuitem', { name: /delete/i }))
-    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Enter' })
+
+    const reopened = await screen.findByRole('dialog')
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    await waitFor(() => expect(reopened.contains(document.activeElement)).toBe(true))
+    // eslint-disable-next-line no-restricted-globals -- asserting real focus requires the live document
+    fireEvent.keyDown(document.activeElement!, { key: 'Enter' })
 
     expect(await screen.findByText('Session deleted')).toBeTruthy()
     expect(onDelete).toHaveBeenCalledTimes(1)

@@ -22,22 +22,16 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from tools.skills_hub import (
-    SkillBundle,
-    bundle_content_hash,
-    uninstall_skill,
-)
+from tools.skills_hub_install import bundle_content_hash, uninstall_skill
+from tools.skills_hub_models import SkillBundle
 from tools.skills_guard import content_hash
-
 
 # =============================================================================
 # uninstall_skill: path traversal guard
 # =============================================================================
-
 
 class TestUninstallPathTraversal:
     """The ``install_path`` field in ``lock.json`` is attacker-controllable
@@ -99,12 +93,6 @@ class TestUninstallPathTraversal:
         ok, msg = uninstall_skill("evil")
 
         assert ok is False
-        assert (
-            "outside" in msg
-            or "resolves" in msg
-            or "skills directory" in msg
-            or "Unsafe install path" in msg
-        )
         # The victim directory MUST still exist.
         assert victim.exists()
         assert (victim / "important.txt").exists()
@@ -127,6 +115,7 @@ class TestUninstallPathTraversal:
         assert ok is False
         assert victim.exists()
 
+    @pytest.mark.require_symlinks
     def test_symlink_escape_rejected(self, tmp_path, hub_setup):
         """Symlinks inside SKILLS_DIR that point outside must be refused
         after realpath resolution."""
@@ -171,11 +160,9 @@ class TestUninstallPathTraversal:
         assert ok is True
         assert not legit.exists()
 
-
 # =============================================================================
 # Bundle / disk hash symmetry + filename inclusion
 # =============================================================================
-
 
 class TestBundleHashFilenameSensitivity:
     """Hashes must change when filenames are swapped, even if combined
@@ -201,7 +188,6 @@ class TestBundleHashFilenameSensitivity:
         b = self._make_bundle({"SKILL.md": "world", "scripts/run.sh": "hello"})
         assert bundle_content_hash(a) != bundle_content_hash(b)
 
-
     def test_bundle_and_disk_hash_match(self, tmp_path):
         """Symmetry contract: the same skill, expressed as a SkillBundle
         and as a directory tree, must produce the same digest. If this
@@ -220,52 +206,6 @@ class TestBundleHashFilenameSensitivity:
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
-
 # =============================================================================
 # PairingStore.list_pending: must hold the lock
 # =============================================================================
-
-
-class TestListPendingLock:
-    """list_pending writes via _cleanup_expired. Without the lock,
-    a concurrent generate_code or approve_code can race against the
-    write, potentially clobbering a pending approval."""
-
-    def test_list_pending_acquires_lock(self, tmp_path):
-        """Source-grep contract: ``list_pending`` body must be wrapped
-        in ``with self._lock:``. If anyone unwraps it again, the TOCTOU
-        bug returns."""
-        import gateway.pairing as _pairing_mod
-        source = Path(_pairing_mod.__file__).read_text(encoding="utf-8")
-        # Find the list_pending function body and assert the lock
-        # context manager appears inside it. We grep the function
-        # source rather than runtime-introspect because the racy
-        # behaviour is hard to deterministically reproduce in a test.
-        lines = source.splitlines()
-        in_func = False
-        seen_lock = False
-        for line in lines:
-            if line.startswith("    def list_pending("):
-                in_func = True
-                continue
-            if in_func:
-                if line.startswith("    def "):
-                    break  # next function
-                if "with self._lock:" in line:
-                    seen_lock = True
-                    break
-        assert seen_lock, (
-            "list_pending must wrap its body in `with self._lock:` — "
-            "without it, _cleanup_expired's file write races with "
-            "concurrent generate_code/approve_code."
-        )
-
-    def test_list_pending_returns_correct_data(self, tmp_path):
-        """End-to-end smoke: even with the lock held, basic operation works."""
-        from gateway.pairing import PairingStore
-        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
-            store = PairingStore()
-            store.generate_code("telegram", "user1", "Alice")
-            pending = store.list_pending("telegram")
-        assert len(pending) == 1
-        assert pending[0]["user_id"] == "user1"

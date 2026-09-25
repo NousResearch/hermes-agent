@@ -1,3 +1,4 @@
+import { compactNumber } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 import type * as React from 'react'
@@ -15,11 +16,11 @@ import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { pathLeaf } from '@/lib/display-path'
-import { compactNumber } from '@/lib/format'
 import { triggerHaptic } from '@/lib/haptics'
 import { middleClickHandlers } from '@/lib/middle-click'
 import { displayModelName } from '@/lib/model-status-label'
 import { sessionProjectLabel } from '@/lib/session-project-label'
+import { SESSION_ROW_AREAS } from '@/lib/session-row-slots'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -28,8 +29,10 @@ import { $sidebarRowMeta } from '@/store/layout'
 import { normalizeProfileKey } from '@/store/profile'
 import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
+import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { $sessionListDensity } from '@/store/session-list-density'
+import { $openStoredSessionIds } from '@/store/session-states'
 import { sessionCostUsd } from '@/store/sidebar-archive'
 import { $todoProgressBySession } from '@/store/todos'
 
@@ -37,6 +40,7 @@ import { SessionStatusDot } from '../session-status-dot'
 
 import {
   SIDEBAR_ROW_CARD_MIN_H,
+  SIDEBAR_TRUNCATED_LEADING,
   SidebarRowBody,
   SidebarRowGrab,
   SidebarRowLabel,
@@ -44,9 +48,11 @@ import {
   SidebarRowLeadGlyph,
   SidebarRowShell
 } from './chrome'
+import { shellOwnsPress } from './reorderable-list'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 import { sessionRowDetails } from './session-row-details'
 import { resolveSessionRowClick } from './session-row-gesture'
+import { SessionRowSlot } from './session-row-slots'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
@@ -108,8 +114,8 @@ function disarmMarquee(event: React.PointerEvent<HTMLElement>) {
 // and is never narrower than the button that has to cover it. A PR chip is the
 // exception while the pointer is on it: it's a link, and the kebab sits
 // absolute over this space, so it has to stop taking clicks too, not just fade.
-const TAIL_HIDES = 'min-w-5 transition-opacity group-hover:opacity-0 group-has-[[data-pr-link]:hover]:opacity-100'
-const KEBAB_YIELDS = 'group-has-[[data-pr-link]:hover]:pointer-events-none group-has-[[data-pr-link]:hover]:opacity-0'
+const TAIL_HIDES = 'session-row-tail min-w-5 transition-opacity group-hover:opacity-0'
+const KEBAB_YIELDS = 'session-row-kebab'
 
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const { unit, value } = coarseElapsed(Date.now() - seconds * 1000)
@@ -142,7 +148,7 @@ function SidebarSessionRowImpl({
 }: SidebarSessionRowProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
-  const { cancelPrewarm, startPrewarm } = useProfilePrewarm(session.profile)
+  const { cancelPrewarm, notePointerMove, startPrewarm } = useProfilePrewarm(session.profile)
   const title = sessionTitle(session)
   const density = useStore($sessionListDensity)
   const fmt = t.sidebar
@@ -173,6 +179,10 @@ function SidebarSessionRowImpl({
   // those branches should repaint.
   const prKey = sessionPrKey(session)
   const pr = useStoreSelector($pullRequestsByBranch, prs => (rowMeta.includes('pr') && prKey ? prs[prKey] : undefined))
+  // Open in a pane, but not the focused one. A selector rather than a prop:
+  // it reaches all four row render paths at once, the set only changes when a
+  // tile opens or closes, and the boolean bails every unaffected row out.
+  const openUnfocused = useStoreSelector($openStoredSessionIds, open => !isSelected && open.has(session.id))
   const totalTokens = session.input_tokens + session.output_tokens
   const cost = sessionCostUsd(session)
 
@@ -223,7 +233,7 @@ function SidebarSessionRowImpl({
               <Tip label={absoluteAge} side="top">
                 <time
                   aria-label={`${age}, ${absoluteAge}`}
-                  className="pointer-events-auto focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
+                  className="pointer-events-auto focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
                   dateTime={timestampDate.toISOString()}
                   tabIndex={0}
                 >
@@ -302,6 +312,7 @@ function SidebarSessionRowImpl({
         </span>
       ))}
       <SessionActionsMenu
+        archived={Boolean(session.archived)}
         onArchive={onArchive}
         onBranch={onBranch}
         onDelete={onDelete}
@@ -331,6 +342,7 @@ function SidebarSessionRowImpl({
 
   return (
     <SessionContextMenu
+      archived={Boolean(session.archived)}
       onArchive={onArchive}
       onBranch={onBranch}
       onDelete={onDelete}
@@ -352,6 +364,10 @@ function SidebarSessionRowImpl({
           !card && density !== 'compact' && 'min-h-[2.75rem]',
           !card && density === 'detailed' && 'min-h-[3.875rem]',
           isSelected && 'bg-(--ui-row-active-background)',
+          // Open in another pane: the SAME band, just weaker. Its own mixed
+          // token rather than row opacity — dimming the whole row would take
+          // the title and the status dot down with it.
+          openUnfocused && 'bg-(--ui-row-open-background)',
           liveTurn && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under
           // it (translucency let the rows below bleed through). data-glass-opaque
@@ -366,9 +382,17 @@ function SidebarSessionRowImpl({
         // steal the other's gesture. Over the sidebar only the reorder has a
         // target (the session drop denies: side chrome hosts no main tile);
         // over the tree only the session drop does (no sortable row there).
-        // Whichever one the release lands on is the one that commits.
-        {...dragHandleProps}
+        // Whichever one the release lands on is the one that commits. Pointer
+        // activator only; the full handle stays on the grabber (see
+        // useSortableBindings).
         onPointerDown={event => {
+          // The rename dialog and the ⋯ menu portal out of this row's React
+          // subtree, so their presses land here with a target outside the row —
+          // select the title in the dialog's input and the row would lift.
+          if (!shellOwnsPress(event)) {
+            return
+          }
+
           // The grabber already carries these same listeners, and the ⋯
           // cluster keeps its own gestures.
           if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {
@@ -382,12 +406,11 @@ function SidebarSessionRowImpl({
           startSessionDrag({ id: session.id, profile: session.profile || 'default', title }, event)
           dragHandleProps?.onPointerDown?.(event)
         }}
-        // Hovering a row from another profile (the all-profiles view) telegraphs
-        // a cross-profile resume — start that backend's spawn now so the click
-        // doesn't pay the full cold boot. Same-profile rows no-op inside
-        // prewarmProfileBackend.
+        // Cross-profile hover pre-warms that backend; the dwell starts on a real
+        // pointermove, not on enter — see useProfilePrewarm (#100548).
         onPointerEnter={startPrewarm}
         onPointerLeave={cancelPrewarm}
+        onPointerMove={notePointerMove}
         ref={ref}
         style={style}
         {...rest}
@@ -396,14 +419,18 @@ function SidebarSessionRowImpl({
         <SidebarRowBody
           // Every trailing figure lives in the actions slot, which the row
           // measures — so the title needs a gap from it and nothing else. Hover
-          // changes what you can see in that slot, never how wide it is.
+          // changes what you can see in that slot, never how wide it is. The
+          // card has no such column to clear (its cluster is INSIDE the body,
+          // ending at the shell's own trailing inset), and keeping the gap
+          // would pull the header in past every line below it.
           className={cn(
-            'z-0 pr-2',
+            'z-0',
+            card && 'pr-0',
             branchStem && 'pl-3.5',
             // The card is a grid with ONE spacing knob: --card-gap. Every row
             // gap is gap-y-(--card-gap); the title/preview group opts out
             // with its own tighter internal flex gap.
-            card && 'flex-col items-stretch justify-center py-1.5 [--card-gap:0.6rem] gap-(--card-gap)'
+            card && 'flex-col items-stretch justify-center py-1.5 [--card-gap:0.4rem] gap-(--card-gap)'
           )}
           // Middle-click = open in a new tab (browser muscle memory).
           {...middleClickHandlers(() => {
@@ -477,9 +504,10 @@ function SidebarSessionRowImpl({
               return (
                 <>
                   {leadNode}
+                  <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
                   {handoffBadge}
                   <span className="min-w-0 flex-1 self-center">
-                    <OverflowTip label={title}>
+                    <OverflowTip label={title} placement="row">
                       <SidebarRowLabel
                         className="hover-marquee block font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
                         onPointerEnter={armMarquee}
@@ -492,16 +520,27 @@ function SidebarSessionRowImpl({
                         deterministic metadata line; detailed adds the initial
                         request preview. Compact keeps today's one-line row. */}
                     {density !== 'compact' && details.metadata && (
-                      <span className="mt-0.5 block truncate text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+                      <span
+                        className={cn(
+                          'mt-0.5 block truncate text-[0.625rem] text-(--ui-text-tertiary)',
+                          SIDEBAR_TRUNCATED_LEADING
+                        )}
+                      >
                         {details.metadata}
                       </span>
                     )}
                     {density === 'detailed' && details.preview && (
-                      <span className="mt-1 block truncate text-[0.625rem] leading-none text-(--ui-text-quaternary)">
+                      <span
+                        className={cn(
+                          'mt-1 block truncate text-[0.625rem] text-(--ui-text-quaternary)',
+                          SIDEBAR_TRUNCATED_LEADING
+                        )}
+                      >
                         {details.preview}
                       </span>
                     )}
                   </span>
+                  <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
                 </>
               )
             }
@@ -515,18 +554,28 @@ function SidebarSessionRowImpl({
                     entire width — nothing truncates against the kebab. */}
                 <div className="flex min-w-0 items-center gap-1.5">
                   {leadNode}
-                  <span className="min-w-0 flex-1 truncate text-[0.6875rem] leading-none text-(--ui-text-tertiary)">
+                  <SessionRowSlot area={SESSION_ROW_AREAS.leading} sessionId={sessionPinId(session)} />
+                  <span
+                    className={cn(
+                      'min-w-0 flex-1 truncate text-[0.6875rem] text-(--ui-text-tertiary)',
+                      SIDEBAR_TRUNCATED_LEADING
+                    )}
+                  >
                     {context}
                   </span>
                   {handoffBadge}
+                  <SessionRowSlot area={SESSION_ROW_AREAS.trailing} sessionId={sessionPinId(session)} />
                   {actionsNode}
                 </div>
                 {/* Title + preview: ONE grouped cell with its own tight
                     internal gap — it does not inherit the card's rhythm. */}
-                <div className="-mt-[0.2em] flex min-w-0 flex-col gap-[0.3rem]">
-                  <OverflowTip label={title}>
+                <div className="flex min-w-0 flex-col gap-[0.15rem]">
+                  <OverflowTip label={title} placement="row">
                     <SidebarRowLabel
-                      className="hover-marquee text-[0.8125rem] leading-none font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground"
+                      className={cn(
+                        'hover-marquee text-[0.8125rem] font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground',
+                        SIDEBAR_TRUNCATED_LEADING
+                      )}
                       onPointerEnter={armMarquee}
                       onPointerLeave={disarmMarquee}
                     >
@@ -534,13 +583,23 @@ function SidebarSessionRowImpl({
                     </SidebarRowLabel>
                   </OverflowTip>
                   {session.preview && rowMeta.includes('preview') ? (
-                    <span className="min-w-0 truncate text-[0.625rem] leading-none text-(--ui-text-quaternary)">
+                    <span
+                      className={cn(
+                        'min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)',
+                        SIDEBAR_TRUNCATED_LEADING
+                      )}
+                    >
                       {session.preview}
                     </span>
                   ) : null}
                 </div>
                 {model || size || todoProgress ? (
-                  <span className="flex min-w-0 items-baseline gap-2 text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+                  <span
+                    className={cn(
+                      'flex min-w-0 items-baseline gap-2 text-[0.625rem] text-(--ui-text-tertiary)',
+                      SIDEBAR_TRUNCATED_LEADING
+                    )}
+                  >
                     {model ? <span className="min-w-0 truncate">{model}</span> : null}
                     {size ? <span className="shrink-0 tabular-nums">{size}</span> : null}
                     {todoProgress ? (

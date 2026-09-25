@@ -6,12 +6,15 @@ import { $sessionTiles } from '@/store/session-states'
 import { $toursEnabled } from '@/store/tours'
 import type { SessionInfo } from '@/types/hermes'
 
-import { handleServerRequest, previewSessionRoute } from './server-requests'
+import { handleServerRequest, previewSessionRoute, requestNamesActiveSession } from './server-requests'
 import type { ServerRequestContext } from './server-requests'
+
+vi.mock('@/lib/tour', () => ({ runTour: vi.fn(async () => ({ ok: true })) }))
 
 const deps = {
   activeSessionIdRef: { current: null },
   sessionInterrupted: () => false,
+  sessionStateByRuntimeIdRef: { current: new Map() },
   updateSessionState: (_sessionId, update) => update(createClientSessionState('stored-session')),
   upsertToolCall: () => undefined
 } as ServerRequestContext['deps']
@@ -157,5 +160,92 @@ describe('tour request routing', () => {
     const { respond } = deliver('tour', { action: 'discover' }, null)
 
     expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ success: false })
+  })
+
+  it('runs the tour for a compression-rotated session driving the conversation on screen', async () => {
+    // #122062: auto-compression rotates the runtime session id (and the stored
+    // tip) while the pane keeps the durable id it navigated to. The request is
+    // stamped with the rotated runtime id — the gate must still see that it
+    // names the conversation on screen instead of refusing it.
+    setSessions([{ id: 'stored-tip', _lineage_root_id: 'stored-root', _lineage_ids: ['stored-root'] } as SessionInfo])
+    deps.sessionStateByRuntimeIdRef.current.set('runtime-2', createClientSessionState('stored-tip'))
+
+    try {
+      const { handled, respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'stored-root')
+
+      expect(handled).toBe(true)
+      await vi.waitFor(() => expect(respond).toHaveBeenCalledTimes(1))
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({ ok: true })
+    } finally {
+      deps.sessionStateByRuntimeIdRef.current.clear()
+      setSessions([])
+    }
+  })
+
+  it('still refuses a scoped request naming another conversation', () => {
+    // The window hosts the request's session as a tile (so the request is
+    // routed here rather than left unanswered), but the pane shows a different
+    // conversation — the gate must still refuse.
+    setSessions([{ id: 'stored-tip', _lineage_root_id: 'stored-root' } as SessionInfo])
+    deps.sessionStateByRuntimeIdRef.current.set('runtime-2', createClientSessionState('stored-tip'))
+    $sessionTiles.set([{ runtimeId: 'runtime-2', storedSessionId: 'stored-tip' } as never])
+
+    try {
+      const { respond } = deliver('tour', { action: 'discover', session_id: 'runtime-2' }, 'other-root')
+
+      expect(JSON.parse(respond.mock.calls[0][0].value)).toMatchObject({
+        error: expect.stringContaining('the session the user is looking at')
+      })
+    } finally {
+      $sessionTiles.set([])
+      deps.sessionStateByRuntimeIdRef.current.clear()
+      setSessions([])
+    }
+  })
+})
+
+describe('session identity matching (runtime vs stored ids)', () => {
+  afterEach(() => {
+    setSessions([])
+  })
+
+  it('matches a compression-rotated request id to the conversation the pane holds', () => {
+    setSessions([{ id: 'stored-tip', _lineage_root_id: 'stored-root', _lineage_ids: ['stored-root'] } as SessionInfo])
+    const bindings: Record<string, string> = { 'runtime-1': 'stored-root', 'runtime-2': 'stored-tip' }
+    const storedIdForRuntimeId = (id: string) => bindings[id]
+
+    // The pane holds the durable/lineage id the user navigated to.
+    expect(
+      requestNamesActiveSession({ activeSessionId: 'stored-root', sessionId: 'runtime-2', storedIdForRuntimeId })
+    ).toBe(true)
+    // The pane holds a stale runtime id while the request carries the rotated one.
+    expect(
+      requestNamesActiveSession({ activeSessionId: 'runtime-1', sessionId: 'runtime-2', storedIdForRuntimeId })
+    ).toBe(true)
+    // Plain equality still short-circuits.
+    expect(requestNamesActiveSession({ activeSessionId: 'runtime-2', sessionId: 'runtime-2' })).toBe(true)
+    // A foreign conversation is still not the active one.
+    expect(
+      requestNamesActiveSession({
+        activeSessionId: 'stored-root',
+        sessionId: 'other-runtime',
+        storedIdForRuntimeId: (id: string) => (id === 'other-runtime' ? 'other-stored' : undefined)
+      })
+    ).toBe(false)
+  })
+
+  it('does not merge branch siblings that only share a lineage root', () => {
+    setSessions([
+      { id: 'branch-a', _lineage_root_id: 'shared-root' } as SessionInfo,
+      { id: 'branch-b', _lineage_root_id: 'shared-root' } as SessionInfo
+    ])
+
+    expect(requestNamesActiveSession({ activeSessionId: 'branch-a', sessionId: 'branch-b' })).toBe(false)
+    expect(requestNamesActiveSession({ activeSessionId: 'shared-root', sessionId: 'branch-b' })).toBe(true)
+  })
+
+  it('stays false when either side is unscoped', () => {
+    expect(requestNamesActiveSession({ activeSessionId: null, sessionId: 'runtime-2' })).toBe(false)
+    expect(requestNamesActiveSession({ activeSessionId: 'stored-root', sessionId: '' })).toBe(false)
   })
 })

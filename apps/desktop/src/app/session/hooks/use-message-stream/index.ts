@@ -1051,10 +1051,10 @@ export function useMessageStream({
     (request: ScopedServerRequest): boolean =>
       dispatchServerRequest(
         request,
-        { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall },
+        { activeSessionIdRef, sessionInterrupted, sessionStateByRuntimeIdRef, updateSessionState, upsertToolCall },
         activeSessionIdRef.current
       ),
-    [activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall]
+    [activeSessionIdRef, sessionInterrupted, sessionStateByRuntimeIdRef, updateSessionState, upsertToolCall]
   )
 
   return {

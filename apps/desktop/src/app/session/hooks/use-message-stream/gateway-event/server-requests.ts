@@ -17,6 +17,7 @@ import {
   setVaultUnlockRequest
 } from '@/store/prompts'
 import { rememberServerRequest } from '@/store/server-requests'
+import { $sessions, sessionMatchesStoredId } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 import { requestScrollToBottom } from '@/store/thread-scroll'
 import { $toursEnabled } from '@/store/tours'
@@ -46,7 +47,10 @@ const answerValue = (request: ScopedServerRequest, result: unknown) =>
   request.respond({ value: result ? JSON.stringify(result) : '' })
 
 export interface ServerRequestContext {
-  deps: Pick<GatewayEventDeps, 'activeSessionIdRef' | 'sessionInterrupted' | 'updateSessionState' | 'upsertToolCall'>
+  deps: Pick<
+    GatewayEventDeps,
+    'activeSessionIdRef' | 'sessionInterrupted' | 'sessionStateByRuntimeIdRef' | 'updateSessionState' | 'upsertToolCall'
+  >
   request: ScopedServerRequest
   /** The session the request names ('' when unscoped). */
   sessionId: string
@@ -67,9 +71,57 @@ type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
  */
 const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
 
+/**
+ * Whether a request's `session_id` names the same conversation as the pane's
+ * active session. The two sides are not always the same identity class: the
+ * gateway stamps requests with the RUNTIME session id — which auto-compression
+ * rotates mid-conversation — while the pane may hold the durable/lineage id it
+ * navigated to, so plain equality refuses the very session on screen (#122062).
+ * Compare through the stored id each side resolves to (an unknown id passes
+ * through unchanged: it may already be a stored id), then through the lineage,
+ * so a compression-rotated tip and its root still read as one conversation.
+ * The lineage leg requires ONE session row to answer to both ids — branch
+ * siblings share a root but are distinct conversations.
+ */
+export function requestNamesActiveSession({
+  activeSessionId,
+  sessionId,
+  storedIdForRuntimeId = () => undefined
+}: {
+  activeSessionId: null | string
+  sessionId: string
+  storedIdForRuntimeId?: (runtimeId: string) => string | undefined
+}): boolean {
+  if (!sessionId || !activeSessionId) {
+    return false
+  }
+
+  if (sessionId === activeSessionId) {
+    return true
+  }
+
+  const requestStoredId = storedIdForRuntimeId(sessionId) ?? sessionId
+  const activeStoredId = storedIdForRuntimeId(activeSessionId) ?? activeSessionId
+
+  if (requestStoredId === activeStoredId) {
+    return true
+  }
+
+  return $sessions
+    .get()
+    .some(session => sessionMatchesStoredId(session, requestStoredId) && sessionMatchesStoredId(session, activeStoredId))
+}
+
 /** This window hosts the session: it is the primary view or an open session tile. */
-export function windowHostsSession(sessionId: string, activeSessionId: null | string): boolean {
-  return sessionId === activeSessionId || $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+export function windowHostsSession(
+  sessionId: string,
+  activeSessionId: null | string,
+  storedIdForRuntimeId?: (runtimeId: string) => string | undefined
+): boolean {
+  return (
+    requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId }) ||
+    $sessionTiles.get().some(tile => tile.runtimeId === sessionId)
+  )
 }
 
 /**
@@ -83,13 +135,15 @@ export function windowHostsSession(sessionId: string, activeSessionId: null | st
 export function previewSessionRoute({
   activeSessionId,
   replayed,
-  sessionId
+  sessionId,
+  storedIdForRuntimeId
 }: {
   activeSessionId: null | string
   replayed: boolean | undefined
   sessionId: string
+  storedIdForRuntimeId?: (runtimeId: string) => string | undefined
 }): PreviewSessionRoute {
-  if (!sessionId || windowHostsSession(sessionId, activeSessionId)) {
+  if (!sessionId || windowHostsSession(sessionId, activeSessionId, storedIdForRuntimeId)) {
     return 'run'
   }
 
@@ -457,8 +511,15 @@ export function handleServerRequest(
 
   const sessionId = str(request.params.session_id)
 
+  // Resolve a request's runtime session id to its stored id through the state
+  // cache the message stream maintains (rotation-aware: auto-compression
+  // re-stamps `storedSessionId` on the same runtime entry). Unknown ids fall
+  // through unchanged — they may already be stored ids.
+  const storedIdForRuntimeId = (runtimeId: string) =>
+    deps.sessionStateByRuntimeIdRef.current.get(runtimeId)?.storedSessionId ?? undefined
+
   if (WINDOW_OWNED_REQUESTS.has(request.method)) {
-    const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId })
+    const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId, storedIdForRuntimeId })
 
     if (route === 'ignore') {
       return true
@@ -470,8 +531,12 @@ export function handleServerRequest(
       // turn. A second miss deliberately stays silent for another window.
       setTimeout(() => {
         if (
-          previewSessionRoute({ activeSessionId: deps.activeSessionIdRef.current, replayed: false, sessionId }) ===
-          'run'
+          previewSessionRoute({
+            activeSessionId: deps.activeSessionIdRef.current,
+            replayed: false,
+            sessionId,
+            storedIdForRuntimeId
+          }) === 'run'
         ) {
           handler({ deps, request, sessionId, isActiveSession: true })
         }
@@ -481,7 +546,12 @@ export function handleServerRequest(
     }
   }
 
-  handler({ deps, request, sessionId, isActiveSession: Boolean(sessionId) && sessionId === activeSessionId })
+  handler({
+    deps,
+    request,
+    sessionId,
+    isActiveSession: requestNamesActiveSession({ activeSessionId, sessionId, storedIdForRuntimeId })
+  })
 
   return true
 }

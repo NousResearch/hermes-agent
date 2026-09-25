@@ -151,6 +151,29 @@ _BLOCK_DEVICE_HARDLINE_BLOCK = [
     "chrt -f 1 blkdiscard /dev/sda",
     "taskset -c 0 dd if=/dev/zero of=/dev/sda",
     "ionice -c3 blkdiscard /dev/nvme0n1",
+    # ---- the same node under a traversal or collapsed spelling (review P1 #2 on #120926) ----
+    # `..` right in front of `dev/` may climb to the root: from /tmp, `../dev/sda` IS /dev/sda.
+    "wipefs -a ../dev/sda",
+    "blkdiscard ../../dev/nvme0n1",
+    "shred -n 1 -z /tmp/../dev/sda",
+    "sgdisk --zap-all /dev/../dev/sda",
+    "mkswap ../dev/sda1",
+    "newfs_hfs ../dev/disk2",
+    "dd if=/dev/zero of=../dev/sda",
+    "dd if=/dev/zero of=/tmp/../dev/disk0",
+    "cat x > ../dev/sda",
+    "cat x > /var/tmp/../../dev/mapper/vg-root",
+    'cat x > "../dev/disk0"',
+    "sudo wipefs -a ../dev/sda",
+    "nice blkdiscard /tmp/../dev/sda",
+    # the kernel collapses empty and `.` segments
+    "wipefs -a /dev//sda",
+    "blkdiscard /dev/./nvme0n1",
+    "cat x > /dev/.//sda",
+    "dd if=/dev/zero of=/dev//disk0",
+    # mdadm's named arrays live in a directory, like /dev/mapper
+    "wipefs -a /dev/md/raid1",
+    "cat x > /dev/md/boot",
     # A real device path still matches after every boundary that is not a path character.
     "cat x > /dev/sda",
     'cat x > "/dev/sda"',
@@ -273,6 +296,15 @@ _BLOCK_DEVICE_HARDLINE_ALLOW = [
     "mkswap /home/user/dev/sdk/swapfile",
     "mkswap /var/lib/dev/sdk/swap.img",
     "newfs_hfs ~/dev/sdk/disk.dmg",
+    # `..` widened the floor to traversal spellings, so the node must still be the LAST path
+    # component: a file under `../dev/` is a file, and `sda-notes` is not `sda`.
+    "shred -u ../dev/sdk/token.json",
+    "shred -n 3 -u ../../dev/sdk/keys.pem",
+    "shred -u /tmp/../dev/sdk/token.json",
+    "wipefs -a ../dev/sda-notes",
+    "mkswap ../dev/sdk/swap.img",
+    "shred -u /dev/sda-notes",
+    "blkdiscard -v /dev/sdk/token.json",
     # The operand lookahead must not read a trailing comment as the operand.
     "shred -u notes.txt # never do this to /dev/sda",
     # `-n`/`--no-act` is wipefs doing everything except the write: a diagnostic.
@@ -320,6 +352,9 @@ def test_lookalike_commands_stay_runnable(command):
     "tee /dev/disk0 < x",
     "tee /dev/mapper/vg-root < x",
     "echo x | tee /dev/nvme0n1",
+    "tee ../dev/disk0 < x",
+    "cp x /tmp/../dev/vda",
+    "mv x /dev//nvme0n1",
     ]],
     *[(c, False) for c in [
     "echo test > /dev/null",
@@ -380,6 +415,9 @@ def clean_session(monkeypatch):
     "/sbin/mkfs.ext4 /dev/sda1",
     "nice -n 10 sgdisk -Z /dev/sda",
     "sudo /usr/sbin/wipefs -a /dev/sda",
+    "wipefs -a ../dev/sda",
+    "cat x > /tmp/../dev/disk0",
+    "dd if=/dev/zero of=/dev//sda",
 ])
 def test_yolo_cannot_bypass_disk_wipes(clean_session, monkeypatch, command):
     """These reached the approval tier at best (or no tier at all) — exactly what

@@ -51,9 +51,21 @@ _BLOCK_DEVICE_PATH = (
     # so ``shred -u ~/dev/sdk/token.json`` and ``mkswap /home/user/dev/sdk/swapfile`` hit an
     # unapprovable floor. A real device path is never preceded by a word character, a dot or
     # a tilde; ``//dev/sda``, ``of=/dev/sda`` and a quoted operand all still match.
-    r'(?<![\w.~-])/dev/(?:(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|nbd)[a-z0-9]*'
-    r'|r?disk[0-9]+[a-z0-9]*'
-    r'|mapper/[^\s;&|<>()"\']+'
+    r'(?<![\w.~-])'
+    # A ``..`` segment directly in front of ``dev/`` may climb to the root: from /tmp,
+    # ``../dev/sda`` IS /dev/sda, and so are ``../../dev/sda`` and ``/tmp/../dev/sda``. The floor
+    # reads them the way the kernel resolves them, as the rm root rule in HARDLINE_PATTERNS reads
+    # ``/..``. A lone ``.`` never climbs, so ``./dev/sdk/token.json`` stays a relative file.
+    r'(?:(?:[^\s;&|<>()"\'`=:]*/)?\.\.)?'
+    # The kernel collapses ``/dev//sda`` and ``/dev/./sda`` to ``/dev/sda``; so does this.
+    r'/dev/(?:\.?/)*'
+    # A device node is the LAST path component: ``sda`` is a disk, while ``sda-notes`` and
+    # ``sdk/token.json`` are files under some directory called ``dev`` (``../dev/sdk/token.json``
+    # is reachable now that ``..`` is accepted). ``mapper``, ``md`` and ``disk/by-*`` are the
+    # directories that hold device links, so those take a name.
+    r'(?:(?:sd|hd|vd|xvd|nvme|mmcblk|md|dm-|loop|nbd)[a-z0-9]*(?![\w/-])'
+    r'|r?disk[0-9]+[a-z0-9]*(?![\w/-])'
+    r'|(?:mapper|md)/[^\s;&|<>()"\']+'
     r'|disk/by-(?:id|uuid|path|label|partuuid|partlabel)/[^\s;&|<>()"\']+)'
 )
 _SENSITIVE_WRITE_TARGET = (

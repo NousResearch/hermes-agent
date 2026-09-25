@@ -1,0 +1,50 @@
+name: omh
+repo: https://github.com/rlaope/oh-my-hermes
+sha: acc9bb16de3f5ca81313da33726b592bbc6271e8
+subdir: src/plugin_bundle/omh
+description: 'Oh My Hermes (OMH) bridge: routing hints and role context for OMH workflow skills, per-task
+  delegation model routing, plan todos and a status tool, a Hermes Desktop status pane (off until enabled),
+  bounded evidence probes that keep prepared work apart from observed results, and a file-backed memory
+  provider. Disclosure — keeps its state under ~/.omh; the workflow skills and the TUI HUD widget install
+  with `omh setup` from the same repo; the one network call is the opt-in omh_jev_ask tool, which sends a
+  typed question to Jev with the user''s own key only when the user names Jev in that turn.'
+maintainer: rlaope
+tier: community
+category: tools
+requires_hermes: ">=0.21.1,<0.22.0"
+docs_url: https://github.com/rlaope/oh-my-hermes
+version: "2.0.5"
+platforms: []
+capabilities:
+  provides_tools:
+    - omh_agent_board
+    - omh_capabilities
+    - omh_context
+    - omh_decision_gate
+    - omh_delegate_route
+    - omh_document_plan
+    - omh_gather_evidence
+    - omh_hud
+    - omh_interact
+    - omh_jev_ask
+    - omh_loop
+    - omh_memory
+    - omh_probe
+    - omh_recommend
+    - omh_role
+    - omh_route_answer
+    - omh_run_summary
+    - omh_source_trust
+    - omh_status
+    - omh_todo
+  provides_hooks:
+    - on_session_end
+    - on_session_start
+    - post_tool_call
+    - pre_llm_call
+    - pre_tool_call
+    - pre_verify
+    - subagent_start
+    - transform_tool_result
+  provides_middleware: []
+  requires_env: []

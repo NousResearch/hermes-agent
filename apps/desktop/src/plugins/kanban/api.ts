@@ -163,7 +163,7 @@ function onEventsFrame(streamScope: string, slug: string, data: unknown): void {
 
   // Completion notification (after invalidation so notify failure
   // never interferes with cache invalidation).
-  void onKanbanEventsFrame(slug, events).catch(() => undefined)
+  void onKanbanEventsFrame(slug, events, streamScope).catch(() => undefined)
 }
 
 // A persisted, subscribable atom (the structural slice we need — avoids
@@ -228,7 +228,7 @@ export function bindApi(
         params.set('since', String(since))
         // Notifications baseline where the stream starts. Read from /board when
         // the first frame arrives, the baseline already includes that frame.
-        seedCompletionBaseline(slug, since)
+        seedCompletionBaseline(scope, slug, since)
       }
 
       const query = params.toString()

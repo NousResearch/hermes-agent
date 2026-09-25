@@ -16,6 +16,7 @@ vi.mock('@/store/gateway', async importOriginal => ({
 const { $boardSlug, bindApi, boardsKey, useKanbanScope } = await import('./api')
 const { setConnection } = await import('@/store/session')
 const { queryClient } = await import('@/lib/query-client')
+const { host } = await import('@hermes/plugin-sdk')
 
 // A socket with no known cursor dials after the board snapshot resolves.
 const settle = () => new Promise(resolve => setTimeout(resolve, 0))
@@ -160,6 +161,48 @@ describe('kanban connection scope', () => {
     expect(fetches).toEqual([null, null])
 
     unsubscribe()
+    dispose()
+  })
+
+  it('completion notifications baseline each connection on its own, even for a shared board slug', async () => {
+    // Both gateways have a board named `ship`, with unrelated event-id sequences.
+    const storage = {
+      ...noopStorage,
+      get: <T>(key: string, fallback: T) => (key.startsWith('boardSlug') ? 'ship' : fallback) as T
+    }
+
+    const latest: Record<string, number> = { local: 100, spark: 3 }
+    const rest = vi.fn(async () => ({ latest_event_id: latest[routed.id ?? 'local'] }))
+    const frames: Array<(data: unknown) => void> = []
+
+    const socket = vi.fn((_path: string, onMessage: (data: unknown) => void) => {
+      frames.push(onMessage)
+
+      return vi.fn()
+    })
+
+    const notify = vi.spyOn(host, 'notify').mockImplementation(() => '')
+    const dispose = bindApi(rest as never, storage, socket)
+
+    // Each socket dials from its board snapshot, seeding that connection's baseline.
+    await vi.waitFor(() => expect(frames).toHaveLength(1))
+    frames.at(-1)!({ events: [{ id: 100, kind: 'created', task_id: 't_local' }] })
+
+    routed.id = 'spark'
+    setConnection({ connectionId: 'spark', mode: 'remote' } as never)
+    await vi.waitFor(() => expect(frames).toHaveLength(2))
+    // spark's stream replays its history (id 2) and then a fresh completion (id 4).
+    frames.at(-1)!({
+      events: [
+        { id: 2, kind: 'completed', task_id: 't_old' },
+        { id: 4, kind: 'completed', task_id: 't_new' }
+      ]
+    })
+
+    await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1))
+    expect(notify.mock.calls[0][0]).toMatchObject({ message: 't_new' })
+
+    notify.mockRestore()
     dispose()
   })
 })

@@ -554,6 +554,21 @@ def _bind_turn_identity(
     # (concurrent turns interleave transcript writes). Cleared in _persist_session.
     from agent.agent_runtime_helpers import note_turn_start
     note_turn_start(agent, turn_id)
+    # P2.1 host contract: a turn-scoped execution_id tagged onto every ordinary per-turn hook so
+    # plugins can tell live turns from background forks without prompt-text/turn-id heuristics.
+    # A fork stamps a caller-supplied context on its agent BEFORE run_conversation
+    # (background_review sets _execution_kind="background_review" + _execution_id =
+    # ReviewExecutionContext.execution_id); preserve that verbatim so every hook firing in the fork
+    # shares one id. An ordinary live turn instead gets a FRESH execution_id EACH turn — the
+    # provenance is per-turn, so a reused live agent must not carry its first turn's id forward.
+    _caller_kind = getattr(agent, "_execution_kind", None)
+    if _caller_kind and _caller_kind != "live":
+        # Caller-tagged context: keep it; only fill an id if the caller tagged the kind only.
+        if not getattr(agent, "_execution_id", None):
+            agent._execution_id = uuid.uuid4().hex
+    else:
+        agent._execution_kind = "live"
+        agent._execution_id = uuid.uuid4().hex
     return effective_task_id, turn_id
 
 
@@ -765,6 +780,8 @@ def _collect_pre_llm_call_context(
             platform=getattr(agent, "platform", None) or "",
             parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            execution_kind=getattr(agent, "_execution_kind", "live"),
+            execution_id=getattr(agent, "_execution_id", None),
         )
         try:
             # Spill oversized per-hook context to disk so a runaway plugin can't inflate every subsequent

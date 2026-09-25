@@ -201,6 +201,19 @@ VALID_HOOKS: Set[str] = {
     # IGNORED in v1 — a plugin returning a directive-shaped dict gets a debug log so future block/rewrite
     # adopters are discoverable once the middleware variant ships against the #64231 taxonomy.
     "pre_command",
+    # Background-review host contract (P2.1): plugins piggyback on the self-improvement review fork
+    # through these instead of monkey-patching. agent.background_review.HOOK_CONTRACT_VERSION bumps on
+    # any signature change.
+    #   background_review_started  — kwargs: context (ReviewExecutionContext), prompt, review_memory,
+    #                                review_skills; return {"prompt_suffix": str} (concatenated).
+    #   background_review_message  — kwargs: context, message; observer-only, per assistant message.
+    #   background_review_finished — kwargs: context, messages (list[dict]), status
+    #                                ("finished"|"failed"|"cancelled"), error (str|None). Fires exactly
+    #                                once on EVERY worker exit — success, exception, both #84423
+    #                                cancellation windows and the tool-call-capability skip — so
+    #                                started == finished + failed + cancelled. "cancelled" carries an
+    #                                empty or truncated transcript: not a complete review.
+    "background_review_started", "background_review_message", "background_review_finished",
 }
 
 # Hooks whose directive the shell-hook response parser has no channel for. VALID_HOOKS doubles as

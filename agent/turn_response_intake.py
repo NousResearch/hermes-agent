@@ -94,6 +94,8 @@ def _fire_post_api_request_hook(
                 assistant_content_chars=len(assistant_message.content or ""),
                 assistant_tool_call_count=len(getattr(assistant_message, "tool_calls", None) or []),
                 moa_references=_moa_reference_metrics_for_hook(agent),
+                execution_kind=getattr(agent, "_execution_kind", "live"),
+                execution_id=getattr(agent, "_execution_id", None),
             )
     except Exception:
         pass

@@ -1176,6 +1176,16 @@ export const frOverrides = {
       vibeHeartsTitle: "Cœurs d'ambiance",
       vibeHeartsDesc:
         "Des cœurs flottants apparaissent lorsque vous dites merci, « je t'aime », « good bot » ou envoyez un cœur. Cette option est indépendante des réactions aux messages ci-dessus.",
+      composerListsTitle: 'Listes dans la zone de message',
+      composerListsDesc:
+        'Maj+Entrée poursuit une liste numérotée, à puces ou à cocher ; Tab et Maj+Tab imbriquent les éléments. Poursuivre aussi :',
+      composerListStyles: {
+        letters: 'Lettres (a. b. c.)',
+        roman: 'Chiffres romains (i. ii. iii.)',
+        outline: 'Numéros hiérarchiques (1.1. 1.2.)',
+        parentheses: 'Parenthèses ((1) (a))',
+        symbols: 'Puces symboles (• ◦ ▪)'
+      },
       embedsTitle: 'Intégrations en ligne',
       embedsDesc:
         "Les aperçus enrichis se chargent depuis des sites tiers (YouTube, X, …). Demander affiche un espace réservé jusqu'à ce que vous autorisiez chacun ; Toujours les charge automatiquement ; Désactivé conserve les liens simples.",

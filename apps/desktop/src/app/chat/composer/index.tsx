@@ -29,6 +29,7 @@ import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
+import { $composerListStyles } from '@/store/composer-list-styles'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
@@ -80,6 +81,7 @@ import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useStatusDrawer } from './hooks/use-status-drawer'
 import { useSessionStatusPresence } from './hooks/use-status-presence'
 import { shouldConvertPasteToAttachment } from './large-paste'
+import { applyListEdit, composerListKey, listEditAtCaret } from './list-keys'
 import { ActionBadges } from './micro-actions'
 import { chipTypedPathOnSpace, pathifyRefs } from './path-refs'
 import { QueuePanel } from './queue-panel'
@@ -89,11 +91,9 @@ import {
   composerPlainText,
   deleteChipBeforeCaret,
   deleteSelectionInEditor,
-  handleNumberedListKey,
   insertComposerContentsAtCaret,
   normalizeComposerEditorDom,
-  RICH_INPUT_SLOT,
-  type NumberedListKey
+  RICH_INPUT_SLOT
 } from './rich-editor'
 import { useComposerScope, useComposerSurfaceId } from './scope'
 import { ComposerStatusStack } from './status-stack'
@@ -892,21 +892,18 @@ export function ChatBar({
       }
     }
 
-    const plainKey = !event.metaKey && !event.ctrlKey && !event.altKey
-    const numberedListKey: NumberedListKey | null =
-      event.key === 'Enter' && event.shiftKey
-        ? 'Enter'
-        : !event.shiftKey && (event.key === 'Backspace' || event.key === 'Tab')
-          ? (event.key as NumberedListKey)
-          : null
+    // Markdown lists: Shift+Enter continues an item, Tab / Shift+Tab nest it,
+    // Backspace clears an empty marker (lib/markdown-lists.ts). Plain Enter is
+    // never a list key, so it still sends.
+    const listKey = composerListKey(event)
+    const listChange = listKey && listEditAtCaret(event.currentTarget, listKey, $composerListStyles.get())
 
-    if (
-      plainKey &&
-      numberedListKey &&
-      withUndoPoint(() => handleNumberedListKey(event.currentTarget, numberedListKey))
-    ) {
+    if (listChange) {
       event.preventDefault()
-      flushEditorToDraft(event.currentTarget)
+
+      if (withUndoPoint(() => applyListEdit(event.currentTarget, listChange))) {
+        flushEditorToDraft(event.currentTarget)
+      }
 
       return
     }

@@ -1173,6 +1173,16 @@ export const esOverrides = {
       vibeHeartsTitle: 'Corazones de vibra',
       vibeHeartsDesc:
         'Corazones flotantes cuando dices gracias, te quiero, buen bot o envías un corazón. Independiente de las reacciones a mensajes de arriba.',
+      composerListsTitle: 'Listas en el cuadro de mensaje',
+      composerListsDesc:
+        'Mayús+Intro continúa una lista numerada, con viñetas o de casillas; Tab y Mayús+Tab anidan elementos. Continuar también:',
+      composerListStyles: {
+        letters: 'Letras (a. b. c.)',
+        roman: 'Números romanos (i. ii. iii.)',
+        outline: 'Numeración de esquema (1.1. 1.2.)',
+        parentheses: 'Paréntesis ((1) (a))',
+        symbols: 'Viñetas de símbolo (• ◦ ▪)'
+      },
       embedsTitle: 'Contenido incrustado',
       embedsDesc:
         'Las vistas previas enriquecidas se cargan desde sitios de terceros (YouTube, X, …). Preguntar muestra un marcador de posición hasta que permitas cada una; Siempre las carga automáticamente; Desactivado conserva los enlaces simples.',

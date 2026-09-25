@@ -831,6 +831,15 @@ export const zh = defineLocale({
       composerPopoutDesc: '允许将输入框拖出底部停靠区。关闭后，输入框会锁定在底部。',
       vibeHeartsTitle: '心情爱心',
       vibeHeartsDesc: '当你说谢谢、爱你、good bot 或发送爱心时飘出的爱心。与上方的消息回应是两回事。',
+      composerListsTitle: '输入框中的列表',
+      composerListsDesc: 'Shift+Enter 继续编号、项目符号或复选框列表；Tab 和 Shift+Tab 缩进或取消缩进条目。同时继续：',
+      composerListStyles: {
+        letters: '字母 (a. b. c.)',
+        roman: '罗马数字 (i. ii. iii.)',
+        outline: '多级编号 (1.1. 1.2.)',
+        parentheses: '括号 ((1) (a))',
+        symbols: '符号项目符号 (• ◦ ▪)'
+      },
       embedsTitle: '内嵌预览',
       embedsDesc:
         '富预览会从第三方网站（YouTube、X 等）加载。询问会在你允许前显示占位符；总是会自动加载；关闭则保留纯链接。',

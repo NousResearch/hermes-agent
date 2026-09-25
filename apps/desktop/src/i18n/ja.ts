@@ -675,6 +675,15 @@ export const ja = defineLocale({
       vibeHeartsTitle: 'バイブハート',
       vibeHeartsDesc:
         'ありがとう・愛してる・good bot・ハート絵文字のときに浮かぶハート。上のメッセージリアクションとは別です。',
+      composerListsTitle: 'メッセージ欄のリスト',
+      composerListsDesc: 'Shift+Enter で番号付き・箇条書き・チェックボックスのリストを続けます。Tab / Shift+Tab で項目を入れ子にします。次の形式も続ける:',
+      composerListStyles: {
+        letters: 'アルファベット (a. b. c.)',
+        roman: 'ローマ数字 (i. ii. iii.)',
+        outline: '階層番号 (1.1. 1.2.)',
+        parentheses: '括弧 ((1) (a))',
+        symbols: '記号の箇条書き (• ◦ ▪)'
+      },
       embedsTitle: 'インライン埋め込み',
       embedsDesc:
         'リッチプレビューは第三者サイト（YouTube、X など）から読み込まれます。確認は許可するまでプレースホルダーを表示し、常には自動で読み込み、オフはリンクのままにします。',

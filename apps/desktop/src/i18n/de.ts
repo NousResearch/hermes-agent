@@ -1175,6 +1175,16 @@ export const deOverrides = {
       vibeHeartsTitle: 'Vibe-Herzen',
       vibeHeartsDesc:
         'Schwebende Herzen, wenn Sie danke, ilu, guter Bot sagen oder ein Herz senden. Unabhängig von den Nachrichten-Reaktionen oben.',
+      composerListsTitle: 'Listen im Eingabefeld',
+      composerListsDesc:
+        'Umschalt+Enter setzt nummerierte, Aufzählungs- und Checklisten fort; Tab und Umschalt+Tab rücken Einträge ein. Außerdem fortsetzen:',
+      composerListStyles: {
+        letters: 'Buchstaben (a. b. c.)',
+        roman: 'Römische Ziffern (i. ii. iii.)',
+        outline: 'Gliederungsnummern (1.1. 1.2.)',
+        parentheses: 'Klammern ((1) (a))',
+        symbols: 'Symbol-Aufzählungszeichen (• ◦ ▪)'
+      },
       embedsTitle: 'Inline-Embeds',
       embedsDesc:
         'Reichhaltige Vorschauen werden von Drittanbieter-Sites geladen (YouTube, X, …). „Fragen“ zeigt einen Platzhalter, bis Sie jede einzelne erlauben; „Immer“ lädt sie automatisch; „Aus“ belässt einfache Links.',

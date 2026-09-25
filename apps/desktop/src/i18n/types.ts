@@ -937,6 +937,9 @@ export interface Translations {
       composerPopoutDesc: string
       vibeHeartsTitle: string
       vibeHeartsDesc: string
+      composerListsTitle: string
+      composerListsDesc: string
+      composerListStyles: Record<'letters' | 'roman' | 'outline' | 'parentheses' | 'symbols', string>
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string

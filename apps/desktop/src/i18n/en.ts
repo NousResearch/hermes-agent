@@ -1137,6 +1137,16 @@ export const en: Translations = {
       vibeHeartsTitle: 'Vibe Hearts',
       vibeHeartsDesc:
         'Floating hearts when you say thanks, ily, good bot, or send a heart. Separate from Message Reactions above.',
+      composerListsTitle: 'Lists in the message box',
+      composerListsDesc:
+        'Shift+Enter continues a numbered, bullet or checkbox list; Tab and Shift+Tab nest items. Also continue:',
+      composerListStyles: {
+        letters: 'Letters (a. b. c.)',
+        roman: 'Roman numerals (i. ii. iii.)',
+        outline: 'Outline numbers (1.1. 1.2.)',
+        parentheses: 'Parentheses ((1) (a))',
+        symbols: 'Symbol bullets (• ◦ ▪)'
+      },
       embedsTitle: 'Inline Embeds',
       embedsDesc:
         'Rich previews load from third-party sites (YouTube, X, …). Ask shows a placeholder until you allow each one; Always loads them automatically; Off keeps plain links.',

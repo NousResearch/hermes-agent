@@ -81,6 +81,8 @@ class _StubChannel:
         self.parent = None
         self.parent_id = None
         self.topic = None
+        # Spy for the operator-side half of AC-3: a refused message must reach no channel.
+        self.send = MagicMock()
 
 
 def _message(channel, *, content: str = "hello"):
@@ -226,6 +228,27 @@ class TestTheTwoRefusingBranchesWriteATrace:
 
         assert len(seen) == 1, f"the same refusal reported {sorted(seen)}"
 
+    def test_the_two_tokens_are_the_whole_vocabulary(self, adapter, caplog, monkeypatch):
+        """Each branch emits ITS own token, and the vocabulary is exactly those two.
+
+        The tokens are written out here rather than imported from the module: these two strings
+        ARE the contract the trace owes (an operator greps them), and spelling them out keeps
+        this file collectable against the parent revision for the RED witness.
+        """
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "111")
+        _drop_the_message(adapter, caplog, _message(_StubChannel(222)))
+        outside_allowlist = {token for _, token in _refusals(caplog, 222)}
+
+        caplog.clear()
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "*")
+        monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "999")
+        _drop_the_message(adapter, caplog, _message(_StubChannel(999)))
+        ignored = {token for _, token in _refusals(caplog, 999)}
+
+        assert outside_allowlist == {"channel_not_allowed"}
+        assert ignored == {"channel_ignored"}
+        assert outside_allowlist | ignored == {"channel_not_allowed", "channel_ignored"}
+
 
 class TestADroppedMessageCannotPassSilently:
     @pytest.mark.parametrize(
@@ -281,6 +304,17 @@ class TestADroppedMessageCannotPassSilently:
             assert record.levelno >= logging.INFO, (
                 "gateway.log's handler level is INFO: a lower line never reaches the file"
             )
+
+    def test_the_refusal_reaches_no_channel(self, adapter, caplog, monkeypatch):
+        """The trace is operator-side: a member sees exactly what they saw before the change."""
+        monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "111")
+        channel = _StubChannel(999)
+
+        dropped = _drop_the_message(adapter, caplog, _message(channel))
+
+        assert dropped is False
+        assert _refusals(caplog, 999), "the refusal left no line"
+        channel.send.assert_not_called()
 
 
 class TestTheAdmittedMessageCarriesNoRefusalTrace:

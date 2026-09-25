@@ -3423,7 +3423,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _allow_group_message(self, sender_id: Any, chat_id: str = "", *, is_bot: bool = False) -> bool:
         """Per-group policy gate for non-DM traffic."""
-        sender_ids = {getattr(sender_id, "open_id", None), getattr(sender_id, "user_id", None)} - {None}
+        # Mirror _sender_identity(): take every id variant the tenant populated.
+        # ``open_id`` is app-scoped — the same person has a different ``open_id``
+        # under every Feishu app — so an allowlist matched on open_id/user_id alone
+        # stops admitting users the moment the app is recreated or migrated.
+        # ``union_id`` is developer-scoped and stable across all of an app's
+        # siblings; the DM path (_admit) already admits through it.
+        sender_ids = {getattr(sender_id, k, None) for k in ("open_id", "user_id", "union_id")} - {None}
         if sender_ids and self._admins and (sender_ids & self._admins):
             return True
         rule = self._group_rules.get(chat_id) if chat_id else None

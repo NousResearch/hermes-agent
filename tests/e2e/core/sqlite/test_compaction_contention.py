@@ -21,7 +21,7 @@ turns. Invariants after every episode:
 * the exchanges ``/compress here N`` promised to keep are live exactly once;
 * canonical row counts only grow (compaction archives, it never deletes) — sampled continuously from outside
   and by the reader; ``integrity_check`` ok; FTS mirrors canonical rows; the store stays in the arm's journal
-  mode; no ``(deleted)`` store (nor, in WAL mode, ``-wal``/``-shm``) held;
+  mode; no ``(deleted)`` store or WAL held, nor a persistent deleted SHM descriptor;
 * the resumed process sends the model every acknowledged user turn exactly once (persisted == sent);
 * the plain writer's acked appends are stored exactly once.
 """

@@ -11,9 +11,9 @@ protocol). This module owns:
   in; nothing in the harness issues a journal-mode pragma;
 
 * process lifecycle (spawn / ready / stop / SIGTERM / SIGKILL, PIDs recorded, nothing else touched);
-* a background ``/proc/<pid>/fd`` monitor over OUR children that records any ``(deleted)`` main-file descriptor
-  (a store swapped under a live holder) and, in WAL mode, any ``(deleted)`` ``-wal``/``-shm`` — the
-  kernel-level signature of a WAL generation unlinked under a live holder;
+* a background ``/proc/<pid>/fd`` monitor over OUR children that records any ``(deleted)`` main-file or
+  WAL descriptor, and SHM descriptors that remain deleted across a short confirmation window. SQLite's
+  last-connection SHM cleanup unlinks before closing its own descriptor;
 * the invariant checks, done in the test process with short-lived bare ``sqlite3`` connections only (the
   test process never imports ``hermes_state``, so it never becomes a foreign holder of the file).
 
@@ -48,6 +48,10 @@ VULNERABLE_SQLITE = "3.50.4"  # bundled by uv's CPython 3.11.14 (the unit CI job
 # DELETE mode holds an EXCLUSIVE lock for every commit's journal+db fsyncs and has no writer fairness: an unpaced
 # append loop starves every other writer and reader. Gateway/TUI writers are paced by turns in the field.
 DELETE_WRITER_PACE = 0.02
+# SQLite unixShmUnmap unlinks before unixShmPurge closes hShm. Confirm persistence,
+# not that legitimate instantaneous close window; main DB and WAL remain immediate.
+# This is a sampling policy, not an upper bound on how long SQLite close can take.
+SHM_CLOSE_GRACE_SECONDS = 0.1
 
 
 def linked_sqlite_is_wal_capable() -> bool:
@@ -222,25 +226,52 @@ class Chamber:
 
     # -- kernel truth: (deleted) sidecars held by our children --------------------------------------
     def _scan_loop(self) -> None:
+        pending: dict[tuple, float] = {}
+        while not self._monitor_stop.is_set():
+            self._scan_deleted_fds(pending)
+            self._monitor_stop.wait(0.02)
+
+    def _scan_deleted_fds(self, pending: dict[tuple, float]) -> None:
         targets = {str(self.db)}
         if self.mode == "wal":
             targets |= {f"{self.db}-wal", f"{self.db}-shm"}
-        while not self._monitor_stop.is_set():
-            for name, proc in self.live():
-                fd_dir = f"/proc/{proc.pid}/fd"
+        still_pending: dict[tuple, float] = {}
+        for name, proc in self.live():
+            fd_dir = f"/proc/{proc.pid}/fd"
+            try:
+                fds = os.listdir(fd_dir)
+            except OSError:
+                continue
+            for fd in fds:
+                fd_path = f"{fd_dir}/{fd}"
                 try:
-                    fds = os.listdir(fd_dir)
+                    link = os.readlink(fd_path)
                 except OSError:
                     continue
-                for fd in fds:
+                if not link.endswith(" (deleted)") or link[: -len(" (deleted)")] not in targets:
+                    continue
+                if link == f"{self.db}-shm (deleted)":
                     try:
-                        link = os.readlink(f"{fd_dir}/{fd}")
+                        identity = os.stat(fd_path)
+                        if os.readlink(fd_path) != link:
+                            continue
                     except OSError:
                         continue
-                    if link.endswith(" (deleted)") and link[: -len(" (deleted)")] in targets:
-                        with self._lock:
-                            self.deleted_hits.append((name, proc.pid, link))
-            self._monitor_stop.wait(0.02)
+                    if proc.poll() is not None:
+                        continue
+                    key = (proc, proc.pid, fd, identity.st_dev, identity.st_ino, link)
+                    observed_at = time.monotonic()
+                    first_seen = pending.get(key, observed_at)
+                    still_pending[key] = first_seen
+                    if observed_at - first_seen < SHM_CLOSE_GRACE_SECONDS:
+                        continue
+                elif proc.poll() is not None:
+                    continue
+                with self._lock:
+                    self.deleted_hits.append((name, proc.pid, link))
+        # A closed/reused descriptor or exited child must start a new observation.
+        pending.clear()
+        pending.update(still_pending)
 
     def deleted_hits_snapshot(self) -> list[tuple[str, int, str]]:
         with self._lock:

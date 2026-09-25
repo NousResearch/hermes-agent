@@ -14,7 +14,7 @@ SAME invariants:
 
 * ``PRAGMA integrity_check`` is ``ok``; the store is still in the arm's journal mode and every SessionDB
   role really ran in it;
-* no child ever held a ``(deleted)`` ``state.db`` descriptor — nor, in WAL mode, ``-wal``/``-shm``
+* no observed ``(deleted)`` ``state.db`` or ``-wal`` descriptor, nor SHM held across the confirmation window
   (``/proc/<pid>/fd`` scan);
 * every acknowledged append is stored exactly once (per-writer intent/ack journals), an in-flight append at
   most once, and no row exists that no writer intended;

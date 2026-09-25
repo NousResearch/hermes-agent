@@ -382,6 +382,7 @@ from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.usage import build_usage_parser
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
 from hermes_cli.subcommands.skills import build_skills_parser
+from hermes_cli.subcommands.channel_skills import build_channel_skills_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
@@ -1945,6 +1946,7 @@ cmd_plugins = _forward_command("cmd_plugins", "hermes_cli.plugins_cmd", "plugins
 cmd_mcp = _forward_command("cmd_mcp", "hermes_cli.mcp_config", "mcp_command", forward_return=True)
 cmd_claw = _forward_command("cmd_claw", "hermes_cli.claw", "claw_command")
 cmd_import_agent = _forward_command("cmd_import_agent", "hermes_cli.agent_import", "import_agent_command")
+cmd_channel_skills = _forward_command("cmd_channel_skills", "hermes_cli.channel_skills_command", "channel_skills_command", forward_return=True, doc='Manage generated channel-specific skills.')
 
 
 def cmd_model(args):
@@ -3452,6 +3454,7 @@ def _build_cli_parser():
     build_console_parser(subparsers, cmd_console=cmd_console)
     build_pairing_parser(subparsers, cmd_pairing=cmd_pairing)
     build_skills_parser(subparsers, cmd_skills=cmd_skills)
+    build_channel_skills_parser(subparsers, cmd_channel_skills=cmd_channel_skills)
     build_bundles_parser(subparsers)
     build_plugins_parser(subparsers, cmd_plugins=cmd_plugins)
 

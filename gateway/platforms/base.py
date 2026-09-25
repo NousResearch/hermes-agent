@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
 from agent.proxy_bypass import first_proxy_env_value, should_bypass_proxy as _should_bypass_proxy
+from gateway.channel_skill_generation import ChannelSkillAutoGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -1808,26 +1809,15 @@ def resolve_channel_prompt(config_extra: dict, channel_id: str, parent_id: str |
 
 def resolve_channel_skills(
     config_extra: dict, channel_id: str, parent_id: str | None = None) -> list[str] | None:
-    """Auto-loaded skill(s) for a channel/thread from ``channel_skill_bindings`` (entries
-    ``{id: "<channel/forum id>", skills: [...]}``; ``skill: "<name>"`` also accepted). Exact
-    *channel_id* first, then *parent_id* (threads inherit). Deduplicated ordered list or None."""
-    bindings = config_extra.get("channel_skill_bindings") or []
-    if not isinstance(bindings, list) or not bindings:
-        return None
-    ids_to_check = {str(key) for key in (channel_id, parent_id) if key}
-    if not ids_to_check:
-        return None
-    for entry in bindings:
-        if not isinstance(entry, dict) or str(entry.get("id", "")) not in ids_to_check:
-            continue
-        skills = entry.get("skills") or entry.get("skill")
-        if isinstance(skills, str):
-            return [skills.strip()] if skills.strip() else None
-        if isinstance(skills, list) and skills:
-            seen = dict.fromkeys(
-                nm for name in skills if isinstance(name, str) and (nm := name.strip()))
-            return list(seen) or None
-    return None
+    """Resolve ordered channel/thread skill names through the shared profile resolver.
+
+    Legacy ``channel_skill_bindings`` entries with ``skill``/``skills`` remain supported;
+    profile bindings additionally support ``channel_skill_profiles`` and ``extends``.
+    Exact *channel_id* bindings take precedence over *parent_id* bindings.
+    """
+    from gateway.channel_skills import ChannelSkillResolver
+
+    return ChannelSkillResolver(config_extra).resolve_skills(channel_id, parent_id)
 
 
 def _split_post_delivery_entry(entry: Any) -> Tuple[Optional[int], Any]:
@@ -1902,6 +1892,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._channel_skill_generator: Optional[ChannelSkillAutoGenerator] = None
         self._no_message_handler_logged: bool = False
         self._reaction_handler: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
         # Runner-owned boundary for normalized events: auth/profile state never lives in an adapter.
@@ -3947,6 +3938,26 @@ class BasePlatformAdapter(ABC):
             raise
         await self._drain_pending_after_session_command(session_key, command_guard)
 
+    async def _ensure_channel_skill(self, event: MessageEvent) -> None:
+        """Generate/apply a channel skill before a new agent turn starts."""
+        if event.source is None:
+            return
+        platform = getattr(event.source.platform, "value", event.source.platform)
+        if str(platform).lower() != "discord":
+            return
+        if self._channel_skill_generator is None:
+            self._channel_skill_generator = ChannelSkillAutoGenerator()
+        try:
+            await asyncio.to_thread(
+                self._channel_skill_generator.ensure,
+                event,
+                getattr(self.config, "extra", {}) or {},
+            )
+        except Exception:
+            # Channel skill generation is deliberately fail-open: normal message handling must
+            # continue when the registry, skill manager, or auxiliary model is unavailable.
+            logger.warning("[%s] Channel skill generation failed; continuing without generated skill", self.name, exc_info=True)
+
     async def handle_message(self, event: MessageEvent) -> None:
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
@@ -3986,6 +3997,9 @@ class BasePlatformAdapter(ABC):
         if session_key in self._active_sessions:
             await self._handle_message_while_active(event, session_key)
             return
+        # First-contact channel skill generation must complete before the new session task is spawned,
+        # so the generated skill applies to this very message rather than only the next one.
+        await self._ensure_channel_skill(event)
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
 

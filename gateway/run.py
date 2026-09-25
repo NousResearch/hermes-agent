@@ -730,6 +730,51 @@ def _format_exec_approval_fallback(
         + ", ".join(choices[:-1]) + f", or {choices[-1]}."
     )
 
+_GATEWAY_PROVIDER_REASON_NOISE_RE = re.compile(
+    r"("
+    r"request[_ ]?id\s*[:=]\s*\S+"
+    r"|req_[A-Za-z0-9]+"
+    r"|Bearer\s+\S+"
+    r"|sk-[A-Za-z0-9_\-]+"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _gateway_provider_error_reason(text: str) -> str:
+    """One sanitized line of why the provider failed, safe to show in chat.
+
+    The category reply stays. The raw body does not — secrets, request ids,
+    and JSON envelopes are stripped so a 400 like unsupported_api_for_model
+    is visible without dumping the provider payload.
+    """
+    body = str(text or "")
+    msg = ""
+    m = re.search(r"""['"]message['"]\s*:\s*['"](.+?)['"]\s*,""", body)
+    if not m:
+        m = re.search(r"""['"]message['"]\s*:\s*['"]([^'"]+)['"]""", body)
+    if m:
+        msg = m.group(1)
+    else:
+        m = re.search(
+            r"(?:HTTP\s*\d{3}|Error code:\s*\d{3}|API call failed[^:]*):\s*(.+)",
+            body,
+            re.IGNORECASE,
+        )
+        if m:
+            msg = m.group(1)
+    if not msg:
+        msg = body
+    msg = _GATEWAY_PROVIDER_REASON_NOISE_RE.sub("", msg)
+    msg = re.sub(r"\{.*\}", "", msg)
+    msg = re.sub(r"\s+", " ", msg).strip(" \t\r\n:-")
+    if not msg or len(msg) < 8:
+        return ""
+    if len(msg) > 180:
+        msg = msg[:177].rstrip() + "..."
+    return msg
+
+
 def _gateway_provider_error_reply(text: str) -> str:
     """Map raw provider/API errors to a short user-safe Telegram reply."""
     if _GATEWAY_AUTH_ERROR_RE.search(text):
@@ -749,10 +794,14 @@ def _gateway_provider_error_reply(text: str) -> str:
             "⚠️ The model server is not responding — it looks like the configured "
             "model endpoint is not running or is unreachable."
         )
-    return (
+    reason = _gateway_provider_error_reason(text)
+    base = (
         "⚠️ The model provider failed after retries. I kept raw provider details "
         "out of chat; check gateway logs for diagnostics."
     )
+    if not reason:
+        return base
+    return f"{base}\nReason: {reason}"
 
 
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(

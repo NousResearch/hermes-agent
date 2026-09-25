@@ -50,6 +50,28 @@ def _load_config_scoped(profile: Optional[str]) -> dict:
         return load_config()
 
 
+def _model_endpoint_credentials(profile: Optional[str], model_name: str, provider: str,
+                                base_url: str) -> tuple[str, str]:
+    """(base_url, api_key) the agent would use for the configured route.
+
+    The live context probe needs the provider's endpoint and key: without them a custom or
+    local provider (LM Studio, vLLM, …) answers 401 and the lookup silently falls back to the
+    catalog maximum instead of the context the server actually loaded. Resolution runs inside
+    the profile scope so ``?profile=`` reads that profile's credentials; any failure keeps the
+    config values, so the endpoint degrades exactly as it did before.
+    """
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        with _profile_scope(profile):
+            runtime = resolve_runtime_provider(requested=provider or None,
+                                               explicit_base_url=base_url or None,
+                                               target_model=model_name or None)
+        return str(runtime.get("base_url") or base_url or ""), str(runtime.get("api_key") or "")
+    except Exception:
+        _log.debug("model/info: runtime credential resolution failed", exc_info=True)
+        return base_url or "", ""
+
+
 @router.get("/api/model/info")
 def get_model_info(profile: Optional[str] = None):
     """Resolved metadata for the configured model: auto-detected vs configured
@@ -66,9 +88,10 @@ def get_model_info(profile: Optional[str] = None):
 
         try:
             from agent.model_metadata import get_model_context_length
+            base_url, api_key = _model_endpoint_credentials(profile, model_name, provider, base_url)
             # config_context_length=None: ignore the override — we want the auto value
-            auto_ctx = get_model_context_length(model=model_name, base_url=base_url, provider=provider,
-                                                config_context_length=None)
+            auto_ctx = get_model_context_length(model=model_name, base_url=base_url, api_key=api_key,
+                                                provider=provider, config_context_length=None)
         except Exception:
             auto_ctx = 0
 

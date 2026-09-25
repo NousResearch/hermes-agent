@@ -27,6 +27,32 @@ def _installed_purelib() -> Path | None:
         return None
 
 
+def _parent_hermes_site_packages() -> list[str]:
+    """site-packages owned by the Hermes runtime, taken from the live parent.
+
+    The gateway resolves its dependencies at runtime (standalone interpreter +
+    bootstrap), so the external cron worker — spawned as plain
+    ``sys.executable -m cron.scheduler`` — must inherit the same entries or it
+    dies importing third-party deps (e.g. ``ruamel`` via ``hermes_yaml``).
+    Only existing dirs under a ``.hermes`` tree are returned; when none match,
+    behaviour is unchanged (tree pin only).
+    """
+    import sys
+
+    found: list[str] = []
+    for entry in sys.path:
+        if "site-packages" not in entry or ".hermes" not in entry:
+            continue
+        if entry in found:
+            continue
+        try:
+            if Path(entry).is_dir():
+                found.append(entry)
+        except OSError:
+            continue
+    return found
+
+
 def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     """Prepend ``repo_root`` to the worker env's own PYTHONPATH (never ``os.environ``'s).
 
@@ -38,5 +64,6 @@ def pin_hermes_tree_on_pythonpath(worker_env: dict, repo_root: Path) -> dict:
     if _installed_purelib() == Path(root).resolve():
         return worker_env
     existing = [e for e in worker_env.get("PYTHONPATH", "").split(os.pathsep) if e]
-    worker_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys([root, *existing]))
+    ordered = dict.fromkeys([root, *_parent_hermes_site_packages(), *existing])
+    worker_env["PYTHONPATH"] = os.pathsep.join(ordered)
     return worker_env

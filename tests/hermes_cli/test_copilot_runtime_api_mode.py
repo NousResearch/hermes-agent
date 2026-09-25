@@ -86,3 +86,26 @@ def test_resolver_routes_copilot_by_target_model_for_every_credential_path(
     assert runtime["provider"] == "copilot"
     assert runtime["api_mode"] == expected_mode
     assert runtime["source"] == credential_source
+
+
+def test_cron_job_pinned_grok_resolves_codex_responses_without_api_key(monkeypatch):
+    """Regression for the cron/gateway model-override bug.
+
+    Cron jobs resolve the runtime credentials for a *target model override*
+    that can differ from the persisted config default, and the credential
+    lookup used there does not always carry a live api_key into
+    ``copilot_model_api_mode`` (catalog fetch skipped -> ``catalog=None``
+    with no api_key -> empty catalog -> no supported_endpoints signal).
+    Uses the real (unmocked) ``copilot_model_api_mode`` so this exercises the
+    actual pattern-matching fix, not a stubbed decision.
+    """
+    from hermes_cli import runtime_provider as rp
+
+    assert (
+        rp._copilot_runtime_api_mode(
+            {"provider": "copilot", "default": "gpt-5.5"},
+            "",
+            target_model="grok-4.7",
+        )
+        == "codex_responses"
+    )

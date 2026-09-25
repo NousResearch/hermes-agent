@@ -2342,9 +2342,47 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
 
 def _should_use_copilot_responses_api(model_id: str) -> bool:
     """opencode's ``shouldUseCopilotResponsesApi``: GPT-5+ uses the Responses API except
-    ``gpt-5-mini``; non-GPT models (Claude, Gemini, ...) use Chat Completions."""
+    ``gpt-5-mini``; non-GPT models (Claude, Gemini, ...) use Chat Completions.
+
+    Grok is matched here too (not only via the catalog's supported_endpoints
+    below): cron/gateway runtimes resolve credentials without a live api_key,
+    so the catalog fetch is skipped and the catalog-only check never fires,
+    silently falling back to chat_completions -- which Copilot rejects with
+    HTTP 400 for every Grok model as of 2026-09. A pattern match that doesn't
+    depend on the catalog fixes the whole class of "no catalog signal"
+    callers (cron, gateway, MoA slots), not just the interactive CLI path
+    that always has a live api_key.
+    """
+    import re
+
+    if re.match(r"^grok[-_]", model_id, re.IGNORECASE):
+        return True
+
     match = re.match(r"^gpt-(\d+)", model_id)
     return bool(match) and int(match.group(1)) >= 5 and not model_id.startswith("gpt-5-mini")
+
+
+def _copilot_model_supported_endpoints(
+    model_id: str,
+    *,
+    catalog: Optional[list[dict[str, Any]]] = None,
+    api_key: Optional[str] = None,
+) -> list[str]:
+    """Return the live catalog's ``supported_endpoints`` for a Copilot model.
+
+    Empty list when the catalog is unreachable or the model is absent — the
+    caller must treat that as "no signal", never as "chat unsupported".
+    """
+    try:
+        if catalog is None:
+            catalog = fetch_github_model_catalog(api_key=api_key)
+        for entry in catalog or []:
+            if str(entry.get("id") or "").strip().lower() == model_id.strip().lower():
+                eps = entry.get("supported_endpoints")
+                return [str(e) for e in eps] if isinstance(eps, list) else []
+    except Exception:
+        pass
+    return []
 
 
 def copilot_model_api_mode(
@@ -2358,6 +2396,22 @@ def copilot_model_api_mode(
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
     if normalized and _should_use_copilot_responses_api(normalized):
         return "codex_responses"
+
+    # Secondary: the live catalog's ``supported_endpoints``. Covers any
+    # other non-GPT family Copilot moves to a /responses-only endpoint in
+    # the future; only switches when the catalog says chat is NOT offered,
+    # so dual-endpoint models (gpt-5-mini) keep their pattern-derived mode.
+    endpoints = _copilot_model_supported_endpoints(
+        normalized, catalog=catalog, api_key=api_key
+    )
+    if endpoints and "/chat/completions" not in endpoints and "/responses" in endpoints:
+        return "codex_responses"
+
+    # Copilot's Claude models are exposed through its OpenAI-compatible chat
+    # endpoint, not through Hermes' native Anthropic adapter. The live catalog may
+    # advertise /v1/messages, but the Copilot token/header scheme is handled by
+    # the OpenAI client path; selecting anthropic_messages would send the wrong
+    # auth/wire shape. Keep non-GPT Copilot slots on chat_completions.
     return "chat_completions"
 
 

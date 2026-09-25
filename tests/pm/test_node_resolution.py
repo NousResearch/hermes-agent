@@ -21,8 +21,10 @@ _REAL_HERMES_HOME = Path.home() / ".hermes"  # Captured before per-test HOME iso
 
 def _register_installed_tool(name, executable, companions=()):
     executable = Path(executable)
-    version = subprocess.run([str(executable), "--version"], capture_output=True, text=True,
-                             check=True, timeout=10).stdout.strip().removeprefix("v")
+    version = subprocess.run(
+        [str(executable), "--version"], capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=True, timeout=10,
+    ).stdout.strip().removeprefix("v")
     package, target, store = get_package(name), current_target(), paths.store_root()
     entry = store / package.store_entry(version, target)
     binary = package.binary(entry, target)
@@ -244,7 +246,7 @@ def test_npm_consumers_execute_with_pm_node(npm_probe, npm_consumers, consumer):
     publish()
     call, output_dir = npm_consumers[consumer]
     call()
-    result = json.loads((output_dir / "called.json").read_text())
+    result = json.loads((output_dir / "called.json").read_text(encoding="utf-8-sig"))
     assert Path(result["argv"][1]) == binary
     assert shutil.which("node", path=result["env"]["PATH"]) == str(node)
     if consumer == "lsp":
@@ -268,7 +270,7 @@ def test_missing_npm_acquires_npm_closure_at_install_boundary(npm_probe, npm_con
     call, bridge = npm_consumers[surface]
     call()
     assert calls == [("npm", surface in {"cli", "dashboard", "photon-cli"})]
-    result = json.loads((bridge / "called.json").read_text())
+    result = json.loads((bridge / "called.json").read_text(encoding="utf-8-sig"))
     assert Path(result["argv"][1]) == binary
     assert shutil.which("node", path=result["env"]["PATH"]) == str(node)
 
@@ -328,7 +330,10 @@ def test_dashboard_pairing_prepares_npm_before_node_lookup(npm_probe, tmp_path, 
     paths.facts_path().unlink()
     bridge = tmp_path / "bridge"
     bridge.mkdir()
-    (bridge / "bridge.js").write_text('console.log(JSON.stringify({argv:process.argv, path:process.env.PATH}));\n')
+    (bridge / "bridge.js").write_text(
+        'console.log(JSON.stringify({argv:process.argv, path:process.env.PATH}));\n',
+        encoding="utf-8",
+    )
     monkeypatch.setattr(whatsapp_common, "resolve_whatsapp_bridge_dir", lambda: bridge)
     installs = []
 
@@ -358,7 +363,10 @@ def test_lsp_node_server_inherits_pm_runtime_and_preserves_overrides(node_store,
 
     _home, node, _external = node_store
     script = tmp_path / "language-server"
-    script.write_text('#!/usr/bin/env node\nconsole.log(JSON.stringify({path:process.env.PATH, flag:process.env.LSP_FLAG}));\n')
+    script.write_text(
+        '#!/usr/bin/env node\nconsole.log(JSON.stringify({path:process.env.PATH, flag:process.env.LSP_FLAG}));\n',
+        encoding="utf-8",
+    )
     script.chmod(0o755)
     monkeypatch.setenv("PATH", "")
     ctx = ServerContext(
@@ -370,7 +378,10 @@ def test_lsp_node_server_inherits_pm_runtime_and_preserves_overrides(node_store,
     assert server is not None
     spec = server.build_spawn(str(tmp_path), ctx)
     assert spec is not None
-    child = subprocess.run(spec.command, env=spec.env, capture_output=True, text=True, timeout=10, check=False)
+    child = subprocess.run(
+        spec.command, env=spec.env, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", timeout=10, check=False,
+    )
     assert child.returncode == 0, child.stderr
     observed = json.loads(child.stdout)
     assert shutil.which("node", path=observed["path"]) == str(node)

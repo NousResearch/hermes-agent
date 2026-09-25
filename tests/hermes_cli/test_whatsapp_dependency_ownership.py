@@ -45,7 +45,7 @@ def test_explicit_maintenance_paths_refresh_and_stamp_whatsapp_dependencies(
 
     assert _whatsapp_install_bridge(bridge_dir) is True
     stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"
-    cli_stamp = stamp.read_text(encoding="utf-8").strip()
+    cli_stamp = stamp.read_text(encoding="utf-8-sig").strip()
     assert cli_stamp
 
     phase[0] = "dashboard"
@@ -53,7 +53,7 @@ def test_explicit_maintenance_paths_refresh_and_stamp_whatsapp_dependencies(
         '{"dependencies": {"a": "1"}}', encoding="utf-8"
     )
     _ensure_whatsapp_bridge_dependencies(bridge_dir)
-    dashboard_stamp = stamp.read_text(encoding="utf-8").strip()
+    dashboard_stamp = stamp.read_text(encoding="utf-8-sig").strip()
     assert dashboard_stamp and dashboard_stamp != cli_stamp
 
     phase[0] = "update"
@@ -67,6 +67,6 @@ def test_explicit_maintenance_paths_refresh_and_stamp_whatsapp_dependencies(
     from hermes_cli.source_build import build_update_products
 
     build_update_products(checkout, desktop=False)
-    update_stamp = stamp.read_text(encoding="utf-8").strip()
+    update_stamp = stamp.read_text(encoding="utf-8-sig").strip()
     assert update_stamp and update_stamp != dashboard_stamp
     assert installs == ["cli", "dashboard", "update"]

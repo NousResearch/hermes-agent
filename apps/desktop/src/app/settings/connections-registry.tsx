@@ -1,12 +1,13 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
+import { RemoteSetupFields } from '@/components/remote-setup/fields'
+import { useRemoteSetup } from '@/components/remote-setup/use-remote-setup'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import type {
   DesktopConnectionKind,
-  DesktopConnectionProbeResult,
   DesktopConnectionsRegistry,
   DesktopRegistryConnection,
   DesktopRegistryConnectionInput
@@ -17,23 +18,8 @@ import {
   connectionMatchesQuery,
   sortConnectionsForDisplay
 } from '@/lib/connection-display'
-import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 import { triggerHaptic } from '@/lib/haptics'
-import {
-  Check,
-  Cloud,
-  Globe,
-  Loader2,
-  LogIn,
-  Monitor,
-  Pencil,
-  Plus,
-  RefreshCw,
-  SearchIcon,
-  Terminal,
-  Trash2
-} from '@/lib/icons'
-import { coerceRemoteUrlScheme } from '@/lib/remote-url'
+import { Cloud, Globe, Loader2, Monitor, Pencil, Plus, RefreshCw, SearchIcon, Terminal, Trash2 } from '@/lib/icons'
 import { $activeConnectionId, setConnectionsRegistry } from '@/store/connections'
 import { refreshFleetRoster } from '@/store/fleet-roster'
 import { notify, notifyError } from '@/store/notifications'
@@ -52,9 +38,6 @@ interface EditorState {
   id: null | string
   kind: DesktopConnectionKind
   label: string
-  url: string
-  authMode: 'oauth' | 'token'
-  token: string
   host: string
   keyPath: string
   remoteHermesPath: string
@@ -69,25 +52,11 @@ interface EditorState {
   headers: { name: string; stored: boolean; value: string }[]
 }
 
-/**
- * The auth mode the editor saves. A Hermes Cloud gateway signs in through its
- * OAuth session and never keeps a pasted token (the main process drops one),
- * so cloud is always oauth whatever the shared editor state last held for a
- * remote; token auth left a hand-registered cloud entry with no credential
- * (#89529).
- */
-function editorAuthMode(editor: Pick<EditorState, 'authMode' | 'kind'>): EditorState['authMode'] {
-  return editor.kind === 'cloud' ? 'oauth' : editor.authMode
-}
-
 function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
   return {
     id: conn.id,
     kind: conn.kind,
     label: conn.label,
-    url: conn.url || '',
-    authMode: conn.authMode || 'token',
-    token: '',
     // Reconstruct the composite the single ssh host field displays. The save
     // payload sends ONLY this string (never separate user/port), because
     // normalizeSshConfig gives explicit user/port fields precedence over the
@@ -106,9 +75,6 @@ function emptyEditor(kind: DesktopConnectionKind): EditorState {
     id: null,
     kind,
     label: '',
-    url: '',
-    authMode: 'token',
-    token: '',
     host: '',
     keyPath: '',
     remoteHermesPath: '',
@@ -157,7 +123,7 @@ export function sshCompositeKey(composite: string): string {
  * Returns the existing entry the candidate collides with, or null.
  */
 export function findDuplicateConnection(
-  editor: Pick<EditorState, 'host' | 'id' | 'kind' | 'remoteProfile' | 'url'>,
+  editor: Pick<EditorState, 'host' | 'id' | 'kind' | 'remoteProfile'> & { url: string },
   connections: DesktopRegistryConnection[]
 ): DesktopRegistryConnection | null {
   if (editor.kind === 'local') {
@@ -270,14 +236,12 @@ export function ConnectionsRegistrySection() {
   // Inline duplicate rejection from the save path (dedupe is also enforced in
   // the main process, so a crafted payload can't slip past the UI check).
   const [dupeError, setDupeError] = useState<null | string>(null)
-  // A gated remote gateway (OAuth, or username/password) never accepts a
-  // session token: it authenticates with a browser sign-in and keeps the
-  // session itself. Probe the edited URL so this row can name the provider,
-  // and remember whether the login round-trip actually completed.
-  const [authProbe, setAuthProbe] = useState<DesktopConnectionProbeResult | null>(null)
-  const [signingIn, setSigningIn] = useState(false)
-  const [oauthConnected, setOauthConnected] = useState(false)
-  const probeSeq = useRef(0)
+
+  const remote = useRemoteSetup({
+    host: 'registry',
+    enabled: editor?.kind === 'remote' || editor?.kind === 'cloud',
+    onNotice: notify
+  })
 
   const bridge = window.hermesDesktop?.connections
 
@@ -287,93 +251,6 @@ export function ConnectionsRegistrySection() {
     setRegistry(next)
     setConnectionsRegistry(next)
   }, [])
-
-  const editorIsGateway = editor?.kind === 'remote' || editor?.kind === 'cloud'
-  const editorUrl = editor && editorIsGateway ? coerceRemoteUrlScheme(editor.url) : ''
-  const editorWantsOauth = Boolean(editor && editorIsGateway && editorAuthMode(editor) === 'oauth')
-  const authProviderShape = deriveRemoteAuthProviderShape(authProbe?.providers, t.boot.failure.identityProvider)
-
-  // Probe only while the sign-in row is on screen, and debounce it so typing a
-  // URL doesn't fire a request per keystroke. Best-effort: a failed probe just
-  // leaves the generic provider label, it never blocks signing in.
-  useEffect(() => {
-    if (!editorWantsOauth || !editorUrl || !window.hermesDesktop?.probeConnectionConfig) {
-      setAuthProbe(null)
-
-      return
-    }
-
-    const seq = ++probeSeq.current
-    // Staleness is covered by probeSeq, but not unmount: a probe resolving
-    // after the editor closes would still call setAuthProbe on an unmounted
-    // component. Harmless in React 18, still worth not doing.
-    let cancelled = false
-
-    const timer = setTimeout(() => {
-      window.hermesDesktop
-        .probeConnectionConfig(editorUrl)
-        .then(result => {
-          if (!cancelled && seq === probeSeq.current) {
-            setAuthProbe(result)
-          }
-        })
-        .catch(() => {
-          if (!cancelled && seq === probeSeq.current) {
-            setAuthProbe(null)
-          }
-        })
-    }, 400)
-
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [editorUrl, editorWantsOauth])
-
-  // The session is scoped to an origin, so pointing the editor at a different
-  // URL invalidates the "signed in" state this row is reporting. Flipping the
-  // auth mode invalidates it too: a saved row edited token -> oauth must not
-  // present a stale "Signed in" pill from an earlier oauth stint.
-  useEffect(() => {
-    setOauthConnected(false)
-  }, [editorUrl, editorWantsOauth])
-
-  // Open the gateway's own login window and let the main process keep whatever
-  // it mints (native PKCE bearer tokens, or the legacy session cookies). This
-  // is the same IPC the first-run form and the gateway panel use — the
-  // registry editor simply had no affordance to reach it.
-  const signInOauth = useCallback(async () => {
-    if (!editorUrl) {
-      notify({ kind: 'warning', title: t.settings.gateway.authTitle, message: t.settings.gateway.enterUrlFirst })
-
-      return
-    }
-
-    setSigningIn(true)
-
-    try {
-      const result = await window.hermesDesktop.oauthLoginConnectionConfig(editorUrl)
-
-      setOauthConnected(Boolean(result.connected))
-
-      if (result.connected) {
-        notify({
-          title: t.settings.gateway.signedIn,
-          message: t.settings.gateway.connectedTo(authProviderShape.providerLabel)
-        })
-      } else {
-        notify({
-          kind: 'warning',
-          title: t.boot.failure.signInIncompleteTitle,
-          message: t.boot.failure.signInIncompleteMessage
-        })
-      }
-    } catch (err) {
-      notifyError(err, t.settings.gateway.signInFailed)
-    } finally {
-      setSigningIn(false)
-    }
-  }, [authProviderShape.providerLabel, editorUrl, t])
 
   const load = useCallback(async () => {
     if (!bridge) {
@@ -397,13 +274,19 @@ export function ConnectionsRegistrySection() {
     void load()
   }, [load])
 
-  const openEditor = (next: EditorState | null) => {
+  const openEditor = (next: EditorState | null, saved?: DesktopRegistryConnection): void => {
     setDupeError(null)
+    remote.reset({
+      url: saved?.url || '',
+      authMode: next?.kind === 'cloud' ? 'oauth' : saved?.authMode || 'token',
+      tokenSet: saved?.tokenSet ?? false,
+      tokenPreview: saved?.tokenPreview ?? null
+    })
     setEditor(next)
   }
 
   const save = useCallback(
-    async (allowPlainTextToken = false) => {
+    async (allowPlainTextToken: boolean = false): Promise<void> => {
       if (!bridge || !editor) {
         return
       }
@@ -411,7 +294,7 @@ export function ConnectionsRegistrySection() {
       // Duplicate prevention lives in the save path (not just a disabled
       // button): reject a candidate that collides with an existing entry with
       // an inline error before anything crosses the IPC boundary.
-      const dupe = findDuplicateConnection(editor, registry?.connections ?? [])
+      const dupe = findDuplicateConnection({ ...editor, url: remote.credentials.url }, registry?.connections ?? [])
 
       if (dupe) {
         setDupeError(
@@ -439,11 +322,11 @@ export function ConnectionsRegistrySection() {
         }
 
         if (editor.kind === 'remote' || editor.kind === 'cloud') {
-          payload.url = editor.url
-          payload.authMode = editorAuthMode(editor)
+          payload.url = remote.payload.remoteUrl
+          payload.authMode = editor.kind === 'cloud' ? 'oauth' : remote.credentials.authMode
 
-          if (editor.token.trim()) {
-            payload.token = editor.token.trim()
+          if (editor.kind === 'remote' && remote.payload.remoteToken) {
+            payload.token = remote.payload.remoteToken
           }
 
           if (allowPlainTextToken) {
@@ -482,8 +365,8 @@ export function ConnectionsRegistrySection() {
           !allowPlainTextToken &&
           registry?.secureTokenStorage === false &&
           editor.kind === 'remote' &&
-          editor.authMode === 'token' &&
-          editor.token.trim()
+          remote.credentials.authMode === 'token' &&
+          remote.credentials.token.trim()
         ) {
           setPlainTextConfirm(true)
 
@@ -495,7 +378,16 @@ export function ConnectionsRegistrySection() {
         setSaving(false)
       }
     },
-    [bridge, editor, publishRegistry, registry?.connections, registry?.secureTokenStorage, s]
+    [
+      bridge,
+      editor,
+      remote.credentials,
+      remote.payload,
+      publishRegistry,
+      registry?.connections,
+      registry?.secureTokenStorage,
+      s
+    ]
   )
 
   const remove = useCallback(async () => {
@@ -737,7 +629,7 @@ export function ConnectionsRegistrySection() {
                     <>
                       <Button
                         aria-label={s.editConnection}
-                        onClick={() => openEditor(editorFromConnection(conn))}
+                        onClick={() => openEditor(editorFromConnection(conn), conn)}
                         size="icon-sm"
                         variant="ghost"
                       >
@@ -786,6 +678,12 @@ export function ConnectionsRegistrySection() {
                 key={kind}
                 onClick={() => {
                   setDupeError(null)
+
+                  // Cloud uses browser sign-in even after a token-auth remote edit.
+                  if (kind === 'cloud') {
+                    remote.setAuthMode('oauth')
+                  }
+
                   setEditor({ ...editor, kind })
                 }}
                 size="sm"
@@ -814,81 +712,40 @@ export function ConnectionsRegistrySection() {
           />
 
           {(editor.kind === 'remote' || editor.kind === 'cloud') && (
-            <ListRow
-              action={
-                <Input
-                  onChange={e => {
-                    setDupeError(null)
-                    setEditor({ ...editor, url: e.target.value })
-                  }}
-                  placeholder="http://homelab.lan:9119"
-                  value={editor.url}
-                />
-              }
-              title={s.urlTitle}
+            <RemoteSetupFields
+              disabled={saving}
+              onUrlChange={() => setDupeError(null)}
+              setup={remote}
+              urlOnly={editor.kind === 'cloud'}
             />
           )}
 
-          {editor.kind === 'remote' && (
-            <>
-              <ListRow
-                action={
-                  <div className="flex gap-2">
-                    {(['token', 'oauth'] as const).map(mode => (
-                      <Button
-                        key={mode}
-                        onClick={() => setEditor({ ...editor, authMode: mode })}
-                        size="sm"
-                        variant={editor.authMode === mode ? 'default' : 'outline'}
-                      >
-                        {mode === 'token' ? t.settings.gateway.tokenTitle : 'OAuth'}
-                      </Button>
-                    ))}
-                  </div>
-                }
-                title={t.settings.gateway.authTitle}
-              />
-              {editor.authMode === 'token' && (
-                <ListRow
-                  action={
-                    <Input
-                      onChange={e => setEditor({ ...editor, token: e.target.value })}
-                      placeholder={t.settings.gateway.pasteSessionToken}
-                      type="password"
-                      value={editor.token}
-                    />
-                  }
-                  description={t.settings.gateway.tokenDesc}
-                  title={t.settings.gateway.tokenTitle}
-                />
-              )}
-            </>
-          )}
-
-          {editorWantsOauth && (
+          {editor.kind === 'cloud' && (
             <ListRow
               action={
-                oauthConnected ? (
-                  <Pill tone="primary">
-                    <Check className="size-3" /> {t.settings.gateway.signedIn}
-                  </Pill>
+                remote.credentials.oauthConnected ? (
+                  <Pill tone="primary">{t.settings.gateway.signedIn}</Pill>
                 ) : (
-                  <Button disabled={signingIn || !editorUrl} onClick={() => void signInOauth()} size="sm">
-                    {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                    {authProviderShape.isPassword
+                  <Button
+                    disabled={saving || remote.signingIn || !remote.payload.remoteUrl}
+                    onClick={() => void remote.signIn()}
+                    size="sm"
+                  >
+                    {remote.signingIn ? <Loader2 className="size-4 animate-spin" /> : null}
+                    {remote.isPassword
                       ? t.settings.gateway.signIn
-                      : t.settings.gateway.signInWith(authProviderShape.providerLabel)}
+                      : t.settings.gateway.signInWith(remote.providerLabel)}
                   </Button>
                 )
               }
               description={
-                oauthConnected
-                  ? authProviderShape.isPassword
+                remote.credentials.oauthConnected
+                  ? remote.isPassword
                     ? t.settings.gateway.authSignedInPassword
                     : t.settings.gateway.authSignedInOauth
-                  : authProviderShape.isPassword
+                  : remote.isPassword
                     ? t.settings.gateway.authNeedsPassword
-                    : t.settings.gateway.authNeedsOauth(authProviderShape.providerLabel)
+                    : t.settings.gateway.authNeedsOauth(remote.providerLabel)
               }
               title={t.settings.gateway.authTitle}
             />

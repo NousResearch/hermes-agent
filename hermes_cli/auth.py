@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from pm import install_hint
 import json
 import logging
 import os
@@ -522,7 +523,7 @@ def _load_global_auth_store() -> Dict[str, Any]:
     if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("HOME"):
         real_root = Path(os.environ["HOME"]) / ".hermes" / "auth.json"
         try:
-            if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+            if os.path.normcase(os.path.abspath(global_path)) == os.path.normcase(os.path.abspath(real_root)):
                 _global_auth_store_cache = None
                 return {}
         except Exception:
@@ -1397,6 +1398,7 @@ _PROVIDER_ALIASES: Dict[str, str] = {
     "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
     "chatgpt": "openai-codex", "chatgpt-codex": "openai-codex",
     # Local server aliases — route through the generic custom provider
+    "local": "custom",
     "ollama": "custom", "ollama_cloud": "ollama-cloud",
     "vllm": "custom", "llamacpp": "custom",
     "llama.cpp": "custom", "llama-cpp": "custom"}
@@ -1946,10 +1948,15 @@ def get_codex_auth_status() -> Dict[str, Any]:
     """Status snapshot for Codex auth (pool first, then legacy provider state).
 
     Read-only by contract: status/doctor must never adopt, refresh or persist a credential (#68004)."""
-    return _pool_first_oauth_status(
+    status = _pool_first_oauth_status(
         "openai-codex", is_expiring=_codex_access_token_is_expiring, auth_mode="chatgpt",
         resolve=lambda: resolve_codex_runtime_credentials(read_only=True),
         on_pool_miss=_codex_pool_rate_limited_status)
+    if str(status.get("source") or "").startswith("pool:"):
+        # Pool rows keep the canonical URL; the chat route may send this key to model.base_url.
+        from hermes_cli.auth_codex import _codex_pool_route_base_url
+        status["base_url"] = _codex_pool_route_base_url(status.get("base_url"))
+    return status
 
 
 def get_xai_oauth_auth_status() -> Dict[str, Any]:
@@ -2023,7 +2030,7 @@ def _copilot_acp_auth_evidence() -> tuple[bool, Optional[str]]:
     try:
         cli_config = os.path.expanduser("~/.copilot/config.json")
         if os.path.isfile(cli_config):
-            with open(cli_config, "r", encoding="utf-8", errors="ignore") as fh:
+            with open(cli_config, "r", encoding="utf-8-sig", errors="ignore") as fh:
                 raw = "\n".join(
                     line for line in fh.read().splitlines() if not line.lstrip().startswith("//"))
             tokens = (json.loads(raw) if raw.strip() else {}).get("copilotTokens")
@@ -2155,9 +2162,9 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
                     "azure-identity is installed; live credential validation "
                     "is skipped here. Run `hermes doctor` to verify token acquisition."
                 ) if installed else (
-                    "azure-identity not installed. Install with: "
-                    "pip install azure-identity  (or rely on Hermes' "
-                    "lazy-install at first use)."))
+                    "azure-identity not installed. From the Hermes environment, run: "
+                    f"{install_hint('azure-identity')}. "
+                    "Then restart Hermes."))
         except Exception as exc:
             info["logged_in"] = False
             info["error"] = f"azure-identity check failed: {exc}"

@@ -172,7 +172,9 @@ KANBAN_BLOCK_SCHEMA = _schema(
         "goes to todo and auto-resumes when that task finishes, no human "
         "needed), 'needs_input' (you need a human decision/answer), "
         "'capability' (a hard wall: no access, missing credentials, an action "
-        "no agent can do), or 'transient' (a flaky failure that may clear). "
+        "no agent can do), 'transient' (a flaky failure that may clear), or "
+        "'superseded' (this card is obsolete — replaced or withdrawn; a "
+        "bookkeeping close, not a failure). "
         "``reason`` is shown to the human on the board. If a task keeps "
         "getting unblocked and re-blocked for the same reason, it is "
         "auto-escalated to triage. Use for genuine blockers only — don't "
@@ -187,12 +189,14 @@ KANBAN_BLOCK_SCHEMA = _schema(
         )),
         "kind": {
             "type": "string",
-            "enum": ["dependency", "needs_input", "capability", "transient"],
+            "enum": ["dependency", "needs_input", "capability", "transient", "superseded"],
             "description": (
                 "Why you're blocked. 'dependency' waits in todo and "
                 "resumes automatically when an incomplete parent finishes; "
                 "if no parent is open it is recorded as needs_input instead. "
-                "The others surface to a human. Omit only if none apply."
+                "'superseded' records the card itself as obsolete or replaced — "
+                "a bookkeeping close, not a failure. The others surface to a "
+                "human. Omit only if none apply."
             ),
         },
     },

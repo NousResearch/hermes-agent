@@ -38,13 +38,17 @@ TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "st
 # status/archived/unblocked are bookkeeping.
 _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "review_requested", "changes_requested", "block_loop_detected")
 
+# Block kinds that record a deliberate decision — a human was asked (`needs_input`),
+# or the card itself was replaced/withdrawn (`superseded`) — not infrastructure attention.
+_INTENTIONAL_BLOCK_KINDS = frozenset({"needs_input", "superseded"})
+
 
 def diagnostic_event(ev) -> bool:
     """Infrastructure attention is distinct from an explicit owner decision."""
     if ev.kind in {"crashed", "timed_out", "gave_up"}:
         return True
     if ev.kind in {"blocked", "block_loop_detected"}:
-        return (ev.payload or {}).get("kind") != "needs_input"
+        return (ev.payload or {}).get("kind") not in _INTENTIONAL_BLOCK_KINDS
     return ev.kind == "status" and (ev.payload or {}).get("status") in {"blocked", "triage"}
 # Consecutive send failures (adapter raised OR reported SendResult(success=False))
 # before a sub is dropped as a dead chat. 12 ≈ 60s at the 5s cadence: a transient

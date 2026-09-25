@@ -423,17 +423,22 @@ def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
 
 
 def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
-    """`capability` / `transient` are valid kinds in general but must not
-    let a goal_mode worker exit the loop without going through the judge."""
+    """`capability` / `transient` / `superseded` are valid kinds in general but
+    must not let a goal_mode worker exit the loop without going through the
+    judge. (`superseded` is a bookkeeping close an operator makes from the CLI;
+    a worker claiming its own card is obsolete is exactly the escape hatch.)"""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
 
     tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
-    for kind in ("capability", "transient"):
+    for kind in ("capability", "transient", "superseded"):
         out = kt._handle_block({"reason": "blocked", "kind": kind})
         d = json.loads(out)
         assert "error" in d, f"kind={kind} should be rejected for goal_mode"
+        # Rejected by the goal_mode gate specifically, not because the kind is
+        # unknown to the vocabulary.
+        assert "goal_mode" in d["error"], f"kind={kind} was not refused by the goal_mode gate"
 
     conn = kbc.connect()
     try:

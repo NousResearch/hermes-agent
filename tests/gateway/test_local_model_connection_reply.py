@@ -158,7 +158,7 @@ class TestGatewayConnectionErrorReply:
             ("API call failed after 3 retries: HTTP 400 request was blocked under the provider "
              "safety policy; connection reset by peer", "request was blocked under the safety policy"),
             ("API call failed after 3 retries: HTTP 429 rate limit exceeded for this model; "
-             "connection reset by peer", "rate limited after 3 retries"),
+             "connection reset by peer", "rate limited after 3 retries for this model"),
         ):
             assert _sanitize_gateway_final_response(platform, tainted) == (
                 _gateway_provider_error_reply(clean)), tainted
@@ -180,7 +180,7 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
             "API call failed after 3 retries: Error code: 429 - "
             "{'error': {'type': 'usage_limit_reached', 'resets_in_seconds': 30995}}")
         assert "resets in ~9h" in body_reply
-        assert "resets in ~5h" in _gateway_provider_error_reply("429 weekly limit reached. Resets in 4hr 5min")
+        assert "resets in ~5h" in _gateway_provider_error_reply("Codex 429 weekly limit reached. Resets in 4hr 5min")
         # A bare 401 inside a timestamp is not a sign-in failure; every real 401 envelope still is,
         # including the ``HTTP 401: Unauthorized`` shape _summarize_api_error emits (control).
         assert "rate-limiting" in _gateway_provider_error_reply("API call failed at 05:14:15,401 status 429")

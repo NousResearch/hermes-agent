@@ -25,14 +25,28 @@ class TestSelection:
         assert cb.get_config_backend().name == "file"
         assert cb.supports_file_tooling() is True
 
-    @pytest.mark.parametrize("value", ["remote", "bogus"])
-    def test_unavailable_backend_fails_closed(self, home, monkeypatch, value):
+    def test_unknown_backend_fails_closed(self, home, monkeypatch):
         # No config value can select the backend, and an unknown one never falls back to the file.
-        monkeypatch.setenv(cb.BACKEND_ENV, value)
+        monkeypatch.setenv(cb.BACKEND_ENV, "bogus")
         with pytest.raises(cb.ConfigBackendUnavailable):
             cb.get_config_backend()
         with pytest.raises(cb.ConfigBackendUnavailable):
             cb.read_config_doc(home / "config.yaml")
+
+    def test_unconfigured_remote_backend_fails_closed_on_read(self, home, monkeypatch):
+        # Selected from the env alone; without its plane identity the first read exits, and the
+        # local config.yaml is never used as a fallback (D2).
+        from plugins.config_backends import remote
+        (home / "config.yaml").write_text("a: 1\n", encoding="utf-8")
+        monkeypatch.setenv(cb.BACKEND_ENV, "remote")
+        monkeypatch.delenv("HERMES_CONFIG_INSTANCE_ID", raising=False)
+        remote._reset_for_tests()
+        try:
+            assert cb.get_config_backend().name == "remote"
+            with pytest.raises(cb.ConfigBackendUnavailable, match="Remote Config"):
+                cb.read_config_doc(home / "config.yaml")
+        finally:
+            remote._reset_for_tests()
 
     def test_explicit_non_config_file_ignores_backend(self, home, monkeypatch):
         other = home / "import-source.yaml"

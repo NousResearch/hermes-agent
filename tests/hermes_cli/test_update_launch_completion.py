@@ -172,6 +172,31 @@ def test_relaunch_keeps_invocation_and_checkout_imports(tmp_path, mode):
     assert json.loads(result.stdout) == ["from checkout", argv[1:]]
 
 
+def test_relaunch_keeps_script_directory_importable(tmp_path):
+    """A re-entered script imports its own neighbours, exactly like `python script.py`.
+
+    ``-I`` implies ``-P``, so the child starts without the script's directory on
+    sys.path, and ``runpy.run_path`` does not restore it either. A script whose
+    imports sit beside it therefore could not start after an interpreter swap.
+    """
+    root = tmp_path / "source"
+    root.mkdir()
+    (root / "checkout_only.py").write_text("value = 'from checkout'\n")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "neighbour.py").write_text("value = 'from script dir'\n")
+    script = project / "entry.py"
+    script.write_text(
+        "import json, checkout_only, neighbour\n"
+        "print(json.dumps([checkout_only.value, neighbour.value]))\n"
+    )
+    argv = [str(script)]
+    command = venv_sync.relaunch_command(Path(sys.executable), root, argv, [sys.executable, *argv], None)
+    result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == ["from checkout", "from script dir"]
+
+
 @pytest.mark.parametrize("owner,argv", [(None, []), ("external", []), ("electron-updater", []), ("self", ["-p", "coder", "pm", "repair"])])
 def test_non_self_or_pm_launch_cannot_trigger_update(tmp_path, monkeypatch, owner, argv):
     import pm

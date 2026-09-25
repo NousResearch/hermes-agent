@@ -181,6 +181,69 @@ function profileBackendParentEnv({
   return env
 }
 
+// Explicitly-set profile/system vars survive the backend env scrub below:
+// the scrub targets leaked interpreter state (PYTHONPATH/PYTHONHOME), not the
+// Windows identity the child runs as. Compared case-insensitively; the
+// caller's original key casing is preserved.
+const WINDOWS_PRESERVED_NAMES = new Set([
+  'USERPROFILE',
+  'LOCALAPPDATA',
+  'APPDATA',
+  'HOMEDRIVE',
+  'HOMEPATH',
+  'SYSTEMROOT'
+])
+
+/**
+ * Backfill the Windows profile/system vars a depleted parent env is missing.
+ *
+ * A GUI-launched Electron (or a scrubbed service context) can hand children
+ * an env without USERPROFILE, LOCALAPPDATA/APPDATA, HOMEDRIVE/HOMEPATH or
+ * SystemRoot. PowerShell needs the profile vars, installers and the backend
+ * resolve the AppData locations, and process creation consults SystemRoot —
+ * so each missing name is derived from os.homedir() instead of failing far
+ * downstream (#122384). Explicit values (any casing) always win; no-op off
+ * Windows.
+ */
+function backfillWindowsChildEnv(env: any = {}, { platform = process.platform, homedir = os.homedir() }: any = {}) {
+  if (platform !== 'win32') {
+    return env
+  }
+
+  const out = { ...(env || {}) }
+  const findKey = (name: string) => Object.keys(out).find(key => key.toUpperCase() === name.toUpperCase())
+
+  const setDefault = (name: string, value: string | null) => {
+    if (value == null || value === '') {
+      return
+    }
+
+    if (!findKey(name)) {
+      out[name] = value
+    }
+  }
+
+  const home = homedir || ''
+
+  setDefault('USERPROFILE', home)
+
+  if (home) {
+    setDefault('LOCALAPPDATA', path.win32.join(home, 'AppData', 'Local'))
+    setDefault('APPDATA', path.win32.join(home, 'AppData', 'Roaming'))
+
+    const drive = path.win32.parse(home).root.replace(/\\+$/, '')
+
+    // Drive-letter profiles only — a UNC home has no HOMEDRIVE/HOMEPATH.
+    if (/^[A-Za-z]:$/.test(drive)) {
+      setDefault('HOMEDRIVE', drive)
+      setDefault('HOMEPATH', home.slice(drive.length) || '\\')
+      setDefault('SystemRoot', path.win32.join(drive + path.win32.sep, 'Windows'))
+    }
+  }
+
+  return out
+}
+
 /**
  * The environment for the spawned Python backend. Electron knows ONE thing:
  * where the interpreter is (by convention). Everything else — managed tool
@@ -188,12 +251,16 @@ function profileBackendParentEnv({
  * spawns tools. PYTHONPATH/PYTHONHOME are scrubbed so an inherited value
  * can't make the backend import modules from another checkout.
  */
-function buildDesktopBackendEnv({ currentEnv = process.env, platform = process.platform }: any = {}) {
+function buildDesktopBackendEnv({
+  currentEnv = process.env,
+  platform = process.platform,
+  homedir = os.homedir()
+}: any = {}) {
   const delimiter = delimiterForPlatform(platform)
   const key = pathEnvKey(currentEnv, platform)
   const saneEntries = platform === 'win32' ? [] : POSIX_SANE_PATH_ENTRIES
 
-  return {
+  const env = {
     PYTHONPATH: '',
     PYTHONHOME: '',
     // Force PEP 540 UTF-8 mode in the spawned Python backend so its stdio and
@@ -205,10 +272,28 @@ function buildDesktopBackendEnv({ currentEnv = process.env, platform = process.p
     PYTHONUTF8: currentEnv?.PYTHONUTF8 ?? '1',
     [key]: appendUniquePathEntries([currentEnv?.[key] || '', saneEntries], { delimiter })
   }
+
+  // The backend env is deliberately scrubbed (see above), so carry the
+  // Windows profile/system vars a backend child cannot run without back
+  // through: explicit parent values first, homedir-derived defaults after.
+  if (platform === 'win32') {
+    const explicit: any = {}
+
+    for (const [name, value] of Object.entries(currentEnv || {})) {
+      if (WINDOWS_PRESERVED_NAMES.has(name.toUpperCase()) && value != null && value !== '') {
+        explicit[name] = value
+      }
+    }
+
+    return backfillWindowsChildEnv({ ...explicit, ...env }, { platform, homedir })
+  }
+
+  return env
 }
 
 export {
   appendUniquePathEntries,
+  backfillWindowsChildEnv,
   buildDesktopBackendEnv,
   delimiterForPlatform,
   normalizeHermesHomeRoot,

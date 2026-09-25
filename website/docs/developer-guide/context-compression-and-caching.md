@@ -504,7 +504,7 @@ This is a cheap pre-pass that saves significant tokens from verbose tool
 outputs (file contents, terminal output, search results).
 
 A tool round the model has not answered yet (compaction fired right after it ran, with or
-without a `/steer` delivered after it) keeps its text results verbatim in the tail, so the model
+without `/steer` messages delivered after it) keeps its text results verbatim in the tail, so the model
 does not re-run the call or answer without its output. The one exception is a round that alone
 exceeds 20% of the input budget (the context window minus the output reservation): it is
 summarized so compaction can still make room.

@@ -225,15 +225,17 @@ def _terminal_result(call_id: str, tag: str, lines: int) -> dict:
     return {"role": "tool", "tool_call_id": call_id, "content": json.dumps({"output": output, "exit_code": 0})}
 
 
-@pytest.mark.parametrize("steered", [False, True], ids=["round_last", "steer_after_round"])
-def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steered):
+@pytest.mark.parametrize("steers", [0, 1, 2], ids=["round_last", "steer_after_round", "two_steers_after_round"])
+def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steers):
     """Regression: compaction after a tool round stubbed the output the model had just asked for.
 
     Lean mode's 10K tail budget puts pass 4's soft ceiling at 15K tokens. Long user messages (no pass
     may shrink them) filled it, so the last resort stubbed the pending round. The model has not read
     that round and would re-run the command or answer blind, so it must survive verbatim while older
     rounds still give way to the budget. A /steer sent during the tools lands as a user row after the
-    round before preflight compaction runs; the round is still unread then.
+    round before preflight compaction runs; the round is still unread then. Two steers can land in one
+    iteration: one drained when the tool batch ends, another drained before the next request and
+    inserted right after the newest tool result, so the round is followed by two steer rows.
     """
     ctx = 272_000
     with patch("agent.context_compressor.get_model_context_length", return_value=ctx):
@@ -262,8 +264,8 @@ def test_mid_turn_compaction_keeps_the_pending_tool_round_verbatim(steered):
     ]
     pending = {m["tool_call_id"]: m["content"] for m in msgs[-2:]}
     previous = msgs[-6]
-    if steered:
-        msgs.append(steer_user_row("Also flag any node above 90% cpu."))
+    for text in ["Also flag any node above 90% cpu.", "And list the racks they sit in."][:steers]:
+        msgs.append(steer_user_row(text))
     assert previous["tool_call_id"] == "old_12"
 
     out = c.compress(list(msgs), current_tokens=estimate_messages_tokens_rough(msgs))

@@ -1379,10 +1379,11 @@ def _last_assistant_index(messages: "List[Dict[str, Any]]") -> int:
 
 def _pending_tool_round(messages: "List[Dict[str, Any]]") -> range:
     """Indices of the tool results the transcript ends with — a round the model has not answered yet; empty when
-    the transcript ends in any other row. One /steer row after the round does not answer it: the steer is
-    delivered after the newest tool result before the next API call, so preflight compaction sees it last."""
+    the transcript ends in any other row. /steer rows after the round do not answer it: a steer is delivered
+    after the newest tool result before the next API call, and two can land in one iteration (one when the tool
+    batch ends, one before the request), so every contiguous trailing steer row is skipped."""
     end = len(messages)
-    if end and messages[end - 1].get("display_kind") == STEER_DISPLAY_KIND:
+    while end and messages[end - 1].get("display_kind") == STEER_DISPLAY_KIND:
         end -= 1
     start = end
     while start > 0 and messages[start - 1].get("role") == "tool":

@@ -184,8 +184,7 @@ export class ProfileDeletionGate {
 export function assertLocalProfileCanStart(
   profile: unknown,
   gate: ProfileDeletionGate,
-  profileDirectoryExists: (profile: string) => boolean,
-  opts: { allowImplicitDefault?: boolean } = {}
+  profileDirectoryExists: (profile: string) => boolean
 ): void {
   const key = String(profile ?? '')
     .trim()
@@ -193,12 +192,7 @@ export function assertLocalProfileCanStart(
 
   gate.assertCanStart(key)
 
-  // `default` is `$HERMES_HOME`, not `profiles/default`, so the ordinary local
-  // start exempts it. A forced-local spawn must not: that exemption is how a
-  // remote-only default starts a local agent with no error (#90477).
-  const implicitDefault = opts.allowImplicitDefault !== false && key === 'default'
-
-  if (key && !implicitDefault && !profileDirectoryExists(key)) {
+  if (key && key !== 'default' && !profileDirectoryExists(key)) {
     throw new Error(`Profile "${key}" no longer exists.`)
   }
 }

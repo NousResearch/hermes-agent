@@ -745,18 +745,21 @@ test('registry local route: per-profile override wins when global remote is also
   assert.deepEqual(route, { delegate: true, poolKey: 'research' })
 })
 
-test('registry local route: a concrete remote-only profile is refused on the forced-local branch, including default', () => {
+test('registry local route: a concrete remote-only profile is refused on the forced-local branch', () => {
   // globalRemote still force-locals a profile that exists on this machine
-  // (This device must not dial the remote). A profile that exists only on the
-  // remote must not spawn a local child — including default, which the
-  // ordinary existence guard exempts and would otherwise start silently.
+  // (This device must not dial the remote). A named profile that exists only
+  // on the remote must not spawn a local child.
   const named = resolveRegistryLocalRoute('inbox', { globalRemote: true, localProfileExists: false })
-  const fallback = resolveRegistryLocalRoute('default', { globalRemote: true, localProfileExists: false })
 
   assert.match(String(named.refuse ?? ''), /Profile "inbox" no longer exists/)
   assert.equal(named.delegate, false)
-  assert.match(String(fallback.refuse ?? ''), /Profile "default" no longer exists/)
-  assert.equal(fallback.delegate, false)
+
+  // default is $HERMES_HOME, not profiles/default: a profiles/default probe
+  // reports absent, but This device -> default must still open locally.
+  assert.deepEqual(resolveRegistryLocalRoute('default', { globalRemote: true, localProfileExists: false }), {
+    delegate: false,
+    poolKey: 'conn:local::default'
+  })
 
   const present = resolveRegistryLocalRoute('research', { globalRemote: true, localProfileExists: true })
 

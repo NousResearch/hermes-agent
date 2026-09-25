@@ -11676,11 +11676,8 @@ async function spawnPoolBackend(
   // here, and logging "Starting" first left an orphaned line with no READY
   // and no exit — the exact undiagnosable burst signature in remote-gateway
   // user bundles (Aug 2026, Dash's report).
-  assertLocalProfileCanStart(
-    profile,
-    profileDeletionGate,
-    key => directoryExists(path.join(HERMES_HOME, 'profiles', key)),
-    { allowImplicitDefault: !opts.forceLocal }
+  assertLocalProfileCanStart(profile, profileDeletionGate, key =>
+    directoryExists(path.join(HERMES_HOME, 'profiles', key))
   )
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
 

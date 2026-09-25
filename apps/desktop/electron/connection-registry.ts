@@ -220,9 +220,7 @@ export interface RegistryLocalRoute {
   delegate: boolean
   /** Pool key for the forced-local child when not delegating. */
   poolKey: string
-  /** Set when a concrete remote-only profile must not spawn a local child.
-   * Includes `default`: the ordinary existence guard exempts it, so a
-   * forced-local default spawn would otherwise succeed with no error. */
+  /** Set when a concrete remote-only profile must not spawn a local child. */
   refuse?: string
 }
 
@@ -526,8 +524,9 @@ function normalizedSshTarget(route: { host?: unknown; port?: unknown; user?: unk
  * the BARE profile key by design, and that slot may already hold the v1
  * route's REMOTE descriptor — so the forced-local child pools under the
  * `conn:local::<profile>` form instead (colons are invalid in profile names,
- * so it cannot collide). A concrete profile that does not exist on this
- * machine, including default, is refused instead of spawned. A per-profile
+ * so it cannot collide). A concrete named profile that does not exist on
+ * this machine is refused instead of spawned. `default` is `$HERMES_HOME`
+ * itself, so it always exists here and is never refused. A per-profile
  * remote override still delegates to the legacy profile route.
  */
 export function resolveRegistryLocalRoute(
@@ -551,12 +550,13 @@ export function resolveRegistryLocalRoute(
   if (opts.globalRemote) {
     const poolKey = `${backendScopePrefix(LOCAL_CONNECTION_ID)}${profileKey}`
 
-    // A concrete profile that does not exist on this machine is remote-only.
-    // Spawning it locally is the #90477 loop (and, for default, a silent
-    // success — the ordinary guard exempts default). Refuse instead. An
-    // unprofiled call is enumeration, not a dial, and a profile that exists
-    // locally still force-locals so "This device" does not dial the remote.
-    if (concrete && opts.localProfileExists === false) {
+    // A concrete named profile that does not exist on this machine is
+    // remote-only. Spawning it locally is the #90477 loop, so refuse. An
+    // unprofiled call is enumeration, not a dial. `default` lives at
+    // $HERMES_HOME, not profiles/default, so This device -> default always
+    // force-locals. A profile that exists locally still force-locals so
+    // "This device" does not dial the remote.
+    if (concrete && profileKey !== 'default' && opts.localProfileExists === false) {
       return { delegate: false, poolKey, refuse: `Profile "${profileKey}" no longer exists.` }
     }
 

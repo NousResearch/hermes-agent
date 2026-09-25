@@ -1094,7 +1094,8 @@ class TestBedrockContextLength:
             _, sep, bare = model_id.partition("anthropic.")
             if not sep:
                 continue
-            _, expected = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, bare)
+            hit = _longest_key_match(DEFAULT_CONTEXT_LENGTHS, bare)
+            expected = hit[1] if hit else None
             actual = get_bedrock_context_length(model_id, probe=False)
             if actual != expected:
                 mismatched.append((model_id, expected, actual))

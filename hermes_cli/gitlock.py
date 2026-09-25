@@ -399,9 +399,24 @@ def fetch_full_commit_graph(repo_root: Path, **run_kwargs) -> bool:
     checkout was unshallowed; fetch failures raise subprocess errors.
     """
     shallow = _shallow_file_path(repo_root) is not None
+    # A filtered fetch writes promisor settings into even a full clone. Only
+    # preserve the commit-only fetch for checkouts already using that filter.
+    filter_result = subprocess.run(
+        ["git", "config", "--get", "remote.origin.partialclonefilter"],
+        cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=10,
+    )
+    partial_filter = filter_result.stdout.strip() if filter_result.returncode == 0 else ""
+    promisor_result = subprocess.run(
+        ["git", "config", "--bool", "--get", "remote.origin.promisor"],
+        cwd=str(repo_root), capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=10,
+    )
+    is_partial = promisor_result.returncode == 0 and promisor_result.stdout.strip() == "true"
     subprocess.run(
         ["git", "fetch", "--quiet", *(["--unshallow"] if shallow else []),
-         "--filter=tree:0", "--no-tags", "origin", "refs/tags/v*:refs/tags/v*"],
+         *([f"--filter={partial_filter}"] if is_partial and partial_filter else []),
+         "--no-tags", "origin", "refs/tags/v*:refs/tags/v*"],
         cwd=str(repo_root), check=True, capture_output=True, text=True,
         encoding="utf-8", errors="replace", timeout=900, **run_kwargs,
     )

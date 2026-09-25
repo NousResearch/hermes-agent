@@ -934,7 +934,8 @@ _PLUGIN_ACTIONS = {
         enable=_tri_state_flag(args, "enable", "no_enable"),
         ref=getattr(args, "ref", None),
         allow_removed=getattr(args, "allow_removed", False),
-        no_deps=getattr(args, "no_deps", False)),
+        no_deps=getattr(args, "no_deps", False),
+        yes_deps=getattr(args, "yes_deps", False)),
     "search": lambda args: _catalog().cmd_search(
         getattr(args, "term", "") or "", json_output=getattr(args, "json", False)),
     "browse": lambda args: _catalog().cmd_search(""),

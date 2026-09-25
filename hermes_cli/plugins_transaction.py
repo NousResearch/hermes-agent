@@ -13,12 +13,17 @@ def recover_plugin_publication(project: Path, row: dict, journal: Path) -> None:
 
 
 def publish_plugin(staged: Path, target: Path, old_metadata: dict, new_metadata: dict,
-                   *, target_digest: str | None = None, require_consent: bool = False) -> None:
+                   *, target_digest: str | None = None, require_consent: bool = False,
+                   assume_consent: bool = False) -> None:
+    """Publish *staged* into *target*. *assume_consent* is the caller's own
+    ``--yes-deps`` answer: the active-replacement consent veto is skipped, so
+    an unattended install can carry the user's explicit decision instead of
+    being refused non-interactively."""
     from pm.client import sync_venv
     from pm.plugin_inputs import StagedUpdate
     from pm.store import tree_digest
 
-    if require_consent:
+    if require_consent and not assume_consent:
         from hermes_cli import plugins_cmd
         from pm.workspace import enabled_plugin_dirs
 

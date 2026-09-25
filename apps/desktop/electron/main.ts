@@ -101,7 +101,6 @@ import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
 import { createCloudAgentAuth, createCloudAgentRegistry } from './cloud-agent-auth'
-import { isCloudRateLimited } from './cloud-auth-errors'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
 import { discoverCloudAgentsWithBearer } from './cloud-discovery'
 import { installCommandScreenshot } from './command-screenshot'
@@ -123,7 +122,6 @@ import {
   cookiesHaveSession,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
-  isGatewayAuthRejection,
   localProfileEntry,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
@@ -145,8 +143,7 @@ import {
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
-  unscopableMutatingRequest,
-  withTransientRetries
+  unscopableMutatingRequest
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
 import {
@@ -318,14 +315,7 @@ import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import { createMinimizeToTray } from './minimize-to-tray'
 import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
-import type { GatedDownloadAuth } from './native-auth-decisions'
-import {
-  oauthSessionIsLive,
-  resolveGatedDownloadAuth,
-  resolveJsonBody,
-  resolveOauthRestAuth,
-  resolveReadinessProbeAuth
-} from './native-auth-decisions'
+import { oauthSessionIsLive, resolveJsonBody, resolveReadinessProbeAuth } from './native-auth-decisions'
 import {
   nativeRefreshUrl,
   type NativeTokenSet,
@@ -339,6 +329,7 @@ import { createNativeTokenCache, type NativeTokenStoreIo } from './native-token-
 import { registerNativeNotifications } from './notification-ipc'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import { mintGatewayWsTicketWithRetries, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
@@ -1384,8 +1375,7 @@ protocol.registerSchemesAsPrivileged([
 
 function registerMediaProtocol(): void {
   const handler: ReturnType<typeof createMediaProtocolHandler> = createMediaProtocolHandler({
-    ensureRemoteBearer: (baseUrl: string): Promise<string | null> =>
-      ensureNativeAccessToken(baseUrl).catch((): null => null),
+    ensureRemoteBearer: (baseUrl: string): Promise<string | null> => ensureNativeAccessToken(baseUrl),
     // Electron's file:// loader ignores Range, which prevents video seeking.
     fetchLocal: fetchLocalMedia,
     fetchRemote: (url, headers, method) =>
@@ -5966,25 +5956,19 @@ async function gatewayAuthProviders(baseUrl, headers = {}) {
 // answers before the SPA catch-all). `probeIsCredentialed` tells
 // waitForHermesReady how to read a 401 — rejected session vs gated route.
 async function buildReadinessHealthProbe(baseUrl, authMode, token) {
-  const nativeAt = authMode === 'oauth' ? await ensureNativeAccessToken(baseUrl).catch(() => null) : null
-  const probeAuth = resolveReadinessProbeAuth(authMode, nativeAt, token)
-
-  if (probeAuth.kind === 'bearer') {
+  if (authMode === 'oauth') {
     return {
-      // fetchJson takes the bearer via `options.bearer` — a raw `headers`
-      // option is ignored, so passing one here would silently probe
-      // uncredentialed and reintroduce the 401 loop.
-      probeHealth: (url, options: any = {}) => fetchJson(url, null, { ...options, bearer: probeAuth.token }),
+      probeHealth: (url: string, options: any = {}) =>
+        requestWithOauthFallback(baseUrl, {
+          ensureNativeAccessToken,
+          requestWithBearer: bearer => fetchJson(url, null, { ...options, bearer }),
+          requestWithCookie: () => fetchJsonViaOauthSession(url, options)
+        }),
       probeIsCredentialed: true
     }
   }
 
-  if (probeAuth.kind === 'cookie') {
-    return {
-      probeHealth: (url, options: any = {}) => fetchJsonViaOauthSession(url, options),
-      probeIsCredentialed: true
-    }
-  }
+  const probeAuth = resolveReadinessProbeAuth(authMode, null, token)
 
   if (probeAuth.kind === 'token' && probeAuth.token) {
     return {
@@ -7486,7 +7470,7 @@ function isSavedCloudConnectionUrl(baseUrl) {
 // Return a valid native access token for baseUrl, refreshing via
 // /auth/native/refresh if the stored one is at/near expiry. Returns null when
 // there are no tokens or the refresh is terminally rejected (caller re-logins).
-const ensureNativeAccessToken: (baseUrl: string) => Promise<string | null> = nativeAccessTokenCoordinator.ensure
+const ensureNativeAccessToken = nativeAccessTokenCoordinator.ensure
 
 interface GatewayFileConnection extends RegistryBackendRequestScope {
   authMode?: 'oauth' | 'token'
@@ -7500,13 +7484,6 @@ interface GatewayFileSavePayload {
   path?: unknown
   profile?: unknown
   suggestedName?: unknown
-}
-
-async function gatedFileAuth(connection: GatewayFileConnection): Promise<GatedDownloadAuth> {
-  const nativeAt =
-    connection.authMode === 'oauth' ? await ensureNativeAccessToken(connection.baseUrl).catch(() => null) : null
-
-  return resolveGatedDownloadAuth(connection.authMode, nativeAt, connection.token)
 }
 
 function gatewayFileRequestPath(
@@ -7551,40 +7528,28 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
     ...deps,
     download: async (requestPath: string, context: GatewayFileSaveContext): Promise<GatewayFileSaveResult> => {
       const url: string = `${connection.baseUrl}${requestPath}`
-      const auth: GatedDownloadAuth = await gatedFileAuth(connection)
 
-      if (auth.kind === 'cookie') {
-        return downloadViaOauthSessionToFile<Session>(url, context, {
-          ...deps,
-          getSession: getOauthSessionForUrl,
-          request: electronNet.request
+      if (connection.authMode === 'oauth') {
+        return requestWithOauthFallback(connection.baseUrl, {
+          ensureNativeAccessToken,
+          requestWithBearer: bearer => downloadViaTokenToFile(url, null, context, deps, { bearer }),
+          requestWithCookie: () =>
+            downloadViaOauthSessionToFile<Session>(url, context, {
+              ...deps,
+              getSession: getOauthSessionForUrl,
+              request: electronNet.request
+            })
         })
       }
 
-      return downloadViaTokenToFile(
-        url,
-        auth.token,
-        context,
-        deps,
-        auth.kind === 'bearer' ? { bearer: auth.token } : {}
-      )
+      return downloadViaTokenToFile(url, connection.token, context, deps)
     },
     readDataUrl: (requestPath: string): Promise<string> => readGatewayFileDataUrl(connection, requestPath)
   })
 }
 
 async function readGatewayFileDataUrl(connection: GatewayFileConnection, requestPath: string): Promise<string> {
-  const url = `${connection.baseUrl}${requestPath}`
-  const auth = await gatedFileAuth(connection)
-  let json: unknown
-
-  if (auth.kind === 'bearer') {
-    json = await fetchJson(url, null, { bearer: auth.token })
-  } else if (auth.kind === 'cookie') {
-    json = await fetchJsonViaOauthSession(url)
-  } else {
-    json = await fetchJson(url, auth.token)
-  }
+  const json: unknown = await fetchJsonForBackend(connection, requestPath)
 
   const dataUrl =
     json && typeof json === 'object' && 'dataUrl' in json && typeof json.dataUrl === 'string' ? json.dataUrl : ''
@@ -7596,58 +7561,15 @@ async function readGatewayFileDataUrl(connection: GatewayFileConnection, request
   return dataUrl
 }
 
-// Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
-// Prefers a native bearer token (cookieless RFC 8252 flow) when present,
-// falling back to the OAuth cookie partition otherwise.
-// Throws (with statusCode 401) if the session cookie is missing/expired —
-// callers treat that as "needs re-login".
-// Transient transport blips (brief host unreachable, 5xx, timeouts) are retried
-// a few times before failing — those 1-3s flaps were promoting into the
-// full-screen "couldn't start" lockout on reconnect.
+// Mint a single-use WS ticket for a gated gateway: native bearer first (one
+// forced re-exchange after a structured 401), cookie session as a fallback
+// that never turns a transport failure or a binding change into a sign-in.
+// Ticket POSTs are replay-safe; arbitrary REST mutations never use this retry loop.
 async function mintGatewayWsTicket(baseUrl, headers = {}) {
-  return withTransientRetries(
-    async () => {
-      // Native flow: mint the ticket with the bearer token, no cookie involved.
-      const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
-
-      if (nativeAt) {
-        const body = (await fetchJson(`${baseUrl}/api/auth/ws-ticket`, null, {
-          method: 'POST',
-          timeoutMs: 8_000,
-          bearer: nativeAt,
-          headers
-        })) as any
-
-        const ticket = body?.ticket
-
-        if (!ticket || typeof ticket !== 'string') {
-          throw new Error('Gateway did not return a WS ticket.')
-        }
-
-        return ticket
-      }
-
-      const body = (await fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
-        method: 'POST',
-        timeoutMs: 8_000,
-        headers
-      })) as any
-
-      const ticket = body?.ticket
-
-      if (!ticket || typeof ticket !== 'string') {
-        throw new Error('Gateway did not return a WS ticket.')
-      }
-
-      return ticket
-    },
-    {
-      // A 429 (Hermes Cloud exchange rate limit / its Retry-After backoff) is
-      // transient but must not be hammered: fail this mint and let the next
-      // connect try again once the backoff has passed.
-      isRetryable: (error: unknown) =>
-        !(error instanceof NativeAuthChangedError) && !isGatewayAuthRejection(error) && !isCloudRateLimited(error)
-    }
+  return mintGatewayWsTicketWithRetries(
+    baseUrl,
+    { ensureNativeAccessToken, fetchJson, fetchJsonViaOauthSession },
+    headers
   )
 }
 
@@ -9996,22 +9918,8 @@ async function fetchJsonForProfile(profile, path) {
 // Issue an arbitrary method against a profile's resolved backend, parsed JSON.
 async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
-  const url = `${conn.baseUrl}${path}`
-  const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
 
-  if (conn.authMode === 'oauth') {
-    // Native RFC 8252 flow: authenticate with the bearer token (cookieless)
-    // when we hold one for this gateway; otherwise use the cookie partition.
-    const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(() => null)
-
-    if (nativeAt) {
-      return fetchJson(url, null, { ...opts, bearer: nativeAt, headers: conn.headers })
-    }
-
-    return fetchJsonViaOauthSession(url, { ...opts, headers: conn.headers })
-  }
-
-  return fetchJson(url, conn.token, { ...opts, headers: conn.headers })
+  return fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -10236,25 +10144,9 @@ async function testDesktopConnectionConfig(input: any = {}) {
 }
 
 async function fetchConnectionStatus(baseUrl, authMode, token, headers = {}) {
-  const url = `${baseUrl}/api/status`
-
-  if (authMode === 'oauth') {
-    // Native PKCE bearer first, OAuth session cookies second — the same two
-    // credentials real traffic uses, in the same order. A refresh failure is
-    // NOT a silent downgrade to an anonymous probe: the cookie path is still
-    // an authenticated request, and if neither credential works the probe
-    // fails, which is the correct answer for a gateway we cannot reach with
-    // the credentials we hold.
-    const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
-
-    if (nativeAt) {
-      return fetchJson(url, null, { timeoutMs: 8_000, bearer: nativeAt, headers })
-    }
-
-    return fetchJsonViaOauthSession(url, { timeoutMs: 8_000, headers })
-  }
-
-  return fetchJson(url, token, { timeoutMs: 8_000, headers })
+  // /api/status is public on newer gateways; the subsequent ticket/WS probe
+  // remains authoritative. Older gated status routes retain cookie fallback.
+  return fetchJsonForBackend({ baseUrl, authMode, token, headers }, '/api/status', { timeoutMs: 8_000 })
 }
 
 function resetBootProgressForReconnect() {
@@ -15644,23 +15536,17 @@ async function fetchJsonForBackend(
       throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
     }
 
-    const nativeAt = await ensureNativeAccessToken(descriptor.baseUrl).catch(() => null)
-
-    if (nativeAt) {
-      return fetchJson(url, null, {
-        method: opts.method,
-        body: opts.body,
-        timeoutMs: opts.timeoutMs,
-        bearer: nativeAt,
-        headers: descriptor.headers
-      })
-    }
-
-    return fetchJsonViaOauthSession(url, {
+    const options = {
       method: opts.method,
       body: opts.body,
       timeoutMs: opts.timeoutMs,
       headers: descriptor.headers
+    }
+
+    return requestWithOauthFallback(descriptor.baseUrl, {
+      ensureNativeAccessToken,
+      requestWithBearer: bearer => fetchJson(url, null, { ...options, bearer }),
+      requestWithCookie: () => fetchJsonViaOauthSession(url, options)
     })
   }
 
@@ -16383,51 +16269,12 @@ async function handleHermesApiRequest(request) {
     })
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-    const url = `${connection.baseUrl}${apiRoute.requestPath}`
-
-    // OAuth gateways authenticate REST via EITHER a native bearer token
-    // (cookieless RFC 8252 flow) OR the HttpOnly session cookie held in the OAuth
-    // partition. Prefer the native bearer when present (mirroring
-    // mintGatewayWsTicket): the native flow never sets a cookie, so routing an
-    // oauth-mode REST call through the cookie-only path returns 401 no_cookie even
-    // though a valid bearer is held. Cookie mode rides Electron's net stack bound
-    // to the OAuth partition so the cookie attaches automatically. Token/local
-    // modes keep using the static session-token header.
-    if (connection.authMode === 'oauth') {
-      // The OAuth path rides electron.net with JSON headers; multipart isn't
-      // wired there. Fail loudly rather than corrupting the upload.
-      if (request?.upload) {
-        throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
-      }
-
-      // Native bearer first (cookieless). ensureNativeAccessToken transparently
-      // refreshes a near-expiry AT via /auth/native/refresh; a null return means
-      // no native session (resolveOauthRestAuth then selects the cookie path).
-      const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
-      const restAuth = resolveOauthRestAuth(nativeAt)
-
-      if (restAuth.kind === 'bearer') {
-        response = await fetchJson(url, null, {
-          method: request?.method,
-          body: request?.body,
-          timeoutMs,
-          bearer: restAuth.token
-        })
-      } else {
-        response = await fetchJsonViaOauthSession(url, {
-          method: request?.method,
-          body: request?.body,
-          timeoutMs
-        })
-      }
-    } else {
-      response = await fetchJson(url, connection.token, {
-        method: request?.method,
-        body: request?.body,
-        upload: request?.upload,
-        timeoutMs
-      })
-    }
+    response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
+      method: request?.method,
+      body: request?.body,
+      upload: request?.upload,
+      timeoutMs
+    })
   } catch (error) {
     // A failed rename PATCH must not strand the app on the temporary primary:
     // restore the original active profile and restart its backend.

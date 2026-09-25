@@ -318,6 +318,8 @@ class CopilotACPClient:
             choices=[SimpleNamespace(message=message, finish_reason="tool_calls" if tool_calls else "stop")],
             usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0, prompt_tokens_details=SimpleNamespace(cached_tokens=0)),
             model=model or "copilot-acp",
+            # ACP prompt results carry no provider-reported inference identity.
+            _hermes_reported_model=None,
         )
         return _completion_to_stream_chunks(completion) if stream else completion
 

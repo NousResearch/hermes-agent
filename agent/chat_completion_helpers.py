@@ -2763,10 +2763,12 @@ class _StreamingCall(StreamingWaitMonitor):
         tool_calls_acc = tool_calls.acc
         finish_reason = model_name = usage_obj = None
         response_id = upstream_provider = None  # the provider's own id / serving upstream, from the chunks
+        reported_identity = {}
         role = "assistant"
         _diag = self._new_diag()
         self._writer_token = self._attempt_request_client = self._attempt_stream_response = None
         from agent.chat_completion_helpers_relay import RelayChatAccumulator
+        from agent.managed_route_health import record_response_identity
         relay_response = RelayChatAccumulator()
 
         def _open_stream(next_api_kwargs: dict[str, Any]):
@@ -2808,6 +2810,7 @@ class _StreamingCall(StreamingWaitMonitor):
                 continue
             if hasattr(chunk, "model") and chunk.model:
                 model_name = chunk.model
+            record_response_identity(reported_identity, chunk)
             if response_id is None and isinstance(getattr(chunk, "id", None), str) and chunk.id:
                 response_id = chunk.id
             if upstream_provider is None and isinstance(getattr(chunk, "provider", None), str) and chunk.provider:
@@ -2881,10 +2884,12 @@ class _StreamingCall(StreamingWaitMonitor):
             raise _httpx.RemoteProtocolError(f"stream attempt {stream_attempt_id} was superseded")
         if stream.final_response is not None:
             return self._adopt_final_response(stream.final_response)
-        return self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
+        response = self._finish_chat_stream(stream, role, content_parts, reasoning_parts, tool_calls_acc,
             finish_reason, model_name, usage_obj, flush_pending=_flush_pending_stream_text,
             response_id=response_id, upstream_provider=upstream_provider, reasoning_details=reasoning_details,
             refusal_parts=refusal_parts)
+        response._hermes_reported_model = reported_identity.get("reported_model")
+        return response
 
     def _adopt_final_response(self, final_response):
         """Adapter returned a completed response for ``stream=True``: switch the

@@ -64,6 +64,8 @@ def completion_to_stream_chunks(completion: SimpleNamespace) -> StreamChunks:
         model=completion.model, usage=None,
     )
     usage_chunk = SimpleNamespace(choices=[], model=completion.model, usage=completion.usage)
+    if hasattr(completion, "_hermes_reported_model"):
+        data_chunk._hermes_reported_model = usage_chunk._hermes_reported_model = completion._hermes_reported_model
     chunks = StreamChunks([data_chunk, usage_chunk])
     for key, value in vars(completion).items():
         if key not in ("choices", "usage", "model"):

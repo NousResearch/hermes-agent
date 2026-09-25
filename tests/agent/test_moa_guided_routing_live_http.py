@@ -29,6 +29,7 @@ import shutil
 import sys
 import tempfile
 import threading
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -446,7 +447,7 @@ def test_shadow_cohort_observation_failure_does_not_cancel_legacy(routed_home, m
 
 
 @pytest.mark.parametrize("reported,status", [("test-model", "matching"), (None, "missing"), ("TEST-model", "changed")])
-@pytest.mark.parametrize("boundary", ["reference", "synthesis", "aggregator", "aggregator_stream"])
+@pytest.mark.parametrize("boundary", ["reference", "synthesis", "synthesis_stream", "aggregator", "aggregator_stream"])
 def test_moa_chat_success_records_provider_identity(routed_home, monkeypatch, reported, status, boundary):
     from agent.model_selection_store import _connect
     from agent.moa_loop import MoAChatCompletions, _run_reference, aggregate_moa_context
@@ -461,9 +462,16 @@ def test_moa_chat_success_records_provider_identity(routed_home, monkeypatch, re
     if boundary == "reference":
         _, text, _ = _run_reference(slot, messages, execution_id="identity", slot_id="reference-0")
         assert text == "slot done"
-    elif boundary == "synthesis":
-        assert "slot done" in aggregate_moa_context(user_prompt="private MoA prompt", api_messages=messages,
-                                                    reference_models=[], aggregator=slot)
+    elif boundary in {"synthesis", "synthesis_stream"}:
+        from agent.auxiliary_client import aux_progress_hook
+
+        progress = []
+        with aux_progress_hook(lambda: progress.append(True)) if boundary == "synthesis_stream" else nullcontext():
+            assert "slot done" in aggregate_moa_context(user_prompt="private MoA prompt", api_messages=messages,
+                                                        reference_models=[], aggregator=slot)
+        if boundary == "synthesis_stream":
+            assert progress
+            assert handler.requests[0]["stream"] is True
     else:
         facade = MoAChatCompletions.__new__(MoAChatCompletions)
         facade._agent = None

@@ -6638,8 +6638,9 @@ class _ChatStreamAccumulator:
         self._check_deadlines()
         self.resp_id = getattr(chunk, "id", None) or self.resp_id
         self.resp_model = getattr(chunk, "model", None) or self.resp_model
-        if isinstance(getattr(chunk, "model", None), str):
-            self.reported_model = chunk.model
+        reported = getattr(chunk, "_hermes_reported_model", getattr(chunk, "model", None))
+        if isinstance(reported, str):
+            self.reported_model = reported
         chunk_usage = getattr(chunk, "usage", None)
         if chunk_usage:
             self.usage = chunk_usage

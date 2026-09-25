@@ -526,7 +526,9 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
                               tool_calls=tool_calls or None, reasoning=reasoning, reasoning_content=reasoning, reasoning_details=None)
-    return _envelope(model, "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason), usage)
+    response = _envelope(model, "chat.completion", SimpleNamespace(index=0, message=message, finish_reason=finish_reason), usage)
+    response._hermes_reported_model = resp.get("modelVersion")
+    return response
 
 
 class _GeminiStreamChunk(SimpleNamespace): ...
@@ -641,6 +643,8 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
         if usage_meta := event.get("usageMetadata") or {}:  # rides on the finish chunk so the stream loop records tokens
             finish_chunk.usage = _usage_from_metadata(usage_meta)
         chunks.append(finish_chunk)
+    for chunk in chunks:
+        chunk._hermes_reported_model = event.get("modelVersion")
     return chunks
 
 

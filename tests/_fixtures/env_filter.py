@@ -236,6 +236,12 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SLACK_ALLOWED_USERS",
     "SIGNAL_ALLOWED_USERS",
     "SIGNAL_GROUP_ALLOWED_USERS",
+    # Signal access policy surface (adapter intake gate): a developer or operator
+    # shell with these exported (e.g. a gateway host's .env) otherwise changes
+    # DM/group admission for EVERY signal test in the suite, not just policy tests.
+    "SIGNAL_DM_POLICY",
+    "SIGNAL_DM_ALLOW_FROM",
+    "SIGNAL_GROUP_POLICY",
     "EMAIL_ALLOWED_USERS",
     "SMS_ALLOWED_USERS",
     "MATTERMOST_ALLOWED_USERS",

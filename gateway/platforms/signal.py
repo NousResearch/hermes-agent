@@ -39,6 +39,7 @@ from gateway.platforms.signal_rate_limit import (
     SignalRateLimitError, _extract_retry_after_seconds, _format_wait, _is_signal_rate_limit_error,
     _signal_send_timeout, get_scheduler)
 from gateway.platforms._shared import get_scoped_secret as _sig_secret
+from gateway.platforms.access_policy_mixin import OwnAccessPolicyMixin
 from utils import TRUTHY_STRINGS
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,20 @@ _QUOTE_AUTHOR_KEYS = (
 def _parse_comma_list(value: str) -> List[str]:
     """Split a comma-separated string into a list, stripping whitespace."""
     return [v.strip() for v in value.split(",") if v.strip()]
+
+
+# Access policies the shared OwnAccessPolicyMixin understands (see its module docstring); anything
+# else is a typo and fails closed rather than silently opening DMs (SECURITY.md §2.6).
+_ACCESS_POLICIES = frozenset({"open", "allowlist", "disabled", "pairing"})
+
+
+def _coerce_entries(value: Any) -> set:
+    """Allowlist entries from a YAML list, a comma-separated string, or ``None`` (empty)."""
+    if value is None:
+        return set()
+    items = _parse_comma_list(value) if isinstance(value, str) else (
+        list(value) if isinstance(value, (list, tuple, set)) else [value])
+    return {str(item).strip() for item in items if str(item).strip()}
 
 
 def _guess_extension(data: bytes) -> str:
@@ -172,10 +187,13 @@ def validate_signal_config(config: PlatformConfig) -> bool:
     return bool(http_url and account)
 
 
-class SignalAdapter(BasePlatformAdapter):
+class SignalAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     """Signal messenger adapter using signal-cli HTTP daemon."""
 
     platform = Platform.SIGNAL
+    # Own-policy prefix for the ``{PREFIX}_ALLOW_ALL_USERS`` opt-in that a ``dm_policy: open``
+    # deployment must set explicitly (SECURITY.md §2.6); the mixin refuses a host without one.
+    ALLOW_ALL_ENV_PREFIX = "SIGNAL"
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     splits_long_messages = True  # send() chunks after markdown → Signal formatting conversion
     # No real edit API; declaring it lets streaming suppress the cursor instead of a stale tofu square.
@@ -187,14 +205,30 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
-        # Allowlists are per-profile (scoped reads); group policy derives from the group allowlist's
-        # presence. The DM allowlist mirrors run.py's SIGNAL_ALLOWED_USERS so reaction hooks (which
-        # fire before run.py's auth gate) can skip unauthorized senders; "*" = open.
-        self.group_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_GROUP_ALLOWED_USERS", "")))
+        # Access policy — the same config-driven surface the other own-policy adapters expose
+        # (``platforms.signal``: ``dm_policy`` / ``allow_from`` / ``group_policy`` /
+        # ``group_allow_from``), with the predicates and the ``SIGNAL_ALLOW_ALL_USERS`` opt-in owned
+        # by ``OwnAccessPolicyMixin``. Reads are profile-scoped, and the defaults keep the historical
+        # env-only install working unchanged: a configured allowlist is enforced (dm_policy falls
+        # back to ``allowlist``), an absent one keeps the legacy ``*`` delegation to the gateway's
+        # own auth, and groups stay disabled unless SIGNAL_GROUP_ALLOWED_USERS lists them.
+        _group_cfg = extra.get("group_allow_from")
+        self._group_allow_from = _coerce_entries(
+            _group_cfg if _group_cfg is not None else _sig_secret("SIGNAL_GROUP_ALLOWED_USERS", ""))
+        _dm_cfg = extra.get("allow_from")
+        self._allow_from = _coerce_entries(
+            _dm_cfg if _dm_cfg is not None
+            else (_sig_secret("SIGNAL_DM_ALLOW_FROM", "") or _sig_secret("SIGNAL_ALLOWED_USERS", "*")))
+        _dm_default = "allowlist" if self._allow_from and not self._open_dm_opted_in() else "open"
+        self._dm_policy = self._resolve_policy(
+            extra.get("dm_policy"), _sig_secret("SIGNAL_DM_POLICY", ""),
+            default=_dm_default, field="dm_policy")
+        self._group_policy = self._resolve_policy(
+            extra.get("group_policy"), _sig_secret("SIGNAL_GROUP_POLICY", ""),
+            default=self._default_group_policy(), field="group_policy")
         _rm_cfg = extra.get("require_mention")
         self.require_mention = (bool(_rm_cfg) if _rm_cfg is not None
                                 else (_sig_secret("SIGNAL_REQUIRE_MENTION", "false") or "false").lower() in TRUTHY_STRINGS)
-        self.dm_allow_from = set(_parse_comma_list(_sig_secret("SIGNAL_ALLOWED_USERS", "*")))
         self.client: Optional[httpx.AsyncClient] = None
         self._sse_task: Optional[asyncio.Task] = None
         self._health_monitor_task: Optional[asyncio.Task] = None
@@ -438,7 +472,13 @@ class SignalAdapter(BasePlatformAdapter):
         group_info = data_message.get("groupInfo")
         group_id = group_info.get("groupId") if group_info else None
         is_group = bool(group_id)
-        if is_group and not self._group_allowed(group_id):
+        if is_group:
+            if not self._group_allowed(group_id):
+                return
+        elif not self._is_dm_intake_allowed(sender):
+            # dm_policy gate: a DM that is not admitted never reaches the gateway's auth (and must
+            # not, under multiplexing where the env allowlist belongs to the default profile).
+            logger.debug("Signal: ignoring DM (dm_policy=%s)", self._dm_policy)
             return
         chat_id = f"group:{group_id}" if is_group else sender
         text = data_message.get("message", "")
@@ -491,16 +531,67 @@ class SignalAdapter(BasePlatformAdapter):
         logger.debug("Signal: message from %s in %s: %s", redact_phone(sender), chat_id[:20], (text or "")[:50])
         await self.handle_message(event)
 
+    # ── Access policy (OwnAccessPolicyMixin host contract) ────────────────────────────────
+    @property
+    def dm_allow_from(self) -> set:
+        """DM allowlist the gate uses (alias of the mixin's ``_allow_from``); ``*`` = everyone."""
+        return self._allow_from
+
+    @dm_allow_from.setter
+    def dm_allow_from(self, value) -> None:
+        """Kept writable: this attribute was a plain set before the policy keys existed."""
+        self._allow_from = _coerce_entries(value)
+
+    @property
+    def group_allow_from(self) -> set:
+        """Group allowlist (alias of the mixin's ``_group_allow_from``); ``*`` = every group."""
+        return self._group_allow_from
+
+    @group_allow_from.setter
+    def group_allow_from(self, value) -> None:
+        self._group_allow_from = _coerce_entries(value)
+
+    @staticmethod
+    def _resolve_policy(cfg_value: Any, env_value: Any, *, default: str, field: str) -> str:
+        """``extra.<field>`` → ``SIGNAL_<FIELD>`` env → derived default. A typo fails closed."""
+        raw = cfg_value if cfg_value is not None else env_value
+        policy = str(raw).strip().lower() if raw is not None and str(raw).strip() else str(default)
+        if policy not in _ACCESS_POLICIES:
+            logger.warning("Signal: unknown %s %r — failing closed (traffic dropped)", field, policy)
+            return "disabled"
+        return policy
+
+    def _default_group_policy(self) -> str:
+        """Group policy derived from the group allowlist, preserving the surface that predates the
+        policy keys: no list → groups disabled, ids → allowlist, ``*`` → every group."""
+        if not self._group_allow_from:
+            return "disabled"
+        return "open" if "*" in self._group_allow_from else "allowlist"
+
+    def _entry_matches(self, entries, target: str) -> bool:
+        """Wildcard-aware, id-form-normalized allowlist matching.
+
+        ``*`` opens the list, and a Signal group matches whether the caller passes the raw
+        ``groupId`` the envelope carries or the canonical ``group:<id>`` chat form.
+        """
+        normalized = {str(entry).strip().removeprefix("group:") for entry in entries if str(entry).strip()}
+        if "*" in normalized:
+            return True
+        principal = str(target or "").strip().removeprefix("group:")
+        return bool(principal) and principal in normalized
+
     def _group_allowed(self, group_id: str) -> bool:
-        """Group policy from SIGNAL_GROUP_ALLOWED_USERS: unset → groups disabled; IDs → only those
-        groups; "*" → all. DM auth is run.py's (_is_user_authorized)."""
-        if not self.group_allow_from:
-            logger.debug("Signal: ignoring group message (no SIGNAL_GROUP_ALLOWED_USERS)")
-            return False
-        if "*" not in self.group_allow_from and group_id not in self.group_allow_from:
+        """Group intake verdict from the shared policy (``group_policy`` + ``group_allow_from``):
+        ``allowlist`` keeps the listed groups, ``open`` accepts every group, and
+        ``disabled`` / ``pairing`` / unknown never forward group traffic. DM auth is the mixin's
+        ``_is_dm_intake_allowed``. """
+        if self._is_group_allowed(group_id):
+            return True
+        if self._group_policy == "allowlist":
             logger.debug("Signal: group %s not in allowlist", group_id[:8] if group_id else "?")
-            return False
-        return True
+        else:
+            logger.debug("Signal: ignoring group message (group_policy=%s)", self._group_policy)
+        return False
 
     def _remember_recipient_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
         """Cache any number↔UUID mapping observed from Signal envelopes."""

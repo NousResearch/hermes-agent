@@ -276,11 +276,13 @@ import {
 import {
   type AttachedBackend,
   attachOrReserveSpawn,
+  HOST_SPAWN_GATE_STALE_MS,
   spawnLedgerPath,
   type SpawnReservation
 } from './host-backend-attach'
 import { assertNoSecondLocalBackend, assertNotPassiveSpawn } from './host-backend-singleton'
 import { lookupPublishedSessionToken } from './host-published-token'
+import { claimHostSpawnGate } from './host-spawn-gate'
 import { requestHudClose } from './hud-close'
 import { cursorPointInWindow } from './hud-cursor'
 import { startHudGameOverlayWatch } from './hud-game-overlay'
@@ -12160,24 +12162,10 @@ function hostSpawnGateDeps() {
         return null
       }
     },
-    take: () => {
-      const gatePath = hostSpawnGatePath()
-
-      try {
-        fs.writeFileSync(gatePath, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), { mode: 0o600 })
-      } catch {
-        // A gate we cannot write is a race we cannot win; spawning anyway is
-        // exactly today's behaviour, so never fail boot over it.
-      }
-
-      return () => {
-        try {
-          fs.unlinkSync(gatePath)
-        } catch {
-          // Already gone / never written.
-        }
-      }
-    },
+    take: () =>
+      claimHostSpawnGate(hostSpawnGatePath(), {
+        staleAfterMs: HOST_SPAWN_GATE_STALE_MS
+      }),
     sleep: (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
   }
 }

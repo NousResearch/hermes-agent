@@ -362,12 +362,14 @@ def _plugin_terminal_backend_rows() -> List[Dict[str, str]]:
     return rows
 
 
-# Token / cost analytics helpers.
-_AUX_COUNTERS = ("input_tokens", "output_tokens", "estimated_cost", "api_calls")
+# Token / cost analytics helpers. cache_read_tokens counts: it is prompt volume the
+# provider billed (session_model_usage carries it), so a per-model total that skips it
+# shows a few percent of reality on a cache-heavy provider.
+_AUX_COUNTERS = ("input_tokens", "cache_read_tokens", "output_tokens", "estimated_cost", "api_calls")
 
 
 def _token_volume(row: Dict[str, Any]) -> Any:
-    return (row.get("input_tokens") or 0) + (row.get("output_tokens") or 0)
+    return (row.get("input_tokens") or 0) + (row.get("cache_read_tokens") or 0) + (row.get("output_tokens") or 0)
 
 
 def _aux_usage_rows(db, cutoff: float) -> List[Dict[str, Any]]:
@@ -394,7 +396,7 @@ def _aux_usage_rows(db, cutoff: float) -> List[Dict[str, Any]]:
             JOIN sessions s ON s.id = u.session_id
             WHERE s.started_at > ? AND u.task != ''
             GROUP BY u.model, u.task, u.billing_provider
-            ORDER BY SUM(u.input_tokens) + SUM(u.output_tokens) DESC
+            ORDER BY SUM(u.input_tokens) + COALESCE(SUM(u.cache_read_tokens), 0) + SUM(u.output_tokens) DESC
         """, (cutoff,))
         return [dict(r) for r in cur.fetchall()]
     except Exception:
@@ -411,8 +413,9 @@ def _merge_aux_into_by_model(
     merged: Dict[str, Dict[str, Any]] = {row.get("model") or "unknown": row for row in by_model}
     for aux in aux_rows:
         model = aux.get("model") or "unknown"
-        target = merged.setdefault(model, {"model": model, "input_tokens": 0, "output_tokens": 0,
-                                           "estimated_cost": 0, "sessions": 0, "api_calls": 0})
+        target = merged.setdefault(model, {"model": model, "input_tokens": 0, "cache_read_tokens": 0,
+                                           "output_tokens": 0, "estimated_cost": 0, "sessions": 0,
+                                           "api_calls": 0})
         for key in _AUX_COUNTERS:
             target[key] = (target.get(key) or 0) + (aux.get(key) or 0)
         target.setdefault("aux_tasks", []).append(
@@ -425,8 +428,9 @@ def _aux_task_summary(aux_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     by_task: Dict[str, Dict[str, Any]] = {}
     for aux in aux_rows:
         task = aux.get("task") or ""
-        d = by_task.setdefault(task, {"task": task, "input_tokens": 0, "output_tokens": 0,
-                                      "estimated_cost": 0, "api_calls": 0, "models": []})
+        d = by_task.setdefault(
+            task, {"task": task, **{key: 0 for key in _AUX_COUNTERS}, "models": []}
+        )
         for key in _AUX_COUNTERS:
             d[key] += aux.get(key) or 0
         model = aux.get("model") or "unknown"

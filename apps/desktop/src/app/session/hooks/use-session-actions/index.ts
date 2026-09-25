@@ -254,11 +254,19 @@ function branchCreateKey({
 
 // Reflect a stored row's persisted token counts into the live usage atom
 // (total is derived, so callers can't drift it out of sync with input/output).
-function applyStoredUsage(stored: { input_tokens?: number | null; output_tokens?: number | null }) {
+// `total` adds the cache buckets back: input/output alone are the cache MISSES plus
+// output, while the gateway's live `total` (session_total_tokens) is prompt+completion.
+function applyStoredUsage(stored: {
+  cache_read_tokens?: number | null
+  cache_write_tokens?: number | null
+  input_tokens?: number | null
+  output_tokens?: number | null
+}) {
   const input = stored.input_tokens || 0
   const output = stored.output_tokens || 0
+  const total = input + (stored.cache_read_tokens || 0) + (stored.cache_write_tokens || 0) + output
 
-  setCurrentUsage(current => ({ ...current, input, output, total: input + output }))
+  setCurrentUsage(current => ({ ...current, input, output, total }))
 }
 
 function reconcileAuthoritativeChatMessages(

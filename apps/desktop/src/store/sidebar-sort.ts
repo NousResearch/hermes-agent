@@ -26,7 +26,15 @@ function rankBy(
       return session => sessionStatusRank(dotStates[session.id])
 
     case 'tokens':
-      return session => -(session.input_tokens + session.output_tokens)
+      // Cache buckets count: `input_tokens` is cache-MISS input only, and a cached
+      // provider would rank a session by a few percent of its real token volume.
+      return session =>
+        -(
+          (session.input_tokens || 0) +
+          (session.cache_read_tokens || 0) +
+          (session.cache_write_tokens || 0) +
+          (session.output_tokens || 0)
+        )
 
     default:
       return null

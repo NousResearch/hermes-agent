@@ -562,7 +562,16 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
       return 1
     }
 
-    return daily.reduce((acc, entry) => Math.max(acc, (entry.input_tokens || 0) + (entry.output_tokens || 0)), 1)
+    // Cache reads count toward the day's prompt volume (they are prompt tokens the
+    // provider billed), so the bars scale to the same total the provider reports.
+    return daily.reduce(
+      (acc, entry) =>
+        Math.max(
+          acc,
+          (entry.input_tokens || 0) + (entry.cache_read_tokens || 0) + (entry.output_tokens || 0)
+        ),
+      1
+    )
   }, [daily])
 
   if (!totals) {
@@ -598,7 +607,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
         <UsageStat label={cc.statApiCalls} value={compactNumber(totals.total_api_calls)} />
         <UsageStat
           label={cc.statTokens}
-          value={`${compactNumber(totals.total_input)} / ${compactNumber(totals.total_output)}`}
+          value={`${compactNumber((totals.total_input || 0) + (totals.total_cache_read || 0))} / ${compactNumber(totals.total_output)}`}
         />
       </div>
 
@@ -624,18 +633,21 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           <>
             <div className="flex h-24 items-end gap-px">
               {daily.map(entry => {
-                const inputH = Math.round(((entry.input_tokens || 0) / maxTokens) * 96)
+                // "in" = prompt tokens, which include the day's cache reads; counting
+                // uncached input alone hides ~95% of it on a cached provider.
+                const promptTokens = (entry.input_tokens || 0) + (entry.cache_read_tokens || 0)
+                const inputH = Math.round((promptTokens / maxTokens) * 96)
                 const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
 
                 return (
                   <div
                     className="group relative flex h-24 min-w-0 flex-1 flex-col justify-end"
                     key={entry.day}
-                    title={`${entry.day} · in ${compactNumber(entry.input_tokens)} · out ${compactNumber(entry.output_tokens)}`}
+                    title={`${entry.day} · in ${compactNumber(promptTokens)} · out ${compactNumber(entry.output_tokens)}`}
                   >
                     <div
                       className="w-full rounded-t-[1px] bg-[color:var(--dt-primary)]/50"
-                      style={{ height: Math.max(inputH, entry.input_tokens > 0 ? 1 : 0) }}
+                      style={{ height: Math.max(inputH, promptTokens > 0 ? 1 : 0) }}
                     />
                     <div
                       className="w-full bg-emerald-500/60"
@@ -659,7 +671,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           rows={byModel.slice(0, 6).map(entry => ({
             key: entry.model,
             label: entry.model,
-            value: `${compactNumber((entry.input_tokens || 0) + (entry.output_tokens || 0))}`
+            value: `${compactNumber((entry.input_tokens || 0) + (entry.cache_read_tokens || 0) + (entry.output_tokens || 0))}`
           }))}
           title={cc.topModels}
         />

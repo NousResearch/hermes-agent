@@ -353,8 +353,11 @@ def _project_node(
         "isAuto": False, "isNoProject": False,
         "sessionCount": session_count, "lastActive": last_active,
         # Totals over the same sessions `sessionCount` counts (billed cost, else estimated).
+        # Token volume is prompt + completion: `input_tokens` is cache-MISS input only, so the
+        # cache buckets must be added back or a cache-heavy provider reports a few percent.
         "totalTokens": sum(
-            (s.get("input_tokens") or 0) + (s.get("output_tokens") or 0) for s in rows),
+            (s.get("input_tokens") or 0) + (s.get("cache_read_tokens") or 0)
+            + (s.get("cache_write_tokens") or 0) + (s.get("output_tokens") or 0) for s in rows),
         "totalCostUsd": sum(
             float(s.get("actual_cost_usd") or s.get("estimated_cost_usd") or 0) for s in rows),
         "repos": repos, "previewSessions": preview_sessions,

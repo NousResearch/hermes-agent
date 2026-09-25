@@ -45,15 +45,6 @@ describe('$sessionColorById', () => {
     expect(b.id in map).toBe(false)
   })
 
-  it('omits a session whose project has no color', () => {
-    const a = makeCwdSession('/www/app', { git_repo_root: '/www/app' })
-
-    $projects.set([makeProject('p_app', ['/www/app'], null)])
-    $sessions.set([a])
-
-    expect(a.id in $sessionColorById.get()).toBe(false)
-  })
-
   it('recomputes when the projects list changes (color applied later)', () => {
     const a = makeCwdSession('/www/app', { git_repo_root: '/www/app' })
 

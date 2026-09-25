@@ -35,7 +35,7 @@ def mod():
 
 
 def _write_entry(catalog_dir: Path, name: str, **overrides) -> Path:
-    import yaml
+    import hermes_yaml as yaml
 
     entry = {
         "name": name,
@@ -146,8 +146,8 @@ def test_version_and_image_are_emitted_and_offhost_image_is_dropped_not_fatal(mo
 
 def test_page_fields_screenshots_readme_url_and_maintainer_slug(mod, tmp_path):
     """Detail-page inputs: screenshots follow the image host rule (off-host dropped, never fatal), readme
-    resolves to the raw README at the PINNED sha (GitHub and GitLab, subdir-aware) and is off for other
-    forges, and the maintainer slug is what /docs/plugins/by/<slug> is generated from."""
+    resolves to the raw README at the PINNED sha (GitHub and GitLab, subdir-aware) BY DEFAULT, is off for
+    other forges or `readme: false`, and the maintainer slug is what /docs/plugins/by/<slug> is generated from."""
     catalog = tmp_path / "plugin-catalog"
     catalog.mkdir()
     shot = "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/docs/1.png"
@@ -156,6 +156,7 @@ def test_page_fields_screenshots_readme_url_and_maintainer_slug(mod, tmp_path):
     _write_entry(catalog, "gl", repo="https://gitlab.com/group/proj", readme=True)
     _write_entry(catalog, "other", repo="https://codeberg.org/o/r", readme=True)
     _write_entry(catalog, "plain")
+    _write_entry(catalog, "optout", readme=False)
 
     entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
     assert entries["gh"]["screenshots"] == [shot]
@@ -165,7 +166,9 @@ def test_page_fields_screenshots_readme_url_and_maintainer_slug(mod, tmp_path):
     assert entries["gh"]["maintainerSlug"] == "nous-research"
     assert entries["gl"]["readmeUrl"] == "https://gitlab.com/group/proj/-/raw/38fe0fb53eff98d477f807432e965429e665ca33/README.md"
     assert entries["other"]["readme"] is False and entries["other"]["readmeUrl"] == ""
-    assert entries["plain"]["readme"] is False and entries["plain"]["screenshots"] == [] and entries["plain"]["maintainerSlug"] == "example"
+    assert entries["plain"]["readme"] is True and entries["plain"]["readmeUrl"].endswith("/README.md")
+    assert entries["plain"]["screenshots"] == [] and entries["plain"]["maintainerSlug"] == "example"
+    assert entries["optout"]["readme"] is False and entries["optout"]["readmeUrl"] == ""
 
 
 # --------------------------------------------------------------------------

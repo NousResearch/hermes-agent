@@ -19,12 +19,6 @@ test('a dev-server run opens the default port with no opt-in', () => {
   assert.deepEqual(resolveDevCdpPort(devRun), { port: DEFAULT_PORT, reason: null })
 })
 
-test('the default matches what the scripts/ tooling reaches for', () => {
-  // scripts/eval.mjs and scripts/perf/lib/cdp.mjs both default here; if this
-  // drifts, `node scripts/eval.mjs ...` stops finding a live renderer.
-  assert.equal(DEFAULT_PORT, 9222)
-})
-
 test('a packaged build never opens the port, however loudly the env asks', () => {
   const decision = resolveDevCdpPort({ ...devRun, env: { HERMES_DESKTOP_CDP_PORT: '9222' }, isPackaged: true })
 

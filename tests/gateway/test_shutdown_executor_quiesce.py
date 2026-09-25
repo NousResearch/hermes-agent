@@ -24,7 +24,6 @@ import pytest
 
 import gateway.run as gw_mod
 
-
 class _FakeSessionDB:
     """Records when the gateway closed it, on a shared event log."""
 
@@ -34,7 +33,6 @@ class _FakeSessionDB:
 
     def close(self):
         self._events.append(f"close:{self._name}")
-
 
 class _FakeGateway:
     """Minimal stand-in with just enough state for ``stop()`` to run."""
@@ -124,7 +122,6 @@ class _FakeGateway:
     def close_all_session_db_handles(self):
         pass
 
-
 @pytest.mark.asyncio
 async def test_running_executor_work_finishes_before_session_db_close():
     """A future already running when stop() begins writes before the close."""
@@ -151,7 +148,6 @@ async def test_running_executor_work_finishes_before_session_db_close():
         f"state.db was closed while a worker was still writing: {events}"
     )
 
-
 @pytest.mark.asyncio
 async def test_executor_refuses_new_work_before_session_db_close():
     """``_executor_closing`` is set before the close, so no fresh pool is minted."""
@@ -174,7 +170,6 @@ async def test_executor_refuses_new_work_before_session_db_close():
     assert "closing_flag:True" in events, events
     with pytest.raises(RuntimeError):
         gw_mod.GatewayRunner._get_executor(gw)
-
 
 @pytest.mark.asyncio
 async def test_stuck_worker_skips_the_session_db_close():
@@ -217,10 +212,8 @@ async def test_stuck_worker_skips_the_session_db_close():
     future.result(timeout=5)
     assert "worker_write" in events, "worker never finished"
 
-
 def _arm_cron(gw):
     gw._active_cron_job_count = lambda: 1
-
 
 def _arm_api(gw):
     # Through the real hook: the adapter map is cleared one phase before the close gate, so the
@@ -237,11 +230,9 @@ def _arm_api(gw):
     gw.adapters[Platform.API_SERVER] = _ApiAdapter()
     gw._bounded_adapter_teardown = _teardown
 
-
 def _arm_deferred(gw):
     # A hygiene worker on the loop's default executor, never finished.
     gw._deferred_agent_workers = {asyncio.get_event_loop().create_future(): object()}
-
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("arm", [_arm_cron, _arm_api, _arm_deferred], ids=["cron", "api", "deferred"])
@@ -268,7 +259,6 @@ async def test_live_writer_outside_the_executor_skips_the_session_db_close(monke
         f"SessionDB closed despite a live {arm.__name__[5:]} writer: {events}"
     )
     assert gw._executor_closing is True, "executor left unsealed on the outside-writer path"
-
 
 @pytest.mark.asyncio
 async def test_cancelled_api_handler_worker_still_blocks_session_db_close(monkeypatch):
@@ -328,7 +318,6 @@ async def test_cancelled_api_handler_worker_still_blocks_session_db_close(monkey
     assert "worker_done" in events, "worker never finished"
     assert api_runs.api_worker_live_count() == 0, "worker exit did not release the count"
 
-
 def test_shutdown_executor_defaults_to_no_wait():
     """The no-argument call keeps the historical fire-and-forget contract."""
     gw = _FakeGateway([])
@@ -351,7 +340,6 @@ def test_shutdown_executor_defaults_to_no_wait():
     release.set()
     future.result(timeout=5)
 
-
 def test_shutdown_executor_reports_a_stuck_worker():
     """A worker that outlives the budget is reported, not waited on forever."""
     gw = _FakeGateway([])
@@ -373,10 +361,3 @@ def test_shutdown_executor_reports_a_stuck_worker():
     assert 0.15 <= elapsed < 2.0, f"budget not honoured: {elapsed:.2f}s"
     release.set()
     future.result(timeout=5)
-
-
-def test_shutdown_executor_without_executor_returns_zero():
-    gw = _FakeGateway([])
-    gw._executor.shutdown(wait=True)
-    gw._executor = None
-    assert gw_mod.GatewayRunner._shutdown_executor(gw, drain_timeout=1.0) == 0

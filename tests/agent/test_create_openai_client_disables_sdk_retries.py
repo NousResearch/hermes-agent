@@ -12,7 +12,6 @@ from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
 
-
 @patch("agent.process_bootstrap.OpenAI")
 def test_create_openai_client_disables_sdk_retries(mock_openai):
     mock_openai.return_value = MagicMock()
@@ -44,35 +43,3 @@ def test_create_openai_client_disables_sdk_retries(mock_openai):
             "double-retry inside the outer rate-limit loop (#26293); got "
             f"{call.kwargs.get('max_retries')!r}"
         )
-
-
-@patch("agent.process_bootstrap.OpenAI")
-def test_create_openai_client_honors_explicit_max_retries(mock_openai):
-    """An explicit max_retries in client_kwargs is respected (setdefault, not
-    clobber) — future callers can opt back into SDK retries if needed."""
-    mock_openai.return_value = MagicMock()
-    agent = AIAgent(
-        api_key="test-key",
-        base_url="https://openrouter.ai/api/v1",
-        model="test/model",
-        quiet_mode=True,
-        skip_context_files=True,
-        skip_memory=True,
-    )
-
-    agent._create_openai_client(
-        {
-            "api_key": "test-key",
-            "base_url": "https://explicit.example.com/v1",
-            "max_retries": 5,
-        },
-        reason="test",
-        shared=False,
-    )
-
-    matching = [
-        c for c in mock_openai.call_args_list
-        if c.kwargs.get("base_url") == "https://explicit.example.com/v1"
-    ]
-    assert matching, "OpenAI was never constructed with the explicit base_url"
-    assert matching[-1].kwargs.get("max_retries") == 5

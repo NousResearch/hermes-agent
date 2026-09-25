@@ -110,7 +110,7 @@ def _locked(home: Path | str):
 def _read(path: Path) -> dict[str, Any] | None:
     """Exact-id read: absent → None; unreadable or not a JSON object → raises (callers fail closed)."""
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = json.loads(path.read_text(encoding="utf-8-sig"))
     except FileNotFoundError:
         return None
     if not isinstance(record, dict):
@@ -179,7 +179,7 @@ def _next_sequence(root: Path) -> int:
     """
     counter = root / _SEQUENCE_FILE
     try:
-        persisted = int(counter.read_text(encoding="utf-8"))
+        persisted = int(counter.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError):
         persisted = 0
     scanned = max((record.get("sequence", record["created_at"])

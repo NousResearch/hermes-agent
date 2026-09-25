@@ -12,7 +12,7 @@ import {
 } from './group-chat'
 import type { GroupChatRoom } from './group-chat'
 import { groupMemberAuthor, groupMemberKey } from './group-membership'
-import { buildGroupChatTurnPrompt, formatGroupDeltaLines } from './group-round-prompt'
+import { buildGroupChatTurnPrompt, formatGroupDeltaLines, isGroupChatSelf } from './group-round-prompt'
 import { isGroupPassText, runGroupChatMemberTurn } from './group-turns'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
@@ -113,6 +113,7 @@ function prepareGroupRoundMember(context: GroupRoundMemberContext, member: Group
   const heldSet = new Set(heldIds)
   const delivered = room.log.filter((entry: GroupMessage) => Boolean(entry.id && heldSet.has(entry.id)))
   const deliveredIds = new Set(delivered.map((entry: GroupMessage) => entry.id).filter(Boolean))
+
   const visibleDelta = [
     ...delivered,
     ...delta.filter((entry: GroupMessage) => !entry.id || !deliveredIds.has(entry.id))
@@ -276,12 +277,7 @@ export async function runGroupRoundMember(
   const spoke = reply !== null && !isGroupPassText(reply)
 
   if (reply !== null && spoke) {
-    appendGroupChatEntry(
-      context.group,
-      groupMemberAuthor(member),
-      reply,
-      thread
-    )
+    appendGroupChatEntry(context.group, groupMemberAuthor(member), reply, thread)
   }
 
   // A member's own entries — its reply, and the rows group-external-writes.ts
@@ -306,10 +302,7 @@ export async function runGroupRoundMember(
 }
 
 function authoredByMember(entry: GroupMessage, member: GroupMember): boolean {
-  const from = entry?.from
-  const source = member.remoteSource ? member.connectionLabel || member.connectionId : undefined
-
-  return from?.kind === 'member' && from.name === member.name && String(from.source || '') === String(source || '')
+  return entry?.from?.kind === 'member' && isGroupChatSelf(entry.from, member)
 }
 
 export async function runGroupContinuationMembers(

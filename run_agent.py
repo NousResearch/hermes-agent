@@ -9,15 +9,25 @@
 # hermes_bootstrap must be the very first import (UTF-8 stdio on Windows; no-op on POSIX).
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    pass  # partial `hermes update` — only skips the Windows UTF-8 stdio setup
+except ModuleNotFoundError as exc:  # partial `hermes update` left the bootstrap unregistered
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
+
+import sys
+
+# `hermes-agent` runs this module without hermes_cli.main, which repairs a `hermes update` killed
+# while git wrote the new tree; do it here, before importing anything else from the checkout.
+if "hermes_cli.main" not in sys.modules:
+    from hermes_cli import _early_recovery
+
+    if _early_recovery.restore_interrupted_pull():
+        _early_recovery.relaunch_after_restore()
 
 import json
 import logging
 logger = logging.getLogger(__name__)
 import os
 import re
-import sys
 import time
 import threading
 import uuid
@@ -121,13 +131,14 @@ from model_tools import get_toolset_for_tool
 from tools.terminal_tool_lifecycle import cleanup_vm, get_active_env
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool_lifecycle import cleanup_browser
+from tools.connectors.turn import agent_connection_surface, scoped_connection_surface
 
 from agent.memory_provider import is_trivial_prompt
 from agent.client_lifecycle import ClientLifecycleMixin
 from agent.stream_delivery import StreamDeliveryMixin
 from agent.status_output import StatusOutputMixin
 from agent.api_request_hooks import ApiRequestHooksMixin
-from agent.api_error_summary import PROVIDER_STREAM_PARSE_MARKERS, ApiErrorSummaryMixin
+from agent.api_error_summary import ApiErrorSummaryMixin, is_provider_stream_parse_error
 from agent.interrupt_control import InterruptControlMixin
 from agent.turn_explainers import TurnExplainersMixin
 from agent.activity_tracking import ActivityTrackingMixin
@@ -288,6 +299,8 @@ class AIAgent(
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
+        side_agent: bool = False, memory_manager=None,
+        tool_result_metadata_callback: Optional[Callable[..., dict]] = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -503,9 +516,7 @@ class AIAgent(
     def _is_provider_stream_parse_error(self, error: BaseException) -> bool:
         """True for a malformed Anthropic event-stream frame (surfaced by the SDK as a plain ``ValueError``);
         that is wire trouble, not local validation, so it follows the truncated-JSON retry path."""
-        return (getattr(self, "api_mode", None) == "anthropic_messages" and isinstance(error, ValueError)
-                and not isinstance(error, (UnicodeEncodeError, json.JSONDecodeError))
-                and any(marker in str(error).strip().lower() for marker in PROVIDER_STREAM_PARSE_MARKERS))
+        return getattr(self, "api_mode", None) == "anthropic_messages" and is_provider_stream_parse_error(error)
 
     _log_stream_retry = _forward("agent.stream_diag", "log_stream_retry")
     _emit_stream_drop = _forward("agent.stream_diag", "emit_stream_drop")
@@ -1319,19 +1330,20 @@ class AIAgent(
         args = (assistant_message, messages, effective_task_id, api_call_count)
         self._executing_tools = True  # allow _vprint during tool execution even with stream consumers
         try:
-            if len(tool_calls) <= 1:
-                self._execute_tool_calls_sequential(*args)
-            else:
-                from agent.tool_dispatch_helpers import _plan_tool_batch_segments
-                active_env = get_active_env(effective_task_id)
-                exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
-                segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
-                if len(segments) == 1:
-                    run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
-                    run(*args)
+            with scoped_connection_surface(agent_connection_surface(self)):
+                if len(tool_calls) <= 1:
+                    self._execute_tool_calls_sequential(*args)
                 else:
-                    from agent.tool_executor import execute_tool_calls_segmented
-                    execute_tool_calls_segmented(self, *args, segments=segments)
+                    from agent.tool_dispatch_helpers import _plan_tool_batch_segments
+                    active_env = get_active_env(effective_task_id)
+                    exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
+                    segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
+                    if len(segments) == 1:
+                        run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
+                        run(*args)
+                    else:
+                        from agent.tool_executor import execute_tool_calls_segmented
+                        execute_tool_calls_segmented(self, *args, segments=segments)
         finally:
             self._executing_tools = False
         # getattr: test stubs built without _set_defaults drive this method too
@@ -1520,6 +1532,14 @@ def main(
     if list_tools:
         return _print_tool_listing()
 
+    # One TLS authority: trust the OS store before any outbound call (bare
+    # requests/urllib included) resolves a CA bundle — see agent/ssl_verify.py.
+    # The `hermes` CLI does this in hermes_cli.main; this console script
+    # bypasses it. Never raises.
+    from agent.ssl_verify import install_truststore
+
+    install_truststore()
+
     enabled_toolsets_list = _parse_toolset_arg(enabled_toolsets, "🎯 Enabled toolsets")
     disabled_toolsets_list = _parse_toolset_arg(disabled_toolsets, "🚫 Disabled toolsets")
     if save_trajectories:
@@ -1554,8 +1574,9 @@ def main(
 
 
 if __name__ == "__main__":
-    import fire
-    fire.Fire(main)
+    from agent.legacy_cli import main as _legacy_cli_main
+
+    raise SystemExit(_legacy_cli_main(run=main))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

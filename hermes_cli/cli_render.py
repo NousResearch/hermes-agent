@@ -7,13 +7,16 @@ cli-level names through ``from cli import ...`` at call time so facade monkeypat
 from __future__ import annotations
 
 import functools
+import itertools
 import os
 import re
 import shutil
 import sys
 import textwrap
+import threading
 import time
 from contextlib import contextmanager, suppress
+from agent.think_scrubber import THINK_TAG_NAMES
 from hermes_cli.banner import format_banner_version_label
 from rich.console import Console
 from rich.text import Text as _RichText
@@ -26,7 +29,7 @@ def _cli():
     return cli
 
 
-_REASONING_TAGS = ("REASONING_SCRATCHPAD", "think", "thinking", "reasoning", "thought")
+_REASONING_TAGS = THINK_TAG_NAMES
 
 
 _TOOL_CALL_TAGS = ("tool_call", "tool_calls", "tool_result", "function_call", "function_calls")
@@ -57,19 +60,10 @@ def _strip_reasoning_tags(text: str) -> str:
         r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*<function\b[^>]*\bname\s*=[^>]*>(?:(?:(?!</function>).)*)</function>\s*',
         '', cleaned, flags=re.DOTALL | re.IGNORECASE,
     )
-    cleaned = re.sub(
-        r'</(?:(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls|function))>\s*', '', cleaned,
-        flags=re.IGNORECASE,
-    )
-    # Unterminated opener / stray <arg_key>/<arg_value> markup = stream cut
-    # mid tool-call serialization (#101899); strip to end of text.
-    cleaned = re.sub(
-        r'(?:^|\n)[ \t]*<(?:[\w.-]+:)?(?:tool_call|tool_calls|tool_result|function_call|function_calls)\b[^>]*>.*$'
-        r'|(?:^|\n)[^\n<]*</?arg_(?:key|value)\b.*$',
-        '',
-        cleaned,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
+    # Stray closers and cut tool-call fragments share storage's compiled patterns (#101899, #102303).
+    from agent.agent_runtime_helpers import _STRAY_TOOL_CALL_CLOSER_PATTERN, _UNTERMINATED_TOOL_CALL_PATTERN
+    cleaned = _STRAY_TOOL_CALL_CLOSER_PATTERN.sub('', cleaned)
+    cleaned = _UNTERMINATED_TOOL_CALL_PATTERN.sub('', cleaned)
     return cleaned.strip()
 
 
@@ -479,6 +473,7 @@ def _coerce_output_history_limit(value) -> int:
 
 def _clear_output_history() -> None:
     _cli()._OUTPUT_HISTORY.clear()
+    _set_chrome_floor(None)  # the screen is cleared with it
 
 
 def _output_history_recording() -> bool:
@@ -491,10 +486,155 @@ def _record_output_history_entry(entry) -> None:
         _cli()._OUTPUT_HISTORY.append(entry)
 
 
-def _record_output_history(text: str) -> None:
+class _PaintedLine(str):
+    """A recorded output line tagged with the terminal ``width`` it was painted at: a terminal
+    that does not reflow keeps the rows it wrapped into then, whatever the width is now."""
+    width = None
+
+
+def _painted_columns():
+    """The width the terminal soft-wraps a print at right now, or ``None``."""
+    from prompt_toolkit.application import get_app_or_none
+    app = get_app_or_none()
+    try:
+        if app is not None:
+            return app.output.get_size().columns
+        return os.get_terminal_size(sys.__stdout__.fileno()).columns
+    except (AttributeError, OSError, ValueError):
+        return None
+
+
+def _record_output_history(text: str, *, force: bool = False) -> None:
+    """Record ``text`` as painted now. ``force`` skips the recording check when the caller
+    made it at print-request time (the print itself was deferred to the app loop)."""
     from cli import _output_history_recording
-    if _output_history_recording():
-        _cli()._OUTPUT_HISTORY.extend(str(text).replace("\r", "").rstrip("\n").splitlines())
+    if force or _output_history_recording():
+        width = _painted_columns()
+        lines = []
+        # One entry per printed line: ``_pt_print`` ends every text with a newline, so "" and a
+        # trailing "\n" are blank rows on screen and must count in the replay's row budget.
+        for line in str(text).replace("\r", "").split("\n"):
+            line = _PaintedLine(line)
+            line.width = width
+            lines.append(line)
+        _cli()._OUTPUT_HISTORY.extend(lines)
+
+
+_ANSI_SEQUENCE_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+
+
+def _ansi_drop_cells(line: str, cells: int) -> str:
+    """``line`` without its first ``cells`` visible cells; escape sequences are kept for their styling."""
+    from prompt_toolkit.utils import get_cwidth
+    out, pos = [], 0
+    for match in [*_ANSI_SEQUENCE_RE.finditer(line), None]:
+        end = match.start() if match else len(line)
+        for ch in line[pos:end]:
+            if cells > 0:
+                cells -= get_cwidth(ch)
+            else:
+                out.append(ch)
+        if match:
+            out.append(match.group())
+            pos = match.end()
+    return "".join(out)
+
+
+# TERM names the terminal the CLI talks to, a multiplexer included (tmux, GNU screen), and is set
+# by that terminal for its children — decisive whenever it names one. Everything else is inherited
+# from whatever started the shell (TMUX, KITTY_WINDOW_ID or TERM_PROGRAM=vscode leak into an st
+# or urxvt launched from there), so it only speaks for a generic TERM such as xterm-256color;
+# TMUX/STY first there: tmux with `default-terminal xterm-256color` (a common setup) hands its
+# panes a generic TERM plus TMUX, while XTERM_VERSION is only inherited from the outer xterm. Then
+# XTERM_VERSION: an xterm started from a VTE shell inherits VTE_VERSION but sets XTERM_VERSION.
+_REFLOW_TERM_PREFIXES = ("tmux", "screen", "xterm-kitty", "alacritty", "foot", "xterm-ghostty", "wezterm",
+                         "contour", "vte")
+# TERM is all that survives ssh; these prefixes name terminals that truncate rows in place.
+_NO_REFLOW_TERM_PREFIXES = ("linux", "st", "mosh", "vt", "cons", "rxvt")
+_MULTIPLEXER_ENV = ("TMUX", "STY")
+_NO_REFLOW_ENV = ("XTERM_VERSION",)
+_REFLOW_ENV = ("VTE_VERSION", "KITTY_WINDOW_ID", "WT_SESSION", "KONSOLE_VERSION",
+               "ALACRITTY_WINDOW_ID", "WEZTERM_PANE", "GHOSTTY_RESOURCES_DIR")
+_REFLOW_TERM_PROGRAMS = ("iTerm.app", "Apple_Terminal", "WezTerm", "vscode", "ghostty", "Tabby", "Hyper")
+
+
+def _terminal_reflows() -> bool | None:
+    """Whether the terminal re-wraps the rows it shows when its width changes: ``True``
+    (tmux, GNU screen, VTE, kitty, iTerm2, Terminal.app, WezTerm, Alacritty, Windows Terminal —
+    a shrink pushes the rows that grew into scrollback), ``False`` (xterm, st, urxvt, mosh, the
+    Linux console keep every row in place, truncated) or ``None`` when nothing says (xterm or
+    iTerm2 over ssh both look like ``TERM=xterm-256color``)."""
+    env = os.environ
+    term = env.get("TERM", "").lower()
+    if term.startswith(_REFLOW_TERM_PREFIXES):  # before "vt": TERM=vte-256color
+        return True
+    if term.startswith(_NO_REFLOW_TERM_PREFIXES):
+        return False
+    if any(env.get(name) for name in _MULTIPLEXER_ENV):
+        return True
+    if any(env.get(name) for name in _NO_REFLOW_ENV):
+        return False
+    if any(env.get(name) for name in _REFLOW_ENV) or env.get("TERM_PROGRAM") in _REFLOW_TERM_PROGRAMS:
+        return True
+    if env.get("LC_TERMINAL") == "iTerm2":  # iTerm2 sets it so that ssh forwards it (LC_*)
+        return True
+    return None
+
+
+def _line_rows(line: str, columns: int) -> int:
+    """Rows ``line`` fills when the terminal soft-wraps it at ``columns``."""
+    from prompt_toolkit.formatted_text import ANSI, fragment_list_width, to_formatted_text
+    width = fragment_list_width(to_formatted_text(ANSI(line)))
+    return max(1, -(-width // columns)) if columns and columns > 0 else 1
+
+
+def _output_tail_fitting(lines: list[str], max_rows: int, columns: int, painted: bool = True) -> list[str]:
+    """Newest ``lines`` filling ``max_rows`` rows, soft-wrapped at ``columns`` — or, with
+    ``painted``, at the width each was painted at, as a terminal that does not reflow still
+    shows it. The oldest one may only partly fit: its bottom rows are kept, the rows above
+    them are already in scrollback."""
+    kept, used = [], 0
+    for line in reversed(lines):
+        if used >= max_rows:
+            break
+        cols = (getattr(line, "width", None) if painted else None) or columns
+        height = _line_rows(line, cols)
+        if used + height > max_rows:
+            kept.append(_ansi_drop_cells(line, (height - (max_rows - used)) * cols))
+            break
+        used += height
+        kept.append(line)
+    kept.reverse()
+    return kept
+
+
+def _output_history_lines() -> list[str]:
+    """The recorded output as the lines a replay paints (callable entries render now)."""
+    rendered_lines = []
+    for entry in tuple(_cli()._OUTPUT_HISTORY):
+        lines = [entry]
+        if callable(entry):
+            try:
+                lines = entry()
+            except Exception:
+                continue
+            if isinstance(lines, str):
+                lines = lines.splitlines()
+        rendered_lines.extend(line if isinstance(line, str) else str(line) for line in lines)
+    return rendered_lines
+
+
+def _output_history_rows(limit: int, columns: int, painted: bool):
+    """Rows the whole recorded output fills (counted as ``_output_tail_fitting`` does), or
+    ``None`` when that is ``limit`` rows or more."""
+    if not _cli()._OUTPUT_HISTORY_ENABLED:
+        return None
+    total = 0
+    for line in reversed(_output_history_lines()):
+        total += _line_rows(line, (getattr(line, "width", None) if painted else None) or columns)
+        if total >= limit:
+            return None
+    return total
 
 
 def _pt_print_ansi(text: str) -> None:
@@ -508,19 +648,115 @@ def _pt_print_ansi(text: str) -> None:
             print(text)
 
 
+_HELD_PAINTS: list | None = None
+_HELD_PAINTS_LOCK = threading.Lock()
+_PAINT_SEQ = itertools.count()
+# ``(app, gate)`` while the CLI's app runs: ``gate()`` is True when output must wait for a resize
+# recovery (see ``CLITerminalMixin._output_waits_for_resize``).
+_PAINT_GATE = None
+
+
+def _set_paint_gate(app, gate) -> None:
+    global _PAINT_GATE
+    _PAINT_GATE = (app, gate) if gate is not None else None
+
+
+# Rows from the top of the prompt chrome down to the bottom of the screen, once a refill left
+# the chrome's top at a known row (``None``: unknown). prompt_toolkit learns that only through
+# CPR, which the CLI leaves off; drawn at least this tall, the chrome keeps reaching the bottom
+# row, where ``_transcript_room`` counts the transcript from, also when it shrinks (a narrower
+# status bar, a closed modal) — rows left blank below it would be counted as transcript (#95375).
+_CHROME_FLOOR = None
+
+
+def _set_chrome_floor(rows) -> None:
+    global _CHROME_FLOOR
+    _CHROME_FLOOR = rows
+
+
+def _chrome_floor():
+    return _CHROME_FLOOR
+
+
+# Rows output scrolled into scrollback while the terminal's width changed under it: a terminal
+# that does not reflow may have truncated them first, if it resized before reading all of that
+# output. The next refill repaints them too — twice rather than truncated for good (#95375).
+_SUSPECT_ROWS = 0
+
+
+def _add_suspect_rows(rows: int) -> None:
+    global _SUSPECT_ROWS
+    _SUSPECT_ROWS += max(0, rows)
+
+
+def _take_suspect_rows() -> int:
+    global _SUSPECT_ROWS
+    rows, _SUSPECT_ROWS = _SUSPECT_ROWS, 0
+    return rows
+
+
+def _hold_paints() -> None:
+    """Hold ``_cprint`` paints until ``_release_paints``, while a resize awaits its recovery.
+
+    A paint erases the prompt chrome from prompt_toolkit's cursor, which is stale once the
+    terminal re-wrapped the chrome to its new width: rows of the old chrome would stay in the
+    transcript, where the replay cannot account for them (#95375). On a terminal that does not
+    reflow, a paint would scroll rows it truncated into scrollback before the refill restores them.
+    """
+    global _HELD_PAINTS
+    with _HELD_PAINTS_LOCK:
+        if _HELD_PAINTS is None:
+            _HELD_PAINTS = []
+
+
+def _release_paints() -> None:
+    """Paint, in the order they were requested, what ``_hold_paints`` held."""
+    global _HELD_PAINTS
+    with _HELD_PAINTS_LOCK:
+        held, _HELD_PAINTS = _HELD_PAINTS or [], None
+    for _seq, paint in sorted(held, key=lambda item: item[0]):
+        with suppress(Exception):
+            paint()
+
+
+def _paint_held(seq: int, paint, app=None) -> bool:
+    """Queue ``paint`` (requested ``seq``-th) when paints are held — or must be, because the
+    terminal's width changed under ``app`` and its recovery has not run yet."""
+    gate = _PAINT_GATE
+    if gate is not None and gate[0] is app and gate[1]():
+        _hold_paints()
+    with _HELD_PAINTS_LOCK:
+        if _HELD_PAINTS is None:
+            return False
+        _HELD_PAINTS.append((seq, paint))
+        return True
+
+
 def _cprint(text: str):
     """Print ANSI text through prompt_toolkit's renderer (patch_stdout swallows raw ANSI).
 
     From a background thread while an Application runs, a direct print races the input
-    redraw and gets buried, so those go through ``run_in_terminal`` via ``call_soon_threadsafe``.
+    redraw and gets buried, so those are painted on the app's loop via ``call_soon_threadsafe``.
     """
-    from cli import _PT_ANSI, _pt_print, _pt_print_ansi, _record_output_history
-    _record_output_history(text)
+    from cli import _PT_ANSI, _output_history_recording, _pt_print, _pt_print_ansi, _record_output_history
+    recording = _output_history_recording()
+    seq = next(_PAINT_SEQ)
+
+    def _painted(paint):
+        # Recorded when painted, not when requested: a redraw replaying the history must
+        # neither print rows still queued for the loop nor size them at a stale width.
+        def _paint():
+            if recording:
+                _record_output_history(text, force=True)
+            paint()
+        return _paint
+    paint_pt = _painted(lambda: _pt_print(_PT_ANSI(text)))
+    paint_fallback = _painted(lambda: _pt_print_ansi(text))
 
     try:
         from prompt_toolkit.application import get_app_or_none, run_in_terminal
     except Exception:
-        _pt_print(_PT_ANSI(text))
+        paint_pt()
         return
 
     try:
@@ -529,7 +765,8 @@ def _cprint(text: str):
         app = None
 
     if app is None or not getattr(app, "_is_running", False):
-        _pt_print_ansi(text)
+        _release_paints()
+        paint_fallback()
         return
 
     import asyncio as _asyncio
@@ -547,23 +784,56 @@ def _cprint(text: str):
     except Exception:
         current_loop = None
     if loop is None or (current_loop is loop and loop.is_running()):
-        _pt_print(_PT_ANSI(text))
+        if not _paint_held(seq, paint_pt, app):
+            paint_pt()
         return
 
+    def _print_now():
+        from prompt_toolkit.formatted_text import to_formatted_text
+        from prompt_toolkit.renderer import print_formatted_text as _paint_formatted_text
+        from prompt_toolkit.styles import Style
+        _paint_formatted_text(app.output, to_formatted_text(_PT_ANSI(text)) + [("", "\n")], Style([]))
+    paint_now = _painted(_print_now)
+
     def _schedule():
-        # run_in_terminal() returns an awaitable (pt >= 3.0) that must be scheduled or the
-        # output is dropped, or None (mocks / older pt) when it already ran synchronously.
-        # Never fall back to a bare print on error: the sync path already printed.
+        if not getattr(app, "_is_running", False):
+            paint_fallback()
+            return
+        if _paint_held(seq, _schedule, app):
+            return
         with suppress(Exception):
-            import inspect as _inspect
-            coro = run_in_terminal(lambda: _pt_print(_PT_ANSI(text)))
-            if coro is not None and (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
-                _asyncio.ensure_future(coro)
+            pending = getattr(app, "_running_in_terminal_f", None)
+            if getattr(app, "_running_in_terminal", False) or (pending is not None and not pending.done()):
+                # Another run_in_terminal body owns the terminal: paint after it. Never fall back
+                # to a bare print on error: run_in_terminal may already have painted.
+                import inspect as _inspect
+                coro = run_in_terminal(lambda: _paint_held(seq, _schedule, app) or paint_now())
+                if coro is not None and (_inspect.isawaitable(coro) or _inspect.iscoroutine(coro)):
+                    _asyncio.ensure_future(coro)
+                return
+            # What run_in_terminal does, but now: its erase and print would run a loop pass
+            # later, when a resize may have landed after the check above (#95375).
+            renderer = app.renderer
+            floor = _CHROME_FLOOR
+            if floor is not None:  # the chrome, as tall as drawn, moves down by the rows printed
+                screen = renderer._last_screen
+                floor = max(floor, renderer._min_available_height, screen.height if screen else 0)
+            columns = app.output.get_size().columns
+            renderer.erase()
+            paint_now()
+            renderer.reset()
+            printed = sum(_line_rows(line, columns) for line in text.split("\n"))
+            if app.output.get_size().columns != columns:
+                _add_suspect_rows(printed)
+            if floor is not None:
+                _set_chrome_floor(max(0, floor - printed))
+            app._request_absolute_cursor_position()
+            app._redraw()
 
     try:
         loop.call_soon_threadsafe(_schedule)
     except Exception:
-        _pt_print_ansi(text)
+        paint_fallback()
 
 
 def _prepend_note_to_message(message, note: str):
@@ -653,9 +923,9 @@ def _build_compact_banner() -> str:
 
     if os.environ.get("HERMES_FAST_STARTUP_BANNER") == "1":
         from hermes_cli import __release_date__ as _release_date
-        from hermes_cli import __version__ as _version
+        from hermes_cli.version_info import get_version_info
 
-        version_line = f"Hermes Agent v{_version} ({_release_date})"
+        version_line = f"Hermes Agent v{get_version_info().derived_version} ({_release_date})"
     else:
         version_line = format_banner_version_label()
 

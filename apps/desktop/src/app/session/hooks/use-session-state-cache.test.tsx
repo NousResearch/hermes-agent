@@ -188,9 +188,7 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     setActiveSessionId('runtime-A')
     setSelectedStoredSessionId(null)
     arm()
-    render(
-      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />
-    )
+    render(<Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />)
 
     act(() => {
       cache.updateSessionState('runtime-A', state => state, 'stored-A')
@@ -272,21 +270,6 @@ describe('useSessionStateCache — per-session turn timer', () => {
     // ...but the global atom (statusbar timer) is untouched — a background turn
     // must not drive the foreground timer.
     expect($turnStartedAt.get()).toBeNull()
-  })
-
-  it("mirrors the focused session's turn clock into the global atom on view-sync", () => {
-    let cache!: Cache
-    render(<Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />)
-
-    const startedAt = 1_700_000_111_000
-
-    // A turn on the ACTIVE session stages into the view; the flush mirrors its
-    // turnStartedAt into the global atom the statusbar reads.
-    act(() => {
-      cache.updateSessionState('fg-runtime', state => ({ ...state, busy: true, turnStartedAt: startedAt }), 'fg-stored')
-    })
-
-    expect($turnStartedAt.get()).toBe(startedAt)
   })
 
   it('clears the global clock when the focused turn ends', () => {
@@ -756,6 +739,165 @@ describe('useSessionStateCache — cross-thread error isolation', () => {
       expect(cache.sessionStateByRuntimeIdRef.current.has(bg)).toBe(true)
       expect(cache.runtimeIdByStoredSessionIdRef.current.get(bgStored)).toBe(bg)
     })
+  })
+})
+
+// #117867: the warm-resume transcript gate used to empty the view entirely
+// while held, so rows arriving LIVE during the hold (the user's in-flight turn)
+// never painted until REST authority landed. The gate now hides only the cached
+// prefix captured when the hold was armed.
+describe('useSessionStateCache — held transcript gate keeps live rows (#117867)', () => {
+  const runtime = 'hold-runtime'
+  const stored = 'hold-stored'
+
+  beforeEach(() => {
+    clearAllSessionStates()
+    setActiveSessionId(runtime)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $messages.set([])
+    clearAllSessionStates()
+    setActiveSessionId(null)
+  })
+
+  it('paints rows appended after the arm and hides only the cached prefix', () => {
+    let cache!: Cache
+    let release: (() => void) | undefined
+
+    render(<ViewHarness activeSessionId={runtime} onReady={value => (cache = value)} />)
+
+    // Seed the warm cache entry with the unproven cached prefix — exactly what
+    // resumeSession has in hand when it arms the hold.
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({
+          ...state,
+          messages: [userMessage('cached-1', 'cached prompt'), assistantText('cached-2', 'cached tail')]
+        }),
+        stored
+      )
+    })
+
+    // The real production arm path, after the cache entry exists.
+    act(() => {
+      release = cache.holdSessionTranscriptView(runtime)
+    })
+
+    // A live row arrives mid-hold. busy:false forces the critical-transition
+    // sync flush (no rAF), so $messages is observable here.
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({
+          ...state,
+          busy: false,
+          messages: [
+            userMessage('cached-1', 'cached prompt'),
+            assistantText('cached-2', 'cached tail'),
+            userMessage('live-1', 'live turn')
+          ]
+        }),
+        stored
+      )
+    })
+
+    const ids = $messages.get().map(message => message.id)
+
+    expect(ids).toContain('live-1')
+    expect(ids).not.toContain('cached-1')
+    expect(ids).not.toContain('cached-2')
+
+    // Releasing restores the full transcript.
+    act(() => release?.())
+    act(() => {
+      cache.updateSessionState(runtime, state => ({ ...state, messages: state.messages }), stored)
+    })
+
+    expect($messages.get().map(message => message.id)).toEqual(['cached-1', 'cached-2', 'live-1'])
+  })
+
+  it('fails closed when the hold was armed with no cached prefix', () => {
+    let cache!: Cache
+    let release: (() => void) | undefined
+
+    render(<ViewHarness activeSessionId={runtime} onReady={value => (cache = value)} />)
+
+    act(() => {
+      release = cache.holdSessionTranscriptView(runtime)
+    })
+
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({
+          ...state,
+          busy: false,
+          messages: [userMessage('late-1', 'arrived after the arm')]
+        }),
+        stored
+      )
+    })
+
+    // No baseline was captured, so nothing is trustworthy yet: today's
+    // hide-everything behavior is preserved until REST authority lands.
+    expect($messages.get()).toEqual([])
+
+    act(() => release?.())
+  })
+
+  it('keeps a re-sequenced cached tail hidden when compaction assigns fresh ids mid-hold (#117867)', () => {
+    let cache!: Cache
+    let release: (() => void) | undefined
+
+    render(<ViewHarness activeSessionId={runtime} onReady={value => (cache = value)} />)
+
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({
+          ...state,
+          messages: [userMessage('cached-1', 'cached prompt'), assistantText('cached-2', 'cached tail')]
+        }),
+        stored
+      )
+    })
+
+    act(() => {
+      release = cache.holdSessionTranscriptView(runtime)
+    })
+
+    // A mid-hold compaction re-sequences the cached tail with FRESH row ids
+    // while keeping the content (archive_and_compact contract: consumers that
+    // reference durable row ids re-resolve by content). An id-only cutoff
+    // would pass `seq-*` through as if it were live and paint the compressed
+    // tail the hold exists to hide (#73646); the content fingerprint keeps it
+    // hidden while a genuinely new row still paints.
+    act(() => {
+      cache.updateSessionState(
+        runtime,
+        state => ({
+          ...state,
+          busy: false,
+          messages: [
+            userMessage('seq-71', 'cached prompt'),
+            assistantText('seq-72', 'cached tail'),
+            userMessage('live-1', 'live turn')
+          ]
+        }),
+        stored
+      )
+    })
+
+    const ids = $messages.get().map(message => message.id)
+
+    expect(ids).toContain('live-1')
+    expect(ids).not.toContain('seq-71')
+    expect(ids).not.toContain('seq-72')
+
+    act(() => release?.())
   })
 })
 

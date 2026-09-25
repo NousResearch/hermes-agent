@@ -13,12 +13,11 @@ import { useQueryClient } from '@tanstack/react-query'
 import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
-import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
-import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
 import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
+import { ExternalOpenFailedDialog } from '@/components/external-open-failed-dialog'
 import { FindBar } from '@/components/find-bar'
 import { FreeTierSignInDialog } from '@/components/free-tier/sign-in-dialog'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
@@ -38,11 +37,9 @@ import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { SendDiagnosticsHost } from '@/components/send-diagnostics-dialog'
 import { TipHost } from '@/components/tips'
 import { emitGatewayEvent } from '@/contrib/events'
-import { getLatestSessionMessages } from '@/hermes'
 import { translateNow } from '@/i18n'
-import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { isMessagingSource } from '@/lib/session-source'
-import { latestSessionTodos } from '@/lib/todos'
 import { activateWakeIndicator } from '@/lib/wake-indicator'
 import { playWakeSound } from '@/lib/wake-sound'
 import { $billingSettingsRequest } from '@/store/billing-block'
@@ -52,6 +49,7 @@ import { $activeConnectionId } from '@/store/connections'
 import { $cronReviewRequest, setCronFocusJobId } from '@/store/cron'
 import { requestGatewayForProfile } from '@/store/gateway'
 import { reconnectGateway } from '@/store/gateway-reconnect'
+import { $interfaceMode, shownInMode } from '@/store/interface-mode'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { $poolLimitsSettingsRequest } from '@/store/pool-limits'
@@ -90,8 +88,8 @@ import {
   setBusy,
   setMessages
 } from '@/store/session'
+import { $archivedSessions } from '@/store/sidebar-archive'
 import { $titlebarAppActionsSide, titlebarAppActionsClusterCounts } from '@/store/titlebar-app-actions'
-import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
 import { armWakeWord, stopClientCapture } from '@/store/wake-word'
 import { isAuxiliaryWindow, isBrowserWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
@@ -138,6 +136,7 @@ import { useRouteResume } from '../session/hooks/use-route-resume'
 import { useSessionActions } from '../session/hooks/use-session-actions'
 import { useSessionListActions } from '../session/hooks/use-session-list-actions'
 import { useSessionStateCache } from '../session/hooks/use-session-state-cache'
+import { useTranscriptPeerSync } from '../session/hooks/use-transcript-peer-sync'
 import { startWorkspaceSession } from '../session/workspace-session-target'
 import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
@@ -155,6 +154,7 @@ import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
 import {
+  hydrateStoredSessionTranscript,
   profileScopeForTranscriptSession,
   reconcileActiveTranscript,
   resolveActiveTranscriptSession,
@@ -253,9 +253,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         return
       }
 
-      void window.hermesDesktop?.recycleBackend?.(normalizeProfileKey($activeGatewayProfile.get())).catch(err =>
-        notifyError(err, translateNow('notifications.errors.restartHermesFailed'))
-      )
+      void window.hermesDesktop
+        ?.recycleBackend?.(normalizeProfileKey($activeGatewayProfile.get()))
+        .catch(err => notifyError(err, translateNow('notifications.errors.restartHermesFailed')))
     }
   }, [backendRestartRequest])
 
@@ -377,7 +377,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const { connectionRef, gateway, gatewayRef, requestGateway: ambientRequestGateway } = useGatewayRequest()
 
   // The guide remains selected while handoff creates on another profile.
-  // Without this pin, the owner ladder sends session.create to hermes-setup
+  // Without this pin, the owner ladder sends session.create to the setup profile
   // despite the gateway switch (#89206). Scope it to the create leg so
   // concurrent session traffic keeps its recorded owner.
   const handoffCreateProfileRef = useRef<null | string>(null)
@@ -492,48 +492,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         resolveActiveTranscriptSession(storedSessionId, runtimeSessionId)
       )
 
-      for (let index = 0; index < Math.max(1, attempts); index += 1) {
-        try {
-          const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
-          const messages = toChatMessages(latest.messages)
-          updateSessionState(
-            runtimeSessionId,
-            state => ({
-              ...state,
-              // Post-turn rehydrate reads only the newest tail page — graft it
-              // onto any backfilled older pages instead of dropping them, and
-              // keep any un-acked optimistic `user-*` row, which lives nowhere
-              // else (a reconnect-triggered rehydrate would otherwise lose a
-              // message the user then has to retype). Same composition order
-              // as reconcileAuthoritativeChatMessages.
-              messages: preserveLocalAssistantErrors(
-                preserveLocalPendingTurnMessages(
-                  graftRefreshedTailOntoBackfill(messages, state.messages),
-                  state.messages
-                ),
-                state.messages
-              )
-            }),
-            storedSessionId
-          )
-
-          const restored = todosForHydration(latestSessionTodos(messages))
-
-          if (restored) {
-            setSessionTodos(runtimeSessionId, restored)
-          } else {
-            clearSessionTodos(runtimeSessionId)
-          }
-
-          return
-        } catch {
-          // Best-effort fallback when live stream payloads are empty.
-        }
-
-        if (index < attempts - 1) {
-          await new Promise(resolve => window.setTimeout(resolve, 250))
-        }
-      }
+      await hydrateStoredSessionTranscript({
+        attempts,
+        storedSessionId,
+        runtimeSessionId,
+        storedProfile,
+        updateSessionState
+      })
     },
     [activeSessionIdRef, selectedStoredSessionIdRef, updateSessionState]
   )
@@ -600,7 +565,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     removeSession,
     resumeSession,
     selectSidebarItem,
-    startFreshSessionDraft
+    startFreshSessionDraft,
+    unarchiveSession
   } = useSessionActions({
     activeSessionId,
     activeSessionIdRef,
@@ -978,6 +944,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     !!selectedStoredSessionId &&
     isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
 
+  useTranscriptPeerSync({
+    activeSessionIdRef,
+    busyRef,
+    selectedStoredSessionIdRef,
+    updateSessionState
+  })
+
   // sessions.changed refreshes every open transcript; only messaging retains
   // the periodic safety-net it already had before this fix.
   // Keep app data live while the gateway is open (on-connect reseed + the
@@ -1129,7 +1102,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const nextActions: WiringActions = {
     onAddContextRef: composer.addContextRefAttachment,
     onAddUrl: url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
-    onArchiveSession: sessionId => void archiveSession(sessionId),
+    // The sidebar row menu reuses this verb in the Archived view too, where the
+    // row is already archived — dispatch by state so the verb restores there
+    // instead of re-archiving (#98813).
+    onArchiveSession: sessionId => {
+      const listed = $sessions.get().find(session => sessionMatchesStoredId(session, sessionId))
+
+      const isArchived =
+        listed?.archived === true || $archivedSessions.get().some(session => sessionMatchesStoredId(session, sessionId))
+
+      void (isArchived ? unarchiveSession(sessionId) : archiveSession(sessionId))
+    },
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,
     onAttachPastedText: composer.attachPastedText,
@@ -1148,6 +1131,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onEdit: editMessage,
     onLoadMoreMessaging: loadMoreMessagingForPlatform,
     onLoadMoreSessions: loadMoreSessions,
+    onRetrySessions: () => refreshSessions().catch(() => undefined),
     onManageCronJob: jobId => {
       setCronFocusJobId(jobId)
       navigate(CRON_ROUTE)
@@ -1285,9 +1269,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // renderer paints its own min/max/close (main decides via customWindowControls).
   const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
   const appActionsSide = useStore($titlebarAppActionsSide)
-  const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
-  const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden).length
-  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0)
+  const interfaceMode = useStore($interfaceMode)
+  const shownTool = shownInMode(interfaceMode)
+  const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
+  const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden && shownTool(tool)).length
+  const clusters = titlebarAppActionsClusterCounts(appActionsSide, leftExtraCount, 0, interfaceMode)
   const systemToolsWidth = titlebarToolsWidthCss(clusters.right)
 
   const titlebarToolsWidth =
@@ -1327,7 +1313,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           />
         )}
         {!isHudWindow() && customWindowControls && (
-          <WslgWindowControls isFullscreen={Boolean(connection?.isFullscreen)} isMaximized={Boolean(connection?.isMaximized)} />
+          <WslgWindowControls
+            isFullscreen={Boolean(connection?.isFullscreen)}
+            isMaximized={Boolean(connection?.isMaximized)}
+          />
         )}
         {children}
       </div>
@@ -1470,6 +1459,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* Send Diagnostics consent/upload dialog — driven by $sendDiagnostics
           (error card action); renders nothing until requested. */}
       <SendDiagnosticsHost />
+
+      {/* Fallback modal when opening an external URL fails — carries the URL
+          so a dead system-browser click is never silent. */}
+      <ExternalOpenFailedDialog />
 
       {/* Petdex floating mascot — renders nothing unless installed + enabled.
           Never in the HUD: that window is the chat bar and nothing else. */}

@@ -4,8 +4,9 @@
 # Must be the very first import (UTF-8 stdio on Windows). Missing only mid-``hermes update``.
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    pass
+except ModuleNotFoundError as exc:
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 
 import logging
 import os
@@ -91,6 +92,7 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _TRUE_RE,
     _WINDOWS_PATH_WITH_DOT_SEGMENT_RE,
     _accent_hex,
+    _add_suspect_rows,
     _append_blank_panel_line,
     _append_panel_line,
     _assistant_content_as_text,
@@ -106,9 +108,15 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _heal_cooked_mode_drift,
     _hex_to_ansi,
     _install_skin_light_mode_hook,
+    _line_rows,
     _luminance_from_hex,
     _maybe_remap_for_light_mode,
+    _output_history_lines,
     _output_history_recording,
+    _output_history_rows,
+    _output_tail_fitting,
+    _painted_columns,
+    _PaintedLine,
     _panel_box_width,
     _post_stream_transform_output,
     _prepend_note_to_message,
@@ -118,11 +126,14 @@ from hermes_cli.cli_render import (  # noqa: F401,E402
     _query_osc11_background,
     _record_output_history,
     _record_output_history_entry,
+    _release_paints,
     _render_final_assistant_content,
     _rich_text_from_ansi,
+    _set_chrome_floor,
     _strip_markdown_syntax,
     _strip_reasoning_tags,
     _terminal_columns,
+    _terminal_reflows,
     _terminal_width_for_streaming,
     _tty_wrap,
     _wrap_panel_text,
@@ -646,27 +657,44 @@ def _suspend_output_history():
         _OUTPUT_HISTORY_SUPPRESSED = old_value
 
 
-def _replay_output_history() -> None:
-    """Repaint recent output above the prompt after a full screen clear."""
+def _replay_output_history(fit=None, output=None) -> None:
+    """Repaint recent output above the prompt after a full screen clear.
+
+    ``fit=(rows, columns, painted, top)`` replays only the newest lines whose wrapped height
+    fits ``rows`` (see ``_output_tail_fitting``) — the older ones are still in scrollback
+    (#95375) — from screen row ``top`` when known (``_set_chrome_floor``). ``output``: paint
+    now, straight to this prompt_toolkit output, where the caller just erased the viewport and
+    reset the renderer — ``run_in_terminal`` would first erase below the top row, which
+    scroll-on-clear terminals (tmux) take as a clear and copy the blank screen into scrollback.
+    """
     global _OUTPUT_HISTORY_REPLAYING
     if not _OUTPUT_HISTORY_ENABLED or not _OUTPUT_HISTORY:
         return
     _OUTPUT_HISTORY_REPLAYING = True
     try:
-        rendered_lines = []
-        for entry in tuple(_OUTPUT_HISTORY):
-            lines = [entry]
-            if callable(entry):
-                try:
-                    lines = entry()
-                except Exception:
-                    continue
-                if isinstance(lines, str):
-                    lines = lines.splitlines()
-            rendered_lines.extend(str(line) for line in lines)
+        rendered_lines = _output_history_lines()
+        top = None
+        if fit is not None:
+            rows, columns, painted, top = fit
+            rendered_lines = _output_tail_fitting(rendered_lines, rows, columns, painted)
         if rendered_lines:
             # One payload: per-line pt prints each force a sync redraw (a waterfall of old output).
-            _pt_print(_PT_ANSI("\n".join(rendered_lines)))
+            if output is None:
+                _pt_print(_PT_ANSI("\n".join(rendered_lines)))
+            else:
+                from prompt_toolkit.renderer import print_formatted_text as _paint_formatted_text
+                from prompt_toolkit.styles import Style
+                _paint_formatted_text(output, _PT_ANSI("\n".join(rendered_lines) + "\n"), Style([]))
+                size = output.get_size()
+                if top is not None:  # the chrome's top is now this many rows down
+                    top += sum(_line_rows(line, columns) for line in rendered_lines)
+                    _set_chrome_floor(max(0, size.rows - top))
+                    if size.columns != columns:
+                        _add_suspect_rows(top + 1 - size.rows)
+            width = _painted_columns() if fit is None else columns
+            for line in rendered_lines:  # repainted: they wrap at today's width from now on
+                if isinstance(line, _PaintedLine):
+                    line.width = width
     except Exception:
         pass
     finally:
@@ -944,18 +972,23 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             return
         self._tirith_security_checked = True
         try:
-            from tools.tirith_security import ensure_installed, is_platform_supported
+            from tools.tirith_security import ensure_installed, is_platform_supported, missing_is_expected
 
             if (
                 ensure_installed(log_failures=False) is None and is_platform_supported()
                 and (self.config.get("security", {}) or {}).get("tirith_enabled", True)
             ):
-                _cprint(
-                    f"  {_DIM}⚠ tirith security scanner enabled but not available "
-                    f"— command scanning will use pattern matching only{_RST}"
-                )
-        except Exception:
-            pass
+                # First launch after install downloads tirith in the background;
+                # warning then would report a fault that resolves itself.
+                if missing_is_expected():
+                    logger.info("tirith not ready (downloading or lazy installs off); pattern matching only")
+                else:
+                    _cprint(
+                        f"  {_DIM}⚠ tirith security scanner enabled but not available "
+                        f"— command scanning will use pattern matching only{_RST}"
+                    )
+        except Exception as exc:
+            logger.debug("tirith availability check failed: %s", exc)
 
     def _show_security_advisories(self):
         """Startup banner for unacked security advisories, on stderr (piped stdout stays clean); 24h rate-limited."""
@@ -1464,6 +1497,8 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
             else:
                 raise
         finally:
+            # A resize right before exit leaves its recovery (and the paints it held) unrun.
+            _release_paints()
             self._tui_shutdown()
 
         # /update relaunch happens here, after prompt_toolkit restored terminal modes, on the
@@ -1696,6 +1731,15 @@ def main(
     if gateway:
         _run_legacy_gateway()
         return
+
+    if not (list_tools or list_toolsets):
+        from hermes_cli.process_identity import register_self
+        from hermes_cli.shared_profile_warning import shared_profile_warning
+
+        register_self("cli")
+        warning = shared_profile_warning()
+        if warning:
+            print(f"Warning: {warning}", file=sys.stderr)
 
     _join_worktree = _start_worktree_setup(list_tools, list_toolsets, worktree, w)
     query = query or q

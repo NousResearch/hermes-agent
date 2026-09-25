@@ -5,6 +5,7 @@ import { evictInkCaches } from '@hermes/ink'
 import type { InflightTurn, SessionResumeResult, Usage } from '@hermes/shared/gateway-events'
 import { type RefObject, useCallback, useEffect, useMemo, useRef } from 'react'
 
+import { STARTUP_WORKSPACE_CWD } from '../config/env.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
 import { ZERO } from '../domain/usage.js'
@@ -60,12 +61,14 @@ export const liveSessionInflightMessages = (inflight?: null | InflightTurn): Msg
   const user = String(inflight?.user ?? '').trim()
 
   return user
-    ? toTranscriptMessages([{
-        role: 'user',
-        text: user,
-        ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
-        ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
-      }])
+    ? toTranscriptMessages([
+        {
+          role: 'user',
+          text: user,
+          ...(inflight?.display_kind ? { display_kind: inflight.display_kind } : {}),
+          ...(inflight?.display_metadata ? { display_metadata: inflight.display_metadata } : {})
+        }
+      ])
     : []
 }
 
@@ -208,7 +211,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         await closeSession(previousSid)
       }
 
-      const r = await rpc<SessionCreateResponse>('session.create', { cols: colsRef.current })
+      const r = await rpc<SessionCreateResponse>('session.create', {
+        cols: colsRef.current,
+        ...(STARTUP_WORKSPACE_CWD ? { cwd: STARTUP_WORKSPACE_CWD } : {})
+      })
 
       if (!r) {
         patchUiState({ status: 'ready' })
@@ -300,6 +306,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     (id: string) => {
       patchOverlayState({ sessions: false })
       patchUiState({ status: 'switching session…' })
+      // The card belongs to the session being left; the activated one answers with its own.
+      clearConnectionOperation()
 
       gw.request<SessionActivateResponse>('session.activate', { session_id: id })
         .then(raw => {
@@ -331,6 +339,11 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
             usage: usageFrom(info)
           })
           hydrateLiveSessionInflight(r.inflight)
+
+          if (r.pending_connection) {
+            applyConnectionRequest(r.pending_connection)
+          }
+
           cancelResumeScrollRef.current?.()
           cancelResumeScrollRef.current = scheduleResumeScrollToBottom(scrollRef)
         })
@@ -357,7 +370,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
         const previousSid = getUiState().sid
 
-        return gw.request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
+        return gw
+          .request<SessionResumeResult>('session.resume', { cols: colsRef.current, session_id: id })
           .then(raw => {
             const r = asRpcResult<SessionResumeResult>(raw)
 

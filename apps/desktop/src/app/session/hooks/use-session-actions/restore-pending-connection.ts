@@ -3,6 +3,7 @@ import {
   $connectionRequests,
   clearConnectionRequest,
   type ConnectionRequest,
+  isCatalogKind,
   normalizeConnectionRequest,
   setConnectionRequest
 } from '@/store/connection-request'
@@ -57,6 +58,14 @@ export function restorePendingConnectionFromSnapshot(
 
 /** Tool row for a pending operation whose `tool.start` event was missed. */
 export function connectionRequestToolPayload(request: ConnectionRequest): GatewayEventPayload & { name: string } {
+  if (request.targets.some(target => isCatalogKind(target.kind))) {
+    return {
+      args: { action: 'install', items: request.targets.map(target => ({ id: target.name, kind: target.kind })) },
+      name: 'manage_catalog',
+      tool_id: request.toolCallId
+    }
+  }
+
   return {
     args: {
       action: request.targets[0]?.action ?? (request.targets[0]?.kind === 'connector' ? 'connect' : 'install'),

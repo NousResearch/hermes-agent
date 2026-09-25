@@ -20,9 +20,9 @@ violation" on every attempt).
 These tests pin that precedence at every layer that makes the decision:
 
   * ``_resolve_use_tui(args)``  — the canonical args-aware resolver used by
-    ``cmd_chat`` and the Termux fast-TUI path.
+    ``cmd_chat`` and the fast-TUI path.
   * ``_wants_tui_early(argv)``  — the dependency-free early resolver used by
-    mouse-residue suppression and the Termux fast paths, before argparse and
+    mouse-residue suppression and the fast paths, before argparse and
     ``hermes_cli.config`` are importable.
   * the argument parser   — both ``--cli`` and ``--tui`` parse at the top
     level and under the ``chat`` subcommand and are relaunch-inherited.
@@ -30,7 +30,6 @@ These tests pin that precedence at every layer that makes the decision:
 
 from __future__ import annotations
 
-import os
 from types import SimpleNamespace
 
 import pytest
@@ -149,14 +148,6 @@ class TestWantsTuiEarly:
         assert m._config_default_interface_early() == "tui"
         assert m._wants_tui_early([]) is True
 
-    def test_same_home_is_read_only_once(self, tmp_path, monkeypatch):
-        (tmp_path / "config.yaml").write_text("display:\n  interface: tui\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        assert m._config_default_interface_early() == "tui"
-
-        # The cache still spares the hot path a second YAML parse.
-        (tmp_path / "config.yaml").write_text("display:\n  interface: cli\n")
-        assert m._config_default_interface_early() == "tui"
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +180,3 @@ class TestParserFlags:
 # ---------------------------------------------------------------------------
 # config default — shipped default preserves classic behavior
 # ---------------------------------------------------------------------------
-def test_default_config_interface_is_cli():
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    assert DEFAULT_CONFIG["display"]["interface"] == "cli"

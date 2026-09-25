@@ -80,6 +80,8 @@ export interface BotMeta {
   /** Legacy single-group scalar, projected alongside `groups`. */
   group?: null | string
   pinned?: boolean
+  /** Raise this bot's Screen tab when it starts driving its desktop (`screen-autoraise.ts`). Opt-in per bot. */
+  screenAutoOpen?: boolean
   shape?: string
   title?: string
   /** Creation timestamp in ms. Deliberately not copied when duplicating a bot. */
@@ -289,8 +291,9 @@ export interface GroupActivityEvent {
   kind: GroupActivityKind
   member?: string
   preview?: string
-  /** Typed failure cause (gateway `data.reason` or the normalized
-   *  `slot_wait_timeout`); absent on non-failures and untyped failures. */
+  /** Failure cause: the gateway's typed `data.reason`, the normalized
+   *  `slot_wait_timeout`, or the error's redacted first line (#117366);
+   *  absent on non-failures. */
   reason?: string
 }
 

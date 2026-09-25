@@ -35,9 +35,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit
 
-import yaml
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+import hermes_yaml as yaml
+
 DEFAULT_CATALOG_DIR = REPO_ROOT / "plugin-catalog"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "website" / "static" / "api"
 # Written by fetch-plugin-stars.py (at most one GitHub probe per day); absent → no ranking data.
@@ -260,8 +261,9 @@ def load_catalog_entries(catalog_dir: Path, stars: dict[str, int] | None = None,
             "version": _cosmetic(raw.get("version"), VERSION_RE.match, path.name, name, "version"),
             "image": _cosmetic(raw.get("image"), _is_allowed_image_url, path.name, name, "image"),
             "screenshots": _screenshots(raw.get("screenshots"), path.name, name),
-            "readme": raw.get("readme") is True and bool(readme_url(repo, sha, subdir)),
-            "readmeUrl": readme_url(repo, sha, subdir) if raw.get("readme") is True else "",
+            # README renders by default from the pinned commit; `readme: false` opts an entry out.
+            "readme": raw.get("readme") is not False and bool(readme_url(repo, sha, subdir)),
+            "readmeUrl": readme_url(repo, sha, subdir) if raw.get("readme") is not False else "",
             "maintainerSlug": maintainer_slug(str(raw.get("maintainer") or "")),
             "installCommand": f"hermes plugins install {name}",
             "stars": _repo_stars(repo, stars),

@@ -681,8 +681,16 @@ def _server_visible_in_scope(key, scope: Optional[str]) -> bool:
 # See issue #62771.
 _LOCK_UNAVAILABLE: Any = object()  # sentinel: locking broken/unavailable
 _MCP_DISCOVERY_LOCK_PATH: Optional[str] = None  # resolved lazily
-# Bounded wait when another process holds the lock.
-_MCP_DISCOVERY_LOCK_MAX_RETRIES, _MCP_DISCOVERY_LOCK_RETRY_DELAY_S = 240, 0.5
+# A discovery pass (bounded gathers, one 120 s budget per wave) may legitimately
+# run past the 120 s a scatter completes in. The waiter must outlast the worst
+# legitimate holder (pass ceiling + slack), or it fails over at 120 s, discovers
+# unguarded beside a still-connecting holder, and spawns duplicate stdio trees.
+# See #117373: the concurrency cap made the old 120 s waiter budget stale.
+_MCP_DISCOVERY_PASS_MAX_SEC = 300          # overall pass ceiling
+_MCP_DISCOVERY_LOCK_RETRY_DELAY_S = 0.5
+# Waiter budget (max_retries * delay) must outlast the pass ceiling: 320 s > 300 s.
+_MCP_DISCOVERY_LOCK_MAX_RETRIES = int(
+    _MCP_DISCOVERY_PASS_MAX_SEC / _MCP_DISCOVERY_LOCK_RETRY_DELAY_S) + 20
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

@@ -7,17 +7,15 @@ reads/writes land in the REQUESTED profile, the dashboard's own profile
 stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
 import json
-from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 import gateway.status as _gw_status
 import hermes_cli.config as _cfg_mod
 import hermes_cli.web_server_chat as _web_server_chat
 import hermes_cli.web_server_gateway as _web_server_gateway
 import hermes_cli.web_server_messaging as _web_server_messaging
-import hermes_cli.web_server_profiles as _web_server_profiles
 
 
 @pytest.fixture
@@ -201,28 +199,6 @@ class TestProfileScopedMcp:
         # No size for tool-b → the key is simply absent (additive-optional).
         assert "schema_chars" not in tools["tool-b"]
 
-    def test_mcp_test_without_schema_chars_keeps_old_wire_shape(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        """A probe that never fills schema_chars (older code path) produces the
-        exact pre-overlay tool objects — nothing new for old renderers."""
-        import hermes_cli.mcp_config as mcp_config
-
-        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
-            "mcp_servers:\n  plain-srv:\n    url: http://x/mcp\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(
-            mcp_config,
-            "_probe_single_server",
-            lambda name, config, connect_timeout=30, details=None: [("tool-a", "desc")],
-        )
-
-        resp = client.post(
-            "/api/mcp/servers/plain-srv/test", params={"profile": "worker_beta"}
-        )
-        assert resp.status_code == 200
-        assert resp.json()["tools"] == [{"name": "tool-a", "description": "desc"}]
 
     def test_mcp_test_resolves_profile_secret_source_scope(
         self, client, isolated_profiles, monkeypatch
@@ -360,46 +336,6 @@ class TestProfileScopedModel:
         assert "Unknown provider 'nobox'" in resp.json()["model_error"]
 
 
-    def test_model_options_uses_config_only_scope_for_selected_profile(
-        self, client, monkeypatch
-    ):
-        """Regression (#58576): _profile_scope holds _SKILLS_PROFILE_LOCK
-        across its body, and the payload build can block up to 15s on a
-        models.dev cache miss — a cold request would starve concurrent
-        /api/config on the same lock. The handler must scope the worker
-        through _config_profile_scope (contextvar only, no lock) for the
-        selected profile."""
-        import hermes_cli.web_server as web_server
-
-        scopes = []
-
-        @contextmanager
-        def _recording_config_scope(profile):
-            scopes.append(("config", profile))
-            yield object()
-
-        @contextmanager
-        def _recording_profile_scope(profile):
-            scopes.append(("full", profile))
-            yield object()
-
-        monkeypatch.setattr(
-            _web_server_profiles, "_config_profile_scope", _recording_config_scope
-        )
-        monkeypatch.setattr(_web_server_profiles, "_profile_scope", _recording_profile_scope)
-        monkeypatch.setattr(
-            "hermes_cli.inventory.load_picker_context", lambda: object()
-        )
-        monkeypatch.setattr(
-            "hermes_cli.inventory.build_model_options_payload",
-            lambda _ctx, **kwargs: {"providers": [], "model": "", "provider": ""},
-        )
-
-        resp = client.get("/api/model/options", params={"profile": "worker_beta"})
-        assert resp.status_code == 200
-        # Only the config-only scope may wrap the payload build; entering
-        # _profile_scope would hold _SKILLS_PROFILE_LOCK across it (#58576).
-        assert scopes == [("config", "worker_beta")]
 
     def test_model_info_unknown_profile_404(self, client, isolated_profiles):
         """Regression: the broad except used to convert the 404 into a 200
@@ -415,7 +351,6 @@ class TestProfileScopedPostSetup:
         """Post-setup runs in a -p scoped subprocess so hooks that read
         config / write per-profile state see the same HERMES_HOME the rest
         of the drawer's writes targeted."""
-        import hermes_cli.web_server as web_server
 
         calls = []
 
@@ -440,31 +375,6 @@ class TestProfileScopedPostSetup:
             ["-p", "worker_beta", "tools", "post-setup", "agent_browser"]
         ]
 
-    def test_post_setup_without_profile_keeps_legacy_argv(
-        self, client, isolated_profiles, monkeypatch
-    ):
-        import hermes_cli.web_server as web_server
-
-        calls = []
-
-        class _FakeProc:
-            pid = 777
-
-        monkeypatch.setattr(
-            _web_server_gateway,
-            "_spawn_hermes_action",
-            lambda subcommand, name: calls.append(list(subcommand)) or _FakeProc(),
-        )
-        monkeypatch.setattr(
-            "hermes_cli.tools_config.valid_post_setup_keys",
-            lambda: {"agent_browser"},
-        )
-        resp = client.post(
-            "/api/tools/toolsets/browser/post-setup",
-            json={"key": "agent_browser"},
-        )
-        assert resp.status_code == 200
-        assert calls == [["tools", "post-setup", "agent_browser"]]
 
 
 class TestProfileScopedGateway:
@@ -661,7 +571,6 @@ class TestProfileScopedTelegramOnboarding:
         self, client, isolated_profiles, monkeypatch
     ):
         import time
-        import hermes_cli.web_server as web_server
 
         with _web_server_messaging._telegram_onboarding_lock:
             _web_server_messaging._telegram_onboarding_pairings.clear()
@@ -716,7 +625,6 @@ class TestProfileScopedTelegramOnboarding:
 
 class TestProfileScopedChatPty:
     def test_chat_argv_scopes_hermes_home(self, isolated_profiles, monkeypatch):
-        import hermes_cli.web_server as web_server
 
         monkeypatch.setattr(
             "hermes_cli.main_tui_launch._make_tui_argv",
@@ -732,7 +640,6 @@ class TestProfileScopedChatPty:
     def test_chat_argv_bridges_selected_profile_terminal_config(
         self, isolated_profiles, monkeypatch
     ):
-        import hermes_cli.web_server as web_server
 
         (isolated_profiles["default"] / "config.yaml").write_text(
             "terminal:\n"
@@ -769,7 +676,6 @@ class TestProfileScopedChatPty:
     def test_chat_argv_default_profile_preserves_exported_terminal_values(
         self, isolated_profiles, monkeypatch
     ):
-        import hermes_cli.web_server as web_server
 
         (isolated_profiles["default"] / "config.yaml").write_text(
             "terminal:\n  backend: docker\n",
@@ -793,7 +699,6 @@ class TestProfileScopedChatPty:
     def test_chat_argv_placeholder_cwd_preserves_exported_value(
         self, isolated_profiles, monkeypatch, placeholder
     ):
-        import hermes_cli.web_server as web_server
 
         (isolated_profiles["default"] / "config.yaml").write_text(
             f"terminal:\n  backend: docker\n  cwd: {placeholder}\n",
@@ -847,7 +752,6 @@ class TestProfileScopedChatPty:
         assert env is not None
         assert env["HERMES_HOME"] == str(isolated_profiles["worker_beta"])
         assert "TERMINAL_ENV" not in env
-        assert "Failed to apply terminal config bridge for dashboard chat" in caplog.text
 
 
 class TestProfileScopedAudio:

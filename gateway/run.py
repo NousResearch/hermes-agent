@@ -650,13 +650,17 @@ def _rate_limit_reply(text: str) -> str:
     from agent.retry_utils import format_reset_window, reset_delay_from_message
     # The delivery platform is not evidence of the failing upstream: a Discord
     # chat can carry either a Discord REST error or a model-provider error.
-    if re.search(r"\bdiscord(?:\s+(?:api|rate)|\.(?:errors|com/api))", text, re.IGNORECASE):
+    discord_source = re.search(r"\bdiscord(?:\s+(?:api|rate)|\.(?:errors|com/api))", text, re.IGNORECASE)
+    model_source = re.search(
+        r"\b(?:codex|openai|anthropic|openrouter|usage_limit_reached)\b|"
+        r"\b(?:model (?:service|provider)|for (?:this |the )?model)\b",
+        text, re.IGNORECASE,
+    )
+    if discord_source and not model_source:
         return ("⏱️ Discord is rate-limiting requests. Wait a moment, then use /retry. "
                 "If it persists, check `hermes logs` on the host.")
-    if not re.search(
-        r"\b(?:model|provider|codex|openai|anthropic|openrouter|usage_limit_reached)\b",
-        text, re.IGNORECASE,
-    ):
+    # Conflicting source names are no stronger evidence than an absent source.
+    if not model_source or discord_source:
         return ("⏱️ An upstream service is rate-limiting requests. Wait a moment, then use /retry. "
                 "Check `hermes logs` on the host to identify the service.")
     seconds = reset_delay_from_message(text) or 0

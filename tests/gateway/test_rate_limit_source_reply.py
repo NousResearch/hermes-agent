@@ -33,9 +33,13 @@ def test_named_model_quota_keeps_reset_guidance():
     "HTTP 429 unknown weekly limit reached; resets in 4hr",
     "HTTP 429 Telegram API retry after 600s",
     "HTTP 429 upstream says model-router-unavailable; retry after 600s",
+    "HTTP 429 hosting provider quota exhausted; retry after 600s",
+    "HTTP 429 Codex quota exhausted; retry after 600s (Discord API delivery)",
 ])
 def test_unknown_source_does_not_infer_quota_from_delay(text):
     reply = _gateway_provider_error_reply(text)
+    assert "AI model" not in reply
+    assert "upstream" in reply
     assert "usage limit" not in reply
     assert "resets in" not in reply
 

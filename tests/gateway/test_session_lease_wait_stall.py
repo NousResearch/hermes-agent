@@ -235,7 +235,7 @@ class _LeaseWaitTurn:
             self.db.close()
 
 
-def _start_lease_wait(monkeypatch, tmp_path) -> _LeaseWaitTurn:
+def _start_lease_wait(monkeypatch, tmp_path, *, wait_budget=LEASE_WAIT_BUDGET_S) -> _LeaseWaitTurn:
     """Start (1) a real second process holding the lease and (2) a turn waiting on that same session."""
     db_path = tmp_path / "state.db"
     db = SessionDB(db_path)
@@ -258,7 +258,7 @@ def _start_lease_wait(monkeypatch, tmp_path) -> _LeaseWaitTurn:
             wait_entered.set()
 
     agent = _gateway_agent(db, status_callback)
-    monkeypatch.setattr("agent.turn_facade_lease.LEASE_WAIT_SECONDS", LEASE_WAIT_BUDGET_S)
+    monkeypatch.setattr("agent.turn_facade_lease.LEASE_WAIT_SECONDS", wait_budget)
     _compress_lease_wait_clock(monkeypatch)
 
     body_snapshot: Dict[str, Any] = {}
@@ -360,6 +360,8 @@ def test_live_lease_wait_publishes_itself_as_progress(tmp_path, monkeypatch):
         f"description={summary.get('last_activity_description')!r} "
         f"provenance={summary.get('last_activity_provenance')!r}"
     )
+    assert summary["last_activity_provenance"] == ActivityProvenance.SESSION_TURN_LEASE_WAIT.value
+    assert turn.holder.holder in summary["last_activity_description"]
 
 
 def test_inactivity_watcher_does_not_abandon_a_live_lease_wait(tmp_path, monkeypatch):
@@ -455,6 +457,40 @@ def test_turn_resumes_after_the_holder_releases_without_leftover_wait_state(tmp_
         assert second["final_response"] == "done"
         assert turn.lease_row_holder() is None
         assert turn.outcome.get("error") is None
+    finally:
+        turn.finish()
+        turn.close()
+
+
+def test_cancelled_lease_wait_clears_temporary_activity(tmp_path, monkeypatch):
+    turn = _start_lease_wait(monkeypatch, tmp_path)
+    try:
+        turn.agent._interrupt_requested = True
+        turn.agent._interrupt_message = "stop"
+        turn.turn_thread.join(timeout=5.0)
+        assert not turn.turn_thread.is_alive()
+        assert turn.outcome.get("error") is None
+        assert turn.outcome["result"]["interrupted"] is True
+        assert turn.lease_row_holder() == turn.holder.holder
+        summary = turn.agent.get_activity_summary()
+        assert summary["last_activity_description"] == ""
+        assert summary["last_activity_provenance"] == ActivityProvenance.UNKNOWN.value
+    finally:
+        turn.finish()
+        turn.close()
+
+
+def test_timed_out_lease_wait_clears_temporary_activity(tmp_path, monkeypatch):
+    turn = _start_lease_wait(monkeypatch, tmp_path, wait_budget=1.0)
+    try:
+        turn.turn_thread.join(timeout=5.0)
+        assert not turn.turn_thread.is_alive()
+        assert turn.outcome.get("error") is None
+        assert turn.outcome["result"]["error"] == f"session_turn_lease_timeout:{SESSION_ID}"
+        assert turn.lease_row_holder() == turn.holder.holder
+        summary = turn.agent.get_activity_summary()
+        assert summary["last_activity_description"] == ""
+        assert summary["last_activity_provenance"] == ActivityProvenance.UNKNOWN.value
     finally:
         turn.finish()
         turn.close()

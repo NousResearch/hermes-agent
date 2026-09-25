@@ -586,6 +586,21 @@ class SessionCompressionMixin:
                 last_notice_at = now
             time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
 
+    def get_session_turn_lease_holder(self, session_id: str) -> Optional[str]:
+        """Current holder for the session's conversation lease, for wait diagnostics only."""
+        if not session_id:
+            return None
+        # _read_ctx belongs to SessionDB, which binds this mixin at runtime.
+        read_ctx = getattr(self, "_read_ctx")
+        with read_ctx() as conn:
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
+            row = conn.execute(
+                "SELECT holder FROM session_turn_leases "
+                "WHERE conversation_id = ? AND expires_at > ?",
+                (conversation_id, time.time()),
+            ).fetchone()
+            return None if row is None else str(row["holder"])
+
     def refresh_session_turn_lease(self, session_id: str, holder: str, *, ttl_seconds: float = 300.0) -> bool:
         """Extend a turn lease only while ``holder`` still owns it."""
         if not session_id or not holder:

@@ -14,6 +14,8 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from agent.session_activity import ActivityProvenance
+
 # Same logger name as the origin module so log records / caplog filters are unchanged.
 logger = logging.getLogger("run_agent")
 
@@ -267,6 +269,20 @@ def admit_durable_turn_lease(
     def _on_wait(elapsed: float) -> None:
         nonlocal waited
         waited = True
+        blocking_holder = None
+        get_holder = getattr(db, "get_session_turn_lease_holder", None)
+        if callable(get_holder):
+            try:
+                blocking_holder = get_holder(session_id)
+            except Exception:
+                # A contended diagnostic read must not interrupt the bounded wait.
+                logger.debug("Could not read session turn lease holder", exc_info=True)
+        activity = "waiting for session turn lease"
+        if blocking_holder:
+            activity += f" held by {blocking_holder}"
+        agent._emit_wait_notice(
+            activity, provenance=ActivityProvenance.SESSION_TURN_LEASE_WAIT,
+        )
         agent._emit_status(
             "⏳ Another Hermes process is using this session; "
             "waiting for it to finish before starting your turn..."
@@ -288,6 +304,7 @@ def admit_durable_turn_lease(
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
         if waited:
+            agent._emit_wait_notice("loading the latest transcript after session admission")
             agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
             # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).

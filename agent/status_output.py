@@ -150,10 +150,12 @@ class StatusOutputMixin:
         """Clear a previously-fired sticky notice by ``key`` (e.g. on recovery)."""
         self._call_callback("notice_clear_callback", key, origin="_emit_notice_clear")
 
-    def _emit_wait_notice(self, text: str) -> None:
+    def _emit_wait_notice(
+        self, text: str, *, provenance: ActivityProvenance | None = None,
+    ) -> None:
         """Rewrite the live status line (CLI spinner, TUI ``thinking.delta``, gateway activity)
         so long provider waits are not an anonymous spinner."""
-        self._touch_activity(text)
+        self._touch_activity(text, provenance=provenance)
         self._call_callback("thinking_callback", text, origin="_emit_wait_notice")
 
     def _emit_diagnostic_wait(self, text: str) -> None:

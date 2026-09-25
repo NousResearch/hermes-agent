@@ -257,7 +257,7 @@ Beyond viewing, the journey is also where you **prune and correct** what Hermes 
 
 | Command | What it does |
 |---------|--------------|
-| `hermes journey list` | List node ids — skill names and `memory:<source>:<index>` ids for memory chunks. |
+| `hermes journey list` | List node ids — skill names and `memory:<source>:<index>:<fingerprint>` ids for memory chunks (pass one back exactly as printed). |
 | `hermes journey delete <node> [-y]` | Delete a node. Skills are **archived** (restorable), memory chunks are removed. `-y` skips the confirmation. |
 | `hermes journey edit <node>` | Open the node's content (a skill's `SKILL.md` or the memory chunk) in `$EDITOR`. |
 

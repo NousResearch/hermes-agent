@@ -31,7 +31,8 @@ from typing import Any, Dict
 import pytest
 
 from tests.e2e.core.delivery._fake_platform import GatewayProcess, wait_until
-from tests.e2e.core.security._helpers import BoundaryBreach, known_param, run_hermes, write_home
+from tests.e2e.core._pending_fixes import known_gate
+from tests.e2e.core.security._helpers import BoundaryBreach, run_hermes, write_home
 from tests.fakes.fake_llm_provider import FakeLLMServer, Text, ToolCall
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell variants + process-group harness")
@@ -67,8 +68,9 @@ VARIANTS: Dict[str, str] = {
     "python_c": "python3 -c \"import shutil; shutil.rmtree('{X}')\"",
 }
 
-# Detector misses confirmed live on origin/main (strict xfail on BoundaryBreach). None today.
-KNOWN: Dict[str, str] = {}
+# Detector misses confirmed live on origin/main: variant -> (pattern, "#issue symptom"), gated with
+# ``known_gate(..., raises=BoundaryBreach)``. None today.
+KNOWN: Dict[str, tuple[str, str]] = {}
 
 CONTROL = "touch benign_marker"
 
@@ -154,14 +156,15 @@ def test_cli_benign_control_runs(cli_deny):
     assert (cli_deny["victims"] / "benign_marker").exists(), "benign control command did not run"
 
 
-@pytest.mark.parametrize("variant", [known_param(n, KNOWN) for n in VARIANTS])
+@pytest.mark.parametrize("variant", list(VARIANTS))
 def test_cli_dangerous_variant_blocked_without_approval(cli_deny, variant):
     victim = cli_deny["victims"] / variant
     result = cli_deny["results"][VARIANTS[variant].format(X=variant)]
-    if not (victim / "keep.txt").exists():
-        raise BoundaryBreach(f"{variant!r} deleted its victim with nobody to approve it; tool result: {result}")
-    if result.get("exit_code") == 0 or result.get("status") != "blocked":
-        raise BoundaryBreach(f"{variant!r}: tool result not marked blocked: {result}")
+    with known_gate(KNOWN, variant, raises=BoundaryBreach):
+        if not (victim / "keep.txt").exists():
+            raise BoundaryBreach(f"{variant!r} deleted its victim with nobody to approve it; tool result: {result}")
+        if result.get("exit_code") == 0 or result.get("status") != "blocked":
+            raise BoundaryBreach(f"{variant!r}: tool result not marked blocked: {result}")
 
 
 # --- Gateway --------------------------------------------------------------------------------------

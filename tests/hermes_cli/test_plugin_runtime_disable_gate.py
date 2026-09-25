@@ -20,14 +20,12 @@ import pytest
 
 from hermes_cli import web_server
 
-
 @pytest.fixture(autouse=True)
 def _reset_plugin_cache():
     """Bust the plugin cache before and after each test."""
     web_server._dashboard_plugins_cache = None
     yield
     web_server._dashboard_plugins_cache = None
-
 
 @pytest.fixture
 def test_client(monkeypatch, tmp_path):
@@ -47,7 +45,6 @@ def test_client(monkeypatch, tmp_path):
     client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
     return client
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -66,11 +63,9 @@ def _make_bundled_plugin(tmp_path, name="bundledx"):
     }))
     return dashboard_dir
 
-
 # ---------------------------------------------------------------------------
 # Test 1: Runtime-disabled user plugin API routes return 404
 # ---------------------------------------------------------------------------
-
 
 class TestPluginApiRuntimeGate:
     """After a user plugin is disabled at runtime, its mounted API routes
@@ -109,7 +104,6 @@ class TestPluginApiRuntimeGate:
 
         assert response.status_code == 404
         call_next.assert_not_called()
-
 
     @pytest.mark.asyncio
     async def test_middleware_passes_non_plugin_api_routes(self):
@@ -162,11 +156,9 @@ class TestPluginApiRuntimeGate:
         assert response.status_code == 404
         call_next.assert_not_called()
 
-
 # ---------------------------------------------------------------------------
 # Test 2: Disabled bundled plugin assets return 404
 # ---------------------------------------------------------------------------
-
 
 class TestBundledPluginAssetGate:
     """Bundled plugins in ``plugins.disabled`` must have their static
@@ -206,5 +198,3 @@ class TestBundledPluginAssetGate:
                 assert resp.status_code == 404, (
                     "Disabled bundled plugin asset must return 404"
                 )
-
-

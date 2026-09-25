@@ -248,7 +248,7 @@ class TestShellFileOpsHelpers:
 
 
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_escape_shell_arg_rewrites_forward_slash_native_paths(self, file_ops):
         """Windows-only: ``_bash_safe_path`` only rewrites drive paths to the
         Git Bash form on Windows, where the MSYS path mangling it works around
@@ -751,25 +751,25 @@ class TestEscapeNativeToolArg:
     def _ops(self, mock_env):
         return ShellFileOperations(mock_env)
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_native_path_kept_native(self, mock_env):
         ops = self._ops(mock_env)
         out = ops._escape_native_tool_arg(r"C:\Users\alice\project")
         assert out == "'C:/Users/alice/project'"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_msys_path_translated_back_to_native(self, mock_env):
         ops = self._ops(mock_env)
         out = ops._escape_native_tool_arg("/c/Users/alice/project")
         assert out == "'C:/Users/alice/project'"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_posix_path_untouched_on_windows(self, mock_env):
         """Multi-segment POSIX paths (/home/x, /tmp/y) are not drive paths."""
         ops = self._ops(mock_env)
         assert ops._escape_native_tool_arg("/tmp/workdir") == "'/tmp/workdir'"
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_rg_content_search_uses_native_form(self, mock_env):
         """The call site, not just the helper: search must hand the native rg
         binary C:/..., never the MSYS /c/... form (the live os-error-3 failure)."""
@@ -791,7 +791,7 @@ class TestEscapeNativeToolArg:
         assert any("'C:/Users/alice/project'" in c for c in rg_cmds), rg_cmds
         assert all("/c/Users" not in c for c in rg_cmds), rg_cmds
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_shell_linter_uses_native_form(self, mock_env):
         """_check_lint must hand node/python/etc. the native C:/ path.
 

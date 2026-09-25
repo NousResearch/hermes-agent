@@ -86,6 +86,7 @@ class CLIInitMixin:
         self._stream_buf = ""  # partial line buffer
         self._reasoning_preview_buf = ""  # coalesces tiny reasoning chunks
         self._stream_started = self._stream_box_opened = self._stream_box_live = False
+        self._streamed_text_this_turn = ""
         self._held_status_lines: list[str] = []  # agent status lines parked while a box streams
         # Possible markdown-table lines held until the block ends for wcwidth-aware re-padding.
         self._stream_table_buf: list[str] = []

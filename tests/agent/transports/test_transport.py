@@ -92,10 +92,11 @@ class TestAnthropicTransport:
 
         details = {"type": "refusal", "category": "general_harms", "explanation": "classifier halt"}
         delta_event = SimpleNamespace(type="message_delta", delta=SimpleNamespace(stop_reason="refusal", stop_details=details))
+        message_stop_event = SimpleNamespace(type="message_stop")
 
         def _stream_cm(final):
             stream = MagicMock()
-            stream.__iter__ = MagicMock(return_value=iter([delta_event]))
+            stream.__iter__ = MagicMock(return_value=iter([delta_event, message_stop_event]))
             stream.get_final_message = MagicMock(return_value=final)
             cm = MagicMock()
             cm.__enter__, cm.__exit__ = MagicMock(return_value=stream), MagicMock(return_value=False)

@@ -28,6 +28,7 @@ import {
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   REGISTRY_VERSION,
+  registryDialConnectionId,
   registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
   removeConnection,
@@ -742,6 +743,52 @@ test('registry local route: per-profile override wins when global remote is also
   })
 
   assert.deepEqual(route, { delegate: true, poolKey: 'research' })
+})
+
+test('registry local route: a concrete remote-only profile is refused on the forced-local branch', () => {
+  // globalRemote still force-locals a profile that exists on this machine
+  // (This device must not dial the remote). A named profile that exists only
+  // on the remote must not spawn a local child.
+  const named = resolveRegistryLocalRoute('inbox', { globalRemote: true, localProfileExists: false })
+
+  assert.match(String(named.refuse ?? ''), /Profile "inbox" no longer exists/)
+  assert.equal(named.delegate, false)
+
+  // default is $HERMES_HOME, not profiles/default: a profiles/default probe
+  // reports absent, but This device -> default must still open locally.
+  assert.deepEqual(resolveRegistryLocalRoute('default', { globalRemote: true, localProfileExists: false }), {
+    delegate: false,
+    poolKey: 'conn:local::default'
+  })
+
+  const present = resolveRegistryLocalRoute('research', { globalRemote: true, localProfileExists: true })
+
+  assert.equal(present.refuse, undefined)
+  assert.equal(present.delegate, false)
+  assert.equal(present.poolKey, 'conn:local::research')
+
+  // The override remains the authoritative route even when the profile is
+  // absent locally. Unprofiled enumeration is not a concrete dial.
+  assert.deepEqual(
+    resolveRegistryLocalRoute('research', {
+      globalRemote: true,
+      localProfileExists: false,
+      profileRemoteOverride: true
+    }),
+    { delegate: true, poolKey: 'research' }
+  )
+  assert.equal(resolveRegistryLocalRoute(null, { globalRemote: true, localProfileExists: false }).refuse, undefined)
+  assert.equal(resolveRegistryLocalRoute('', { globalRemote: true, localProfileExists: false }).refuse, undefined)
+})
+
+test('registry dial: an empty connection id is not registry.primary', () => {
+  assert.throws(() => registryDialConnectionId('', 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId('   ', 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId(null, 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId(undefined, 'homelab'), /No connection with id/)
+  assert.equal(registryDialConnectionId('local', 'ssh-other-host'), 'local')
+  assert.equal(registryDialConnectionId('homelab', 'ssh-other-host'), 'homelab')
+  assert.equal(registryDialConnectionId('ssh-other-host', 'ssh-other-host'), 'ssh-other-host')
 })
 
 // --- shouldDeferLocalEnumeration (roster's connect-on-demand for 'local') ---

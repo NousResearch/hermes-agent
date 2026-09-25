@@ -18,10 +18,11 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Mapping
 
-import pytest
-import yaml
+import hermes_yaml as yaml
+
+from tests.e2e.core._pending_fixes import known_gate
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TURN_TIMEOUT = 150.0
@@ -34,32 +35,28 @@ _PASSTHROUGH_ENV = frozenset({"PATH", "LANG", "LANGUAGE", "USER", "LOGNAME", "SH
 
 class HarnessError(RuntimeError):
     """The harness broke (a process died, a reply or event never came, a turn overran its
-    budget). Never an ``AssertionError``, so a KNOWN strict xfail can never excuse it."""
+    budget). Never an ``AssertionError``, so a KNOWN entry can never excuse it."""
 
 
 class KnownBugError(AssertionError):
-    """Raised ONLY from inside ``bug_assertions()``: the one exception a KNOWN strict xfail
-    accepts. Preconditions, waits and teardown outside that block fail the test for real."""
-
-
-def known_marks(known: dict[str, str], name: str) -> list:
-    """Marks for a scenario: a strict xfail while ``name`` is in ``known`` (red the moment
-    the bug is fixed, forcing the entry out), nothing once it is gone."""
-    if name not in known:
-        return []
-    return [pytest.mark.xfail(strict=True, raises=KnownBugError, reason=known[name])]
+    """Raised ONLY from inside ``bug_assertions()``: the one exception type its
+    ``known_gate`` accepts. Preconditions, waits and teardown outside that block fail the
+    test for real."""
 
 
 @contextmanager
-def bug_assertions() -> Iterator[None]:
+def bug_assertions(known: Mapping[str, tuple[str, str]], name: str) -> Iterator[None]:
     """Wrap ONLY the final behavioural assertions that name the bug, after every wait has
-    settled; an ``AssertionError`` raised inside becomes a ``KnownBugError``."""
-    try:
-        yield
-    except KnownBugError:
-        raise
-    except AssertionError as exc:
-        raise KnownBugError(str(exc)) from exc
+    settled; an ``AssertionError`` raised inside becomes a ``KnownBugError``. While ``name``
+    is in ``known`` (key -> ``(pattern, "#issue reason")``) a ``KnownBugError`` matching its
+    pattern XFAILs the cell (``known_gate``); any other failure, or a clean pass, stands."""
+    with known_gate(known, name, raises=KnownBugError):
+        try:
+            yield
+        except KnownBugError:
+            raise
+        except AssertionError as exc:
+            raise KnownBugError(str(exc)) from exc
 
 
 # Vendor-boundary sitecustomize shims ---------------------------------------------------

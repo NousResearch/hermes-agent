@@ -1,5 +1,6 @@
 """Tests for the platform adapter registry and dynamic Platform enum."""
 
+import logging
 from unittest.mock import MagicMock
 
 from gateway.platform_registry import PlatformRegistry, PlatformEntry
@@ -232,6 +233,64 @@ class TestEnsureDepsFn:
         reg.register(entry)
         assert reg.create_adapter("flaky", MagicMock()) is adapter
         installer.assert_called_once()
+
+
+class TestMissingRequiredEnvNaming:
+    """A failed check_fn names the unset required env instead of the dependency
+    install_hint (#122877): the hint answers a dependency question, which let a
+    dead Email platform read like a harmless deps nit."""
+
+    def _entry(self, name, *, check_fn, required_env=None, install_hint=""):
+        return PlatformEntry(
+            name=name,
+            label=name.title(),
+            adapter_factory=lambda cfg: MagicMock(),
+            check_fn=check_fn,
+            required_env=required_env or [],
+            install_hint=install_hint,
+            source="plugin",
+        )
+
+    def test_unset_required_env_named_in_warning(self, monkeypatch, caplog):
+        monkeypatch.setenv("FAKE_PLATFORM_TOKEN", "set")
+        monkeypatch.delenv("FAKE_PLATFORM_HOST", raising=False)
+        reg = PlatformRegistry()
+        reg.register(self._entry(
+            "fake",
+            check_fn=lambda: False,
+            required_env=["FAKE_PLATFORM_HOST", "FAKE_PLATFORM_TOKEN"],
+            install_hint="Fake uses the Python stdlib — no extra deps",
+        ))
+        with caplog.at_level(logging.WARNING, logger="gateway.platform_registry"):
+            assert reg.create_adapter("fake", MagicMock()) is None
+        assert "required env not set: FAKE_PLATFORM_HOST" in caplog.text
+        assert "no extra deps" not in caplog.text
+
+    def test_all_required_env_set_keeps_install_hint(self, monkeypatch, caplog):
+        monkeypatch.setenv("FAKE_PLATFORM_TOKEN", "set")
+        reg = PlatformRegistry()
+        reg.register(self._entry(
+            "fake",
+            check_fn=lambda: False,
+            required_env=["FAKE_PLATFORM_TOKEN"],
+            install_hint="Fake needs the fake-sdk package",
+        ))
+        with caplog.at_level(logging.WARNING, logger="gateway.platform_registry"):
+            assert reg.create_adapter("fake", MagicMock()) is None
+        assert "Fake needs the fake-sdk package" in caplog.text
+
+    def test_blank_required_env_counts_as_unset(self, monkeypatch, caplog):
+        # check_fn gates treat abandoned blank values as missing (#40715); so must the probe.
+        monkeypatch.setenv("FAKE_PLATFORM_TOKEN", "   ")
+        reg = PlatformRegistry()
+        reg.register(self._entry(
+            "fake",
+            check_fn=lambda: False,
+            required_env=["FAKE_PLATFORM_TOKEN"],
+        ))
+        with caplog.at_level(logging.WARNING, logger="gateway.platform_registry"):
+            assert reg.create_adapter("fake", MagicMock()) is None
+        assert "required env not set: FAKE_PLATFORM_TOKEN" in caplog.text
 
 
 # ── GatewayConfig integration ────────────────────────────────────────────

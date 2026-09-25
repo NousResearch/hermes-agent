@@ -110,6 +110,50 @@ describe('useMessageStream compaction lifecycle', () => {
     expect(hydrateFromStoredSession).not.toHaveBeenCalled()
   })
 
+  it('retires the turn clock when compaction recovery settles without message.complete', () => {
+    const states = new Map([
+      [
+        SID,
+        {
+          ...createClientSessionState(),
+          awaitingResponse: true,
+          busy: true,
+          turnLive: true,
+          turnStartedAt: 1_000
+        }
+      ]
+    ])
+
+    stream = renderMessageStream(SID, { states })
+
+    // Provider-side reconnect/client rebuild is internal to the agent. From
+    // Desktop's point of view an aborted compaction can only clear its phase
+    // and later settle the turn through the authoritative running=false edge.
+    emit('status.update', { kind: 'compacting' })
+    emit('status.update', { kind: 'ready' })
+
+    // ready only ends the compaction phase; the turn itself is still live.
+    expect(stream.state()).toMatchObject({
+      awaitingResponse: true,
+      busy: true,
+      turnLive: true,
+      turnStartedAt: 1_000
+    })
+
+    // If message.complete was lost across the provider failure/recovery, the
+    // terminal heartbeat must still retire the clock/live claim so a pending
+    // assistant bubble cannot keep TurnActivityIndicator ticking forever.
+    emit('session.info', { running: false })
+
+    expect(stream.state()).toMatchObject({
+      awaitingResponse: false,
+      busy: false,
+      turnLive: false,
+      turnStartedAt: null
+    })
+    expect($compactingSessions.get()).toEqual({})
+  })
+
   it('reconciles a reconnecting compaction only from trusted terminal server state', () => {
     mountStream()
     emit('status.update', { kind: 'compacting' })

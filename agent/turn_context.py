@@ -730,7 +730,7 @@ def _collect_pre_llm_call_context(
     """Run ``pre_llm_call`` plugins; their context is injected into the user message
     (never the system prompt). Oversized per-hook context is spilled to disk so a
     runaway plugin can't inflate every subsequent turn's prompt. Hooks also receive this
-    turn's ``voice_context`` (#109455) so a plugin can branch on it without core changes."""
+    turn's ``turn_voice_context`` (#109455) so a plugin can branch on it without core changes."""
     if getattr(agent, "_persist_disabled", False):
         return ""
     try:
@@ -749,8 +749,11 @@ def _collect_pre_llm_call_context(
             sender_id=getattr(agent, "_user_id", None) or "",
             # Per-turn signal (#109455), trust varies by entry point — see turn_voice_context.py's
             # trust note: {} on every non-voice turn, never the previous turn's value — see
-            # build_turn_context's reset-first comment.
-            voice_context=getattr(agent, "_turn_voice_context", None) or {},
+            # build_turn_context's reset-first comment. Named turn_voice_context, not voice_context:
+            # prompt.submit's shipped `voice_context` wire param is the spoken TRANSCRIPT string
+            # (tools/voice_live.py's turn note), and a hook field reading the same would be a
+            # tracing hazard. Matches agent._turn_voice_context and the gateway's own local name.
+            turn_voice_context=getattr(agent, "_turn_voice_context", None) or {},
         )
         try:
             # Spill oversized per-hook context to disk so a runaway plugin can't inflate every subsequent

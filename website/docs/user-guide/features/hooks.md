@@ -443,7 +443,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `transform_tool_result` | Transform | After `post_tool_call`, before conversation append; first string replaces the result. | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | Exposes the full model-bound result and arguments. |
 | `transform_terminal_output` | Transform | After bounded foreground process capture, before final output limiting; first string replaces output. | `command`, `output`, `returncode`, `task_id`, `env_type` | Command/output may contain credentials. |
 | `pre_transcription` | Transform | Fired by the STT dispatcher after provider resolution and before any backend (built-in, command-type, or plugin-registered) is invoked; dict results are applied in registration order, last-writer-wins per field (`prompt`, `language`, `model`; `file_path` is read-only). | `file_path`, `provider`, `model`, `language`, `prompt`, `source` | The final prompt is uploaded to the configured STT provider with the audio — keep secrets out of hook returns. |
-| `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | Full user message and conversation history. |
+| `pre_llm_call` | Directive/control | Once per turn before the loop; all valid string/`{"context": ...}` returns are joined and injected into the user message. | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id`, `turn_voice_context` | Full user message and conversation history. `turn_voice_context` is client-declared UI metadata — never an identity or authorization signal. |
 | `post_llm_call` | Observer | Successful, non-interrupted turn finalization; return ignored. | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | Full prompt, response, and history. |
 | `transform_llm_output` | Transform | Before `post_llm_call` and final delivery; first non-empty string replaces the response. | `response_text`, `session_id`, `model`, `platform` | Full final assistant text. |
 | `pre_verify` | Directive/control | At the bounded edited-code verify gate; first valid continue/block-stop directive keeps the turn going. | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | Draft response and changed paths. |
@@ -677,6 +677,26 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
 | `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+| `turn_voice_context` | `dict` | How this turn was entered (see below). `{}` on an ordinary typed turn. |
+
+#### `turn_voice_context`
+
+A per-turn signal letting a callback adapt to spoken input — shorter, more speakable replies, say — without the plugin having to pattern-match a prose prefix.
+
+```python
+{"input_modality": "voice",      # "voice" | "text" — how this turn was entered
+ "voice_session_active": True,   # a voice interaction is ongoing
+ "client_surface": "desktop",    # WHERE: which client ("cli", "tui", "desktop", ...)
+ "voice_engine": "voice-live"}   # WHAT ran it; present only for a live-voice engine
+```
+
+`client_surface` names the client, never the engine, so `client_surface == "desktop"` keeps meaning *every* desktop turn as new voice engines arrive; `voice_engine` is omitted entirely when no live-voice engine handled the turn.
+
+- **Compatibility.** Always passed, always a dict: `{}` whenever the turn asserts nothing about voice, so a callback can read it unconditionally. Prefer `kwargs.get("turn_voice_context", {})` anyway if your plugin must also run against an older Hermes. Fields are normalized defensively — a malformed value from a client degrades to the default rather than raising.
+- **Trust — read this before branching on it.** Only the CLI's own `--voice` capture is first-hand. Everything arriving through the TUI/Desktop gateway is derived from `prompt.submit`'s `surface` parameter, which is a plain client-supplied string with no server-side proof of a live voice session behind it (unlike a turn's author, which the gateway stamps and a client cannot forge). Treat it as UI state for adapting tone or formatting. **Never** use it for authorization, identity, or access decisions.
+- **Not delivered on isolated compute-host turns.** With dashboard process isolation enabled, the compute-host frame carries no voice context, so hooks see `{}` even on a spoken turn. Detect voice by its presence, and treat absence as "unknown", not as "definitely typed".
+- **Desktop coverage is partial today.** Only the GPT-Live full-duplex mode tags its turns. The default `chained` voice mode (mic → STT → ordinary turn → TTS) submits nothing to distinguish itself from typing, so a spoken turn there arrives as `{}`.
+- **Shell hooks read it under `extra`.** Shell hooks promote only `tool_name`, `args`, `session_id` and `parent_session_id` to the top level of the JSON on stdin; everything else — `turn_voice_context` included — lands in the `extra` object, i.e. `.extra.turn_voice_context`.
 
 **Fires:** In `agent/turn_context.py` (turn preparation for `run_conversation()` in `agent/conversation_loop.py`), after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 

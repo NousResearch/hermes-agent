@@ -1456,9 +1456,10 @@ def _run_conversation_turn(
     store when ``user_message`` carries API-only synthetic prefixes; timestamp / platform id are
     stored as metadata (platform id lets restart drain recovery dedup). ``persist_user_display_*``:
     display-only event rendering; the model still receives the message unchanged. ``voice_context``:
-    per-turn ``{input_modality, voice_session_active, client_surface}`` (#109455) — CLI-trusted,
-    gateway client-declared (see ``agent/turn_voice_context.py``'s trust note) — never persisted;
-    reaches ``pre_llm_call`` hooks via ``agent._turn_voice_context``."""
+    per-turn ``{input_modality, voice_session_active, client_surface}`` (+ ``voice_engine`` when a
+    live-voice engine ran the turn) (#109455) — CLI-trusted, gateway client-declared (see
+    ``agent/turn_voice_context.py``'s trust note) — never persisted; reaches ``pre_llm_call`` hooks
+    as the ``turn_voice_context`` payload field, via ``agent._turn_voice_context``."""
     if moa_config is None:
         user_message, moa_config, persist_user_message = _decode_inline_moa_turn(
             user_message, persist_user_message

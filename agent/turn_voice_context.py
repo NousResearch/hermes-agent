@@ -13,8 +13,8 @@ state. The TUI/Desktop-gateway path is different — ``prompt.submit``'s ``surfa
 (``tui_gateway/methods_prompt.py``) is a plain client-supplied string with no server-side proof
 of an actual live voice session behind it, unlike ``turn_author`` (gated by a
 ``DeliveryAuthor`` the client cannot construct, see 4124). So the resulting
-``client_surface``/``input_modality``/``voice_session_active`` a hook sees for a gateway turn
-is *client-declared UI state*, at the same trust level as the pre-existing ``display_kind``/
+``client_surface``/``input_modality``/``voice_session_active``/``voice_engine`` a hook sees for a
+gateway turn is *client-declared UI state*, at the same trust level as the pre-existing ``display_kind``/
 ``surface`` params it rides alongside — useful for a plugin adapting tone or formatting, but
 hooks and plugins MUST NOT use it as an authorization or identity signal.
 """
@@ -24,15 +24,15 @@ from __future__ import annotations
 from typing import Any, Dict, Mapping
 
 _VALID_MODALITIES = frozenset({"voice", "text"})
-_MAX_SURFACE_LEN = 40
+_MAX_LABEL_LEN = 40
 
 
-def _clean_surface(value: Any) -> str:
-    """A short, trimmed surface label ("cli", "tui", "desktop", a platform name, ...); ``""``
-    for anything that isn't a non-empty string. No fixed enum — new surfaces need no code change."""
+def _clean_label(value: Any) -> str:
+    """A short, trimmed label; ``""`` for anything that isn't a non-empty string. No fixed enum —
+    a new client or a new voice engine needs no code change here."""
     if not isinstance(value, str):
         return ""
-    return value.strip()[:_MAX_SURFACE_LEN]
+    return value.strip()[:_MAX_LABEL_LEN]
 
 
 def _truthy(value: Any) -> bool:
@@ -45,13 +45,27 @@ def _truthy(value: Any) -> bool:
 
 
 def parse_voice_context(raw: Any) -> Dict[str, Any]:
-    """Normalize *raw* into ``{"input_modality", "voice_session_active", "client_surface"}``.
+    """Normalize *raw* into ``{"input_modality", "voice_session_active", "client_surface"}``,
+    plus ``"voice_engine"`` when one was named.
 
-    ``input_modality`` is this turn's input, ``voice_session_active`` is whether a voice
-    interaction is ongoing (independent — a user can type one message mid voice-session).
-    Anything that isn't a mapping, or a mapping asserting nothing (default modality, inactive,
-    no surface), normalizes to ``{}`` — falsy, so callers can treat "no signal" and "garbage
-    input" identically instead of special-casing either. Every field is normalized defensively
+    These are separate axes, and a caller must not collapse them:
+    ``client_surface`` is *where* the turn came from (which client: ``"cli"``, ``"tui"``,
+    ``"desktop"``, ...), ``input_modality`` is *how* it was entered, and ``voice_engine`` — present
+    only when a live-voice engine handled the turn — is *what* ran it (``"voice-live"`` for
+    Desktop's GPT-Live). Putting an engine id in ``client_surface`` would break the plain
+    ``client_surface == "desktop"`` test a plugin writes to mean "every desktop turn", and would
+    need re-deciding for every new engine — so engines get their own field instead.
+
+    ``voice_session_active`` is whether a voice interaction is ongoing. It is a separate axis
+    from ``input_modality`` by design (a user can type one message mid voice-session), though not
+    every entry point can express that today: the TUI/Desktop gateway derives all three fields
+    from one ``surface == "voice-live"`` boolean, so a typed message mid voice-session arrives
+    there as no signal at all. The CLI sets it from its own voice-mode state, independently.
+
+    Anything that isn't a mapping, or a mapping asserting nothing (default modality, inactive, no
+    surface), normalizes to ``{}`` — falsy, so callers can treat "no signal" and "garbage input"
+    identically instead of special-casing either. A bare ``voice_engine`` asserts nothing on its
+    own and does not by itself make the result non-empty. Every field is normalized defensively
     (an unhashable ``input_modality`` must not raise) since callers span the CLI's own trusted
     ``voice_input`` flag down to a gateway's client-declared, unauthenticated ``surface`` param —
     see the module docstring's trust note."""
@@ -60,7 +74,12 @@ def parse_voice_context(raw: Any) -> Dict[str, Any]:
     modality = raw.get("input_modality")
     modality = modality if isinstance(modality, str) and modality in _VALID_MODALITIES else "text"
     active = _truthy(raw.get("voice_session_active"))
-    surface = _clean_surface(raw.get("client_surface"))
+    surface = _clean_label(raw.get("client_surface"))
     if modality == "text" and not active and not surface:
         return {}
-    return {"input_modality": modality, "voice_session_active": active, "client_surface": surface}
+    parsed = {"input_modality": modality, "voice_session_active": active, "client_surface": surface}
+    # Omitted rather than carried as "" when absent: most turns name no engine, and the common
+    # shape stays the three fields #109455 specified.
+    if (engine := _clean_label(raw.get("voice_engine"))):
+        parsed["voice_engine"] = engine
+    return parsed

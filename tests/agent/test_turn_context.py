@@ -386,7 +386,10 @@ def test_voice_context_reaches_the_pre_llm_call_hook():
 
     pre_llm_calls = [c for c in lifecycle_hook.call_args_list if c.args[:1] == ("pre_llm_call",)]
     assert len(pre_llm_calls) == 1
-    assert pre_llm_calls[0].kwargs["voice_context"] == voice_context
+    # The hook field is turn_voice_context, not voice_context: prompt.submit's shipped
+    # voice_context wire param is the spoken transcript STRING, and one name for both is a
+    # tracing hazard (the run_conversation kwarg keeps its name — that one is not a wire field).
+    assert pre_llm_calls[0].kwargs["turn_voice_context"] == voice_context
 
 
 def test_absent_voice_context_reaches_the_pre_llm_call_hook_as_empty_dict():
@@ -397,7 +400,7 @@ def test_absent_voice_context_reaches_the_pre_llm_call_hook_as_empty_dict():
 
     pre_llm_calls = [c for c in lifecycle_hook.call_args_list if c.args[:1] == ("pre_llm_call",)]
     assert len(pre_llm_calls) == 1
-    assert pre_llm_calls[0].kwargs["voice_context"] == {}
+    assert pre_llm_calls[0].kwargs["turn_voice_context"] == {}
 
 
 def test_voice_context_reaches_the_agent_through_the_real_facade(monkeypatch):

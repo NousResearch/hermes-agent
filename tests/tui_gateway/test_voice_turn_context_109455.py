@@ -3,7 +3,8 @@
 Desktop's GPT-Live full-duplex mode already tags its turns with ``surface: "voice-live"``
 (see tools/voice_live.py, tests/tui_gateway/test_voice_live_delegation.py); these tests cover
 turning that existing signal into the same structured ``{input_modality, voice_session_active,
-client_surface}`` shape ``pre_llm_call`` hooks/plugins get for CLI voice input, and threading it
+client_surface}`` shape ``pre_llm_call`` hooks/plugins get for CLI voice input (plus
+``voice_engine``, which names the live-voice engine), and threading it
 into the actual turn via ``agent.run_conversation(voice_context=...)``.
 
 ``voice_context`` is threaded as an explicit per-request argument end-to-end (``prompt.submit``
@@ -51,7 +52,8 @@ def _session(**extra):
     }
 
 
-_VOICE_CONTEXT = {"input_modality": "voice", "voice_session_active": True, "client_surface": "voice-live"}
+_VOICE_CONTEXT = {"input_modality": "voice", "voice_session_active": True,
+                  "client_surface": "desktop", "voice_engine": "voice-live"}
 
 
 class TestPromptSubmitComputesVoiceContextWithoutMutatingSession:
@@ -76,6 +78,29 @@ class TestPromptSubmitComputesVoiceContextWithoutMutatingSession:
             "r1", {"session_id": "sid", "text": "x", "queued": True, "surface": "hud"})
 
         assert "voice_turn_context" not in busy_session
+
+    def test_the_hook_shape_names_the_client_and_the_engine_separately(self, busy_session):
+        """``client_surface`` is WHERE (which client), ``voice_engine`` is WHAT ran the turn.
+        Regression: the handler emitted ``client_surface: "voice-live"`` — an engine id in a field
+        documented as a client label, so a plugin testing ``client_surface == "desktop"`` for
+        "every desktop turn" silently missed every desktop voice turn, and each new live-voice
+        engine would have had to re-decide the mapping."""
+        server._methods["prompt.submit"](
+            "r1", {"session_id": "sid", "text": "what's the weather", "queued": True, "surface": "voice-live"})
+
+        assert busy_session["queued_prompt"]["voice_context"] == {
+            "input_modality": "voice", "voice_session_active": True,
+            "client_surface": "desktop", "voice_engine": "voice-live",
+        }
+
+    def test_the_session_surface_field_still_carries_the_raw_client_token(self, busy_session):
+        """Only the hook-facing dict is remapped. ``session["client_surface"]`` keeps the wire
+        token: ``_hud_surface_note``/``session_notifications.py`` and the transcript gate at
+        ``methods_prompt.py`` both branch on the literal ``"voice-live"``."""
+        server._methods["prompt.submit"](
+            "r1", {"session_id": "sid", "text": "x", "queued": True, "surface": "voice-live"})
+
+        assert busy_session["client_surface"] == "voice-live"
 
 
 class _FakeAgentWithVoiceContext:

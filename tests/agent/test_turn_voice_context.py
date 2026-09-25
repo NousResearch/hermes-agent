@@ -52,6 +52,30 @@ class TestParseVoiceContext:
         result = parse_voice_context({"input_modality": "voice", "client_surface": long_surface})
         assert len(result["client_surface"]) == 40
 
+    def test_voice_engine_survives_normalization(self):
+        # Regression: the return was a fixed three-key dict, so a voice_engine set at the call
+        # site vanished between the gateway and the hook while every call-site test still passed.
+        result = parse_voice_context(
+            {"input_modality": "voice", "voice_session_active": True,
+             "client_surface": "desktop", "voice_engine": "voice-live"})
+        assert result["voice_engine"] == "voice-live"
+        assert result["client_surface"] == "desktop"
+
+    def test_voice_engine_is_omitted_when_absent(self):
+        # Payload minimization: most turns name no engine, so the common shape stays three keys.
+        assert "voice_engine" not in parse_voice_context({"input_modality": "voice"})
+
+    def test_voice_engine_is_trimmed_capped_and_type_checked(self):
+        assert parse_voice_context(
+            {"input_modality": "voice", "voice_engine": "  voice-live  "})["voice_engine"] == "voice-live"
+        assert "voice_engine" not in parse_voice_context({"input_modality": "voice", "voice_engine": 12345})
+        result = parse_voice_context({"input_modality": "voice", "voice_engine": "x" * 500})
+        assert len(result["voice_engine"]) == 40
+
+    def test_voice_engine_alone_asserts_nothing(self):
+        # An engine name without a modality/session/surface claim is not a voice signal by itself.
+        assert parse_voice_context({"voice_engine": "voice-live"}) == {}
+
     def test_extra_keys_are_ignored(self):
         result = parse_voice_context({"input_modality": "voice", "tts_provider": "elevenlabs"})
         assert "tts_provider" not in result

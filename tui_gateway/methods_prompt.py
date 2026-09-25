@@ -621,8 +621,18 @@ def _(rid, params: dict) -> dict:
     # (turn_voice_context), like turn_author — NOT stashed on the shared session dict: a session is
     # mutated on every submit, so a value stored there would misattribute to whichever turn next
     # reads it (a queued/auto-continue/goal-followup turn that never went through this handler at all).
+    #
+    # client_surface is the CLIENT, never the engine: "voice-live" names GPT-Live everywhere else it
+    # appears (the /api/audio/voice-live/* routes, ClientSurface.voice_live, the renderer store), so
+    # putting it here would break a plugin testing client_surface == "desktop" for "every desktop
+    # turn" and would need re-deciding for a third engine. The engine rides in voice_engine instead,
+    # keeping the token that actually arrived rather than minting a new name for it. "desktop" is
+    # inferred, not asserted by the client: the gateway session carries no client identity, and
+    # `surface: "voice-live"` is only ever sent from apps/desktop — a non-desktop client adopting it
+    # would need this mapping revisited (as would declaring the modality client-side, per #109455).
     turn_voice_context = (
-        {"input_modality": "voice", "voice_session_active": True, "client_surface": "voice-live"}
+        {"input_modality": "voice", "voice_session_active": True, "client_surface": "desktop",
+         "voice_engine": "voice-live"}
         if session["client_surface"] == "voice-live" else None)
     has_truncation = any(params.get(k) is not None for k in _TRUNCATION_PARAMS)
     if has_truncation and isinstance(text, str):

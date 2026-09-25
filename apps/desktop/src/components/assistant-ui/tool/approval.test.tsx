@@ -6,7 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { HermesGateway } from '@/hermes'
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { $gateway } from '@/store/gateway'
-import { $approvalRequest, clearAllPrompts, sessionApprovalRequests, setApprovalRequest } from '@/store/prompts'
+import { $approvalRequest, APPROVAL_RESPOND_REQUEST_TIMEOUT_MS, clearAllPrompts, sessionApprovalRequests, setApprovalRequest } from '@/store/prompts'
 import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 import { $activeSessionId } from '@/store/session'
 import { stubMenuDomApis, stubResizeObserver } from '@/test/jsdom'
@@ -212,12 +212,18 @@ describe('PendingApprovalStack', () => {
     fireEvent.click(screen.getByRole('button', { name: /Run/ }))
 
     await waitFor(() => {
-      expect(request).toHaveBeenCalledWith('approval.respond', {
-        all: false,
-        choice: 'once',
-        request_id: 'apr-1',
-        session_id: 'sess-1'
-      })
+      expect(request).toHaveBeenCalledWith(
+        'approval.respond',
+        {
+          all: false,
+          choice: 'once',
+          request_id: 'apr-1',
+          session_id: 'sess-1'
+        },
+        // #55433: the respond RPC carries an explicit deadline covering the backend's approvals window.
+        APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+        undefined
+      )
     })
     expect($approvalRequest.get()).toBeNull()
   })
@@ -327,12 +333,18 @@ describe('PendingApprovalStack', () => {
         handleApprovalKey(new KeyboardEvent('keydown', { key: 'Enter', repeat: index > 0, cancelable: true }))
       })
       await waitFor(() =>
-        expect(rpc).toHaveBeenCalledWith('approval.respond', {
-          all: false,
-          choice: 'once',
-          request_id: id,
-          session_id: 'sess-1'
-        })
+        expect(rpc).toHaveBeenCalledWith(
+          'approval.respond',
+          {
+            all: false,
+            choice: 'once',
+            request_id: id,
+            session_id: 'sess-1'
+          },
+          // #55433: the respond RPC carries an explicit deadline covering the backend's approvals window.
+          APPROVAL_RESPOND_REQUEST_TIMEOUT_MS,
+          undefined
+        )
       )
       await waitFor(() => expect(screen.queryAllByRole('button', { name: /Run/ })).toHaveLength(index === 2 ? 0 : 1))
     }

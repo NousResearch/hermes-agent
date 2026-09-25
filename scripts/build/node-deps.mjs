@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
+import { tmpdir } from 'node:os'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -43,6 +44,28 @@ function completedInstallMatches({ source, receipt, hiddenLock, key, nativeKey }
   }
   return readFileSync(receipt, 'utf8') === expected && Object.keys(JSON.parse(installed).packages)
     .every(path => existsSync(join(source, path)))
+}
+
+// An interrupted Windows update can leave a nested .bin that npm ci's own rmdir
+// cannot clear (ENOTEMPTY, #75584); only deleting node_modules recovers it. npm's
+// debug log names the code while stdio stays on the terminal, so give each run
+// its own logs dir and retry once only on that code. Other failures keep the tree.
+function runNpmCi(node, npm, args, { source, env }) {
+  const logsDir = mkdtempSync(join(tmpdir(), 'hermes-npm-logs-'))
+  // Builders set CI=1, which turns npm's spinner off. Ask for it back: npm
+  // still shows it only on a terminal. Kept out of `args`, which keys the receipt.
+  const run = () => execFileSync(node, [npm, ...args, '--progress=true', `--logs-dir=${logsDir}`],
+    { cwd: source, env, stdio: 'inherit' })
+  try {
+    run()
+  } catch (error) {
+    const logged = readdirSync(logsDir).some(name => readFileSync(join(logsDir, name), 'utf8').includes('ENOTEMPTY'))
+    if (!logged) throw error
+    console.log('node-deps: npm ci hit ENOTEMPTY; removing node_modules and retrying once...')
+    rmSync(join(source, 'node_modules'), { recursive: true, force: true, maxRetries: 3 })
+    run()
+  }
+  rmSync(logsDir, { recursive: true, force: true })
 }
 
 /** Install the full requested workspace union in one strict, locked operation. */
@@ -105,9 +128,7 @@ export function prepareNodeDependencies({ source, workspaces, env = process.env,
   rmSync(receipt, { force: true })
   rmSync(nativeReceipt, { force: true })
   console.log(`node-deps: installing workspace dependencies with npm ci (${selected.join(', ')})...`)
-  // Builders set CI=1, which turns npm's spinner off. Ask for it back: npm
-  // still shows it only on a terminal. Kept out of `args`, which keys the receipt.
-  execFileSync(node, [npm, ...args, '--progress=true'], { cwd: source, env, stdio: 'inherit' })
+  runNpmCi(node, npm, args, { source, env })
   if (reuse) {
     const completed = `${key}\n${createHash('sha256').update(readFileSync(hiddenLock)).digest('hex')}\n`
     writeFileSync(receipt, completed)

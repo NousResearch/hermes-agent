@@ -187,3 +187,47 @@ test('npm configuration name casing does not invalidate a completed install', as
   prepareNodeDependencies({ ...options, env: { ...env, NPM_CONFIG_PREFIX: join(source, 'other-prefix') } })
   expect(existsSync(artifact)).toBe(false)
 }, 30000)
+
+// A stand-in npm: `ci` fails with ENOTEMPTY (or `failure`) while a stuck
+// node_modules/.bin entry survives, and records every ci run.
+function fakeNpm(root, failure) {
+  const [, realCli] = npmCommand()
+  const dir = join(root, 'fake-npm')
+  mkdirSync(join(dir, 'node_modules'), { recursive: true })
+  symlinkSync(dirname(createRequire(realCli).resolve('semver/package.json')), join(dir, 'node_modules/semver'), 'junction')
+  const cli = join(dir, 'npm-cli.js')
+  writeFileSync(cli, `const fs = require('fs'), path = require('path')
+const args = process.argv.slice(2)
+if (args[0] === '--version') { console.log('10.9.0'); process.exit(0) }
+fs.appendFileSync(path.join(${JSON.stringify(root)}, 'ci-runs'), 'ci\\n')
+if (fs.existsSync('node_modules/.bin/stuck')) {
+  const logs = args.find(arg => arg.startsWith('--logs-dir=')).slice('--logs-dir='.length)
+  fs.writeFileSync(path.join(logs, 'debug-0.log'), 'error code ${failure}\\n')
+  process.exit(1)
+}
+`)
+  return { ...process.env, npm_execpath: cli }
+}
+
+function stuckNodeModules(root) {
+  mkdirSync(join(root, 'node_modules/.bin'), { recursive: true })
+  writeFileSync(join(root, 'node_modules/.bin/stuck'), '')
+}
+
+test('npm ci ENOTEMPTY clears node_modules and retries once', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  stuckNodeModules(source)
+  prepareNodeDependencies({ source, workspaces: ['web'], env: fakeNpm(source, 'ENOTEMPTY') })
+  expect(readFileSync(join(source, 'ci-runs'), 'utf8')).toBe('ci\nci\n')
+  expect(existsSync(join(source, 'node_modules/.bin/stuck'))).toBe(false)
+}, 30000)
+
+test('any other npm ci failure keeps node_modules and does not retry', async () => {
+  const { prepareNodeDependencies } = await import('../scripts/build/node-deps.mjs')
+  const source = fixture()
+  stuckNodeModules(source)
+  expect(() => prepareNodeDependencies({ source, workspaces: ['web'], env: fakeNpm(source, 'EINTEGRITY') })).toThrow()
+  expect(readFileSync(join(source, 'ci-runs'), 'utf8')).toBe('ci\n')
+  expect(existsSync(join(source, 'node_modules/.bin/stuck'))).toBe(true)
+}, 30000)

@@ -392,6 +392,12 @@ def _create_session(rid, params: dict, *, copy_parent_history: bool = False) -> 
             "transport": current_transport() or _stdio_transport,
             "auth_user_id": _transport_auth_user_id(current_transport())}
         _register_session_cwd(_sessions[sid])
+    if session_model_override:
+        # A composer pick rides in as this override and beats model.default for the whole session;
+        # name both so agent.log alone explains which model a new chat runs, and why (#107410).
+        logger.info("session.create %s: model=%s provider=%s source=client override (profile default: %s)",
+                    key, session_model_override["model"], session_model_override.get("provider") or "-",
+                    _session_default_model(_sessions[sid]))
     # No DB row here (drafts left "Untitled" litter): created on the first prompt — except seeded sessions.
     # NOTE: we intentionally do NOT persist a DB row here. Every TUI/desktop launch (and every "New agent" /
     # draft) opens a session here just to paint the composer, so eagerly creating a row left an "Untitled"

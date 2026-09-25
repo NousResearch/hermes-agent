@@ -285,7 +285,7 @@ _ORPHAN_STORE_STATUS = {
 
 def _patch_checkpoint_manager(monkeypatch, prune_calls: list) -> None:
     """Report one orphan project and record the resulting prune call."""
-    import tools.checkpoint_manager as ckpt_mgr
+    import tools.checkpoint_maintenance as ckpt_mgr
 
     monkeypatch.setattr(ckpt_mgr, "store_status", lambda *a, **k: _ORPHAN_STORE_STATUS)
 

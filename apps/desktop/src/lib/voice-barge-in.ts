@@ -23,6 +23,8 @@
 // - Detection is a windowed majority (>=80% of the last SUSTAINED_MS above
 //   trigger) so intra-word energy dips don't reset progress.
 
+import { closeMeterContext, meterContextsClosed } from '@/lib/mic-meter-context'
+
 const CALIBRATION_MS = 400
 const SUSTAINED_MS = 300
 const SUSTAINED_MAJORITY = 0.8
@@ -113,7 +115,7 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
 
     recorder = null
     chunks = []
-    void context?.close().catch(() => undefined)
+    closeMeterContext(context)
     context = null
     stream?.getTracks().forEach(track => track.stop())
     stream = null
@@ -188,6 +190,14 @@ export function monitorSpeechDuringPlayback(callbacks: BargeMonitorCallbacks): (
   }
   void (async () => {
     try {
+      // Don't open a second capture context while the recorder's is still
+      // closing (#75329).
+      await meterContextsClosed()
+
+      if (disposed) {
+        return
+      }
+
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true }
       })

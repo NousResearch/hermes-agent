@@ -5,7 +5,7 @@
 
 import { vi } from 'vitest'
 
-class InertResizeObserver {
+export class InertResizeObserver {
   disconnect() {}
   observe() {}
   unobserve() {}

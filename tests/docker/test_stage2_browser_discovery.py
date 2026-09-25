@@ -1,25 +1,21 @@
-"""Runtime smoke tests for Docker stage2 browser executable discovery.
+"""Verify Docker exports a runnable full Chromium executable.
 
-Build the real image and verify the chromium binary is actually
-discovered at boot: ``AGENT_BROWSER_EXECUTABLE_PATH`` is set, points to
-a real executable, and is a browser binary (not a shared library picked
-up by a broad ``find | grep``).
+The image must ship no separate headless-shell package or store entry.
 """
 from __future__ import annotations
 
-from tests.docker.conftest import docker_exec_sh, start_container
+import json
+
+from tests.docker.conftest import docker_exec, docker_exec_sh, start_container
 
 
 def test_stage2_discovers_chromium_binary(
     built_image: str, container_name: str,
 ) -> None:
-    """The stage2 hook must discover the Playwright chromium binary and
-    export AGENT_BROWSER_EXECUTABLE_PATH so the browser tool can find it.
+    """Stage2 must export the baked full-browser path, not a shell or .so.
 
-    The discovery uses filename matching, not a broad ``find | grep``:
-    shared libraries (libGLESv2.so etc.) inherit the executable bit from
-    Playwright's tarball but must not be picked up. This test verifies the
-    discovered binary is a real browser, not a .so.
+    Exercise it as the runtime user: an executable bit alone does not prove
+    Chromium can load its shared libraries.
     """
     start_container(built_image, container_name)
 
@@ -46,10 +42,7 @@ def test_stage2_discovers_chromium_binary(
     )
 
     # Must be a browser binary by basename — NOT a shared library.
-    accepted_names = (
-        "chrome", "chromium", "chrome-headless-shell",
-        "headless_shell", "chromium-browser",
-    )
+    accepted_names = ("chrome", "chromium", "chromium-browser")
     r = docker_exec_sh(
         container_name,
         f'basename "{browser_path}"',
@@ -59,7 +52,30 @@ def test_stage2_discovers_chromium_binary(
     assert basename in accepted_names, (
         f"discovered binary basename {basename!r} is not a recognized "
         f"browser name (accepted: {accepted_names}) — the discovery may "
-        f"have picked up a shared library (.so) instead of the real browser"
+        f"have picked up a shell or shared library instead of full Chromium"
     )
 
+    r = docker_exec(
+        container_name,
+        "python3", "-c",
+        "import json; from pathlib import Path; "
+        "root = Path('/opt/hermes/tools'); "
+        "packages = json.loads((root / 'facts.json').read_text())['packages']; "
+        "print(json.dumps({'packages': list(packages), 'shell_entries': "
+        "[p.name for p in root.glob('*headless*shell*')]}))",
+        timeout=10,
+    )
+    assert r.returncode == 0, f"cannot inspect installed browser packages: {r.stderr}"
+    inventory = json.loads(r.stdout)
+    assert "chromium" in inventory["packages"], inventory
+    assert "chromium-headless-shell" not in inventory["packages"], inventory
+    assert not inventory["shell_entries"], inventory
 
+    r = docker_exec(
+        container_name,
+        browser_path,
+        "--version",
+        timeout=10,
+    )
+    assert r.returncode == 0, f"full Chromium executable failed: {r.stderr}"
+    assert "Chrome" in r.stdout or "Chromium" in r.stdout, r.stdout

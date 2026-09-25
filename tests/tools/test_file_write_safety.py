@@ -547,6 +547,21 @@ class TestBomHandling:
             f"*** Begin Patch\n*** Update File: {target}\n@@\n-VERSION=1\n+VERSION=2\n*** End Patch").success
         assert target.read_bytes() == original
 
+    @pytest.mark.parametrize("op", ["add", "move"])
+    def test_a_dangling_symlink_destination_is_occupied(self, ops, tmp_path: Path, op):
+        # `[ -f ]` and `[ -e ]` follow the link, so a dangling one read as an absent path: Add
+        # followed it and created its target, Move replaced the link. The entry is there.
+        link = tmp_path / "link.txt"
+        link.symlink_to(tmp_path / "gone.txt")
+        (tmp_path / "src.txt").write_bytes(b"SOURCE\n")
+        body = (f"*** Add File: {link}\n+X\n" if op == "add"
+                else f"*** Move File: {tmp_path / 'src.txt'} -> {link}\n")
+        res = ops.patch_v4a(f"*** Begin Patch\n{body}*** End Patch")
+        assert not res.success
+        assert link.is_symlink() and os.readlink(link) == str(tmp_path / "gone.txt")
+        assert not (tmp_path / "gone.txt").exists()
+        assert (tmp_path / "src.txt").read_bytes() == b"SOURCE\n"
+
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX only: needs os.mkfifo and SIGALRM")
     def test_native_byte_exact_read_never_opens_a_non_regular_file(self, tmp_path: Path, monkeypatch):
         # The native fast path bypasses the backend timeout, so a blocking open there hangs the

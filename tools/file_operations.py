@@ -595,8 +595,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def _not_regular_error(path: str) -> ReadResult:
         """Error for a path that exists but would block if read."""
         return ReadResult(error=(
-            f"Cannot read '{path}': not a regular file (directory, FIFO, "
-            "socket, or device). Reading it could block indefinitely."))
+            f"Cannot read '{path}': not a regular file (directory, dangling symlink, "
+            "FIFO, socket, or device). Reading it could block indefinitely."))
 
     def _probe_regular_file(self, path: str) -> tuple[int, str]:
         """Byte size of a REGULAR file: ``(file_size, status)`` with status ``"ok"``,
@@ -605,14 +605,16 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         wrapper itself failed (``_env_unavailable_error`` surfaces it verbatim).
         ``wc -c <`` on a writer-less FIFO/socket//dev/zero blocks forever and a
         name-based blocklist can't cover a FIFO (a file TYPE at any path); ``[ -f ]``
-        is a stat (symlinks followed) so it answers without touching content."""
+        is a stat (symlinks followed) so it answers without touching content. A dangling
+        symlink is ``not_regular``, never ``missing``: the entry exists, and a writer
+        told the path is free would follow the link and create its target."""
         arg = self._escape_shell_arg(path)
         # A missing path ECHOES its sentinel: a non-zero exit with no sentinel means the shell itself did
         # not run (container still starting, removed out-of-band, transport down) — not a missing file.
         # Reporting that as "File not found" made the model trust a false negative for the whole session.
         stat_result = self._exec(
             f"if [ -f {arg} ]; then wc -c < {arg} 2>/dev/null; "
-            f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
+            f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
             f"else echo {MISSING_SENTINEL}; fi")
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout).strip()
         if stat_output == MISSING_SENTINEL:
@@ -887,6 +889,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         try:
             st = os.stat(full)
         except (FileNotFoundError, NotADirectoryError):
+            if os.path.islink(full):  # dangling: an entry, not an absent path (``_probe_regular_file``)
+                return self._not_regular_error(path)
             return self._read_file_missing(path, offset, limit)
         except OSError:
             return self._read_file_sequential(path, offset, limit)
@@ -988,7 +992,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"wc -l < {arg} 2>/dev/null; {mark}; "
             f"tail -c 1 {arg} 2>/dev/null | wc -l; {mark}; "
             f'echo "$__hs $__hr"; '
-            f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
+            f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
             f"else echo {MISSING_SENTINEL}; fi")
 
     def _read_file_missing(self, path: str, offset: int, limit: int) -> ReadResult:

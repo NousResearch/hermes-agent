@@ -229,6 +229,19 @@ class MemoryStore:
             self._write("INSERT OR IGNORE INTO fact_entities (fact_id, entity_id) VALUES (?, ?)",
                         (fact_id, self._resolve_entity(name)))
 
+    def entity_ids(self, name: str) -> list[int]:
+        """entity_ids matching a name or alias, read-only (the same lookups _resolve_entity writes through).
+
+        Returns every match, so a caller asking "which facts mention this entity?" is not
+        silently narrowed to the first alias hit. Empty list = the name was never linked."""
+        ids: list[int] = []
+        for sql in _ENTITY_LOOKUPS:
+            for row in self._conn.execute(sql, (name,)).fetchall():
+                entity_id = int(row["entity_id"])
+                if entity_id not in ids:
+                    ids.append(entity_id)
+        return ids
+
     def _resolve_entity(self, name: str) -> int:
         """Return the entity_id for a case-insensitive name or alias match, creating the entity if absent."""
         for sql in _ENTITY_LOOKUPS:

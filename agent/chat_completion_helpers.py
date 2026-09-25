@@ -2259,6 +2259,17 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         if isinstance(api_msg, dict):
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 del api_msg[internal_key]
+    # Same closing normalization as assemble_api_request: strip string content and
+    # canonicalize tool-call argument JSON so the summary's prefix is bit-identical to
+    # the main loop's (KV-cache / provider prefix-cache reuse; a diverging early row
+    # forces a full re-prefill, e.g. a 555k-token conversation re-read on a local
+    # vLLM box with prefix caching). The sanitizer above may already have rewritten
+    # tool_calls into fresh dicts; canonicalization still runs for parity.
+    for api_msg in api_messages:
+        if isinstance(api_msg.get("content"), str):
+            api_msg["content"] = api_msg["content"].strip()
+    from agent.conversation_loop import _canonicalize_api_tool_calls
+    _canonicalize_api_tool_calls(api_messages)
     return api_messages
 
 

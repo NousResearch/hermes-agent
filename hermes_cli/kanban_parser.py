@@ -83,6 +83,14 @@ _TASK_IDS = _arg("task_ids", nargs="+")
 _SLUG = _arg("slug")
 _TENANT = _arg("--tenant", help="Tenant namespace")
 _PRIORITY = _arg("--priority", type=int, default=0, help="Priority tiebreaker")
+# Shared by `create` and `swarm`: both write the same cards, so both must be able to
+# choose where those cards work. Omitting it defaults to scratch, whose directory is
+# deleted on completion — a swarm's synthesizer needs a durable target to deliver into.
+_WORKSPACE = _arg(
+    "--workspace",
+    help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch; "
+         "an explicit 'scratch' also opts out of a project-scoped board's project)",
+)
 _RECLAIM_REASON = _reason("Human-readable reason (recorded on the reclaimed event)")
 _NOTIFY_TARGET = (
     _arg("--platform", required=True),
@@ -166,9 +174,7 @@ _SPECS = [
                   "Mutually exclusive with --body."),
         _arg("--assignee", help="Profile name to assign"),
         _arg("--parent", action="append", default=[], help="Parent task id (repeatable)"),
-        _arg("--workspace",
-             help="scratch | worktree | worktree:<path> | dir:<path> (default: scratch; "
-                  "an explicit 'scratch' also opts out of a project-scoped board's project)"),
+        _WORKSPACE,
         _arg("--branch", help="Branch name for worktree tasks, e.g. wt/t6-wire"),
         _arg("--project",
              help="Link to a project (id or slug). Anchors the task's "
@@ -225,6 +231,7 @@ _SPECS = [
              help="Parallel worker card (repeatable)"),
         _arg("--verifier", required=True, help="Verifier profile"),
         _arg("--synthesizer", required=True, help="Synthesizer/writer profile"),
+        _WORKSPACE,
         _TENANT,
         _PRIORITY,
         _arg("--created-by", help="Creator/anchor profile"),

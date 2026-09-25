@@ -663,6 +663,29 @@ def test_slash_exec_rejects_skills_hub_mutations_for_external_transports(monkeyp
     assert "review subcommands" in response["error"]["message"]
 
 
+def test_slash_exec_rejects_skills_hub_when_transport_context_is_missing(monkeypatch):
+    class _ExplodingWorker:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("skills hub must fail closed without transport context")
+
+    server._sessions["sid-skills"] = _session()
+    monkeypatch.setattr(server, "current_transport", lambda: None)
+    monkeypatch.setattr(server, "_SlashWorker", _ExplodingWorker)
+
+    try:
+        response = server.handle_request(
+            {
+                "id": "skills-install",
+                "method": "slash.exec",
+                "params": {"command": "skills install demo", "session_id": "sid-skills"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid-skills", None)
+
+    assert response["error"]["code"] == 4018
+
+
 def test_slash_exec_runs_skills_review_subcommands_without_the_hub(monkeypatch, tmp_path):
     class _ExplodingWorker:
         def __init__(self, *args, **kwargs):

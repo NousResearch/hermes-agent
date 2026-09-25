@@ -980,7 +980,7 @@ def _(rid, params: dict) -> dict:
         "user_id": "server-internal",
         "provider": "server-internal",
     }
-    if base == "skills" and transport is not None and transport is not _stdio_transport and not internal_tui:
+    if base == "skills" and transport is not _stdio_transport and not internal_tui:
         return _cmd_external_skills(rid, session, arg)
     sid = params.get("session_id", "")
     live_output = _live_slash_command_output(sid, session, base, arg)

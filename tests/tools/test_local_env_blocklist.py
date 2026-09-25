@@ -91,6 +91,37 @@ def test_terminal_child_observes_declared_policy(child_env, monkeypatch):
     assert dict(os.environ) == before
 
 
+# Secrets adapters read straight from the environment (webhook signing secrets, access tokens,
+# app secrets), built-in and plugin adapters alike, none of them listed in OPTIONAL_ENV_VARS.
+ADAPTER_SECRETS = """
+WHATSAPP_CLOUD_ACCESS_TOKEN WHATSAPP_CLOUD_APP_SECRET WHATSAPP_CLOUD_VERIFY_TOKEN WEIXIN_TOKEN
+YUANBAO_APP_SECRET FEISHU_ENCRYPT_KEY FEISHU_VERIFICATION_TOKEN TELEGRAM_WEBHOOK_SECRET
+PHOTON_SIDECAR_TOKEN RAFT_CHANNEL_TOKEN MSGRAPH_WEBHOOK_CLIENT_STATE MSGRAPH_CLIENT_SECRET
+""".split()
+
+
+@pytest.mark.parametrize("builder", ["foreground", "background", "nonterminal"])
+def test_adapter_and_provider_profile_secrets_never_reach_children(child_env, monkeypatch, builder):
+    from providers import list_providers
+    from tools.env_passthrough import is_env_passthrough, register_env_passthrough
+    secrets = set(ADAPTER_SECRETS)
+    secrets.update(name for profile in list_providers() for name in (profile.env_vars or ()))
+    secrets.discard("CLAUDE_CODE_OAUTH_TOKEN")  # operator's subscription, not Hermes inference
+    operator = ["MY_APP_KEY", "DEPLOY_WEBHOOK_SECRET"]  # secret-shaped, but no adapter owns them
+    for name in [*secrets, *operator]:
+        monkeypatch.setenv(name, "fake-" + name)
+    factories = {
+        "foreground": lambda: local._make_run_env({}),
+        "background": lambda: local._sanitize_subprocess_env(dict(os.environ)),
+        "nonterminal": local.hermes_subprocess_env,
+    }
+    observed = observe_child(factories[builder](), sorted(secrets | set(operator)))
+    assert observed == {**dict.fromkeys(secrets), **{k: "fake-" + k for k in operator}}
+    # Skill passthrough is what forwards a name into docker/ssh/modal and execute_code children.
+    register_env_passthrough(sorted(secrets))
+    assert not any(is_env_passthrough(name) for name in secrets)
+
+
 @pytest.mark.parametrize("builder", ["foreground", "background", "factory", "nonterminal"])
 def test_builders_strip_runtime_markers_and_owned_paths(child_env, monkeypatch, builder):
     repo, site = Path(__file__).resolve().parents[2], _running_site()

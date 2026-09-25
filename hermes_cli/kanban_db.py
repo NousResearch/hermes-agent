@@ -738,6 +738,8 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Unix time a ``scheduled`` card auto-wakes (promote_due_scheduled); NULL = manual unblock.
+    scheduled_wake_at: Optional[int] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -767,7 +769,7 @@ _TASK_REQUIRED_COLUMNS = (
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "session_id", "completion_contract", "scheduled_wake_at",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -972,7 +974,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Unix time a ``scheduled`` task auto-wakes (promote_due_scheduled);
+    -- NULL = waits for a manual unblock. Cleared when it leaves ``scheduled``.
+    scheduled_wake_at    INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2121,7 +2126,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
         "WHERE task_id = ? AND kind IN ("
         "'blocked', 'block_loop_detected', 'dependency_wait', 'gave_up', "
         "'unblocked', 'changes_requested', 'review_reopened', 'status', 'reclaimed', "
-        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited'"
+        "'stale', 'timed_out', 'crashed', 'spawn_failed', 'rate_limited', 'scheduled'"
         ") ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
     payload = _json_dict(_row_get(row, "payload"))
@@ -3647,48 +3652,78 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
+def _resume_parked_task_locked(
+    conn: sqlite3.Connection, task_id: str, *, statuses: tuple[str, ...], event_kind: str,
+    now: int, note: str, extra_payload: Optional[dict] = None, legacy_empty_payload: bool = False,
+) -> Optional[str]:
+    """Shared body of :func:`unblock_task` and :func:`promote_due_scheduled`:
+    recover the parked-from phase (``review`` survives a park), re-gate on
+    parents, clear the wake time, close a dangling run. Caller holds the txn.
+    Returns the landed status, or ``None`` when the task was not parked."""
+    if _task_status(conn, task_id) in ("blocked", "scheduled"):
+        resume_status = _resume_status_from_events(conn, task_id)
+    else:
+        resume_status = "ready"
+    _reclaim_dangling_run(conn, task_id, statuses=statuses, now=now, note=note)
+    # Re-gate on parent completion before restoring the source phase.
+    landing_status = _landing_status_after_parents(conn, task_id)
+    new_status = "review" if landing_status == "ready" and resume_status == "review" else landing_status
+    # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
+    # resetting them is the amnesia that let cron-unblock <-> re-block loop
+    # unbounded; only complete_task clears them. ``consecutive_failures``
+    # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
+    # is a fresh start for the retry budget.
+    placeholders = ", ".join("?" for _ in statuses)
+    cur = conn.execute(
+        "UPDATE tasks SET status = ?, current_run_id = NULL, "
+        "consecutive_failures = 0, last_failure_error = NULL, scheduled_wake_at = NULL "
+        f"WHERE id = ? AND status IN ({placeholders})", (new_status, task_id, *statuses),
+    )
+    if cur.rowcount != 1:
+        return None
+    payload: Optional[dict] = {"status": new_status, "resume_status": resume_status}
+    if extra_payload:
+        payload.update(extra_payload)
+    elif legacy_empty_payload and new_status == "ready" and resume_status == "ready":
+        payload = None
+    _append_event(conn, task_id, event_kind, payload)
+    return new_status
+
+
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    when that is where it left off, including a card parked from review),
+    closing any leaked run first and clearing any pending wake time."""
     now = int(time.time())
     with write_txn(conn):
-        resume_status = (
-            _resume_status_from_events(conn, task_id)
-            if _task_status(conn, task_id) == "blocked"
-            else "ready"
-        )
-        _reclaim_dangling_run(
-            conn, task_id, statuses=("blocked", "scheduled"), now=now,
-            note="invariant recovery on unblock",
-        )
-        # Re-gate on parent completion before restoring the source phase.
-        landing_status = _landing_status_after_parents(conn, task_id)
-        new_status = (
-            "review"
-            if landing_status == "ready" and resume_status == "review"
-            else landing_status
-        )
-        # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
-        # resetting them is the amnesia that let cron-unblock <-> re-block loop
-        # unbounded; only complete_task clears them. ``consecutive_failures``
-        # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
-        # is a fresh start for the retry budget.
-        cur = conn.execute(
-            "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
-        )
-        if cur.rowcount != 1:
-            return False
-        _append_event(
-            conn, task_id, "unblocked",
-            (
-                {"status": new_status, "resume_status": resume_status}
-                if new_status != "ready" or resume_status != "ready"
-                else None
-            ),
-        )
-        return True
+        return _resume_parked_task_locked(
+            conn, task_id, statuses=("blocked", "scheduled"), event_kind="unblocked",
+            now=now, note="invariant recovery on unblock", legacy_empty_payload=True,
+        ) is not None
+
+
+def promote_due_scheduled(conn: sqlite3.Connection) -> list[str]:
+    """Resume every ``scheduled`` task whose ``scheduled_wake_at`` has passed,
+    via the exact :func:`unblock_task` transition, recording ``scheduled_wake``.
+    A scheduled task with no wake time is never auto-promoted. Returns ids woken.
+    Opens its own txns — call OUTSIDE any write txn."""
+    now = int(time.time())
+    rows = conn.execute(
+        "SELECT id, scheduled_wake_at FROM tasks WHERE status = 'scheduled' "
+        "AND scheduled_wake_at IS NOT NULL AND scheduled_wake_at <= ? "
+        "ORDER BY scheduled_wake_at", (now,),
+    ).fetchall()
+    woken: list[str] = []
+    for row in rows:
+        with write_txn(conn):
+            landed = _resume_parked_task_locked(
+                conn, row["id"], statuses=("scheduled",), event_kind="scheduled_wake",
+                now=now, note="invariant recovery on scheduled wake",
+                extra_payload={"wake_at": int(row["scheduled_wake_at"]), "now": now},
+            )
+        if landed is not None:
+            woken.append(row["id"])
+    return woken
 
 
 def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -4023,20 +4058,31 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def schedule_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    expected_run_id: Optional[int] = None,
+    expected_run_id: Optional[int] = None, wake_at: Optional[int] = None,
 ) -> bool:
     """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
-    until ``unblock_task`` re-gates it."""
+    until ``unblock_task`` re-gates it, or — with ``wake_at`` (unix seconds) —
+    until :func:`promote_due_scheduled` wakes it on a dispatcher tick.
+
+    ``review`` is an accepted source phase (a reviewer waiting on CI must be
+    able to park instead of being re-claimed next tick); it is recorded as
+    ``source_status`` so wake/unblock resume INTO review. ``triage`` is a human
+    lane and is not accepted. A foreign live worker released here is ended by
+    ``reap_terminal_workers`` off the closed run; ``scheduled`` is not
+    dispatchable, so no second writer can be spawned meanwhile."""
+    wake = int(wake_at) if wake_at is not None else None
     with write_txn(conn):
-        params: list[Any] = [task_id]
+        source_status = _task_status(conn, task_id)
+        params: list[Any] = [wake, task_id]
         sql = """
             UPDATE tasks
                SET status       = 'scheduled',
                    claim_lock   = NULL,
                    claim_expires= NULL,
-                   worker_pid   = NULL
+                   worker_pid   = NULL,
+                   scheduled_wake_at = ?
              WHERE id = ?
-               AND status IN ('todo', 'ready', 'running', 'blocked')
+               AND status IN ('todo', 'ready', 'running', 'blocked', 'review')
         """
         if expected_run_id is not None:
             sql += " AND current_run_id = ?"
@@ -4046,7 +4092,10 @@ def schedule_task(
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="scheduled", status="scheduled", summary=reason, synthesize=bool(reason),
         )
-        _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
+        _append_event(
+            conn, task_id, "scheduled",
+            {"reason": reason, "source_status": source_status, "wake_at": wake}, run_id=run_id,
+        )
         return True
 
 

@@ -366,7 +366,12 @@ _SPECS = [
         _TASK_ID,
         _arg("reason", nargs="*", help="Reason/timing note (also appended as a comment)"),
         _bulk_ids("schedule"),
-    ], help="Park one or more tasks in Scheduled (waiting on time, not human input)"),
+        _arg("--wake-at", default=None,
+             help="Auto-wake time: ISO-8601 (naive = local time) or unix epoch seconds. "
+                  "The dispatcher resumes the task on the first tick at/after it; "
+                  "omit to wait for 'kanban unblock'."),
+    ], help="Park one or more tasks in Scheduled (waiting on time, not human input); "
+            "parks from todo/ready/running/blocked/review and resumes into the parked phase"),
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,

@@ -199,7 +199,10 @@ def test_schedule_task_parks_time_delay_without_dispatching(kanban_home):
         assert kb.claim_task(conn, t) is None
 
         events = kb.list_events(conn, t)
-        assert any(e.kind == "scheduled" and e.payload == {"reason": "run next week"} for e in events)
+        scheduled = [e for e in events if e.kind == "scheduled"]
+        assert scheduled[-1].payload["reason"] == "run next week"
+        assert scheduled[-1].payload["source_status"] == "ready"
+        assert scheduled[-1].payload["wake_at"] is None
 
 
 

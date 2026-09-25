@@ -1041,14 +1041,35 @@ def _cmd_block(args: argparse.Namespace) -> int:
         return _bulk_apply(ids, op, ok_msg, lambda tid: f"cannot block {tid}")
 
 
+def _parse_wake_at(value: Optional[str]) -> Optional[int]:
+    """``--wake-at`` (ISO-8601, naive = local time, or unix seconds) -> unix
+    seconds; ``ValueError`` on anything else."""
+    raw = str(value).strip() if value is not None else ""
+    if not raw:
+        return None
+    if raw.isdigit():
+        return int(raw)
+    import datetime as _dt
+
+    parsed = _dt.datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return int(parsed.timestamp())
+
+
 def _cmd_schedule(args: argparse.Namespace) -> int:
     reason = _joined_words(args.reason)
     author = _profile_author()
     ids = _bulk_ids(args)
-    suffix = f": {reason}" if reason else ""
+    try:
+        wake_at = _parse_wake_at(getattr(args, "wake_at", None))
+    except ValueError:
+        return _err("--wake-at must be an ISO-8601 timestamp or a unix epoch in seconds")
+    when = f" (wakes at {wake_at})" if wake_at is not None else ""
+    suffix = f"{when}: {reason}" if reason else when
     with kbc.connect_closing() as conn:
         op = _commented(conn, reason, author, "SCHEDULED", lambda tid: kb.schedule_task(
-            conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid)))
+            conn, tid, reason=reason, expected_run_id=_worker_run_id_for(tid), wake_at=wake_at))
         return _bulk_apply(ids, op, lambda tid: f"Scheduled {tid}{suffix}", lambda tid: f"cannot schedule {tid}")
 
 

@@ -1,4 +1,4 @@
-﻿# Hermes Agent bootstrap: git checkout + venv + hermes command on PATH.
+# Hermes Agent bootstrap: git checkout + venv + hermes command on PATH.
 # Heavy dependencies (tool binaries, browsers, node) are pm's job after
 # this: `hermes pm install`. Stage protocol kept for Hermes-Setup:
 #   -Manifest             print the stage list as JSON
@@ -93,6 +93,10 @@ $script:GitPinFiles = @{
     }
 }
 # --- END GENERATED: bootstrap pins ---
+
+# The managed-Python minor the installer uses before pm/lock.json exists to
+# pin one: the pre-checkout git tar fallback.
+$script:BaselinePythonMinor = '3.14'
 
 # ============================================================================
 # 8.3 short-path normalization
@@ -527,29 +531,45 @@ function Get-Uv {
 }
 
 # Extract a tar archive with the pinned uv's managed CPython when the inbox
-# bsdtar cannot (no bzip2 filter on stock Windows). Applies pm's exact
-# MSYS-link skip policy (pm/store.py extract_tar git_msys): dev/fd,
-# dev/stdin, dev/stdout, dev/stderr and etc/mtab are symlinks into /proc that
-# cannot exist on Windows; every other member is extracted and any other
-# failure fails the stage. Exit code in $LASTEXITCODE; no stdout.
+# bsdtar cannot (no bzip2 filter on older Windows 10 bsdtar builds). Applies
+# pm's MSYS-link skip policy (pm/store.py extract_tar git_msys): symlinks
+# under dev/ pointing into /proc, and etc/mtab -> /proc/mounts, cannot exist
+# on Windows; every other member is extracted and any other failure fails the
+# stage. The Python runs from a temp .py file -- Windows PowerShell 5.1's
+# legacy native argument passing mangles the quotes a `python -c` payload
+# needs -- and stderr keeps flowing so the install log shows why a failure
+# happened. Exit code in $LASTEXITCODE; no stdout.
 function Invoke-PythonTarExtract {
     param(
         [Parameter(Mandatory = $true)][string]$Archive,
         [Parameter(Mandatory = $true)][string]$Destination
     )
-    $py = Get-BootstrapPython
+    # Never Get-BootstrapPython: that cache is lock-pinned by later stages,
+    # and this runs before a checkout exists to read the lock from.
+    $py = Resolve-ManagedPython $script:BaselinePythonMinor
     $code = @'
 import sys, tarfile
 archive, dest = sys.argv[1], sys.argv[2]
-skip = {("dev/fd", "/proc/self/fd"), ("dev/stderr", "/proc/self/fd/2"),
-        ("dev/stdin", "/proc/self/fd/0"), ("dev/stdout", "/proc/self/fd/1"),
-        ("etc/mtab", "/proc/mounts")}
+def keep(m):
+    if not m.issym():
+        return True
+    name = m.name.lstrip("./")
+    if name.startswith("dev/") and m.linkname.startswith("/proc/"):
+        return False
+    return not (name == "etc/mtab" and m.linkname == "/proc/mounts")
 with tarfile.open(archive, "r:bz2") as tf:
     tf.extractall(dest, filter="data",
-                  members=[m for m in tf.getmembers()
-                           if (m.name, m.linkname) not in skip])
+                  members=[m for m in tf.getmembers() if keep(m)])
 '@
-    Invoke-Native { & $py -c $code $Archive $Destination 2>$null }
+    $tmpPy = Join-Path ([IO.Path]::GetTempPath()) "hermes-tar-extract-$PID.py"
+    try {
+        # ASCII like the installer itself: 5.1 reads a BOM-less file as the
+        # ANSI code page, and $code is all-ASCII.
+        Set-Content -LiteralPath $tmpPy -Value $code -Encoding Ascii
+        Invoke-Native { & $py $tmpPy $Archive $Destination }
+    } finally {
+        Remove-Item -LiteralPath $tmpPy -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # Provision git for this host from the pinned pm/lock.json artifact, into
@@ -571,9 +591,11 @@ function Get-PinnedGit {
         $extractDir = Join-Path $tmpDir "unpacked"
         New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
         # The pinned artifact is a git-for-windows tar.bz2 (the same one pm
-        # itself extracts). Windows 10+ ships bsdtar with bzip2 support in
-        # System32; a GNU tar earlier on PATH (Cygwin/MSYS) reads C:\ as a
-        # remote host, so never resolve it from PATH.
+        # itself extracts). The inbox System32 bsdtar is preferred (a GNU tar
+        # earlier on PATH reads C:\ as a remote host, so never resolve it
+        # from PATH); Windows 11's build links bz2lib, but older Windows 10
+        # builds (libarchive 3.3.x) ship without the bzip2 filter -- covered
+        # by the fallback below.
         $inboxTar = Join-Path $env:SystemRoot 'System32\tar.exe'
         # MSYS ships these as symlinks into /proc. Without symlink rights (not
         # elevated, no Developer Mode) tar cannot create them and fails the
@@ -584,15 +606,16 @@ function Get-PinnedGit {
         $excludes = foreach ($link in $msysProcLinks) { '--exclude'; "^$link" }
         Invoke-Native { & $inboxTar @excludes -xf $tarPath -C $extractDir }
         if ($LASTEXITCODE) {
-            # Stock Windows 10/11 ships a bsdtar built without bzip2: it can
-            # only "decompress" a .tar.bz2 by spawning an external bzip2 -d,
-            # which a fresh host does not have, so the pinned git artifact
-            # can never unpack there ("Can't initialize filter; unable to run
-            # program bzip2 -d"). GitHub runners pass only because Git's own
-            # usr\bin\bzip2.exe is on PATH. Retry with the pinned uv's own
-            # managed Python, whose stdlib tarfile reads bz2 natively (the
-            # same move pm made for host xz in #11197); the fallback covers
-            # every bsdtar failure, not just the missing-filter one.
+            # Older Windows 10 bsdtar builds (libarchive 3.3.x) have no
+            # bzip2 filter: they can only "decompress" a .tar.bz2 by spawning
+            # an external bzip2 -d, which a fresh host does not have, so the
+            # pinned git artifact can never unpack there ("Can't initialize
+            # filter; unable to run program bzip2 -d"). GitHub runners pass
+            # only because Git's own usr\bin\bzip2.exe is on PATH. Retry
+            # with the pinned uv's own managed Python, whose stdlib tarfile
+            # reads bz2 natively (the same move pm made for host xz in
+            # #11197); the fallback covers every bsdtar failure, not just
+            # this one.
             Invoke-PythonTarExtract -Archive $tarPath -Destination $extractDir
             if ($LASTEXITCODE) { Fail "failed to extract pinned git archive" }
         }
@@ -928,31 +951,33 @@ function Stage-Venv {
 # (the run_locked_uv_sync contract moved into pm/environment.py).
 # This tool-only bootstrap runs before PM's own dependencies exist. pm.cli
 # prepares and enters its independently locked runtime before installing apps.
+# Resolve (installing when absent) the pinned uv's managed CPython for a
+# minor version, e.g. '3.14'. Never caches: the bootstrap ladder caches its
+# lock-pinned result in $script:BootstrapPython, and the pre-checkout tar
+# fallback must not pollute that cache with the baseline minor.
+function Resolve-ManagedPython([string]$Minor) {
+    $uv = Get-Uv
+    # A bare version lets uv pick emulated x86_64 on Windows-on-ARM.
+    $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
+    $pyRequest = "cpython-$Minor-windows-$pyArch-none"
+    $py = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
+    if ($LASTEXITCODE -or -not $py) {
+        Invoke-Logged "Downloading Python $Minor" { & $uv python install --no-bin --no-registry $pyRequest }
+        if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
+        $py = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
+    }
+    if ($LASTEXITCODE -or -not $py) { Fail "bootstrap Python lookup failed" }
+    return $py.Trim()
+}
+
 function Get-BootstrapPython {
     # The full ladder runs every stage in one process and four of them need
     # this interpreter; resolve uv and Python once per process.
     if ($script:BootstrapPython) { return $script:BootstrapPython }
-    $uv = Get-Uv
-    # prerequisites runs before a checkout exists; the lock is read only for
-    # the (optional) python pin, so fall back to the installer's baseline.
-    $lockPath = Join-Path $InstallDir "pm\lock.json"
-    $pyVersion = '3.14'
-    if (Test-Path $lockPath) {
-        $lock = Get-Content $lockPath -Raw | ConvertFrom-Json
-        $pyPin = $lock.packages.python
-        if ($pyPin) { $pyVersion = ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' }
-    }
-    # A bare version lets uv pick emulated x86_64 on Windows-on-ARM.
-    $pyArch = if ((Get-WindowsArch) -eq 'arm64') { 'aarch64' } else { 'x86_64' }
-    $pyRequest = "cpython-$pyVersion-windows-$pyArch-none"
-    $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest 2>$null }) -join "`n"
-    if ($LASTEXITCODE -or -not $bootPy) {
-        Invoke-Logged "Downloading Python $pyVersion" { & $uv python install --no-bin --no-registry $pyRequest }
-        if ($LASTEXITCODE) { Fail "bootstrap Python installation failed" }
-        $bootPy = (Invoke-Native { & $uv python find --managed-python --no-project $pyRequest }) -join "`n"
-    }
-    if ($LASTEXITCODE -or -not $bootPy) { Fail "bootstrap Python lookup failed" }
-    $script:BootstrapPython = $bootPy.Trim()
+    $lock = Get-Content (Join-Path $InstallDir "pm\lock.json") -Raw | ConvertFrom-Json
+    $pyPin = $lock.packages.python
+    $pyVersion = if ($pyPin) { ($pyPin.version -split '\+')[0] -replace '^(\d+\.\d+).*', '$1' } else { $script:BaselinePythonMinor }
+    $script:BootstrapPython = Resolve-ManagedPython $pyVersion
     return $script:BootstrapPython
 }
 

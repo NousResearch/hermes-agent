@@ -1,11 +1,11 @@
 """The pinned git .tar.bz2 must unpack even when the inbox bsdtar cannot (#122774).
 
-Stock Windows 10/11 ships ``System32\\tar.exe`` (bsdtar) built without a
-bzip2 filter: on a fresh host it cannot decompress the pinned git-for-windows
-``.tar.bz2`` ("Can't initialize filter; unable to run program \"bzip2 -d\"")
-and the installer failed at the prerequisites stage. install.ps1 now retries
-the extraction with the pinned uv's managed Python (stdlib ``tarfile`` reads
-bz2 natively), skipping exactly the MSYS /proc links pm skips
+Older Windows 10 builds ship ``System32\\tar.exe`` (bsdtar/libarchive 3.3.x)
+without a bzip2 filter: on a fresh host it cannot decompress the pinned
+git-for-windows ``.tar.bz2`` ("Can't initialize filter; unable to run program
+\"bzip2 -d\"") and the installer failed at the prerequisites stage. install.ps1
+now retries the extraction with the pinned uv's managed Python (stdlib
+``tarfile`` reads bz2 natively), skipping the MSYS /proc links pm skips
 (pm/store.py ``extract_tar(git_msys=True)``).
 
 These drive the real installer functions, dot-sourced, under Windows
@@ -49,7 +49,10 @@ def _write_archive(path: Path) -> str:
                              ("dev/stdin", "/proc/self/fd/0"),
                              ("dev/stdout", "/proc/self/fd/1"),
                              ("dev/stderr", "/proc/self/fd/2"),
-                             ("etc/mtab", "/proc/mounts")):
+                             ("etc/mtab", "/proc/mounts"),
+                             # The pm predicate skips ANY dev/* -> /proc/* symlink,
+                             # not just the five git-for-windows ships today.
+                             ("dev/newlink", "/proc/newthing")):
             link = tarfile.TarInfo(name)
             link.type = tarfile.SYMTYPE
             link.linkname = target
@@ -69,7 +72,7 @@ def _run_probe(script: str, workdir: Path, timeout: int = 240) -> subprocess.Com
 
 def test_python_fallback_unpacks_archive_and_skips_proc_links(tmp_path):
     """With bsdtar out of the picture, Invoke-PythonTarExtract alone unpacks
-    the archive and skips exactly the five /proc symlinks."""
+    the archive and skips exactly the MSYS /proc symlinks."""
     archive = tmp_path / "git.tar.bz2"
     _write_archive(archive)
     dest = tmp_path / "unpacked"
@@ -78,7 +81,7 @@ def test_python_fallback_unpacks_archive_and_skips_proc_links(tmp_path):
     script = f"""
 $ErrorActionPreference = "Stop"
 . "{INSTALLER}"
-function Get-BootstrapPython {{ return "{py}" }}
+function Resolve-ManagedPython {{ return "{py}" }}
 Invoke-PythonTarExtract -Archive "{archive}" -Destination "{dest}"
 if ($LASTEXITCODE) {{ "extract exit=$LASTEXITCODE"; exit 1 }}
 "ok"
@@ -90,11 +93,21 @@ if ($LASTEXITCODE) {{ "extract exit=$LASTEXITCODE"; exit 1 }}
     # directories that share their parents are not.
     assert not (dest / "dev" / "fd").exists()
     assert not (dest / "etc" / "mtab").exists()
+    # A future git build adding another dev/* -> /proc/* link (the pm
+    # predicate's general form) is skipped too, not just the five literals.
+    assert not (dest / "dev" / "newlink").exists()
 
 
 def test_bsdtar_failure_falls_back_to_python_extractor(tmp_path):
-    """When the inbox tar.exe fails (a filter-less bsdtar on stock Windows),
-    Get-PinnedGit still stages git through the Python fallback."""
+    """When the inbox tar.exe fails (a filter-less bsdtar on older Windows 10
+    builds), Get-PinnedGit still stages git through the Python fallback.
+
+    The Invoke-Native stand-in must fail the exact scriptblock the bsdtar
+    call site builds (`& $inboxTar @excludes -xf $tarPath -C $extractDir`,
+    resolved from the $inboxTar variable) -- a literal ``tar.exe`` never
+    appears in that text, so a stand-in keyed on it would let the runner's
+    real bsdtar succeed and never exercise the fallback.
+    """
     archive = tmp_path / "git.tar.bz2"
     sha = _write_archive(archive)
     store = tmp_path / "store"
@@ -103,11 +116,11 @@ def test_bsdtar_failure_falls_back_to_python_extractor(tmp_path):
 $ErrorActionPreference = "Stop"
 $env:HERMES_RUNTIME_DIR = "{store}"
 . "{INSTALLER}"
-function Get-BootstrapPython {{ return "{py}" }}
-# Stand in for the filter-less inbox bsdtar: fail every tar invocation,
-# run everything else (the Python extractor) for real.
+function Resolve-ManagedPython {{ return "{py}" }}
+# Stand in for the filter-less inbox bsdtar: fail exactly the archive
+# extraction call, run everything else (the Python extractor) for real.
 function Invoke-Native([scriptblock]$Command) {{
-    if ("$Command" -like "*tar.exe*") {{ $global:LASTEXITCODE = 1; return }}
+    if ("$Command" -like "*-xf*") {{ $global:LASTEXITCODE = 1; return }}
     & $Command
 }}
 $script:GitPinVersion = "9.9.9"
@@ -123,22 +136,3 @@ if (-not $git -or $LASTEXITCODE) {{ exit 1 }}
     staged = sorted(store.glob("git-*/cmd/git.exe"))
     assert len(staged) == 1
     assert staged[0].read_bytes() == GIT_PAYLOAD
-
-
-def test_bootstrap_python_tolerates_missing_checkout(tmp_path):
-    """prerequisites runs before a checkout exists, so Get-BootstrapPython
-    must not require pm/lock.json under the install dir."""
-    fake_uv = tmp_path / "fake-uv.cmd"
-    fake_uv.write_text("@echo C:\\fake\\python.exe\r\n@exit /b 0\r\n", encoding="utf-8")
-    install_dir = tmp_path / "no-checkout-yet"
-    install_dir.mkdir()
-    script = f"""
-$ErrorActionPreference = "Stop"
-. "{INSTALLER}" -InstallDir "{install_dir}"
-function Get-Uv {{ return "{fake_uv}" }}
-$py = Get-BootstrapPython
-"py=$py"
-"""
-    result = _run_probe(script, tmp_path)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "py=C:\\fake\\python.exe" in result.stdout

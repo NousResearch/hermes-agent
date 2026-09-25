@@ -507,8 +507,10 @@ def _timestamp_line(agent: Any) -> str:
                            "— trust this over the start date for what day it is now; query tools for exact time.")
     if getattr(agent, "_bot_chat_timeless_prompt", False):
         timestamp_line = f"Timezone: {', '.join(_bits)}" if _bits else ""
-    trailer = (("Session ID", agent.session_id if agent.pass_session_id else None), ("Model", agent.model),
-               ("Provider", agent.provider), ("Platform", agent.platform))
+    trailer = (("Session ID", agent.session_id if agent.pass_session_id else None),)
+    if not getattr(agent, "_white_label_prompt", False):
+        trailer += (("Model", agent.model), ("Provider", agent.provider))
+    trailer += (("Platform", agent.platform),)
     return timestamp_line + "".join(f"\n{label}: {value}" for label, value in trailer if value)
 
 
@@ -563,7 +565,8 @@ def _guidance_parts(agent: Any) -> List[str]:
     if not agent.valid_tool_names:
         return parts
     # Steering only lands inside tool results, so only reachable with tools.
-    parts.append(STEER_CHANNEL_NOTE)
+    if not getattr(agent, "_white_label_prompt", False):
+        parts.append(STEER_CHANNEL_NOTE)
     # agent.tool_use_enforcement / agent.execution_guidance: "auto" (default)
     # matches the hardcoded model lists; true/false force; a list gives custom
     # model-name substrings.  Execution guidance is an independent gate so
@@ -701,7 +704,9 @@ def _post_workspace_parts(agent: Any) -> List[str]:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts += [_active_profile_line(agent), platform_hint(agent)]
+    if not getattr(agent, "_white_label_prompt", False):
+        parts.append(_active_profile_line(agent))
+    parts.append(platform_hint(agent))
     return parts
 
 
@@ -740,13 +745,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # The skill_view() pointer dangles without skill tools OR without the
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.
+    _white_label = getattr(agent, "_white_label_prompt", False)
     _help_guidance_slot = len(stable_parts)
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
+    if not _white_label:
+        stable_parts.append(HERMES_AGENT_HELP_GUIDANCE_NO_SKILLS)
     stable_parts.extend(_guidance_parts(agent))
     skills_prompt = _skills_prompt(agent)
     # Skill-pointer variant requires BOTH skill_view AND the hermes-agent skill
     # in the rendered index (pure string check — inherits the index's stability).
-    if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
+    if not _white_label and "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
     stable_parts.extend(_alibaba_identity_part(agent))
     # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.

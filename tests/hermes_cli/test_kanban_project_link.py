@@ -242,6 +242,15 @@ def test_worker_filing_a_card_keeps_the_project_through_the_tool(
         "source_task": owner.id}
     assert kb.get_task(conn, filed["task_id"]).project_id == project_id
 
+    # The other half of the card: with project and workspace args omitted, the
+    # inheritance branch must bind the same project through the same fallback.
+    inherited = json.loads(kt._handle_create(
+        {"title": "filed with nothing named", "assignee": "peer"}))
+    assert inherited["ok"] is True, inherited
+    assert inherited["project_id"] == project_id
+    assert inherited["workspace_kind"] == "worktree"
+    assert inherited["project_link"]["resolution"] == "recovered_from_source_task"
+
     dropped = json.loads(kt._handle_create(
         {"title": "filed with a stale id", "assignee": "peer", "project": "p_nowhere"}))
     assert dropped["ok"] is True, dropped

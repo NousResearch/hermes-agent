@@ -94,6 +94,9 @@ _EXIT_REASON_FAILURES: Tuple[Tuple[str, str, bool, bool], ...] = (
     # Advisory: the reasoning-only text may literally be the answer, and cron stays silent.
     ("empty_response_exhausted", "empty_response", True, False),
     ("all_retries_exhausted_no_response", FailoverReason.server_error.value, True, True),
+    # #55316/#54756: the loop stopped on a tool tail with no follow-up text; the
+    # finalizer synthesizes the visible close and fails the turn.
+    ("pending_tool_result", "loop_error", True, True),
     ("interpreter_shutdown", "interpreter_shutdown", False, True),
     # Advisory: a deterministic local bug is not a task failure for the kanban breaker.
     ("local_processing_error", "loop_error", False, False),

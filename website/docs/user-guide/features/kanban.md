@@ -63,7 +63,8 @@ re-reads the PR head/base. Optional failed/skipped telemetry does not veto accep
 required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
 neutral **required** evidence cannot complete the card. Neither can zero-run
 acceptance, unreadable policy or GitHub API failures. A repository without required
-checks needs a local-only contract. `gh` must be authenticated with read access to
+checks needs an explicit named-check policy (below), or a local-only contract for
+intentionally non-CI work. `gh` must be authenticated with read access to
 the repository's checks and rules; no remote writes are performed by this gate.
 
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
@@ -81,6 +82,56 @@ transaction or a continuous post-completion monitor. This is a single-user lifec
 guard, not OS isolation against arbitrary direct database writes. GitHub Enterprise
 is not covered. Related publication/lifecycle work: #91230, #84254, #52311; local
 verification and publication alone are not remote acceptance.
+
+### Explicit named checks for a repository without protection metadata
+
+An operator can choose a named-check policy in the completing profile's
+`config.yaml` (or its managed configuration). This deliberately replaces
+repository-protection discovery for the exact `OWNER/REPO` key only; it is not an
+API-error fallback. Other repositories retain the existing protection gate.
+Never accept a policy from task metadata or change the contract to evade CI.
+
+```yaml
+kanban:
+  pr_acceptance_policies:
+    OWNER/REPO:
+      workflow_id: 123456 # numeric Actions workflow ID, not run ID
+      workflow_path: .github/workflows/ci.yml
+      workflow_blob_sha: REPLACE_WITH_APPROVED_40_HEX_GIT_BLOB_SHA
+      app_id: 15368 # GitHub Actions; verify the actual check producer
+      required_checks: [unit tests, ci ok]
+      checkout_checks: [unit tests]
+```
+
+Review the workflow before approving its blob SHA. `checkout_checks` must include
+every job that executes tests/builds; an aggregate-only job may be omitted from
+that list, but must still be in `required_checks`. All lists must be nonempty,
+unique, and exact names. The workflow must preserve the standard timestamped
+`actions/checkout` `git log -1 --format=%H` output, with exactly one checkout per
+listed checkout job. Workflows that change checkout after that point are not
+compatible with this evidence model. Pin actions by reviewed immutable SHA and
+ensure the aggregate cannot turn skipped/failing tests green.
+
+Acceptance requires a same-repository PR, the latest workflow run/attempt for its
+current head and base, every configured check successful, and matching workflow,
+app, check-suite, run, and job identities. It reads each checkout job's GitHub log,
+then independently compares the tested commit's Git tree with the current PR head.
+A PR synthetic merge is accepted only when it is the current merge, binds the
+current head/base parents, and has the exact same tree as the head. The workflow
+blob at both head and tested commit must equal the approved blob. Expired logs,
+missing evidence, changed workflow, ambiguous jobs, or API failures fail closed.
+
+Receipts retain the policy hash, workflow/run/attempt, job IDs, log hashes, actual
+tested SHA, and tree SHA without storing raw logs. The collector re-reads the PR,
+latest run, and jobs before returning; the existing SQLite run-ownership fence
+still controls completion. This is snapshot evidence, not a lock on GitHub.
+
+Roll out reviewed source through the normal runtime release process first, then
+add the policy only to profiles that need it. Probe acceptance without completing
+a production card before enabling normal completion. Roll back by removing the
+repository policy and restoring the previous runtime release; this restores the
+fail-closed protection gate, not a `local-only` bypass. Do not hand-edit an active
+immutable release or restart unrelated gateways to install it.
 
 ## Kanban vs. `delegate_task`
 

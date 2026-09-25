@@ -307,6 +307,29 @@ def record_crash_left_reply(*, obligation_id: str, session_key: str, platform: s
              session_key, content, since))
 
 
+def record_delivered_obligation(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
+                                thread_id: Optional[str], content: str,
+                                adapter_profile: Optional[str] = None) -> None:
+    """Book an outbound-first send that already reached the platform (state='delivered').
+
+    Senders outside a gateway turn — the ``hermes send`` CLI and the opt-in MCP server, the two
+    callers of the send_message tool entrypoint — answer no inbound event, so nothing ledgered
+    their deliveries and delivery accounting saw only the gateway-response half of the traffic. The row is born
+    terminal: ``sweep_recoverable`` claims only pending/attempting/failed rows, so an audit row can
+    never gain redelivery semantics, and pruning retains it like any delivered row."""
+    now, (pid, started) = time.time(), _owner_stamp()
+    with _DB_LOCK, _transaction() as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO delivery_obligations
+               (obligation_id, session_key, platform, chat_id, thread_id,
+                content, state, attempts, created_at, updated_at,
+                owner_pid, owner_started_at, adapter_profile)
+               VALUES (?, ?, ?, ?, ?, ?, 'delivered', 0, ?, ?, ?, ?, ?)""",
+            (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
+             content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
+        _prune_unlocked(conn, now)
+
+
 def mark_attempting(obligation_id: str) -> None:
     _update_state(obligation_id, "attempting")
 

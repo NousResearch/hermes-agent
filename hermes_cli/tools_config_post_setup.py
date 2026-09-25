@@ -21,15 +21,16 @@ def _info_lines(*lines: str) -> None:
         _print_info(f"    {line}")
 
 
-def _ensure_browser_use_cli(*, verbose_hints: bool = False) -> None:
+def _ensure_browser_use_cli(*, verbose_hints: bool = False, timeout_s: int = 600) -> None:
     """Install the Browser Use CLI if it isn't already runnable.
     Primary driver engine for EVERY browser backend except Camofox (Firefox-based, no CDP surface).
     A browser-use on the user's PATH does not satisfy this check; PM owns the
-    selected isolated tool environment."""
+    selected isolated tool environment. ``timeout_s`` bounds the install (the update
+    step passes a tighter bound so one optional download cannot stall the update)."""
     _print_info("    Ensuring browser-use CLI (managed install)...")
     try:
         from tools.browser_use_cli import install_cli
-        ok, message = install_cli()
+        ok, message = install_cli(timeout_s=timeout_s)
     except Exception as exc:  # pragma: no cover — defensive
         ok, message = False, f"install failed: {exc}"
     if ok:

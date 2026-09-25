@@ -2507,12 +2507,26 @@ def _hermes_path_argv(path: str) -> list[str]:
     return [_absolute_hermes_path(path)]
 
 
+def _worker_cli_works(argv: list[str], *, cwd: Optional[str],
+                      env: Optional[Mapping[str, str]]) -> bool:
+    """Check the worker's parser and imports, not the dependency-free version path."""
+    try:
+        probe = subprocess.run(
+            [*argv, "--cli", "chat", "--help"], cwd=cwd, env=env,
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        return probe.returncode == 0 and "--query" in probe.stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _resolve_hermes_argv(*, cwd: Optional[str] = None, env: Optional[Mapping[str, str]] = None) -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
     same-directory file), then the running interpreter's ``sys.executable -m
     hermes_cli.main`` when a fresh interpreter in the worker's cwd and env
-    resolves this installation, then the installed launcher or ``which("hermes")``.
+    resolves this installation and loads the chat CLI, then this checkout's
+    entry point under a compatible Python. Fail before spawning if none works.
     The module argv must win over PATH when it actually works: a PATH-first lookup
     lets an attacker-planted ``hermes`` shadow the running install (#111569).
     Mirrors ``gateway.run._resolve_hermes_bin``; local because ``hermes_cli``
@@ -2542,19 +2556,33 @@ def _resolve_hermes_argv(*, cwd: Optional[str] = None, env: Optional[Mapping[str
         )
     except (OSError, subprocess.SubprocessError):
         same_install = False
-    if same_install:
+    if same_install and _worker_cli_works(_module_hermes_argv(), cwd=cwd, env=env):
         return _module_hermes_argv()
 
-    # Running the source entry point puts its checkout on the child's sys.path,
-    # even when the bare interpreter cannot import it from the worker workspace.
+    # Running the source entry point pins this checkout, but a bare interpreter
+    # may still lack dependencies that the parent loaded from a managed venv.
     source_launcher = Path(__file__).resolve().parent.parent / "hermes"
     if source_launcher.is_file():
-        return [sys.executable, str(source_launcher)]
+        candidates = [sys.executable]
+        venvs = []
+        if sys.prefix != sys.base_prefix:
+            venvs.append(Path(sys.prefix))
+        if os.environ.get("VIRTUAL_ENV"):
+            venvs.append(Path(os.environ["VIRTUAL_ENV"]))
+        venvs.extend((source_launcher.parent / ".venv", source_launcher.parent / "venv"))
+        for venv in venvs:
+            python = venv / ("Scripts/python.exe" if _kb._IS_WINDOWS else "bin/python")
+            if python.is_file() and str(python) not in candidates:
+                candidates.append(str(python))
+        for python in candidates:
+            argv = [python, str(source_launcher)]
+            if _worker_cli_works(argv, cwd=cwd, env=env):
+                return argv
 
-    hermes_bin = _safe_which_no_cwd("hermes", env)
-    if hermes_bin:
-        return _hermes_path_argv(hermes_bin)
-    return _module_hermes_argv()
+    raise RuntimeError(
+        "No Python environment can launch this Hermes installation's worker CLI. "
+        "Install its dependencies in the active venv or set HERMES_BIN to a working launcher."
+    )
 
 
 def _worker_terminal_timeout_env(

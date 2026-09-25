@@ -464,3 +464,98 @@ def test_branch_tip_failure_names_the_cause(installation):
     status = check_for_updates(install_root=root, home=home, force=True)
     assert status["error"] == "fetch-failed"
     assert "HTTP 503" in status["message"]
+def test_api_422_with_confirmed_absence_heals_to_main(installation, monkeypatch):
+    """A GitHub 422 names a branch the repo does not have (a missing/private
+    repo answers 404): with the empty ls-remote advertisement confirming the
+    repo is readable, the deleted Desktop branch heals to main. (#122182)"""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "deleted"}))
+    responses["/repos/fixture/fork/commits/deleted"] = (422, {"message": "No commit found for SHA: deleted"})
+    responses["/repos/fixture/fork/commits/main"] = (200, head)
+    original = subprocess.run
+    probes = []
+
+    def advertise(args, **kwargs):
+        if "ls-remote" in args:
+            probes.append(args)
+            return subprocess.CompletedProcess(args, 2, "", "")
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", advertise)
+    status = check_for_updates(install_root=linked, home=home, branch_config_path=branch_file)
+    assert status.get("branch") == "main", status
+    assert "error" not in status, status
+    assert status["behind"] == 0
+    assert len(probes) == 1
+    assert json.loads(branch_file.read_text()) == {"branch": "main"}
+
+
+def test_api_422_with_unrunnable_ls_remote_reports_ls_remote(installation, monkeypatch):
+    """When ls-remote cannot run, a stored API 422 must not surface: the error
+    names the failed probe and the branch is left alone. (#122182)"""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "deleted"}))
+    responses["/repos/fixture/fork/commits/deleted"] = (422, {"message": "No commit found for SHA: deleted"})
+    original = subprocess.run
+
+    def timeout(args, **kwargs):
+        if "ls-remote" in args:
+            raise subprocess.TimeoutExpired(args, 10)
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    status = check_for_updates(install_root=linked, home=home, branch_config_path=branch_file)
+    assert status["error"] == "fetch-failed"
+    assert status["branch"] == "deleted"
+    assert "ls-remote" in status["message"] and "422" not in status["message"], status
+    assert json.loads(branch_file.read_text()) == {"branch": "deleted"}
+
+
+def test_api_422_with_failed_ls_remote_reports_ls_remote(installation, monkeypatch):
+    """A rejected ls-remote transport likewise supersedes the stored API 422
+    instead of letting it pose as the cause. (#122182)"""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "deleted"}))
+    responses["/repos/fixture/fork/commits/deleted"] = (422, {"message": "No commit found for SHA: deleted"})
+    original = subprocess.run
+
+    def refused(args, **kwargs):
+        if "ls-remote" in args:
+            return subprocess.CompletedProcess(args, 128, "", "fatal: could not read from remote repository")
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", refused)
+    status = check_for_updates(install_root=linked, home=home, branch_config_path=branch_file)
+    assert status["error"] == "fetch-failed"
+    assert status["branch"] == "deleted"
+    assert "ls-remote" in status["message"] and "422" not in status["message"], status
+    assert json.loads(branch_file.read_text()) == {"branch": "deleted"}
+
+
+def test_non_422_api_failure_still_reports_the_api_cause(installation, monkeypatch):
+    """Only a 422 is superseded by the ls-remote failure: other API failures
+    keep their (actionable) copy. (#122182)"""
+    from hermes_cli.source_check import check_for_updates
+    root, linked, home, base, head, responses, requests, git = installation
+    branch_file = home / "desktop-update.json"
+    branch_file.write_text(json.dumps({"branch": "deleted"}))
+    responses["/repos/fixture/fork/commits/deleted"] = (503, {})
+    original = subprocess.run
+
+    def timeout(args, **kwargs):
+        if "ls-remote" in args:
+            raise subprocess.TimeoutExpired(args, 10)
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", timeout)
+    status = check_for_updates(install_root=linked, home=home, branch_config_path=branch_file)
+    assert status["error"] == "fetch-failed"
+    assert status["branch"] == "deleted"
+    assert "HTTP 503" in status["message"], status
+    assert json.loads(branch_file.read_text()) == {"branch": "deleted"}

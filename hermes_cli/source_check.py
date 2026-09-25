@@ -141,11 +141,19 @@ def _branch_tip(repository: str | None, branch: str, root: Path, git: str,
     # A successful empty ref advertisement alone proves a branch was deleted.
     # GitHub 404 can also mean a private repository: it must not heal a branch.
     failure = None
+    api_branch_absent = False
     if repository:
         from hermes_cli.github_api import describe_github_failure, github_token
         try:
             sha = _request(f"https://api.github.com/repos/{repository}/commits/{quote(branch, safe='')}",
                            "application/vnd.github.sha")
+        except urllib.error.HTTPError as exc:
+            # HTTP 422 names a branch the repository does not have: the repo
+            # itself resolved, so unlike a 404 (which can also mean a private
+            # repository) it confirms the branch is absent.
+            api_branch_absent = exc.code == 422
+            sha = None
+            failure = describe_github_failure(exc, authenticated=github_token() is not None)
         except Exception as exc:
             sha = None
             failure = describe_github_failure(exc, authenticated=github_token() is not None)
@@ -158,13 +166,22 @@ def _branch_tip(repository: str | None, branch: str, root: Path, git: str,
     result = _git_run(["ls-remote", "--exit-code", "--heads", remote, f"refs/heads/{branch}"],
                       cwd=root, git=git, timeout=10)
     if result is None:
+        if api_branch_absent:
+            # Absence was never confirmed against this remote: name the probe
+            # that failed, not the stale API verdict.
+            return None, False, f"`git ls-remote {remote}` could not run."
         return None, False, failure or f"`git ls-remote {remote}` could not run."
     sha = result.stdout.split()[0] if result.returncode == 0 and result.stdout else None
     if _is_full_sha(sha):
         return sha, False, None
     if result.returncode == 2:
+        # Confirmed-absent: the remote answered and advertises no such ref.
+        # A stored API 422 agrees with this verdict and is discarded.
         return None, True, None
     detail = (result.stderr or "").strip().splitlines()
+    if api_branch_absent:
+        return None, False, (f"`git ls-remote {remote}` failed: {detail[-1]}" if detail
+                             else f"`git ls-remote {remote}` returned no tip.")
     return None, False, failure or (f"`git ls-remote {remote}` failed: {detail[-1]}" if detail
                                     else f"`git ls-remote {remote}` returned no tip.")
 

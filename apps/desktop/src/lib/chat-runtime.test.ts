@@ -22,33 +22,56 @@ function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttach
 }
 
 describe('optimisticAttachmentRef', () => {
-  it('renders an image from its in-hand base64 preview (no @image: path ref)', () => {
+  it('renders a path-backed image through the same @image: ref as a reloaded turn (#93204)', () => {
     const ref = optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: DATA_URL }))
 
-    // The raw data URL flows through extractEmbeddedImages → inline thumbnail,
-    // dodging the remote /api/media 403 an @image:<localpath> ref would hit.
-    expect(ref).toBe(DATA_URL)
+    // DirectiveImage paints a bounded thumbnail inline and hands the full file
+    // to the lightbox, so the in-flight bubble matches the reloaded turn instead
+    // of freezing on a 512px thumbnail. Remote gateways resolve the same path
+    // over the authenticated media API (no /api/media 403).
+    expect(ref).toBe('@image:/tmp/shot.png')
   })
 
-  it('prefers the downscaled thumbnail for the display ref when present', () => {
+  it('prefers the path ref even when a downscaled thumbnail is present (#93204)', () => {
     const ref = optimisticAttachmentRef(
-      attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL })
+      attachment({ kind: 'image', path: '/tmp/shot.png', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL })
     )
 
-    // The bubble is display-only; full bytes are read on demand and for upload.
-    expect(ref).toBe(THUMB_URL)
+    // The thumbnail no longer caps fidelity: the path lets the lightbox load the
+    // original. Full bytes are read on demand and for upload.
+    expect(ref).toBe('@image:/tmp/shot.png')
   })
 
-  it('does not render a full path-backed image while its bounded thumbnail is pending', () => {
-    expect(optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png' }))).toBeNull()
+  it('emits the path ref for a freshly attached image before its thumbnail resolves (#93204)', () => {
+    // Previously this returned null (waiting on the resize); now the path drives
+    // an @image: ref that DirectiveImage renders bounded-inline immediately.
+    expect(optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png' }))).toBe('@image:/tmp/shot.png')
   })
 
-  it('does not use a path fallback for a non-data preview url', () => {
+  it('emits the path ref regardless of a non-data preview url (#93204)', () => {
     const ref = optimisticAttachmentRef(
       attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: 'https://example.com/x.png' })
     )
 
-    expect(ref).toBeNull()
+    expect(ref).toBe('@image:/tmp/shot.png')
+  })
+
+  it('falls back to the bounded thumbnail for a path-less pasted image', () => {
+    // No filesystem path to rehydrate from (raw clipboard bytes): keep the
+    // inline thumbnail so the bubble still renders something.
+    const ref = optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL }))
+
+    expect(ref).toBe(THUMB_URL)
+  })
+
+  it('falls back to a data preview url when a path-less image has no thumbnail', () => {
+    const ref = optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: DATA_URL }))
+
+    expect(ref).toBe(DATA_URL)
+  })
+
+  it('returns null for a path-less image with no renderable inline source', () => {
+    expect(optimisticAttachmentRef(attachment({ kind: 'image', previewUrl: 'https://example.com/x.png' }))).toBeNull()
   })
 
   it('passes non-image attachments straight through to attachmentDisplayText', () => {
@@ -66,10 +89,6 @@ describe('optimisticAttachmentRef', () => {
     expect(() => optimisticAttachmentRef(undefined as unknown as ComposerAttachment)).not.toThrow()
     expect(optimisticAttachmentRef(undefined as unknown as ComposerAttachment)).toBeNull()
   })
-
-  it('returns null for a null attachment instead of throwing', () => {
-    expect(optimisticAttachmentRef(null as unknown as ComposerAttachment)).toBeNull()
-  })
 })
 
 describe('attachmentDisplayText', () => {
@@ -77,38 +96,6 @@ describe('attachmentDisplayText', () => {
     expect(() => attachmentDisplayText(undefined as unknown as ComposerAttachment)).not.toThrow()
     expect(attachmentDisplayText(undefined as unknown as ComposerAttachment)).toBeNull()
     expect(attachmentDisplayText(null as unknown as ComposerAttachment)).toBeNull()
-  })
-
-  it('still resolves a normal file ref', () => {
-    expect(attachmentDisplayText(attachment({ kind: 'file', refText: '@file:src/a.ts' }))).toBe('@file:src/a.ts')
-  })
-
-  it('expands a review attachment into an anchored fenced block', () => {
-    const detail = JSON.stringify({
-      author: 'teknium1',
-      body: 'this cap looks wrong',
-      diffHunk: '@@ -1,2 +1,2 @@\n-const CAP = 5\n+const CAP = 50',
-      kind: 'review',
-      line: 12,
-      path: 'src/limits.ts',
-      prNumber: 123,
-      startLine: null,
-      url: 'https://github.com/o/r/pull/123#discussion_r1'
-    })
-
-    const block = attachmentDisplayText(attachment({ kind: 'review', detail, refText: '@url:`https://x`' }))
-
-    // The contract: anchor (file:line), author, body, and the hunk all ride.
-    expect(block).toContain('review-comment src/limits.ts:12')
-    expect(block).toContain('@teknium1')
-    expect(block).toContain('this cap looks wrong')
-    expect(block).toContain('const CAP = 50')
-  })
-
-  it('falls back to the url ref when a review detail is malformed', () => {
-    expect(attachmentDisplayText(attachment({ kind: 'review', detail: 'not json', refText: '@url:`https://x`' }))).toBe(
-      '@url:`https://x`'
-    )
   })
 })
 

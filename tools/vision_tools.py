@@ -36,6 +36,14 @@ def _load_auxiliary_client() -> None:
 from hermes_constants import get_hermes_dir
 from tools.debug_helpers import DebugSession
 from tools.website_policy import check_website_access
+from tools.vision_tools_history_budget import (
+    native_turn_duplicate as _native_turn_duplicate,
+    record_embed as _record_embed,
+    release_embed as _release_embed,
+    repeat_refusal as _repeat_refusal,
+    resolve_repeat_cap as _resolve_repeat_cap,
+    resolve_embed_target_bytes as _resolve_embed_target_bytes,
+)
 from tools.vision_tools_image_prep import (
     _VISION_MAX_VALIDATED_AGGREGATE_PIXELS,
     _VISION_MAX_VALIDATED_FRAME_COUNT,
@@ -252,10 +260,10 @@ _MAX_BASE64_BYTES = 20 * 1024 * 1024
 # downsamples to a 1568px long edge anyway, so pixels past that cost wire bytes for no fidelity.
 # The 20 MB hard ceiling / Anthropic 5 MB reject-cap still apply as safety nets; those are one-shot viewing
 # limits, not history-reuse sizes. A 4 MB / 7900px embed was observed at ~400K chars and ~100–260K billed
-# tokens per image (#92699), so we size for model reading instead: 256 KB keeps a 1568px screenshot cheap
-# enough to ride the session (PNGs that exceed it are downscaled further by the byte-budget ladder), well
-# under every provider's per-image limit.
-_EMBED_TARGET_BYTES = 256 * 1024
+# tokens per image (#92699), so we size for model reading instead: the byte budget is
+# ``vision.embed_target_bytes`` (default 256 KB, see vision_tools_history_budget) — it keeps a 1568px
+# screenshot cheap enough to ride the session (PNGs that exceed it are downscaled further by the
+# byte-budget ladder), well under every provider's per-image limit.
 _EMBED_MAX_DIMENSION = 1568
 
 # Target when auto-resizing after a provider size rejection (retry once).
@@ -301,11 +309,13 @@ def _import_pillow_for_resize():
         from PIL import Image
     except ImportError:
         try:
-            from tools.lazy_deps import ensure as _ensure_dep
-            # prompt=False: never raise a blocking input() prompt mid-session. Under the interactive CLI
-            # prompt_toolkit owns stdin, so a bare input() deadlocks the terminal (#40490). The install is
-            # already gated by security.allow_lazy_installs, so reaching here is opt-in.
-            _ensure_dep("tool.vision", prompt=False)
+            # pm-era wiring: never raise a blocking input() prompt mid-session. Under the
+            # interactive CLI prompt_toolkit owns stdin, so a bare input() deadlocks the
+            # terminal (#40490). The install is already gated by security.allow_lazy_installs,
+            # so reaching here is opt-in.
+            from pm import ensure_import
+
+            ensure_import("vision")
             from PIL import Image
         except Exception:
             return None
@@ -449,27 +459,33 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         return False
 
 
+def _accepts_tool_result_images(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> bool:
+    """One gate for both native lanes — the ``vision_analyze`` fast path and the ``computer_use`` capture route
+    (#115248): the profile's ``supports_vision_tool_messages=False`` veto first, then either the provider's tool
+    results are known to carry media or the capability lookup (config override → catalog → probes → profile)
+    attests the model as vision-capable."""
+    if _profile_rejects_tool_media(provider, model):
+        return False
+    if _supports_media_in_tool_results(provider, model):
+        return True
+    from agent.image_routing import _lookup_supports_vision
+    return _lookup_supports_vision(provider, model, cfg) is True
+
+
 def _should_use_native_vision_fast_path() -> bool:
     """True when image routing resolves to ``native`` AND the provider accepts images in tool
     results, or the user set the ``model.supports_vision`` override (escape hatch for
     custom/local providers). Any failure → False."""
     try:
         from agent.auxiliary_client import _read_main_provider, _read_main_model
-        from agent.image_routing import decide_image_input_mode, _lookup_supports_vision
+        from agent.image_routing import decide_image_input_mode
         from hermes_cli.config import load_config
         provider = _read_main_provider()
         model = _read_main_model()
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
-        # The profile veto applies ahead of the capability lookup too: a
-        # model marked vision-capable by models.dev / custom_providers must
-        # not re-open the multimodal-envelope route the profile rejects.
-        if _profile_rejects_tool_media(provider, model):
-            return False
-        return (
-            _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True)
+        return _accepts_tool_result_images(provider, model, cfg)
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)
         return False
@@ -566,8 +582,8 @@ async def _prepare_image(
 def _too_large_message(image_data_url: str) -> str:
     return (
         f"Image too large for vision API: base64 payload is {len(image_data_url) / (1024 * 1024):.1f} MB "
-        f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) even after resizing. Install Pillow "
-        f"(`pip install Pillow`) for better auto-resize, or compress the image manually.")
+        f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) even after resizing. Run `hermes pm repair` "
+        f"to restore Pillow for auto-resize, or compress the image manually.")
 
 
 async def _resize_prepared(prepared: _PreparedImage, scale_info: dict, **kwargs) -> str:
@@ -584,7 +600,16 @@ async def _vision_analyze_native(
     or a JSON error string (the normal tool-result contract) on failure."""
     if not isinstance(image_url, str) or not image_url.strip():
         return tool_error("image_url is required", success=False)
+    already_native = _native_turn_duplicate(image_url, region)
+    if already_native is not None:
+        return already_native
+    # A cap > 0 RESERVES the slot here (atomic check-and-count); released below if no embed happens.
+    refusal = _repeat_refusal(image_url)
+    if refusal is not None:
+        return refusal
+    reserved = _resolve_repeat_cap() > 0
     prepared: Optional[_PreparedImage] = None
+    embedded = False
     try:
         from tools.interrupt import is_interrupted
         if is_interrupted():
@@ -601,15 +626,19 @@ async def _vision_analyze_native(
         # Anthropic still rejects >5 MB / >8000px with a non-retryable 400, but those are one-shot viewing
         # limits — history embeds are sized smaller so repeated vision_analyze turns don't blow the context
         # (#92699).
+        embed_target_bytes = _resolve_embed_target_bytes()
         _over_dims = await _run_encode_on_cpu_executor(
             _image_exceeds_dimension, prepared.path, _EMBED_MAX_DIMENSION)
-        if len(image_data_url) > _EMBED_TARGET_BYTES or _over_dims:
+        if len(image_data_url) > embed_target_bytes or _over_dims:
             image_data_url = await _resize_prepared(
                 prepared, _scale_info,
-                max_base64_bytes=_EMBED_TARGET_BYTES, max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
+                max_base64_bytes=embed_target_bytes, max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
             # Reject rather than embed a session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(_too_large_message(image_data_url), success=False)
+        embedded = True
+        if not reserved:
+            _record_embed(image_url)
         return _build_native_vision_tool_result(
             image_url=image_url, question=question, image_data_url=image_data_url,
             image_size_bytes=prepared.size_bytes,
@@ -618,6 +647,8 @@ async def _vision_analyze_native(
         logger.warning("Native vision fast path failed: %s", exc)
         return tool_error(f"Native vision failed: {exc}", success=False)
     finally:
+        if reserved and not embedded:
+            _release_embed(image_url)
         # Only delete temp files we created — never user-provided paths.
         if prepared is not None:
             _unlink_quietly(prepared.path)

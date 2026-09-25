@@ -23,11 +23,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.plugin_validate_desktop import check_desktop_surface
+from hermes_cli.plugins_manifest import _CONFIG_SCHEMA_TYPES
+
 _UPPER_SNAKE_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
-_CONFIG_TYPES = {
-    "str", "string", "int", "integer", "float", "number",
-    "bool", "boolean", "list", "array", "dict", "mapping", "map",
-}
+# Admission accepts exactly the ``config_schema`` types the loader type-checks at load time (and the
+# Desktop settings renderer keys its field table on) — a private copy drifted and rejected ``secret``.
+_CONFIG_TYPES = frozenset(_CONFIG_SCHEMA_TYPES)
 _PROBE_TIMEOUT = 30
 _PROBE_SENTINEL = "HERMES_VALIDATE_JSON:"
 
@@ -490,11 +492,11 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
         )
         return report
 
-    import yaml
+    import hermes_yaml as yaml
 
     try:
         manifest = yaml.safe_load(
-            manifest_file.read_text(encoding="utf-8")
+            manifest_file.read_text(encoding="utf-8-sig")
         )
     except Exception as exc:
         report.add("manifest", False, f"plugin.yaml failed to parse: {exc}")
@@ -508,9 +510,71 @@ def validate_plugin_dir(plugin_dir: Path) -> ValidationReport:
     _check_requires_hermes(report, manifest)
     _check_config_spec(report, manifest)
     _check_requires_env(report, manifest)
+    _check_loadable(report, plugin_dir)
+    _check_python_dependencies(report, plugin_dir)
     recorded = _check_capabilities(report, manifest, plugin_dir)
     _check_builtin_collisions(report, manifest, recorded)
+    _check_security_scan(report, plugin_dir)
+    check_desktop_surface(report, plugin_dir)
     return report
+
+
+_LOADABLE_ENTRYPOINTS = ("__init__.py", "desktop/plugin.js", "plugin.json")
+
+
+def _check_loadable(report: ValidationReport, plugin_dir: Path) -> None:
+    """A plugin.yaml with nothing beside it that Hermes can load (no ``register()`` module, no
+    desktop bundle, no portable manifest) installs "successfully" and does nothing — a pip-layout
+    repo whose code lives under ``src/`` behind an entry point is the usual shape."""
+    present = [rel for rel in _LOADABLE_ENTRYPOINTS if (plugin_dir / rel).is_file()]
+    report.add(
+        "loadable", bool(present),
+        f"entry: {', '.join(present)}" if present else
+        "nothing to load: no __init__.py, desktop/plugin.js or plugin.json beside plugin.yaml "
+        "(pip-layout packages need a directory-plugin wrapper with a pyproject.toml declaring the deps)",
+    )
+
+
+def _check_python_dependencies(report: ValidationReport, plugin_dir: Path) -> None:
+    """Declared deps (pyproject ``[project].dependencies`` or manifest ``python_dependencies``) must be
+    well-formed PEP 508 specs the installer will accept; a plugin opting out with
+    ``python_runtime: external`` declares none."""
+    from pm.plugin_declarations import read_python_declaration, unsupported_requirements
+
+    try:
+        decl = read_python_declaration(plugin_dir)
+        if decl.external:
+            report.add("python dependencies", True, "external runtime (plugin manages its own)")
+            return
+        urls = unsupported_requirements(decl.requirements)
+        installable = decl.install_requirements
+    except (ValueError, OSError) as exc:
+        report.add("python dependencies", False, f"declaration invalid: {exc}")
+        return
+    if urls:
+        report.warn("python dependencies: direct URL requirement(s) are not managed by PM; "
+                    f"use a plugin-owned external runtime: {', '.join(urls)}")
+    source = "pyproject" if decl.pyproject is not None else "manifest"
+    detail = f"{len(installable)} requirements from {source}" if decl.requirements else "none declared"
+    report.add("python dependencies", True, detail)
+
+
+
+def _check_security_scan(report: ValidationReport, plugin_dir: Path) -> None:
+    """Run the install-time scanner at admission, so a pin a reviewer approves is one the
+    installer will accept: ``dangerous`` fails the entry; ``caution`` findings surface as
+    warnings for the reviewer (the installer trusts them once the pin is merged)."""
+    from tools.plugin_guard import scan_plugin
+
+    result = scan_plugin(plugin_dir)
+    flagged = [f for f in result.findings if f.severity in ("critical", "high")]
+    summary = ", ".join(sorted({f"{f.pattern_id} ({Path(f.file).name}:{f.line})" for f in flagged})) or "no findings"
+    if result.verdict == "dangerous":
+        report.add("security scan", False, f"dangerous: {summary}")
+        return
+    report.add("security scan", True, result.verdict)
+    if result.verdict == "caution":
+        report.warn(f"security scan caution: {summary}")
 
 
 def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> ValidationReport:
@@ -521,15 +585,17 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
     diagnostics (schema shape, name, supported subset).
     """
     try:
-        from hermes_cli.agent_plugins import read_agent_plugin_manifest
+        from hermes_cli.agent_plugins import load_agent_plugin
+        from hermes_platform.resolver.availability import availability
 
-        manifest, diagnostics = read_agent_plugin_manifest(plugin_dir)
+        with tempfile.TemporaryDirectory() as data_root:
+            package = load_agent_plugin(plugin_dir, Path(data_root))
+        manifest = package.manifest
+        diagnostics = package.diagnostics
     except Exception as exc:
         report.add("portable manifest", False, f"plugin.json failed validation: {exc}")
         return report
 
-    # The portable reader raises on hard failures; surviving diagnostics are
-    # advisory (unsupported-subset notes etc.) — surface them as warnings.
     for diag in diagnostics:
         scope = getattr(diag, "scope", "")
         message = getattr(diag, "message", str(diag))
@@ -542,4 +608,14 @@ def _validate_portable_plugin(report: ValidationReport, plugin_dir: Path) -> Val
         bool(name),
         "name present" if name else "plugin.json missing required 'name'",
     )
+    for server_name, server_decl in package.server_declarations.items():
+        result = availability(server_decl.declaration)
+        detail = result.state
+        if result.version:
+            detail += f", version {result.version}"
+        if result.path:
+            detail += f", path {result.path}"
+        report.add(f"server availability: {server_name}", True, detail)
+    _check_security_scan(report, plugin_dir)
+    check_desktop_surface(report, plugin_dir)
     return report

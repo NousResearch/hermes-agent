@@ -8,6 +8,7 @@ export {
   completeOpenTimelineParts,
   dedupeRepeatedTextInParts,
   mergeFinalAssistantText,
+  normalizeWs,
   reasoningPart,
   renderMediaTags,
   textPart
@@ -20,6 +21,7 @@ export {
   sealOpenToolParts,
   settlePendingClarifyToolCall,
   stripPendingClarifyProjectionForCache,
+  toolCallOwnerMessageId,
   upsertToolPart,
   withUniqueToolCallIdsWithinMessage
 } from './tool-parts'

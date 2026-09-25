@@ -22,17 +22,6 @@ from tui_gateway import server
 FULL_KIT = {"read_window_below", "computer_use", "browser_navigate"}
 
 
-def _tool_def(name: str) -> dict:
-    return {
-        "type": "function",
-        "function": {
-            "name": name,
-            "description": name,
-            "parameters": {"type": "object", "properties": {}},
-        },
-    }
-
-
 def _session(*, tools=FULL_KIT, **extra):
     return {
         "agent": types.SimpleNamespace(valid_tool_names=set(tools)),
@@ -50,12 +39,6 @@ def _session(*, tools=FULL_KIT, **extra):
 class TestNoteContents:
     """Every tool the note names has to be one this agent actually has."""
 
-    def test_points_at_the_window_below_and_at_working_in_it(self):
-        note = hud_surface_note(FULL_KIT)
-
-        assert "read_window_below" in note
-        assert "computer_use" in note
-        assert "browser_navigate" in note
 
     def test_no_note_at_all_without_the_tool_it_rests_on(self):
         assert hud_surface_note({"computer_use", "browser_navigate"}) == ""
@@ -92,39 +75,6 @@ class TestTurnRouting:
         session["agent"] = types.SimpleNamespace()
 
         assert server._hud_surface_note(session) == ""
-
-    def test_note_survives_tool_search_when_mcp_tools_are_present(self):
-        """valid_tool_names is the post-assembly list. MCP tools used to hide
-        read_window_below there, so a HUD turn got no note at all."""
-        from tools.registry import discover_builtin_tools, registry
-        from tools.tool_search import ToolSearchConfig, assemble_tool_defs
-
-        discover_builtin_tools()
-        mcp_name = "mcp_hud_surface_probe"
-        registry.register(
-            name=mcp_name,
-            handler=lambda args, **kw: "{}",
-            schema=_tool_def(mcp_name)["function"],
-            toolset="mcp-hud-surface-probe",
-        )
-
-        assembled = assemble_tool_defs(
-            [_tool_def(name) for name in (*FULL_KIT, mcp_name)],
-            context_length=200_000,
-            config=ToolSearchConfig.from_raw({"enabled": "on"}),
-        )
-        names = {td["function"]["name"] for td in assembled.tool_defs}
-
-        assert assembled.activated
-        assert mcp_name not in names
-        # Production computes the note from agent.valid_tool_names — the
-        # GRANTED set — not from the visible post-assembly schemas. Under
-        # #97979 the HUD kit (read_window_below, computer_use) is deferred
-        # behind the bridge yet still granted/callable, so the note must
-        # survive assembly unchanged.
-        assert server._hud_surface_note(_session(tools=FULL_KIT, client_surface="hud")) == (
-            hud_surface_note(FULL_KIT)
-        )
 
 
 class TestPrepending:

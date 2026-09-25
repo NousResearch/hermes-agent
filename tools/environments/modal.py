@@ -65,7 +65,7 @@ def _delete_direct_snapshot(task_id: str, snapshot_id: str | None = None) -> Non
 def _resolve_modal_image(image_spec: Any) -> Any:
     """Convert registry references or snapshot ids into Modal image objects. Registry images
     get pip repaired (ensurepip) before Modal's bootstrap; ubuntu/debian also get python3."""
-    ensure_lazy_dep("terminal.modal")
+    ensure_lazy_dep("modal")
     import modal as _modal
 
     if not isinstance(image_spec, str):
@@ -149,7 +149,7 @@ class ModalEnvironment(BaseEnvironment):
             _get_snapshot_restore_candidate(self._task_id) if self._persistent else (None, False))
         if restored_snapshot_id:
             logger.info("Modal: restoring from snapshot %s", restored_snapshot_id[:20])
-        ensure_lazy_dep("terminal.modal")
+        ensure_lazy_dep("modal")
         import modal as _modal
         cred_mounts = []
         try:
@@ -234,7 +234,8 @@ class ModalEnvironment(BaseEnvironment):
 
     def _modal_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive (sandboxes run as root, so /root/.hermes)."""
-        data = self._exec("tar cf - -C / root/.hermes", timeout=120, fail_label="bulk download", capture=True)
+        # --exclude: live sockets cannot be archived ("socket ignored") and must not fail the download.
+        data = self._exec("tar cf - --exclude='*.sock' -C / root/.hermes", timeout=120, fail_label="bulk download", capture=True)
         dest.write_bytes(data.encode() if isinstance(data, str) else data)
 
     def _modal_delete(self, remote_paths: list[str]) -> None:

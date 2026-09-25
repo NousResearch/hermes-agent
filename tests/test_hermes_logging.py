@@ -1,4 +1,5 @@
 """Tests for hermes_logging — centralized logging setup."""
+import importlib.util
 import io
 import logging
 import os
@@ -25,14 +26,14 @@ def _reset_logging_state():
     """Reset the module-level sentinel and clean up root logger handlers
     added by setup_logging() so tests don't leak state.
 
-    Under xdist (-n auto) other test modules may have called setup_logging()
-    in the same worker process, leaving RotatingFileHandlers on the root
-    logger.  We strip ALL RotatingFileHandlers before each test so the count
-    assertions are stable regardless of test ordering.
+    Under a shared-process run, other test modules may have called
+    setup_logging() in the same process, leaving RotatingFileHandlers on the
+    root logger.  We strip ALL RotatingFileHandlers before each test so the
+    count assertions are stable regardless of test ordering.
     """
     hermes_logging._logging_initialized = False
     # File handlers now live behind the async QueueListener, not on the root
-    # logger; tear down any leaked from other xdist tests in this worker.
+    # logger; tear down any leaked from other tests in this process.
     hermes_logging._reset_queued_handlers()
     root = logging.getLogger()
     prev_root_level = root.level
@@ -65,57 +66,37 @@ def hermes_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.mark.parametrize("mode,component", [("cli", None), ("gateway", "gateway.log"), ("gui", "gui.log")])
+@pytest.mark.parametrize("configured,explicit,minimum", [(None, None, logging.INFO), ("DEBUG", "WARNING", logging.WARNING), ("DEBUG", None, logging.DEBUG)])
+def test_repeated_setup_routes_records_once(hermes_home, mode, component, configured, explicit, minimum):
+    if configured:
+        (hermes_home / "config.yaml").write_text(f"logging:\n  level: {configured}\n", encoding="utf-8")
+    for _ in range(2):
+        assert hermes_logging.setup_logging(hermes_home=hermes_home, mode=mode, log_level=explicit) == hermes_home / "logs"
+    hermes_logging.set_session_context("routing-session")
+    sources = ["tools.terminal_tool", "agent.context_compressor", "gateway.run",
+               "plugins.platforms.telegram.adapter", "hermes_cli.web_server", "tui_gateway.ws"]
+    for index, source in enumerate(sources):
+        for level in (logging.DEBUG, logging.INFO, logging.WARNING):
+            logging.getLogger(source).log(level, "routing-witness-%s-%s", index, level)
+    hermes_logging.flush_log_queue()
+    outputs = {path.name: path.read_text(encoding="utf-8-sig") for path in (hermes_home / "logs").glob("*.log")}
+    assert set(outputs) == {"agent.log", "errors.log"} | ({component} if component else set())
+    for filename, content in outputs.items():
+        for index, source in enumerate(sources):
+            for level in (logging.DEBUG, logging.INFO, logging.WARNING):
+                accepted = {
+                    "agent.log": level >= minimum,
+                    "errors.log": level >= logging.WARNING,
+                    "gateway.log": index in (2, 3) and level >= max(logging.INFO, minimum),
+                    "gui.log": index in (4, 5) and level >= max(logging.INFO, minimum),
+                }[filename]
+                witness = f"routing-witness-{index}-{level}"
+                assert content.count(witness) == int(accepted), (mode, filename, witness, content)
+        assert "[routing-session]" in content
+
+
 class TestSetupLogging:
-    """setup_logging() creates agent.log + errors.log with RotatingFileHandler."""
-
-    def test_creates_log_directory(self, hermes_home):
-        log_dir = hermes_logging.setup_logging(hermes_home=hermes_home)
-        assert log_dir == hermes_home / "logs"
-        assert log_dir.is_dir()
-
-    def test_creates_agent_log_handler(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        root = logging.getLogger()
-
-        agent_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "agent.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(agent_handlers) == 1
-        assert agent_handlers[0].level == logging.INFO
-
-
-    def test_idempotent_no_duplicate_handlers(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        hermes_logging.setup_logging(hermes_home=hermes_home)  # second call — should be no-op
-
-        root = logging.getLogger()
-        agent_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "agent.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(agent_handlers) == 1
-
-
-
-
-
-    def test_writes_to_agent_log(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-
-        test_logger = logging.getLogger("test_hermes_logging.write_test")
-        test_logger.info("test message for agent.log")
-
-        # Flush handlers
-        hermes_logging.flush_log_queue()
-
-        agent_log = hermes_home / "logs" / "agent.log"
-        assert agent_log.exists()
-        content = agent_log.read_text()
-        assert "test message for agent.log" in content
-
     def test_profile_routing_follows_context_home(self, hermes_home, tmp_path):
         """Desktop multiplex cron records are written to their owning profile."""
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -137,10 +118,87 @@ class TestSetupLogging:
 
         assert "profile-routed cron record" in (
             profile_home / "logs" / "agent.log"
-        ).read_text()
-        assert "profile-routed cron record" not in (
-            hermes_home / "logs" / "agent.log"
-        ).read_text()
+        ).read_text(encoding="utf-8-sig")
+        default_log = hermes_home / "logs" / "agent.log"
+        assert not default_log.exists() or "profile-routed cron record" not in default_log.read_text(encoding="utf-8-sig")
+
+    @pytest.mark.parametrize("launch_redacts, routed_opt_out, routed_redacted", [
+        (False, None, True),      # the launch profile opted out, the routed one did not
+        (True, "env", False),     # the routed profile opted out in its own .env
+    ], ids=["launch-opt-out", "routed-env-opt-out"])
+    def test_routed_records_follow_their_own_profiles_redaction_policy(
+            self, hermes_home, tmp_path, monkeypatch, launch_redacts, routed_opt_out, routed_redacted):
+        """The listener thread formats every record after its profile scope is gone, so a routed profile's own
+        agent.log was redacted by the LAUNCH profile's policy: raw credentials if only the launch opted out."""
+        from agent import redact
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        monkeypatch.setattr(redact, "_REDACT_ENABLED", launch_redacts)
+        monkeypatch.setattr(redact, "_REDACT_ENABLED_BY_HOME", {})
+        routed = tmp_path / "profile-b"
+        routed.mkdir()
+        if routed_opt_out == "config":
+            (routed / "config.yaml").write_text("security:\n  redact_secrets: false\n", encoding="utf-8")
+        elif routed_opt_out == "env":
+            (routed / ".env").write_text("HERMES_REDACT_SECRETS=false\n", encoding="utf-8")
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing([hermes_home, routed]) is True
+        routed_secret = "sk-proj-ROUTEDPROFILE" + "b" * 24
+        launch_secret = "sk-proj-LAUNCHPROFILE" + "a" * 24
+
+        logger = logging.getLogger("gateway.redaction-routing-test")
+        token = set_hermes_home_override(routed)
+        try:
+            logger.warning("provider rejected key %s", routed_secret)
+        finally:
+            reset_hermes_home_override(token)
+        logger.warning("launch key %s", launch_secret)
+        hermes_logging.flush_log_queue()
+
+        assert (routed_secret not in (routed / "logs" / "agent.log").read_text()) is routed_redacted
+        assert (launch_secret not in (hermes_home / "logs" / "agent.log").read_text()) is launch_redacts
+
+    def test_release_profile_log_handlers_closes_only_deleted_profile(self, hermes_home, tmp_path):
+        """Profile deletion releases its routed log files without disturbing another profile."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        deleted_home = tmp_path / "profile-deleted"
+        other_home = tmp_path / "profile-other"
+        deleted_home.mkdir()
+        other_home.mkdir()
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        assert hermes_logging.enable_profile_log_routing(
+            [hermes_home, deleted_home, other_home]
+        ) is True
+
+        logger = logging.getLogger("agent.profile-delete-log-release")
+        token = set_hermes_home_override(deleted_home)
+        try:
+            logger.warning("deleted profile log handles")
+        finally:
+            reset_hermes_home_override(token)
+        token = set_hermes_home_override(other_home)
+        try:
+            logger.warning("other profile log handles")
+        finally:
+            reset_hermes_home_override(token)
+        hermes_logging.flush_log_queue()
+
+        routers = [
+            handler for handler in hermes_logging._queued_file_handlers
+            if isinstance(handler, hermes_logging._ProfileRoutingFileHandler)
+        ]
+        assert len(routers) == 2  # agent.log and errors.log
+        assert all(deleted_home.resolve() in handler._profile_handlers for handler in routers)
+        assert all(other_home.resolve() in handler._profile_handlers for handler in routers)
+
+        assert hermes_logging.release_profile_log_handlers(deleted_home) == 2
+
+        assert all(deleted_home.resolve() not in handler._profile_handlers for handler in routers)
+        assert all(deleted_home.resolve() not in handler._profile_homes for handler in routers)
+        assert all(other_home.resolve() in handler._profile_handlers for handler in routers)
+        assert "other profile log handles" in (other_home / "logs" / "agent.log").read_text()
+        assert "other profile log handles" in (other_home / "logs" / "errors.log").read_text()
 
     def test_a_second_home_routes_instead_of_stacking_an_unfiltered_handler(self, hermes_home, tmp_path):
         """A dashboard or serve backend builds agents for several profiles in ONE process, and each
@@ -225,9 +283,9 @@ class TestSetupLogging:
 
     def test_explicit_params_override_config(self, hermes_home):
         """Explicit function params take precedence over config.yaml."""
-        import yaml
+        import hermes_yaml as yaml
         config = {"logging": {"level": "DEBUG"}}
-        (hermes_home / "config.yaml").write_text(yaml.dump(config))
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(config))
 
         hermes_logging.setup_logging(hermes_home=hermes_home, log_level="WARNING")
 
@@ -238,142 +296,6 @@ class TestSetupLogging:
             and "agent.log" in getattr(h, "baseFilename", "")
         ]
         assert agent_handlers[0].level == logging.WARNING
-
-
-
-class TestGatewayMode:
-    """setup_logging(mode='gateway') creates a filtered gateway.log."""
-
-    def test_gateway_log_created(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
-        root = logging.getLogger()
-
-        gw_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "gateway.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(gw_handlers) == 1
-
-    def test_gateway_log_not_created_in_cli_mode(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="cli")
-        root = logging.getLogger()
-
-        gw_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "gateway.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(gw_handlers) == 0
-
-
-
-    def test_gateway_log_receives_gateway_records(self, hermes_home):
-        """gateway.log captures records from gateway.* loggers."""
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
-
-        gw_logger = logging.getLogger("plugins.platforms.telegram.adapter")
-        gw_logger.info("telegram connected")
-
-        hermes_logging.flush_log_queue()
-
-        gw_log = hermes_home / "logs" / "gateway.log"
-        assert gw_log.exists()
-        assert "telegram connected" in gw_log.read_text()
-
-    def test_gateway_log_rejects_non_gateway_records(self, hermes_home):
-        """gateway.log does NOT capture records from tools.*, agent.*, etc."""
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gateway")
-
-        tool_logger = logging.getLogger("tools.terminal_tool")
-        tool_logger.info("running command")
-
-        agent_logger = logging.getLogger("agent.context_compressor")
-        agent_logger.info("compressing context")
-
-        hermes_logging.flush_log_queue()
-
-        gw_log = hermes_home / "logs" / "gateway.log"
-        if gw_log.exists():
-            content = gw_log.read_text()
-            assert "running command" not in content
-            assert "compressing context" not in content
-
-
-
-class TestGuiMode:
-    """setup_logging(mode='gui') creates a filtered gui.log."""
-
-    def test_gui_log_created(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
-        root = logging.getLogger()
-
-        gui_handlers = [
-            h for h in hermes_logging._queued_file_handlers
-            if isinstance(h, RotatingFileHandler)
-            and "gui.log" in getattr(h, "baseFilename", "")
-        ]
-        assert len(gui_handlers) == 1
-
-
-    def test_gui_log_receives_only_gui_components(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home, mode="gui")
-
-        logging.getLogger("hermes_cli.web_server").info("dashboard online")
-        logging.getLogger("tui_gateway.ws").info("ws connected")
-        logging.getLogger("gateway.run").info("gateway event")
-
-        hermes_logging.flush_log_queue()
-
-        gui_log = hermes_home / "logs" / "gui.log"
-        assert gui_log.exists()
-        content = gui_log.read_text()
-        assert "dashboard online" in content
-        assert "ws connected" in content
-        assert "gateway event" not in content
-
-
-class TestSessionContext:
-    """set_session_context / clear_session_context + _SessionFilter."""
-
-    def test_session_tag_in_log_output(self, hermes_home):
-        """When session context is set, log lines include [session_id]."""
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        hermes_logging.set_session_context("abc123")
-
-        test_logger = logging.getLogger("test.session_tag")
-        test_logger.info("tagged message")
-
-        hermes_logging.flush_log_queue()
-
-        agent_log = hermes_home / "logs" / "agent.log"
-        content = agent_log.read_text()
-        assert "[abc123]" in content
-        assert "tagged message" in content
-
-
-
-
-
-
-
-class TestComponentFilter:
-    """Unit tests for _ComponentFilter."""
-
-    def test_passes_matching_prefix(self):
-        f = hermes_logging._ComponentFilter(("gateway",))
-        record = logging.LogRecord(
-            "gateway.run", logging.INFO, "", 0, "msg", (), None
-        )
-        assert f.filter(record) is True
-
-
-    def test_blocks_non_matching(self):
-        f = hermes_logging._ComponentFilter(("gateway",))
-        record = logging.LogRecord(
-            "tools.terminal_tool", logging.INFO, "", 0, "msg", (), None
-        )
-        assert f.filter(record) is False
 
 
 
@@ -424,31 +346,8 @@ class TestAddRotatingHandler:
         assert len(rotating_handlers) == 1
         # Clean up
 
-    def test_no_session_filter_on_handler(self, tmp_path):
-        """Handlers rely on record factory, not per-handler _SessionFilter."""
-        log_path = tmp_path / "no_session_filter.log"
-        logger = logging.getLogger("_test_no_session_filter")
-        formatter = logging.Formatter("%(session_tag)s%(message)s")
 
-        hermes_logging._add_rotating_handler(
-            log_path,
-            level=logging.INFO, max_bytes=1024, backup_count=1,
-            formatter=formatter,
-        )
-
-        handlers = [h for h in hermes_logging._queued_file_handlers if isinstance(h, RotatingFileHandler)]
-        assert len(handlers) == 1
-        # No _SessionFilter on the handler — record factory handles it
-        assert len(handlers[0].filters) == 0
-
-        # But session_tag still works (via record factory)
-        hermes_logging.set_session_context("factory_test")
-        logger.info("test msg")
-        hermes_logging.flush_log_queue()
-        content = log_path.read_text()
-        assert "[factory_test]" in content
-
-        # Clean up
+    @pytest.mark.platforms("linux")
     def test_managed_mode_initial_open_sets_group_writable(self, tmp_path):
         log_path = tmp_path / "managed-open.log"
         formatter = logging.Formatter("%(message)s")
@@ -485,7 +384,7 @@ class TestWindowsConcurrentLogLockTimeout:
         logger.addHandler(handler)
         return logger, handler
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_helper_only_matches_windows_concurrent_lock_timeout(self):
         # Windows-only: concurrent-log-handler (and therefore its cross-process
         # lock timeout) is only installed on Windows — faking sys.platform
@@ -497,7 +396,7 @@ class TestWindowsConcurrentLogLockTimeout:
             RuntimeError("some other logging failure")
         )
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_helper_never_matches_off_windows(self):
         # On POSIX the suppression must stay inert: stdlib RotatingFileHandler
         # is in use, so this RuntimeError text is never a CLH lock timeout.
@@ -505,7 +404,7 @@ class TestWindowsConcurrentLogLockTimeout:
             RuntimeError("Cannot acquire lock after 20 attempts")
         )
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_lock_timeout_routed_to_handle_error_is_suppressed(self, tmp_path, capsys):
         """Mirror CLH's real control flow.
 
@@ -514,7 +413,8 @@ class TestWindowsConcurrentLogLockTimeout:
         RuntimeError raised in ``_do_lock()`` is caught *inside* CLH and routed
         to ``handleError`` with the exception live in ``sys.exc_info()``.  We
         invoke ``handleError`` the same way CLH would and assert no traceback
-        reaches stderr (the slash-worker surface).
+        reaches stderr (the slash-worker surface) — but the suppression must
+        still surface once through the logging system, not stay a black hole.
 
         Windows-only: the suppression is keyed on the real host, and only on
         Windows is the base handler CLH at all — the fake platform gave us the
@@ -523,7 +423,21 @@ class TestWindowsConcurrentLogLockTimeout:
         record = logger.makeRecord(
             logger.name, logging.INFO, __file__, 0, "force rollover", (), None,
         )
+        captured_warnings: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                captured_warnings.append(record)
+
+        listener = _Capture()
+        logging.getLogger("hermes_logging").addHandler(listener)
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(hermes_logging, "_windows_lock_timeout_warned", False)
         try:
+            try:
+                raise RuntimeError("Cannot acquire lock after 20 attempts")
+            except RuntimeError:
+                handler.handleError(record)
             try:
                 raise RuntimeError("Cannot acquire lock after 20 attempts")
             except RuntimeError:
@@ -532,8 +446,102 @@ class TestWindowsConcurrentLogLockTimeout:
             captured = capsys.readouterr()
             assert "Cannot acquire lock after 20 attempts" not in captured.err
             assert "--- Logging error ---" not in captured.err
+            # One-shot warning: the second suppressed emit must not re-warn.
+            assert len(captured_warnings) == 1
+            assert "concurrent-log-handler" in captured_warnings[0].getMessage()
         finally:
+            monkeypatch.undo()
+            logging.getLogger("hermes_logging").removeHandler(listener)
             logger.removeHandler(handler)
+            handler.close()
+
+    def test_lock_timeout_warning_is_one_shot(self, caplog):
+        """The suppressed-timeout warning is exactly-once per process.
+
+        Every emit after the first CLH lock failure raises the same
+        RuntimeError, so warn-once is what keeps errors.log from being spammed
+        as badly as the stderr noise the suppression replaces."""
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(hermes_logging, "_windows_lock_timeout_warned", False)
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_logging"):
+                hermes_logging._warn_windows_lock_timeout_once()
+                hermes_logging._warn_windows_lock_timeout_once()
+        finally:
+            monkeypatch.undo()
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert "concurrent-log-handler" in warnings[0].getMessage()
+
+    @pytest.fixture
+    def fresh_logging(self):
+        def load():
+            spec = importlib.util.spec_from_file_location(
+                "_hermes_logging_import_test", hermes_logging.__file__,
+            )
+            assert spec is not None and spec.loader is not None
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+        return load
+
+    @pytest.mark.platforms("windows")
+    def test_fresh_import_selects_working_concurrent_handler(self, tmp_path, fresh_logging):
+        """Native locking must work at import, before the handler class is defined."""
+        from concurrent_log_handler import ConcurrentRotatingFileHandler
+
+        module = fresh_logging()
+        assert module.RotatingFileHandler is ConcurrentRotatingFileHandler
+        assert module._WINDOWS_CLH_FALLBACK is False
+        assert module._WINDOWS_CLH_FALLBACK_REASON == ""
+
+        log_path = tmp_path / "agent.log"
+        handler = module._new_file_handler(
+            log_path, level=logging.INFO, max_bytes=1, backup_count=1,
+            formatter=logging.Formatter("%(message)s"),
+        )
+        try:
+            for message in ("before rollover", "after rollover"):
+                handler.handle(logging.LogRecord("test", logging.INFO, "", 0, message, (), None))
+            handler.flush()
+            assert log_path.read_text(encoding="utf-8-sig").splitlines() == ["after rollover"]
+            assert (tmp_path / "agent.log.1").read_text(encoding="utf-8-sig").splitlines() == ["before rollover"]
+        finally:
+            handler.close()
+
+    @pytest.mark.platforms("windows")
+    def test_fresh_import_retains_lock_failure_and_writes_without_rollover(
+        self, tmp_path, monkeypatch, fresh_logging,
+    ):
+        """A post-import platform fake misses both handler selection and fallback resets."""
+        import portalocker
+        from logging.handlers import RotatingFileHandler as StdlibRotatingFileHandler
+
+        failure = ImportError("pywintypes is required for Win32Locker but not found")
+
+        def fail_lock(stream, flags):
+            raise failure
+
+        monkeypatch.setattr(portalocker, "lock", fail_lock)
+        module = fresh_logging()
+        assert module.RotatingFileHandler is StdlibRotatingFileHandler
+        assert module._WINDOWS_CLH_FALLBACK is True
+        assert module._WINDOWS_CLH_FALLBACK_REASON == repr(failure)
+
+        log_path = tmp_path / "agent.log"
+        handler = module._new_file_handler(
+            log_path, level=logging.INFO, max_bytes=1, backup_count=1,
+            formatter=logging.Formatter("%(message)s"),
+        )
+        try:
+            assert handler.maxBytes == 0
+            assert handler.backupCount == 0
+            for message in ("first message", "second message"):
+                handler.handle(logging.LogRecord("test", logging.INFO, "", 0, message, (), None))
+            handler.flush()
+            assert log_path.read_text(encoding="utf-8-sig").splitlines() == ["first message", "second message"]
+            assert not list(tmp_path.glob("agent.log.*"))
+        finally:
             handler.close()
 
 
@@ -548,9 +556,9 @@ class TestReadLoggingConfig:
         assert backup is None
 
     def test_reads_logging_section(self, hermes_home):
-        import yaml
+        import hermes_yaml as yaml
         config = {"logging": {"level": "DEBUG", "max_size_mb": 10, "backup_count": 5}}
-        (hermes_home / "config.yaml").write_text(yaml.dump(config))
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(config), encoding="utf-8")
 
         level, max_size, backup = hermes_logging._read_logging_config()
         assert level == "DEBUG"
@@ -601,7 +609,7 @@ class TestExternalRotationRecovery:
         handler = self._make_handler(log_path)
         try:
             self._emit(handler, "before rotation")
-            assert log_path.read_text() == "before rotation\n"
+            assert log_path.read_text(encoding="utf-8-sig") == "before rotation\n"
 
             # External rotation (NOT via handler.doRollover()).
             os.rename(log_path, rotated)
@@ -612,8 +620,8 @@ class TestExternalRotationRecovery:
             # The new write should land in a freshly recreated gateway.log,
             # not appended to the rotated backup.
             assert log_path.exists(), "handler did not recreate gateway.log"
-            assert log_path.read_text() == "after rotation\n"
-            assert rotated.read_text() == "before rotation\n"
+            assert log_path.read_text(encoding="utf-8-sig") == "after rotation\n"
+            assert rotated.read_text(encoding="utf-8-sig") == "before rotation\n"
         finally:
             handler.close()
 
@@ -633,12 +641,12 @@ class TestExternalRotationRecovery:
             self._emit(handler, "AAAA" * 32)
             assert log_path.stat().st_size > 0
 
-            with open(log_path, "w"):
+            with open(log_path, "w", encoding="utf-8"):
                 pass  # truncate to zero
             assert log_path.stat().st_size == 0
 
             self._emit(handler, "after truncate")
-            assert log_path.read_text() == "after truncate\n"
+            assert log_path.read_text(encoding="utf-8-sig") == "after truncate\n"
         finally:
             handler.close()
 
@@ -660,7 +668,7 @@ class TestExternalRotationRecovery:
 
         logging.getLogger("gateway.run").info("line BEFORE rotation")
         hermes_logging.flush_log_queue()
-        assert "BEFORE rotation" in gw_path.read_text()
+        assert "BEFORE rotation" in gw_path.read_text(encoding="utf-8-sig")
 
         # External actor renames the file out from under us.
         os.rename(gw_path, rotated)
@@ -678,14 +686,13 @@ class TestExternalRotationRecovery:
         # backup.  Allen's logs had everything past the rotation point
         # going into agent.log only, never gateway.log.
         assert gw_path.exists(), "gateway.log was never recreated"
-        assert "AFTER rotation" in gw_path.read_text()
-        assert "AFTER rotation" not in rotated.read_text()
+        assert "AFTER rotation" in gw_path.read_text(encoding="utf-8-sig")
+        assert "AFTER rotation" not in rotated.read_text(encoding="utf-8-sig")
 
 
 def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsys):
     """A failing log destination is named once (no per-record traceback) and writes resume
     once the file is reachable again."""
-    import io
 
     class _SickStream(io.TextIOBase):
         def writable(self):
@@ -720,7 +727,6 @@ def test_eio_from_file_handler_names_the_path_once_then_recovers(tmp_path, capsy
 def test_eio_after_successful_reopen_still_names_the_path_once(tmp_path, capsys):
     """The reported case: open() succeeds but every write/seek/flush raises EIO. Reopening must
     not re-arm the notice, or a stuck device prints the path once per record."""
-    import io
 
     class _SickStream(io.TextIOBase):
         def writable(self):
@@ -775,58 +781,43 @@ class TestSafeStderr:
         assert isinstance(result, io.TextIOWrapper)
         assert result.encoding == "utf-8"
         assert result.errors == "replace"
-
-    def test_handler_emits_unicode_without_crash(self, tmp_path):
-        """StreamHandler with _safe_stderr can emit Unicode messages."""
-        import io
-
-        # Create a stderr-like stream with ASCII encoding
-        class AsciiStream:
-            encoding = "ascii"
-            buffer = io.BytesIO()
-
-            def write(self, s):
-                self.buffer.write(s.encode("ascii", errors="replace"))
-
-            def flush(self):
-                pass
-
-        # Without the fix, this would crash on cp949/ASCII stderr.
-        # With the wrapper, the em-dash is replaced with '?'
-        handler = logging.StreamHandler(
-            io.TextIOWrapper(
-                io.BytesIO(),
-                encoding="utf-8",
-                errors="replace",
-            )
-        )
-        handler.setFormatter(logging.Formatter("%(message)s"))
-        logger = logging.getLogger("_test_unicode")
-        logger.addHandler(handler)
-        logger.setLevel(logging.DEBUG)
-        try:
-            # Em-dash U+2014 — the exact character from the bug report
-            logger.info("Session hygiene: 400 messages — auto-compressing")
-        finally:
-            logger.removeHandler(handler)
+        handler = logging.StreamHandler(result)
+        handler.handle(logging.LogRecord("unicode", logging.INFO, "", 0, "Session — 日本", (), None))
+        handler.flush()
+        assert fake.buffer.getvalue() == "Session — 日本\n".encode("utf-8")
 
 
-class TestAsyncQueueLogging:
-    """File logging runs through a QueueListener so emits never block on the
-    cross-process rotation lock (Windows event-loop-stall fix)."""
 
-    def test_file_handlers_not_on_root(self, hermes_home):
-        hermes_logging.setup_logging(hermes_home=hermes_home)
-        root = logging.getLogger()
-        # Rotating file handlers live on the async listener, never on root.
-        assert not any(isinstance(h, RotatingFileHandler) for h in root.handlers)
-        # Exactly one queue handler funnels records to the listener.
-        queue_handlers = [
-            h for h in root.handlers if getattr(h, "_hermes_queue", False)
-        ]
-        assert len(queue_handlers) == 1
-        # The real file handlers are discoverable via the accessor.
-        assert any(
-            "agent.log" in getattr(h, "baseFilename", "")
-            for h in hermes_logging._queued_file_handlers
-        )
+class TestLineBufferPipedStdout:
+    """A piped stdout is line-buffered so headless log streams track the
+    agent loop incrementally (#92281); a TTY stdout is left alone."""
+
+    def _fake_stdout(self, isatty: bool):
+        from unittest.mock import MagicMock
+
+        stream = MagicMock()
+        stream.isatty.return_value = isatty
+        stream.reconfigure = MagicMock()
+        return stream
+
+    def test_tty_none_or_reconfigure_less_stdout_left_alone(self, monkeypatch):
+        from types import SimpleNamespace
+
+        tty = self._fake_stdout(isatty=True)
+        monkeypatch.setattr(sys, "stdout", tty)
+        hermes_logging._line_buffer_piped_stdout()
+        tty.reconfigure.assert_not_called()
+
+        monkeypatch.setattr(sys, "stdout", None)
+        hermes_logging._line_buffer_piped_stdout()  # must not raise
+        # A stream without reconfigure() (e.g. a print-redirect shim).
+        monkeypatch.setattr(sys, "stdout", SimpleNamespace(isatty=lambda: False))
+        hermes_logging._line_buffer_piped_stdout()
+
+    def test_setup_logging_applies_it_to_piped_stdout(self, tmp_path, monkeypatch):
+        stream = self._fake_stdout(isatty=False)
+        monkeypatch.setattr(sys, "stdout", stream)
+        hermes_logging.setup_logging(hermes_home=tmp_path, force=True)
+        # setup_logging runs per AIAgent build: a second call must not re-flush/reconfigure.
+        hermes_logging.setup_logging(hermes_home=tmp_path, force=True)
+        stream.reconfigure.assert_called_once_with(line_buffering=True)

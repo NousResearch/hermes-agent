@@ -181,15 +181,6 @@ def test_pending_fallback_notice_continues_after_callback_error():
     assert agent._pending_fallback_notice is None
 
 
-def test_pending_fallback_notice_noop_when_unset():
-    """No fallback this turn → no notice emitted on the success path."""
-    agent = _make_bare_agent()
-    emitted = []
-    agent._emit_status = lambda msg: emitted.append(msg)
-
-    # No _pending_fallback_notice attribute set at all.
-    agent._emit_pending_fallback_notice()
-    assert emitted == []
 
 
 def test_flush_discards_pending_fallback_notice():

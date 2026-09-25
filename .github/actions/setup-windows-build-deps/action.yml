@@ -1,0 +1,21 @@
+name: Set up native Windows ARM64 build dependencies
+description: Prepare MSVC, SDK, Clang, Rust and static OpenSSL through the shared PowerShell installer.
+runs:
+  using: composite
+  steps:
+    - name: Cache ARM64 OpenSSL development files
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        # Cache libraries and headers only, not a vcpkg checkout or machine state.
+        path: C:\vcpkg\installed\arm64-windows-static-md
+        key: windows-build-deps-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/windows-build-deps.ps1', 'scripts/build/windows-deps.ps1') }}
+
+    - name: Initialize the native build environment
+      shell: powershell
+      env:
+        _WINDOWS_BUILD_ACTION: ${{ github.action_path }}
+      run: |
+        & "$env:_WINDOWS_BUILD_ACTION/../../../scripts/build/windows-deps.ps1" `
+          -StateRoot "$env:RUNNER_TEMP/windows-build-deps" `
+          -OpenSSLRoot 'C:\vcpkg' `
+          -GithubEnv $env:GITHUB_ENV -GithubPath $env:GITHUB_PATH

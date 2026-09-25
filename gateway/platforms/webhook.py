@@ -3,7 +3,9 @@ Svix, Linear, generic), renders payloads into agent prompts, and routes response
 or any gateway platform). Routes live under platforms.webhook.extra.routes: events (header filter),
 secret (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
 deliver/deliver_extra, deliver_only (rendered prompt IS the message), cron_job (fire an existing cron
-job per event; the rendered prompt is transient per-run context; exclusive with deliver_only). Per-route rate limiting,
+job per event; the rendered prompt is transient per-run context; exclusive with deliver_only), mirror_to_session
+(opt-in: a delivered response is also written into the target chat's transcript so follow-ups there have
+context). Per-route rate limiting,
 idempotency cache, body-size caps checked before reading. Generic HMAC V2 binds a timestamp for
 replay protection; body-only V1 is deprecated but accepted with a warning."""
 
@@ -17,7 +19,6 @@ import logging
 import os
 import re
 import subprocess
-import sys
 import time
 from collections import deque
 from contextlib import nullcontext, suppress
@@ -34,6 +35,7 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
+from gateway.platforms.tcp_site import start_tcp_site
 from gateway.platforms.webhook_coalesce import WebhookCoalescer, validate_coalesce_config
 from gateway.platforms.webhook_filters import DEFAULT_SCRIPT_TIMEOUT_SECONDS, WebhookRouteProcessor
 from gateway.response_filters import is_autonomous_silence_response
@@ -231,13 +233,8 @@ class WebhookAdapter(BasePlatformAdapter):
         app.router.add_route("*", "/p/{profile}/{tail:.*}", self._handle_profile_ingress)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
-        # SO_REUSEADDR: on macOS (BSD) two wildcard/specific sockets can silently split traffic while
-        # both report success → disable. On Linux it only permits rebinding past TIME_WAIT (a quick
-        # restart would otherwise fail to bind for ~60s) → keep the default.
-        site = web.TCPSite(self._runner, self._host, self._port,
-                           reuse_address=False if sys.platform == "darwin" else None)
         try:
-            await site.start()
+            await start_tcp_site(self._runner, self._host, self._port, log_tag="webhook")
         except OSError as exc:
             await self._runner.cleanup()
             self._runner = None
@@ -333,11 +330,13 @@ class WebhookAdapter(BasePlatformAdapter):
     def toolsets_for_source(self, source) -> Optional[List[str]]:
         """Per-route ``toolsets`` override (config.yaml or a manual key in webhook_subscriptions.json —
         deliberately NOT settable via `hermes webhook subscribe`, so an agent-created subscription
-        cannot self-grant tools)."""
-        parts = str(getattr(source, "chat_id", "") or "").split(":", 2)
-        if len(parts) < 2 or parts[0] != "webhook":
+        cannot self-grant tools). Keyed on ``user_id`` (exactly ``webhook:{route}`` as authenticated), not
+        ``chat_id``, whose caller-supplied delivery id and ``:``-bearing route names make any split ambiguous
+        (GHSA-2fmg-cjqm-hhrj)."""
+        user_id = str(getattr(source, "user_id", "") or "")
+        if not user_id.startswith("webhook:"):
             return None
-        route_config = self._routes.get(parts[1])
+        route_config = self._routes.get(user_id[len("webhook:"):])
         toolsets = route_config.get("toolsets") if isinstance(route_config, dict) else None
         if not isinstance(toolsets, list):
             return None
@@ -382,7 +381,7 @@ class WebhookAdapter(BasePlatformAdapter):
             mtime = subs_path.stat().st_mtime
             if mtime <= self._dynamic_routes_mtime:
                 return  # No change
-            data = json.loads(subs_path.read_text(encoding="utf-8"))
+            data = json.loads(subs_path.read_text(encoding="utf-8-sig"))
             if not isinstance(data, dict):
                 return
             self._dynamic_routes = {  # static routes take precedence
@@ -484,7 +483,9 @@ class WebhookAdapter(BasePlatformAdapter):
         """deliver_only: the rendered prompt IS the message — skip the agent, reuse the same
         auth/rate-limit/idempotency/template pipeline."""
         delivery = {"deliver": route_config.get("deliver", "log"), "payload": payload, "profile": profile,
-                    "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+                    "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+                    "route": route_name,
+                    "mirror": route_config.get("mirror_to_session") is True}
         logger.info("[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s", event_type,
                     route_name, delivery["deliver"], len(prompt), delivery_id)
         failed = {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id}
@@ -653,7 +654,9 @@ class WebhookAdapter(BasePlatformAdapter):
         # THIS profile's adapter, home channel and secrets — not the first profile that has the platform.
         self._delivery_info[session_chat_id] = {
             "deliver": route_config.get("deliver", "log"), "profile": profile,
-            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload)}
+            "deliver_extra": self._render_delivery_extra(route_config.get("deliver_extra", {}), payload),
+            "route": route_name,
+            "mirror": route_config.get("mirror_to_session") is True}
         self._delivery_info_created[session_chat_id] = now
         self._delivery_info_order.append((now, session_chat_id))
         self._prune_delivery_info(now)
@@ -876,7 +879,10 @@ class WebhookAdapter(BasePlatformAdapter):
                     return SendResult(success=False, error=f"No chat_id or home channel for {platform_name}")
                 chat_id = home.chat_id
             thread_id = extra.get("message_thread_id") or extra.get("thread_id")  # Telegram forum topics
-            return await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+            result = await adapter.send(chat_id, content, metadata={"thread_id": thread_id} if thread_id else None)
+            if result.success:
+                self._mirror_delivery(platform_name, str(chat_id), content, delivery, thread_id)
+            return result
 
     def _delivery_config(self, profile: Optional[str]):
         """Gateway config of the profile a delivery is bound to (call inside ``_profile_scope``)."""
@@ -884,3 +890,30 @@ class WebhookAdapter(BasePlatformAdapter):
             return self.gateway_runner.config
         from gateway.config import load_gateway_config
         return load_gateway_config()
+
+    def _mirror_delivery(self, platform_name: str, chat_id: str, content: str, delivery: dict,
+                         thread_id: Optional[str]) -> None:
+        """Best-effort mirror of a delivered response into the TARGET chat's session transcript, so a
+        follow-up there ("so he's out?") sees what the webhook run just told the user. Without this the
+        text only lives in the ephemeral ``webhook:<route>:<delivery_id>`` session and the target chat's
+        agent has no idea it sent anything. Same path and USER-role convention as cron briefs
+        (``cron.scheduler_delivery._maybe_mirror_cron_delivery``, #2221): the text is not the target
+        session's agent speaking, and a labelled user turn merges safely on strict-alternation providers.
+        Opt-in per route (``mirror_to_session: true``), default off like cron's ``mirror_delivery``: the text
+        lands with user authority in a chat the route author may not own, and on ``deliver_only`` routes it is
+        the raw rendered payload. Called inside the routed profile's scope so the lookup hits THAT profile's
+        state.db — a DM chat_id is the user's id on every bot, so an unscoped mirror lands in another
+        profile's DM with the same person. Never raises — a delivered message must not be reported failed
+        because the mirror broke."""
+        if delivery.get("mirror") is not True:
+            return
+        route = delivery.get("route") or "webhook"
+        try:
+            from gateway.mirror import mirror_to_session
+            ok = mirror_to_session(platform_name, chat_id, f"[Webhook delivery: {route}]\n{content}",
+                                   source_label="webhook", thread_id=thread_id, role="user")
+            logger.log(logging.INFO if ok else logging.DEBUG,
+                       "[webhook] Route '%s' delivery %smirrored into %s:%s session", route, "" if ok else "not ",
+                       platform_name, chat_id)
+        except Exception as e:
+            logger.debug("[webhook] Route '%s' delivery mirror into %s:%s failed: %s", route, platform_name, chat_id, e)

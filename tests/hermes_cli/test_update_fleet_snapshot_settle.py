@@ -60,11 +60,65 @@ def test_snapshot_stops_waiting_once_the_restarted_unit_is_dead(monkeypatch) -> 
     monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **_kwargs: [])
     monkeypatch.setattr(
         update_cmd_fleet, "_systemctl",
-        lambda cmd, *, timeout: SimpleNamespace(stdout="failed\n", stderr="", returncode=3))
+        lambda cmd, *, timeout: SimpleNamespace(
+            stdout="LoadState=loaded\nActiveState=failed\n", stderr="", returncode=0))
 
     restart = SimpleNamespace(pre_restart_gateway_pids=[101], restarted_scoped_units={"user/hermes-gateway.service"})
     assert update_cmd_fleet._collect_fleet_snapshot(restart, rows_expected=True) == []
     assert clock.now < 30.0
+
+
+def test_snapshot_keeps_waiting_when_the_unit_is_unknown_to_the_asked_scope(monkeypatch) -> None:
+    """#112466: a user unit recorded as ``system/<name>`` answers ``LoadState=not-found`` in the
+    system scope — inconclusive, not a dead successor, so the settle poll runs to its deadline."""
+    clock = _FakeClock()
+    monkeypatch.setattr(update_cmd_fleet._time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(update_cmd_fleet._time, "sleep", clock.sleep)
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **_kwargs: [])
+
+    def systemctl(cmd, *, timeout):
+        # Real systemctl shape: the owning (user) scope has the unit loaded and active; the system
+        # scope does not know it at all (``is-active`` there would print ``inactive`` rc 4).
+        loaded = "--user" in cmd
+        return SimpleNamespace(
+            stdout=f"LoadState={'loaded' if loaded else 'not-found'}\nActiveState={'active' if loaded else 'inactive'}\n",
+            stderr="", returncode=0)
+
+    monkeypatch.setattr(update_cmd_fleet, "_systemctl", systemctl)
+    assert update_cmd_fleet._restarted_units_gone(("system/hermes-gateway.service",)) is False
+
+    restart = SimpleNamespace(pre_restart_gateway_pids=[101], restarted_scoped_units={"system/hermes-gateway.service"})
+    assert update_cmd_fleet._collect_fleet_snapshot(restart, rows_expected=True) == []
+    assert clock.now >= update_cmd_fleet._FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
+
+
+def test_snapshot_waits_for_the_relaunched_pid_to_publish_its_identity(monkeypatch) -> None:
+    """#112634: an ``unknown`` row from a pid that did not exist at update start is a successor still
+    booting — keep polling until it turns ``current``; a surviving pre-restart pid settles at once."""
+    clock = _FakeClock()
+    monkeypatch.setattr(update_cmd_fleet._time, "monotonic", clock.monotonic)
+    monkeypatch.setattr(update_cmd_fleet._time, "sleep", clock.sleep)
+    unknown = {"profile": "default", "pid": 34516, "code_sha": None, "code_version": None, "state": "unknown"}
+    current = {**unknown, "code_sha": "new", "code_version": "0.21.3", "state": "current"}
+    snapshots = iter([[dict(unknown)]] * 5 + [[current]])
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **_kwargs: next(snapshots))
+    restart = SimpleNamespace(pre_restart_gateway_pids=[32512], restarted_scoped_units=set())
+
+    assert update_cmd_fleet._collect_fleet_snapshot(restart, rows_expected=True) == [current]
+    assert clock.now == 12.0
+
+    # Control: the same unknown row for a pid that was already running pre-update is settled as-is.
+    clock.now = 0.0
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **_kwargs: [dict(unknown)])
+    survivor = SimpleNamespace(pre_restart_gateway_pids=[34516], restarted_scoped_units=set())
+    result = update_cmd_fleet._collect_fleet_snapshot(survivor, rows_expected=True)
+    assert clock.now == 2.0 and "identity_pending" not in result[0]
+
+    # Still unknown at the deadline: flagged so the matrix prints restart-aware copy, never "predates".
+    clock.now = 0.0
+    result = update_cmd_fleet._collect_fleet_snapshot(restart, rows_expected=True)
+    assert clock.now >= update_cmd_fleet._FLEET_PROBE_SETTLE_TIMEOUT_SECONDS
+    assert result[0]["identity_pending"] is True
 
 
 def test_verifier_clears_marker_after_late_current_gateway_state(monkeypatch) -> None:
@@ -107,7 +161,6 @@ def test_verifier_clears_marker_after_late_current_gateway_state(monkeypatch) ->
         restart,
         _pre_update_plan=None,
         _windows_gateway_resume=None,
-        node_failures=[],
         update_complete=True,
     )
 

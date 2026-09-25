@@ -262,6 +262,13 @@ class TestTheLauncherRuntimeIsNotReEntered:
         """When re-entry is owed, it must not land on the store interpreter."""
         root, environment, store_python = self._install(tmp_path, self._caller(), monkeypatch=monkeypatch)
         interpreter = self._generation_interpreter(environment)
+        # The publish now also proves the embedded runtime can spawn a child
+        # (`-m hermes_cli.main`), which needs a whole dependency generation.
+        # This fixture fabricates the LAYOUT only -- its interpreter is a symlink
+        # with an empty site-packages, before PM builds one -- so that check is
+        # stubbed here and covered for real in test_child_spawn_smoke.py.
+        monkeypatch.setattr("hermes_cli.child_spawn_smoke.verify_published_runtime",
+                            lambda *args, **kwargs: None)
 
         assert venv_sync.prepare_launch(root, []) == interpreter
         assert venv_sync.prepare_launch(root, []) != store_python

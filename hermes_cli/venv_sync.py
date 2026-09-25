@@ -97,6 +97,16 @@ def publish_launchers(project_root: Path, *, create: bool = True) -> None:
         import logging
 
         logging.getLogger(__name__).warning("CLI exposure failed: %s", result["error"])
+    # A published launcher promises its runtime can spawn a child as
+    # `sys.executable -m hermes_cli.main` (kanban workers, external cron workers).
+    # Nothing verified that promise before: the CLI and the gateway keep working
+    # when it is false, because hermes_bootstrap completes the parent in-process,
+    # so an embedded dependency-less interpreter went unnoticed on 2026-09-25
+    # until the cron error stream complained. Raise here: a publish that leaves
+    # the install unable to dispatch is a failed install, not a warning.
+    from hermes_cli.child_spawn_smoke import verify_published_runtime
+
+    verify_published_runtime(root)
 
 
 def sync(project_root: Path | None = None, *, check: bool = False) -> dict:

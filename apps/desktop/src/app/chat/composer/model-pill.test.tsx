@@ -15,6 +15,7 @@ import { COMPOSER_AREAS, type ComposerModelPillContext, type ComposerModelPillPr
 import { requestModelMenuToggle } from './focus'
 import { ModelPill } from './model-pill'
 import { RICH_INPUT_SLOT } from './rich-editor'
+import { ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from './scope'
 
 const modelState = (over: Partial<ChatBarState['model']> = {}): ChatBarState['model'] => ({
   canSwitch: true,
@@ -181,6 +182,30 @@ describe('ModelPill owner label', () => {
     act(() => trigger.focus())
     fireEvent.keyDown(trigger, { key: 'Enter' })
     expect((await screen.findByRole('menu')).textContent).toContain('default · unlisted-gateway')
+  })
+
+  it('uses the resolved session owner for an in-place cross-gateway chat', () => {
+    $connectionsRegistry.set({
+      version: 2,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [
+        { id: 'local', kind: 'local', label: 'Laptop', tokenSet: false, tokenPreview: null },
+        { id: 'remote', kind: 'ssh', label: 'Mini-2', tokenSet: false, tokenPreview: null }
+      ]
+    })
+
+    render(
+      <ComposerScopeProvider value={{ ...MAIN_COMPOSER_SCOPE, connectionId: 'remote', profile: 'writer' }}>
+        <ModelPill
+          disabled={false}
+          model={modelState({ ownerConnectionId: 'local', ownerProfile: 'default' })}
+        />
+      </ComposerScopeProvider>
+    )
+
+    expect(screen.getByText('writer · Mini-2')).toBeTruthy()
+    expect(screen.queryByText('default · Laptop')).toBeNull()
   })
 })
 

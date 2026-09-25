@@ -523,6 +523,29 @@ class TestExecute:
         assert args == ["-c", "echo done"]
         assert kwargs["cwd"] == "/vercel/sandbox"
 
+    def test_large_stdin_is_staged_outside_command_argv(
+        self, make_env, vercel_sdk
+    ):
+        env = make_env()
+        sandbox = vercel_sdk.current
+        sandbox.run_command_calls.clear()
+        sandbox.write_files_calls.clear()
+        payload = "x" * (70 * 1024)
+
+        handle = env._run_bash("cat > /tmp/payload.txt", stdin_data=payload)
+
+        assert handle.wait(timeout=2) == 0
+        assert env._stdin_mode == "payload"
+        assert sandbox.write_files_calls
+        staged = sandbox.write_files_calls[0][0]
+        assert staged["content"] == payload.encode("utf-8")
+        command = next(
+            args[1] for cmd, args, _ in sandbox.run_command_calls
+            if cmd == "bash" and len(args) > 1 and "cat > /tmp/payload.txt" in args[1]
+        )
+        assert payload not in command
+        assert ".hermes-stdin-" in command
+
 
 class TestSnapshotPersistence:
     def test_create_restores_from_saved_snapshot(

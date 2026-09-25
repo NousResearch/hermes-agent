@@ -193,6 +193,32 @@ class TestExecute:
         assert "hello" in result["output"]
         assert result["returncode"] == 0
 
+    def test_large_stdin_is_staged_outside_command_argv(self, make_env):
+        env = make_env()
+        sandbox = env._sandbox
+        sandbox.process.exec.reset_mock()
+        sandbox.process.exec.return_value = _make_exec_response(result="ok", exit_code=0)
+        uploads = []
+
+        def capture_upload(host_path, remote_path):
+            with open(host_path, "rb") as staged:
+                uploads.append((remote_path, staged.read()))
+
+        sandbox.fs.upload_file.side_effect = capture_upload
+        payload = "x" * (70 * 1024)
+
+        handle = env._run_bash("cat > /tmp/payload.txt", stdin_data=payload)
+
+        assert handle.wait(timeout=2) == 0
+        assert env._stdin_mode == "payload"
+        assert uploads and uploads[0][1] == payload.encode("utf-8")
+        shell_cmd = next(
+            call.args[0] for call in sandbox.process.exec.call_args_list
+            if "cat > /tmp/payload.txt" in call.args[0]
+        )
+        assert payload not in shell_cmd
+        assert ".hermes-stdin-" in shell_cmd
+
 
 
 

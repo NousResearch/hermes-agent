@@ -58,6 +58,9 @@ def _wire_async_exec(env, exec_calls=None):
         proc.wait = MagicMock()
         proc.wait.aio = AsyncMock(return_value=0)
         proc.stdin = stdin_mock
+        proc.stdout = MagicMock()
+        proc.stdout.read = MagicMock()
+        proc.stdout.read.aio = AsyncMock(return_value="")
         proc.stderr = MagicMock()
         proc.stderr.read = MagicMock()
         proc.stderr.read.aio = AsyncMock(return_value="")
@@ -153,3 +156,19 @@ class TestModalBulkUpload:
         with tarfile.open(fileobj=buf, mode="r:gz") as tar:
             names = tar.getnames()
             assert "root/.hermes/large.bin" in names
+
+
+class TestModalCommandStdin:
+    def test_large_payload_uses_sdk_stdin_not_bash_argv(self, monkeypatch, tmp_path):
+        env = _make_mock_modal_env(monkeypatch, tmp_path)
+        payload = "x" * (70 * 1024)
+        exec_calls, _, stdin_mock = _wire_async_exec(env)
+
+        handle = env._run_bash("cat > /tmp/payload.txt", stdin_data=payload)
+
+        assert handle.wait(timeout=2) == 0
+        assert modal_env.ModalEnvironment._stdin_mode == "payload"
+        assert "".join(stdin_mock._written_chunks) == payload
+        assert len(exec_calls) == 1
+        assert payload not in " ".join(str(part) for part in exec_calls[0])
+        stdin_mock.write_eof.assert_called_once()

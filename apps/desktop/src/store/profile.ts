@@ -15,7 +15,7 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { withTimeout } from '@/lib/with-timeout'
-import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { registryConnectionKind } from '@/store/connection-registry-state'
 import {
   $gateway,
   activeGatewayConnectionId,
@@ -488,10 +488,6 @@ export const $hydrationSyncProfile = atom<string | null>(null)
 const PREWARM_MIN_INTERVAL_MS = 60_000
 
 const prewarmedAt = new Map<string, number>()
-
-function registryConnectionKind(connectionId: string): string | undefined {
-  return $connectionsRegistry.get()?.connections.find(entry => entry.id === connectionId)?.kind
-}
 
 export function prewarmProfileBackend(name: string, connectionId: null | string = null): void {
   const key = normalizeProfileKey(name)

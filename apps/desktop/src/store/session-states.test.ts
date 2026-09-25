@@ -10,6 +10,8 @@ import {
   setWorkspaceScope,
   workspaceScopeKey
 } from '@/components/pane-shell/workspace-scope'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
+import { setPrimaryGateway, setPrimaryGatewayConnection } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $activeSessionId,
@@ -1465,5 +1467,49 @@ describe('isSessionRemote (#94640)', () => {
     setSessions([{ id: 'stored-2', profile: 'loki' } as never])
 
     expect(isSessionRemote('stored-2')).toBe(true)
+  })
+
+  it("reads a connection-tagged row's mode from the registry, not the ambient connection (#120730)", () => {
+    // A row from the unified Sessions list carries connection_id but no mode;
+    // its owner is { connectionId, profile }. The byte-vs-path decision must
+    // come from that connection's registry kind.
+    $connectionsRegistry.set({
+      version: 1,
+      primary: 'local',
+      secureTokenStorage: true,
+      connections: [
+        { id: 'local', kind: 'local', label: 'This Mac', tokenSet: false, tokenPreview: null },
+        { id: 'vps', kind: 'ssh', label: 'VPS', tokenSet: false, tokenPreview: null }
+      ]
+    })
+    setSessions([
+      { id: 'stored-ssh', profile: 'default', connection_id: 'vps' } as never,
+      { id: 'stored-local', profile: 'default', connection_id: 'local' } as never
+    ])
+
+    try {
+      $connection.set({ mode: 'local' } as never)
+      expect(isSessionRemote('stored-ssh')).toBe(true)
+
+      $connection.set({ mode: 'remote' } as never)
+      expect(isSessionRemote('stored-local')).toBe(false)
+    } finally {
+      $connectionsRegistry.set(null)
+    }
+  })
+
+  it('reads a bare-profile owner from the socket that serves it, not the ambient connection (#120730)', () => {
+    // The primary socket serving 'default' is a remote backend while the window
+    // shows a local source: the primary's own mode decides.
+    setPrimaryGateway({} as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'vps', mode: 'remote' })
+    $connection.set({ mode: 'local' } as never)
+    setSessions([{ id: 'stored-primary', profile: 'default' } as never])
+
+    try {
+      expect(isSessionRemote('stored-primary')).toBe(true)
+    } finally {
+      setPrimaryGateway(null)
+    }
   })
 })

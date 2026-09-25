@@ -252,6 +252,11 @@ type BotsMessages = {
     nameLabel: string
     holdDetection: string
     holdDetectionHint: string
+    sharing: string
+    sharingHint: string
+    sharingSaveFailed: string
+    routesUnavailable: string
+    syncFailed: string
     compressHistory: string
     compressHistoryHint: (member: string) => string
     compressing: (member: string) => string
@@ -682,6 +687,11 @@ const en: BotsMessages = {
     nameLabel: 'Group name',
     holdDetection: 'Detect stop directives',
     holdDetectionHint: 'Let room messages put addressed members on hold until they are mentioned again.',
+    sharing: 'Share with connected gateways',
+    sharingHint: 'Off by default. When enabled, room names, members, and recent messages are copied to connected gateways. Turning it off removes those copies.',
+    sharingSaveFailed: 'Could not save the room sharing setting. The previous setting is still in effect.',
+    routesUnavailable: 'Connected gateways could not be listed. Room changes will sync only to the active gateway until they are available.',
+    syncFailed: 'Group chat changes could not reach a connected gateway. Check its connection and save the sharing setting again.',
     compressHistory: 'Compress history',
     compressHistoryHint: (member: string) =>
       `Compress ${member}'s hidden room history so the member stops failing with empty replies`,
@@ -1107,6 +1117,11 @@ const ja: BotsMessages = {
     nameLabel: 'グループ名',
     holdDetection: '停止指示を検出',
     holdDetectionHint: 'ルームのメッセージで、再びメンションされるまで対象メンバーを保留にします。',
+    sharing: '接続済みゲートウェイと共有',
+    sharingHint: '初期設定ではオフです。有効にするとルーム名、メンバー、最近のメッセージが接続済みゲートウェイにコピーされ、オフにすると削除されます。',
+    sharingSaveFailed: 'ルームの共有設定を保存できませんでした。以前の設定が引き続き有効です。',
+    routesUnavailable: '接続済みゲートウェイを一覧できません。利用可能になるまではアクティブなゲートウェイだけに同期します。',
+    syncFailed: '接続済みゲートウェイにグループチャットの変更を同期できませんでした。接続を確認して共有設定を再度保存してください。',
     compressHistory: '履歴を圧縮',
     compressHistoryHint: (member: string) =>
       `${member} の非表示のルーム履歴を圧縮し、空の応答で失敗しなくなるようにします`,
@@ -1526,6 +1541,11 @@ const zh: BotsMessages = {
     nameLabel: '群组名称',
     holdDetection: '检测停止指令',
     holdDetectionHint: '允许房间消息将指定成员保持暂停，直到再次提及该成员。',
+    sharing: '与已连接的网关共享',
+    sharingHint: '默认关闭。开启后，房间名称、成员和最近的消息会复制到已连接的网关；关闭后会删除这些副本。',
+    sharingSaveFailed: '无法保存房间共享设置，之前的设置仍然有效。',
+    routesUnavailable: '无法列出已连接的网关，网关恢复可用前只会同步到当前活动网关。',
+    syncFailed: '群聊变更未能同步到某个已连接的网关。请检查连接，然后重新保存共享设置。',
     compressHistory: '压缩历史',
     compressHistoryHint: (member: string) => `压缩 ${member} 隐藏的房间历史，避免该成员因空回复而失败`,
     compressing: (member: string) => `正在压缩 ${member} 的房间历史…`,
@@ -1939,6 +1959,11 @@ const zhHant: BotsMessages = {
     nameLabel: '群組名稱',
     holdDetection: '偵測停止指令',
     holdDetectionHint: '允許房間訊息暫停指定成員，直到再次提及該成員。',
+    sharing: '與已連線的閘道分享',
+    sharingHint: '預設關閉。啟用後，房間名稱、成員和最近的訊息會複製到已連線的閘道；關閉後會刪除這些副本。',
+    sharingSaveFailed: '無法儲存房間分享設定，先前的設定仍然有效。',
+    routesUnavailable: '無法列出已連線的閘道，閘道恢復可用前只會同步到目前作用中的閘道。',
+    syncFailed: '群組聊天變更未能同步到某個已連線的閘道。請檢查連線，然後重新儲存分享設定。',
     compressHistory: '壓縮歷史',
     compressHistoryHint: (member: string) => `壓縮 ${member} 隱藏的房間歷史，避免該成員因空回覆而失敗`,
     compressing: (member: string) => `正在壓縮 ${member} 的房間歷史…`,

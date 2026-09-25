@@ -26,7 +26,9 @@ from hermes_cli import __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_cli.version_info import get_version_info
 from hermes_constants import get_process_hermes_home, profile_name_for_home
-from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
+from hermes_cli.web_models import (
+    CuratorPause, DebugShareRequest, LearningNodeCrossInsert, LearningNodeEdit,
+    LearningNodeRef, ProviderSessionMaterialize)
 from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -39,6 +41,7 @@ logs_router = APIRouter()
 # Late-bound so a test's monkeypatch on the owning module wins at call time.
 _collect_profile_gateway_topology_cached = late("_collect_profile_gateway_topology_cached", "hermes_cli.web_server_gateway")
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
+_profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 _dashboard_local_update_managed_externally = late("_dashboard_local_update_managed_externally", "hermes_cli.web_server_files")
 _load_configured_gateway_platforms = late("_load_configured_gateway_platforms", "hermes_cli.web_server_gateway")
 _probe_gateway_health = late("_probe_gateway_health", "hermes_cli.web_server_gateway")
@@ -666,9 +669,87 @@ async def run_curator(profile: Optional[str] = None):
                          destructive_profile(profile, "POST /api/curator/run"))
 
 
+_MAX_JOURNEY_PROFILES = 16
+
+
+def _merge_learning_graphs(graphs: list[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """Merge per-profile learning graphs into one payload for the multi-profile map.
+
+    Node and edge ids gain a ``<profile>:`` prefix so equal ids from different profiles
+    stay distinct. Each node keeps its unprefixed id in ``_originalId``: node-level
+    requests (edit, recall, cross-profile insert) send that id scoped to the node's own
+    ``profile``. Nodes, edges and memory cards carry ``profile``; cluster counts and
+    integer stats are summed.
+    """
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    memory: list[dict[str, Any]] = []
+    clusters: Dict[str, int] = {}
+    stats: Dict[str, Any] = {}
+    providers: list[str] = []
+    for name, graph in graphs:
+        prefix = f"{name}:"
+        for node in graph.get("nodes", []):
+            nodes.append({**node, "id": f"{prefix}{node['id']}", "_originalId": node["id"], "profile": name})
+        for edge in graph.get("edges", []):
+            edges.append({"source": f"{prefix}{edge['source']}", "target": f"{prefix}{edge['target']}",
+                          "profile": name})
+        memory.extend({**card, "profile": name} for card in graph.get("memory", []))
+        for cluster in graph.get("clusters", []):
+            category = cluster.get("category")
+            clusters[category] = clusters.get(category, 0) + int(cluster.get("count") or 0)
+        for key, value in (graph.get("stats") or {}).items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                stats[key] = stats.get(key, 0) + value
+        provider = graph.get("memoryProvider")
+        if provider and provider not in providers:
+            providers.append(provider)
+    names = [name for name, _ in graphs]
+    # One provider name gates provider-specific UI. Conclusion nodes come from Honcho,
+    # so Honcho wins when any selected profile uses it.
+    provider = next((p for p in providers if str(p).lower() == "honcho"), providers[0] if providers else None)
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "clusters": [{"category": c, "count": n} for c, n in sorted(clusters.items(), key=lambda kv: -kv[1])],
+        "memory": memory,
+        "memoryProvider": provider,
+        "stats": {**stats, "profiles": names},
+        "multiProfile": True,
+        "profiles": names,
+    }
+
+
+async def _multi_profile_learning_graph(names: list[str]) -> dict[str, Any]:
+    """Build each named profile's learning graph in that profile's scope and merge them.
+
+    A profile that does not exist, fails name validation, or fails to build is skipped,
+    so one broken profile cannot blank the whole map."""
+    from agent.learning_graph import build_learning_graph
+
+    if len(names) > _MAX_JOURNEY_PROFILES:
+        raise HTTPException(status_code=400, detail=f"at most {_MAX_JOURNEY_PROFILES} profiles per request")
+    graphs: list[tuple[str, dict[str, Any]]] = []
+    for name in names:
+        try:
+            graphs.append((name, await scoped_to_thread(name, build_learning_graph)))
+        except HTTPException:
+            continue
+        except Exception:
+            _log.warning("GET /api/learning/graph: skipping profile %r", name, exc_info=True)
+    return _merge_learning_graphs(graphs)
+
+
 @router.get("/api/learning/graph")
-async def get_learning_graph(profile: Optional[str] = None):
-    """Learning graph for the desktop panel: profile-scoped learned skills + memory chunks."""
+async def get_learning_graph(profile: Optional[str] = None, profiles: Optional[str] = None):
+    """Learning graph for the desktop panel: profile-scoped learned skills + memory chunks.
+
+    ``profiles`` (comma-separated profile names) returns those profiles' graphs merged
+    into one payload; see ``_merge_learning_graphs`` for the id and tagging contract."""
+    names = list(dict.fromkeys(p.strip() for p in (profiles or "").split(",") if p.strip()))
+    if names:
+        return await _multi_profile_learning_graph(names)
+
     def _run():
         from agent.learning_graph import build_learning_graph
         return build_learning_graph()
@@ -712,6 +793,144 @@ async def update_learning_node(body: LearningNodeEdit):
     from agent.learning_mutations import edit_node
     return await _learning_mutation(
         body.profile, lambda: edit_node(body.id, body.content), 400, "edit failed")
+
+
+@router.get("/api/learning/recall-draft")
+async def get_learning_recall_draft(id: str, profile: Optional[str] = None):
+    """Return injection-hardened draft text for recalling a journey node."""
+    from agent.learning_mutations import build_recall_draft
+    return await _learning_mutation(
+        profile, lambda: build_recall_draft(id), 404, "not found")
+
+
+@router.post("/api/learning/node/cross-insert")
+async def cross_insert_learning_node(body: LearningNodeCrossInsert):
+    """Copy a memory node from ``source_profile`` into ``target_profile``'s MEMORY.md.
+
+    ``id`` is the node's own (unprefixed) id in the source profile. A file memory copies
+    its whole entry and a provider memory its card text; the new entry's first line is
+    ``[Imported from profile: <source>]``. Skills are refused. The write goes through the
+    memory tool's locked, threat-scanned, size-capped append, so a refusal leaves the
+    target unchanged. Refusals return ``ok: false`` with a message; an unknown profile
+    is a 404."""
+    from agent import learning_mutations
+
+    source = body.source_profile.strip()
+    target = body.target_profile.strip()
+    if learning_mutations.parse_node_kind(body.id) != "memory":
+        return {"ok": False, "message": "cross-profile insert supports memory nodes only; skills are not supported"}
+    if not source or not target:
+        raise HTTPException(status_code=400, detail="source_profile and target_profile are required")
+    if source == target:
+        return {"ok": False, "message": "source and target profiles are the same"}
+
+    def _run():
+        with _profile_scope(source):
+            found = learning_mutations.memory_node_text(body.id)
+        if not found.get("ok"):
+            return {"ok": False, "message": found.get("message", "node not found")}
+        with _profile_scope(target):
+            return learning_mutations.import_memory_entry(found["content"], source)
+
+    try:
+        return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/learning/node/cross-insert failed")
+        raise HTTPException(status_code=500, detail="Cross-profile insert failed")
+
+
+@router.get("/api/learning/provider-session")
+async def get_learning_provider_session(
+    session_id: str, limit: int = 500, profile: Optional[str] = None
+):
+    """Return the provider-side source corpus behind a journey node."""
+    def _read():
+        from plugins.memory import _get_active_memory_provider, load_memory_provider
+
+        name = _get_active_memory_provider()
+        if not name:
+            return None, []
+        provider = load_memory_provider(name)
+        if provider is None or not hasattr(provider, "journey_session_messages"):
+            return name, []
+        safe_limit = max(1, min(int(limit or 500), 2000))
+        raw = provider.journey_session_messages(session_id, limit=safe_limit) or []
+        from agent.learning_graph import _to_int_ts
+
+        messages = []
+        for message in raw:
+            if not isinstance(message, dict):
+                continue
+            content = str(message.get("content") or "")
+            if not content.strip():
+                continue
+            messages.append({
+                "content": content,
+                "peer": str(message.get("peer") or ""),
+                "timestamp": _to_int_ts(message.get("timestamp")),
+                # role is part of the ProviderSessionMessage contract
+                # (desktop type: "'user' | 'assistant' when the provider
+                # knows which peer is the human") — pass it through.
+                **({"role": message["role"]} if message.get("role") else {}),
+            })
+        return name, messages
+
+    try:
+        name, messages = await scoped_to_thread(profile, _read)
+    except Exception:
+        _log.exception("GET /api/learning/provider-session failed")
+        raise HTTPException(status_code=500, detail="Failed to load provider session")
+    return {"provider": name, "session_id": session_id, "messages": messages}
+
+
+@router.post("/api/learning/provider-session/materialize")
+async def materialize_learning_provider_session(body: ProviderSessionMaterialize):
+    """Recreate a provider-side conversation through the standard session importer."""
+    profile = destructive_profile(
+        body.profile, "POST /api/learning/provider-session/materialize")
+
+    def _materialize():
+        learning_mutations = importlib.import_module("agent.learning_mutations")
+
+        built = learning_mutations.build_provider_session_import(body.session_id)
+        if not built.get("ok"):
+            return built
+        provider = str(built.get("provider") or "").strip()
+        if not provider:
+            return {"ok": False, "message": "provider session is missing provenance"}
+        session = {**built["session"], "source": f"journey:{provider}"}
+        db = _open_session_db_for_profile(profile, read_only=False)
+        try:
+            result = db.import_sessions([session])
+        finally:
+            db.close()
+        errors = result.get("errors") or []
+        if errors:
+            first_error = errors[0]
+            message = (
+                first_error.get("error", "import failed")
+                if isinstance(first_error, dict) else str(first_error)
+            )
+            return {"ok": False, "message": str(message)}
+        return {
+            "ok": True,
+            "provider": provider,
+            "session_id": session["id"],
+            "title": session.get("title") or "",
+            "message_count": built.get("message_count", 0),
+            "created": bool(result.get("imported")),
+        }
+
+    try:
+        res = await scoped_to_thread(profile, _materialize)
+    except Exception:
+        _log.exception("POST /api/learning/provider-session/materialize failed")
+        raise HTTPException(status_code=500, detail="Failed to materialize provider session")
+    if not res.get("ok"):
+        raise HTTPException(status_code=400, detail=res.get("message", "materialize failed"))
+    return res
 
 
 # Portal — Nous Portal auth + Tool Gateway routing status (read-only).

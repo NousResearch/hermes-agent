@@ -233,6 +233,42 @@ describe('resolveActive / keep-alive tab heal', () => {
     expect(getActiveComposer()).toBe('tile:front')
   })
 
+  it('delivers an active-target INSERT to the visible tile, not the buried main (/recall)', async () => {
+    // Regression: "/recall → Insert into this chat" must populate the composer:
+    // the star map is opened over a session TILE, so the visible composer is
+    // tile:… while main sits mounted under data-pane-hidden. A recall insert
+    // hardcoded to 'main' wrote into that off-screen composer. The fix routes
+    // to 'active', which must heal to the visible tile.
+    mountSurface('main', true)
+    mountSurface('tile:front')
+    markActiveComposer('tile:front')
+
+    const saw: string[] = []
+    const off = onComposerInsertRequest(({ target, text }) => saw.push(`${target}:${text}`))
+
+    requestComposerInsert('recalled knowledge', { mode: 'block' })
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    off()
+
+    expect(saw).toEqual(['tile:front:recalled knowledge'])
+  })
+
+  it('delivers an active-target INSERT to main when the workspace tab is fronted (/recall)', async () => {
+    // The plain case: no tile, main is the visible chat surface. 'active' must
+    // resolve to 'main' so recall still lands there.
+    mountSurface('main')
+    markActiveComposer('main')
+
+    const saw: string[] = []
+    const off = onComposerInsertRequest(({ target, text }) => saw.push(`${target}:${text}`))
+
+    requestComposerInsert('recalled knowledge', { mode: 'block' })
+    await new Promise(resolve => window.setTimeout(resolve, 0))
+    off()
+
+    expect(saw).toEqual(['main:recalled knowledge'])
+  })
+
   it('heals an edit claim once the edit root is gone (no release site needed)', async () => {
     mountSurface('main')
     markActiveComposer('edit')

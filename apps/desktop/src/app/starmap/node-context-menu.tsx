@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useRef, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog, fireOptimistic } from '@/app/learning/archive-skill-confirm-dialog'
@@ -10,25 +11,69 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { deleteLearningNode, editLearningNode, getLearningNode } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { evictStarmapNode, loadStarmapGraph } from '@/store/starmap'
+import { $profiles, normalizeProfileKey, profileLabel } from '@/store/profile'
+import { evictStarmapNode, loadStarmapGraph, $starmapSelectedProfiles } from '@/store/starmap'
 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
+import { isProviderSource } from './sources'
+
 export interface NodeMenuTarget {
   id: string
+  /** True when this node is a Honcho conclusion (durable derived fact). Adds a
+   *  "Start a conversation about this" action; conclusions are provider-backed
+   *  so they stay read-only (no Edit/Delete). */
+  isConclusion?: boolean
   kind: 'memory' | 'skill'
   label: string
+  /** Memory nodes only: 'memory' | 'profile' | a provider name ('honcho', …).
+   *  Provider-backed nodes are read-only — the menu offers no Edit/Delete. */
+  memorySource?: string
+  /** Multi-profile mode: which profile this node belongs to. */
+  profile?: string
+  /** Multi-profile mode: the original node id without the profile prefix. */
+  _originalId?: string
   x: number
   y: number
+}
+
+/** One recent session offered in the "Add to a session" submenu. `key` is the
+ *  durable composer scope (lineage root) the draft is stashed under; `title` is
+ *  the display label. */
+export interface RecallSessionOption {
+  key: string
+  title: string
 }
 
 interface NodeContextMenuProps {
   onClose: () => void
   onNodeRemoved: () => void
+  /** Open the provenance dialog ("Where this came from…") for this node. */
+  onShowProvenance?: (id: string) => void
+  /** Conclusion nodes only: seed a NEW chat about this conclusion (for review
+   *  — never auto-sent). Absent when the host doesn't support it. */
+  onStartConversation?: (target: NodeMenuTarget) => void
+  /** "Add to a session": stash this node's knowledge (as a reviewed,
+   *  injection-hardened draft) into an existing session's composer. Given the
+   *  durable session key. Available for ALL node kinds. */
+  onAddToSession?: (target: NodeMenuTarget, sessionKey: string) => void
+  /** /recall: insert this node's knowledge into the CURRENT chat's
+   *  composer for review. Available for ALL node kinds. */
+  onRecallIntoChat?: (target: NodeMenuTarget) => void
+  /** Cross-profile insert: copy this node's content into another profile's memory.
+   *  Available when in multi-profile mode and the node kind is 'memory'. */
+  onInsertIntoProfile?: (target: NodeMenuTarget, profileName: string) => void
+  /** Most-recently-active sessions (already capped + ordered) for the
+   *  "Add to a session" submenu. Empty/undefined hides that action. */
+  recentSessions?: RecallSessionOption[]
   target: NodeMenuTarget | null
 }
 
@@ -38,8 +83,75 @@ interface EditState {
   label: string
 }
 
-/** Right-click actions for a star-map node: edit (modal) or delete (confirm). */
-export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextMenuProps) {
+function CrossProfileSubmenu({
+  onInsertIntoProfile,
+  target,
+  title
+}: {
+  onInsertIntoProfile: (target: NodeMenuTarget, profileName: string) => void
+  target: NodeMenuTarget
+  title: (profile: string) => string
+}) {
+  const { t } = useI18n()
+  const profiles = useStore($profiles)
+  const selectedProfiles = useStore($starmapSelectedProfiles)
+  const targets =
+    Array.isArray(profiles) && Array.isArray(selectedProfiles)
+      ? profiles.filter(profile => {
+          const key = normalizeProfileKey(profile.name)
+
+          return selectedProfiles.includes(key) && key !== target.profile
+        })
+      : []
+
+  if (targets.length === 0) {
+    return null
+  }
+
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>{title(targets.length === 1 ? profileLabel(targets[0]) : '…')}</DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>
+        {targets.length > 1 ? (
+          <DropdownMenuItem
+            className="font-medium"
+            onSelect={() => {
+              targets.forEach(profile => onInsertIntoProfile(target, normalizeProfileKey(profile.name)))
+            }}
+          >
+            {t.starmap.insertIntoAllSelected}
+          </DropdownMenuItem>
+        ) : null}
+        {targets.map(profile => (
+          <DropdownMenuItem
+            className="max-w-64"
+            key={normalizeProfileKey(profile.name)}
+            onSelect={() => onInsertIntoProfile(target, normalizeProfileKey(profile.name))}
+            title={profileLabel(profile)}
+          >
+            <span className="truncate">{profileLabel(profile)}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  )
+}
+
+/** Right-click actions for a star-map node: provenance, edit (modal), delete (confirm).
+ *  Provider-backed memory nodes are read-only (their storage lives in the
+ *  provider's backend), so Edit/Delete are replaced by a hint. */
+export function NodeContextMenu({
+  onAddToSession,
+  onClose,
+  onInsertIntoProfile,
+  onNodeRemoved,
+  onRecallIntoChat,
+  onShowProvenance,
+  onStartConversation,
+  recentSessions,
+  target
+}: NodeContextMenuProps) {
+  const { t } = useI18n()
   const [editing, setEditing] = useState<EditState | null>(null)
   const [deleting, setDeleting] = useState<Omit<NodeMenuTarget, 'x' | 'y'> | null>(null)
   const [loading, setLoading] = useState(false)
@@ -121,29 +233,76 @@ export function NodeContextMenu({ onClose, onNodeRemoved, target }: NodeContextM
             {/* A zero-size anchor at the canvas click point, as AppContextMenu
                 does: Radix positions against it like a real trigger and flips or
                 shifts the menu back inside the viewport near the window edges,
-                so the destructive row can never be clipped off-window. */}
+                so every feature row stays reachable. */}
             <span aria-hidden style={{ left: target.x, position: 'fixed', top: target.y }} />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" onCloseAutoFocus={e => e.preventDefault()} side="bottom">
-            <DropdownMenuLabel className="truncate text-[0.68rem] font-normal text-muted-foreground">
+            <DropdownMenuLabel className="max-w-56 truncate text-[0.68rem] font-normal text-muted-foreground">
               {target.label}
             </DropdownMenuLabel>
-            <DropdownMenuItem
-              disabled={loading}
-              onSelect={e => {
-                // Keep the menu up while the node content loads; openEdit closes it.
-                e.preventDefault()
-                void openEdit()
-              }}
-            >
-              Edit {noun}…
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => setDeleting({ id: target.id, kind: target.kind, label: target.label })}
-              variant="destructive"
-            >
-              {target.kind === 'skill' ? 'Archive skill' : 'Delete memory'}
-            </DropdownMenuItem>
+            {onShowProvenance ? (
+              <DropdownMenuItem onSelect={() => onShowProvenance(target.id)}>
+                {t.starmap.provenanceMenu}
+              </DropdownMenuItem>
+            ) : null}
+            {onRecallIntoChat ? (
+              <DropdownMenuItem onSelect={() => onRecallIntoChat(target)}>{t.starmap.recallIntoChat}</DropdownMenuItem>
+            ) : null}
+            {onAddToSession && recentSessions && recentSessions.length > 0 ? (
+              <DropdownMenuSub>
+                <DropdownMenuSubTrigger>{t.starmap.addToSession}</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent>
+                  {recentSessions.map(session => (
+                    <DropdownMenuItem
+                      className="max-w-64"
+                      key={session.key}
+                      onSelect={() => onAddToSession(target, session.key)}
+                      title={session.title}
+                    >
+                      <span className="truncate">{session.title}</span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            ) : null}
+            {onInsertIntoProfile && target.profile ? (
+              <CrossProfileSubmenu
+                onInsertIntoProfile={onInsertIntoProfile}
+                target={target}
+                title={t.starmap.insertIntoProfile}
+              />
+            ) : null}
+            {isProviderSource(target.memorySource) ? (
+              <>
+                {target.isConclusion && onStartConversation ? (
+                  <DropdownMenuItem onSelect={() => onStartConversation(target)}>
+                    {t.starmap.conclusionStartConversation}
+                  </DropdownMenuItem>
+                ) : null}
+                <DropdownMenuLabel className="max-w-56 whitespace-normal text-[0.68rem] font-normal text-muted-foreground">
+                  {t.starmap.providerReadOnly(target.memorySource)}
+                </DropdownMenuLabel>
+              </>
+            ) : (
+              <>
+                <DropdownMenuItem
+                  disabled={loading}
+                  onSelect={e => {
+                    // Keep the menu up while the node content loads; openEdit closes it.
+                    e.preventDefault()
+                    void openEdit()
+                  }}
+                >
+                  Edit {noun}…
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => setDeleting({ id: target.id, kind: target.kind, label: target.label })}
+                  variant="destructive"
+                >
+                  {target.kind === 'skill' ? 'Archive skill' : 'Delete memory'}
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       ) : null}

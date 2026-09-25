@@ -139,6 +139,7 @@ function ScopedSkillCatalog({
       if (!skill.installed) {
         continue
       }
+
       installedIdentifiers.add(skill.identifier)
       const installed = installedByName.get(skill.name)
 
@@ -151,6 +152,7 @@ function ScopedSkillCatalog({
       if (entry.source !== 'optional') {
         return undefined
       }
+
       const identifier = entry.installIdentifier ?? entry.identifier
       const exact = officialByIdentifier.get(identifier)
 
@@ -204,11 +206,13 @@ function ScopedSkillCatalog({
       if (catalog.skillsById.has(entry.id) || catalog.skillsByName.has(entry.name)) {
         return true
       }
+
       const matched = catalog.matchInstalled(entry)
 
       if (matched && catalog.skillsById.has(matched.id)) {
         return true
       }
+
       const optional = catalog.officialFor(entry)
 
       return catalog.installedIdentifiers.has(optional?.identifier ?? entry.installIdentifier ?? entry.identifier)

@@ -652,7 +652,7 @@ def _rate_limit_reply(text: str) -> str:
     # chat can carry either a Discord REST error or a model-provider error.
     discord_source = re.search(r"\bdiscord(?:\s+(?:api|rate)|\.(?:errors|com/api))", text, re.IGNORECASE)
     model_source = re.search(
-        r"\b(?:codex|openai|anthropic|openrouter|usage_limit_reached)\b|"
+        r"\b(?:codex|openai|anthropic|openrouter|gemini)\b|"
         r"\b(?:model (?:service|provider)|for (?:this |the )?model)\b",
         text, re.IGNORECASE,
     )

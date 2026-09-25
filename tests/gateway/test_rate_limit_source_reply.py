@@ -19,9 +19,10 @@ def test_non_model_rate_limit_is_not_a_model_quota(platform, text, source):
     assert "/retry" in reply
 
 
-def test_named_model_quota_keeps_reset_guidance():
+@pytest.mark.parametrize("source", ["Codex provider", "Gemini", "custom model provider"])
+def test_named_model_quota_keeps_reset_guidance(source):
     reply = _gateway_provider_error_reply(
-        "Codex provider quota exhausted (429); retry after 116168s"
+        f"{source} quota exhausted (429); retry after 116168s"
     )
     assert "AI model service" in reply
     assert "resets in ~33h" in reply
@@ -29,6 +30,7 @@ def test_named_model_quota_keeps_reset_guidance():
 
 
 @pytest.mark.parametrize("text", [
+    "HTTP 429 usage_limit_reached; retry after 600s",
     "HTTP 429 Too Many Requests",
     "HTTP 429 unknown weekly limit reached; resets in 4hr",
     "HTTP 429 Telegram API retry after 600s",

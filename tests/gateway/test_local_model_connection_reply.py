@@ -177,7 +177,7 @@ class TestQuotaExhaustedIsNotAnAuthFailure:
             "retry after 116168s. Credentials are still valid.")
         assert "/login" not in reply and "resets in ~33h" in reply
         body_reply = _gateway_provider_error_reply(
-            "API call failed after 3 retries: Error code: 429 - "
+            "OpenAI API call failed after 3 retries: Error code: 429 - "
             "{'error': {'type': 'usage_limit_reached', 'resets_in_seconds': 30995}}")
         assert "resets in ~9h" in body_reply
         assert "resets in ~5h" in _gateway_provider_error_reply("Codex 429 weekly limit reached. Resets in 4hr 5min")

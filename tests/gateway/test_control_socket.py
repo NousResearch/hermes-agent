@@ -18,10 +18,7 @@ from gateway.control_socket import (
     windows_pipe_name,
 )
 
-pytestmark = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="Unix-socket transport; the named-pipe half is covered on the wine2e lane",
-)
+pytestmark = pytest.mark.platforms("posix")  # Unix-socket transport; the named-pipe half is covered on the wine2e lane
 
 
 def _run(coro):
@@ -309,7 +306,7 @@ def test_collect_fleet_versions_prefers_socket(tmp_path: Path, monkeypatch):
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(
@@ -351,7 +348,7 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     home.mkdir()
 
     monkeypatch.setattr(
-        "hermes_cli.build_info.get_code_identity",
+        "hermes_cli.version_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
     )
     monkeypatch.setattr(

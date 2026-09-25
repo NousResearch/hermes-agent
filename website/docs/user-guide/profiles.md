@@ -328,6 +328,12 @@ hermes update
 
 User-modified skills are never overwritten.
 
+Dependency preparation reads every profile's `config.yaml` to compute the
+plugin set the shared environment must carry. A profile whose `config.yaml`
+does not parse (or whose `plugins` / `memory` sections have the wrong shape)
+fails that step for the whole install — see
+[Dependency preparation and preservation](./features/plugins.md#dependency-preparation-and-preservation).
+
 ## Managing profiles
 
 ```bash
@@ -425,6 +431,14 @@ The default profile is simply `~/.hermes` itself. No migration needed — existi
 A profile you built on one machine can go to another — your own workstation, a teammate's laptop, or the community. Two paths:
 
 **Send a file.** `/export` packs the profile into one `.tar.gz` — skills, memory, persona, crons, plugins, settings, and (from the desktop) your theme and layout. API keys are stripped. The recipient runs `/import`.
+
+Machine-specific PM state is not portable. Export, import, and distribution
+install exclude `installs/`, `tools/`, and `cache/` at a profile's root.
+Backup and restore apply the same rule to the default home and named profiles.
+Older archives cannot replace the destination machine's PM selections or tools.
+Files such as `plugins/example/facts.json` and `skills/example/tools/helper.py`
+remain user data and are preserved. Install dependencies on the destination
+through [PM](../reference/package-management.md), rather than copying environments.
 
 ```bash
 # In chat, run /export, hand over the file, and they run /import on it

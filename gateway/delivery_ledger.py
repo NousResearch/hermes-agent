@@ -285,6 +285,28 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
         _prune_unlocked(conn, now)
 
 
+def record_crash_left_reply(*, obligation_id: str, session_key: str, platform: str, chat_id: str,
+                            thread_id: Optional[str], content: str, since: float,
+                            adapter_profile: Optional[str] = None) -> None:
+    """Adopt a reply a killed process persisted but never ledgered. Unowned, so this boot's sweep
+    claims it, and 'attempting', because a streamed reply may already be on screen: it is
+    redelivered once, with the recovered marker. A no-op when the same reply was already ledgered
+    since *since* (the turn start), and idempotent across boots that die before their sweep."""
+    now = time.time()
+    with _DB_LOCK, _transaction() as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO delivery_obligations
+               (obligation_id, session_key, platform, chat_id, thread_id,
+                content, state, attempts, created_at, updated_at,
+                owner_pid, owner_started_at, adapter_profile)
+               SELECT ?, ?, ?, ?, ?, ?, 'attempting', 0, ?, ?, NULL, NULL, ?
+               WHERE NOT EXISTS (SELECT 1 FROM delivery_obligations
+                                 WHERE session_key = ? AND content = ? AND created_at >= ?)""",
+            (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
+             content, now, now, str(adapter_profile).strip() if adapter_profile else "default",
+             session_key, content, since))
+
+
 def mark_attempting(obligation_id: str) -> None:
     _update_state(obligation_id, "attempting")
 
@@ -347,8 +369,9 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                       deliverable_targets: Optional[set] = None) -> List[Dict[str, Any]]:
     """Claim undelivered rows owned by dead processes; return them for redelivery.
 
-    Claiming atomically re-stamps the owner to THIS process and increments ``attempts`` (the UPDATE is
-    guarded on the previous owner stamp, so a second gateway racing the same sweep cannot double-claim).
+    Claiming atomically re-stamps the owner to THIS process, moves the row to 'attempting' and increments
+    ``attempts`` (the UPDATE is guarded on the previous owner stamp, so a second gateway racing the same
+    sweep cannot double-claim).
     Rows over the attempts cap or stale cutoff become 'abandoned'. ``deliverable_platforms`` restricts
     claiming to platforms the caller can send on this boot: ``attempts`` is the redelivery budget and
     must only be spent on a real send, else a platform that failed to connect burns one attempt per boot
@@ -401,23 +424,25 @@ def sweep_recoverable(now: Optional[float] = None, *, deliverable_platforms: Opt
                         "profile": adapter_profile or "default", "attempts": attempts,
                         "adopted": True, "not_before": flood_not_before(updated_at, last_error)})
                 continue
-            # A claimed flood row is resent as a fresh attempt: clear the stale refusal so an interrupted
-            # resend is seen as 'attempting' with no error by the next boot and gets the marker.
+            # Every claim starts a send, so the row leaves 'pending'/'failed' for 'attempting' in the same
+            # CAS: a boot killed inside the redelivery then leaves proof the platform may have it (next boot
+            # marks it), and the runtime sweep, which only takes 'failed', cannot re-claim it mid-send. A
+            # claimed flood row also drops its stale refusal, so an interrupted resend has no error.
             cursor = conn.execute(
                 """UPDATE delivery_obligations
                    SET owner_pid=?, owner_started_at=?, attempts=attempts+1, updated_at=?,
-                       adapter_profile=COALESCE(adapter_profile, 'default'),
-                       state=CASE WHEN ? THEN 'attempting' ELSE state END,
+                       adapter_profile=COALESCE(adapter_profile, 'default'), state='attempting',
                        last_error=CASE WHEN ? THEN NULL ELSE last_error END
                    WHERE obligation_id=? AND (owner_pid IS ? OR owner_pid=?)""",
-                (pid, started, now, 1 if flood_row else 0, 1 if flood_row else 0, oid, owner_pid, owner_pid))
+                (pid, started, now, 1 if flood_row else 0, oid, owner_pid, owner_pid))
             if cursor.rowcount:
-                # pending = never started, redeliver plainly; anything else (crashed mid-await, other
-                # rejection, a flood refusal whose earlier chunks the platform may have accepted) carries
+                # A never-claimed pending row was never sent: redeliver plainly. Anything else (crashed
+                # mid-await, other rejection, a flood refusal whose earlier chunks the platform may have
+                # accepted, or a pending row an older build already claimed and may have sent) carries
                 # the marker.
                 claimed.append(_claimed_row(oid, session_key, platform, chat_id, thread_id, content, attempts,
-                                            adapter_profile or "default", needs_marker=state != "pending",
-                                            flood=flood_row))
+                                            adapter_profile or "default",
+                                            needs_marker=state != "pending" or attempts > 0, flood=flood_row))
     return claimed
 
 

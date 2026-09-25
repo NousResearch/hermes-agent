@@ -764,7 +764,7 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
 
 
 def _write_profile_cfg(home: Path, cwd: str | None) -> Path:
-    import yaml
+    import hermes_yaml as yaml
 
     home.mkdir(parents=True, exist_ok=True)
     cfg = {"terminal": {"cwd": cwd}} if cwd is not None else {}
@@ -2512,9 +2512,29 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
             "context": "resume",
             "name": "search_files",
             "role": "tool",
+            "tool_call_id": history[2]["tool_call_id"],
         },
         {"role": "assistant", "text": "first answer"},
         {"role": "user", "text": "second prompt"},
+    ]
+
+
+def test_history_to_messages_types_the_failed_turn_boundary_for_resume():
+    """Desktop keys the failed-turn boundary on ``display_kind`` (a room poller must not post it
+    as the member's reply); rows written before the closer typed it are typed on read."""
+    from agent.turn_failure_copy import FAILED_TURN_DISPLAY_KIND, FAILED_TURN_NOTICE, PARTIAL_FAILED_TURN_NOTICE
+
+    history = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": FAILED_TURN_NOTICE, "display_kind": FAILED_TURN_DISPLAY_KIND},
+        {"role": "user", "content": "b"},
+        {"role": "assistant", "content": PARTIAL_FAILED_TURN_NOTICE},  # legacy untyped row
+        {"role": "user", "content": "c"},
+        {"role": "assistant", "content": f"Quoting Hermes: {FAILED_TURN_NOTICE}"},  # a real reply
+    ]
+
+    assert [m.get("display_kind") for m in server._history_to_messages(history)] == [
+        None, FAILED_TURN_DISPLAY_KIND, None, FAILED_TURN_DISPLAY_KIND, None, None,
     ]
 
 
@@ -8223,7 +8243,7 @@ def test_config_set_yolo_stale_session_id_is_refused_not_process_scoped(monkeypa
 
 def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
     """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
@@ -8254,7 +8274,7 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
 def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # Point the canonical resolver (load_config → env HERMES_HOME) at the
@@ -8274,7 +8294,7 @@ def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
 def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_value(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # _load_approval_mode delegates to the canonical resolver in
@@ -8293,7 +8313,7 @@ def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_valu
 
 
 def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # See fail-safe test above: the canonical resolver reads via
@@ -8312,7 +8332,7 @@ def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
 def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # config.set writes via server._hermes_home, but the post-write
@@ -8347,7 +8367,7 @@ def test_pet_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch
     quoted YAML value kept the petdex mascot enabled against the operator's
     explicit intent.
     """
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -8426,7 +8446,7 @@ def test_config_set_approval_mode_rejects_unknown_value():
 
 def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatch):
     """An explicit value pins global approvals.mode regardless of prior state."""
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
@@ -8668,7 +8688,7 @@ def test_config_get_busy_survives_non_dict_display(monkeypatch):
 
 
 def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"display": "broken"}))
@@ -8688,7 +8708,7 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
 
 
 def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -8718,7 +8738,7 @@ def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
 
 
 def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -8737,7 +8757,7 @@ def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
 
 
 def test_config_set_section_clears_override_on_empty_value(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -11958,7 +11978,7 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
         def interrupt(self, *args, **kwargs):
             calls["interrupt_called"] = True
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    server._sessions["sid"] = _session(agent=_Agent(), running=True)
     try:
         resp = server.handle_request(
             {
@@ -11975,6 +11995,64 @@ def test_session_steer_calls_agent_steer_when_agent_supports_it():
     assert resp["result"]["text"] == "also check auth.log"
     assert calls["steer_text"] == "also check auth.log"
     assert "interrupt_called" not in calls  # must NOT interrupt
+
+
+class _RecordingSteerAgent:
+    def __init__(self):
+        self.steered = []
+
+    def steer(self, text):
+        self.steered.append(text)
+        return True
+
+
+def test_session_steer_on_idle_session_is_rejected_not_parked():
+    """#64578: with no live turn a steer has no tool call to ride. Accepting it parked the text in
+    the agent's pending-steer slot, where the next turn's pre-API drain spliced it after an OLD tool
+    row. It must come back 'rejected' (clients then send it as a normal prompt) and never reach
+    agent.steer()."""
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=False)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.steer", "params": {"session_id": "sid", "text": "check the logs"}}
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "rejected", resp
+    assert agent.steered == []
+
+
+def test_steer_slash_on_idle_session_sends_as_next_turn():
+    """#64578: idle `/steer <text>` via command.dispatch must go out as a normal next-turn message
+    with a notice saying so, not claim "Steer queued" while stashing the text on the agent."""
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=False)
+    try:
+        res = server._methods["command.dispatch"](
+            "1", {"name": "steer", "arg": "check the logs", "session_id": "sid"})
+    finally:
+        server._sessions.pop("sid", None)
+
+    result = res["result"]
+    assert result["type"] == "send"
+    assert result["message"] == "check the logs"
+    assert result.get("notice")
+    assert agent.steered == []
+
+
+def test_steer_slash_during_live_turn_still_steers():
+    agent = _RecordingSteerAgent()
+    server._sessions["sid"] = _session(agent=agent, running=True)
+    try:
+        res = server._methods["command.dispatch"](
+            "1", {"name": "steer", "arg": "check the logs", "session_id": "sid"})
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert res["result"]["type"] == "exec"
+    assert agent.steered == ["check the logs"]
 
 
 def test_session_steer_rejects_empty_text():
@@ -15621,7 +15699,7 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         resp = server.handle_request(
             {
                 "id": "1",
-                "method": "session.branch",
+                "method": "session.branch_whole",
                 "params": {"session_id": "parent", "name": "forked"},
             }
         )
@@ -15631,6 +15709,8 @@ def test_session_branch_writes_to_parent_profile_db(monkeypatch, tmp_path):
         # The branch row is self-describing: stamped with the parent's owning
         # profile, not left NULL for aggregators to mis-tag as "default".
         assert seen.get("profile_name") == "mlperf"
+        assert resp["result"].get("messages_omitted") is True
+        assert "messages" not in resp["result"]
         assert seen.get("title") == (seen["created"], "forked")
         assert len(seen["msgs"]) == 1
         assert seen.get("launch") is None
@@ -15736,6 +15816,61 @@ def test_session_create_persists_seeded_branch_child(monkeypatch):
     assert server._sessions[runtime_sid]["pending_title"] is None
 
     server._sessions.pop(runtime_sid, None)
+
+
+def test_session_branch_stored_copies_parent_history_without_returning_transcript(monkeypatch):
+    """Whole-session desktop branches read the parent in the gateway, not in the renderer."""
+
+    class _Scope:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class _FakeDB:
+        def get_resume_conversations(self, key):
+            assert key == "parent"
+            return [], [
+                {"role": "user", "content": "first question", "timestamp": 1},
+                {"role": "assistant", "content": "first answer", "timestamp": 2},
+            ]
+
+    class _FakeAgent:
+        model = "test-model"
+
+    seen: dict = {}
+    db = _FakeDB()
+
+    monkeypatch.setattr(server, "_profile_db", lambda _params: _Scope(db))
+    monkeypatch.setattr(
+        server,
+        "_seed_branch_row",
+        lambda _record, _key, _parent, history, *_args: seen.update(history=list(history)),
+    )
+    monkeypatch.setattr(server, "_make_agent", lambda *_args, **_kwargs: _FakeAgent())
+    monkeypatch.setattr(server, "_session_info", lambda *_args: {"model": "test-model"})
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.branch_stored",
+            "params": {
+                "cols": 96,
+                "parent_session_id": "parent",
+                "source": "desktop",
+            },
+        }
+    )
+
+    assert "result" in resp, resp
+    assert [message["content"] for message in seen["history"]] == ["first question", "first answer"]
+    assert resp["result"]["message_count"] == 2
+    assert resp["result"].get("messages_omitted") is True
+    assert "messages" not in resp["result"]
 
 
 def test_session_create_branch_seed_failure_does_not_break_create(monkeypatch):
@@ -16383,7 +16518,7 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
     save_credential.assert_called_once_with(env_var, fake_key)
 
 
-def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch):
+def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch, tmp_path):
     """The gated picker's own chat waits on ``setup.status``, which answers from the boot record:
     a key saved for the launch profile must flip a ``False`` record (+ ``setup.ready``) at once;
     a key saved for another profile (``profile`` param) must leave the launch record alone."""
@@ -16399,6 +16534,9 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
     monkeypatch.setattr(fb, "_resolve_inference", lambda: "test-provider")
     broadcasts = []
     monkeypatch.setattr(fb, "_broadcast", broadcasts.append)
+    other_home = tmp_path / "profiles" / "other"  # model.save_key is profile scoped: "other" must exist
+    other_home.mkdir(parents=True)
+    monkeypatch.setattr(server, "_profile_home", lambda name: other_home if name == "other" else None)
     fb.reset_for_tests()
     stale = fb.SetupRecord(provider_configured=False, inference_provider="", free_tier=False,
                            has_identity=False, other_providers=False)
@@ -16422,6 +16560,60 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
 # ---------------------------------------------------------------------------
 
 
+
+
+def test_prompt_submit_releases_old_history_before_heap_trim(monkeypatch, tmp_path):
+    """The post-turn heap trim must run after the turn's pre-turn history snapshots are dropped:
+    malloc_trim cannot return pages still referenced, so a retained snapshot of a large tool
+    result pins them for the life of the process. Observed through a weak reference to the old
+    message, not by reading the finisher's local variable names."""
+    import contextlib
+    import gc
+    import weakref
+
+    class _Msg(dict):
+        """dict itself is not weakref-able."""
+
+    observed = {}
+    order = []
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kw):
+            return {"final_response": "reply", "messages": [{"role": "assistant", "content": "reply"}]}
+
+    def _trim(**_kwargs):
+        order.append("trim")
+        gc.collect()
+        observed["alive_at_trim"] = old_ref() is not None
+
+    old = _Msg(role="tool", tool_call_id="old", content="x" * 20_000)
+    old_ref = weakref.ref(old)
+    session = _session(agent=_Agent())
+    profile_home = tmp_path / "profiles" / "worker"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    session["profile_home"] = str(profile_home)
+    session["history"] = [old]
+    del old
+    server._sessions["sid_trim"] = session
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "set_hermes_home_override", lambda _home: object())
+        monkeypatch.setattr(server, "reset_hermes_home_override", lambda _token: order.append("reset_home"))
+        monkeypatch.setattr(server, "_session_profile_runtime_scope", lambda _session, **_kw: contextlib.nullcontext())
+        monkeypatch.setattr("hermes_cli.mem_trim.trim_memory", _trim)
+
+        resp = server.handle_request(
+            {"id": "1", "method": "prompt.submit", "params": {"session_id": "sid_trim", "text": "hi"}})
+
+        assert resp is not None and resp.get("result")
+        assert order == ["trim", "reset_home"]
+        assert observed["alive_at_trim"] is False, "a pre-turn history snapshot survived to the heap trim"
+    finally:
+        server._sessions.pop("sid_trim", None)
 
 
 class _ImmediateThread:
@@ -20675,7 +20867,7 @@ def test_save_cfg_preserves_user_comments(tmp_path, monkeypatch):
     assert "# provider rationale" in text
     assert "# trailing skin note" in text
 
-    import yaml as _yaml
+    import hermes_yaml as _yaml
 
     parsed = _yaml.safe_load(text)
     assert parsed["display"]["skin"] == "mono"

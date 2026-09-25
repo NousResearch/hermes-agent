@@ -685,8 +685,10 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
-  getCronDeliveryTargets: () =>
-    fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
+  getCronDeliveryTargets: (profile = "default") =>
+    fetchJSON<{ targets: CronDeliveryTarget[] }>(
+      `/api/cron/delivery-targets?profile=${encodeURIComponent(profile)}`,
+    ),
   createCronJob: (job: CronJobMutation, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
@@ -716,8 +718,10 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
   // Automation Blueprints — parameterized automation blueprints
-  getAutomationBlueprints: () =>
-    fetchJSON<{ blueprints: AutomationBlueprint[] }>("/api/cron/blueprints"),
+  getAutomationBlueprints: (profile = "default") =>
+    fetchJSON<{ blueprints: AutomationBlueprint[] }>(
+      `/api/cron/blueprints?profile=${encodeURIComponent(profile)}`,
+    ),
   instantiateAutomationBlueprint: (
     body: { blueprint: string; values: Record<string, string> },
     profile = "default",
@@ -1806,6 +1810,7 @@ export interface MemoryProviderExternalDependency {
 
 export interface MemoryProviderSetupInfo {
   pip_dependencies: string[];
+  python_dependencies_declared?: boolean;
   external_dependencies: MemoryProviderExternalDependency[];
   required_env: string[];
   dependencies_installed: boolean;
@@ -1998,6 +2003,13 @@ export interface StatusResponse {
   config_version: number;
   env_path: string;
   gateway_exit_reason: string | null;
+  /** Why a multi-profile host's gateway came up STANDALONE on a boot guard (unset
+   * ``gateway.multiplex_profiles`` refused): the other profiles' bots are silent until
+   * ``hermes gateway migrate --multiplex`` runs. null/absent when it multiplexes or only one
+   * profile exists. */
+  multiplex_standalone_reason?: string | null;
+  /** Every profile installed on this host (multiplex or not). */
+  profiles?: string[];
   gateway_health_url: string | null;
   /** Seconds since the gateway's housekeeping last stamped gateway_state.json, set only when the
    * process is alive but the stamp is past the freshness TTL (loop/housekeeping wedged).

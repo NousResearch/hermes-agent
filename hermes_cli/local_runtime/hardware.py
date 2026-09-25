@@ -61,6 +61,52 @@ def _stdout(*argv: str) -> str:
     ).stdout
 
 
+_LINUX_RAM_KEYS = frozenset({"MemTotal", "MemAvailable", "MemFree"})
+
+
+def _linux_meminfo_text() -> str | None:
+    """Raw /proc/meminfo, or None when procfs cannot be read."""
+    try:
+        return Path("/proc/meminfo").read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def _linux_ram_from_meminfo(text: str) -> tuple[int, int] | None:
+    """(total, available) from meminfo text, or None if it cannot be trusted.
+
+    MemAvailable includes reclaimable page cache, which ``getconf _AVPHYS_PAGES``
+    counts as used. Kernels that omit MemAvailable fall back to MemFree. Zero is
+    a real available value — a missing-field check must not treat it as absent.
+    """
+    fields: dict[str, int] = {}
+    try:
+        for line in text.splitlines():
+            name, separator, value = line.partition(":")
+            if not separator or name not in _LINUX_RAM_KEYS:
+                continue
+            parts = value.split()
+            if len(parts) != 2 or parts[1] != "kB":
+                continue
+            fields[name] = int(parts[0]) * 1024
+        total = fields.get("MemTotal")
+        # Key presence, not truthiness: MemAvailable 0 must not fall through to MemFree.
+        if "MemAvailable" in fields:
+            available = fields["MemAvailable"]
+        else:
+            available = fields.get("MemFree")
+        if (
+            total is None
+            or total <= 0
+            or available is None
+            or not 0 <= available <= total
+        ):
+            return None
+        return total, available
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def _ram_bytes() -> tuple[int, int]:
     """(total, available) physical memory, cross-platform stdlib."""
     try:
@@ -98,6 +144,12 @@ def _ram_bytes() -> tuple[int, int]:
                 if pages > 0:
                     avail = pages * page
             return total, avail
+        if sys.platform.startswith("linux"):
+            meminfo = _linux_meminfo_text()
+            if meminfo is not None:
+                linux_ram = _linux_ram_from_meminfo(meminfo)
+                if linux_ram is not None:
+                    return linux_ram
         # POSIX
         page = int(_stdout("getconf", "PAGE_SIZE") or 4096)
         total = int(_stdout("getconf", "_PHYS_PAGES") or 0) * page
@@ -198,15 +250,13 @@ def _engine_device_pool() -> "tuple[int, bool | None] | None":
     fallback when the driver API is unreachable: asks the exact binary that will do the
     allocating. Carries no integrated verdict — callers must gate it."""
     with suppress(Exception):  # a probe miss must never block budgeting
-        from hermes_cli.local_runtime.binaries import installed_tags, runtimes_root, server_binary
+        from hermes_cli.config import get_config_value
+        from hermes_cli.local_runtime.binaries import installed_engine
 
-        tags = installed_tags()
-        if not tags:
+        engine = installed_engine(get_config_value("local_runtime.backend", "auto"))
+        if engine is None:
             return None
-        backend_dirs = [d for d in (runtimes_root() / tags[0]).iterdir() if d.is_dir()]
-        if not backend_dirs:
-            return None
-        exe = server_binary(backend_dirs[0])
+        exe = engine.binary
         out = subprocess.run([str(exe), "--list-devices"], capture_output=True,
                              text=True, timeout=30, cwd=str(exe.parent))
         if out.returncode != 0:

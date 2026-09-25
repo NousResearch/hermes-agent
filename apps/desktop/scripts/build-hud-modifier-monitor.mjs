@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Host-built helper. Windows uses its in-box .NET Framework compiler; no SDK download.
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, renameSync, rmdirSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { macosSysroot, xcrunClangArgv } from './macos-sysroot.mjs'
 
 const script = fileURLToPath(import.meta.url)
 const root = resolve(dirname(script), '..')
@@ -22,9 +23,11 @@ export function hudModifierBinaryRelativePath(platform = process.platform, arch 
 }
 
 export function buildHudModifierMonitor({
-  distDir = resolve(root, 'dist'),
+  source = resolve(root, '../..'),
+  distDir = resolve(source, 'apps/desktop/dist'),
   platform = process.platform,
-  arch = process.arch
+  arch = process.arch,
+  sysroot
 } = {}) {
   // Cross-packaging must not ship a host binary under the target's name. The
   // capability stays unavailable unless that target was built on its own host.
@@ -36,16 +39,14 @@ export function buildHudModifierMonitor({
   if (!['darwin', 'linux', 'win32'].includes(platform)) return null
   const output = resolve(distDir, hudModifierBinaryRelativePath(platform, arch))
   const staging = `${output}.${process.pid}.tmp${platform === 'win32' ? '.exe' : ''}`
-  const source = name => resolve(root, 'electron/native', name)
+  const nativeSource = name => resolve(source, 'apps/desktop/electron/native', name)
   mkdirSync(dirname(output), { recursive: true })
   try {
     if (platform === 'darwin') {
       execFileSync(
         'xcrun',
         [
-          '--sdk',
-          'macosx',
-          'clang',
+          ...xcrunClangArgv(sysroot === undefined ? macosSysroot() : sysroot),
           '-arch',
           'arm64',
           '-arch',
@@ -60,7 +61,7 @@ export function buildHudModifierMonitor({
           'Cocoa',
           '-framework',
           'CoreGraphics',
-          source('hud-modifier-monitor.m'),
+          nativeSource('hud-modifier-monitor.m'),
           '-o',
           staging
         ],
@@ -70,7 +71,7 @@ export function buildHudModifierMonitor({
       execFileSync(resolveWindowsFrameworkCompiler(), [
         '/nologo', '/target:exe', '/platform:anycpu', '/optimize+', '/warnaserror+',
         '/reference:System.Windows.Forms.dll', `/out:${staging}`,
-        source('hud-modifier-monitor-win.cs'), source('hud-modifier-gesture.cs')
+        nativeSource('hud-modifier-monitor-win.cs'), nativeSource('hud-modifier-gesture.cs')
       ], { stdio: 'pipe', timeout: 120_000 })
     } else {
       execFileSync(
@@ -80,7 +81,7 @@ export function buildHudModifierMonitor({
           '-O2',
           '-Wall',
           '-Wextra',
-          source('hud-modifier-monitor-x11.c'),
+          nativeSource('hud-modifier-monitor-x11.c'),
           '-o',
           staging,
           '-lX11', '-lXi'
@@ -94,6 +95,17 @@ export function buildHudModifierMonitor({
     return output
   } catch (error) {
     rmSync(output, { force: true }) // Never keep a stale helper after a failed rebuild.
+    // Packaged ASAR output omits empty directories. Leaving native/linux-* behind
+    // makes the packaged renderer differ from its compiler receipt, so source
+    // installs report a healthy desktop bundle as stale when X11 headers are
+    // unavailable. Remove only empty ancestors; stop at the product root.
+    for (let directory = dirname(output); directory !== resolve(distDir); directory = dirname(directory)) {
+      try {
+        rmdirSync(directory)
+      } catch {
+        break
+      }
+    }
     if (platform !== 'linux') throw error
     console.warn('[hud-modifier] unavailable: native build needs a C compiler, libx11-dev and libxi-dev; desktop packaging continues')
     console.warn(String(error.stderr || error.message))

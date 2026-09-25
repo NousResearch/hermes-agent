@@ -25,6 +25,7 @@ from agent.auxiliary_client import (
     _is_rate_limit_error,
     _is_model_not_found_error,
     _is_model_incompatible_error,
+    _is_statusless_structured_provider_error,
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
@@ -53,6 +54,10 @@ class _FakeAnthropicStream:
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+    def __iter__(self):
+        # A completed Messages stream ends in message_stop (#121320 gate).
+        yield SimpleNamespace(type="message_stop")
 
     def get_final_message(self):
         return self._final_message
@@ -246,7 +251,7 @@ class TestMoaAggregatorSharedResolution:
 
     @staticmethod
     def _write_moa_config(tmp_path, monkeypatch, default_preset="opus-gpt"):
-        import yaml
+        import hermes_yaml as yaml
 
         home = tmp_path / ".hermes"
         home.mkdir(exist_ok=True)
@@ -287,7 +292,7 @@ class TestMoaAggregatorSharedResolution:
     def test_real_config_explicit_task_provider_moa(self, tmp_path, monkeypatch):
         """auxiliary.<task>.provider: moa in a REAL config.yaml resolves to the
         aggregator through the genuine load_config()/resolve_moa_preset() path."""
-        import yaml
+        import hermes_yaml as yaml
 
         home = self._write_moa_config(tmp_path, monkeypatch)
         cfg = yaml.safe_load((home / "config.yaml").read_text())
@@ -1567,6 +1572,67 @@ class TestCallLlmPaymentFallback:
         exc.status_code = 429
         return exc
 
+
+    @staticmethod
+    def _sdk_stream_error(error_payload):
+        """The APIError the real OpenAI SDK raises for an HTTP-200 SSE ``error`` event."""
+        import httpx
+        from openai import APIError, OpenAI
+
+        sse = f"data: {json.dumps({'error': error_payload})}\n\n".encode()
+        transport = httpx.MockTransport(lambda request: httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, content=sse))
+        client = OpenAI(api_key="k", base_url="https://relay.example/v1",
+                        http_client=httpx.Client(transport=transport))
+        with pytest.raises(APIError) as caught:
+            for _ in client.chat.completions.create(
+                    model="m", messages=[{"role": "user", "content": "hi"}], stream=True):
+                pass
+        return caught.value
+
+    def test_statusless_structured_error_detection(self):
+        """A status-less SDK stream error with a non-empty structured body counts (#101538)."""
+        assert _is_statusless_structured_provider_error(
+            self._sdk_stream_error({"type": "server_error", "code": "overloaded", "message": "busy"}))
+        assert _is_statusless_structured_provider_error(self._sdk_stream_error("service unavailable"))
+        assert not _is_statusless_structured_provider_error(self._sdk_stream_error({"metadata": {}}))
+        assert not _is_statusless_structured_provider_error(Exception("stream_error: mid_stream_failure"))
+
+        class _StatusCoded(Exception):
+            status_code = 503
+            body = {"type": "server_error"}
+
+        assert not _is_statusless_structured_provider_error(_StatusCoded("unavailable"))
+
+    def test_statusless_structured_error_after_param_strip_triggers_configured_fallback(self):
+        """An in-stream error event on an explicit relay reaches the fallback chain, also when it
+        arrives on a parameter-strip retry (#101538)."""
+        primary_client = MagicMock()
+        primary_client.base_url = "https://relay.example/v1"
+        primary_client.chat.completions.create.side_effect = [
+            Exception("Unsupported parameter: temperature"),
+            self._sdk_stream_error({"type": "server_error", "code": "overloaded"}),
+        ]
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="fallback response"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "virtual-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("custom", "virtual-model", "https://relay.example/v1", "test-key", None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "fallback-model", "fallback_chain[0](openrouter)")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(None, None, "")):
+            call_llm(task="compression", messages=[{"role": "user", "content": "summarize"}],
+                     temperature=0.3)
+
+        assert fallback_client.chat.completions.create.called
+        assert primary_client.chat.completions.create.call_count == 2
+        assert "temperature" not in primary_client.chat.completions.create.call_args.kwargs
+        assert mock_chain.call_args.kwargs["reason"] == "structured provider error"
 
     def test_429_rate_limit_triggers_fallback(self, monkeypatch):
         """429 rate-limit errors should trigger fallback to next provider."""
@@ -3859,6 +3925,27 @@ class TestCodexAuxiliaryAdapterCompletedResponse:
         assert response.usage.completion_tokens == 3
         assert response.usage.total_tokens == 14
 
+    def test_completed_response_with_null_output_does_not_crash(self):
+        """Regression for #33368: a host that returns a completed Responses
+        object with ``output=None`` must yield an empty ``stop`` turn, not
+        ``TypeError: 'NoneType' object is not iterable``."""
+        completed = SimpleNamespace(
+            status="completed", id="r", output=None, output_text="", usage=None,
+            incomplete_details=None, error=None,
+        )
+
+        class FakeResponses:
+            def create(self, **kwargs):
+                return completed
+
+        fake_client = SimpleNamespace(responses=FakeResponses())
+        adapter = _CodexCompletionsAdapter(fake_client, "gpt-5.5")
+
+        response = adapter.create(messages=[{"role": "user", "content": "x"}])
+
+        assert response.choices[0].message.content is None
+        assert response.choices[0].finish_reason == "stop"
+
 
 class TestCodexAuxiliaryAdapterReservedToolAliases:
     """The aux adapter emits the same tool schemas as the main Responses transport: shared
@@ -4734,7 +4821,7 @@ class TestNoProgressTimeoutTaskConfigGating:
         CodexAuxiliaryClient path (both the first-output and between-output deadlines derive from
         ``guard.no_progress_timeout``); other tasks keep the 60s default; a non-positive value
         is rejected with a warning and falls back to the default."""
-        import yaml
+        import hermes_yaml as yaml
         from agent import auxiliary_client as aux
 
         home = tmp_path / ".hermes"

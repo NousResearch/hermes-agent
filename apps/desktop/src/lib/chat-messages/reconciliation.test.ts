@@ -168,3 +168,50 @@ it('keeps a failed tail at the end while its re-submitted prompt is still local-
 
   expect(merged.map(message => message.id)).toEqual(['u1', 'a1', 'u0', 'local-failure'])
 })
+
+it('does not re-append a failed turn whose prompt hydration carries under a new id (#119326)', () => {
+  // The backend rewrote the stored prompt (attachment suffix), so only its
+  // durable rowId still ties it to the local optimistic row.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'hi', { rowId: 1 }),
+      row('9-1-assistant', 'assistant', 'hello', { rowId: 2 }),
+      row('9-2-user', 'user', 'look\n\n[image attached]', { rowId: 3 }),
+      row('9-3-user', 'user', 'newer', { rowId: 5 }),
+      row('9-4-assistant', 'assistant', 'reply', { rowId: 6 })
+    ],
+    [
+      row('1-0-user', 'user', 'hi', { rowId: 1 }),
+      row('1-1-assistant', 'assistant', 'hello', { rowId: 2 }),
+      row('user-look', 'user', 'look', { rowId: 3 }),
+      row('local-failure', 'assistant', '', { error: 'upstream timeout' }),
+      row('user-newer', 'user', 'newer', { rowId: 5 }),
+      row('assistant-stream-reply', 'assistant', 'reply', { rowId: 6 })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual([
+    '9-0-user',
+    '9-1-assistant',
+    '9-2-user',
+    'local-failure',
+    '9-3-user',
+    '9-4-assistant'
+  ])
+})
+
+it('moves a local error onto the durable row it already represents (#119326)', () => {
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'look\n\n[image attached]', { rowId: 3 }),
+      row('9-1-assistant', 'assistant', 'partial', { rowId: 4 })
+    ],
+    [
+      row('user-look', 'user', 'look', { rowId: 3 }),
+      row('assistant-stream-x', 'assistant', 'partial', { error: 'upstream timeout', rowId: 4 })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant'])
+  expect(merged[1]).toMatchObject({ error: 'upstream timeout', pending: false })
+})

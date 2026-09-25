@@ -43,6 +43,7 @@
     "typescript-eslint": "8.64.0"
   },
   "overrides": {
+    "@xmldom/xmldom": "0.8.15",
     "@electron/osx-sign": {
       "isbinaryfile": "5.0.7"
     },
@@ -55,7 +56,8 @@
     "ip-address": "10.3.1",
     "nanoid@^3": "3.3.18",
     "nanoid@^6": "6.0.0",
-    "js-yaml@^4": "4.3.1",
+    "joi": "18.2.5",
+    "js-yaml@^4": "4.3.2",
     "undici@^6": "6.28.0",
     "undici@^7": "7.29.0",
     "postcss": "8.5.23",
@@ -70,13 +72,13 @@
     "esbuild@0.28.1": true,
     "node-pty@1.1.0": true,
     "electron-winstaller@5.4.0": true,
-    "electron@40.10.2": true,
+    "electron@44.4.5": true,
     "fsevents@2.3.2": true,
     "fsevents@2.3.3": true,
     "get-windows@9.3.0": true
   },
   "dependencies": {
-    "js-yaml": "4.3.1",
+    "js-yaml": "4.3.2",
     "semver": "7.7.4"
   }
 }

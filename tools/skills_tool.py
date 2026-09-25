@@ -231,21 +231,35 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
+def _find_plugin_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
+    """Discover eligible plugin skills for listing surfaces.
+
+    ``skip_disabled=True`` mirrors :func:`_find_all_skills`: retain disabled
+    entries so configuration UIs can annotate them instead of hiding them.
+    """
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+        discover_plugins()
+        skills = []
+        for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
+            frontmatter = plugin_skill.pop("frontmatter", {})
+            if not skill_matches_platform(frontmatter) or not skill_matches_environment(frontmatter):
+                continue
+            if not skip_disabled and _is_skill_disabled(plugin_skill["name"]):
+                continue
+            skills.append(plugin_skill)
+        return skills
+    except Exception:
+        logger.debug("Plugin skill listing failed", exc_info=True)
+        return []
+
+
 def skills_list(category: str = None, task_id: str = None) -> str:
     """Tier 1 listing: name + description (+ category) only; ``task_id`` is handler parity."""
     try:
         _skills_dir().mkdir(parents=True, exist_ok=True)
-        all_skills = _find_all_skills()
-        try:
-            from hermes_cli.plugins import discover_plugins, get_plugin_manager
-            discover_plugins()
-            for plugin_skill in get_plugin_manager().list_plugin_skill_metadata():
-                frontmatter = plugin_skill.pop("frontmatter", {})
-                if not skill_matches_platform(frontmatter) or _is_skill_disabled(plugin_skill["name"]):
-                    continue
-                all_skills.append(plugin_skill)
-        except Exception:
-            logger.debug("Plugin skill listing failed", exc_info=True)
+        all_skills = _find_all_skills() + _find_plugin_skills()
         if not all_skills:
             return _json({"success": True, "skills": [], "categories": [],
                           "message": "No skills found in skills/ directory."})

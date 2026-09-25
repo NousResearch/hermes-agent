@@ -785,7 +785,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     profile's config — ``-p`` swaps HERMES_HOME at process start, so no profile flag here."""
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
-    from tools.skills_tool import _find_all_skills
+    from tools.skills_tool import _find_all_skills, _find_plugin_skills, _sort_skills
     from agent.skill_utils import get_disabled_skill_names
     from agent.skill_commands import skill_command_collision_note
     c = console or _console
@@ -793,17 +793,22 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     hub_installed = {e["name"]: e for e in HubLockFile().list_installed()}
     builtin_names = set(_read_manifest())
     all_skills = _find_all_skills(skip_disabled=True)  # include disabled ones to annotate status
+    plugin_skills = _find_plugin_skills(skip_disabled=True)
+    plugin_names = {skill["name"] for skill in plugin_skills}
+    all_skills.extend(plugin_skills)
     disabled_names = get_disabled_skill_names()
 
     table = _table(("Name", {"style": "bold cyan"}), "Category", "Source", "Trust", "Status",
                    title="Installed Skills" + (" (enabled only)" if enabled_only else ""))
 
-    counts = {"hub": 0, "builtin": 0, "local": 0}
+    counts = {"hub": 0, "builtin": 0, "local": 0, "plugin": 0}
     enabled_count = disabled_count = 0
-    for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
+    for skill in _sort_skills(all_skills):
         name = skill["name"]
         hub_entry = hub_installed.get(name)
-        if hub_entry:
+        if name in plugin_names:
+            source_type, source_display, trust = "plugin", name.split(":", 1)[0], "plugin"
+        elif hub_entry:
             source_type, source_display = "hub", hub_entry.get("source", "hub")
             trust = hub_entry.get("trust_level", "community")
         else:
@@ -825,7 +830,7 @@ def do_list(source_filter: str = "all", enabled_only: bool = False,
     tail = (f"{enabled_count} enabled shown" if enabled_only
             else f"{enabled_count} enabled, {disabled_count} disabled")
     c.print(f"[dim]{counts['hub']} hub-installed, {counts['builtin']} builtin, "
-            f"{counts['local']} local — {tail}[/]\n")
+            f"{counts['local']} local, {counts['plugin']} plugin — {tail}[/]\n")
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:

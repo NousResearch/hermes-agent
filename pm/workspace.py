@@ -27,6 +27,38 @@ def _member_ignored(directory, names):
     return [name for name in names if name in _MEMBER_EXCLUDE or name.endswith(".egg-info")]
 
 
+def _member_source_ignore(root: Path):
+    """Apply plugin-local gitignore rules to both stamping and snapshotting."""
+    import pathspec
+
+    specs = {}
+
+    def ignored(directory, names):
+        directory = Path(directory)
+        # A child .gitignore applies below its own directory, in addition to
+        # the rules inherited from ancestors.
+        rules = directory / ".gitignore"
+        if rules.is_file():
+            specs[directory] = pathspec.GitIgnoreSpec.from_lines(
+                rules.read_text(encoding="utf-8-sig").splitlines())
+        parents = [parent for parent in reversed((directory, *directory.parents))
+                   if parent in specs and (parent == root or parent.is_relative_to(root))]
+        excluded = set(_member_ignored(directory, names))
+        for name in names:
+            path = directory / name
+            is_ignored = False
+            for parent in parents:
+                result = specs[parent].check_file(path.relative_to(parent).as_posix() +
+                                                  ("/" if path.is_dir() else ""))
+                if result.index is not None:
+                    is_ignored = result.include
+            if is_ignored:
+                excluded.add(name)
+        return excluded
+
+    return ignored
+
+
 # The uv failure classifier lives beside the uv runner (stdlib-only imports): the bootstrap
 # runner streams uv output from a pre-3.11 system python where this module's tomllib import
 # cannot load. Workspace callers keep reaching it from here.
@@ -51,9 +83,10 @@ def members_stamp(plugin_dirs) -> str:
             h.update(source.read_bytes())
             h.update(b"\0")
         if (entry / "pyproject.toml").is_file():
+            ignored = _member_source_ignore(entry)
             for directory, dirs, files in os.walk(entry):
-                dirs[:] = sorted(set(dirs) - set(_member_ignored(directory, dirs)))
-                for name in sorted(set(files) - set(_member_ignored(directory, files))):
+                dirs[:] = sorted(set(dirs) - set(ignored(directory, dirs)))
+                for name in sorted(set(files) - set(ignored(directory, files))):
                     path = Path(directory) / name
                     h.update(path.relative_to(entry).as_posix().encode())
                     h.update(b"\0")
@@ -251,7 +284,7 @@ def _workspace_member(plugin_dir: Path, root: Path, *, identity: Path) -> Path:
     if pyproject is not None:
         member = root / "plugin-sources" / key
         shutil.copytree(plugin_dir, member, symlinks=True,
-                        ignore=_member_ignored)
+                        ignore=_member_source_ignore(plugin_dir))
         document = tomllib.loads(pyproject.read_text(encoding="utf-8-sig"))
         # uv identifies a workspace member by [project].name, so the same virtual
         # plugin enabled in two profiles would declare one name twice and fail

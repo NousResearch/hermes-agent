@@ -1262,13 +1262,27 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             if not timed_out.is_set():
                 if not isinstance(exc, transport_errors):
                     _log_failure(exc)
+                from agent.api_error_summary import provider_error_log_detail
+
                 logger.warning(
                     "Codex Responses stream transport finalization failed after a terminal response was already "
                     "received; returning the completed response instead of retrying. %s error=%s",
-                    agent._client_log_context(), exc,
+                    agent._client_log_context(), provider_error_log_detail(exc),
                 )
-        except Exception:
-            logger.debug("Codex Responses stream finalization failed after a terminal response", exc_info=True)
+        except Exception as exc:
+            from agent.api_error_summary import provider_error_log_detail
+            from agent.redact import has_volatile_sensitive_text
+
+            if has_volatile_sensitive_text():
+                logger.debug(
+                    "Codex Responses stream finalization failed after a terminal response: %s",
+                    provider_error_log_detail(exc),
+                )
+            else:
+                logger.debug(
+                    "Codex Responses stream finalization failed after a terminal response",
+                    exc_info=True,
+                )
         finally:
             # cancel() wins if the budget has not fired; join() also waits for an already-running shutdown
             # callback, preserving shutdown-before-close ordering at the exact timeout boundary. A failed
@@ -1341,10 +1355,13 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 if attempt >= max_stream_retries:
                     _log_failure(exc)
                     raise
+                from agent.api_error_summary import provider_error_log_detail
+
                 logger.debug(
                     "Codex Responses stream connect failed (attempt %s/%s); retrying. %s error=%s" if event_stream is None
                     else "Codex Responses stream transport failed mid-iteration (attempt %s/%s); retrying. %s error=%s",
-                    attempt + 1, max_stream_retries + 1, agent._client_log_context(), exc,
+                    attempt + 1, max_stream_retries + 1, agent._client_log_context(),
+                    provider_error_log_detail(exc),
                 )
                 if not intercepted_events:  # zero-event attempt: never resend a pathological payload silently
                     api_kwargs = _prune_zero_event_retry_payload(api_kwargs, attempt + 1, max_stream_retries + 1)
@@ -1371,9 +1388,14 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             if not agent._interrupt_requested:
                 _drain_for_finalizer(event_stream)
             if final.status in {"incomplete", "failed"}:
+                from agent.redact import has_volatile_sensitive_text
+
+                private_context = has_volatile_sensitive_text()
                 logger.warning("Codex Responses stream terminal status=%s "
                                "(incomplete_details=%s, error=%s, streamed_chars=%d). %s",
-                               final.status, final.incomplete_details, final.error,
+                               final.status,
+                               "withheld" if private_context else final.incomplete_details,
+                               "withheld" if private_context else final.error,
                                sum(len(p) for p in agent._codex_streamed_text_parts), agent._client_log_context())
             return final
         finally:

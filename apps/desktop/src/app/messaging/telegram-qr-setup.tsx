@@ -73,6 +73,8 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
   const [qrDataUrl, setQrDataUrl] = useState('')
   const [phase, setPhase] = useState<Phase>('idle')
   const [botUsername, setBotUsername] = useState<null | string>(null)
+  // The bot a successful apply just saved; outlives reset() so the card still says which bot is connected.
+  const [connectedBot, setConnectedBot] = useState<null | string>(null)
   const [allowedIds, setAllowedIds] = useState<string[]>([])
   const [detectedOwnerId, setDetectedOwnerId] = useState<null | string>(null)
   const [newAllowedId, setNewAllowedId] = useState('')
@@ -194,6 +196,7 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
     setPhase('starting')
     setError('')
     setBotUsername(null)
+    setConnectedBot(null)
     setAllowedIds([])
     setDetectedOwnerId(null)
     setNewAllowedId('')
@@ -269,6 +272,7 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
 
       if (scopeRef.current !== owner) {return}
       reset()
+      setConnectedBot(result.bot_username || botUsername)
       onApplied(result)
     } catch (applyError) {
       if (scopeRef.current === owner) {
@@ -303,7 +307,14 @@ export function TelegramQrSetup({ onApplied, platform, scopeProfile }: TelegramQ
         )}
       </div>
 
-      {platform.configured && phase === 'idle' && (
+      {phase === 'idle' && connectedBot && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          <Badge variant="success">{t.messaging.states.connected}</Badge>
+          <span className="font-mono text-xs text-muted-foreground">@{connectedBot}</span>
+        </div>
+      )}
+
+      {platform.configured && phase === 'idle' && !connectedBot && (
         <p className="mt-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-muted-foreground">
           {q.replaceWarning}
         </p>

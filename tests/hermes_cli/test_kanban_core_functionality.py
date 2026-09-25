@@ -1394,3 +1394,57 @@ def test_dead_worker_reap_reads_the_log_of_the_dispatching_board(kanban_home):
         assert "no reassignment operation" in (task.last_failure_error or "")
     finally:
         conn.close()
+
+
+def test_log_command_points_at_the_board_that_holds_the_log(kanban_home, capsys):
+    """A miss must name the board it searched and point at the board holding the
+    log, instead of asserting the task never spawned (#122541)."""
+    import argparse
+
+    from hermes_cli import kanban as kc
+
+    assert kb.get_current_board() == "default"
+    tid = "t_logprobe"
+    # connect() initializes boards/trading/kanban.db so list_boards() sees it.
+    kbc.connect(board="trading").close()
+    log_path = kb.worker_log_path(tid, board="trading")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text("trading log\n")
+
+    # Miss on the active board: name it, its path, and the board that has the log.
+    args = argparse.Namespace(task_id=tid, tail=None, board=None, log_board=None)
+    assert kc._cmd_log(args) == 1
+    err = capsys.readouterr().err
+    assert "on board 'default'" in err
+    assert "no log file at" in err
+    assert "'trading'" in err and "--board trading" in err
+
+    # --board after the subcommand resolves the log.
+    args = argparse.Namespace(task_id=tid, tail=None, board=None, log_board="trading")
+    assert kc._cmd_log(args) == 0
+    assert capsys.readouterr().out == "trading log\n"
+
+    # A genuine miss keeps the not-spawned hint, now scoped to the searched board.
+    args = argparse.Namespace(task_id="t_nowhere", tail=None, board=None, log_board=None)
+    assert kc._cmd_log(args) == 1
+    err = capsys.readouterr().err
+    assert "on board 'default'" in err and "may not have spawned yet" in err
+    assert "trading" not in err
+
+
+def test_log_parser_accepts_board_before_and_after_the_subcommand(kanban_home):
+    """`--board` works in both positions; the subparser must not clobber the
+    parent-level value (separate dest, merged in _cmd_log)."""
+    import argparse as ap
+
+    from hermes_cli.kanban_parser import build_parser
+
+    top = ap.ArgumentParser()
+    build_parser(top.add_subparsers(dest="cmd"))
+
+    pre = top.parse_args(["kanban", "--board", "trading", "log", "t1"])
+    assert (getattr(pre, "log_board", None) or pre.board) == "trading"
+    post = top.parse_args(["kanban", "log", "t1", "--board", "trading"])
+    assert (post.log_board or post.board) == "trading"
+    bare = top.parse_args(["kanban", "log", "t1"])
+    assert not (getattr(bare, "log_board", None) or bare.board)

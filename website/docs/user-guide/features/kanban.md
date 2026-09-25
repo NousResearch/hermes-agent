@@ -45,6 +45,33 @@ This is the shape that covers the workloads `delegate_task` can't:
 
 The eight canonical collaboration patterns are catalogued in [Collaboration patterns](#collaboration-patterns) below.
 
+## Design cards around the outcome
+
+Write the card for the state the user wants, not for a list of example commands or a
+chain of checks. Work backward from the observable postcondition to the necessary
+prerequisites, then execute them in dependency order. A specialist card should
+normally contain the preparation, authorized mutation and direct verification in
+one bounded run. Add another card only for a real ownership handoff, independently
+useful deliverable or material decision that can change the next transition.
+
+For example, moving a stateful Compose service to a new descriptor may require
+quiescing its writers, making a consistent backup, recreating that service from
+the new descriptor and verifying its labels, mounts and health. If the chosen
+backup method cannot copy changing state consistently, stop or drain the relevant
+writers **before** taking the copy; repeatedly checking a live-changing copy
+cannot make it consistent. A supported online snapshot is fine when its
+consistency is actually proven. The necessary stop/restart is part of an
+explicitly authorized migration, not an automatic new approval stage.
+
+Keep safety proportional: check the live conditions that can make the operation
+unsafe, perform the work, then verify the requested postconditions. An independent
+review should not require evidence that can only exist after the executing worker
+has completed an authorized prerequisite. On failure, inspect what actually
+changed, correct an ordinary technical obstacle and resume the same outcome with
+bounded retries; ask for human input only for missing authority, access or a
+material new risk. Do not weaken policy guards or repeat destructive operations
+without checking whether the previous attempt already took effect.
+
 ## PR completion contracts
 
 Declare PR work at creation with `--completion-contract OWNER/REPO` (or an exact

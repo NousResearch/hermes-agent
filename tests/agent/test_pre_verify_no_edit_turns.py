@@ -76,9 +76,9 @@ def _make_agent(session_id="pre-verify-no-edit"):
     from run_agent import AIAgent
 
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             session_id=session_id, api_key="k", base_url="https://example.invalid/v1",

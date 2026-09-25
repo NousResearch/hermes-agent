@@ -89,7 +89,8 @@ def _emit(event: str, task_id: str | None, **fields) -> None:
         if not (title and reason):
             try:
                 from hermes_cli import kanban_db as kb
-                with kb.connect() as conn:
+                from hermes_cli import kanban_db_connect as _kbc
+                with _kbc.connect() as conn:
                     t = kb.get_task(conn, task_id)
                     if t:
                         title = title or (t.title or "")

@@ -95,6 +95,13 @@ try:
     )
     import agent.conversation_loop as cl
     seen, stack = set(), [cl.run_conversation.__code__]
+    # Upstream moved the stop gates out of run_conversation into agent.turn_stop_gates.
+    try:
+        import agent.turn_stop_gates as tsg
+        stack += [f.__code__ for f in vars(tsg).values()
+                  if callable(f) and hasattr(f, "__code__")]
+    except ImportError:
+        pass
     while stack:
         code = stack.pop()
         if id(code) in seen:

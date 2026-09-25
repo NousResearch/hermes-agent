@@ -102,8 +102,10 @@ def procs():
 
 
 def _board(home: Path):
-    from hermes_cli import kanban_db as kb
+    # Post-split: one namespace over the decomposed kanban_db modules.
+    from tests.hermes_cli._kanban_modules import KanbanModules
 
+    kb = KanbanModules()
     return kb.connect(home / "board.db"), kb
 
 
@@ -276,6 +278,9 @@ def run_turn(
     agent._stream_callback = None
     agent.valid_tool_names = set()
     agent._drain_pending_steer.return_value = None
+    # Upstream finalize_turn compares the compressor's token readings numerically.
+    agent.context_compressor.last_prompt_tokens = 0
+    agent.context_compressor.last_real_prompt_tokens = 0
     messages = [
         {"role": "user", "content": user_message},
         {"role": "assistant", "content": final_response},
@@ -504,6 +509,14 @@ def test_6_continuations_are_bounded_and_write_nothing(home):
     [t.join(timeout=60) for t in threads]
 
     granted = [r for r in results if r]
+    # Upstream single-flights concurrent same-session bounded hooks in one process
+    # (plugins_dispatch gate), so the burst may grant fewer; drain sequentially —
+    # the cross-process ledger must still cap the total at exactly 2.
+    assert 1 <= len(granted) <= 2, granted
+    for _ in range(4):
+        r = fire_pre_verify(changed_paths=["a.py"])
+        if r:
+            granted.append(r)
     assert len(granted) == 2, f"expected the configured cap, got {len(granted)}"
     assert len(kb.list_tasks(conn, include_archived=True)) == before  # no new cards
     assert all("STOP-CHECK" in g for g in granted)
@@ -953,9 +966,9 @@ def test_20_no_edit_turn_really_continues_into_a_tool_call(home, monkeypatch):
     from run_agent import AIAgent
 
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             session_id=SESSION, api_key="k", base_url="https://example.invalid/v1",
@@ -1011,7 +1024,7 @@ def test_20_no_edit_turn_really_continues_into_a_tool_call(home, monkeypatch):
     agent._interruptible_api_call = model_call
     set_turn_context(SUPERVISION_MSG)
 
-    with patch("run_agent.handle_function_call", side_effect=fake_tool):
+    with patch("model_tools.handle_function_call", side_effect=fake_tool):
         result = agent.run_conversation(SUPERVISION_MSG)
 
     assert len(calls) >= 3, calls
@@ -1480,20 +1493,16 @@ def test_32_activation_preflight_refuses_an_old_core_and_an_empty_scope(home):
     # A core with the no-edit resolver but WITHOUT the enforced verdict is
     # refused too: that is exactly the runtime that can still ship a quiet end.
     partial = home / "partial-core"
-    shutil.copytree(REPO / "agent", partial / "agent",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+    # Copy the whole importable core (upstream's import graph is wide), minus
+    # the heavy non-Python trees.
+    shutil.copytree(REPO, partial, symlinks=True, ignore=shutil.ignore_patterns(
+        "__pycache__", ".git", "node_modules", "website", "apps", "ui-tui", "web",
+        "tests", "contrib", "venv", ".venv", "*.pyc"))
     vh = partial / "agent" / "verify_hooks.py"
     vh.write_text(vh.read_text().replace("def apply_pre_verify_verdict(",
                                          "def _removed_apply_pre_verify_verdict("))
     tf = partial / "agent" / "turn_finalizer.py"
     tf.write_text(tf.read_text().replace("apply_pre_verify_verdict", "_gone"))
-    for extra in ("tools", "utils.py", "hermes_constants.py"):
-        src = REPO / extra
-        if src.is_dir():
-            shutil.copytree(src, partial / extra,
-                            ignore=shutil.ignore_patterns("__pycache__"))
-        elif src.exists():
-            shutil.copy(src, partial / extra)
     g_partial = pf.Gate()
     pf.probe_core(partial, g_partial)
     assert "enforced-verdict contract" in g_partial.failures, g_partial.lines
@@ -1553,9 +1562,9 @@ def test_33_continuation_drives_a_real_tool_action_through_real_dispatch(home, m
     from run_agent import AIAgent
 
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             session_id=SESSION, api_key="k", base_url="https://example.invalid/v1",
@@ -1642,9 +1651,9 @@ def _supervision_agent(home: Path, *, max_iterations: int = 8):
     from run_agent import AIAgent
 
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             session_id=SESSION, api_key="k", base_url="https://example.invalid/v1",
@@ -1697,6 +1706,9 @@ def test_34_post_cap_delivered_answer_is_fail_explicit_in_both_orders(home):
     kb.block_task(conn, tid, reason="hold")
 
     HOSTILE = "All good — nothing needed this sweep."
+    # A long NON-repetitive draft: upstream's repetition guard aborts a turn on
+    # "x" * 20000, which would test that guard instead of the stop-check.
+    LONG_DRAFT = " ".join(f"note{i}" for i in range(3000))
 
     for order_name in ("aaa-earlier-plugin", "zzz-later-plugin"):
         for stale in home.glob("plugins/*-plugin"):
@@ -1717,7 +1729,7 @@ def test_34_post_cap_delivered_answer_is_fail_explicit_in_both_orders(home):
         plugin.reset_state()
 
         agent = _supervision_agent(home)
-        model_call, calls = _always_quiet_model([QUIET, "x" * 20000 + " all clear"])
+        model_call, calls = _always_quiet_model([QUIET, LONG_DRAFT + " all clear"])
         agent._interruptible_api_call = model_call
         set_turn_context(SUPERVISION_MSG)
         result = agent.run_conversation(SUPERVISION_MSG)
@@ -1743,7 +1755,7 @@ def test_34_post_cap_delivered_answer_is_fail_explicit_in_both_orders(home):
         assert "not permitted to end this turn" not in delivered, order_name
         # 5. The model's own quiet draft never ships as the whole answer.
         assert delivered.strip() != HOSTILE
-        assert "x" * 20000 not in delivered
+        assert LONG_DRAFT not in delivered
 
     for stale in home.glob("plugins/*-plugin"):
         shutil.rmtree(stale, ignore_errors=True)
@@ -2414,9 +2426,9 @@ def test_49_name_route_intent_drives_a_real_tool_through_run_conversation(home, 
     from run_agent import AIAgent
 
     with (
-        patch("run_agent.get_tool_definitions", return_value=[]),
-        patch("run_agent.check_toolset_requirements", return_value={}),
-        patch("run_agent.OpenAI"),
+        patch("model_tools.get_tool_definitions", return_value=[]),
+        patch("model_tools.check_toolset_requirements", return_value={}),
+        patch("agent.process_bootstrap.OpenAI"),
     ):
         agent = AIAgent(
             session_id=SESSION, api_key="k", base_url="https://example.invalid/v1",

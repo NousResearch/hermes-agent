@@ -716,6 +716,7 @@ def _on_completed(task_id=None, run_id=None, summary=None, board=None,
         if cfg.get("enabled", False) is not True:
             return
         from hermes_cli import kanban_db as kb
+        from hermes_cli import kanban_db_connect as _kbc
 
         # The board is taken from the EXPLICIT payload, never inferred from the
         # calling thread's ContextVar (a queued/threaded dispatch does not
@@ -737,7 +738,7 @@ def _on_completed(task_id=None, run_id=None, summary=None, board=None,
             logger.warning("[kanban-pipeline] ignoring non-string profile_name payload")
             profile_name = None
 
-        with kb.connect(board=board) as conn:
+        with _kbc.connect(board=board) as conn:
             try:
                 task = kb.get_task(conn, task_id)
             except Exception as exc:

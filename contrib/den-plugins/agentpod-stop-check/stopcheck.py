@@ -769,7 +769,8 @@ def evaluate_board(
     try:
         from pathlib import Path
 
-        conn = kb.connect(Path(db_path)) if db_path else kb.connect(board=board)
+        _connect = _board_connect(kb)
+        conn = _connect(Path(db_path)) if db_path else _connect(board=board)
         # Read the board unscoped so "scope matched nothing" can be told apart
         # from "board is empty". Only SCOPED cards are ever evaluated below.
         tasks = kb.list_tasks(conn, include_archived=False)
@@ -870,6 +871,16 @@ def evaluate_board(
         truncated=truncated,
         notes=notes,
     )
+
+
+def _board_connect(kb):
+    """``connect`` from an injected board module/fake, else the post-split
+    ``hermes_cli.kanban_db_connect.connect`` (``kanban_db.connect`` is a removed
+    compat path since the Sep 2026 decomposition)."""
+    fn = getattr(kb, "__dict__", {}).get("connect")
+    if fn is None:
+        from hermes_cli.kanban_db_connect import connect as fn  # type: ignore
+    return fn
 
 
 def kanban_db_module():

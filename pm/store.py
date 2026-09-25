@@ -345,7 +345,8 @@ class Store:
                 destination = scratch / entry_name / url.rsplit("/", 1)[-1]
             sources.append(pinned_source(url, destination, digest))
 
-        urls = {str(source.dest): source.url for source in sources}
+        # Progress keeps lockfile identities even when the transport uses a mirror.
+        urls = {str(source.dest): artifact["url"] for source, artifact in zip(sources, artifacts)}
 
         def tick(done, total, ranges):
             if progress is not None:

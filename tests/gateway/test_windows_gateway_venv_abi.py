@@ -11,10 +11,10 @@ import sys
 import gateway.run as run
 
 
-def _write_cfg(path, version):
+def _write_cfg(path, version, key="version_info"):
     path.mkdir(parents=True, exist_ok=True)
     (path / "pyvenv.cfg").write_text(
-        "home = /nonexistent\nimplementation = CPython\nversion_info = %s\n" % version,
+        "home = /nonexistent\nimplementation = CPython\n%s = %s\n" % (key, version),
         encoding="utf-8",
     )
     (path / "Lib" / "site-packages").mkdir(parents=True, exist_ok=True)
@@ -31,6 +31,18 @@ def test_abi_rejects_other_interpreter(tmp_path):
     other = tmp_path / "other"
     _write_cfg(other, "2.7.18" if sys.version_info[:2] != (2, 7) else "3.99.0")
     assert run._venv_abi_matches(other) is False
+
+
+def test_abi_stdlib_version_key(tmp_path):
+    """CPython's `python -m venv` writes `version`, not `version_info`."""
+    current = "%d.%d.%d" % sys.version_info[:3]
+    match = tmp_path / "stdlib-match"
+    _write_cfg(match, current, key="version")
+    assert run._venv_abi_matches(match) is True
+    mismatch = tmp_path / "stdlib-mismatch"
+    _write_cfg(mismatch, "2.7.18" if sys.version_info[:2] != (2, 7) else "3.99.0",
+               key="version")
+    assert run._venv_abi_matches(mismatch) is False
 
 
 def test_abi_missing_or_broken_cfg_keeps_legacy_behavior(tmp_path):

@@ -431,14 +431,17 @@ def _venv_abi_matches(venv_dir: Path) -> bool:
         cfg = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
     except OSError:
         return True
-    marker = next(
-        (line for line in cfg.splitlines() if line.strip().startswith("version_info")),
-        None,
-    )
-    if marker is None or "=" not in marker:
+    found: dict[str, str] = {}
+    for line in cfg.splitlines():
+        name, sep, value = line.strip().partition("=")
+        if sep and name.strip() in ("version", "version_info"):
+            found.setdefault(name.strip(), value.strip())
+    # stdlib venvs write `version`, uv writes `version_info`.
+    version = found.get("version_info", found.get("version"))
+    if not version:
         return True
     try:
-        major, minor = marker.split("=", 1)[1].strip().split(".")[:2]
+        major, minor = version.split(".")[:2]
         return (int(major), int(minor)) == tuple(sys.version_info[:2])
     except (ValueError, IndexError):
         return True

@@ -252,6 +252,7 @@ const TranscriptPane = memo(function TranscriptPane({
             prevMsg={transcript.historyItems[transcript.historyItems.length - 1]}
             progress={progress}
             sections={ui.sections}
+            timestamps={ui.timestamps}
           />
 
           {/* Narrow terminals: reserve rows so the newest lines sit above the pet. */}

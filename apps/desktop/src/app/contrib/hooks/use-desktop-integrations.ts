@@ -33,6 +33,7 @@ import {
 } from '@/store/session'
 import { $botChatScopes, $sessionTiles, storedSessionIdForRuntimeId } from '@/store/session-states'
 import { onSessionsChanged } from '@/store/session-sync'
+import { requestSkillInstallFromDeepLink } from '@/store/skill-deeplink-install'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '@/store/updates'
 import { isBrowserWindow, isHudWindow, isSecondaryWindow } from '@/store/windows'
 import type { SessionInfo } from '@/types/hermes'
@@ -312,6 +313,7 @@ export function useDesktopIntegrations({
   //    names toast an error and never fall back to a git-path install.
   //  - plugin/install?… (and legacy plugin-agent/plugin-desktop) → plugin install
   //    modal awaiting explicit confirmation. Never auto-installs.
+  //  - skill/install?identifier=… → confirmation, then the existing hub pipeline
   //  - blueprint/<name>?… → reviewable /blueprint command in the composer
   //  - <plugin>/<path>?… → in-app navigate (e.g. index-network/intent/1)
   //  - open/<path>?… → in-app navigate (generic)
@@ -377,6 +379,16 @@ export function useDesktopIntegrations({
           legacyHint: action.legacyHint
         })
 
+        return
+      }
+
+      if (action.type === 'skill-install') {
+        void requestSkillInstallFromDeepLink(action.identifier)
+
+        return
+      }
+
+      if (payload.kind === 'skill') {
         return
       }
 

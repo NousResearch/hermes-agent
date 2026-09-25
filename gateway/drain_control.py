@@ -164,7 +164,7 @@ def read_drain_request(*, home: Optional[Path] = None) -> Optional[dict[str, Any
     """Return the marker payload, ``{}`` if present but unparseable, ``None`` if absent. Never raises."""
     path = drain_request_path(home)
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except OSError as e:
         if not isinstance(e, FileNotFoundError):
             _log.warning("drain-control: failed to read %s: %s", path, e)

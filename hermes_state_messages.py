@@ -958,6 +958,18 @@ class SessionMessagesMixin:
             "UPDATE messages SET content = ? WHERE id = ? AND session_id = ? AND role = 'user' AND active = 1",
             (self._encode_content(content), row_id, session_id))
 
+    def deactivate_message(self, session_id: str, row_id: int) -> int:
+        """Deactivate ONE known row (id-addressed, idempotent; returns the affected row count). Used by
+        the queued-prompt drain: the row written at accept time sits ahead of the in-flight turn's
+        assistant reply, and the drain re-appends an identical row at the transcript end — leaving the
+        early row active would put two user rows before that reply and the alternation repair would
+        glue the two turns into one. The durable row is preserved (inactive), never deleted."""
+        if not session_id or isinstance(row_id, bool) or not isinstance(row_id, int) or row_id <= 0:
+            return 0
+        return self._write_rowcount(
+            "UPDATE messages SET active = 0 WHERE id = ? AND session_id = ?",
+            (row_id, session_id))
+
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
         dedupe_content = row["content"]

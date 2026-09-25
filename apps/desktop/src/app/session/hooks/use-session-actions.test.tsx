@@ -33,7 +33,8 @@ import {
   ensureGatewayAgent,
   ensureGatewayProfile
 } from '@/store/profile'
-import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
+import { $projectScope, ALL_PROJECTS } from '@/store/project-scope'
+import { $projectTree } from '@/store/projects'
 import {
   $activeSessionId,
   $activeSessionStoredIdRotation,
@@ -3252,6 +3253,171 @@ describe('resumeSession warm-cache mapping integrity', () => {
     ).toMatchObject({ toolCallId: 'call-provider' })
     expect(resumedState?.streamId).toBe(clarifyMessages[0].id)
     expect($clarifyRequests.get()['rt-A']).toMatchObject({ requestId: 'req-warm' })
+  })
+
+  function answerableClarifyRows(messages: ClientSessionState['messages'] | undefined) {
+    return (
+      messages?.filter(
+        message =>
+          message.pending &&
+          message.parts.some(
+            part => part.type === 'tool-call' && part.toolName === 'clarify' && part.result === undefined
+          )
+      ) ?? []
+    )
+  }
+
+  async function resumeClarifyBeforeHydration({
+    messageCount = 1,
+    messages,
+    provenance
+  }: {
+    messageCount?: number
+    messages: ClientSessionState['messages']
+    provenance?: ClientSessionState['transcriptProvenance']
+  }) {
+    setSessions([storedSession({ id: 'stored-A', message_count: messageCount })])
+
+    const state = clientState('stored-A')
+    state.messages = messages
+
+    if (provenance) {
+      state.transcriptProvenance = provenance
+    }
+
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const persistedTranscript = deferred<Awaited<ReturnType<typeof getLatestSessionMessages>>>()
+    vi.mocked(getLatestSessionMessages).mockReturnValue(persistedTranscript.promise)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        setClarifyRequest({
+          choices: ['safe', 'fast'],
+          multiSelect: false,
+          question: 'Which path?',
+          receivedAt: Date.now(),
+          requestId: 'req-navigation',
+          sessionId: 'rt-A'
+        })
+
+        return {
+          info: {},
+          message_count: messageCount,
+          messages: [],
+          messages_omitted: true,
+          open_requests: [
+            { id: 'req-navigation', method: 'clarify', params: { choices: ['safe', 'fast'], question: 'Which path?' } }
+          ],
+          resumed: 'stored-A',
+          running: true,
+          session_id: 'rt-A',
+          session_key: 'stored-A'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    const viewSyncs: ClientSessionState[] = []
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onViewSync={(_sessionId, syncedState) => viewSyncs.push(syncedState)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    const resumePromise = resume!('stored-A', true)
+    await waitFor(() => expect(viewSyncs.some(syncedState => syncedState.needsInput)).toBe(true))
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-A', undefined)
+
+    return { persistedTranscript, resumePromise, sessionStateByRuntimeIdRef, viewSyncs }
+  }
+
+  it('publishes an answerable pending clarify row in the same needsInput view update, before transcript hydration (#108718)', async () => {
+    const { persistedTranscript, resumePromise, viewSyncs } = await resumeClarifyBeforeHydration({
+      messages: [{ id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] }],
+      provenance: {
+        connectionId: '',
+        coverage: 'latest-page',
+        lineageRootId: null,
+        profile: 'default',
+        source: 'persisted-display',
+        storedSessionId: 'stored-A'
+      }
+    })
+
+    const preHydration = viewSyncs.find(syncedState => syncedState.needsInput)
+    const answerable = answerableClarifyRows(preHydration?.messages)
+
+    expect(answerable).toHaveLength(1)
+    expect(answerable[0].parts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          args: expect.objectContaining({ choices: ['safe', 'fast'], question: 'Which path?' }),
+          toolCallId: 'req-navigation',
+          toolName: 'clarify',
+          type: 'tool-call'
+        })
+      ])
+    )
+    expect(preHydration?.messages.some(message => message.id === 'cached-user')).toBe(true)
+
+    persistedTranscript.resolve({
+      messages: [{ content: 'help me choose', role: 'user', timestamp: 1 }],
+      session_id: 'stored-A'
+    } as never)
+    await resumePromise
+
+    const settled = viewSyncs.filter(syncedState => syncedState.needsInput).at(-1)
+    expect(answerableClarifyRows(settled?.messages)).toHaveLength(1)
+  })
+
+  it('keeps the snapshot clarify row visible while unproven history stays suppressed (#108718)', async () => {
+    const { persistedTranscript, resumePromise, viewSyncs } = await resumeClarifyBeforeHydration({
+      messages: [
+        { id: 'cached-user', role: 'user', parts: [{ type: 'text', text: 'help me choose' }] },
+        {
+          id: 'cached-assistant',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'I found two paths.' }]
+        }
+      ]
+    })
+
+    const preHydration = viewSyncs.find(syncedState => syncedState.needsInput)
+
+    expect(answerableClarifyRows(preHydration?.messages)).toHaveLength(1)
+    expect(preHydration?.messages.some(message => message.id === 'cached-user')).toBe(false)
+    expect(preHydration?.messages.some(message => message.id === 'cached-assistant')).toBe(false)
+
+    persistedTranscript.resolve({ messages: [], session_id: 'stored-A' } as never)
+    await resumePromise
+    expect(answerableClarifyRows(viewSyncs.at(-1)?.messages)).toHaveLength(1)
+  })
+
+  it('keeps the snapshot clarify row visible when the unproven warm cache has no prefix (#108718)', async () => {
+    const { persistedTranscript, resumePromise, viewSyncs } = await resumeClarifyBeforeHydration({
+      messageCount: 0,
+      messages: []
+    })
+
+    const preHydration = viewSyncs.find(syncedState => syncedState.needsInput)
+
+    expect(answerableClarifyRows(preHydration?.messages)).toHaveLength(1)
+
+    persistedTranscript.resolve({ messages: [], session_id: 'stored-A' } as never)
+    await resumePromise
   })
 
   it.each([

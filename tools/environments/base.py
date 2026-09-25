@@ -181,7 +181,7 @@ def touch_activity_if_due(state: dict, label: str) -> None:
         if cb:
             cb(f"{label} ({int(now - state['start'])}s elapsed)")
     except Exception:
-        pass
+        logger.debug("activity callback failed during a long-running command", exc_info=True)
 
 
 def get_sandbox_dir() -> Path:
@@ -194,11 +194,12 @@ def get_sandbox_dir() -> Path:
 
 
 def _load_json_store(path: Path) -> dict:
-    """Load a JSON file as a dict, returning ``{}`` on any error."""
+    """Treat a missing or damaged snapshot store as empty."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _save_json_store(path: Path, data: dict) -> None:
@@ -214,6 +215,11 @@ def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
         return (st.st_mtime, st.st_size)
     except OSError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# BaseEnvironment
+# ---------------------------------------------------------------------------
 
 
 class BaseEnvironment(ABC):
@@ -240,8 +246,12 @@ class BaseEnvironment(ABC):
     _profile_scoped_passthrough: bool = False
 
     def get_temp_dir(self) -> str:
-        """Backend temp directory for session artifacts (``/tmp`` in sandboxes;
-        LocalEnvironment overrides for Termux where only ``TMPDIR`` is writable)."""
+        """Return the backend temp directory used for session artifacts.
+
+        Most sandboxed backends use ``/tmp`` inside the target environment.
+        LocalEnvironment overrides this on hosts where ``/tmp`` may be missing
+        and ``TMPDIR`` is the portable writable location.
+        """
         return "/tmp"  # no-tmp: ok — sandbox-side (remote container) temp dir, not the host
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):
@@ -411,15 +421,21 @@ class BaseEnvironment(ABC):
 
     @staticmethod
     def _embed_stdin_heredoc(command: str, stdin_data: str) -> str:
-        """Append stdin_data as a shell heredoc to the command string (SDK backends)."""
+        """Redirect stdin_data to the complete command with a shell heredoc (SDK backends).
+        A heredoc body always ends in a newline stdin_data may lack, and write_file verifies a
+        byte-exact hash, so a process substitution re-emits the body minus that last character.
+        Redirections apply left to right, so the substitution inherits the heredoc as its stdin;
+        the heredoc stays outside ``<( )`` because bash 3.2 mis-parses bodies inside it. ``|| :``
+        keeps an inherited ``set -e`` from killing the reader on read's EOF status."""
         delimiter = f"HERMES_STDIN_{uuid.uuid4().hex[:12]}"
-        return f"{command} << '{delimiter}'\n{stdin_data}\n{delimiter}"
+        return (f"{{\n{command}\n}} << '{delimiter}' < <(IFS= read -r -d '' s || :; printf '%s' \"${{s%?}}\")\n"
+                f"{stdin_data}\n{delimiter}")
 
     # --- Process lifecycle ---
     def _wait_for_process(
         self, proc: ProcessHandle, timeout: int = 120, *,
         bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
-        yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
+        output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
         """Poll-based wait with interrupt checking and stdout draining (shared, not overridden).
         ``yield_handler(proc, output_so_far)``: when the tool thread is asked to yield
         (``tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
@@ -439,7 +455,8 @@ class BaseEnvironment(ABC):
         reads feeding the patch engine, code-execution RPC reads, log reads — where truncation would corrupt
         data. See #64435.
         """
-        output = _new_output_collector(proc, bounded_capture)
+        if output is None:
+            output = _new_output_collector(proc, bounded_capture)
         drain_stop = threading.Event() if yield_handler is not None else None
         drain_thread = _start_drain_thread(proc, output, drain_stop)
         _now = time.monotonic()
@@ -616,6 +633,7 @@ class BaseEnvironment(ABC):
         # deadline worker, so copy it across or long commands look idle.
         parent_activity_cb = get_activity_callback()
         proc_holder: list = []
+        output_holder: list = []
 
         def _spawn_and_wait() -> dict:
             if parent_activity_cb is not None:
@@ -630,10 +648,12 @@ class BaseEnvironment(ABC):
             proc_holder.append(spawned)
             if fenced:  # the hard-exit kill may have stopped waiting for us before we registered
                 self._force_kill_process(spawned)
+            output = _new_output_collector(spawned, bounded_capture)
+            output_holder.append(output)
             try:
                 return self._wait_for_process(
                     spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
-                    watch_interrupt_tid=parent_tid,
+                    watch_interrupt_tid=parent_tid, output=output,
                     **({"yield_handler": yield_handler} if yield_handler is not None else {}))
             finally:
                 with _live_foreground_cond:
@@ -664,9 +684,15 @@ class BaseEnvironment(ABC):
             _on_timeout()
             raise
 
-        result = (
-            {"output": f"[Command timed out after {effective_timeout}s]", "returncode": 124}
-            if bounded.timed_out else bounded.value)
+        if bounded.timed_out:
+            suffix = f"\n[Command timed out after {effective_timeout}s]"
+            if output_holder:
+                collector = output_holder[0]
+                result = self._finalize_wait_result(collector, collector.render(suffix=suffix).lstrip("\n"), 124)
+            else:
+                result = {"output": suffix.lstrip(), "returncode": 124}
+        else:
+            result = bounded.value
         self._update_cwd(result)
         if getattr(self, "_recreated_notice_pending", False):
             self._recreated_notice_pending = False

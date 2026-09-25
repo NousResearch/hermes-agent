@@ -142,7 +142,6 @@ export function useVoiceConversation({
   // a torn-down window).
   const cancelFallbackPollRef = useRef<(() => void) | null>(null)
 
-   
   useEffect(() => () => cancelFallbackPollRef.current?.(), [])
 
   const clearTurnTimeout = () => {

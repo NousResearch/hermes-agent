@@ -87,7 +87,8 @@ export interface ChannelManifest {
 const SHA256 = /^[a-f0-9]{64}$/
 const COMMIT = /^[a-f0-9]{40}$/
 const BUILD_ID = /^[a-f0-9]{32}$/
-const VERSION = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/
+const VERSION =
+  /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/
 // rc.<N>-vX.Y.Z with N >= 1 without leading zeros and a release version whose
 // major stays within three digits — one regex matching the Python grammar.
 const ARCHIVE_REF = /^rc\.(?:[1-9]\d*)-v(?:0|[1-9]\d{0,2})\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/
@@ -363,8 +364,12 @@ function request(fields: Fields): ChannelRequest {
 
   // Match the build-time allowlist: a channel request cannot inject process flags.
   const allowed = new Set([
-    'HERMES_HOME', 'HERMES_DATA_DIR_SUFFIX', 'HERMES_DESKTOP_USER_DATA_DIR',
-    'HERMES_SHARED_AUTH_DIR', 'HERMES_GUEST_ONBOARDING', 'HERMES_SKIP_INTRO'
+    'HERMES_HOME',
+    'HERMES_DATA_DIR_SUFFIX',
+    'HERMES_DESKTOP_USER_DATA_DIR',
+    'HERMES_SHARED_AUTH_DIR',
+    'HERMES_GUEST_ONBOARDING',
+    'HERMES_SKIP_INTRO'
   ])
 
   for (const key of environment.keys()) {
@@ -387,16 +392,11 @@ function request(fields: Fields): ChannelRequest {
     throw new Error('Noncanonical request publicBase')
   }
 
-  const releaseTag = fields.optional(
-    'releaseTag',
-    /^v\d+\.\d+\.\d+(?:\+canary\.20\d{6}T\d{6}Z)?$/
-  )
+  const releaseTag = fields.optional('releaseTag', /^v\d+\.\d+\.\d+(?:\+canary\.20\d{6}T\d{6}Z)?$/)
+
   const canaryRelease: boolean = /\+canary\./.test(releaseTag || '')
 
-  const windowsVersion = fields.text(
-    'windowsVersion',
-    canaryRelease ? /^\d+\.\d+\.\d+\.\d+$/ : /^\d+\.\d+\.\d+\.0$/
-  )
+  const windowsVersion = fields.text('windowsVersion', canaryRelease ? /^\d+\.\d+\.\d+\.\d+$/ : /^\d+\.\d+\.\d+\.0$/)
 
   if (windowsVersion.split('.').some((part: string): boolean => Number(part) > 65535)) {
     throw new Error('Invalid Windows version')

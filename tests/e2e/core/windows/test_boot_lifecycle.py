@@ -1,8 +1,7 @@
 """Boot and lifecycle of the real Hermes processes on native Windows.
 
-* ``hermes.exe --version`` — the console-script shim users launch starts and reports
-  the installed package version.
-* ``hermes.exe chat -q`` — one oneshot turn against the loopback provider: the reply is
+* The source launcher ``hermes.exe`` reports checkout version and runs a
+  one-shot chat turn: the reply is
   printed, the prompt reached the wire, and both messages persisted to ``state.db`` under
   the session id the CLI announced.
 * ``hermes serve`` (the Desktop backend) — announces its port on stdout, and after the
@@ -17,7 +16,6 @@
 
 from __future__ import annotations
 
-import importlib.metadata
 import json
 import queue
 import re
@@ -29,6 +27,7 @@ from pathlib import Path
 
 import pytest
 
+from hermes_cli.version_info import get_version_info
 from tests.e2e.core.windows._helpers import (
     WinHome,
     db_rows,
@@ -49,24 +48,26 @@ from tests.fakes.fake_llm_provider import FakeLLMServer, Text
 
 # Real process-tree kills (taskkill /T /F, psutil) of children this test spawned with a
 # scratch USERPROFILE/HERMES_HOME; the live-system guard would refuse the taskkill argv.
-pytestmark = [pytest.mark.windows_only, pytest.mark.integration, pytest.mark.live_system_guard_bypass]
+pytestmark = [pytest.mark.platforms("windows"), pytest.mark.integration, pytest.mark.live_system_guard_bypass]
 
 READY_TIMEOUT = 120.0
 
 
-def test_version_reports_installed_package(tmp_path: Path) -> None:
+def test_version_reports_checkout_identity(tmp_path: Path) -> None:
     home = make_home(tmp_path, "http://127.0.0.1:9/v1")  # never contacted by --version
-    res = run([str(hermes_exe()), "--version"], home, timeout=120)
+    res = run([str(hermes_exe(home)), "--version"], home, timeout=120)
     assert res.returncode == 0, res.tail()
-    version = importlib.metadata.version("hermes-agent")
-    assert f"v{version}" in res.stdout, f"--version does not report the installed {version}:\n{res.tail()}"
+    version = get_version_info().derived_version
+    assert version != "unknown", "the checkout must have a readable release or commit identity"
+    assert f"Hermes Agent v{version} (" in res.stdout, (
+        f"--version does not report this checkout's {version}:\n{res.tail()}")
 
 
 def test_chat_oneshot_turn_persists(tmp_path: Path) -> None:
     prompt_id, reply_id = nonce("PROMPT"), nonce("REPLY")
     with FakeLLMServer([Text(f"The answer is {reply_id}.")]) as srv:
         home = make_home(tmp_path, srv.base_url)
-        res = run([str(hermes_exe()), "chat", "-q", f"Say the code {prompt_id}", "-Q"], home)
+        res = run([str(hermes_exe(home)), "chat", "-q", f"Say the code {prompt_id}", "-Q"], home)
         assert res.returncode == 0, res.tail()
         assert reply_id in res.stdout, f"reply not printed:\n{res.tail()}"
         mains = srv.main_requests()

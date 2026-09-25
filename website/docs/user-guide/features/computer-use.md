@@ -41,10 +41,10 @@ no-foreground invariant, click-dispatch internals — see
 
 ## Enabling
 
-**Fresh installs already have the driver.** The Hermes installer
-(`install.sh` / `install.ps1`) pre-installs `cua-driver` (best-effort;
-pass `--skip-computer-use` / `-SkipComputerUse` to opt out), so enabling
-Computer Use is just a config flip:
+**The driver is a PM-managed tool.** `cua-driver` is pinned in
+`pm/lock.json`; the installer does not fetch it up front (there is no
+`--skip-computer-use` / `-SkipComputerUse` flag), and it is prepared the
+first time something enables Computer Use:
 
 - **`hermes tools`** → pick `🖱️  Computer Use` — installs the driver
   automatically if it's still missing.
@@ -52,21 +52,21 @@ Computer Use is just a config flip:
   driver is missing, the toggle kicks off the install in the background
   automatically (watch progress in the toolset panel).
 
-**Manual fallback (older installs, skipped installer step):**
+**Manual install / repair:**
 
 ```
 hermes computer-use install
 ```
 
-This fetches and runs the upstream cua-driver installer — `install.sh`
-on macOS/Linux, `install.ps1` on Windows. Use `hermes computer-use
-status` to verify the install.
+This asks PM to prepare the pinned `cua-driver` package (verified against
+`pm/lock.json`) — it does not run the upstream installer. Use
+`hermes computer-use status` to verify the install.
 
 Already have cua-driver? Hermes reuses it when it supports the 0.20 runtime
 contract. During setup, toolset enablement, `hermes update`, and the first
 `computer_use` call of a session, Hermes checks the local version and
 manifest. It repairs an old or incomplete standard installation through
-the upstream installer (at most once per session at runtime). A binary
+PM (at most once per session at runtime). A binary
 selected with `HERMES_CUA_DRIVER_CMD` stays
 under your control, so Hermes reports the incompatibility and leaves it
 unchanged.

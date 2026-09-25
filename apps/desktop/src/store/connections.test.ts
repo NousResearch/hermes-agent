@@ -207,6 +207,24 @@ describe('connection registry cache', () => {
     expect(ensureGatewayAgent).not.toHaveBeenCalled()
   })
 
+  it('selects the registry primary on boot when an update left an unqualified local descriptor', async () => {
+    // Post-update boot can publish a local descriptor with no registry id
+    // while connections.json still says launchMode=primary and the primary is
+    // SSH. That live local must not block selecting the registered primary.
+    list.mockResolvedValueOnce({
+      ...registry,
+      lastUsed: 'local',
+      launchMode: 'primary',
+      primary: 'homelab'
+    })
+    $connection.set({ mode: 'local' })
+
+    await initializeConnectionsRegistry()
+
+    expect(ensureGatewayAgent).toHaveBeenCalledTimes(1)
+    expect(ensureGatewayAgent).toHaveBeenCalledWith('homelab', 'default', expect.anything())
+  })
+
   it('restores a remote registry primary through its exact connection id', async () => {
     list.mockResolvedValueOnce({ ...registry, primary: 'homelab', launchMode: 'primary' })
     $connection.set({ connectionId: 'local', mode: 'local' })

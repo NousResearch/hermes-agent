@@ -86,6 +86,49 @@ test('no backend record spawns exactly one backend', async () => {
   assert.equal(spawns, 1)
 })
 
+/**
+ * `serve --isolated` is another client's backend (Desktop SSH mode from a
+ * different machine). It is live, loopback and serves a valid token, but it is
+ * not this host's shared backend: attaching to it strands this app on
+ * whatever code that client started, across our own updates.
+ */
+test('an isolated serve record is never attached; startup spawns its own backend', async () => {
+  const isolatedOnly = JSON.stringify([{ ...JSON.parse(LEDGER)[0], isolated: true }])
+  let spawns = 0
+
+  const setup = await runPrimaryBackendStartup({
+    assertCurrentAttempt: () => {},
+    attachHostBackend: () =>
+      attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, attachDeps(isolatedOnly)),
+    connectRemote: async () => ({ mode: 'remote' }),
+    ensureLocalRuntime: async backend => backend,
+    prepareLocalBackend: () => {
+      spawns += 1
+
+      return { label: 'spawned' }
+    },
+    resolveRemote: async () => null,
+    waitForDecision: async () => 'continue-local' as const,
+    waitForLocalStart: async () => undefined
+  })
+
+  assert.equal(setup.kind, 'local')
+  assert.equal(spawns, 1)
+})
+
+test('an ordinary serve is still attached when an isolated one is newer', async () => {
+  const [ordinary] = JSON.parse(LEDGER)
+
+  const ledger = JSON.stringify([
+    ordinary,
+    { ...ordinary, isolated: true, pid: 5150, port: 61_000, registered_at: ordinary.registered_at + 1 }
+  ])
+
+  const attached = await attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, attachDeps(ledger))
+
+  assert.equal(attached?.pid, 4711)
+})
+
 /** A record that fails validation is not a backend: fall through to spawning. */
 test('a record whose backend rejects the session token does not attach', async () => {
   const attached = await attachToHostBackend(
@@ -94,4 +137,75 @@ test('a record whose backend rejects the session token does not attach', async (
   )
 
   assert.equal(attached, null)
+})
+
+/**
+ * Post-update relaunch: the previous backend published a session token, but
+ * GET / withholds it. Refusing that record and spawning another is the
+ * "did not publish a session token" hand-off failure.
+ */
+test('a relaunch adopts a backend that published a session token instead of spawning another', async () => {
+  const logs: string[] = []
+  const token = 'published-session-token'
+  let spawns = 0
+
+  const setup = await runPrimaryBackendStartup({
+    assertCurrentAttempt: () => {},
+    attachHostBackend: () =>
+      attachToHostBackend(
+        { isolated: false, ledgerPath: '/ledger.json' },
+        {
+          ...attachDeps(LEDGER),
+          log: message => {
+            logs.push(message)
+          },
+          probeWebSocket: async wsUrl => {
+            assert.match(wsUrl, /token=published-session-token/)
+
+            return { ok: true }
+          },
+          publishedTokenFor: () => token,
+          resolveServedToken: async () => null
+        } as Parameters<typeof attachToHostBackend>[1]
+      ),
+    connectRemote: async () => ({ mode: 'remote' }),
+    ensureLocalRuntime: async backend => backend,
+    prepareLocalBackend: () => {
+      spawns += 1
+
+      return { label: 'spawned' }
+    },
+    resolveRemote: async () => null,
+    waitForDecision: async () => 'continue-local' as const,
+    waitForLocalStart: async () => undefined
+  })
+
+  assert.equal(setup.kind, 'attached')
+  assert.equal(spawns, 0, 'a published session token must be adopted, not replaced by a second backend')
+  assert.equal(
+    logs.some(line => line.includes('did not publish a session token')),
+    false
+  )
+  assert.equal(setup.kind === 'attached' ? setup.attached.token : null, token)
+})
+
+test('a published token the websocket rejects is not adopted', async () => {
+  let probed = 0
+
+  const attached = await attachToHostBackend(
+    { isolated: false, ledgerPath: '/ledger.json' },
+    {
+      ...attachDeps(LEDGER),
+      probeWebSocket: async () => {
+        probed += 1
+
+        return { ok: false, reason: 'unauthorized' }
+      },
+      publishedTokenFor: () => 'published-session-token',
+      resolveServedToken: async () => null
+    } as Parameters<typeof attachToHostBackend>[1]
+  )
+
+  assert.equal(attached, null)
+  assert.equal(probed, 1)
 })

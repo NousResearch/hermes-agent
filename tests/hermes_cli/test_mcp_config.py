@@ -989,3 +989,38 @@ def test_configure_shorthand_tools_select_all_clears_filter(tmp_path, monkeypatc
     _run_configure_with_shorthand_pick(monkeypatch, {0, 1, 2})
 
     assert "tools" not in _saved_servers(tmp_path)["x"]
+
+
+def test_details_probe_accepts_shorthand_tools_filter(monkeypatch):
+    """The desktop/TUI ``details`` probe must accept a shorthand ``tools`` filter (PR #122381
+    review follow-up): ``tools_filter.get(cap)`` raised AttributeError on the string, breaking
+    the server-info views. The shorthand whitelist has no prompts/resources keys, so both
+    capability probes still run and record counts."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    class _FakeServer:
+        def __init__(self):
+            self._tools = [FakeTool("a", "")]
+            self.initialize_result = SimpleNamespace(
+                capabilities=SimpleNamespace(prompts=object(), resources=object()))
+            self.session = SimpleNamespace(
+                list_prompts=AsyncMock(return_value=SimpleNamespace(prompts=[1, 2])),
+                list_resources=AsyncMock(return_value=SimpleNamespace(resources=[1])),
+            )
+
+        async def shutdown(self):
+            pass
+
+    async def _fake_connect(name, config):
+        return _FakeServer()
+
+    monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+    from hermes_cli.mcp_config import _probe_single_server
+
+    details = {}
+    found = _probe_single_server("x", {"tools": "a,b"}, connect_timeout=5, details=details)
+
+    assert found == [("a", "")]
+    assert details["prompts"] == 2
+    assert details["resources"] == 1

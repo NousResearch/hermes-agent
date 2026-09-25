@@ -125,3 +125,14 @@ def test_apply_mcp_change_accepts_shorthand_filter():
 
     assert not failed
     assert config["mcp_servers"]["github"]["tools"] == {"include": ["a", "b"], "exclude": ["c"]}
+
+
+def test_tools_list_shows_shorthand_filter(capsys):
+    """``hermes tools list`` must accept a shorthand ``tools`` filter (PR #122381 review follow-up)
+    and show the whitelist it represents instead of crashing on ``str.get``."""
+    from hermes_cli.tools_config_mcp import _print_tools_list
+
+    _print_tools_list(set(), {"github": {"command": "npx", "tools": "a,b"}})
+
+    out = capsys.readouterr().out
+    assert "include only: a, b" in out

@@ -214,7 +214,7 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         print()
         print("MCP servers:")
         for srv_name, srv_cfg in mcp_servers.items():
-            tools_cfg = srv_cfg.get("tools") or {}
+            tools_cfg = normalize_tools_filter(srv_cfg.get("tools"), f"mcp_servers.{srv_name}.tools")
             exclude, include = tools_cfg.get("exclude") or [], tools_cfg.get("include")
             if isinstance(include, list):
                 _print_info(f"{srv_name}  [include only: {', '.join(include) or '(none)'}]")

@@ -784,9 +784,11 @@ def test_silence_is_free_when_wanted_and_piles_up_when_not(home):
 
 
 def test_the_local_terminal_is_the_operator_not_a_stranger(plugin):
+    with store.locked_state() as (_d, peers):                   # recent contact: no long-silence jolt
+        peers[KEY]["last_interaction"] = store.iso(store.now())
     plugin.hooks["pre_llm_call"](session_id="t1", user_message="yo", platform="cli", sender_id="")
     assert "cli:local" not in _peers() and _peers()[KEY]["messages_from_them"] == 1
-    assert _drives()["modulators"]["adrenaline"] < 0.5          # no stranger jolt
+    assert _drives()["modulators"]["adrenaline"] < 0.5          # no unknown-peer jolt (0.6)
     from wintermute_engine import status
     with store.locked_state() as (_, peers):
         peers["cli:local"] = store.new_peer(T0)
@@ -1145,3 +1147,29 @@ def test_brain_scan_composes_without_error(home):
     assert "live scan" in frame and "firing:" in frame
     plain = [__import__("re").sub(r"\x1b\[[0-9;]*m", "", ln) for ln in frame.splitlines()]
     assert max(len(ln) for ln in plain) <= 80          # fits a terminal
+
+
+def test_dream_journal_keeps_every_dream(home):
+    from wintermute_engine import status
+    store.append_dream({"night": "2026-09-24", "at": "2026-09-24T23:00:00+00:00",
+                        "text": "A door that was not there.", "tone": "troubling"})
+    store.append_dream({"night": "2026-09-25", "at": "2026-09-25T23:00:00+00:00",
+                        "text": "I left my hand flat on the cold.", "tone": "soothing"})
+    dreams = store.read_dreams(10)
+    assert len(dreams) == 2 and dreams[0]["night"] == "2026-09-24"
+    out = status.render_dreams(10)
+    assert "DREAM JOURNAL" in out and "door that was not there" in out and "hand flat on the cold" in out
+
+
+def test_a_generated_dream_is_appended_to_the_journal(home, monkeypatch):
+    from wintermute_engine import dream
+    monkeypatch.setattr(dream, "_key", lambda: "k")
+    monkeypatch.setattr(dream, "_call", lambda *a: {
+        "choices": [{"message": {"content": "Water climbs the stairs.\nTONE: soothing"}}],
+        "usage": {"total_tokens": 100}})
+    store.write_self("I have been listening more than speaking.", T0)   # a fragment to dream from
+    d = _drives_with_night()
+    dream.generate(d, _peers(), T0)
+    journal = store.read_dreams(5)
+    assert journal and journal[-1]["tone"] == "soothing" and "Water climbs" in journal[-1]["text"]
+    assert dream.pending()["text"].startswith("Water climbs")   # dream.json still the latest-unseen

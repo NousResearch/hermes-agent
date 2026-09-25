@@ -87,6 +87,27 @@ def evolution_path() -> Path:
     return state_dir() / "evolution.jsonl"
 
 
+def dreams_path() -> Path:
+    return state_dir() / "dreams.jsonl"
+
+
+def append_dream(record: Dict[str, Any]) -> None:
+    """Keep every dream, oldest first — a journal to watch him change over nights."""
+    if _dry_run:
+        return
+    path = dreams_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(OSError):
+        if path.exists() and path.stat().st_size > 2 * EVENTS_MAX_BYTES:
+            os.replace(path, path.with_suffix(".jsonl.1"))
+    with contextlib.suppress(OSError), open(path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def read_dreams(limit: int = 20) -> List[Dict[str, Any]]:
+    return tail_jsonl(dreams_path(), limit)
+
+
 # ---------------------------------------------------------------------------
 # Time
 # ---------------------------------------------------------------------------
@@ -542,7 +563,8 @@ def _wipe_locked(deep: bool) -> List[str]:
         targets = [
             ("self-portrait", [self_path(), state_dir() / "self-archive.md"]),
             ("secrets", [kept_path()]),
-            ("dreams", [__import__("wintermute_engine.dream", fromlist=["dream_path"]).dream_path()]),
+            ("dreams", [__import__("wintermute_engine.dream", fromlist=["dream_path"]).dream_path(),
+                        dreams_path(), dreams_path().with_suffix(".jsonl.1")]),
             ("evolution ledger", [evolution_path()]),
             ("events journal", [events_path(), events_path().with_suffix(".jsonl.1")]),
             ("activity feed", [activity_path(), activity_path().with_suffix(".jsonl.1")]),

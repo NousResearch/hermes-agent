@@ -155,8 +155,9 @@ def generate(drives: Dict[str, Any], peers: Dict[str, Any], ts: datetime) -> Opt
         return None
     body, tone, motifs = _extract(text)
     store.record_usage(tokens, "dream")
-    store._write_json(dream_path(), {"night": night, "at": store.iso(ts), "text": body,
-                                     "tone": tone, "seen": False, "consolidated": False})
+    record = {"night": night, "at": store.iso(ts), "text": body, "tone": tone}
+    store._write_json(dream_path(), {**record, "seen": False, "consolidated": False})
+    store.append_dream(record)                        # the lasting journal (dream.json is only the latest)
     with store.locked_state() as (d, _p):
         prior = list((d["meta"].get("dream_motifs") or []))
         recurred = [w for w in motifs if w in prior]

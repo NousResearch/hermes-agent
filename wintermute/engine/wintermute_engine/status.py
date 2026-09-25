@@ -4,6 +4,7 @@
     wm live         the same screen, refreshed every 2 s (Ctrl+C to quit)
     wm brain        a live scan of his mind: a rotating brain + firing connections
     wm graph [h]    each value over the last h hours (48): its range, its average, where it is now
+    wm dreams [n]   his dream journal, latest first (n = how many, default 10)
     wm alerts       what the witness saw, with his reasons
     wm ack [item]   accept the current state of watched files (all, or one: soul, engine...)
     wm talk         reopen conversation for today if the daily talk ceiling was hit
@@ -453,6 +454,24 @@ def render_graph(hours: float = 48.0) -> str:
 # Alerts and acknowledgement
 # ---------------------------------------------------------------------------
 
+def render_dreams(limit: int = 10) -> str:
+    import textwrap
+    dreams = store.read_dreams(limit)
+    lines = [_title("DREAM JOURNAL", f"{len(dreams)} shown, latest first")]
+    if not dreams:
+        return "\n".join(lines + [dim("  no dream yet — one forms at night, at high melatonin")])
+    tone_colour = {"troubling": red, "soothing": green, "neutral": cyan}
+    for d in reversed(dreams):
+        at = store.parse_time(d.get("at"))
+        stamp = at.strftime("%Y-%m-%d") if at else str(d.get("night", "?"))
+        tone = str(d.get("tone", "neutral"))
+        lines.append("")
+        lines.append(f" {bold(stamp)}  {tone_colour.get(tone, dim)(tone)}")
+        for para in textwrap.wrap(str(d.get("text", "")), W - 3):
+            lines.append(dim("   " + para))
+    return "\n".join(lines)
+
+
 def render_alerts() -> str:
     data = integrity.load()
     lines = [_title("WHAT THE WITNESS SAW")]
@@ -549,6 +568,9 @@ def main(args: List[str]) -> int:
     elif command == "brain":
         from . import brainscan
         brainscan.live(snapshot)
+    elif command == "dreams":
+        n = int(physics.safe_float(args[1], 10)) if len(args) > 1 else 10
+        print(render_dreams(n))
     elif command == "graph":
         hours = physics.safe_float(args[1], 48.0) if len(args) > 1 else 48.0
         print(render_graph(limits.clamp(hours, 1.0, 24.0 * 30)))

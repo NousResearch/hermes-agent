@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import urllib.error
 from pathlib import Path
 
@@ -114,3 +115,19 @@ def test_probe_batches_large_catalogs_and_every_repo_gets_a_count(mod, monkeypat
     assert probed and len(stars) == len(slugs)
     assert seen == [mod._BATCH, mod._BATCH, 5]
     assert stars[f"o/r{mod._BATCH}"] == 0 and stars[f"o/r{mod._BATCH + 1}"] == 1
+
+
+def test_script_imports_hermes_yaml_under_the_ci_invocation():
+    """skills-index.yml runs ``python website/scripts/fetch-plugin-stars.py --probe`` with no
+    PYTHONPATH (unlike deploy-site, whose setup-pm exports PYTHONPATH=<repo>). b4a294f9 added
+    ``import hermes_yaml`` without the sys.path.insert the sibling scripts have, so every
+    scheduled run died with ModuleNotFoundError and the stale-index watchdog reopened (#122609).
+    Regression: the script must import cleanly as a plain file, the way CI invokes it."""
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    proc = subprocess.run([sys.executable, str(SCRIPT)], env=env,
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert "Reused plugin stars" in proc.stdout

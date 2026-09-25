@@ -1788,18 +1788,46 @@ _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
 CODEX_MODELS_CATALOG_ENDPOINT = "https://chatgpt.com/backend-api/codex/models"
 CODEX_NEWEST_CLIENT_VERSION = "99.0.0"
 CODEX_UNGATED_CLIENT_VERSION = "0.0.0"
-CODEX_MODELS_CATALOG_URLS = tuple(
-    f"{CODEX_MODELS_CATALOG_ENDPOINT}?client_version={v}"
-    for v in (CODEX_NEWEST_CLIENT_VERSION, CODEX_UNGATED_CLIENT_VERSION)
-)
 
 
-def fetch_codex_catalog_entries(get: Callable[[str], Any]) -> Tuple[List[Any], Optional[int]]:
+def _codex_catalog_urls(base_url: str = "") -> Tuple[str, ...]:
+    """Catalog URLs against ``base_url`` when it names a Codex-compatible gateway, else the
+    hard-coded endpoint. A custom base's credential belongs to that service — sending it to
+    chatgpt.com (or fetching the direct catalog behind a gateway's back) is wrong (#121486)."""
+    base = (base_url or "").strip().rstrip("/")
+    endpoint = f"{base}/models" if base else CODEX_MODELS_CATALOG_ENDPOINT
+    return tuple(
+        f"{endpoint}?client_version={v}"
+        for v in (CODEX_NEWEST_CLIENT_VERSION, CODEX_UNGATED_CLIENT_VERSION)
+    )
+
+
+CODEX_MODELS_CATALOG_URLS = _codex_catalog_urls()
+
+
+def _codex_catalog_probe_allowed(access_token: str, base_url: str = "") -> bool:
+    """Whether a catalog probe may carry ``access_token`` to ``base_url``'s ``/models``.
+
+    The caller binds ``base_url`` to the credential's own route, so a custom gateway is asked with
+    its own key (opaque or JWT). chatgpt.com only accepts ChatGPT OAuth access tokens — JWTs — so a
+    non-JWT credential aimed there is a gateway key composed with the wrong host: refuse it
+    (defense in depth, mirroring ``_probe_codex_quota_restored``'s gate; #121486).
+    """
+    if not access_token:
+        return False
+    base = (base_url or "").strip() or CODEX_MODELS_CATALOG_ENDPOINT
+    if not base_url_host_matches(base, "chatgpt.com"):
+        return True
+    from hermes_cli.auth_constants import _decode_jwt_claims
+    return bool(_decode_jwt_claims(access_token))
+
+
+def fetch_codex_catalog_entries(get: Callable[[str], Any], base_url: str = "") -> Tuple[List[Any], Optional[int]]:
     """``(models, last_status)`` from the first catalog URL that answers HTTP 200 with a non-empty
     ``models`` list; ``get(url)`` is any client returning an object with ``status_code``/``json()``.
     An empty or non-200 answer on the newest-client URL falls through to the ``0.0.0`` sentinel."""
     status: Optional[int] = None
-    for url in CODEX_MODELS_CATALOG_URLS:
+    for url in _codex_catalog_urls(base_url):
         resp = get(url)
         status = resp.status_code
         if status != 200:
@@ -1811,18 +1839,21 @@ def fetch_codex_catalog_entries(get: Callable[[str], Any]) -> Tuple[List[Any], O
     return [], status
 
 
-def _codex_oauth_token_fingerprint(access_token: str) -> str:
-    """Non-secret cache key for a Codex OAuth access token."""
-    return hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16]
+def _codex_oauth_token_fingerprint(access_token: str, base_url: str = "") -> str:
+    """Non-secret cache key for a Codex OAuth access token (plus the base it was probed against —
+    a gateway's catalog can differ from chatgpt.com's for the same forwarded token)."""
+    return hashlib.sha256(f"{access_token}\n{(base_url or '').strip().rstrip('/')}".encode("utf-8")).hexdigest()[:16]
 
 
-def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[Dict[str, int], bool]:
+def _fetch_codex_oauth_context_lengths_with_source(access_token: str, base_url: str = "") -> Tuple[Dict[str, int], bool]:
     """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
     fingerprint (windows vary by entitlement); ``max_context_window`` lands in
     ``_codex_oauth_max_context_cache`` under the same key. An in-process hit reports False: not a
     fresh provider confirmation, must not drive persistent writes."""
+    if not _codex_catalog_probe_allowed(access_token, base_url):
+        return {}, False
     now = time.time()
-    cache_key = _codex_oauth_token_fingerprint(access_token)
+    cache_key = _codex_oauth_token_fingerprint(access_token, base_url)
     cached = _codex_oauth_context_cache.get(cache_key)
     if cached is not None and now - cached[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
         return cached[0], False
@@ -1832,7 +1863,8 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
     headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
     try:
         entries, status = fetch_codex_catalog_entries(
-            lambda url: model_metadata_http.get(url, headers=headers, timeout=(5, 10), verify=model_metadata_http.resolve_verify())
+            lambda url: model_metadata_http.get(url, headers=headers, timeout=(5, 10), verify=model_metadata_http.resolve_verify()),
+            base_url=base_url,
         )
         if status != 200:
             logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", status)
@@ -1854,7 +1886,7 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
     return result, True
 
 
-def _resolve_codex_oauth_context_length_with_source(model: str, access_token: str = "") -> Tuple[Optional[int], str]:
+def _resolve_codex_oauth_context_length_with_source(model: str, access_token: str = "", base_url: str = "") -> Tuple[Optional[int], str]:
     """``(context_length, source)`` for a Codex OAuth slug. source: "live" (fresh authenticated probe —
     the only one eligible for persistent writes), "memory" (same-token in-process hit), "fallback"
     (static table), or "" when unresolved."""
@@ -1877,8 +1909,8 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     # (#92797 review).
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
     if access_token:
-        live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
-        live_max = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token), {})
+        live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token, base_url=base_url)
+        live_max = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token, base_url), {})
         # Exact slug, then case-insensitive in case casing drifts.
         slug = lookup_bare if lookup_bare in live else next((s for s in live if s.lower() == lookup_bare.lower()), None)
         if slug is not None:
@@ -2118,7 +2150,7 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
     # OR-fallback or static-table value cached on a blip would be frozen in by step 1 forever.
     sourced = {
         "nous": lambda: _resolve_nous_context_length(model, base_url=base_url or "", api_key=api_key or "") + ("portal",),
-        "openai-codex": lambda: _resolve_codex_oauth_context_length_with_source(model, access_token=api_key or "") + ("live",),
+        "openai-codex": lambda: _resolve_codex_oauth_context_length_with_source(model, access_token=api_key or "", base_url=base_url or "") + ("live",),
     }.get(effective_provider)
     if sourced is not None:
         ctx, source, persist_on = sourced()

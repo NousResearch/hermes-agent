@@ -2457,7 +2457,7 @@ export const ar = defineLocale({
       copyFailure: 'فشل نسخ المعيار إلى الحافظة',
       continuationFailed: 'فشل إرسال متابعة الهدف',
       continuationQueued: 'تم استئناف الهدف — المتابعة في قائمة الانتظار حتى انتهاء الدور الحالي',
-      continuationBusy: 'تم استئناف الهدف — الجلسة مشغولة، نفّذ /interrupt للدور الحالي للمتابعة',
+      continuationBusy: 'تم استئناف الهدف — الجلسة مشغولة، أوقف الرد الحالي أولاً (زر الإيقاف أو Esc) للمتابعة',
       controlUnavailable: msg => `عناصر تحكم الجلسة غير متاحة: ${msg}`,
       dismissError: 'تجاهل الخطأ',
       add: 'إضافة'
@@ -2805,6 +2805,7 @@ export const ar = defineLocale({
       search: 'البحث عن نموذج...',
       noModels: 'لا توجد نماذج',
       editModels: 'تحرير النماذج',
+      followDefault: 'استخدام الافتراضي من الإعدادات',
       refreshModels: 'تحديث النماذج',
       fast: 'سريع'
     },

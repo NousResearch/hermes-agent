@@ -5080,12 +5080,12 @@ class TelegramAdapter(TelegramContactMixin, TelegramHeldInboundMixin, TelegramRe
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s", self.name, _redact_telegram_error_text(e), exc_info=True)
             try:
-                from gateway.platforms.base import ssrf_redirect_guard
+                from gateway.platforms.base import read_httpx_body_with_limit, ssrf_redirect_guard
                 from tools.url_safety import create_ssrf_safe_async_client
-                async with create_ssrf_safe_async_client(timeout=30.0, event_hooks={"response": [ssrf_redirect_guard]}) as client:
-                    resp = await client.get(image_url)
+                async with create_ssrf_safe_async_client(timeout=30.0, event_hooks={"response": [ssrf_redirect_guard]}) as client, \
+                        client.stream("GET", image_url) as resp:
                     resp.raise_for_status()
-                    image_data = resp.content
+                    image_data = await read_httpx_body_with_limit(resp, media_type="image")
                 msg = await self._send_media(
                     self._bot.send_photo, chat_id, reply_to, metadata, "uploaded photo", photo=image_data, caption=photo_caption)
                 return SendResult(success=True, message_id=str(msg.message_id))

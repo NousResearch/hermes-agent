@@ -104,3 +104,29 @@ def test_status_reports_bundled_defaults_and_the_live_memory_provider(home):
     # An explicit disable still wins over both defaults.
     assert plugins_cmd._plugin_status("fakemem", enabled, {"fakemem"}, key="fakemem", source="user",
                                       active=active) == "disabled"
+
+
+def test_refused_admission_exits_cleanly_instead_of_a_raw_traceback(home, monkeypatch, capsys):
+    """A refused admission (e.g. the managed install's workspace lock is missing, #122832) must
+    surface the authority's ✗ line and exit non-zero — not abort the CLI with a raw traceback."""
+    from hermes_cli.plugins_admission import AdmissionRefused
+
+    def refuse(enabled, disabled, **_kwargs):
+        raise AdmissionRefused("[Errno 2] No such file or directory: '...workspace/pm/uv.lock'")
+
+    monkeypatch.setattr("hermes_cli.plugins_admission.admit_plugin_set_change", refuse)
+    _write_plugin(home / "plugins", "hindsight", "hindsight")
+
+    for command, pending in ((plugins_cmd.cmd_disable, "enabled"), (plugins_cmd.cmd_enable, "disabled")):
+        cfg = load_config()
+        cfg["plugins"] = {"enabled": [], "disabled": []}
+        cfg["plugins"][pending] = ["hindsight"]
+        save_config(cfg)
+        with pytest.raises(SystemExit) as refused:
+            command("hindsight")
+        assert refused.value.code == 1
+        # The admission authority's verdict and remediation hint reached the user.
+        assert "refused" in capsys.readouterr().out
+        # Refusal publishes nothing: the recorded selection is untouched.
+        expected = ({"hindsight"}, set()) if pending == "enabled" else (set(), {"hindsight"})
+        assert _lists() == expected

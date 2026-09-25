@@ -636,7 +636,15 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         except PluginOperationError as exc:
             _fail(console, f"[red]Error:[/red] {exc}")
 
-    if _activate_key(key, enable=True, console=console):
+    from hermes_cli.plugins_admission import AdmissionRefused
+
+    try:
+        changed = _activate_key(key, enable=True, console=console)
+    except AdmissionRefused:
+        # The authority already printed the ✗ verdict and its remediation hint; exit non-zero
+        # instead of aborting the command with a raw traceback (#122832).
+        sys.exit(1)
+    if changed:
         from hermes_cli.plugins_activation import activate_plugin_now, activation_hint
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
         console.print(f"[dim]{activation_hint(activate_plugin_now(key, in_process=False))}[/dim]")
@@ -660,11 +668,19 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
 
 def cmd_disable(name: str) -> None:
     """Remove a plugin from the enabled allow-list (and add to disabled)."""
+    from hermes_cli.plugins_admission import AdmissionRefused
+
     console = _console()
     key = _resolve_plugin_key(name)
     if key is None:
         _fail(console, _unknown_plugin_message(name))
-    if not _activate_key(key, enable=False, console=console):
+    try:
+        changed = _activate_key(key, enable=False, console=console)
+    except AdmissionRefused:
+        # The authority already printed the ✗ verdict and its remediation hint; exit non-zero
+        # instead of aborting the command with a raw traceback (#122832).
+        sys.exit(1)
+    if not changed:
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
     console.print(

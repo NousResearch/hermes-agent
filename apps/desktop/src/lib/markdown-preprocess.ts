@@ -100,6 +100,10 @@ const URL_LIKE_SPLIT_RE = /(<https?:\/\/[^>\s]+>|https?:\/\/[^\s<>"'`*]+[^\s<>"'
 // literal tilde, so CJK ranges (`1~10`) and approximation prefixes (`~¥0.089`)
 // no longer pair up into a GFM strikethrough span.
 const LONE_TILDE_RE = /(?<![\\~])~(?!~)/g
+// Same shape as DIRECTIVE_LINE_RE, anchored to a single line: escapeLoneTildes
+// tests one line at a time and must not carry the shared regex's `g` flag
+// (stateful lastIndex would skip every other directive line).
+const DIRECTIVE_LINE_ONLY_RE = /^[ \t]*::[a-z][a-z0-9-]{0,63}\{[^{}\n]{0,1024}\}[ \t]*$/
 // HTML-shaped prose tokens (`<tool_call>`, `<observation>`...) that are NOT
 // real inline elements get swallowed by the HTML-aware renderer (parse5 sees
 // an unclosed tag and consumes the rest of the message). Match unknown tag-like
@@ -311,7 +315,22 @@ function autoLinkRawUrls(text: string): string {
 function escapeLoneTildes(text: string): string {
   return text
     .split(URL_LIKE_SPLIT_RE)
-    .map(part => (/^<?https?:\/\//i.test(part) ? part : part.replace(LONE_TILDE_RE, '\\~')))
+    .map(part => {
+      if (/^<?https?:\/\//i.test(part)) {
+        return part
+      }
+
+      // Directive lines are shielded verbatim further down the pipeline:
+      // shieldDirectiveLines backslash-escapes every inline metachar (`~`
+      // included) so the card value arrives as ONE text node. Escaping a `~`
+      // here would leave `\\~` after the shield doubles the backslash, and the
+      // parser then emits the stray `\` into the directive's rendered value
+      // (#50871 follow-up: `brief="Sync ~/notes to ~/backup nightly"`).
+      return part
+        .split('\n')
+        .map(line => (DIRECTIVE_LINE_ONLY_RE.test(line) ? line : line.replace(LONE_TILDE_RE, '\\~')))
+        .join('\n')
+    })
     .join('')
 }
 

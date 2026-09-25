@@ -156,21 +156,6 @@ const TranscriptPane = memo(function TranscriptPane({
   const bodyCols = Math.max(28, (useGutter && petBox ? composer.cols - petBox.width : composer.cols) - railCols)
   const petBandRows = petBox && !useGutter ? petBox.height : 0
 
-  // LiveTodoPanel rides as a child of the latest user-message row so it
-  // visually belongs to the prompt and follows it during scroll. -1 when
-  // empty → row.index === -1 is always false → no render.
-  const lastUserIdx = useMemo(() => {
-    const items = transcript.historyItems
-
-    for (let i = items.length - 1; i >= 0; i--) {
-      if (items[i].role === 'user') {
-        return i
-      }
-    }
-
-    return -1
-  }, [transcript.historyItems])
-
   // Index of the first user-role message; every later user message gets a
   // small dash above it so multi-turn transcripts visually segment by
   // turn. -1 when no user message has been sent yet → no separator ever
@@ -238,7 +223,6 @@ const TranscriptPane = memo(function TranscriptPane({
                 />
               )}
 
-              {row.index === lastUserIdx && <LiveTodoPanel />}
             </Box>
           ))}
 
@@ -572,6 +556,16 @@ export const AppLayout = memo(function AppLayout({
 
         {!overlay.agents && !overlay.journey && (
           <>
+            {/* Pinned live todos: outside ScrollBox so the panel stays
+              visible above the composer while the transcript scrolls.
+              TodoPanel returns null when empty, so this takes zero space
+              with no todos. */}
+            {/* ponytail: single pinned slot; add a collapse-height cap here
+              if long todo lists ever crowd the composer. */}
+            <Box flexShrink={0} paddingX={1}>
+              <LiveTodoPanel />
+            </Box>
+
             <PerfPane id="prompt">
               <PromptZone
                 cols={composer.cols}

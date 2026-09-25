@@ -75,6 +75,9 @@ _STUDIO_KEY_ON_EXPRESS_GUIDANCE = (
 # the request alternation-valid while the user's message stays a turn of its own
 # (mirrors gemini-cli's placeholder repair).
 _INTERRUPTED_RESPONSE_PLACEHOLDER = "[The previous response was interrupted before it completed.]"
+# Opens the contents when history trimming or compaction left a model functionCall first; Gemini
+# 400s a function call that does not follow a user turn or a function response.
+_TRIMMED_HISTORY_PLACEHOLDER = "[Earlier turns of this conversation are not shown.]"
 # Cross-provider tool_calls (e.g. fallback from xAI/Anthropic) carry no Gemini thoughtSignature;
 # without this sentinel Gemini 3 thinking models reject replayed history with 400 INVALID_ARGUMENT.
 _SKIP_SIGNATURE = "skip_thought_signature_validator"
@@ -367,6 +370,10 @@ def _has_function_response(content: Dict[str, Any]) -> bool:
     return any(isinstance(part, dict) and "functionResponse" in part for part in content.get("parts", []))
 
 
+def _has_function_call(content: Dict[str, Any]) -> bool:
+    return any(isinstance(part, dict) and "functionCall" in part for part in content.get("parts", []))
+
+
 def _merge_alternating(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Alternation contract for generateContent: 1) adjacent same-role contents merge (else HTTP 400
     "multiturn requests [must] alternate"); 2) EXCEPT never fuse a human user text turn into a preceding
@@ -396,6 +403,11 @@ def _merge_alternating(contents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             merged[-1]["parts"].extend(content["parts"])
         else:
             merged.append(content)
+    # 4) A function call must follow a user turn or a function response (HTTP 400 "function call turn comes
+    # immediately after a user turn or after a function response turn"). History trimming or compaction can
+    # leave a model functionCall first, so open with a placeholder user turn.
+    if merged and merged[0]["role"] == "model" and _has_function_call(merged[0]):
+        merged.insert(0, {"role": "user", "parts": [{"text": _TRIMMED_HISTORY_PLACEHOLDER}]})
     return merged
 
 

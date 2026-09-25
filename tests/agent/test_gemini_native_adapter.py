@@ -131,6 +131,89 @@ def test_consecutive_user_messages_merge_for_gemini_alternation():
     assert roles == ["user", "model"], roles
 
 
+def _function_call_order_ok(contents):
+    """Gemini's turn-order rule: a model functionCall content must come
+    immediately after a user content (text or functionResponse)."""
+    return all(
+        index > 0 and contents[index - 1]["role"] == "user"
+        for index, content in enumerate(contents)
+        if content["role"] == "model" and any("functionCall" in part for part in content["parts"])
+    )
+
+
+def test_leading_function_call_gets_a_placeholder_user_turn():
+    """Compaction or history trimming can leave ``system -> assistant(tool_calls)``
+    at the head of the transcript (the session store kept exactly this shape).
+    Gemini rejects a leading functionCall with HTTP 400 INVALID_ARGUMENT
+    ("function call turn comes immediately after a user turn or after a
+    function response turn"), so the contents must open with a user turn."""
+    from agent.gemini_native_adapter import (
+        _TRIMMED_HISTORY_PLACEHOLDER,
+        _build_gemini_contents,
+    )
+
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "done"},
+        {"role": "user", "content": "[summary of earlier turns] why can't you book the small rooms?"},
+    ]
+
+    contents, system_instruction = _build_gemini_contents(messages)
+
+    assert [content["role"] for content in contents] == ["user", "model", "user", "model", "user"]
+    assert contents[0]["parts"] == [{"text": _TRIMMED_HISTORY_PLACEHOLDER}]
+    assert "functionCall" in contents[1]["parts"][0]
+    assert system_instruction is not None
+    assert _function_call_order_ok(contents)
+
+
+def test_leading_model_text_turn_gets_no_placeholder():
+    """Only a leading functionCall needs the placeholder; a leading plain
+    model text turn is passed through unchanged."""
+    from agent.gemini_native_adapter import _build_gemini_contents
+
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "assistant", "content": "Hello, how can I help?"},
+        {"role": "user", "content": "hi"},
+    ]
+
+    contents, _ = _build_gemini_contents(messages)
+
+    assert [content["role"] for content in contents] == ["model", "user"]
+    assert contents[0]["parts"] == [{"text": "Hello, how can I help?"}]
+
+
+def test_build_gemini_request_never_opens_with_a_function_call():
+    """Entry point: the wire request for a Gemini 3 model must satisfy the
+    turn-order rule even when the leading assistant turn carries both text
+    and tool_calls (a reply the compressor keeps verbatim)."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {
+            "role": "assistant",
+            "content": "I booked rooms A and B.",
+            "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "ok"},
+        {"role": "user", "content": "latest ask"},
+    ]
+
+    request = build_gemini_request(messages=messages, model="gemini-3-flash-preview")
+
+    contents = request["contents"]
+    assert contents[0]["role"] == "user"
+    assert _function_call_order_ok(contents)
+    assert {"text": "I booked rooms A and B."} in contents[1]["parts"]
+
+
 def test_schema_bearing_tool_result_is_wrapped_as_opaque_text():
     """A tool result whose content is itself a JSON Schema must not be
     forwarded as a structured functionResponse.response.
@@ -644,6 +727,7 @@ _PNG_DATA_URL = (
 def _vision_tool_messages():
     """Assistant tool_call + tool result carrying a text part and an image part."""
     return [
+        {"role": "user", "content": "describe the image"},
         {
             "role": "assistant",
             "content": "",
@@ -686,7 +770,7 @@ def test_gemini_3x_embeds_image_in_function_response_parts(model):
         tools=[],
         tool_choice=None,
     )
-    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    fr = request["contents"][2]["parts"][0]["functionResponse"]
     assert "parts" in fr, "Gemini 3.x must embed image inlineData in functionResponse.parts"
     assert fr["parts"][0]["inlineData"]["mimeType"] == "image/png"
     assert fr["parts"][0]["inlineData"]["data"]
@@ -702,7 +786,7 @@ def test_gemini_2x_does_not_embed_image_parts():
         tools=[],
         tool_choice=None,
     )
-    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    fr = request["contents"][2]["parts"][0]["functionResponse"]
     assert "parts" not in fr
 
 
@@ -711,6 +795,7 @@ def test_text_only_tool_result_has_no_parts():
     from agent.gemini_native_adapter import build_gemini_request
 
     messages = [
+        {"role": "user", "content": "read the file"},
         {
             "role": "assistant",
             "content": "",
@@ -735,7 +820,7 @@ def test_text_only_tool_result_has_no_parts():
         tools=[],
         tool_choice=None,
     )
-    fr = request["contents"][1]["parts"][0]["functionResponse"]
+    fr = request["contents"][2]["parts"][0]["functionResponse"]
     assert "parts" not in fr
 
 

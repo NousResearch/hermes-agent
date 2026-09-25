@@ -483,7 +483,13 @@ class EmailAdapter(BasePlatformAdapter):
             message = f"Not configured — missing {', '.join(missing)}. Set it via `hermes gateway setup` (env) or platforms.email in config.yaml."
             # Non-retryable: a blank-but-present env var used to drive an indefinite retry loop that leaked until OOM.
             return self._fail("[Email] %s", message, "email_missing_configuration", message, retryable=False)
-        if not self._probe_imap(is_reconnect) or not self._probe_smtp():
+        # Both probes are synchronous stdlib IMAP/SMTP with a 30s socket timeout, so they must run off the
+        # loop: run inline, a slow mail server wedges the whole gateway (every other platform's keepalive
+        # and the loop's own deadline timers stop being serviced). Offload them the same way _check_inbox
+        # offloads _fetch_new_messages, and keep the IMAP-then-SMTP short circuit.
+        if not await asyncio.get_running_loop().run_in_executor(None, self._probe_imap, is_reconnect):
+            return False
+        if not await asyncio.get_running_loop().run_in_executor(None, self._probe_smtp):
             return False
         self._running = True
         self._poll_task = asyncio.create_task(self._poll_loop())

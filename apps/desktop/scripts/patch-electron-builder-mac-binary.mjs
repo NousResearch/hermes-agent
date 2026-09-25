@@ -1,64 +1,62 @@
+// Loaded in the builder child before osx-sign. Keep its walk and classifier,
+// but own each probe through close: isbinaryfile's path API resolves too early.
+// The prebuilder lifecycle also imports this file to validate the supplier pins.
 import fs from 'node:fs'
 import path from 'node:path'
+import { createRequire, registerHooks } from 'node:module'
+import { pathToFileURL } from 'node:url'
 
-if (process.platform !== 'darwin') {
-  process.exit(0)
+const require = createRequire(import.meta.url)
+const signerEntry = require.resolve('@electron/osx-sign')
+const signerRequire = createRequire(signerEntry)
+const binaryEntry = signerRequire.resolve('isbinaryfile')
+const signerVersion = JSON.parse(fs.readFileSync(path.resolve(path.dirname(signerEntry), '../package.json'), 'utf8')).version
+const binaryVersion = JSON.parse(fs.readFileSync(path.resolve(path.dirname(binaryEntry), '../package.json'), 'utf8')).version
+if (signerVersion !== '2.4.0' || binaryVersion !== '5.0.7') {
+  throw new Error('Revalidate signing probe ownership for the installed osx-sign/isbinaryfile versions')
 }
 
-const desktopRoot = path.resolve(import.meta.dirname, '..')
-const repoRoot = path.resolve(desktopRoot, '..', '..')
-const electronMacPath = path.join(repoRoot, 'node_modules', 'app-builder-lib', 'out', 'electron', 'electronMac.js')
-
-const marker = 'hermes-macos-electron-binary-fallback'
-const needle = `    await Promise.all([
-        doRename(path.join(contentsPath, "MacOS"), electronBranding.productName, appPlist.CFBundleExecutable),
-        (0, builder_util_1.unlinkIfExists)(path.join(appOutDir, "LICENSE")),
-        (0, builder_util_1.unlinkIfExists)(path.join(appOutDir, "LICENSES.chromium.html")),
-    ]);`
-const replacement = `    // ${marker}: electron-builder 26.8.x can sometimes copy
-    // Electron.app without its main MacOS/Electron binary before this rename.
-    // Restore it from the installed Electron runtime so local desktop installs
-    // do not fail with ENOENT during macOS arm64 packaging.
-    const macosDir = path.join(contentsPath, "MacOS");
-    const bundledElectronBinary = path.join(macosDir, electronBranding.productName);
-    if (!fs.existsSync(bundledElectronBinary)) {
-        const candidates = [
-            path.join(packager.info.framework.distMacOsAppName, "Contents", "MacOS", electronBranding.productName),
-            // npm may nest the workspace-only electron devDep under
-            // apps/desktop/node_modules (process.cwd() during pack), or hoist
-            // it to the repo root. Try the workspace-local install first, then
-            // the root hoist, so the fallback works under either layout.
-            path.join(process.cwd(), "node_modules", "electron", "dist", "Electron.app", "Contents", "MacOS", electronBranding.productName),
-            path.join(process.cwd(), "..", "..", "node_modules", "electron", "dist", "Electron.app", "Contents", "MacOS", electronBranding.productName),
-        ];
-        const sourceBinary = candidates.find(candidate => fs.existsSync(candidate));
-        if (sourceBinary == null) {
-            throw new Error("Electron binary missing from packaged app and Electron runtime: " + bundledElectronBinary);
-        }
-        await (0, promises_1.copyFile)(sourceBinary, bundledElectronBinary);
-        await (0, promises_1.chmod)(bundledElectronBinary, 0o755);
+const utilUrl = pathToFileURL(path.join(path.dirname(signerEntry), 'util.js')).href
+const needle = `async function getFilePathIfBinary(filePath) {
+    if (await isBinaryFile(filePath)) {
+        return filePath;
     }
-    await Promise.all([
-        doRename(macosDir, electronBranding.productName, appPlist.CFBundleExecutable),
-        (0, builder_util_1.unlinkIfExists)(path.join(appOutDir, "LICENSE")),
-        (0, builder_util_1.unlinkIfExists)(path.join(appOutDir, "LICENSES.chromium.html")),
-    ]);`
+    return null;
+}`
+const replacement = `// Shared by concurrent walks in this builder child, never by unrelated fs users.
+const probeWaiters = [];
+let activeProbes = 0;
+async function getFilePathIfBinary(filePath) {
+    // Sixteen complete probes leave room for Node and codesign at a 64-fd limit.
+    if (activeProbes >= 16) await new Promise(resolve => probeWaiters.push(resolve));
+    else activeProbes++;
+    try {
+        const stat = await fs.promises.stat(filePath);
+        if (!stat.isFile()) throw new Error('Path provided was not a file!');
+        const file = await fs.promises.open(filePath, 'r');
+        try {
+            // Match isbinaryfile 5.0.7's sample, including its UTF-8 boundary reserve.
+            const buffer = Buffer.alloc(515);
+            const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+            return await isBinaryFile(buffer, bytesRead) ? filePath : null;
+        } finally {
+            await file.close();
+        }
+    } finally {
+        const next = probeWaiters.shift();
+        if (next) next();
+        else activeProbes--;
+    }
+}`
 
-if (!fs.existsSync(electronMacPath)) {
-  console.warn(`[patch-electron-builder] skipped: ${electronMacPath} not found`)
-  process.exit(0)
-}
-
-const source = fs.readFileSync(electronMacPath, 'utf8')
-if (source.includes(marker)) {
-  console.log('[patch-electron-builder] macOS Electron binary fallback already applied')
-  process.exit(0)
-}
-
-if (!source.includes(needle)) {
-  console.warn('[patch-electron-builder] skipped: expected electronMac.js shape not found')
-  process.exit(0)
-}
-
-fs.writeFileSync(electronMacPath, source.replace(needle, replacement))
-console.log('[patch-electron-builder] applied macOS Electron binary fallback')
+// Transform just the private supplier helper in memory; never mutate node_modules
+// or fs.open. An upstream shape change must fail instead of silently losing the cap.
+registerHooks({
+  load(url, context, nextLoad) {
+    const loaded = nextLoad(url, context)
+    if (url !== utilUrl) return loaded
+    const source = loaded.source.toString()
+    if (!source.includes(needle)) throw new Error('osx-sign binary probe shape changed; revalidate the signing adapter')
+    return { ...loaded, source: source.replace(needle, replacement) }
+  }
+})

@@ -251,7 +251,7 @@ class TestMoaAggregatorSharedResolution:
 
     @staticmethod
     def _write_moa_config(tmp_path, monkeypatch, default_preset="opus-gpt"):
-        import yaml
+        import hermes_yaml as yaml
 
         home = tmp_path / ".hermes"
         home.mkdir(exist_ok=True)
@@ -292,7 +292,7 @@ class TestMoaAggregatorSharedResolution:
     def test_real_config_explicit_task_provider_moa(self, tmp_path, monkeypatch):
         """auxiliary.<task>.provider: moa in a REAL config.yaml resolves to the
         aggregator through the genuine load_config()/resolve_moa_preset() path."""
-        import yaml
+        import hermes_yaml as yaml
 
         home = self._write_moa_config(tmp_path, monkeypatch)
         cfg = yaml.safe_load((home / "config.yaml").read_text())
@@ -4821,7 +4821,7 @@ class TestNoProgressTimeoutTaskConfigGating:
         CodexAuxiliaryClient path (both the first-output and between-output deadlines derive from
         ``guard.no_progress_timeout``); other tasks keep the 60s default; a non-positive value
         is rejected with a warning and falls back to the default."""
-        import yaml
+        import hermes_yaml as yaml
         from agent import auxiliary_client as aux
 
         home = tmp_path / ".hermes"

@@ -29,6 +29,7 @@ import {
   $sessionStates,
   $sessionTiles,
   confirmReconnectSettlesExcept,
+  noteSessionEvent,
   publishSessionState,
   SESSION_WATCHDOG_TIMEOUT_MS,
   setSessionStalled
@@ -650,6 +651,13 @@ export function rehydrateLiveSessionStatuses(
         needsInput,
         storedSessionId
       })
+    }
+
+    if (working) {
+      // A poll that still lists the turn is an event. Reset the silence clock
+      // so a quiet tool call is not settled; a dead backend stops answering
+      // this poll and the clock runs out.
+      noteSessionEvent(runtimeSessionId)
     }
 
     if (!working) {

@@ -12,16 +12,13 @@ Salvaged from PR #4097 (@tjp2021); adapted to the post-refactor layout
 accepts extra_headers).
 """
 
-
 from run_agent import AIAgent
-
 
 def _tool_defs(*names):
     return [
         {"type": "function", "function": {"name": n, "description": n, "parameters": {}}}
         for n in names
     ]
-
 
 class _FakeOpenAI:
     def __init__(self, **kw):
@@ -30,7 +27,6 @@ class _FakeOpenAI:
 
     def close(self):
         pass
-
 
 def _make_agent(monkeypatch, base_url, api_mode="chat_completions"):
     """Create an AIAgent pointing at the given base_url."""
@@ -48,16 +44,12 @@ def _make_agent(monkeypatch, base_url, api_mode="chat_completions"):
         skip_memory=True,
     )
 
-
-
-
 class TestIsCopilotUrl:
     """_is_copilot_url() detects GitHub Copilot endpoints."""
 
     def test_standard_copilot_url(self, monkeypatch):
         agent = _make_agent(monkeypatch, "https://api.githubcopilot.com")
         assert agent._is_copilot_url() is True
-
 
     def test_github_models_url(self, monkeypatch):
         agent = _make_agent(monkeypatch, "https://models.github.ai/inference")
@@ -67,20 +59,14 @@ class TestIsCopilotUrl:
         agent = _make_agent(monkeypatch, "https://openrouter.ai/api/v1")
         assert agent._is_copilot_url() is False
 
-
-
 class TestUserInitiatedTurnFlag:
     """_is_user_initiated_turn lifecycle."""
-
 
     def test_reset_session_clears_flag(self, monkeypatch):
         agent = _make_agent(monkeypatch, "https://api.githubcopilot.com")
         agent._is_user_initiated_turn = True
         agent.reset_session_state()
         assert agent._is_user_initiated_turn is False
-
-
-
 
 class TestHeaderValues:
     """copilot_default_headers(is_agent_turn=...) sets x-initiator correctly."""
@@ -92,4 +78,3 @@ class TestHeaderValues:
     def test_user_turn(self):
         from hermes_cli.models import copilot_default_headers
         assert copilot_default_headers(is_agent_turn=False)["x-initiator"] == "user"
-

@@ -1,81 +1,102 @@
-"""A checkout outside the effective Hermes home must not pause gateways."""
+"""The Windows update pause owns only workers from the effective Hermes home."""
+
+from types import SimpleNamespace
 
 import pytest
 
-from hermes_cli import main as cli_main
+from hermes_cli import gateway as gateway_cli
 from hermes_cli import update_cmd_windows
 
 
-@pytest.mark.windows_only
-def test_explicit_home_outside_checkout_skips_host_wide_gateway_discovery(monkeypatch, tmp_path):
-    home = tmp_path / "isolated-home"
-    checkout = tmp_path / "isolated-checkout"
-    home.mkdir()
-    checkout.mkdir()
+pytestmark = pytest.mark.platforms("windows")
+
+
+def _discovery(monkeypatch, *, home, workers, profiles=(), services=()):
     monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", checkout)
-
-    def must_not_discover():
-        pytest.fail("host-wide gateway discovery crossed the isolated home boundary")
-
-    monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", must_not_discover)
-    with pytest.raises(RuntimeError, match="outside the managed Hermes checkout"):
-        update_cmd_windows._pause_windows_gateways_for_update()
+    monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda **_kw: list(workers))
+    monkeypatch.setattr(gateway_cli, "find_profile_gateway_processes", lambda **_kw: list(profiles))
+    monkeypatch.setattr(gateway_cli, "find_windows_gateway_services", lambda **_kw: list(services))
 
 
-@pytest.mark.windows_only
-def test_default_home_outside_checkout_skips_host_wide_gateway_discovery(monkeypatch, tmp_path):
-    monkeypatch.delenv("HERMES_HOME", raising=False)
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local-app-data"))
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path / "isolated-checkout")
-
-    def must_not_discover():
-        pytest.fail("host-wide gateway discovery crossed the default home boundary")
-
-    monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", must_not_discover)
-    with pytest.raises(RuntimeError, match="outside the managed Hermes checkout"):
-        update_cmd_windows._pause_windows_gateways_for_update()
-
-
-@pytest.mark.windows_only
-def test_unverified_discovery_result_cannot_reach_gateway_pause(monkeypatch, tmp_path):
-    home = tmp_path / "managed-home"
+def test_foreign_gateway_is_excluded_before_any_pause(monkeypatch, tmp_path):
+    home = tmp_path / "isolated"
+    foreign = tmp_path / "live"
     home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", home / "hermes-agent")
+    foreign.mkdir()
+    _discovery(monkeypatch, home=home, workers=[202])
+    monkeypatch.setattr(update_cmd_windows, "_gateway_process_home", lambda _pid: foreign)
+    monkeypatch.setattr(update_cmd_windows, "_windows_cold_start_plan", lambda: None)
+    monkeypatch.setattr(update_cmd_windows, "_record_attested_cold_start_profiles", lambda *_a: None)
     monkeypatch.setattr(
-        update_cmd_windows, "_discover_windows_gateways",
-        lambda: ({}, [], set(), [202]),
+        update_cmd_windows, "_request_socket_pauses",
+        lambda *_a: pytest.fail("a foreign gateway reached the pause"),
     )
-    with pytest.raises(RuntimeError, match="unverified process owner"):
-        update_cmd_windows._pause_windows_gateways_for_update()
+
+    assert update_cmd_windows._discover_windows_gateways() == ({}, [], set(), [])
+    assert update_cmd_windows._pause_windows_gateways_for_update() is None
 
 
-@pytest.mark.windows_only
-def test_home_switch_a_to_b_to_a_rechecks_checkout_before_discovery(monkeypatch, tmp_path):
-    home_a = tmp_path / "home-a"
-    home_b = tmp_path / "home-b"
-    home_a.mkdir()
-    home_b.mkdir()
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", home_b / "hermes-agent")
-    discovered = []
+def test_custom_checkout_keeps_its_own_profile_and_excludes_foreign(monkeypatch, tmp_path):
+    home = tmp_path / "isolated"
+    foreign = tmp_path / "live"
+    home.mkdir()
+    foreign.mkdir()
+    own = SimpleNamespace(pid=101, path=home, profile="default")
+    _discovery(monkeypatch, home=home, workers=[101, 202], profiles=[own])
+    monkeypatch.setattr(
+        update_cmd_windows, "_gateway_process_home",
+        lambda pid: home if pid == 101 else foreign,
+    )
 
-    def record_discovery():
-        discovered.append(True)
-        raise LookupError("matched home reached discovery")
+    assert update_cmd_windows._discover_windows_gateways() == ({101: own}, [], set(), [101])
 
-    monkeypatch.setattr(update_cmd_windows, "_discover_windows_gateways", record_discovery)
 
-    monkeypatch.setenv("HERMES_HOME", str(home_a))
-    with pytest.raises(RuntimeError, match="outside the managed Hermes checkout"):
-        update_cmd_windows._pause_windows_gateways_for_update()
+def test_unmapped_worker_in_target_home_aborts_before_pause(monkeypatch, tmp_path):
+    home = tmp_path / "isolated"
+    home.mkdir()
+    _discovery(monkeypatch, home=home, workers=[101])
+    monkeypatch.setattr(update_cmd_windows, "_gateway_process_home", lambda _pid: home)
 
-    monkeypatch.setenv("HERMES_HOME", str(home_b))
-    with pytest.raises(LookupError, match="matched home reached discovery"):
-        update_cmd_windows._pause_windows_gateways_for_update()
+    with pytest.raises(RuntimeError, match="without a verified profile or service owner"):
+        update_cmd_windows._discover_windows_gateways()
 
-    monkeypatch.setenv("HERMES_HOME", str(home_a))
-    with pytest.raises(RuntimeError, match="outside the managed Hermes checkout"):
-        update_cmd_windows._pause_windows_gateways_for_update()
 
-    assert discovered == [True]
+def test_pid_file_cannot_claim_a_foreign_worker(monkeypatch, tmp_path):
+    home = tmp_path / "isolated"
+    foreign = tmp_path / "live"
+    home.mkdir()
+    foreign.mkdir()
+    claimed = SimpleNamespace(pid=101, path=home, profile="default")
+    _discovery(monkeypatch, home=home, workers=[101], profiles=[claimed])
+    monkeypatch.setattr(update_cmd_windows, "_gateway_process_home", lambda _pid: foreign)
+
+    with pytest.raises(RuntimeError, match="disagrees with its profile PID file"):
+        update_cmd_windows._discover_windows_gateways()
+
+
+def test_service_worker_must_match_its_profile_home(monkeypatch, tmp_path):
+    home = tmp_path / "isolated"
+    foreign = tmp_path / "live"
+    home.mkdir()
+    foreign.mkdir()
+    service = SimpleNamespace(gateway_pid=101, profile="default")
+    _discovery(monkeypatch, home=home, workers=[101], services=[service])
+    monkeypatch.setattr(update_cmd_windows, "_gateway_process_home", lambda _pid: home)
+
+    assert update_cmd_windows._discover_windows_gateways() == ({}, [service], {101}, [101])
+    monkeypatch.setattr(update_cmd_windows, "_gateway_process_home", lambda _pid: foreign)
+    with pytest.raises(RuntimeError, match="disagrees with its Windows service profile"):
+        update_cmd_windows._discover_windows_gateways()
+
+
+def test_unreadable_process_home_aborts_discovery(monkeypatch, tmp_path):
+    home = tmp_path / "isolated"
+    home.mkdir()
+    _discovery(monkeypatch, home=home, workers=[101])
+    monkeypatch.setattr(
+        update_cmd_windows, "_gateway_process_home",
+        lambda _pid: (_ for _ in ()).throw(OSError("access denied")),
+    )
+
+    with pytest.raises(RuntimeError, match="Could not establish Windows gateway home"):
+        update_cmd_windows._discover_windows_gateways()

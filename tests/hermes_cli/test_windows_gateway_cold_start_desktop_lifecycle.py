@@ -40,7 +40,6 @@ def _live_serve_ledger_entry() -> dict:
         "spawner_create": 0.5,
     }
 
-
 def test_control_plane_argv_is_not_a_gateway():
     from gateway.status import looks_like_gateway_command_line
 
@@ -51,7 +50,6 @@ def test_control_plane_argv_is_not_a_gateway():
     assert looks_like_gateway_command_line(serve) is False
     assert update_cmd._looks_like_desktop_control_plane(run) is False
     assert looks_like_gateway_command_line(run) is True
-
 
 def test_control_plane_classifier_is_token_based_not_substring():
     """#90778/#91869 class: flag values and lookalike tokens must not read
@@ -75,23 +73,21 @@ def test_control_plane_classifier_is_token_based_not_substring():
     # undeterminable subcommand → NOT a control plane (never guess ownership)
     assert update_cmd._looks_like_desktop_control_plane("python.exe -c import time") is False
 
-
 def test_ledger_live_serve_with_live_spawner_owns_lifecycle(monkeypatch):
     monkeypatch.setattr(
         process_identity, "ledger_entries", lambda **_k: [_live_serve_ledger_entry()]
     )
     monkeypatch.setattr(process_identity, "spawner_is_dead", lambda _e: False)
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
+    monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [])
 
     assert update_cmd._desktop_owns_gateway_lifecycle() is True
-
 
 def test_orphaned_control_plane_does_not_own_lifecycle(monkeypatch):
     monkeypatch.setattr(
         process_identity, "ledger_entries", lambda **_k: [_live_serve_ledger_entry()]
     )
     monkeypatch.setattr(process_identity, "spawner_is_dead", lambda _e: True)
-    monkeypatch.setattr(cli_main, "_detect_venv_python_processes", lambda: [])
+    monkeypatch.setattr("hermes_cli.update_cmd_windows._detect_venv_python_processes", lambda: [])
 
     assert update_cmd._desktop_owns_gateway_lifecycle() is False
 
@@ -103,8 +99,6 @@ def _running_beta_pause_fixture(monkeypatch, tmp_path):
 
     homes = {"default": tmp_path, "beta": tmp_path / "profiles" / "beta"}
     homes["beta"].mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    monkeypatch.setattr(cli_main, "PROJECT_ROOT", tmp_path / "hermes-agent")
     monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: str(tmp_path))
     monkeypatch.setattr(update_cmd, "_desktop_owns_gateway_lifecycle", lambda: True)
     monkeypatch.setattr(update_cmd_windows, "_desktop_owns_gateway_lifecycle", lambda: True)
@@ -125,7 +119,7 @@ def _running_beta_pause_fixture(monkeypatch, tmp_path):
     return homes
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_dead_attested_default_is_cold_started_beside_running_beta(monkeypatch, tmp_path, capsys):
     """#110959: the all-or-nothing plan never ran while ``beta`` was alive, so a default gateway
     that died after a ✓ stayed down after the update. Its dead attestation must become a per-profile
@@ -160,7 +154,7 @@ def test_dead_attested_default_is_cold_started_beside_running_beta(monkeypatch, 
     assert "Gateway profile default started via cold-start after update (PID: 4242)" in out
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_every_dead_attested_profile_is_cold_started_when_nothing_runs(monkeypatch, tmp_path):
     """Nothing running, active profile exited cleanly (plan → None), ``beta`` dead-attested: beta still
     gets a token and a spawn. And when BOTH owe a spawn, the fleet-wide active cold-start runs FIRST —
@@ -187,7 +181,7 @@ def test_every_dead_attested_profile_is_cold_started_when_nothing_runs(monkeypat
     assert token["resume_needed"] is False
 
 
-@pytest.mark.windows_only
+@pytest.mark.platforms("windows")
 def test_service_supervised_running_profile_is_not_cold_started(monkeypatch, tmp_path):
     """A profile whose gateway is alive under an SCM service is skipped by the socket pause, so it is
     absent from ``token["profiles"]``; it must still count as RUNNING for the per-profile probe or its

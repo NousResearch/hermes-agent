@@ -204,16 +204,9 @@ async def _call_verifier(verifier, *args, **kwargs):
 
 
 def _hermes_version() -> str:
-    """Canonical Hermes version: ``hermes_cli.__version__`` (dist-info can be stale on
-    source checkouts), then distribution metadata, then "dev". Never raises."""
-    with suppress(Exception):
-        from hermes_cli import __version__
-        return __version__
-    try:
-        from importlib.metadata import version
-        return version("hermes-agent")
-    except Exception:
-        return "dev"
+    """Canonical base version for API protocol and compatibility payloads."""
+    from hermes_cli.version_info import get_version_info
+    return get_version_info().base_version
 
 
 # Default settings

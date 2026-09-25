@@ -21,11 +21,9 @@ requires_git = pytest.mark.skipif(
     shutil.which("git") is None, reason="git required"
 )
 
-
 class _Stub(CLICommandsMixin):
     def __init__(self):
         self.agent = None
-
 
 def _run(stub, command):
     """Capture handler output.
@@ -49,7 +47,6 @@ def _run(stub, command):
         stub._handle_worktree_command(command)
     return buf.getvalue()
 
-
 def _git(repo, *args):
     subprocess.run(
         ["git", *args], cwd=repo, check=True, capture_output=True,
@@ -57,7 +54,6 @@ def _git(repo, *args):
              "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
              "HOME": str(repo), "PATH": os.environ["PATH"]},
     )
-
 
 @pytest.fixture()
 def repo(tmp_path, monkeypatch):
@@ -74,27 +70,21 @@ def repo(tmp_path, monkeypatch):
     # Leave tmp dir before pytest tears it down (worktree cwd may be inside).
     os.chdir(tmp_path)
 
-
-
-
 def test_status_outside_repo(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli_mod, "_active_worktree", None)
     out = _run(_Stub(), "/worktree")
     assert "not inside a git repository" in out
 
-
 def test_new_outside_repo(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     out = _run(_Stub(), "/worktree new")
     assert "requires being inside a git repository" in out
 
-
 @requires_git
 def test_list_shows_worktrees(repo):
     out = _run(_Stub(), "/worktree list")
-    assert str(repo) in out
-
+    assert repo.as_posix() in out
 
 @requires_git
 def test_new_named_creates_and_retargets(repo):
@@ -109,7 +99,6 @@ def test_new_named_creates_and_retargets(repo):
     # Same file contents as the base commit.
     assert (wt / "a.txt").read_text() == "hello\n"
 
-
 @requires_git
 def test_new_named_collision_refused(repo):
     _run(_Stub(), "/worktree new dup")
@@ -120,7 +109,6 @@ def test_new_named_collision_refused(repo):
     # Active worktree not clobbered by the failed attempt.
     assert cli_mod._active_worktree == first
 
-
 @requires_git
 def test_new_unnamed_uses_random_hermes_prefix(repo):
     out = _run(_Stub(), "/worktree new")
@@ -128,11 +116,8 @@ def test_new_unnamed_uses_random_hermes_prefix(repo):
     name = os.path.basename(cli_mod._active_worktree["path"])
     assert name.startswith("hermes-")
 
-
 @requires_git
 def test_new_sanitizes_name(repo):
     _run(_Stub(), "/worktree new " + "weird name!@#")
     name = os.path.basename(cli_mod._active_worktree["path"])
     assert name == "weird-name"
-
-

@@ -16,12 +16,14 @@ import { Plus, Search, X } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
+import { confirm } from '@/store/confirm'
 import {
   $customModels,
   addCustomModel,
   customModelCandidate,
   isCustomModel,
   removeCustomModel,
+  resetModelVisibilityKeepingCustoms,
   withCustomModels
 } from '@/store/custom-models'
 import {
@@ -87,6 +89,19 @@ export function ModelVisibilityDialog({
 
   const setProviderVisible = (provider: ModelOptionProvider, next: boolean) => {
     setVisibleModels(setProviderVisibility($visibleModels.get(), providers, provider.slug, next), providers)
+  }
+
+  const resetToDefaults = async () => {
+    const ok = await confirm({
+      confirmLabel: copy.resetAction,
+      description: copy.resetDescription,
+      destructive: true,
+      title: copy.resetConfirm
+    })
+
+    if (ok) {
+      resetModelVisibilityKeepingCustoms(providers)
+    }
   }
 
   const q = normalize(search)
@@ -234,7 +249,7 @@ export function ModelVisibilityDialog({
           )}
         </div>
 
-        <div className="px-3 py-2">
+        <div className="flex items-center justify-between px-3 py-2">
           <Button
             className="-ml-2 text-(--ui-text-tertiary)"
             onClick={() => {
@@ -247,6 +262,18 @@ export function ModelVisibilityDialog({
           >
             {copy.addProvider}
           </Button>
+          {/* Only once there is something to undo, like the sidebar view reset. */}
+          {stored !== null && modelOptions.isSuccess && (
+            <Button
+              className="-mr-2 text-(--ui-text-tertiary)"
+              onClick={() => void resetToDefaults()}
+              size="xs"
+              type="button"
+              variant="text"
+            >
+              {copy.resetToDefaults}
+            </Button>
+          )}
         </div>
       </DialogContent>
     </Dialog>

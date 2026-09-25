@@ -3453,7 +3453,11 @@ export const ru = defineLocale({
     noAuthenticatedProviders: 'Нет провайдеров с аутентификацией.',
     addProvider: 'Добавить провайдера…',
     addCustomModel: 'Добавить свою модель',
-    removeCustomModel: 'Удалить свою модель'
+    removeCustomModel: 'Удалить свою модель',
+    resetToDefaults: 'Сбросить к значениям по умолчанию',
+    resetConfirm: 'Сбросить видимость моделей по умолчанию?',
+    resetDescription: 'Ваш выбор показанных и скрытых моделей будет очищен, и у каждого провайдера вернётся список по умолчанию. Добавленные вами модели сохранятся и будут показаны.',
+    resetAction: 'Сбросить'
   },
   shell: {
     windowControls: 'Управление окном',

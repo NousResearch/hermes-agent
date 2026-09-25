@@ -4916,7 +4916,11 @@ export const deOverrides = {
     noAuthenticatedProviders: 'Keine authentifizierten Anbieter.',
     addProvider: 'Anbieter hinzufügen…',
     addCustomModel: 'Eigenes Modell hinzufügen',
-    removeCustomModel: 'Eigenes Modell entfernen'
+    removeCustomModel: 'Eigenes Modell entfernen',
+    resetToDefaults: 'Auf Standard zurücksetzen',
+    resetConfirm: 'Modellsichtbarkeit auf Standard zurücksetzen?',
+    resetDescription: 'Ihre Auswahl sichtbarer und ausgeblendeter Modelle wird gelöscht, und jeder Anbieter zeigt wieder seine Standardliste. Eigene Modelle bleiben erhalten und werden angezeigt.',
+    resetAction: 'Zurücksetzen'
   },
   shell: {
     windowControls: 'Fenster-Bedienelemente',

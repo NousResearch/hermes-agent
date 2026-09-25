@@ -2782,7 +2782,11 @@ export const ar = defineLocale({
     noAuthenticatedProviders: 'لا يوجد مزوّدون مصادق عليهم.',
     addProvider: 'إضافة مزوّد…',
     addCustomModel: 'إضافة نموذج مخصص',
-    removeCustomModel: 'إزالة النموذج المخصص'
+    removeCustomModel: 'إزالة النموذج المخصص',
+    resetToDefaults: 'إعادة التعيين إلى الافتراضي',
+    resetConfirm: 'إعادة إعدادات ظهور النماذج إلى الافتراضي؟',
+    resetDescription: 'ستُمسح اختياراتك للنماذج الظاهرة والمخفية وتعود قائمة كل مزوّد الافتراضية. تُحفظ النماذج المخصصة التي أضفتها وتظهر.',
+    resetAction: 'إعادة التعيين'
   },
   shell: {
     windowControls: 'تحكم النافذة',

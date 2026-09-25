@@ -361,7 +361,7 @@ def _collect_skill_candidates(name, local_category_name, all_dirs):
                 _record(found_skill_md.parent, found_skill_md)
         # Legacy flat <name>.md anywhere under the dir. Markdown owned by an ancestor
         # directory skill loads through file_path and must not shadow a real skill.
-        for found_md in search_dir.rglob(f"{name}.md"):
+        for found_md in iter_skill_index_files(search_dir, f"{name}.md"):
             if (found_md.name != "SKILL.md" and not _is_skill_support_path(found_md)
                     and not _is_package_owned_markdown(found_md, search_dir)):
                 _record(None, found_md)

@@ -228,6 +228,12 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         server = _core._servers.get(key)
         if server is not None and server.session is not None:
             return True
+        # An earlier first-use connect that parked was adopted into ``_servers`` and its run task
+        # owns revival (callers signal it). Connecting again would replace it there and orphan a
+        # task that keeps self-probing, then holds a live session and stdio child nobody shuts down.
+        task = getattr(server, "_task", None)
+        if task is not None and not task.done():
+            return False
         config = _core._lazy_server_configs.get(key)
         if (not config or _connect_cooldown_active(server_name)
                 or key in _core._server_connecting):

@@ -146,7 +146,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "copilot-acp": "GitHub Copilot ACP", "stepfun": "StepFun Step Plan", "xiaomi": "Xiaomi MiMo", "gmi": "GMI Cloud",
     "upstage": "Upstage Solar", "actual": "Actual Computer", "tencent-tokenhub": "Tencent TokenHub",
     "nebius-token-factory": "Nebius Token Factory", "tencent-tokenplan": "Tencent TokenPlan", "lmstudio": "LM Studio",
-    "local": "Local endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
+    "custom": "Custom endpoint", "bedrock": "AWS Bedrock", "vertex": "Google Vertex AI", "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 

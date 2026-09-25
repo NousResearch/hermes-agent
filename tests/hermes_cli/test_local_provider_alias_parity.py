@@ -8,33 +8,29 @@ different table:
 * ``hermes_cli.auth.resolve_provider``         (credential resolution)
 
 Historically these disagreed for the local self-hosted server aliases: bare
-``vllm`` / ``llamacpp`` resolved to ``"local"`` in ``providers`` (an orphan id
-with no ``ProviderDef``), stayed ``"vllm"`` in ``models`` (unknown), yet mapped
-to ``"custom"`` in ``auth`` — the "custom, local, custom:local" confusion the
-bug report describes. They must all agree on the generic ``"custom"`` provider.
+``local`` stayed ``"local"`` in ``providers`` and ``models`` while ``auth`` mapped
+it to ``"custom"``, and ``vllm`` got three answers (``local`` / ``vllm`` /
+``custom``) — the "custom, local, custom:local" confusion the bug report
+describes. Every alias the ``custom`` provider profile declares must land on
+``custom``; the one exception is the model table's managed llama.cpp runtime id,
+which the picker's Local row and the staged-library validator key on.
 """
 
 import pytest
 
 from hermes_cli.auth import resolve_provider
 from hermes_cli.models import normalize_provider as models_normalize
-from hermes_cli.providers import normalize_provider as providers_normalize
+from hermes_cli.providers import LLAMACPP_ALIASES, normalize_provider as providers_normalize
+from providers import get_provider_profile
 
-# Local OpenAI-compatible server aliases users are told to configure.
-#
-# ``local`` is included: it is declared a ``custom`` alias in
-# ``plugins/model-providers/custom/__init__.py`` and ``auth.resolve_provider``
-# already mapped it to ``"custom"`` (statically and via the plugin import), so
-# leaving it as the orphan ``"local"`` id (no ``ProviderDef``) in the providers
-# and models tables was exactly the cross-table disagreement this contract
-# guards against. Routing code already treats ``{"custom", "local"}`` as
-# equivalent (e.g. ``model_switch``/``web_server``), so unifying to ``custom``
-# is behaviour-preserving.
-_LOCAL_ALIASES = ("local", "ollama", "vllm", "llamacpp", "llama.cpp", "llama-cpp")
+_CUSTOM_ALIASES = tuple(get_provider_profile("custom").aliases)
 
 
-@pytest.mark.parametrize("alias", _LOCAL_ALIASES)
-def test_local_aliases_normalize_to_custom_in_every_table(alias):
+@pytest.mark.parametrize("alias", _CUSTOM_ALIASES)
+def test_custom_profile_aliases_normalize_to_custom_in_every_table(alias):
     assert providers_normalize(alias) == "custom"
-    assert models_normalize(alias) == "custom"
     assert resolve_provider(alias) == "custom"
+    if alias in LLAMACPP_ALIASES:
+        assert models_normalize(alias) in LLAMACPP_ALIASES
+    else:
+        assert models_normalize(alias) == "custom"

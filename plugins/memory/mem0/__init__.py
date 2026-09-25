@@ -18,9 +18,10 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List
 
-from agent.memory_provider import MemoryProvider
-from agent.secret_scope import UnscopedSecretError, get_secret
+from agent.memory_provider import MemoryProvider, spawn_context_thread
+from agent.secret_scope import get_secret
 from tools.registry import tool_error
+from utils import atomic_json_write, read_json_or_empty
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,13 @@ _DEFAULT_USER_ID = "hermes-user"
 _SYNC_MSG_MAX_CHARS = 450
 
 
+# Sentence ends recognized when trimming a synced message. Deliberately unordered:
+# the LAST boundary of ANY kind wins, so one CJK stop early in a mixed-script turn
+# cannot outrank a Latin stop near the end of the window. ``".\n"`` is not listed —
+# its index can never exceed the bare ``"."`` it starts with.
+_SYNC_SENTENCE_ENDS = ("。", "！", "？", ".", "!", "?")
+
+
 def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
     """Cap a synced message at its last sentence boundary within ``max_len``.
 
@@ -52,10 +60,10 @@ def _truncate_for_sync(text: str, max_len: int = _SYNC_MSG_MAX_CHARS) -> str:
     """
     if len(text) <= max_len:
         return text
-    for sep in ("。", "！", "？", ".\n", ".", "!", "?"):
-        cut = text[:max_len].rfind(sep)
-        if cut > max_len // 3:
-            return text[:cut + 1]
+    window = text[:max_len]
+    cut = max(window.rfind(sep) for sep in _SYNC_SENTENCE_ENDS)
+    if cut > max_len // 3:
+        return text[:cut + 1]
     return text[:max_len]
 
 
@@ -65,23 +73,6 @@ def _is_client_error(exc: Exception) -> bool:
     return type(exc).__name__ in _CLIENT_ERROR_TYPES or any(s in err_str for s in ("404", "not found", "valid uuid"))
 
 
-def _read_mem0_json(config_path: Path) -> dict:
-    """Best-effort read of mem0.json; missing/corrupt file -> {}."""
-    if config_path.exists():
-        with suppress(Exception):
-            return json.loads(config_path.read_text(encoding="utf-8"))
-    return {}
-
-
-def _scoped_env(name: str) -> str:
-    """Profile-scoped read of a non-secret mem0 setting; no scope under multiplex = unset (never
-    ``os.environ``). Only the API key may fail closed — OSS mode has none to read (#99121)."""
-    try:
-        return get_secret(name, "") or ""
-    except UnscopedSecretError:
-        return ""
-
-
 def _load_config() -> dict:
     """Env vars provide defaults; $HERMES_HOME/mem0.json overrides individual keys.
     Layering avoids a silent failure when the JSON file exists but lacks fields
@@ -89,16 +80,19 @@ def _load_config() -> dict:
     from hermes_constants import get_hermes_home
     # Identity (user/agent id), host and mode are .env values like the key: read them through the
     # profile scope too, or a secondary profile's memories land in the default profile's account.
-    config = {"mode": _scoped_env("MEM0_MODE") or "platform", "host": _scoped_env("MEM0_HOST"),
-              "agent_id": _scoped_env("MEM0_AGENT_ID") or "hermes", "oss": {}}
-    if user_id := _scoped_env("MEM0_USER_ID"):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
+    # A scope-less multiplex caller raises here on purpose — that is a spawn-site bug, and
+    # swallowing it would silently route the turn's memories to the default profile.
+    config = {"mode": get_secret("MEM0_MODE", "") or "platform", "host": get_secret("MEM0_HOST", "") or "",
+              "agent_id": get_secret("MEM0_AGENT_ID", "") or "hermes", "oss": {}}
+    if user_id := get_secret("MEM0_USER_ID", ""):  # only when explicitly configured, so initialize() can fall back to the gateway-native id
         config["user_id"] = user_id
-    file_cfg = _read_mem0_json(get_hermes_home() / "mem0.json")
+    file_cfg = read_json_or_empty(get_hermes_home() / "mem0.json")
     config.update({k: v for k, v in file_cfg.items() if v is not None and v != ""})
     # MEM0_API_KEY authenticates the Platform and self-hosted HTTP backends; pure OSS mode builds its
-    # backend from the local ``oss`` config and has no platform credential to resolve. Decide after
-    # mem0.json overrode the env fallback so a scope-less multiplex caller can load an OSS config
-    # without weakening fail-closed reads for credentialed modes.
+    # backend from the local ``oss`` config and has no platform credential to resolve, so a profile
+    # scope WITHOUT the key must still load an OSS config (#99121 as it stands today: the caller is
+    # scoped, the scope is just empty). Decided after mem0.json overrode the env defaults because
+    # the file may be what selects ``oss``. Scope-less callers already raised above.
     if config.get("mode", "platform") == "oss":
         config.setdefault("api_key", "")
     elif not config.get("api_key"):
@@ -154,9 +148,8 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def save_config(self, values, hermes_home):
         """Merge-write config to $HERMES_HOME/mem0.json."""
-        from utils import atomic_json_write
         config_path = Path(hermes_home) / "mem0.json"
-        atomic_json_write(config_path, {**_read_mem0_json(config_path), **values}, mode=0o600)
+        atomic_json_write(config_path, {**read_json_or_empty(config_path), **values}, mode=0o600)
 
     def get_config_schema(self):
         api_key_required = _load_config().get("mode", "platform") != "oss"
@@ -177,11 +170,11 @@ class Mem0MemoryProvider(MemoryProvider):
         return template.format(vs=self._config.get("oss", {}).get("vector_store", {}).get("provider", default)) if self._mode == "oss" else ""
 
     def _create_backend(self):
-        # Lazy-install the mem0 SDK before the backend imports it (honors security.allow_lazy_installs);
-        # on failure the backend import raises the canonical error, captured below.
+        # Make the pinned mem0 extra importable first; on failure the backend import
+        # raises the canonical error, captured below.
         with suppress(Exception):
-            from tools.lazy_deps import ensure as _lazy_ensure
-            _lazy_ensure("memory.mem0", prompt=False)
+            from pm import ensure_import
+            ensure_import("mem0")
         try:
             from . import _backend
             if self._mode == "oss":
@@ -292,7 +285,7 @@ class Mem0MemoryProvider(MemoryProvider):
             if self._prefetch_query == query and (self._prefetch_done or (self._prefetch_thread and self._prefetch_thread.is_alive())):
                 return
             self._prefetch_query, self._prefetch_result, self._prefetch_done = query, "", False
-            self._prefetch_thread = t = threading.Thread(target=_run, daemon=True, name="mem0-prefetch")
+            self._prefetch_thread = t = spawn_context_thread(_run, name="mem0-prefetch")
         t.start()
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -325,7 +318,7 @@ class Mem0MemoryProvider(MemoryProvider):
                 prev.join(timeout=5.0)
                 if prev.is_alive():  # still busy after the wait: skip to avoid duplicate ingestion
                     return
-            self._sync_thread = threading.Thread(target=_sync, daemon=True, name="mem0-sync")
+            self._sync_thread = spawn_context_thread(_sync, name="mem0-sync")
             self._sync_thread.start()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:

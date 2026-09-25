@@ -54,13 +54,22 @@ def _positive(value: Any, cast: Callable[[Any], Any] = int) -> Any:
     return parsed if parsed is not None and parsed > 0 else None
 
 
+def _finite_limit(path: Path) -> Optional[int]:
+    """A cgroup memory limit file's value when it is a real cap; None for unreadable, empty,
+    ``max``, or the v1 near-2^63 sentinel (all mean unlimited)."""
+    try:
+        limit = int(path.read_text(encoding="utf-8-sig").strip())
+    except (OSError, ValueError):
+        return None
+    return limit if 0 < limit < (1 << 62) else None
+
+
 def _cgroup_limit_bytes() -> Optional[int]:
     """Memory limit this process runs under, if cgroup-capped.
 
     Prefers v2 ``memory.high`` (the throttling point) over ``memory.max``, then v1.
     Own cgroup first (where a systemd unit's ``MemoryHigh=``/``MemoryMax=`` lands —
-    root reads ``max`` there), then root for container-style limits.  ``max`` and
-    the v1 near-2^63 sentinel mean unlimited.
+    root reads ``max`` there), then root for container-style limits.
     """
     if sys.platform != "linux":
         return None
@@ -72,11 +81,8 @@ def _cgroup_limit_bytes() -> Optional[int]:
         own = None
     roots = ([f"/sys/fs/cgroup{own}"] if own and own != "/" else []) + ["/sys/fs/cgroup"]
     for candidate in [f"{r}/memory.{f}" for r in roots for f in ("high", "max")] + ["/sys/fs/cgroup/memory/memory.limit_in_bytes"]:
-        try:
-            limit = int(Path(candidate).read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):  # unreadable, empty, or "max"
-            continue
-        if 0 < limit < (1 << 62):
+        limit = _finite_limit(Path(candidate))
+        if limit is not None:
             return limit
     return None
 
@@ -133,9 +139,44 @@ def resolve_agent_cache_bounds(config: Any) -> AgentCacheBounds:
     )
 
 
+def _cgroup_anon_bytes() -> Optional[int]:
+    """Anonymous memory charged to this process's own cgroup v2 (``memory.stat`` ``anon``), or None.
+
+    The budget is derived from the same cgroup's ``memory.high``/``memory.max``, and the kernel
+    charges every process in the unit against it — execute_code kernels, terminal children — so a
+    self-only reading under-counts by exactly the children's share (#110549).  Anon, not
+    ``memory.current``: the module's signal is heap, and reclaimable page cache is noise.
+    Only for a *capped* cgroup: an uncapped one (a plain login session) is the whole user
+    slice, and its budget is total RAM — self RSS stays the right scope there.
+    """
+    if sys.platform != "linux":
+        return None
+    try:
+        from gateway.cgroup_cleanup import _own_cgroup_path
+
+        own = _own_cgroup_path()
+        if not own or own == "/":
+            return None
+        root = Path(f"/sys/fs/cgroup{own}")
+        capped = any(_finite_limit(root / f"memory.{f}") for f in ("high", "max"))
+        text = root.joinpath("memory.stat").read_text(encoding="utf-8-sig") if capped else ""
+    except (OSError, ValueError, ImportError):
+        return None
+    for line in text.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "anon" and value.strip().isdigit():
+            return int(value)
+    return None
+
+
 def read_anon_rss_mb() -> Optional[int]:
-    """Anonymous RSS in MB (where cached transcripts live; file-backed pages are noise),
-    or None.  ``/proc/self/status`` first; psutil covers other platforms (total RSS only)."""
+    """Anonymous memory in MB (where cached transcripts live; file-backed pages are noise),
+    or None.  Own cgroup's ``memory.stat`` anon first — the scope the budget is charged
+    against, so same-unit child processes count; then ``/proc/self/status``; psutil covers
+    other platforms (total RSS only)."""
+    charged = _cgroup_anon_bytes()
+    if charged:
+        return charged // _BYTES_PER_MB
     try:
         from hermes_cli.mem_trim import collect_memory_snapshot
 

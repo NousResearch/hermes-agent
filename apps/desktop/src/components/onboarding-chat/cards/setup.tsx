@@ -1,33 +1,76 @@
 /**
- * The three setup picks — accent, connectors, layout.
- *
- * Picks apply live. The shared catalog keeps cards and previews in agreement
- * without asking the model to enumerate the options.
+ * The three setup cards: accent, connectors, and layout. The accent and layout picks apply as soon as they are
+ * clicked; the connector picks are only recorded. The option lists come from onboarding-chat/options.tsx, so the cards
+ * and the previews stay in agreement without the model listing the options.
  */
 
 import { useStore } from '@nanostores/react'
+import { Puzzle } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
 
+import { useSessionView } from '@/app/chat/session-view'
 import { $chatLayoutPicked, assembleChatOnboarding } from '@/components/onboarding-chat/assembly'
 import { CardFrame, type CardProps, useCardCommit } from '@/components/onboarding-chat/cards/frame'
 import { Chip } from '@/components/onboarding-chat/chip'
 import {
   accentsFor,
   AccentSwatch,
-  CONNECTORS,
   LayoutPreviewCard,
   LAYOUTS,
-  NOUS_ACCENT
+  NOUS_ACCENT,
+  orderConnectorPicks
 } from '@/components/onboarding-chat/options'
 import type { LayoutNode } from '@/components/pane-shell/tree/model'
 import { ConnectorLogo } from '@/components/ui/connector-logo'
+import { SearchField } from '@/components/ui/search-field'
 import { registry } from '@/contrib/registry'
+import { connectorIconUrl, connectorTitle } from '@/lib/connector-tools'
+import { cn } from '@/lib/utils'
+import { type ConnectorCatalog, useConnectorCatalog } from '@/store/connector-catalog'
 import { $onboardingAnswers, setOnboardingAnswers } from '@/store/onboarding-answers'
+import { type OnboardingPlugin, pluginNeedsApp, useOnboardingPlugins } from '@/store/onboarding-plugins'
 import { useTheme } from '@/themes'
 import { setAccentOverride } from '@/themes/accent-override'
+import { normalizeHex } from '@/themes/color'
 
 export function ConnectorsCard({ locked }: CardProps) {
+  const view = useSessionView()
+  const storedId = useStore(view.$storedId)
+  const runtimeId = useStore(view.$runtimeId)
+  const { commit, done } = useCardCommit('connectors')
+  const catalog = useConnectorCatalog(storedId, runtimeId)
+  const plugins = useOnboardingPlugins(storedId)
+
+  return <ConnectorPicks catalog={catalog} commit={commit} done={done} locked={locked} plugins={plugins} />
+}
+
+interface ConnectorPicksProps {
+  catalog: ConnectorCatalog
+  commit: (summary: string) => boolean
+  done: boolean
+  locked: boolean
+  plugins: OnboardingPlugin[]
+}
+
+/** The picks themselves, fed by ConnectorsCard. Plugins lead the one group (NS-960 D1). */
+export function ConnectorPicks({ catalog, commit, done, locked, plugins }: ConnectorPicksProps) {
   const answers = useStore($onboardingAnswers)
-  const { commit, done } = useCardCommit()
+  const [query, setQuery] = useState('')
+
+  // Only what the gateway carries. A pick is a slug the build chat can hand
+  // straight to manage_connections; a name the gateway does not carry would be
+  // a pick the build chat cannot honour.
+  const rows = useMemo(() => (catalog.status === 'ready' ? orderConnectorPicks(catalog.rows) : []), [catalog])
+  const search = query.trim().toLowerCase()
+
+  const shown = search
+    ? rows.filter(row => connectorTitle(row.connector).toLowerCase().includes(search))
+    : rows.slice(0, Math.max(0, 12 - plugins.length))
+
+  const shownPlugins = search ? plugins.filter(plugin => plugin.title.toLowerCase().includes(search)) : plugins
+  const picked = rows.filter(row => answers.connectors.includes(row.connector))
+  const pickedPlugins = plugins.filter(plugin => answers.plugins.includes(plugin.name))
+  const pickedCount = picked.length + pickedPlugins.length
 
   const toggle = (id: string) =>
     setOnboardingAnswers({
@@ -36,51 +79,147 @@ export function ConnectorsCard({ locked }: CardProps) {
         : [...answers.connectors, id]
     })
 
+  const togglePlugin = (name: string) =>
+    setOnboardingAnswers({
+      plugins: answers.plugins.includes(name)
+        ? answers.plugins.filter(item => item !== name)
+        : [...answers.plugins, name]
+    })
+
+  const summary = () => {
+    const apps = picked.length > 0 ? picked.map(row => row.connector).join(', ') : 'none for now'
+    const tools = pickedPlugins.map(plugin => plugin.name).join(', ')
+
+    return `apps I use, not connected yet: ${apps}${tools ? `; plugins picked, not installed yet: ${tools}` : ''}`
+  }
+
+  // Nothing to pick from: the toolset is off or the gateway is unreachable.
+  // The step still has to end, so the card offers Skip.
+  if (plugins.length === 0 && (catalog.status === 'unavailable' || (catalog.status === 'ready' && rows.length === 0))) {
+    return (
+      <CardFrame
+        continueLabel="Skip this"
+        done={done}
+        locked={locked}
+        onContinue={() => commit('apps I use: none for now')}
+      >
+        <p className="text-sm text-muted-foreground">
+          Connections aren’t available right now — this can be set up later.
+        </p>
+      </CardFrame>
+    )
+  }
+
   return (
     <CardFrame
+      continueLabel={pickedCount > 0 ? `Continue with ${pickedCount}` : 'None of these'}
+      disabled={catalog.status === 'loading'}
       done={done}
       locked={locked}
-      onContinue={() => {
-        const picked = CONNECTORS.filter(connector => answers.connectors.includes(connector.id))
-
-        commit(
-          `apps I use, not connected yet: ${picked.length > 0 ? picked.map(c => c.name).join(', ') : 'none for now'}`
-        )
-      }}
+      onContinue={() => void commit(summary())}
     >
-      <div className="grid grid-cols-3 gap-2">
-        {CONNECTORS.map(connector => (
-          <Chip
-            icon={
-              <ConnectorLogo
-                className="size-7 rounded-full text-sm"
-                connector={{ homepage: connector.homepage, name: connector.id, title: connector.name }}
+      {catalog.status === 'loading' ? (
+        <div className="grid grid-cols-3 gap-2">
+          {Array.from({ length: 9 }, (_, index) => (
+            <div className="h-10 animate-pulse rounded-lg bg-muted/40" key={index} />
+          ))}
+        </div>
+      ) : (
+        <>
+          {rows.length + plugins.length > 12 ? (
+            <SearchField onChange={setQuery} placeholder="Find an app" value={query} />
+          ) : null}
+          <div className="grid max-h-72 grid-cols-3 gap-2 overflow-y-auto">
+            {shownPlugins.map(plugin => (
+              <Chip
+                className={cn(pluginNeedsApp(plugin) && 'opacity-60')}
+                icon={
+                  <span className="grid size-7 shrink-0 place-items-center rounded-full bg-background text-muted-foreground">
+                    <Puzzle className="size-4" />
+                  </span>
+                }
+                key={`plugin:${plugin.name}`}
+                label={plugin.title}
+                on={answers.plugins.includes(plugin.name)}
+                onToggle={() => togglePlugin(plugin.name)}
+                sub={pluginNeedsApp(plugin) ? plugin.sentence : 'Plugin'}
               />
-            }
-            key={connector.id}
-            label={connector.name}
-            on={answers.connectors.includes(connector.id)}
-            onToggle={() => toggle(connector.id)}
-          />
-        ))}
-      </div>
+            ))}
+            {shown.map(row => (
+              <Chip
+                icon={
+                  <ConnectorLogo
+                    className="size-7 rounded-full text-sm"
+                    connector={{
+                      iconUrl: connectorIconUrl(row.connector),
+                      name: row.connector,
+                      title: connectorTitle(row.connector)
+                    }}
+                  />
+                }
+                key={row.connector}
+                label={connectorTitle(row.connector)}
+                on={answers.connectors.includes(row.connector)}
+                onToggle={() => toggle(row.connector)}
+              />
+            ))}
+          </div>
+        </>
+      )}
+      {/* Picking is a preference, not an authorization: nothing is signed into
+          here. Saying so is what keeps the Connect cards later from reading as
+          a second ask for the same thing. */}
+      <p className="text-xs text-muted-foreground">
+        <strong className="font-medium text-foreground">Nothing connects or installs yet.</strong> Hermes will offer to
+        link these, or install a plugin, when a task needs them, and asks first.
+      </p>
     </CardFrame>
   )
 }
 
-export function LookCard({ locked }: CardProps) {
+function pickAccent(value: string, receipt?: string): void {
+  const hex = normalizeHex(value)
+
+  if (!hex) {
+    return
+  }
+
+  const accent = hex === NOUS_ACCENT ? null : hex
+
+  setOnboardingAnswers({
+    accent,
+    ...(receipt ? { committed: [...$onboardingAnswers.get().committed, receipt] } : {})
+  })
+  setAccentOverride(accent)
+}
+
+export function LookCard({ attrs, locked, messageId }: CardProps) {
   const answers = useStore($onboardingAnswers)
   const { renderedMode } = useTheme()
-  const { commit, done } = useCardCommit()
+  const { commit, done } = useCardCommit('look')
   const accents = accentsFor(renderedMode === 'dark')
   const accent = answers.accent ?? NOUS_ACCENT
   const picked = accents.find(swatch => swatch.hex === accent.toLowerCase())
 
-  const pickAccent = (hex: string) => {
-    const seed = hex === NOUS_ACCENT ? null : hex
+  const requested = normalizeHex(attrs.value)
+  const receipt = messageId && requested ? `look-color:${JSON.stringify([messageId, requested])}` : null
 
-    setOnboardingAnswers({ accent: seed })
-    setAccentOverride(seed)
+  useEffect(() => {
+    if (locked || done) {
+      return
+    }
+
+    if (requested && receipt && !answers.committed.includes(receipt)) {
+      pickAccent(requested, receipt)
+    } else {
+      // Restore an unfinished choice without replaying a historical directive over a newer pick.
+      setAccentOverride(answers.accent)
+    }
+  }, [answers.accent, answers.committed, done, locked, receipt, requested])
+
+  // Chat choices update the existing picker; they do not create a second question card.
+  if (attrs.value !== undefined) {
+    return null
   }
 
   return (
@@ -95,6 +234,7 @@ export function LookCard({ locked }: CardProps) {
             onPick={() => pickAccent(swatch.hex)}
           />
         ))}
+        <AccentSwatch active={!picked} hex={accent} name="Custom color" onColorChange={pickAccent} />
       </div>
     </CardFrame>
   )
@@ -102,31 +242,32 @@ export function LookCard({ locked }: CardProps) {
 
 export function LayoutCard({ locked }: CardProps) {
   const answers = useStore($onboardingAnswers)
-  const { commit, done } = useCardCommit()
-  // The stored answer defaults to 'basic', but the CHOICE is the point of this
-  // step — nothing renders selected (and Continue stays off) until they click.
-  // Store-backed: the pick's own layout apply remounts this card (the pane
-  // tree is replaced), so local state would drop the highlight instantly.
+  const { commit, done } = useCardCommit('layout')
+  // The stored answer defaults to 'basic', so nothing renders selected and Continue stays disabled until the user
+  // clicks. The flag lives in a store because applying the picked layout replaces the pane tree and remounts this
+  // card, which would clear local state.
   const picked = useStore($chatLayoutPicked)
 
   const pickLayout = (id: string) => {
     $chatLayoutPicked.set(true)
     setOnboardingAnswers({ layout: id })
 
-    // Live, behind the chat — the panes rearrange as the option is clicked.
+    // The pick answers "how much of the machinery do you want to see" too;
+    // Skip leaves the mode alone, so only an actual choice sets it.
+    const layout = LAYOUTS.find(candidate => candidate.id === id)
+
     const preset = registry.getArea('layouts').find(contribution => contribution.id === id)
 
     if (!preset?.data) {
       return
     }
 
-    // Every pick goes through assembly, including re-picks. The first grows
-    // the window and places the panes, keeping the chat (and the cursor over
-    // this card) pixel-fixed; later ones re-arrange in place. Swapping just the
-    // preset tree on a re-pick left the previous layout's dismissals and dock
-    // records in force, and the two layouts came up mixed together.
+    // Every pick goes through assembly, including re-picks. The first pick grows the window and places the panes,
+    // holding the chat and the cursor over this card at the same screen position; later picks rearrange in place.
+    // Swapping only the preset tree on a re-pick kept the previous layout's dismissals and dock records, and the two
+    // layouts came up mixed together.
     // SAFETY: Layout presets declare data: LayoutNode (pane-shell/tree/presets.ts).
-    assembleChatOnboarding(preset.id, preset.data as LayoutNode)
+    assembleChatOnboarding(preset.id, preset.data as LayoutNode, layout?.mode)
   }
 
   return (
@@ -144,6 +285,7 @@ export function LayoutCard({ locked }: CardProps) {
         {LAYOUTS.map(layout => (
           <LayoutPreviewCard
             active={picked && answers.layout === layout.id}
+            description={layout.description}
             key={layout.id}
             name={layout.name}
             onSelect={() => pickLayout(layout.id)}

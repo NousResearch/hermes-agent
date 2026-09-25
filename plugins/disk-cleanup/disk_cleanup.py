@@ -54,16 +54,20 @@ def load_tracked() -> List[Dict[str, Any]]:
     tf.parent.mkdir(parents=True, exist_ok=True)
     if not tf.exists():
         return []
-    with contextlib.suppress(ValueError):
-        return json.loads(tf.read_text(encoding="utf-8"))
-    bak = tf.with_suffix(".json.bak")
-    if bak.exists():
-        with contextlib.suppress(Exception):
-            data = json.loads(bak.read_text(encoding="utf-8"))
-            _log("WARN: tracked.json corrupted — restored from .bak")
-            return data
-    _log("WARN: tracked.json corrupted, no backup — starting fresh")
-    return []
+
+    try:
+        return json.loads(tf.read_text(encoding="utf-8-sig"))
+    except (json.JSONDecodeError, ValueError):
+        bak = tf.with_suffix(".json.bak")
+        if bak.exists():
+            try:
+                data = json.loads(bak.read_text(encoding="utf-8-sig"))
+                _log("WARN: tracked.json corrupted — restored from .bak")
+                return data
+            except Exception:
+                pass
+        _log("WARN: tracked.json corrupted, no backup — starting fresh")
+        return []
 
 
 def save_tracked(tracked: List[Dict[str, Any]]) -> None:
@@ -85,7 +89,11 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "logs", "memories", "sessions", "cron", "cronjobs",
     "cache", "skills", "plugins", "disk-cleanup", "optional-skills",
     "hermes-agent", "backups", "profiles", ".worktrees",
-    "patches", "projects", "skins", "themes", "contributors"})
+    "patches", "projects", "skins", "themes", "contributors",
+    # Per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
+    "workspace", "plans", "home",
+    # Kanban owns its own lifecycle (workspaces GC'd at terminal state, attachments live with the task).
+    "kanban"})
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
     ".git", "node_modules", "venv", ".venv", "site-packages", "__pycache__"})
@@ -98,24 +106,39 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     "auth.json", "hermes-agent",
     # User-authored project trees — never sweep empty directories inside these (#75403).
     # User-authored and project trees — never auto-delete files inside these just because they happen to be
-    # named test_* or tmp_* (#75403, also #32164, #37721).
+    # named test_* or tmp_* (#75403, also #32164, #37721). ``workspace``, ``plans`` and ``home`` are the
+    # per-profile user trees bootstrapped by ``profiles.py::_PROFILE_DIRS`` (#112859).
     "patches", "projects", "skins", "themes", "contributors",
-    "profiles", "backups", "optional-skills"})
+    "profiles", "backups", "optional-skills", "workspace", "plans", "home",
+    # Kanban task attachments/workspaces have their own lifecycle; test_* staging files there are
+    # not disposable (#114552).
+    "kanban"})
 
-@functools.lru_cache(maxsize=1)  # built lazily so HERMES_HOME resolves once
-def _protected_cron_paths() -> frozenset:
+
+def _is_protected_dir(p: Path) -> bool:
+    """A tracked DIRECTORY that is HERMES_HOME itself or lives under a protected top-level tree
+    (``cache/terminal`` holds terminal snapshots) is never rmtree'd; only its files age out."""
+    if not p.is_dir():
+        return False
+    with contextlib.suppress(ValueError, OSError):
+        rel = p.resolve().relative_to(get_hermes_home())
+        return not rel.parts or rel.parts[0] in _EMPTY_DIR_PROTECTED_TOP_LEVEL
+    return False
+
+@functools.lru_cache(maxsize=8)  # keyed by home: a multiplexed process serves several profiles
+def _protected_cron_paths(home: Path) -> frozenset:
     """Defense-in-depth for quick(): EXACT cron control-plane paths (``cron/``, ``output/`` root,
     ``jobs.json``, ``.tick.lock``) never deleted regardless of stored category (stale tracked.json).
     Never widen to everything under ``cron/output/``: run artifacts there are disposable; only
     wholesale deletion of ``output/`` is fatal."""
-    return frozenset(str(x) for parent in ("cron", "cronjobs") for base in (get_hermes_home() / parent,)
+    return frozenset(str(x) for parent in ("cron", "cronjobs") for base in (home / parent,)
                      for x in (base, base / "output", base / "jobs.json", base / ".tick.lock"))
 
 
 # Paths under $HERMES_HOME that must NEVER be deleted by quick(), regardless of what the stored category
 # says. This is a defense-in-depth guard against stale tracked.json entries from before #34840.
 def _is_protected_cron_path(p: Path) -> bool:
-    return str(p.resolve()) in _protected_cron_paths()
+    return str(p.resolve()) in _protected_cron_paths(get_hermes_home())
 
 
 def fmt_size(n: float) -> str:
@@ -212,8 +235,8 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
     auto, prompt = [], []
     for item, p, age in _live_items(load_tracked(), datetime.now(timezone.utc)):
         cat = item["category"]
-        # Stale cron-output entries are skipped by quick(); omit them here too.
-        if cat == "cron-output" and guess_category(p) != "cron-output":
+        # Stale cron-output entries and protected dirs are skipped by quick(); omit them here too.
+        if (cat == "cron-output" and guess_category(p) != "cron-output") or _is_protected_dir(p):
             continue
         if _is_auto_delete(cat, age):
             auto.append(item)
@@ -236,6 +259,9 @@ def quick() -> Dict[str, Any]:
         # Hard safety net even if re-validation above somehow let it through.
         if _is_protected_cron_path(p):
             _log(f"SKIP protected cron path: {p}")
+            continue
+        if _is_protected_dir(p):
+            _log(f"SKIPPED: {p} (protected top-level dir)")
             continue
         if not _is_auto_delete(cat, age):
             new_tracked.append(item)
@@ -314,6 +340,20 @@ _TEST_PATTERNS = ("test_", "tmp_")
 _TEST_SUFFIXES = (".test.py", ".test.js", ".test.ts", ".test.md")
 
 
+def _inside_git_worktree(path: Path) -> bool:
+    """True if *path* sits inside a Git worktree/checkout: a ``.git`` entry (a directory in a
+    normal checkout, a pointer FILE in a linked worktree) exists anywhere on the directory chain.
+    Files there are Git-owned — a ``test_*`` file in a worktree is typically a committed
+    regression test, not session scratch (#115295).
+
+    Only ``.git`` entries strictly BELOW ``HERMES_HOME`` count for in-home paths: a home kept
+    in a dotfiles repo (``~/.git``) would otherwise make every scratch file look Git-owned."""
+    parents = list(path.resolve().parents)
+    with contextlib.suppress(ValueError):
+        parents = parents[: parents.index(get_hermes_home())]
+    return any((parent / ".git").exists() for parent in parents)
+
+
 def guess_category(path: Path) -> Optional[str]:
     """Category label for *path*, or None if we shouldn't track it (``post_tool_call`` hook)."""
     if not is_safe_path(path):
@@ -321,7 +361,7 @@ def guess_category(path: Path) -> Optional[str]:
     with contextlib.suppress(ValueError):  # not under HERMES_HOME (/tmp/hermes-*) — name rules only
         rel = path.resolve().relative_to(get_hermes_home())
         top = rel.parts[0] if rel.parts else ""
-        if top in _NEVER_TRACK_TOP_LEVEL:
+        if top in _NEVER_TRACK_TOP_LEVEL or _is_protected_dir(path):
             return None
         if top in ("cron", "cronjobs"):
             # Only the disposable ``output/`` subtree; control-plane state (jobs.json,
@@ -330,4 +370,9 @@ def guess_category(path: Path) -> Optional[str]:
         if top == "cache":
             return "temp"
     name = path.name
-    return "test" if name.startswith(_TEST_PATTERNS) or name.endswith(_TEST_SUFFIXES) else None
+    if name.startswith(_TEST_PATTERNS) or name.endswith(_TEST_SUFFIXES):
+        # Git-owned trees manage their own files: never classify a test_* there as disposable,
+        # so neither tracking nor quick() (which re-validates stored "test" entries through
+        # this function) touches it (#115295).
+        return None if _inside_git_worktree(path) else "test"
+    return None

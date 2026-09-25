@@ -19,7 +19,6 @@ from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_cli.status_auth import (  # renderers wired into _SECTIONS below
     _render_api_keys, _render_apikey_providers, _render_auth_providers, _render_nous_gateway)
 from hermes_constants import OPENROUTER_MODELS_URL
-from hermes_constants import is_termux as _is_termux
 
 
 def check_mark(ok: bool) -> str:
@@ -137,7 +136,7 @@ def _banner(lines, *styles) -> None:
 
 def _render_header(ctx):
     _banner(("┌─────────────────────────────────────────────────────────┐",
-             "│                 ⚕ Hermes Agent Status                  │",
+             "│                 ☤ Hermes Agent Status                  │",
              "└─────────────────────────────────────────────────────────┘"), Colors.CYAN)
     paused = _estop_status_line()
     if paused:
@@ -173,7 +172,7 @@ def _render_terminal(ctx):
         auth_status = describe_vercel_auth()
         _kv("Runtime:", os.getenv('TERMINAL_VERCEL_RUNTIME') or terminal_cfg.get('vercel_runtime') or 'node24')
         _kv_flag("SDK:", importlib.util.find_spec("vercel") is not None, "installed",
-                 "missing (install: pip install 'hermes-agent[vercel]')")
+                 "missing (run hermes setup terminal and select Vercel Sandbox, then restart Hermes)")
         _kv("Auth:", f"{check_mark(auth_status.ok)} {auth_status.label}")
         for line in auth_status.detail_lines:
             _kv("Auth detail:", line)
@@ -234,15 +233,16 @@ def _render_gateway(ctx):
             _kv("PID(s):", _format_gateway_pids(snapshot.gateway_pids))
         if snapshot.running and (served := multiplexer_served_secondaries()):
             _kv("Serves:", ", ".join(served))
+            from hermes_cli.gateway_multiplex_served import served_profile_ingress_urls
+            for name, per_platform in sorted(served_profile_ingress_urls().items()):
+                for platform, url in sorted(per_platform.items()):
+                    _kv(f"  {name}/{platform}:", url)
         if snapshot.has_process_service_mismatch:
             _kv("Service:", "installed but not managing the current running gateway")
-        elif _is_termux() and not snapshot.gateway_pids:
-            _kv("Start with:", "hermes gateway")
-            _kv("Note:", "Android may stop background jobs when Termux is suspended")
         elif snapshot.service_installed and not snapshot.service_running:
             _kv("Service:", "installed but stopped")
     except Exception:
-        platform = "termux" if _is_termux() else "linux" if sys.platform.startswith("linux") else sys.platform
+        platform = "linux" if sys.platform.startswith("linux") else sys.platform
         status_text, manager = _GATEWAY_FALLBACK.get(platform, ("N/A", "(not supported on this platform)"))
         _kv("Status:", color(status_text, Colors.DIM))
         _kv("Manager:", manager)
@@ -274,7 +274,7 @@ def _render_sessions(ctx):
     # pre-migration installs.
     try:
         from hermes_state import SessionDB
-        db = SessionDB()
+        db = SessionDB(read_only=True)  # status only reads; never a writer beside a running gateway
         try:
             gateway_rows = db.list_gateway_sessions(active_only=True) or []
         finally:
@@ -292,7 +292,7 @@ def _render_sessions(ctx):
         _kv("Active:", 0)
     else:
         try:
-            data = _load_json(sessions_file)
+            data = _load_json(sessions_file, encoding="utf-8-sig")
             entries = [k for k in data if not str(k).startswith("_")] if isinstance(data, dict) else []
             _kv("Active:", f"{len(entries)} session(s)")
         except Exception:

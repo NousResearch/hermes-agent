@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from agent.account_usage import AccountUsageSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -29,8 +32,8 @@ def _profile_user_agent() -> str:
     (OpenCode Zen, etc.) sit behind a WAF that returns 403 for that.
     """
     try:
-        from hermes_cli import __version__ as _ver  # lazy: avoid layer cycle at import time
-        return f"hermes-cli/{_ver}"
+        from hermes_cli.version_info import get_version_info  # lazy: avoid layer cycle at import time
+        return f"hermes-cli/{get_version_info().base_version}"
     except Exception:
         return "hermes-cli"
 
@@ -55,6 +58,22 @@ class ProviderProfile:
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
+    # False → fetch_models returns None without a network call (catalog comes from an SDK/subprocess).
+    supports_model_listing: bool = True
+
+    # ── Provider-owned auth (optional; non-api-key plugins) ──────────
+    # ``auth_handler(action, args) -> bool``: ``hermes auth add|status|logout|refresh <name>`` calls it
+    # FIRST with the parsed CLI namespace; truthy = the plugin owned the action, falsy = built-in path.
+    # ``refresh_credential(entry) -> Mapping | None``: the credential pool's refresh of a pooled OAuth
+    # row — return the rotated fields (``access_token``, ``refresh_token``, ``expires_at_ms`` …) or raise.
+    # Both own their own token endpoints; Hermes passes no secrets beyond the pooled row itself.
+    # ``classify_api_error(error, *, status_code, error_code, message, body, model) -> Mapping | None``:
+    # consulted by ``agent.error_classifier.classify_api_error`` for THIS provider's failures only, after
+    # the generic ``transform_api_error_classification`` plugin hooks and before the built-in pipeline.
+    # Return ``{"reason": <FailoverReason name>, ...hint flags}`` to override, ``None`` to decline.
+    auth_handler: Callable[[str, Any], Any] | None = None
+    refresh_credential: Callable[[Any], Any] | None = None
+    classify_api_error: Callable[..., Any] | None = None
 
     # ── Vision support ────────────────────────────────────────
     # True when the provider's API accepts image content inside
@@ -78,6 +97,11 @@ class ProviderProfile:
     # top-level fields rather than ignoring them.
     supports_prompt_cache_key: bool = False
 
+    # Private replay carriers use a namespaced '<provider>.native_assistant' type
+    # in reasoning_details. Only this profile may receive its matching carrier;
+    # other providers (including an unregistered fallback) get ordinary details only.
+    native_reasoning_details_type: str | None = None
+
     # ── External-process providers (auth_type="external_process") ──
     # An agent CLI driven over stdio (ACP) rather than an HTTP endpoint. These
     # describe how to launch it; hermes_cli/auth.py's
@@ -93,6 +117,9 @@ class ProviderProfile:
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
     fallback_models: tuple = ()
+    # model_aliases: short name -> id in fallback_models, for providers whose catalog is not
+    # in models.dev (external processes); `/model <alias>` resolves here before core guessing.
+    model_aliases: dict = field(default_factory=dict)
 
     # hostname: base hostname for URL→provider reverse-mapping in model_metadata.py
     # e.g. "api.gmi-serving.com". Derived from base_url when empty.
@@ -105,12 +132,30 @@ class ProviderProfile:
     # Temperature: None = use caller's default, OMIT_TEMPERATURE = don't send
     fixed_temperature: Any = None
     default_max_tokens: int | None = None
+    # ``response_format`` types the API rejects outright (e.g. ("json_schema",)); aux requests omit them up front.
+    unsupported_response_formats: tuple = ()
     default_aux_model: str = (
         ""  # cheap model for auxiliary tasks (compression, vision, etc.)
     )
     # empty = use main model
 
+    # Per-model metadata in the canonical model_overrides schema. Partial entries
+    # patch catalog metadata; explicit user overrides still win. Exact model IDs.
+    model_capabilities: dict[str, dict[str, Any]] = field(default_factory=dict)
+
     # ── Hooks (override in subclass for complex providers) ───
+
+    def fetch_account_usage(
+        self, *, base_url: str | None = None, api_key: str | None = None
+    ) -> AccountUsageSnapshot | None:
+        """Return an account-usage snapshot for this provider, if available.
+
+        The ``/usage`` command invokes this only when no built-in account
+        usage fetcher owns the provider. Implementations may make their
+        provider-specific request and must return an ``AccountUsageSnapshot``
+        or ``None``; exceptions fail open at the dispatch boundary.
+        """
+        return None
 
     def resolve_aux_model(self, *, vision: bool = False) -> str:
         """Return a LIVE cheap-model id for auxiliary tasks, or "".
@@ -158,6 +203,16 @@ class ProviderProfile:
         """
         return {}
 
+    def default_reasoning_config(self, model: str | None = None) -> dict | None:
+        """Reasoning config the main loop sends when ``agent.reasoning_effort`` is unset.
+
+        None (default) hands the unset state to ``build_api_kwargs_extras`` as ``reasoning_config=None``,
+        where each profile already decides (Nous/OpenRouter fill medium; Anthropic omits). A profile
+        that would otherwise leave the route's own default in charge returns the config here so the
+        agent records it as what went on the wire (the reasoning-rejection ladder reads that).
+        """
+        return None
+
     def build_api_kwargs_extras(
         self,
         *,
@@ -197,6 +252,14 @@ class ProviderProfile:
         Default: None (no provider-specific vision model — the caller falls
         back to the user's chat model or the aggregator chain).
         """
+        return None
+
+    def get_model_context_length(self, model: str) -> int | None:
+        """Provider-qualified context bound; explicit user overrides take precedence."""
+        return None
+
+    def get_usage_cost(self, model: str, usage: Any) -> Any | None:
+        """Optional CostResult from canonical usage; distinguish estimates from invoices."""
         return None
 
     def get_max_tokens(self, model: str | None) -> int | None:
@@ -267,6 +330,16 @@ class ProviderProfile:
         """
         return None
 
+    def setup_status(self, **kwargs: Any) -> dict[str, Any] | None:
+        """External-process providers: ``{available, logged_in, plan, detail, login_command}`` from the
+        CLI itself so setup can gate on login. ``None`` = nothing to report beyond executable presence."""
+        return None
+
+    def discover_models(self, **kwargs: Any) -> list[dict[str, Any]] | None:
+        """External-process providers: the account's live picker as ``[{id, label, note}]`` without
+        any inference request; ``None`` falls back to ``fallback_models``."""
+        return None
+
     def fetch_models(
         self,
         *,
@@ -300,6 +373,8 @@ class ProviderProfile:
         Callers must always fall back to the static _PROVIDER_MODELS list
         when this returns None.
         """
+        if not self.supports_model_listing:
+            return None
         caller_base = (base_url or "").strip()
         effective_base = caller_base or self.base_url
         custom_base = bool(caller_base) and (

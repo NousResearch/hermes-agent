@@ -122,7 +122,7 @@ def _set_model(rid, params, key, value, session):
             if failed_ready is None:
                 return _err(rid, 5032, session.get("agent_error") or "agent initialization failed")
             if not failed_ready.wait(timeout=30.0):
-                return _err(rid, 5032, "agent initialization timed out")
+                return _err(rid, 5032, AGENT_STILL_STARTING)
         failed_agent_init = (
             failed_agent_init and session.get("agent") is None and session.get("agent_error") is not None
             and session.get("agent_ready") is failed_ready and failed_ready.is_set())
@@ -147,8 +147,11 @@ def _set_model(rid, params, key, value, session):
         if parse_model_switch_args(str(value)).is_once:
             result = _apply_model_switch("", {"agent": None}, value, confirm_expensive_model=confirmed)
         else:
-            return _err(rid, 4001, "config.set model requires a live session; "
-                        "use Settings -> Models to change the profile default")
+            # One string for every client: the Ink TUI (dashboard /chat, `hermes --tui`) has no
+            # Settings; the dashboard has a Models page; only the Desktop has Settings -> Models.
+            return _err(rid, 4001, "config.set model requires a live session; to change the "
+                        "profile default run /setup, or use the Models page (dashboard) / "
+                        "Settings -> Models (Desktop)")
     return _kv(rid, key, result["value"], warning=result["warning"],
                confirm_required=result.get("confirm_required", False),
                confirm_message=result.get("confirm_message", ""), scope=result.get("scope", "session"))
@@ -168,7 +171,7 @@ def _set_fast(rid, params, key, value, session):
     else:
         current_tier = _load_service_tier()
     if raw == "status":
-        return _kv(rid, key, {"priority": "fast", None: "normal"}.get(current_tier, current_tier))
+        return _kv(rid, key, {"priority": "fast", None: "normal", "": "normal"}.get(current_tier, current_tier))
     nv = _FAST_WORDS.get(raw, ("normal" if current_tier == "priority" else "fast") if raw in {"", "toggle"} else None)
     if nv is None:
         return _err(rid, 4002, f"unknown fast mode: {value}")
@@ -411,7 +414,10 @@ def _set_cwd(rid, params, key, value, session):
     if not os.path.isdir(cwd):
         return _err(rid, 4002, f"working directory does not exist: {raw}")
     _write_config_key("terminal.cwd", cwd)
-    os.environ["TERMINAL_CWD"] = cwd
+    # ``TERMINAL_CWD`` belongs to the launch process. Keep launch-profile updates live, but never
+    # publish an explicit or session-bound secondary profile's cwd into that process-wide carrier.
+    if Path(get_hermes_home()).resolve() == Path(_hermes_home).resolve():
+        os.environ["TERMINAL_CWD"] = cwd
     return _kv(rid, "terminal.cwd", cwd, cwd=cwd, branch=git_probe.branch(cwd))
 
 
@@ -465,12 +471,21 @@ _CONFIG_SETTERS = {
     "cwd": _set_cwd, "terminal.cwd": _set_cwd, "workdir": _set_cwd,
     "prompt": _set_prompt, "personality": _set_personality, "skin": _set_skin}
 
+# Keys whose sessionless branch writes a different, wider scope than the session branch (config.yaml's
+# agent.* for every surface, the process env every later child inherits). A non-empty session_id this
+# backend no longer holds (reaped / re-minted) is a stale session, not "no session": it answers 4001 so
+# the client resumes, never the global write. An explicit scope="global" is still honoured.
+_SESSION_SCOPED_KEYS = frozenset({"model", "fast", "yolo", "reasoning"})
+
 
 @method("config.set")
 @_profile_scoped
 def _(rid, params: dict) -> dict:
     key, value = params.get("key", ""), params.get("value", "")
     session = _sessions.get(params.get("session_id", ""))
+    if session is None and params.get("session_id") and key in _SESSION_SCOPED_KEYS \
+            and _word(params.get("scope")) != "global":
+        return _sess_nowait(params, rid)[1]
     handler = _CONFIG_SETTERS.get(key)
     if handler is None and key.startswith("details_mode."):
         handler = _set_details_section

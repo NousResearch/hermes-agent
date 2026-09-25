@@ -41,25 +41,45 @@ def build_gateway_parser(
     gateway_subparsers = gateway_parser.add_subparsers(dest="gateway_command")
 
     gateway_run = gateway_subparsers.add_parser(
-        "run", help="Run gateway in foreground (recommended for WSL, Docker, Termux)")
-    gateway_run.add_argument("-v", "--verbose", action="count", default=0,
-        help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)")
-    _flag(gateway_run, "-q", "--quiet", help="Suppress all stderr log output")
-    _flag(
-        gateway_run, "--replace", help="Replace any existing gateway instance (useful for systemd)")
-    _flag(gateway_run, "--force",
-        help="Start a foreground gateway even when a systemd/launchd/s6 service "
+        "run", help="Run gateway in foreground (recommended for WSL and Docker)"
+    )
+    gateway_run.add_argument(
+        "-v",
+        "--verbose",
+        action="count",
+        default=0,
+        help="Increase stderr log verbosity (-v=INFO, -vv=DEBUG)",
+    )
+    gateway_run.add_argument(
+        "-q", "--quiet", action="store_true", help="Suppress all stderr log output"
+    )
+    gateway_run.add_argument(
+        "--replace",
+        action="store_true",
+        help="Replace any existing gateway instance (useful for systemd)",
+    )
+    gateway_run.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Start a foreground gateway even when a systemd/launchd/s6 service "
             "already supervises this profile. Without --force, the command "
             "refuses because a second dispatcher escapes the service and can "
-            "corrupt shared gateway state.")
-    _flag(gateway_run, "--no-supervise",
-        help="Inside the s6-overlay Docker image, normally `gateway run` is "
+            "corrupt shared gateway state."
+        ),
+    )
+    gateway_run.add_argument(
+        "--no-supervise",
+        action="store_true",
+        help=(
+            "Inside the s6-overlay Docker image, normally `gateway run` is "
             "automatically redirected to the supervised s6 service (so the "
             "gateway gets auto-restart on crash, plus a supervised dashboard "
             "if HERMES_DASHBOARD is set). Pass --no-supervise to opt out and "
             "get the historical pre-s6 foreground behavior: the gateway is "
             "the container's main process and the container exits with the "
-            "gateway's exit code. No effect outside an s6 container.")
+            "gateway's exit code. No effect outside an s6 container."),
+    )
     _flag(gateway_run, "--external-supervisor",
         help="Declare that an external process manager owns this foreground "
             "gateway. In-chat restarts and updates exit back to that manager "
@@ -94,6 +114,7 @@ def build_gateway_parser(
     _add_system_flag(gateway_status)
     _add_compat_platform_flag(gateway_status)
 
+    # gateway install
     gateway_install = gateway_subparsers.add_parser(
         "install", help="Install gateway as a systemd/launchd background service")
     _flag(gateway_install, "--force",
@@ -129,8 +150,21 @@ def build_gateway_parser(
         help="List what would be removed without doing it")
     _flag(gateway_migrate_legacy, "-y", "--yes", dest="yes", help="Skip the confirmation prompt")
 
+    gateway_migrate = gateway_subparsers.add_parser(
+        "migrate", help="Converge every per-profile gateway onto the ONE host gateway",
+        description="Converge this host onto the one-gateway-per-host model: stop and uninstall "
+            "each secondary profile's gateway and its supervisor unit (systemd, launchd, Windows "
+            "Scheduled Task), then restart the default profile's gateway so it serves every "
+            "profile. Runs a preflight first (duplicate bot tokens, port-binding platforms "
+            "without a /p/<profile>/ ingress) and changes nothing when blocked. Safe to re-run: a "
+            "half-migrated host converges on the next run. Per-profile gateways are not a "
+            "supported topology any more, so there is no rollback command.")
+    _flag(gateway_migrate, "--multiplex", dest="multiplex", help="Converge onto the one host gateway (default)")
+    _flag(gateway_migrate, "--dry-run", dest="dry_run", help="Print the plan and blockers without changing anything")
+    _flag(gateway_migrate, "-y", "--yes", dest="yes", help="Apply without confirmation")
+
     # enroll: redeem a single-use connector token for the per-gateway secret + per-tenant
-    # delivery key, written to .env. See docs/relay-connector-contract.md. EXPERIMENTAL.
+    # delivery key, written to .env. See website/docs/developer-guide/relay-connector-contract.md. EXPERIMENTAL.
     gateway_enroll = gateway_subparsers.add_parser("enroll",
         help="Enroll this gateway with a relay connector (writes relay auth creds to .env)",
         description="Redeem a single-use enrollment token with a relay connector. "

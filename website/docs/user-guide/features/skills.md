@@ -14,18 +14,18 @@ You can also point Hermes at **external skill directories** — additional folde
 
 See also:
 
-- [Bundled Skills Catalog](/reference/skills-catalog)
-- [Official Optional Skills Catalog](/reference/optional-skills-catalog)
+- [Bundled Skills Catalog](../../reference/skills-catalog.md)
+- [Official Optional Skills Catalog](../../reference/optional-skills-catalog.md)
 
 ## Starting with a blank slate
 
 By default every profile is seeded with the bundled skill catalog, and each `hermes update` adds any newly bundled skills. If you want a profile with **no bundled skills** — and that stays empty across updates — you have two paths:
 
-**At install time** (applies to the default `~/.hermes` profile):
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --no-skills
-```
+**At install time** (applies to the default `~/.hermes` profile): the
+installer has no `--no-skills` flag. Its setup stage asks whether to seed the
+bundled catalog when you pick the Blank Slate setup; answering no writes the
+opt-out marker described below. Non-interactive installs seed the catalog, so
+run `hermes skills opt-out` afterwards if you want the profile empty.
 
 **At profile-create time** (named profiles):
 
@@ -41,7 +41,7 @@ hermes skills opt-out --remove   # also delete UNMODIFIED bundled skills (confir
 hermes skills opt-in --sync      # undo: remove the marker and re-seed now
 ```
 
-All three paths write a `.no-bundled-skills` marker into the profile directory. While the marker is present, the installer, `hermes update`, and any skill sync all skip bundled-skill seeding for that profile. Delete the marker (or run `hermes skills opt-in`) to re-enable.
+All of these paths write a `.no-bundled-skills` marker into the profile directory. While the marker is present, the installer, `hermes update`, and any skill sync all skip bundled-skill seeding for that profile. Delete the marker (or run `hermes skills opt-in`) to re-enable.
 
 :::note Safe by default
 `hermes skills opt-out` only stops *future* seeding — it never deletes anything already on disk. The optional `--remove` flag deletes bundled skills **only** when they are unmodified (byte-identical to the version Hermes installed). Skills you have edited, skills installed from the hub, and skills you wrote yourself are always kept.
@@ -76,7 +76,7 @@ Parsing stops at the first token that isn't an installed skill, so arguments
 that happen to start with `/` (like file paths) are never swallowed:
 
 ```bash
-/ocr-and-documents /tmp/scan.pdf extract the tables   # loads one skill; /tmp/scan.pdf is the argument
+/ocr-and-documents ~/.hermes/cache/scratch/scan.pdf extract the tables   # loads one skill; ~/.hermes/cache/scratch/scan.pdf is the argument
 ```
 
 For combinations you use repeatedly, prefer a [skill bundle](#skill-bundles) —
@@ -279,7 +279,7 @@ required_environment_variables:
 
 When a missing value is encountered, Hermes asks for it securely only when the skill is actually loaded in the local CLI. You can skip setup and keep using the skill. Messaging surfaces never ask for secrets in chat — they tell you to use `hermes setup` or `~/.hermes/.env` locally instead.
 
-Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](/user-guide/security#environment-variable-passthrough) for details.
+Once set, declared env vars are **automatically passed through** to `execute_code` and `terminal` sandboxes — the skill's scripts can use `$TENOR_API_KEY` directly. For non-skill env vars, use the `terminal.env_passthrough` config option. See [Environment Variable Passthrough](../security.md#environment-variable-passthrough) for details.
 
 ### Skill Config Settings
 
@@ -297,7 +297,7 @@ metadata:
 
 Settings are stored under `skills.config` in your config.yaml. `hermes config migrate` prompts for unconfigured settings, and `hermes config show` displays them. When a skill loads, its resolved config values are injected into the context so the agent knows the configured values automatically.
 
-See [Skill Settings](/user-guide/configuration#skill-settings) and [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml) for details.
+See [Skill Settings](../configuration.md#skill-settings) and [Creating Skills — Config Settings](../../developer-guide/creating-skills.md#config-settings-configyaml) for details.
 
 ## Skill Directory Structure
 
@@ -388,7 +388,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
+- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/` (or `skills.create_dir` when configured — see below). Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch` (targeted or full rewrite), `write_file`, `remove_file`, or `delete`.
 - **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
@@ -473,6 +473,8 @@ Trust is a repo-level decision, but a repo's skill content changes with every `g
 ### Non-interactive surfaces (cron, API, ACP)
 
 Cron jobs and other non-interactive surfaces inherit your interactive trust decision — they never prompt and never auto-trust. The project root resolves from the surface's working directory (a cron job's `workdir`, via the same mechanism the terminal tool uses). A cron job whose `workdir` is inside a repo you previously trusted loads that repo's project skills; a job in an untrusted or undecided repo loads none.
+
+In the TUI and Desktop the project root follows each **session's workspace** (the directory shown in the sidebar / set with the workspace picker), so starting `hermes --tui` inside a trusted repo registers its project skills as slash commands even when `terminal.cwd` is left at the default placeholder `.`; two sessions open in two repos each see their own.
 
 ## Skill Bundles
 
@@ -592,10 +594,12 @@ holds a small set of files named by topic (a decision table, a recipe, provider 
 extended in place rather than accumulated one file per session. Skills also do not
 restate what is already loaded every turn (the repo's `AGENTS.md`, tool schemas).
 
-`skill_manage` runs an advisory linter on `create` and on `references/` writes and
-returns its findings in the tool result. Two rules exist specifically for this shape:
-`incident-log-shape` (a body dense in PR/issue numbers) and `references-sprawl` (more
-than 60 reference files). They warn; they never block a write.
+`skill_manage` runs an advisory linter on `create`, on `SKILL.md` patches, and on `references/`
+writes and returns its findings in the tool result. Three rules exist specifically for this shape:
+`incident-log-shape` (a body dense in PR/issue numbers), `references-sprawl` (more
+than 60 reference files), and `oversized-body` (a `SKILL.md` body past ~24k chars — `skill_view`
+loads the whole file and it stays in context for the rest of the session). They warn; they never
+block a write.
 
 ### Actions
 
@@ -603,19 +607,26 @@ than 60 reference files). They warn; they never block a write.
 |--------|---------|------------|
 | `create` | New skill from scratch | `name`, `content` (full SKILL.md), optional `category` |
 | `patch` | Targeted fixes (preferred) | `name`, `old_string`, `new_string` |
-| `edit` | Major structural rewrites | `name`, `content` (full SKILL.md replacement) |
+| `patch` with `content` | Major structural rewrites (replaces the whole SKILL.md; `edit` is the legacy alias) | `name`, `content` |
 | `delete` | Remove a skill entirely | `name` |
 | `write_file` | Add/update supporting files | `name`, `file_path`, `file_content` |
 | `remove_file` | Remove a supporting file | `name`, `file_path` |
 
+Each action is advertised as its own shape: the text slot belongs to one action only
+(`content` → create / full rewrite, `new_string` → targeted patch, `file_content` →
+write_file). An op that carries another action's slot — e.g. `file_content` on a
+`create` — is invalid against the tool schema (grammar-constrained local backends never
+emit it) and, if it arrives anyway, is rejected **before any op in the batch is
+applied**, with an error naming the key the text sits in and where to move it.
+
 :::tip
-The `patch` action is preferred for updates — it's more token-efficient than `edit` because only the changed text appears in the tool call.
+The targeted `patch` is preferred for updates — it's more token-efficient than a full rewrite because only the changed text appears in the tool call.
 :::
 
 ### Gating agent skill writes (`skills.write_approval`)
 
 By default the agent writes skills freely — including from the [background
-self-improvement review](/user-guide/features/memory#controlling-memory-writes-write_approval)
+self-improvement review](./memory.md#controlling-memory-writes-write_approval)
 that runs after a turn. If you'd rather approve every skill write first
 (small models that misjudge what they learned, secure environments, or just
 wanting eyes on the self-improvement loop), turn on the write-approval gate:
@@ -643,15 +654,17 @@ reviewed with the same familiar approve/deny flow as dangerous commands:
 The review surface works in the interactive CLI and on messaging platforms
 (diff output is truncated for chat bubbles — read the full diff on the CLI or
 in the pending JSON file). Memory writes have the same gate under
-`memory.write_approval` — see [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
+`memory.write_approval` — see [Controlling memory writes](./memory.md#controlling-memory-writes-write_approval).
 
 > The separate `skills.guard_agent_created` setting is a content scanner
 > (dangerous-pattern heuristics), not an approval gate — the two are
-> independent. See [Guard on agent-created skill writes](/user-guide/configuration#guard-on-agent-created-skill-writes).
+> independent. See [Guard on agent-created skill writes](../configuration.md#guard-on-agent-created-skill-writes).
 
 ## Skills Hub
 
 Browse, search, install, and manage skills from online registries, `skills.sh`, direct well-known skill endpoints, and official optional skills.
+
+Unfiltered searches (CLI, TUI, and the dashboard) are answered from a cached centralized index that covers the external registries. That index is rebuilt periodically, so when it has no match for your query Hermes also asks `skills.sh`, ClawHub, LobeHub and well-known endpoints directly — a skill published minutes ago still shows up. That extra pass gets at most 8 seconds of the search budget, so a slow registry cannot turn a miss into a long wait. Custom GitHub taps are not part of that fallback (search them with `--source github`, or via the index once it catches up), and provider filters such as `--source nvidia` do not trigger it (those registries carry no provider data).
 
 ### Common commands
 
@@ -747,6 +760,7 @@ Default taps (browsable without any setup):
 - [huggingface/skills](https://github.com/huggingface/skills)
 - [NVIDIA/skills](https://github.com/NVIDIA/skills) — NVIDIA-verified skills (signed `skill.oms.sig` + governance `skill-card.md`)
 - [garrytan/gstack](https://github.com/garrytan/gstack)
+- [K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) and [synthetic-sciences/openscience](https://github.com/synthetic-sciences/openscience) — ~480 scientific research skills (bioinformatics, chemistry, physics, ML training, scholarly tooling), grouped under one `science` category. Community trust: every install is security-scanned. Many wrap third-party tools with their own licenses (some GPL; KEGG requires a commercial license for non-academic use) — check each skill's prerequisites.
 
 - Example:
 

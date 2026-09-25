@@ -105,7 +105,7 @@ def _get_session_db_timeout() -> float:
 
 def _read_windows_pyvenv_cfg(venv_dir: Path) -> dict[str, str]:
     try:
-        lines = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
+        lines = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return {}
     return {
@@ -129,6 +129,18 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
         sibling = interpreter.with_name("python.exe")
         if sibling.exists():
             interpreter = sibling
+
+    from hermes_cli._launchers import resolve_store_python
+    from pm.environments import selected_venv, site_packages as dependency_site
+
+    repo = Path(__file__).resolve().parents[1]
+    managed_python = resolve_store_python(repo)
+    if managed_python is not None:
+        # A packaged caller may hand us the old venv launcher; select bytes
+        # from the install record rather than interpreting relocated pyvenv.cfg.
+        dependencies = dependency_site(selected_venv(repo))
+
+        return str(managed_python), {"PYTHONPATH": os.pathsep.join([str(repo), str(dependencies)])}
 
     cfg = _read_windows_pyvenv_cfg(venv_dir)
     home = cfg.get("home", "")
@@ -235,7 +247,9 @@ def _windows_cron_bootstrap_argv(
     the venv on ``PYTHONPATH``, but ``.pth`` files are only processed by ``site.addsitedir()``, so
     editable installs would be invisible; bootstrap via addsitedir + ``runpy.run_path`` (keeps
     ``__file__``/``sys.path[0]`` semantics). Plain invocation if the venv is unresolvable."""
-    site_packages = _sched.Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages"
+    site_packages = next((Path(item) for item in env_overlay.get("PYTHONPATH", "").split(os.pathsep)
+                          if Path(item).name == "site-packages"),
+                         _sched.Path(env_overlay.get("VIRTUAL_ENV", "")) / "Lib" / "site-packages")
     if not site_packages.is_dir():
         # Warn: silent fallback would make "editable installs invisible" undiagnosable.
         logger.warning(
@@ -288,7 +302,13 @@ def _resolve_script_path(script_path: str) -> tuple[Optional[Path], Optional[str
             f"({scripts_dir_resolved}): {script_path!r}"
         )
     if not path.exists():
-        return None, f"Script not found: {path}"
+        # Scripts resolve against THIS profile's scripts/ dir by design (profiles never share files),
+        # which is the usual reason a copied job cannot find a script that exists elsewhere (#94821).
+        return None, (
+            f"Script not found: {path}. Cron scripts are looked up only in this profile's folder "
+            f"({scripts_dir_resolved}); if the job was copied from another profile, copy the script "
+            f"there too, or edit the job with `hermes cron edit`."
+        )
     if not path.is_file():
         return None, f"Script path is not a file: {path}"
     return path, None
@@ -338,7 +358,15 @@ def _run_job_script(
 
     try:
         from tools.environments.local import build_subprocess_env
-        popen_kwargs: dict[str, Any] = {"start_new_session": True}
+        # Lossy decode only: keep the platform-default (locale) encoding — gating ``encoding=``
+        # to win32 was deliberate (#66566: unconditional UTF-8 leaked into POSIX) — but
+        # ``errors=`` must not stay 'strict': one stray non-UTF-8 byte in the script's stdout
+        # or stderr raises UnicodeDecodeError in communicate() and fails the whole run,
+        # discarding the output (#105582; the Windows branch decodes lossily per #45099).
+        popen_kwargs: dict[str, Any] = {
+            "start_new_session": True,
+            "errors": "replace",
+        }
         if sys.platform == "win32":
             popen_kwargs = {
                 "creationflags": windows_hide_flags()
@@ -349,7 +377,12 @@ def _run_job_script(
                 # reader threads on non-UTF-8 Windows (#45099).
                 "encoding": "utf-8",
                 "errors": "replace"}
-        env = build_subprocess_env()
+        # The process env is the LAUNCH profile's. For a job owned by a routed profile, drop that
+        # profile's .env residue from the base first (no-op for the launch profile's own jobs);
+        # the sanitizer then overlays the names the owning profile declares in
+        # terminal.env_passthrough from its own secret scope (#114209). The factory snapshots the
+        # process env itself — no raw copy at the spawn site (test_subprocess_env_guard).
+        env = build_subprocess_env(strip_launch_profile=True)
         env.update(env_overlay)
         # Subprocess cwd only (default: scripts-dir parent). NEVER os.chdir() the process.
         # Use the job's workdir as the subprocess cwd when configured, otherwise default to the scripts-dir

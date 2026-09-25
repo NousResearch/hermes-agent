@@ -1,4 +1,4 @@
-import { registryBackendScopeKey } from '@hermes/shared'
+import { type GatewayEvent, registryBackendScopeKey } from '@hermes/shared'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { GatewayEventPayload } from '@/lib/chat-messages'
@@ -13,8 +13,8 @@ import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { replayPendingApproval } from '@/store/prompts'
 import { setSessionProviderWait } from '@/store/provider-wait'
 import { isSessionGone } from '@/store/session-gone-latch'
+import { noteSessionEvent } from '@/store/session-states'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
-import type { RpcEvent } from '@/types/hermes'
 
 import { handleDesktopBridgeEvent } from './desktop-bridge'
 import { handleInputRequestEvent } from './input-requests'
@@ -46,7 +46,6 @@ const DRAFT_SUPERSEDING_EVENT_TYPES = new Set([
   'reasoning.delta',
   'thinking.delta',
   'tool.complete',
-  'tool.progress',
   'tool.start'
 ])
 
@@ -61,7 +60,6 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'moa.progress',
   'moa.phase',
   'tool.start',
-  'tool.progress',
   'tool.generating',
   'tool.complete'
 ])
@@ -76,7 +74,6 @@ const PROVIDER_WAIT_SUPERSEDING_EVENT_TYPES = new Set([
   'reasoning.delta',
   'tool.complete',
   'tool.generating',
-  'tool.progress',
   'tool.start'
 ])
 
@@ -135,7 +132,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
   )
 
   return useCallback(
-    (event: RpcEvent) => {
+    (event: GatewayEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
 
       // "From the active profile" must mean "from the active SOURCE": every
@@ -235,9 +232,18 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         scheduleConfigRefresh
       }
 
-      for (const handler of HANDLERS) {
-        if (handler(ctx)) {
-          return
+      try {
+        for (const handler of HANDLERS) {
+          if (handler(ctx)) {
+            return
+          }
+        }
+      } finally {
+        // Any attributed event — including a heartbeat that does not change
+        // state — proves this session is still producing. Silence after the
+        // last one force-settles a dead turn, partial payload included.
+        if (sessionId) {
+          noteSessionEvent(sessionId)
         }
       }
     },
@@ -255,6 +261,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       deps.failAssistantMessage,
       deps.finalizeInterimAssistantMessage,
       deps.flushQueuedDeltas,
+      deps.dropQueuedDeltas,
       deps.hydrateFromStoredSession,
       deps.lastCwdInfoSessionRef,
       deps.nativeSubagentSessionsRef,

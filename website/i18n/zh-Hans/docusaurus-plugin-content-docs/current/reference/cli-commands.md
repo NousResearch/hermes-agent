@@ -6,6 +6,9 @@ description: "Hermes 终端命令及命令族的权威参考"
 
 # CLI 命令参考
 
+本页的 Python 依赖命令使用 [PM 准备的源码环境](./package-management.md#developer-workflow)。
+依赖变更后，请重新激活该 checkout 并重启 Hermes。
+
 本页介绍从 shell 运行的**终端命令**。
 
 关于聊天内斜杠命令，请参阅 [斜杠命令参考](./slash-commands.md)。
@@ -63,7 +66,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes config` | 显示、编辑、迁移和查询配置文件。 |
 | `hermes pairing` | 审批或撤销消息配对码。 |
 | `hermes skills` | 浏览、安装、发布、审计和配置 skill。 |
-| `hermes bundles` | 将多个 skill 归组到单个 `/<name>` 斜杠命令下。参见 [Skill Bundles](../user-guide/features/skills.md#skill-bundles)。 |
+| `hermes bundles` | 将多个 skill 归组到单个 `/<name>` 斜杠命令下。参见 [Skill Bundles](../user-guide/features/skills.md#skill-捆绑包)。 |
 | `hermes curator` | 后台 skill 维护——状态、运行、暂停、固定。参见 [Curator](../user-guide/features/curator.md)。 |
 | `hermes memory` | 配置外部 memory provider。当对应 provider 激活时，特定于 plugin 的子命令（如 `hermes honcho`）会自动注册。 |
 | `hermes acp` | 将 Hermes 作为 ACP 服务器运行，用于编辑器集成。 |
@@ -227,7 +230,7 @@ hermes gateway <subcommand>
 | `--no-supervise` | 在 `run` 时：在 s6-overlay Docker 镜像内部，跳过 s6 自动监管，退回到 pre-s6 前台语义——gateway 作为容器主进程运行，无自动重启。在 s6 镜像之外为空操作。等同于设置 `HERMES_GATEWAY_NO_SUPERVISE=1`。 |
 
 :::tip WSL 用户
-使用 `hermes gateway run` 而非 `hermes gateway start`——WSL 的 systemd 支持不稳定。用 tmux 包裹以保持持久运行：`tmux new -s hermes 'hermes gateway run'`。详见 [WSL FAQ](/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails)。
+使用 `hermes gateway run` 而非 `hermes gateway start`——WSL 的 systemd 支持不稳定。用 tmux 包裹以保持持久运行：`tmux new -s hermes 'hermes gateway run'`。详见 [WSL FAQ](./faq.md#wsl网关持续断开连接或-hermes-gateway-start-失败)。
 :::
 
 ## `hermes lsp`
@@ -249,7 +252,7 @@ hermes lsp <subcommand>
 | `restart` | 关闭正在运行的客户端，以便下次编辑时重新启动。 |
 | `which <id>` | 打印某个服务器的已解析二进制路径。 |
 
-完整指南、支持的语言和配置项，请参阅 [LSP — 语义诊断](/user-guide/features/lsp)。
+完整指南、支持的语言和配置项，请参阅 [LSP — 语义诊断](../user-guide/features/lsp.md)。
 
 ## `hermes setup`
 
@@ -333,7 +336,7 @@ hermes slack manifest --slashes-only  # 仅输出 features.slash_commands 数组
 
 ## `hermes auth`
 
-管理同一 provider 的密钥轮换凭据池。完整文档请参阅 [凭据池](/user-guide/features/credential-pools)。
+管理同一 provider 的密钥轮换凭据池。完整文档请参阅 [凭据池](../user-guide/features/credential-pools.md)。
 
 ```bash
 hermes auth                                              # 交互式向导
@@ -393,7 +396,7 @@ hermes kanban [--board <slug>] <action> [options]
 |------|---------|
 | `--board <slug>` | 操作特定看板。默认为当前看板（通过 `hermes kanban boards switch`、`HERMES_KANBAN_BOARD` 环境变量或 `default` 设置）。 |
 
-**这是人工/脚本操作界面。** 调度器生成的 agent worker 通过专用的 `kanban_*` [toolset](/user-guide/features/kanban#how-workers-interact-with-the-board)（`kanban_show`、`kanban_complete`、`kanban_block`、`kanban_create`、`kanban_link`、`kanban_comment`、`kanban_heartbeat`；编排器 profile 还可使用 `kanban_list` 和 `kanban_unblock`）驱动看板，而非调用 `hermes kanban`。Worker 的环境中固定了 `HERMES_KANBAN_BOARD`，因此物理上无法看到其他看板。
+**这是人工/脚本操作界面。** 调度器生成的 agent worker 通过专用的 `kanban_*` [toolset](../user-guide/features/kanban.md#how-workers-interact-with-the-board)（`kanban_show`、`kanban_complete`、`kanban_block`、`kanban_create`、`kanban_link`、`kanban_comment`、`kanban_heartbeat`；编排器 profile 还可使用 `kanban_list` 和 `kanban_unblock`）驱动看板，而非调用 `hermes kanban`。Worker 的环境中固定了 `HERMES_KANBAN_BOARD`，因此物理上无法看到其他看板。
 
 | 操作 | 用途 |
 |--------|---------|
@@ -421,7 +424,7 @@ hermes kanban [--board <slug>] <action> [options]
 | `dispatch` | 对活跃看板执行一次调度器扫描。标志：`--dry-run`、`--max N`、`--failure-limit N`、`--json`。 |
 | `context <id>` | 打印 worker 将看到的完整上下文（标题 + 正文 + 父任务结果 + 评论）。 |
 | `specify <id>` / `specify --all` | 通过辅助 LLM 将 triage 列中的任务细化为具体规格（标题 + 包含目标、方案、验收标准的正文），然后将其提升到 `todo`。标志：`--tenant`（将 `--all` 限定到一个 tenant）、`--author`、`--json`。在 `config.yaml` 的 `auxiliary.triage_specifier` 下配置模型。 |
-| `decompose <id>` / `decompose --all` | 将 triage 列中的任务按描述拆分为子任务图，路由到专业 profile（编排器驱动路径）。当 LLM 判断任务不适合拆分时，回退到 specify 风格的单任务提升。与 `specify` 相同的标志。在 `config.yaml` 的 `auxiliary.kanban_decomposer` 下配置模型。当 `kanban.auto_decompose: true`（默认）时，每次调度器 tick 也会自动运行。参见 [自动与手动编排](/user-guide/features/kanban#auto-vs-manual-orchestration)。 |
+| `decompose <id>` / `decompose --all` | 将 triage 列中的任务按描述拆分为子任务图，路由到专业 profile（编排器驱动路径）。当 LLM 判断任务不适合拆分时，回退到 specify 风格的单任务提升。与 `specify` 相同的标志。在 `config.yaml` 的 `auxiliary.kanban_decomposer` 下配置模型。当 `kanban.auto_decompose: true`（默认）时，每次调度器 tick 也会自动运行。参见 [自动与手动编排](../user-guide/features/kanban.md#auto-vs-manual-orchestration)。 |
 | `gc` | 删除已归档任务的 scratch 工作区。 |
 
 示例：
@@ -444,7 +447,7 @@ hermes kanban boards rm atm10-server --delete
 
 所有操作也可作为 gateway 中的斜杠命令使用（`/kanban …`），参数界面相同——包括 `boards` 子命令和 `--board` 标志。
 
-完整设计——与 Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise 的对比、八种协作模式、四个用户故事、并发正确性证明——请参阅仓库中的 `docs/hermes-kanban-v1-spec.pdf` 或 [Kanban 用户指南](/user-guide/features/kanban)。
+完整设计——与 Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise 的对比、八种协作模式、四个用户故事、并发正确性证明——请参阅 [Kanban 用户指南](../user-guide/features/kanban.md)。
 
 ## `hermes webhook`
 
@@ -843,7 +846,7 @@ hermes skills reset google-workspace --restore --yes
 hermes bundles <subcommand>
 ```
 
-Skill bundle 将多个 skill 归组到一个 `/<bundle-name>` 斜杠命令下。调用 bundle 会将每个引用的 skill 加载到单个合并的用户消息中。存储位置：`~/.hermes/skill-bundles/<slug>.yaml`。YAML schema 和行为请参阅 [Skill Bundles](../user-guide/features/skills.md#skill-bundles)。
+Skill bundle 将多个 skill 归组到一个 `/<bundle-name>` 斜杠命令下。调用 bundle 会将每个引用的 skill 加载到单个合并的用户消息中。存储位置：`~/.hermes/skill-bundles/<slug>.yaml`。YAML schema 和行为请参阅 [Skill Bundles](../user-guide/features/skills.md#skill-捆绑包)。
 
 子命令：
 
@@ -975,7 +978,7 @@ python -m acp_adapter
 首先安装支持：
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e '.[acp]'
+cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['acp'], explicit=True)"
 ```
 
 参见 [ACP 编辑器集成](../user-guide/features/acp.md) 和 [ACP 内部原理](../developer-guide/acp-internals.md)。
@@ -998,7 +1001,7 @@ hermes mcp <subcommand>
 | `configure <name>`（别名：`config`） | 切换服务器的工具选择。 |
 | `login <name>` | 强制重新认证基于 OAuth 的 MCP 服务器。 |
 
-参见 [MCP 配置参考](./mcp-config-reference.md)、[在 Hermes 中使用 MCP](../guides/use-mcp-with-hermes.md) 和 [MCP 服务器模式](../user-guide/features/mcp.md#running-hermes-as-an-mcp-server)。
+参见 [MCP 配置参考](./mcp-config-reference.md)、[在 Hermes 中使用 MCP](../guides/use-mcp-with-hermes.md) 和 [MCP 服务器模式](../user-guide/features/mcp.md#将-hermes-作为-mcp-服务器运行)。
 
 ## `hermes plugins`
 
@@ -1145,7 +1148,7 @@ hermes claw migrate --source /home/user/old-openclaw
 hermes dashboard [options]
 ```
 
-启动 Web 控制台——基于浏览器的界面，用于管理配置、API 密钥和监控会话。需要 `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"`（FastAPI + Uvicorn）。内嵌浏览器 Chat 标签页始终可用，但额外需要 `pty` extra（`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`）以及 POSIX PTY 环境（如 Linux、macOS 或 WSL2）。完整文档请参阅 [Web 控制台](/user-guide/features/web-dashboard)。
+启动 Web 控制台，用于管理配置、API 密钥和会话。FastAPI、Uvicorn 和平台 PTY 辅助库是核心依赖。`web` extra 提供 HTTP 栈的精确约束，标准 PM 安装通过 `all` 选择它。如依赖损坏，请运行 `hermes pm repair`。内嵌 Chat 标签页需要 POSIX PTY 环境，例如 Linux、macOS 或 WSL2。请参阅 [Web 控制台](../user-guide/features/web-dashboard.md)。
 
 | 选项 | 默认值 | 说明 |
 |--------|---------|-------------|
@@ -1221,6 +1224,13 @@ hermes completion zsh >> ~/.zshrc
 # Fish
 hermes completion fish > ~/.config/fish/completions/hermes.fish
 ```
+
+## `hermes pm`
+
+PM 管理工具和 Python 依赖，不负责替换应用发布包。
+源码开发先运行一次 setup 脚本，然后用 Bash `source ./activate` 或 PowerShell `. .\activate.ps1` 激活已有环境。
+使用 `deactivate` 恢复激活前的环境。
+详见[PM 开发工作流](./package-management.md#developer-workflow)，包括依赖更新和测试环境。
 
 ## `hermes update`
 

@@ -99,7 +99,7 @@ async def test_shutdown_notice_goes_to_notice_channel_not_home():
     adapter.send.assert_awaited_once()
     chat_id, msg = adapter.send.await_args.args[0], adapter.send.await_args.args[1]
     assert chat_id == "gateway-99"
-    assert "Gateway shutting down" in msg
+    assert "shutting down" in msg
     # the home channel gets no copy: one notice, one destination
     assert all(call.args[0] != "home-42" for call in adapter.send.await_args_list)
 
@@ -111,7 +111,9 @@ async def test_startup_notice_goes_to_notice_channel(tmp_path, monkeypatch):
 
     delivered = await runner._send_home_channel_startup_notifications()
 
-    assert delivered == {("telegram", "gateway-99", None)}
+    # accounted against the HOME channel the planned-restart marker owes (#112109),
+    # even though the notice itself went to the notice channel
+    assert delivered == {("telegram", "home-42", None)}
     adapter.send.assert_awaited_once()
     assert adapter.send.await_args.args[0] == "gateway-99"
     assert "Gateway online" in adapter.send.await_args.args[1]
@@ -268,3 +270,67 @@ def test_config_does_not_accept_hand_authored_provenance():
         }
     )
     assert cfg.gateway_notice_channel == {"chat_id": "g-1"}
+
+
+# ------------------------------------------- no home channel, restart marker
+# Raised on #76780: an alerts channel should not need a home channel, and a
+# redirected notice must still discharge the planned-restart marker, which owes
+# the notice per HOME channel (#112109).
+
+def _runner_without_home(notice):
+    runner, adapter = make_restart_runner()
+    cfg = runner.config.platforms[Platform.TELEGRAM]
+    cfg.home_channel = None
+    cfg.gateway_notice_channel = notice
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="x"))
+    return runner, adapter
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notice_reaches_notice_channel_without_a_home_channel():
+    runner, adapter = _runner_without_home(notice={"chat_id": "gateway-99"})
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[0] == "gateway-99"
+
+
+@pytest.mark.asyncio
+async def test_startup_notice_reaches_notice_channel_without_a_home_channel(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = _runner_without_home(notice={"chat_id": "gateway-99"})
+
+    await runner._send_home_channel_startup_notifications()
+
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[0] == "gateway-99"
+    assert "Gateway online" in adapter.send.await_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_control_no_home_and_no_notice_channel_sends_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = _runner_without_home(notice=None)
+
+    await runner._send_home_channel_startup_notifications()
+    await runner._notify_active_sessions_of_shutdown()
+
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_redirected_startup_notice_discharges_the_planned_restart_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    runner, adapter = _runner_with_home(notice={"chat_id": "gateway-99"})
+    marker = tmp_path / ".restart_pending.json"
+    marker.write_text("{}", encoding="utf-8")
+
+    await runner._replay_pending_planned_restart_notification()
+
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.args[0] == "gateway-99"
+    assert not marker.exists(), "the home channel was owed the notice and it went out, redirected"
+
+    await runner._replay_pending_planned_restart_notification()
+    adapter.send.assert_awaited_once()  # no second notice on a later replay

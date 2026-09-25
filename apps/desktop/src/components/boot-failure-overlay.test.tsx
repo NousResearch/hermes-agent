@@ -1,7 +1,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { en } from '@/i18n/en'
 import { $desktopBoot } from '@/store/boot'
+import { $notifications } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
@@ -29,7 +31,23 @@ function stubDesktop(config: Record<string, unknown>, overrides: Record<string, 
   const original = window.hermesDesktop
   Object.defineProperty(window, 'hermesDesktop', {
     configurable: true,
-    value: { getRecentLogs: async () => ({ lines: [] }), getConnectionConfig: async () => config, ...overrides }
+    value: {
+      getRecentLogs: async () => ({ lines: [] }),
+      getConnectionConfig: async () => config,
+      getBootstrapState: async () => ({
+        active: false,
+        manifest: null,
+        stages: {},
+        error: null,
+        log: [],
+        startedAt: null,
+        completedAt: null,
+        setupChoice: null,
+        unsupportedPlatform: null,
+        bundled: false
+      }),
+      ...overrides
+    }
   })
 
   return () => Object.defineProperty(window, 'hermesDesktop', { configurable: true, value: original })
@@ -66,12 +84,32 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('BootFailureOverlay', () => {
+  it('keeps keyboard focus inside the recovery surface', () => {
+    render(
+      <>
+        <button type="button">Background action</button>
+        <BootFailureOverlay />
+      </>
+    )
+
+    const recoverySurface = screen.getByRole('dialog', { name: /Hermes couldn't start/i })
+    const retry = screen.getByRole('button', { name: /retry/i })
+    const backgroundAction = screen.getByText(/background action/i)
+
+    retry.focus()
+    backgroundAction.focus()
+
+    expect(recoverySurface.getAttribute('aria-modal')).toBe('true')
+    expect(recoverySurface.contains(globalThis.document.activeElement)).toBe(true)
+  })
+
   it('swaps to the in-place gateway settings view (no route nav) and back', async () => {
     render(<BootFailureOverlay />)
 
     fireEvent.click(screen.getByRole('button', { name: /gateway settings/i }))
     // Recovery actions give way to the embedded panel (behind a Back control).
     expect(await screen.findByRole('button', { name: /back/i })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: /gateway settings/i }).getAttribute('aria-modal')).toBe('true')
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /back/i }))
@@ -183,7 +221,8 @@ describe('BootFailureOverlay', () => {
       fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
 
       await waitFor(() => expect(cloudAgentSignIn).toHaveBeenCalledWith(gatewayUrl))
-      expect(logout).toHaveBeenCalledWith(gatewayUrl)
+      // The ladder owns the logout: exactly one drop of this gateway's cookies.
+      expect(logout).toHaveBeenCalledExactlyOnceWith(gatewayUrl)
       expect(cloudStatus).toHaveBeenCalledTimes(1)
       expect(cloudLogin).toHaveBeenCalledTimes(1)
       expect(nativeLogin).not.toHaveBeenCalled()
@@ -226,6 +265,132 @@ describe('BootFailureOverlay', () => {
       expect(screen.getByText(/ares-3009\.agents\.nousresearch\.com/i)).toBeTruthy()
     } finally {
       restore()
+    }
+  })
+
+  const bundledState = {
+    active: false,
+    manifest: null,
+    stages: {},
+    error: null,
+    log: [],
+    startedAt: null,
+    completedAt: null,
+    setupChoice: null,
+    unsupportedPlatform: null,
+    bundled: true
+  }
+
+  it('offers "Reinstall the app" on a bundled install only when the payload itself is damaged', async () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    const restore = stubDesktop({ mode: 'local' }, { getBootstrapState: async () => bundledState, openExternal })
+    $desktopBoot.set({
+      ...$desktopBoot.get(),
+      error:
+        'This app bundles its own Hermes runtime, but the runtime files are missing or damaged. Reinstall Hermes Desktop to restore it.'
+    })
+
+    try {
+      render(<BootFailureOverlay />)
+
+      // The bundled artifact has no installer to repair with — the action is
+      // a docs link, and the hint says reinstall instead of re-run installer.
+      expect(await screen.findByRole('button', { name: /reinstall the app/i })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /repair install/i })).toBeNull()
+      expect(screen.getByText(/reinstall the app to restore/i)).toBeTruthy()
+
+      fireEvent.click(screen.getByRole('button', { name: /reinstall the app/i }))
+      await waitFor(() =>
+        expect(openExternal).toHaveBeenCalledWith('https://hermes-agent.nousresearch.com/docs/user-guide/desktop')
+      )
+    } finally {
+      restore()
+    }
+  })
+
+  it('a bundled install with an unrelated failure gets neither Repair nor Reinstall', async () => {
+    const restore = stubDesktop({ mode: 'local' }, { getBootstrapState: async () => bundledState })
+    $desktopBoot.set({ ...$desktopBoot.get(), error: 'listen EADDRINUSE: address already in use 127.0.0.1:8642' })
+
+    try {
+      render(<BootFailureOverlay />)
+
+      expect(await screen.findByRole('button', { name: /retry/i })).toBeTruthy()
+      // Wait for the bundled snapshot to land before asserting the negatives.
+      await waitFor(() => expect(screen.queryByRole('button', { name: /repair install/i })).toBeNull())
+      expect(screen.queryByRole('button', { name: /reinstall the app/i })).toBeNull()
+      expect(screen.queryByText(/reinstall the app to restore/i)).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it.each(['refused', 'thrown', 'unavailable'])('preserves a %s repair failure without reloading', async failure => {
+    const reload = vi.fn()
+    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location')!
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, reload }
+    })
+
+    const repair =
+      failure === 'unavailable'
+        ? undefined
+        : vi.fn(async () => {
+            if (failure === 'thrown') {
+              throw new Error('installer permission denied')
+            }
+
+            return { ok: false, error: 'bundled-immutable' }
+          })
+
+    const restore = stubDesktop({ mode: 'local' }, { repairBootstrap: repair })
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /repair install/i }))
+
+      const message =
+        failure === 'thrown'
+          ? 'installer permission denied'
+          : failure === 'refused'
+            ? en.boot.failure.bundledReinstallHint
+            : en.boot.errors.ipcBridgeUnavailable
+
+      await waitFor(() =>
+        expect($notifications.get()).toEqual(
+          expect.arrayContaining([expect.objectContaining({ kind: 'error', message })])
+        )
+      )
+      expect(reload).not.toHaveBeenCalled()
+      expect(screen.getByRole('button', { name: /repair install/i }).hasAttribute('disabled')).toBe(false)
+    } finally {
+      restore()
+      Object.defineProperty(window, 'location', originalLocation)
+      $notifications.set([])
+    }
+  })
+
+  it('reloads after an accepted repair', async () => {
+    const reload = vi.fn()
+    const originalLocation = Object.getOwnPropertyDescriptor(window, 'location')!
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { ...window.location, reload }
+    })
+
+    const restore = stubDesktop({ mode: 'local' }, { repairBootstrap: vi.fn().mockResolvedValue({ ok: true }) })
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /repair install/i }))
+
+      await waitFor(() => expect(reload).toHaveBeenCalled())
+      expect($notifications.get().some(n => n.kind === 'error')).toBe(false)
+    } finally {
+      restore()
+      Object.defineProperty(window, 'location', originalLocation)
+      $notifications.set([])
     }
   })
 })

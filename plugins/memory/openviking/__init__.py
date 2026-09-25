@@ -35,10 +35,11 @@ from urllib.parse import quote, unquote, urlparse
 from urllib.request import url2pathname
 
 from agent.message_content import flatten_message_text
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import MemoryProvider, spawn_context_thread
 from agent.secret_scope import get_secret
 from agent.skill_commands import extract_user_instruction_from_skill_message
-from hermes_cli import __version__ as _HERMES_VERSION
+from hermes_cli.version_info import get_version_info
+from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from utils import atomic_json_write, env_var_enabled
 
@@ -52,7 +53,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_ENDPOINT = "http://127.0.0.1:1933"
 _OPENVIKING_SERVICE_ENDPOINT = "https://api.vikingdb.cn-beijing.volces.com/openviking"
 _DEFAULT_AGENT = ""
-_OPENVIKING_USER_AGENT = f"openviking-memory-hermes/{_HERMES_VERSION}"
+_OPENVIKING_USER_AGENT = f"openviking-memory-hermes/{get_version_info().base_version}"
 _OVCLI_CONFIG_ENV = "OPENVIKING_CLI_CONFIG_FILE"
 _OVCLI_DEFAULT_RELATIVE_PATH = ".openviking/ovcli.conf"
 _OVCLI_SAVED_PREFIX = "ovcli.conf."
@@ -198,23 +199,23 @@ def _preview(value: Any, limit: int = 160) -> str:
 
 # atexit safety net: commit pending sessions even if shutdown_memory_provider
 # never runs (gateway crash, exception in the session expiry watcher, ...).
-_last_active_provider: Optional["OpenVikingMemoryProvider"] = None
+# One entry per Hermes home: a multiplexed gateway initializes a provider per profile and every
+# one of them holds pending sessions worth committing, not just the last to initialize.
+_active_providers_by_home: Dict[str, "OpenVikingMemoryProvider"] = {}
 
 
 def _atexit_commit_sessions():
-    global _last_active_provider
-    provider = _last_active_provider
-    if provider is None:
-        return
-    _last_active_provider = None
-    try:
-        with suppress(Exception):  # best-effort at shutdown time
-            provider.on_session_end([])
-    finally:
-        # ``finally`` (as on main): the run lock is released even when on_session_end
-        # dies of a BaseException (KeyboardInterrupt during atexit).
-        with suppress(Exception):
-            provider._release_run_lock()
+    providers = list(_active_providers_by_home.values())
+    _active_providers_by_home.clear()
+    for provider in providers:
+        try:
+            with suppress(Exception):  # best-effort at shutdown time
+                provider.on_session_end([])
+        finally:
+            # ``finally`` (as on main): the run lock is released even when on_session_end
+            # dies of a BaseException (KeyboardInterrupt during atexit).
+            with suppress(Exception):
+                provider._release_run_lock()
 
 
 atexit.register(_atexit_commit_sessions)
@@ -559,7 +560,8 @@ def _load_ovcli_config(path: Optional[Path] = None) -> dict:
     config_path = path or _resolve_ovcli_config_path()
     if not config_path.exists():
         return {}
-    data = json.loads(config_path.read_text(encoding="utf-8"))
+    with config_path.open(encoding="utf-8-sig") as f:
+        data = json.load(f)
     if not isinstance(data, dict):
         raise ValueError(f"OpenViking CLI config must be a JSON object: {config_path}")
     return data
@@ -904,15 +906,6 @@ def _local_openviking_bind(endpoint: str) -> tuple[str, int]:
     return parsed.hostname or "127.0.0.1", parsed.port or 1933
 
 
-def _hermes_home_path() -> Path:
-    try:
-        from hermes_constants import get_hermes_home
-        return get_hermes_home()
-    except Exception:
-        env_home = os.environ.get("HERMES_HOME")
-        return Path(env_home).expanduser() if env_home else Path.home() / ".hermes"
-
-
 def _local_openviking_port_is_open(host: str, port: int) -> bool:
     """Pre-spawn guard: a successful connect proves a listener owns the port (so a
     second openviking-server would lose the data-dir lock); says nothing about health."""
@@ -976,7 +969,7 @@ def _start_local_openviking_server(endpoint: str) -> tuple[str, str]:
     server_cmd = shutil.which("openviking-server")
     if not server_cmd:
         return _LOCAL_SERVER_FAILED, "openviking-server was not found on PATH. Start it manually, then retry."
-    log_path = _hermes_home_path() / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
+    log_path = get_hermes_home() / _OPENVIKING_SERVER_LOG_RELATIVE_PATH
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         # Strip PYTHONPATH: the Desktop backend puts the Hermes venv on it, which
@@ -1316,9 +1309,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         # Caller holds _runtime_start_lock and reserved ownership via _runtime_start_pending.
         if self._runtime_start_thread and self._runtime_start_thread.is_alive():
             return
-        self._runtime_start_thread = threading.Thread(
-            target=self._finish_runtime_openviking_start, daemon=True, name="openviking-runtime-start",
-            kwargs={"endpoint": endpoint, "status_callback": status_callback, "warning_callback": warning_callback})
+        self._runtime_start_thread = spawn_context_thread(
+            lambda: self._finish_runtime_openviking_start(endpoint=endpoint, status_callback=status_callback, warning_callback=warning_callback),
+            name="openviking-runtime-start")
         self._runtime_start_thread.start()
 
     def _settings_tuple(self, endpoint: Optional[str] = None) -> tuple:
@@ -1411,7 +1404,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         self._env_refresh_enabled = True
         self._session_id = session_id
         self._turn_count = 0
-        self._hermes_home = str(kwargs.get("hermes_home") or "").strip() or str(_hermes_home_path())
+        self._hermes_home = str(kwargs.get("hermes_home") or "").strip() or str(get_hermes_home())
         self._acquire_run_lock()
         self._profile_prefetched_sessions.clear()
 
@@ -1436,8 +1429,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
             self._conn_snapshot = self._settings_tuple()
             self._recover_pending_sessions()
 
-        global _last_active_provider  # atexit safety net
-        _last_active_provider = self
+        _active_providers_by_home[self._hermes_home] = self  # atexit safety net
 
     def _ensure_client(self) -> Optional["_VikingClient"]:
         """Active client, rebuilt if the resolved config changed.
@@ -2079,7 +2071,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
                     if after_discard is not None:
                         after_discard()
 
-        thread = threading.Thread(target=_run, daemon=True, name=name)
+        thread = spawn_context_thread(_run, name=name)
         with lock:
             if skip_if is not None and skip_if():
                 return
@@ -2225,7 +2217,8 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.debug("Could not safely mark OpenViking session %s pending without a run lock", sid)
             return
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            from hermes_constants import mkdir_under_hermes_home
+            mkdir_under_hermes_home(path.parent)
             atomic_json_write(path, {"session_id": sid, "owner_run_id": self._run_id}, mode=0o600)
             self._pending_marked_sids.add(sid)
         except Exception as e:
@@ -2248,7 +2241,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         sessions: List[tuple[str, str]] = []
         for path in sorted(directory.glob("*.json")):
             try:
-                raw = json.loads(path.read_text(encoding="utf-8"))
+                raw = json.loads(path.read_text(encoding="utf-8-sig"))
             except Exception:
                 raw = None
             raw = raw if isinstance(raw, dict) else {}
@@ -2488,9 +2481,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
         for t in workers:
             if t.is_alive():
                 t.join(timeout=5.0)
-        global _last_active_provider  # clear so atexit doesn't double-commit
-        if _last_active_provider is self:
-            _last_active_provider = None
+        # Clear so atexit doesn't double-commit.
+        if _active_providers_by_home.get(self._hermes_home) is self:
+            del _active_providers_by_home[self._hermes_home]
         self._release_run_lock()
 
     @staticmethod

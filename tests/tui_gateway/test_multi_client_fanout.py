@@ -112,7 +112,7 @@ def test_membership_preserves_terminal_delivery_and_revokes_departed_peers(monke
         newcomer = b if attachment == "direct" else FanoutTransport(a, b)
         assert server._attach_session_transport(session, newcomer)
         assert server._attach_session_transport(session, b)
-        for kind in ("message.start", "message.delta", "message.complete"):
+        for kind in ("message.delta", "reasoning.delta", "message.complete"):
             server._emit(kind, "fanout-invariant", {"text": "α"})
             first, second = a.receive(), b.receive()
             assert first == second
@@ -172,7 +172,7 @@ def test_membership_preserves_terminal_delivery_and_revokes_departed_peers(monke
         assert session["transport"] is server._detached_ws_transport
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.parametrize("client_type", [PipeClient, SocketClient])
 @pytest.mark.parametrize("slow_first", [True, False])
 @pytest.mark.parametrize("on_loop", [True, False])

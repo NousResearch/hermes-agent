@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import copy
 import functools
+import logging
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+
+logger = logging.getLogger(__name__)
 
 #: Auto-migration support floor. Configs whose on-disk ``_config_version`` is below this are NOT
 #: auto-migrated (v12 predates ~two years of releases; carrying the sub-v12 steps and the env
@@ -121,6 +124,8 @@ def _migrate_to_12(results: Dict[str, Any], quiet: bool) -> None:
         if not isinstance(entry, dict):
             continue
         old_name = entry.get("name", "")
+        if not isinstance(old_name, str):  # hand-edited name: 5 must not crash .strip()
+            old_name = ""
         old_url = entry.get("base_url", "") or entry.get("url", "") or entry.get("api", "") or ""
         if not old_url:
             continue
@@ -194,6 +199,8 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
         return
     legacy_model = raw_stt["model"]
     provider = raw_stt.get("provider", "local")
+    if not isinstance(provider, str):  # a mapping/int provider has no valid target section
+        provider = "local"
     config = read_raw_config()
     stt = config.get("stt", {})
     stt.pop("model", None)
@@ -201,11 +208,14 @@ def _migrate_to_14(results: Dict[str, Any], quiet: bool) -> None:
     def _place(section: str) -> None:
         existing = raw_stt.get(section, {})
         if not isinstance(existing, dict) or "model" not in existing:
-            stt.setdefault(section, {})["model"] = legacy_model
+            target = stt.get(section)
+            if not isinstance(target, dict):  # stt.<section>: 5 — replace, don't index a scalar
+                target = stt[section] = {}
+            target["model"] = legacy_model
 
     if provider in {"local", "local_command"}:
         # An OpenAI model name is dropped; the local section already defaults to "base".
-        if legacy_model in _LOCAL_WHISPER_MODELS:
+        if isinstance(legacy_model, str) and legacy_model in _LOCAL_WHISPER_MODELS:
             _place("local")
     else:
         _place(provider)
@@ -223,10 +233,11 @@ def _migrate_to_16(results: Dict[str, Any], quiet: bool) -> None:
         return
     platforms = _dict_at(display, "platforms")
     for plat, mode in old_overrides.items():
-        if plat not in platforms:
-            platforms[plat] = {}
-        if "tool_progress" not in platforms[plat]:
-            platforms[plat]["tool_progress"] = mode
+        target = platforms.get(plat)
+        if not isinstance(target, dict):  # platforms.<plat>: 5 — replace, don't index a scalar
+            target = platforms[plat] = {}
+        if "tool_progress" not in target:
+            target["tool_progress"] = mode
     display["platforms"] = platforms
     config["display"] = display
     migrated = ", ".join(f"{p}={m}" for p, m in old_overrides.items())
@@ -249,7 +260,12 @@ def _migrate_to_17(results: Dict[str, Any], quiet: bool) -> None:
         val = str(raw).strip() if raw else ""
         if not val or (k == "provider" and val == "auto"):
             continue
-        aux_comp = config.setdefault("auxiliary", {}).setdefault("compression", {})
+        aux = config.get("auxiliary")
+        if not isinstance(aux, dict):  # auxiliary: 5 — setdefault would index a scalar
+            aux = config["auxiliary"] = {}
+        aux_comp = aux.get("compression")
+        if not isinstance(aux_comp, dict):
+            aux_comp = aux["compression"] = {}
         cur = aux_comp.get(k)
         if not cur or (k == "provider" and cur == "auto"):
             aux_comp[k] = val
@@ -279,7 +295,7 @@ def _installed_user_plugins(disabled: set) -> List[str]:
                 if not manifest_file.exists():
                     continue
                 try:
-                    with open(manifest_file, encoding="utf-8") as _mf:
+                    with open(manifest_file, encoding="utf-8-sig") as _mf:
                         manifest = _c.fast_safe_load(_mf) or {}
                 except Exception:
                     manifest = {}
@@ -529,7 +545,7 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
     for name, profile_dir in _roster(_hermes_root(get_hermes_home())):
         soul = profile_dir / "SOUL.md"
         try:
-            text = soul.read_text(encoding="utf-8") if soul.is_file() else ""
+            text = soul.read_text(encoding="utf-8-sig") if soul.is_file() else ""
             if _PROTOCOL_HEADING in text:
                 soul.write_text(strip_legacy_protocol(text), encoding="utf-8")
                 cleaned.append(name)
@@ -542,12 +558,86 @@ def _migrate_to_41(results: Dict[str, Any], quiet: bool) -> None:
                   f"({', '.join(cleaned)}) — Bot Chat sessions now get the live roster instead.")
 
 
+def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
+    # 44 → 45: append `connections` to every saved `platform_toolsets` list that predates it
+    # (an explicit list treats absence as unchecked). Skipped when `known_builtin_toolsets`
+    # already records `connections` (a decline) or `agent.disabled_toolsets` names it (the
+    # resolver subtracts that list last, so the append would have no effect).
+    from agent.skill_utils import parse_config_string_list
+    from hermes_cli.tools_config import _configurable_keys, _get_plugin_toolset_keys
+    from hermes_cli.toolset_scope import toolset_allowed_for_platform
+
+    config = read_raw_config()
+    saved = config.get("platform_toolsets")
+    if not isinstance(saved, dict):
+        return
+    if "connections" in parse_config_string_list(_dict_at(config, "agent").get("disabled_toolsets")):
+        return
+    known = _dict_at(config, "known_builtin_toolsets")
+    # Same predicate the resolver uses to pick its explicit branch: any configurable or plugin key.
+    explicit_keys = _configurable_keys() | _get_plugin_toolset_keys()
+    enabled_for: List[str] = []
+    for platform, toolsets in saved.items():
+        if not isinstance(toolsets, list) or "connections" in toolsets:
+            continue
+        if not toolset_allowed_for_platform("connections", platform):
+            continue
+        # A composite like [hermes-cli] already inherits every core tool at read time.
+        if not any(str(ts) in explicit_keys for ts in toolsets):
+            continue
+        offered = known.get(platform)
+        if isinstance(offered, list) and "connections" in offered:
+            continue
+        saved[platform] = sorted({*map(str, toolsets), "connections"})
+        if isinstance(offered, list):
+            known[platform] = sorted({*map(str, offered), "connections"})
+        enabled_for.append(str(platform))
+    if not enabled_for:
+        return
+    config["platform_toolsets"] = saved
+    if known:
+        config["known_builtin_toolsets"] = known
+    platforms = ", ".join(sorted(enabled_for))
+    _commit(
+        config, results, quiet,
+        f"enabled the connections toolset for {platforms}",
+        f"  ✓ Enabled the Connections toolset (Gmail, Linear, Notion, local MCP servers) for {platforms}. "
+        "Uncheck Connections in `hermes tools` to turn it off.")
+
+
+def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
+    # 45 → 46: the profile editor used to switch an MCP server off with `disabled: true`, a key no
+    # runtime reader consults, so the server kept running. Carry that choice over to `enabled:
+    # false` (the key every reader uses) and drop `disabled`, so the editor and runtime agree.
+    # `disabled: true` wins over an explicit `enabled: true`: `hermes mcp add` writes that, and the
+    # old editor only added `disabled`, so letting `enabled` win would skip nearly every server.
+    from hermes_cli.tools_config import _parse_enabled_flag
+
+    config = read_raw_config()
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return
+    legacy = {n: e for n, e in servers.items() if isinstance(e, dict) and "disabled" in e}
+    turned_off = sorted((n for n, e in legacy.items() if _parse_enabled_flag(e["disabled"], default=False)), key=str)
+    if not turned_off:
+        return  # a falsy `disabled` is inert; the runtime never read it
+    for name in turned_off:
+        del legacy[name]["disabled"]
+        legacy[name]["enabled"] = False
+    names = ", ".join(map(str, turned_off))
+    _commit(
+        config, results, quiet,
+        f"mcp_servers: disabled → enabled: false ({names})",
+        f"  ✓ Turned off MCP servers the profile editor had marked disabled: {names}.")
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
 #: configs already AT v12 still get every step below; only configs BELOW 12 are refused by the
 #: floor gate in run_migrations()'s caller. Versions absent here (15, 18-20, 22, 24, 26-28, 30)
-#: only added a schema default that runtime merging supplies without a write.
+#: only added a schema default that runtime merging supplies without a write. When adding a step,
+#: decide whether it belongs in LEGACY_KEY_STEPS below (the only steps an unversioned file gets).
 MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (12, _migrate_to_12),
     (13, _migrate_to_13),
@@ -647,15 +737,57 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "  ✓ Removed gateway.multiplex_profile_allowlist — the multiplexing gateway now serves "
             "every profile under profiles/. Delete or archive a profile you do not want served."),
         extra_guard=lambda raw: "multiplex_profile_allowlist" in raw)),
+    # 43 → 44: curator prunes faster — stale 30→14 days, archive 90→30 days. A skill nobody has
+    # touched in a month is prompt weight, not knowledge; archival is recoverable. Only the OLD
+    # defaults are rewritten; an explicit user value is preserved.
+    (44, _rewrite_stale_default(
+        section="curator", key="stale_after_days", old=30, new=14,
+        added="curator.stale_after_days=14 (was: 30)",
+        message="  ✓ curator.stale_after_days 30→14 — unused skills are flagged stale after two weeks.")),
+    (44, _rewrite_stale_default(
+        section="curator", key="archive_after_days", old=90, new=30,
+        added="curator.archive_after_days=30 (was: 90)",
+        message=(
+            "  ✓ curator.archive_after_days 90→30 — skills unused for a month are archived to "
+            "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
+    # 44 → 45: saved platform_toolsets lists predate the connections toolset (see _migrate_to_45).
+    (45, _migrate_to_45),
+    # 45 → 46: legacy editor `disabled: true` on MCP servers becomes `enabled: false` (see _migrate_to_46).
+    (46, _migrate_to_46),
 )
 
+#: Steps triggered by a legacy key or identifier (a renamed or retired key, a removed plugin or
+#: toolset, the plugin-era SOUL.md section): they carry its setting to where the runtime reads it
+#: or drop what nothing reads, which is right however old the file is. A config.yaml with no
+#: ``_config_version`` is current-schema content that was never stamped (installers seed it from
+#: cli-config.yaml.example; targeted writers never stamp), so it gets only these: every other step
+#: decides by a value or an absence that, in such a file, is the user's own choice. v13 is left
+#: out: it clears OPENAI_MODEL from .env, a generic name Hermes never reads but the user's tools may.
+#: v41 is left out too: it rewrites profile SOUL.md on a heading match, an artifact whose
+#: provenance the config stamp says nothing about.
+LEGACY_KEY_STEPS = frozenset({12, 14, 16, 17, 29, 33, 38, 39, 42, 43, 46})
 
-def run_migrations(current_ver: int, results: Dict[str, Any], quiet: bool) -> None:
-    """Apply every registered migration whose target version exceeds *current_ver*.
+
+def run_migrations(
+    current_ver: int, results: Dict[str, Any], quiet: bool, *, unversioned: bool = False) -> None:
+    """Apply every registered migration whose target version exceeds *current_ver*; a config
+    with no ``_config_version`` (*unversioned*) gets only :data:`LEGACY_KEY_STEPS`.
 
     *current_ver* is the on-disk schema version captured ONCE before any step runs and does not
     advance between steps — each step is gated on the same initial value.
     """
     for target_ver, migration_fn in MIGRATIONS:
-        if current_ver < target_ver:
-            migration_fn(results, quiet)
+        if current_ver < target_ver and (target_ver in LEGACY_KEY_STEPS or not unversioned):
+            try:
+                migration_fn(results, quiet)
+            except Exception as exc:
+                # A malformed nested value in one step must not abort the rest of the
+                # ladder (config loading itself fails otherwise). Loud, not silent.
+                warning = f"config migration to v{target_ver} failed and was skipped: {exc}"
+                results.setdefault("warnings", []).append(warning)
+                # Quiet callers (profile creation, unattended update) discard ``results`` and
+                # migrate_config still stamps the latest version, so without a log line the
+                # skipped step vanishes for good.
+                logger.warning("%s", warning)
+                if not quiet:
+                    print(f"  ⚠ {warning}")

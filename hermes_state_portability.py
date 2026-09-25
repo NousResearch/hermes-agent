@@ -7,11 +7,14 @@ Must never import hermes_state (cycle); shared constants live in hermes_state_co
 import logging
 import json
 import time
+from collections import Counter
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agent.skill_commands import SKILL_SCAFFOLD_SQL_LIKE
 from utils import safe_json_loads
 from hermes_cli.timefmt import coerce_epoch
+from hermes_state_ids import new_session_id
 from hermes_state_common import SCHEMA_SQL, _PREVIEW_RAW_SUBQUERY_SQL, _shape_preview, _sql_session_last_active
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -78,6 +81,46 @@ def _rich_select(select_cols: str, where: str, tail: str = "", prompt_select: Op
 _PROMPT_RESOLVED_SQL = "COALESCE(sp.prompt, s.system_prompt) AS _system_prompt_resolved"
 
 
+def _export_timings(messages: List[Dict[str, Any]], session_id: Optional[str] = None) -> Dict[str, Any]:
+    """Text-free timing evidence for a session export.
+
+    Exports get attached to bug reports; a reader should not have to infer from raw
+    timestamps whether a slow turn was one long model gap or many small tool
+    intervals. Hermes persists no model/tool stopwatch samples, so message
+    timestamps are the durable floor (``complete`` is therefore always False).
+    Ids, roles, counts and durations only — never prompt text, arguments or results.
+    Corrupt timestamp cells go through ``coerce_epoch`` like every other reader: they
+    count as ``missing`` and never abort the export.
+    """
+    timestamped = [(msg, ts) for msg in messages
+                   if (ts := coerce_epoch(msg.get("timestamp"), session_id=session_id)) is not None]
+    role_counts = Counter(str(msg.get("role") or "unknown") for msg in messages)
+    tool_calls_emitted = sum(
+        len(tc) if isinstance(tc, list) else 1 for tc in (msg.get("tool_calls") for msg in messages) if tc)
+    intervals = [{
+        "from_message_id": prev.get("id"), "to_message_id": nxt.get("id"),
+        "from_role": prev.get("role"), "to_role": nxt.get("role"),
+        "gap_ms": max(0, int(round((nxt_ts - prev_ts) * 1000))),
+    } for (prev, prev_ts), (nxt, nxt_ts) in zip(timestamped, timestamped[1:])]
+    iso = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()  # noqa: E731
+    first_ts, last_ts = (timestamped[0][1], timestamped[-1][1]) if timestamped else (None, None)
+    return {
+        "source": "message_timestamps",
+        "available": bool(timestamped),
+        "complete": False,
+        "unavailable_reason": None if timestamped else "no_timestamped_messages",
+        "message_timestamps": {"available": len(timestamped), "missing": len(messages) - len(timestamped)},
+        "first_message_at": iso(first_ts) if first_ts is not None else None,
+        "last_message_at": iso(last_ts) if last_ts is not None else None,
+        "wall_clock_ms": max(0, int(round((last_ts - first_ts) * 1000))) if timestamped else None,
+        "largest_gap_ms": max(i["gap_ms"] for i in intervals) if intervals else None,
+        "role_counts": dict(role_counts),
+        "tool_result_count": role_counts.get("tool", 0),
+        "tool_calls_emitted": tool_calls_emitted,
+        "intervals": intervals,
+    }
+
+
 class SessionPortabilityMixin:
     """See module docstring — mixin for SessionDB (Port cluster)."""
 
@@ -106,8 +149,7 @@ class SessionPortabilityMixin:
         Reuse the portability validator and message writer so counters and FTS
         obey the same contract as ordinary transcript imports.
         """
-        import uuid
-        session_id = f"{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:12]}"
+        session_id = new_session_id(hex_len=12)
         normalized, errors = self._validate_import_payload([
             {"id": session_id, "source": origin["tool"], "title": title,
              "cwd": cwd, "messages": messages}])
@@ -234,32 +276,38 @@ class SessionPortabilityMixin:
 
     # ── Export ─────────────────────────────────────────────────────────────
 
-    def _with_messages(self, session: Dict[str, Any]) -> Dict[str, Any]:
-        return {**session, "messages": self.get_messages(session["id"])}
+    def _with_messages(self, session: Dict[str, Any], include_compacted: bool = False) -> Dict[str, Any]:
+        messages = self.get_messages(session["id"], include_compacted=include_compacted)
+        return {**session, "messages": messages, "timings": _export_timings(messages, session["id"])}
 
-    def export_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Export a single session with all its messages as a dict."""
+    def export_session(self, session_id: str, include_compacted: bool = False) -> Optional[Dict[str, Any]]:
+        """Export a single session with all its messages as a dict. ``include_compacted`` adds the turns
+        in-place compaction archived (the history the user still sees); it stays off for payloads that go
+        back through :meth:`import_sessions`, which would insert those turns as live context."""
         session = self.get_session(session_id)
-        return self._with_messages(session) if session else None
+        return self._with_messages(session, include_compacted) if session else None
 
-    def export_session_lineage(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Export a compression lineage as one logical session dict."""
+    def export_session_lineage(self, session_id: str, include_compacted: bool = False) -> Optional[Dict[str, Any]]:
+        """Export a compression lineage as one logical session dict (``include_compacted`` as in :meth:`export_session`)."""
         lineage_ids = self.get_compression_lineage(session_id)
         if not lineage_ids:
             return None
-        segments = [seg for seg in map(self.export_session, lineage_ids) if seg]
+        segments = [seg for seg in (self.export_session(sid, include_compacted) for sid in lineage_ids) if seg]
         if not segments:
             return None
         messages = [msg for seg in segments for msg in (seg.get("messages") or [])]
         return {
             **segments[-1], "segments": segments,
             "lineage_session_ids": [seg["id"] for seg in segments], "message_count": len(messages),
-            "messages": messages,
+            "messages": messages, "timings": _export_timings(messages, session_id),
         }
 
-    def export_all(self, source: str = None) -> List[Dict[str, Any]]:
-        """Export all sessions (with messages) as dicts, e.g. for JSONL backup."""
+    def export_all(self, source: str = None, include_compacted: bool = False) -> List[Dict[str, Any]]:
+        """Export all sessions (with messages) as dicts, e.g. for JSONL backup (``include_compacted`` as in
+        :meth:`export_session`; that display read dedupes per session, so it skips the batched read)."""
         sessions = self.search_sessions(source=source, limit=100000)
+        if include_compacted:
+            return [self._with_messages(session, True) for session in sessions]
         messages_by_session = {session["id"]: [] for session in sessions}
         session_ids = list(messages_by_session)
         # Stay below SQLite's legacy 999-variable limit while replacing the per-session N+1 reads.
@@ -274,7 +322,8 @@ class SessionPortabilityMixin:
                 messages_by_session[row["session_id"]].append(
                     self._row_to_message_dict(row, warn_context="get_messages", summary_flag=True)
                 )
-        return [{**session, "messages": messages_by_session[session["id"]]} for session in sessions]
+        return [{**session, "messages": messages_by_session[session["id"]],
+                 "timings": _export_timings(messages_by_session[session["id"]], session["id"])} for session in sessions]
 
     def adopt_session_lineage_from(self, donor_db: Any, session_id: str, *, retire_donor: bool = True) -> Dict[str, Any]:
         """Adopt *session_id*'s full compression lineage from *donor_db* (stranded-bot-session
@@ -450,7 +499,10 @@ class SessionPortabilityMixin:
         if any(not isinstance(msg, dict) for msg in messages):
             raise ValueError("messages must contain only objects")
         try:
-            session_bytes = len(json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+            # `timings` is derived from the messages at export time and rebuilt on the next export;
+            # it must not eat into the size budget of the content it merely describes.
+            measured = {k: v for k, v in raw.items() if k != "timings"}
+            session_bytes = len(json.dumps(measured, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
         except (TypeError, ValueError):
             raise ValueError("session must be JSON serializable") from None
         if session_bytes > self._IMPORT_MAX_SESSION_BYTES:
@@ -534,7 +586,7 @@ class SessionPortabilityMixin:
         / ``last_activity_description`` / ``last_activity_provenance``) because they are part of the durable
         row, but import deliberately RESETS them to NULL. This asymmetry is intentional and covered by
         regression
-        (tests/gateway/test_watchdog_review_76354.py::test_s4_export_includes_activity_import_resets_it).
+        (tests/gateway/test_watchdog_review.py::test_s4_export_includes_activity_import_resets_it).
         """
         if not isinstance(sessions, list):
             raise ValueError("sessions must be a list")

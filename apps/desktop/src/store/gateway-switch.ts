@@ -12,8 +12,11 @@ import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
   setCronSessions,
+  setCurrentBranch,
+  setCurrentCwdTransient,
   setFreshDraftReady,
   setMessages,
+  setMessagingListServer,
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
@@ -21,6 +24,7 @@ import {
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
   setSessions,
+  setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
 import { clearAllSessionControl } from '@/store/session-control'
@@ -198,6 +202,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   invalidateCronJobsRequests()
   setCronJobs([])
   setMessagingSessions([])
+  setMessagingListServer(null)
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
   // Clearing $sessionStates automatically clears $workingSessionIds and
@@ -215,12 +220,22 @@ export function wipeSessionListsForGatewaySwitch(): void {
   resetLiveSync()
   $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
+  setSessionsLoadError(false)
   resetSessionsLimit()
 
   setActiveSessionId(null)
   setSelectedStoredSessionId(null)
   setMessages([])
   setFreshDraftReady(true)
+
+  // The draft workspace belongs to the outgoing backend. Nothing downstream
+  // clears it: ensureDefaultWorkspaceCwd only seeds a NON-empty remembered
+  // path and seedDefaultCwd only applies the new gateway's default when the
+  // cwd is EMPTY, so a gateway with nothing remembered kept painting (and
+  // sending on session.create) the previous gateway's folder (#114306).
+  // Transient on purpose: the per-backend memory of the old gateway stays.
+  setCurrentCwdTransient('')
+  setCurrentBranch('')
 
   // Artifacts are keyed by sessions on the previous backend, so both the
   // registry and any rail tab pointing into it go with them.

@@ -14,7 +14,7 @@ maintainer: harrylabsj
 tier: community
 category: tools
 docs_url: https://github.com/harrylabsj/healthcare-mcp
-version: "0.2.1"
+version: "0.2.0"
 platforms:
   - macos
 capabilities:

@@ -608,10 +608,21 @@ export function ModelCatalogMenu({
                           }}
                           {...kbRowProps(`${group.provider.slug}:${family.id}`)}
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
-                          </span>
+                          {/* The id gets its own line: it is what tells two rows with the
+                              same display name apart, so it must not be the part the
+                              label's truncation eats first. */}
+                          <div className="flex min-w-0 flex-1 flex-col">
+                            <span className="truncate" title={name}>
+                              <HighlightMatches foldSeparators query={search} text={name} />
+                              {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                            </span>
+                            <span
+                              className="truncate font-mono text-[0.68rem] text-(--ui-text-tertiary)"
+                              title={family.id}
+                            >
+                              <HighlightMatches foldSeparators query={search} text={family.id} />
+                            </span>
+                          </div>
                           {loadProgress ? (
                             <span
                               className="ml-auto flex shrink-0 items-center gap-1.5"

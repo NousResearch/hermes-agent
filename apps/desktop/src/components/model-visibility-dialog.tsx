@@ -177,9 +177,20 @@ export function ModelVisibilityDialog({
                           className="flex cursor-pointer items-center gap-2 px-3 py-1 text-xs hover:bg-(--ui-control-active-background)"
                           key={key}
                         >
-                          <span className="min-w-0 flex-1 truncate">
-                            <HighlightMatches foldSeparators query={search} text={name} />
-                            {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
+                          {/* A span, not a div: a `label` may only contain phrasing
+                              content. The row is per-id (its switch is), so the id
+                              has to be on the row. */}
+                          <span className="flex min-w-0 flex-1 flex-col">
+                            <span className="truncate" title={name}>
+                              <HighlightMatches foldSeparators query={search} text={name} />
+                              {tag ? <span className="text-(--ui-text-tertiary)"> {tag}</span> : null}
+                            </span>
+                            <span
+                              className="truncate font-mono text-[0.68rem] text-(--ui-text-tertiary)"
+                              title={family.id}
+                            >
+                              <HighlightMatches foldSeparators query={search} text={family.id} />
+                            </span>
                           </span>
                           {isCustomModel(customModels, provider.slug, family.id) && (
                             <Button

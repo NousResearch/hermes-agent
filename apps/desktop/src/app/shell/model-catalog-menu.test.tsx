@@ -243,3 +243,35 @@ describe('in-flight local downloads', () => {
     expect(screen.queryByText('Local')).toBeNull()
   })
 })
+
+// Distinct ids that prettify to the SAME label are the whole point of showing
+// the id: without it the two rows are indistinguishable.
+describe('a row shows the raw id it maps to', () => {
+  it('keeps two ids that share a display name apart', async () => {
+    getGlobalModelOptions.mockResolvedValue({
+      providers: [{ models: ['b-ai/glm-5.3-flash', 'kios-ai/glm-5.3-flash'], name: 'Router', slug: 'router' }]
+    })
+
+    renderMenu()
+
+    await screen.findAllByText('Glm 5.3 Flash')
+
+    const rowFor = (id: string) => screen.getByText(id).closest('[role="menuitem"]')
+    const baseRow = rowFor('b-ai/glm-5.3-flash')
+    const kiosRow = rowFor('kios-ai/glm-5.3-flash')
+
+    expect(baseRow).not.toBeNull()
+    expect(kiosRow).not.toBeNull()
+    expect(baseRow?.textContent).toContain('Glm 5.3 Flash')
+    expect(kiosRow?.textContent).toContain('Glm 5.3 Flash')
+    expect(kiosRow).not.toBe(baseRow)
+
+    // The filter matches the id too, so an id-only query marks the id line.
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search models' }), { target: { value: 'kios' } })
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('kios', { selector: 'mark' })).toBeDefined()
+      expect(screen.queryByText('b-ai/glm-5.3-flash')).toBeNull()
+    })
+  })
+})

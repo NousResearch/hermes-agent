@@ -18,7 +18,8 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.profile_routing import parse_profile_routes
 from gateway.session import SessionSource, build_session_key
 from gateway.session_identity import (
-    IdentityUnresolved, RoutingIdentity, identity_of, replace_source, resolve_identity,
+    IdentityUnresolved, RoutingIdentity, clear_identity, identity_of, replace_source,
+    resolve_identity, restore_identity,
 )
 
 
@@ -65,7 +66,8 @@ def mux(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(home))
     served = [("default", home), ("ops", home / "profiles" / "ops"), ("team_b", home / "profiles" / "team_b")]
     rig = _runner(home, multiplex=True, routes=[
-        {"name": "admin-dm", "platform": "telegram", "profile": "ops", "chat_id": "72719239"},
+        {"name": "admin-dm", "platform": "telegram", "profile": "ops", "chat_id": "72719239",
+         "response_policy": "silent"},
         {"name": "ghost", "platform": "telegram", "profile": "ghost", "chat_id": "4040"},
     ])
     with patch("hermes_cli.profiles.profiles_to_serve", return_value=served), \
@@ -83,7 +85,7 @@ def test_identity_is_one_frozen_value_that_every_reader_agrees_on(mux):
 
     assert identity == RoutingIdentity(
         transport_profile="default", runtime_profile="ops", authorization_home=mux.home,
-        runtime_home=mux.home / "profiles" / "ops")
+        runtime_home=mux.home / "profiles" / "ops", response_policy="silent")
     assert identity.namespace == "agent:ops" and identity.store_path == mux.home / "profiles" / "ops" / "state.db"
     assert identity.adapter() is mux.primary
     with pytest.raises(dataclasses.FrozenInstanceError):
@@ -145,3 +147,55 @@ def test_replace_source_keeps_identity_and_transport_where_dataclasses_replace_d
     assert isinstance(copied._transport_adapter_ref, weakref.ref)
     assert Path(copied._authorization_profile_home) == mux.home
     assert mux.primary._source_session_key(copied) == "agent:ops:telegram:dm:72719239:7"
+
+
+def test_replace_source_keeps_route_policy_before_identity_is_pinned(mux):
+    routed = mux.primary.build_source(
+        chat_id="72719239", chat_type="dm", user_id="72719239"
+    )
+    assert identity_of(routed) is None
+
+    copied = replace_source(routed, thread_id="7")
+
+    assert resolve_identity(copied, runner=mux.runner).response_policy == "silent"
+
+
+def test_clear_identity_drops_silent_policy_before_source_is_reused(mux):
+    source = mux.primary.build_source(
+        chat_id="72719239", chat_type="dm", user_id="72719239"
+    )
+    assert resolve_identity(source, runner=mux.runner).response_policy == "silent"
+
+    clear_identity(source)
+    source.chat_id = "unrouted"
+
+    assert resolve_identity(source, runner=mux.runner).response_policy == "normal"
+
+
+def test_route_probe_resets_stale_response_policy_when_route_no_longer_matches(mux):
+    source = mux.primary.build_source(
+        chat_id="72719239", chat_type="dm", user_id="72719239"
+    )
+    assert source._profile_route_response_policy == "silent"
+
+    source.chat_id = "unrouted"
+    mux.runner._profile_name_for_source(source)
+
+    assert source._profile_route_response_policy == "normal"
+
+
+def test_restored_source_recomputes_current_route_response_policy(mux):
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="72719239",
+        user_id="72719239",
+        chat_type="dm",
+        profile="ops",
+    )
+
+    identity = restore_identity(
+        source, runner=mux.runner, transport_profile="default"
+    )
+
+    assert identity is not None
+    assert identity.response_policy == "silent"

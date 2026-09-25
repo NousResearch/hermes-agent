@@ -414,7 +414,9 @@ class GatewayTurnMixin:
                 "telegram topic recovery: chat=%s user=%s %r -> %s",
                 source.chat_id, source.user_id, source.thread_id, recovered,
             )
-            source = dataclasses.replace(source, thread_id=recovered)
+            from gateway.session_identity import replace_source
+
+            source = replace_source(source, thread_id=recovered)
             with suppress(Exception):
                 event.source = source
 
@@ -1531,15 +1533,20 @@ class GatewayTurnMixin:
             _sanitize_gateway_final_response, _should_clear_resume_pending_after_turn,
         )
         response = agent_result.get("final_response") or ""
+        from gateway.session_identity import response_policy_of
+
+        _route_silent = response_policy_of(source) == "silent"
         # Hidden-reasoning-only retry exhaustion: the loop's sentinel text doubles as final_response
         # and would be delivered verbatim (peer agents would ingest it as a completed turn).
         if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
             response = ""
-        _intentional_silence = self._is_intentional_silence(agent_result, response)
+        _intentional_silence = _route_silent or self._is_intentional_silence(agent_result, response)
+        if _route_silent:
+            response = ""
         # A queued (/queue) chain's TERMINAL turn owns the silence verdict, not the event that
         # opened the chain: an internal follow-up may go silent, a human one must not.
         _silence_kind = agent_result.get("queued_terminal_display_kind", persist_user_display_kind)
-        if _intentional_silence and not is_machinery_display_kind(_silence_kind):
+        if _intentional_silence and not _route_silent and not is_machinery_display_kind(_silence_kind):
             logger.warning(
                 "silence marker rejected on a user turn: platform=%s chat=%s",
                 _platform_name, source.chat_id or "unknown",
@@ -1834,7 +1841,8 @@ class GatewayTurnMixin:
 
     async def _hmwa_persist_turn_transcript(
         self, *, event, source, session_entry, session_key, agent_result, agent_messages,
-        prepared, response, agent_failed_early, hidden_reasoning_incomplete, is_context_overflow_failure,
+        prepared, response, agent_failed_early, hidden_reasoning_incomplete,
+        is_context_overflow_failure, intentional_silence=False,
     ):
         """Persist this turn to the transcript (session_meta on first turn, closed failed turn on
         transient failure, nothing on context overflow), update last_prompt_tokens, and re-baseline the
@@ -1891,9 +1899,10 @@ class GatewayTurnMixin:
                 if not new_messages:
                     # Edge case: fall back to simple user/assistant rows.
                     await store.append_to_transcript(sid, _user_row, skip_db=agent_persisted)
-                    if response:
+                    persisted_response = response or ("[SILENT]" if intentional_silence else "")
+                    if persisted_response:
                         await store.append_to_transcript(
-                            sid, {"role": "assistant", "content": response, "timestamp": ts},
+                            sid, {"role": "assistant", "content": persisted_response, "timestamp": ts},
                             skip_db=agent_persisted,
                         )
                 else:
@@ -1984,12 +1993,15 @@ class GatewayTurnMixin:
         # Retain Slack thread/workspace routing so a failed turn cannot leave its status visible.
         await self._hmwa_stop_typing_for_turn(event, source)
         logger.exception("Agent error in session %s", session_key)
+        from gateway.session_identity import response_policy_of
+
+        _route_silent = response_policy_of(source) == "silent"
         status_code = getattr(e, "status_code", None)
         if status_code in {400, 500} and len(prepared.history) > 50:
             # Context overflow / payload too large: a deterministic rejection (#107567), and the same
             # no-grow rule as the persist path (#1630) — nothing is written into an oversized session.
             from gateway.run import _CONTEXT_OVERFLOW_REPLY
-            return _CONTEXT_OVERFLOW_REPLY
+            return "" if _route_silent else _CONTEXT_OVERFLOW_REPLY
         # Replay can coalesce inputs; only this input's durable marker establishes ownership.
         try:
             if prepared.message_text is not None and session_entry is not None:
@@ -2004,6 +2016,8 @@ class GatewayTurnMixin:
                 await self._hmwa_close_failed_turn(session_entry.session_id, PARTIAL_FAILED_TURN_NOTICE)
         except Exception:
             logger.debug("Failed to persist inbound user message after agent exception", exc_info=True)
+        if _route_silent:
+            return ""
         # Never expose raw exception types/messages to end users (info-leakage risk).
         status_hint = self._STATUS_HINTS.get(status_code, "")
         if status_code == 401:
@@ -2251,7 +2265,8 @@ class GatewayTurnMixin:
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
                 agent_result=agent_result, agent_messages=agent_messages, prepared=prepared,
-                response=response, agent_failed_early=agent_failed_early,
+                response=response, intentional_silence=_intentional_silence,
+                agent_failed_early=agent_failed_early,
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
             )
@@ -2719,6 +2734,10 @@ class GatewayTurnMixin:
 
     def _proxy_stream_consumer(self, source: "SessionSource", event_message_id, _thread_metadata, _run_still_current):
         """Platform stream consumer for the proxy path when streaming is enabled, else ``None``."""
+        from gateway.session_identity import response_policy_of
+
+        if response_policy_of(source) == "silent":
+            return None
         from gateway.run import _load_gateway_config, _platform_config_key
         _scfg = getattr(getattr(self, "config", None), "streaming", None)
         # #60671 — streaming TTS consumer is created on the outer event-loop thread before run_sync
@@ -2811,15 +2830,18 @@ class GatewayTurnMixin:
             headers["X-Hermes-Session-Id"] = session_id
         body = {"model": "hermes-agent", "messages": api_messages, "stream": True}
 
+        from gateway.session_identity import response_policy_of
+
+        _route_silent = response_policy_of(source) == "silent"
         _thread_metadata: Optional[Dict[str, Any]] = self._thread_metadata_for_source(source, event_message_id)
         _stream_consumer = (
-            None if scheduled_heartbeat
+            None if scheduled_heartbeat or _route_silent
             else self._proxy_stream_consumer(source, event_message_id, _thread_metadata, _run_still_current)
         )
         stream_task = asyncio.create_task(_stream_consumer.run()) if _stream_consumer else None
 
         _adapter = self._delivery_adapter_for(source)
-        if _adapter and not scheduled_heartbeat:
+        if _adapter and not (scheduled_heartbeat or _route_silent):
             with suppress(Exception):
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
 
@@ -2934,7 +2956,9 @@ class GatewayTurnMixin:
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around ``_run_agent_inner`` (same keyword parameters; pass-through
         when multiplexing is off)."""
-        with self._profile_scope_for_source(source):
+        from gateway.ingress_context import bind_ingress_adapter
+
+        with self._profile_scope_for_source(source), bind_ingress_adapter(source):
             return await self._run_agent_inner(message, context_prompt, history, source, session_id, **turn_kwargs)
 
     def _run_agent_display_settings(self, source: SessionSource) -> "GatewayRunner._RunAgentDisplay":
@@ -3721,6 +3745,11 @@ class GatewayTurnMixin:
         # Delivery uses the finalized task result (empty/failure normalization), not raw ``result``.
         _delivery_result = response if isinstance(response, dict) else (result or {})
         first_response = _delivery_result.get("final_response", "")
+        from gateway.session_identity import response_policy_of
+
+        _route_silent = response_policy_of(turn_ctx.source) == "silent"
+        if _route_silent:
+            first_response = ""
         _already_streamed = self._run_agent_stream_confirmed_final_delivery(
             _sc, first_response, previewed=bool(_delivery_result.get("response_previewed")),
         )
@@ -3740,7 +3769,7 @@ class GatewayTurnMixin:
                 first_response = _UNEXPECTED_SILENCE_REPLY
                 _already_streamed = False
         # Failed turns deliver their text but never their attachments (completed-turn parity).
-        _deliver_media = not _delivery_result.get("failed")
+        _deliver_media = not (_route_silent or _delivery_result.get("failed"))
         if first_response:
             logger.info(
                 "Queued follow-up for session %s: final text delivery confirmed; delivering explicit media before continuing."
@@ -4245,7 +4274,10 @@ class GatewayTurnMixin:
         from run_agent import AIAgent
 
         disp = self._run_agent_display_settings(source)
-        if scheduled_heartbeat:
+        from gateway.session_identity import response_policy_of
+
+        silent_route = response_policy_of(source) == "silent"
+        if scheduled_heartbeat or silent_route:
             # A heartbeat is proactive work: tool chrome, drafts, thinking and periodic
             # liveness notices would create a user-visible ping before its final result is known.
             # Keep status callbacks intact for approvals and actionable failures.
@@ -4273,7 +4305,7 @@ class GatewayTurnMixin:
             turn_ctx, turn_runner, source, event_message_id, disp._native_slack_task_cards,
         )
         # Two independent quiet reasons: a muted diagnostic wake (ours) and a scheduled heartbeat.
-        if not (scheduled_heartbeat or turn_ctx.mute_notification_reply):
+        if not (scheduled_heartbeat or silent_route or turn_ctx.mute_notification_reply):
             self._run_agent_start_streaming_tts(
                 source, message_type, _status_thread_metadata, turn_ctx.streaming_tts_consumer_holder,
             )
@@ -4290,7 +4322,7 @@ class GatewayTurnMixin:
         # Periodic "still working" notifications so the user knows the agent hasn't died.
         _executor_task_holder: list = [None]  # bound once the executor future exists (see below)
         _notify_task = (
-            None if (scheduled_heartbeat or turn_ctx.mute_notification_reply)
+            None if (scheduled_heartbeat or silent_route or turn_ctx.mute_notification_reply)
             else spawn(self._run_agent_notify_long_running(disp, turn_ctx, _executor_task_holder))
         )
 

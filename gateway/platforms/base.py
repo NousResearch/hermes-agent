@@ -4357,8 +4357,15 @@ class BasePlatformAdapter(ABC):
                               metadata: Optional[dict]) -> Optional[asyncio.Task]:
         """Spawn the typing-refresh task, or None when ``typing_indicator=False``.
         ``stop_event`` is passed only when the (possibly overridden) ``_keep_typing`` accepts it."""
-        # A scheduled heartbeat is proactive work: no typing indicator until it has something to say.
-        if not getattr(self.config, "typing_indicator", True) or getattr(event, "_heartbeat_session_id", None):
+        # Scheduled heartbeats and silent routes are proactive work: no typing indicator until there
+        # is something user-visible to send.
+        from gateway.session_identity import response_policy_of
+
+        if (
+            not getattr(self.config, "typing_indicator", True)
+            or getattr(event, "_heartbeat_session_id", None)
+            or response_policy_of(event.source) == "silent"
+        ):
             return None
         kwargs: Dict[str, Any] = {"metadata": metadata}
         if self._accepts_kwarg(self._keep_typing, "stop_event", var_kw=False, unknown=True):
@@ -4669,11 +4676,12 @@ class BasePlatformAdapter(ABC):
         # later ``source.profile``-less fallback can re-route the message through the default bot's routes).
         owner_profile = getattr(self, "_owner_profile", None)
         profile, profile_route_rejected = owner_profile, False
+        route_probe = SessionSource(**fields)
         if self.gateway_runner is not None:
             from gateway.profile_routing import ProfileRouteRejected
             try:
                 profile = self.gateway_runner._profile_name_for_source(
-                    SessionSource(**fields), adapter_profile=owner_profile) or owner_profile
+                    route_probe, adapter_profile=owner_profile) or owner_profile
             except ProfileRouteRejected:
                 profile_route_rejected = True
             except Exception:
@@ -4686,6 +4694,9 @@ class BasePlatformAdapter(ABC):
         # even if profile_routes picks another runtime; the reject flag is consumed before auth.
         source._transport_adapter_ref = weakref.ref(self)
         source.profile_route_rejected = profile_route_rejected
+        source._profile_route_response_policy = getattr(
+            route_probe, "_profile_route_response_policy", "normal"
+        )
         return source
 
     @abstractmethod

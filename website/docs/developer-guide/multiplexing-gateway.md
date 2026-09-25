@@ -176,8 +176,9 @@ profile-scoped code runs without the override where one is expected.
 ## Inbound routing
 
 `gateway.profile_routes` maps `(platform, user_id, guild_id, chat_id, thread_id)` to a
-profile; matching is conjunctive, most-specific-first, with parent-chain chat
-matching for threads. Routing only runs when multiplexing is active, and a
+profile and may attach `response_policy: normal|silent`; matching is
+conjunctive, most-specific-first, with parent-chain chat matching for threads.
+Routing only runs when multiplexing is active, and a
 matched route whose target is outside the served set is rejected (the event is
 dropped, not misdelivered). Full schema and matching rules:
 [Routing shared-bot chats to profiles](../user-guide/multi-profile-gateways.md#routing-shared-bot-chats-to-profiles-profile_routes).

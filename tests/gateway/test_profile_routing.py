@@ -82,6 +82,35 @@ class TestParseProfileRoutes:
         assert parse_profile_routes(None) == []
         assert parse_profile_routes([]) == []
 
+    @pytest.mark.parametrize(
+        ("configured", "expected"),
+        [(None, "normal"), (" NORMAL ", "normal"), ("silent", "silent")],
+    )
+    def test_response_policy_is_normalized_with_backward_compatible_default(
+        self, configured, expected
+    ):
+        entry = {"name": "r", "platform": "telegram", "profile": "p"}
+        if configured is not None:
+            entry["response_policy"] = configured
+
+        [route] = parse_profile_routes([entry])
+
+        assert route.response_policy == expected
+
+    def test_invalid_response_policy_fails_closed_without_rehoming_route(self, caplog):
+        with caplog.at_level("WARNING", logger="gateway.profile_routing"):
+            routes = parse_profile_routes([
+                {"name": "bad", "platform": "telegram", "profile": "p",
+                 "response_policy": "drop-everything"},
+                {"name": "good", "platform": "telegram", "profile": "p"},
+            ])
+
+        assert [(route.name, route.response_policy) for route in routes] == [
+            ("bad", "silent"),
+            ("good", "normal"),
+        ]
+        assert "response_policy" in caplog.text
+
     def test_coerces_yaml_native_int_ids_to_str(self):
         # YAML loads unquoted snowflakes / negative Telegram ids as int;
         # inbound SessionSource ids are str, so un-coerced routes never match.
@@ -244,7 +273,8 @@ class TestGatewayConfigRoundtrip:
         from gateway.config import GatewayConfig
 
         config = GatewayConfig(profile_routes=parse_profile_routes([
-            {"name": "sender", "platform": "teams", "profile": "owner", "user_id": "aad-456"},
+            {"name": "sender", "platform": "teams", "profile": "owner", "user_id": "aad-456",
+             "response_policy": "silent"},
             {"name": "off", "platform": "teams", "profile": "owner",
              "chat_id": "conversation-1", "enabled": False},
         ]))
@@ -252,6 +282,7 @@ class TestGatewayConfigRoundtrip:
         assert "user_id" not in raw["profile_routes"][1]
         restored = GatewayConfig.from_dict(raw).profile_routes
 
-        assert [(r.name, r.user_id, r.enabled, r.specificity) for r in restored] == [
-            ("sender", "aad-456", True, 16), ("off", None, False, 4),
+        assert [(r.name, r.user_id, r.enabled, r.specificity, r.response_policy) for r in restored] == [
+            ("sender", "aad-456", True, 16, "silent"),
+            ("off", None, False, 4, "normal"),
         ]

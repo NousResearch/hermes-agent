@@ -124,6 +124,10 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        from gateway.session_identity import response_policy_of
+
+        if response_policy_of(ctx.source) == "silent":
+            return
         # Failed subagent → one clean user-facing notice, handled FIRST, before every progress-queue
         # gate: platforms with tool_progress off must still hear about a dead delegation.
         if event_type == "subagent.complete":
@@ -909,6 +913,10 @@ class TurnRunner:
 
     def _setup_stream_consumer(self, platform_key):
         ctx = self._ctx
+        from gateway.session_identity import response_policy_of
+
+        if response_policy_of(ctx.source) == "silent":
+            return None, None, None, False
         if ctx.mute_notification_reply:
             return None, None, None, False
         stream_consumer = None

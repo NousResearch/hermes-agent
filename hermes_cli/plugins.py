@@ -289,10 +289,10 @@ class PluginContext:
 
     @cached_property
     def platform_actions(self):
-        """Capability-gated platform action facade (``add_reaction``, ``set_thread_title``). Every call
+        """Capability-gated actions through the current turn's exact ingress adapter. Every call
         re-checks ``gateway.platform_actions`` (legacy ``plugins.entries.<id>.allow_platform_actions``,
-        default OFF) and returns ``{"ok": bool, ...}`` — verbs never raise into hook dispatch; no adapter
-        handles or raw SDK objects."""
+        default OFF), fails closed outside a live inbound turn, and returns ``{"ok": bool, ...}`` —
+        verbs never raise into hook dispatch; no adapter handles or raw SDK objects."""
         from hermes_cli.platform_actions import PlatformActions
         return PlatformActions(self.plugin_id)
 

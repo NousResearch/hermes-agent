@@ -595,7 +595,7 @@ plugins from sources you trust.
 ### Platform actions
 
 `ctx.platform_actions` gives a plugin a minimal, capability-gated verb set for
-acting on connected chat platforms through the live gateway adapter registry —
+acting through the exact live gateway adapter that received the current event —
 the sanctioned alternative to monkeypatching an adapter. **It is off by
 default**: every call re-checks the `gateway.platform_actions` capability
 (legacy key `plugins.entries.<id>.allow_platform_actions`), and an ungranted
@@ -617,22 +617,31 @@ if not result["ok"]:
 
 Success is `{"ok": True, "action": <verb>}`. Failures are
 `{"ok": False, "error": <code>, "detail": <str>}` with stable error codes:
-`capability_not_granted`, `invalid_argument`, `gateway_unavailable`,
+`capability_not_granted`, `invalid_argument`,
 `unknown_platform`, `adapter_not_registered`, `adapter_disconnected`,
 `unsupported_platform_action`, `action_failed`. Actions validate that the
-target adapter exists and is connected before acting; a disconnected or
-missing adapter degrades to a structured error, never an exception.
+bound ingress adapter exists, matches the requested platform, and is connected
+before acting. Calls outside an inbound turn, or from a turn without live
+transport provenance, fail closed with `adapter_not_registered`; Hermes never
+falls back to another registered adapter or to process-environment credentials.
+A shared default-profile bot routed into a secondary execution profile remains
+the live ingress adapter, so a granted plugin in that secondary profile acts
+through the shared bot without copying its token. A disconnected or missing
+adapter degrades to a structured error, never an exception.
 
 Platforms supported in v1: Telegram and Discord. Telegram's `add_reaction`
 *sets* the bot's reaction (the Bot API replaces a previous bot reaction rather
 than stacking). Every action — allowed or denied — is written to the log with
-the plugin id, verb, platform, and outcome.
+the plugin id, verb, platform, ingress transport profile, target chat id, and
+outcome.
 
 :::warning Security note
-Platform actions are a **messaging-as-the-bot power**: a granted plugin can
-react and rename threads in any chat the gateway bot can reach, not just the
-chat that triggered the hook. Grant `gateway.platform_actions` only to plugins
-you trust, and prefer plugins that document exactly which actions they take.
+Platform actions are a **messaging-as-the-bot power**. A granted plugin chooses
+the target chat/message/thread ids and can act in any destination the receiving
+bot can reach, not only the chat that triggered the hook. On a shared-bot route,
+this means a plugin running in a secondary profile acts as the default profile's
+shared bot. Grant `gateway.platform_actions` only to plugins you trust, and
+prefer plugins that document exactly which actions they take.
 Raw platform SDK payload/handle access is deliberately **not** part of this
 surface — per the #64176 round-2 design correction it requires its own
 capability (`gateway.raw_events`) with a "no stability guarantee" label and a

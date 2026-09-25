@@ -763,6 +763,14 @@ gateway:
       chat_id: "-1001234567890"
       profile: tg-profile
 
+    # Run the routed profile and its plugins, but never send ordinary agent text
+    - name: tg-automation-topic
+      platform: telegram
+      chat_id: "-1001234567890"
+      thread_id: "3232"
+      profile: automation
+      response_policy: silent
+
     # A WhatsApp DM — write the phone number; JID and LID forms also match
     - name: owner-whatsapp
       platform: whatsapp
@@ -785,6 +793,17 @@ channel. Messages that match no route stay on the default/active profile. The
 routed profile gets the full per-profile isolation described above (config,
 skills, memory, credentials, session namespace). Routing works on every
 platform adapter, not just Discord.
+
+`response_policy` is optional. `normal` (the default) preserves regular reply
+delivery. `silent` still runs the complete model/tool turn and persists its
+conversation state, but suppresses final agent text, model-error copy, typing
+indicators, progress notices, and response streams. Approval prompts and
+actionable status requests remain available so a silent turn cannot bypass a
+required decision. It is a route-local delivery policy: other chats, threads,
+platforms, and routes are unaffected. Use it when a trusted plugin or workflow
+performs the visible platform action itself. It does not disable tool calls or
+weaken plugin capability gates. An unrecognized `response_policy` fails closed
+to `silent` and logs a warning without changing the route's target profile.
 
 `user_id` is the **sender** of the inbound message, compared for exact equality. It is only
 as trustworthy as the adapter that reports it, so treat it as an authorization input only on

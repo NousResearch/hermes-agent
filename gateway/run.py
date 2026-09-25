@@ -4418,6 +4418,7 @@ class GatewayRunner(
         ``adapter_profile`` is the profile owning the receiving bot; only routes declaring it as
         ``bot_profile`` apply (#104933)."""
         config = getattr(self, "config", None)
+        source._profile_route_response_policy = "normal"
         if not getattr(config, "multiplex_profiles", False):
             return None
         routes = getattr(config, "profile_routes", None)
@@ -4453,6 +4454,7 @@ class GatewayRunner(
                     "Rejecting profile route %r: target profile %r is not served",
                     matched.name, matched.profile)
                 raise ProfileRouteRejected(matched.name)
+            source._profile_route_response_policy = matched.response_policy
             return matched.profile
         logger.debug(
             "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",

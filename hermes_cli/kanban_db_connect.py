@@ -835,6 +835,9 @@ _LATER_TASK_COLUMNS = (
     # Typed block reason (VALID_BLOCK_KINDS); NULL = generic human blocker.
     ("block_kind", "block_kind TEXT"),
     ("block_recurrences", "block_recurrences INTEGER NOT NULL DEFAULT 0"),
+    # Card whose worker run filed this one; the provenance ``kanban_withdraw``
+    # authorises against. NULL = legacy row / filed without a run identity.
+    ("creator_task_id", "creator_task_id TEXT"),
     # Spawn-time start fingerprint of worker_pid (PID-reuse guard; NULL = legacy row).
     ("worker_started_at", "worker_started_at INTEGER"),
 )

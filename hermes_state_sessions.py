@@ -1028,13 +1028,16 @@ class SessionSessionsMixin:
     def _project_compression_tips(self, sessions: List[Dict[str, Any]], compact_rows: bool) -> List[Dict[str, Any]]:
         """Replace each compression root's surfaced fields with its live tip's (root ``started_at`` kept
         for stable ordering), one batched query. ``_lineage_ids`` carries every chain id (a tile may
-        hold a MIDDLE segment's id)."""
+        hold a MIDDLE segment's id). Chains come from ONE batched edge fetch walked in memory — the
+        previous per-root ``get_compression_chain`` cost one query (and one read-pool checkout) per hop
+        per root."""
         chain_by_root: Dict[str, List[str]] = {}  # only roots whose tip differs from themselves
-        for s in sessions:
-            if s.get("end_reason") == "compression":
-                chain = self.get_compression_chain(s["id"])
-                if chain and chain[-1] != s["id"]:
-                    chain_by_root[s["id"]] = chain
+        chains = self._compression_chains(
+            s["id"] for s in sessions if s.get("end_reason") == "compression"
+        )
+        for root_id, chain in chains.items():
+            if chain and chain[-1] != root_id:
+                chain_by_root[root_id] = chain
         tip_rows = (
             self._get_session_rich_rows_batch(
                 {chain[-1] for chain in chain_by_root.values()}, compact_rows=compact_rows,

@@ -3410,6 +3410,96 @@ class TestCompressionChainProjection:
         assert "_lineage_root_id" not in row
         assert row["end_reason"] == "compression"
 
+    def test_list_resolves_tips_without_per_hop_walk(self, db, monkeypatch):
+        """Tip resolution must come from ONE batched edge fetch walked in
+        memory — never from the per-hop get_compression_tip() walk, and the
+        edge index must be built exactly once per listing regardless of how
+        many roots/hops the page holds (N+1 regression pin for #95316).
+
+        Before #95316's fix, a page with R compression roots of average depth
+        D cost R×(D+1) locked queries inside list_sessions_rich; this test
+        fails on that code because get_compression_tip() is entered at all.
+        """
+        import time as _time
+
+        t0 = _time.time() - 7200
+        self._build_compression_chain(db, t0)  # root1 -> mid1 -> tip1 (2 hops)
+
+        # Second independent chain so one call covers multiple roots.
+        db.create_session("root2", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 100, "root2"))
+        db.append_message("root2", "user", "second conversation start")
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t0 + 200, "compression", "root2"),
+        )
+        db.create_session("tip2", "cli", parent_session_id="root2")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0 + 201, "tip2"))
+        db.append_message("tip2", "user", "second continuation")
+        db._conn.commit()
+
+        tip_walk_calls = []
+        index_builds = []
+
+        def forbidden_tip_walk(session_id):
+            tip_walk_calls.append(session_id)
+            return session_id
+
+        def counting_edges(*args, **kwargs):
+            index_builds.append(1)
+            return real_edges(*args, **kwargs)
+
+        real_edges = db._compression_child_edges
+        monkeypatch.setattr(db, "get_compression_tip", forbidden_tip_walk)
+        monkeypatch.setattr(db, "_compression_child_edges", counting_edges)
+
+        sessions = db.list_sessions_rich(source="cli", limit=20)
+        ids = [s["id"] for s in sessions]
+        # Behavior is unchanged: both chains still project to their tips...
+        assert "tip1" in ids and "tip2" in ids
+        assert next(s for s in sessions if s["id"] == "tip1")["_lineage_root_id"] == "root1"
+
+        # ...but resolution never re-entered the per-hop walker, and the
+        # batched edge index was built exactly once for the whole page —
+        # not once per root, let alone once per hop.
+        assert tip_walk_calls == []
+        assert len(index_builds) == 1
+
+    def test_resolve_compression_tips_matches_per_hop_walker(self, db):
+        """_resolve_compression_tips must agree with get_compression_tip()
+        for every node of every chain — the in-memory walk is a drop-in for
+        the per-hop query walk, including multi-hop chains."""
+        import time as _time
+
+        t0 = _time.time() - 7200
+        root1, _delegate1, mid1, tip1 = self._build_compression_chain(db, t0)
+        # A third hop: tip1 compresses too, chain continues to tip1b.
+        t_compress_tip = t0 + 5400 + 1800
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason=? WHERE id=?",
+            (t_compress_tip, "compression", "tip1"),
+        )
+        db.create_session("tip1b", "cli", parent_session_id="tip1")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t_compress_tip + 1, "tip1b")
+        )
+        db.append_message("tip1b", "user", "third continuation")
+        db._conn.commit()
+
+        all_nodes = [root1, mid1, "tip1"]
+        resolved = db._resolve_compression_tips(all_nodes)
+        for node in all_nodes:
+            expected = db.get_compression_tip(node)
+            assert expected is not None
+            assert resolved[node] == expected
+
+        # Batched call agrees per-node and resolves the full 3-hop chain.
+        assert resolved[root1] == "tip1b"
+        assert resolved[mid1] == "tip1b"
+        # Nodes off any chain resolve to themselves.
+        assert db._resolve_compression_tips(["nonexistent"]) == {"nonexistent": "nonexistent"}
+        assert db._resolve_compression_tips([]) == {}
+
 
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)

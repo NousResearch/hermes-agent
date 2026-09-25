@@ -25,7 +25,7 @@ function configuredElectronFlags(env: NodeJS.ProcessEnv): string[] {
 }
 
 const electronFlags = process.platform === 'linux' ? configuredElectronFlags(process.env) : []
-const args = wslgLaunchArgs(process.argv.slice(1), process.env, process.platform, undefined, electronFlags)
+const args = wslgLaunchArgs(process.argv.slice(1), process.env, process.platform, electronFlags)
 
 if (args) {
   // Keep the launcher alive until the child exits: npm's concurrently must not

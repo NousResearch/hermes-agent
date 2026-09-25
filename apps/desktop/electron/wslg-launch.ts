@@ -1,4 +1,4 @@
-import { detectRemoteDisplay, isWslEnvironment } from './bootstrap-platform'
+import { detectRemoteDisplay } from './bootstrap-platform'
 
 // Ozone is selected before application JavaScript. Never appendSwitch here:
 // that leaves the browser on X11 while GPU children receive Wayland.
@@ -6,7 +6,6 @@ export function wslgLaunchArgs(
   argv: readonly string[],
   env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
-  isWsl = isWslEnvironment(env, platform),
   electronFlags: readonly string[] = []
 ): string[] | null {
   const displayEnv = { ...env, HERMES_DESKTOP_DISABLE_GPU: undefined }
@@ -18,14 +17,10 @@ export function wslgLaunchArgs(
     return null
   }
 
-  const nativeWayland = env.XDG_SESSION_TYPE === 'wayland' || Boolean(env.WAYLAND_DISPLAY)
-  const wslgWayland = Boolean(isWsl && env.WAYLAND_DISPLAY)
+  // WSLg always exports WAYLAND_DISPLAY, so it is covered by the same check.
+  const wayland = env.XDG_SESSION_TYPE === 'wayland' || Boolean(env.WAYLAND_DISPLAY)
 
-  if (!nativeWayland && !wslgWayland) {
-    return null
-  }
-
-  if (hasOzonePlatform(argv)) {
+  if (!wayland || hasOzonePlatform(argv)) {
     return null
   }
 

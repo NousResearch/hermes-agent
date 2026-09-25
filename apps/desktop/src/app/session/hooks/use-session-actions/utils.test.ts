@@ -2152,3 +2152,57 @@ describe('preserveEquivalentTranscript', () => {
     expect(preserveEquivalentTranscript(current, next)).toBe(next)
   })
 })
+
+describe('preserveLocalPendingTurnMessages attachment rewrites (#120978)', () => {
+  it('drops the rowId-less pasted-attachment prompt once the rewritten copy commits', () => {
+    // A pasted clipboard image is rewritten on the durable side (marker lines,
+    // no data: ref) while the optimistic local row keeps the bare caption and
+    // the data: ref — exact text/refs equality can never match them and the
+    // optimistic row was re-appended below the newest turn.
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-1790168309-ab12cd', 'user', 'unable to publish', {
+        attachmentRefs: ['data:image/png;base64,AAAA']
+      })
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first', { rowId: 1 }),
+      msg('2-assistant-stored', 'assistant', 'first answer', { rowId: 2 }),
+      msg('3-user-stored', 'user', 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]\n[screenshot]', {
+        rowId: 3
+      })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-user-stored'
+    ])
+  })
+
+  it('never tolerance-matches a plain repeat prompt without attachment evidence', () => {
+    // The gating invariant: rewrite markers on the stored side AND attachment
+    // evidence on the local side. A bare repeated caption is a genuine new
+    // question and must survive.
+    const previous = [
+      msg('1-user', 'user', 'first'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-plain-repeat', 'user', 'unable to publish')
+    ]
+
+    const next = [
+      msg('1-user-stored', 'user', 'first', { rowId: 1 }),
+      msg('2-assistant-stored', 'assistant', 'first answer', { rowId: 2 }),
+      msg('3-user-stored', 'user', 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]', { rowId: 3 })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      '3-user-stored',
+      'user-plain-repeat'
+    ])
+  })
+})

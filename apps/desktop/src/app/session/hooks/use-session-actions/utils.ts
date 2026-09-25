@@ -1,6 +1,7 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
+import { sameAttachmentTurn, spliceOlderPreservedRows } from '@/lib/chat-messages'
 import {
   assistantTextPart,
   type ChatMessage,
@@ -885,8 +886,9 @@ export function preserveLocalPendingTurnMessages(
       isOptimisticUser &&
       acknowledgedUserCandidates.some(
         candidate =>
-          !conflictingTranscriptIdentity(message, candidate) &&
-          textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
+          (!conflictingTranscriptIdentity(message, candidate) &&
+            textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))) ||
+          sameAttachmentTurn(candidate, message)
       )
     ) {
       continue
@@ -1002,7 +1004,10 @@ export function preserveLocalPendingTurnMessages(
   const withReplacements =
     replacements.size > 0 ? nextMessages.map(message => replacements.get(message.id) ?? message) : nextMessages
 
-  return preserved.length ? [...withReplacements, ...preserved] : withReplacements
+  // #120978: a kept run whose rowIds predate the whole hydrated page belongs
+  // earlier — splice it in front of the first newer row instead of appending it
+  // below the newest turn (non-qualifying runs keep the trailing behavior).
+  return preserved.length ? spliceOlderPreservedRows(withReplacements, preserved) : withReplacements
 }
 
 /**

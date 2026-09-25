@@ -215,3 +215,123 @@ it('moves a local error onto the durable row it already represents (#119326)', (
   expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant'])
   expect(merged[1]).toMatchObject({ error: 'upstream timeout', pending: false })
 })
+
+it('does not re-append a rowId-less pasted-attachment prompt rewritten by the backend (#120978)', () => {
+  // The pasted clipboard image has no rowId on the optimistic local row, and
+  // the durable prompt is rewritten to marker lines + an injected
+  // memory-context block, so no exact text/refs compare can tie them.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'first', { rowId: 1 }),
+      row('9-1-assistant', 'assistant', 'first answer', { rowId: 2 }),
+      row('9-2-user', 'user', 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]\n[screenshot]', { rowId: 3 })
+    ],
+    [
+      row('1-0-user', 'user', 'first', { rowId: 1 }),
+      row('1-1-assistant', 'assistant', 'first answer', { rowId: 2 }),
+      row('user-1790168309-ab12cd', 'user', 'unable to publish', {
+        attachmentRefs: ['data:image/png;base64,AAAA']
+      })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual(['9-0-user', '9-1-assistant', '9-2-user'])
+})
+
+it('folds a preserved attachment error onto the durable reply via the tolerant caption (#120978)', () => {
+  // The errored assistant's hydrated row exists, but neither it nor the user
+  // row can be matched by rowId (the local pair carries none) — the tolerant
+  // caption match must fold the error onto the durable reply and drop the
+  // optimistic pair instead of preserving both at the tail.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]', { rowId: 18711 }),
+      row('9-1-assistant', 'assistant', 'partial', { rowId: 18715 }),
+      row('9-2-user', 'user', 'later question', { rowId: 18817 }),
+      row('9-3-assistant', 'assistant', 'later answer', { rowId: 18822 })
+    ],
+    [
+      row('user-1790168309-ab12cd', 'user', 'unable to publish', {
+        attachmentRefs: ['data:image/png;base64,AAAA']
+      }),
+      row('assistant-stream-deadbeef', 'assistant', 'partial', { error: 'upstream timeout' }),
+      row('9-2-user', 'user', 'later question', { rowId: 18817 }),
+      row('9-3-assistant', 'assistant', 'later answer', { rowId: 18822 })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual([
+    '9-0-user',
+    '9-1-assistant',
+    '9-2-user',
+    '9-3-assistant'
+  ])
+  expect(merged[1]).toMatchObject({ error: 'upstream timeout', pending: false })
+})
+
+it('never tolerance-matches a plain repeated prompt without attachment evidence (#120978)', () => {
+  // Gating: the stored row carries rewrite markers but the local repeat is a
+  // bare caption with no refs — a genuine repeat must survive.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'unable to publish\n\n[Image attached at: C:\\img\\shot.png]', { rowId: 18711 }),
+      row('9-1-assistant', 'assistant', 'stored reply', { rowId: 18712 })
+    ],
+    [
+      row('1-0-user', 'user', 'earlier', { rowId: 100 }),
+      row('1-1-assistant', 'assistant', 'earlier answer', { rowId: 101 }),
+      row('user-repeat', 'user', 'unable to publish'),
+      row('assistant-stream-x', 'assistant', 'stored reply', { error: 'upstream timeout' })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual([
+    '9-0-user',
+    '9-1-assistant',
+    'user-repeat',
+    'assistant-stream-x'
+  ])
+})
+
+it('splices an older-rowId preserved run in front of the first newer hydrated row (#120978)', () => {
+  // The windowed hydrated page starts past the failed turn; the kept pair
+  // (user 210 + errored assistant 211) must land ABOVE the newer turn, not
+  // below it.
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'newer question', { rowId: 220 }),
+      row('9-1-assistant', 'assistant', 'newer answer', { rowId: 221 })
+    ],
+    [
+      row('user-210', 'user', 'older question', { rowId: 210 }),
+      row('assistant-stream-211', 'assistant', 'older partial', { rowId: 211, error: 'upstream timeout' }),
+      row('9-0-user', 'user', 'newer question', { rowId: 220 }),
+      row('9-1-assistant', 'assistant', 'newer answer', { rowId: 221 })
+    ]
+  )
+
+  expect(merged.map(message => message.rowId)).toEqual([210, 211, 220, 221])
+  expect(merged[1]).toMatchObject({ error: 'upstream timeout', pending: false })
+})
+
+it('keeps a rowId-less preserved run trailing (#118002 behavior unchanged)', () => {
+  const merged = preserveLocalAssistantErrors(
+    [
+      row('9-0-user', 'user', 'newer question', { rowId: 220 }),
+      row('9-1-assistant', 'assistant', 'newer answer', { rowId: 221 })
+    ],
+    [
+      row('user-no-row', 'user', 'older question'),
+      row('assistant-stream-x', 'assistant', 'older partial', { error: 'upstream timeout' }),
+      row('9-0-user', 'user', 'newer question', { rowId: 220 }),
+      row('9-1-assistant', 'assistant', 'newer answer', { rowId: 221 })
+    ]
+  )
+
+  expect(merged.map(message => message.id)).toEqual([
+    '9-0-user',
+    '9-1-assistant',
+    'user-no-row',
+    'assistant-stream-x'
+  ])
+})

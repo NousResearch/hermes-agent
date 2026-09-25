@@ -127,6 +127,15 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_MARKDOWN`         | true                       | Send agent replies as markdown (iMessage renders natively). `false` strips formatting to plain text |
 | `PHOTON_REACTIONS`        | false                      | Tapback 👀/👍/👎 as processing status; tapbacks on bot messages reach the agent as `reaction:added:<emoji>` |
 
+Threaded answers use the shared `reply_to_mode` in `config.yaml`:
+
+```yaml
+platforms:
+  photon:
+    reply_to_mode: first   # default: answer inside the thread only when the user replied in one
+                           # all: always quote-reply the triggering message; off: never thread
+```
+
 ## Attachments & limitations
 
 - **Inbound attachments and voice notes are downloaded.** The sidecar reads

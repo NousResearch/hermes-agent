@@ -1,4 +1,6 @@
-"""Inbound iMessage threaded (swipe) replies for PhotonAdapter (#100663).
+"""iMessage threaded (swipe) replies for PhotonAdapter (#100663, #105320).
+
+Inbound:
 
 spectrum-ts 12.x wraps a threaded reply as ``{type: "reply", content, target}``. The
 sidecar normalises it to ``{type: "reply", content, targetMessageId, targetDirection,
@@ -6,6 +8,9 @@ targetText}``; the adapter must unwrap it instead of emitting
 "[Photon content type not handled: reply]", and carry the quoted message as reply
 context. spectrum usually can't hydrate the text of our own outbound bubbles, so the
 adapter records what it sends in ``gateway.rich_sent_store`` and falls back to that.
+
+Outbound: the answer to a threaded message goes back into that thread via ``replyToId``
+on ``/send`` and ``/send-attachment``; the shared ``reply_to_mode`` (first = only when the user threaded | all | off).
 """
 from __future__ import annotations
 
@@ -29,10 +34,10 @@ def _isolated_sent_index(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
 
-def _make_adapter(monkeypatch: pytest.MonkeyPatch, **extra: Any) -> PhotonAdapter:
+def _make_adapter(monkeypatch: pytest.MonkeyPatch, reply_to_mode: str = "first", **extra: Any) -> PhotonAdapter:
     monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
     monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
-    return PhotonAdapter(PlatformConfig(enabled=True, token="", extra=dict(extra)))
+    return PhotonAdapter(PlatformConfig(enabled=True, token="", extra=dict(extra), reply_to_mode=reply_to_mode))
 
 
 def _capture_handled(adapter: PhotonAdapter, monkeypatch: pytest.MonkeyPatch) -> List[MessageEvent]:
@@ -220,3 +225,83 @@ async def test_unknown_reply_target_leaves_text_empty(monkeypatch):
 
     assert handled[-1].text == "?"
     assert handled[-1].reply_to_text is None
+
+
+# --- outbound: answer inside the thread ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_answer_to_threaded_message_is_threaded(monkeypatch):
+    adapter = _make_adapter(monkeypatch)
+    _capture_handled(adapter, monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    await adapter._dispatch_inbound(_reply_event({"type": "text", "text": "hi"}, message_id="in-9"))
+    result = await adapter.send(DM, "answer", reply_to="in-9")
+
+    assert result.success
+    path, body = calls[-1]
+    assert path == "/send"
+    assert body["replyToId"] == "in-9"
+
+
+@pytest.mark.asyncio
+async def test_answer_to_plain_message_is_not_threaded_by_default(monkeypatch):
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    await adapter.send(DM, "answer", reply_to="plain-1")
+
+    assert "replyToId" not in calls[-1][1]
+
+
+@pytest.mark.asyncio
+async def test_threading_modes(monkeypatch):
+    all_adapter = _make_adapter(monkeypatch, reply_to_mode="all")
+    calls = _capture_sidecar(all_adapter)
+    await all_adapter.send(DM, "answer", reply_to="plain-1")
+    assert calls[-1][1]["replyToId"] == "plain-1"
+
+    off_adapter = _make_adapter(monkeypatch, reply_to_mode="off")
+    _capture_handled(off_adapter, monkeypatch)
+    calls = _capture_sidecar(off_adapter)
+    await off_adapter._dispatch_inbound(_reply_event({"type": "text", "text": "hi"}, message_id="in-3"))
+    await off_adapter.send(DM, "answer", reply_to="in-3")
+    assert "replyToId" not in calls[-1][1]
+
+
+def test_threading_mode_comes_from_platform_reply_to_mode(monkeypatch):
+    monkeypatch.setenv("PHOTON_PROJECT_ID", "test-project-id")
+    monkeypatch.setenv("PHOTON_PROJECT_SECRET", "test-project-secret")
+    cfg = PlatformConfig.from_dict({"enabled": True, "reply_to_mode": "off"})
+    assert PhotonAdapter(cfg)._reply_to_mode == "off"
+    assert PhotonAdapter(PlatformConfig.from_dict({"enabled": True}))._reply_to_mode == "first"
+
+
+@pytest.mark.asyncio
+async def test_threaded_answer_skips_richlink_path(monkeypatch):
+    adapter = _make_adapter(monkeypatch, reply_to_mode="all")
+    calls = _capture_sidecar(adapter)
+
+    await adapter.send(DM, "https://example.com", reply_to="in-1")
+
+    assert [path for path, _ in calls] == ["/send"]
+    assert calls[-1][1]["replyToId"] == "in-1"
+
+
+@pytest.mark.asyncio
+async def test_attachment_answer_to_threaded_message_is_threaded(monkeypatch, tmp_path):
+    monkeypatch.setattr(PhotonAdapter, "validate_media_delivery_path",
+                        staticmethod(lambda p: p if os.path.exists(p) else None))
+    img = tmp_path / "chart.png"
+    img.write_bytes(b"\x89PNG fake")
+    adapter = _make_adapter(monkeypatch)
+    _capture_handled(adapter, monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    await adapter._dispatch_inbound(_reply_event({"type": "text", "text": "chart?"}, message_id="in-4"))
+    await adapter.send_image_file(DM, str(img), reply_to="in-4")
+
+    path, body = calls[-1]
+    assert path == "/send-attachment"
+    assert body["replyToId"] == "in-4"

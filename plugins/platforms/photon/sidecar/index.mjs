@@ -307,6 +307,7 @@ let Spectrum,
   spectrumRichlink,
   spectrumTyping,
   spectrumPoll,
+  spectrumReply,
   imessageEffect;
 try {
   ({
@@ -318,6 +319,7 @@ try {
     markdown: spectrumMarkdown,
     richlink: spectrumRichlink,
     typing: spectrumTyping,
+    reply: spectrumReply,
   } = await import("spectrum-ts"));
   ({ imessage, effect: imessageEffect } = await import("spectrum-ts/providers/imessage"));
 } catch (e) {
@@ -371,6 +373,28 @@ function lruSet(map, key, value, cap) {
 function rememberKnownSpace(id, space) {
   if (!id || typeof id !== "string" || !space) return;
   lruSet(knownSpaces, id, space, MAX_KNOWN_SPACES);
+}
+
+// Send `builder` as a native threaded reply to `replyToId` when given and
+// resolvable; otherwise (or if the target can't be found) a normal send, so a
+// stale anchor never loses the message.
+async function sendMaybeThreaded(space, builder, replyToId) {
+  if (!replyToId || typeof replyToId !== "string" || !spectrumReply) {
+    return await space.send(builder);
+  }
+  let target;
+  try {
+    target = knownMessages.get(replyToId) ?? (await space.getMessage(replyToId));
+  } catch (e) {
+    target = undefined;
+  }
+  if (!target) {
+    console.error(
+      `photon-sidecar: reply target ${replyToId} not found; sending unthreaded`
+    );
+    return await space.send(builder);
+  }
+  return await space.send(spectrumReply(builder, target));
 }
 
 function rememberKnownMessage(message) {
@@ -1065,7 +1089,7 @@ const server = http.createServer(async (req, res) => {
     }
     const body = await readBody(req);
     if (req.url === "/send") {
-      const { spaceId, text, format = "text" } = body || {};
+      const { spaceId, text, format = "text", replyToId } = body || {};
       if (!spaceId || typeof text !== "string") {
         return badRequest(res, "spaceId and text are required");
       }
@@ -1085,7 +1109,7 @@ const server = http.createServer(async (req, res) => {
         chooseSendFormat(format, text) === "markdown"
           ? spectrumMarkdown(text)
           : spectrumText(text);
-      const result = await space.send(builder);
+      const result = await sendMaybeThreaded(space, builder, replyToId);
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-richlink") {
@@ -1098,7 +1122,7 @@ const server = http.createServer(async (req, res) => {
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-attachment") {
-      const { spaceId, path, name, mimeType, caption, kind } =
+      const { spaceId, path, name, mimeType, caption, kind, replyToId } =
         body || {};
       if (!spaceId || typeof path !== "string" || !path) {
         return badRequest(res, "spaceId and path are required");
@@ -1116,7 +1140,7 @@ const server = http.createServer(async (req, res) => {
           ? voice(path, Object.keys(opts).length ? opts : undefined)
           : attachment(path, Object.keys(opts).length ? opts : undefined);
 
-      const result = await space.send(builder);
+      const result = await sendMaybeThreaded(space, builder, replyToId);
 
       // iMessage delivers the caption as a separate bubble; send it
       // after the media so the attachment renders first.

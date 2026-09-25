@@ -288,6 +288,15 @@ class MCPServerTransportMixin:
         """Drop the ledger entries; a child (or its pgroup) still alive means SDK teardown failed
         (common on mid-way cancel on Linux: setsid() children escape) — mark it orphaned for the sweep."""
         from gateway.status import _pid_exists
+        # Windows has no process groups (_stdio_pgids stays empty, see its docstring), so an
+        # already-exited root can only be found orphaned by scanning for a still-live descendant
+        # directly — the common shape is the MCP root exiting cleanly while a worker survives
+        # (#122391). Computed outside the lock; a system-wide process scan.
+        no_pgroups = getattr(os, "killpg", None) is None
+        live_descendants = {}
+        if no_pgroups:
+            from agent.deadline import has_live_descendants
+            live_descendants = {pid: has_live_descendants(pid) for pid in new_pids}
         # Groups with nothing left alive; the supervisor forgets them after the lock is released.
         # Groups still alive stay registered on purpose, so the supervisor still reaps them if this
         # process dies before the orphan sweep runs.
@@ -296,7 +305,8 @@ class MCPServerTransportMixin:
             for pid in new_pids:
                 _stdio_pids.pop(pid, None)
                 # Windows-safe pid probe; the child may be gone while descendants remain in its pgroup.
-                if _pid_exists(pid) or _pgroup_alive(_stdio_pgids.get(pid)):
+                if (_pid_exists(pid) or _pgroup_alive(_stdio_pgids.get(pid))
+                        or live_descendants.get(pid, False)):
                     _orphan_stdio_pids.add(pid)
                     _orphan_stdio_pid_servers[pid] = self.name
                 else:  # nothing to reap — drop the pgid so PID reuse can't surface stale pgroup state

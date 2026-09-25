@@ -455,6 +455,67 @@ class TestWindowsWholeTreeReap:
 
 
 # ---------------------------------------------------------------------------
+# Fix 2d: an already-exited root with a live descendant must still be tracked
+# for the sweep on Windows (#122391 review follow-up)
+# ---------------------------------------------------------------------------
+#
+# On Windows _stdio_pgids is never populated (os.getpgid is POSIX-only), so
+# _release_spawned_children's prior gate (_pid_exists(pid) or
+# _pgroup_alive(pgid)) dropped an already-exited root unconditionally, even
+# when it left a live worker subprocess behind — the exact orphan shape
+# #122378 reports. That root never entered _orphan_stdio_pids, so the
+# whole-tree reap added for that issue never ran for it.
+
+class TestReleaseSpawnedChildrenWindowsDescendants:
+    """_release_spawned_children marks an exited root orphaned when a live descendant is found."""
+
+    def _server(self):
+        from tools.mcp_tool import MCPServerTask
+        server = MCPServerTask.__new__(MCPServerTask)
+        server.name = "test-windows-descendants"
+        return server
+
+    def _reset_state(self):
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pid_servers, _orphan_stdio_pids, _stdio_pgids, _stdio_pids
+        from tools.mcp_tool import _lock
+        with _lock:
+            _stdio_pids.clear()
+            _orphan_stdio_pids.clear()
+            _orphan_stdio_pid_servers.clear()
+            _stdio_pgids.clear()
+
+    def test_exited_root_with_live_descendant_is_orphaned(self, monkeypatch):
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pids
+        from tools.mcp_tool import _lock
+
+        self._reset_state()
+        monkeypatch.delattr(os, "killpg", raising=False)  # simulate Windows: no process groups
+        fake_pid = 909090
+        with patch("gateway.status._pid_exists", return_value=False), \
+             patch("agent.deadline.has_live_descendants", return_value=True):
+            self._server()._release_spawned_children({fake_pid})
+
+        with _lock:
+            assert fake_pid in _orphan_stdio_pids, (
+                "an exited root with a live descendant must still be reaped (#122391)"
+            )
+
+    def test_exited_root_with_no_descendants_is_dropped(self, monkeypatch):
+        from tools.mcp_tool_lifecycle import _orphan_stdio_pids
+
+        self._reset_state()
+        monkeypatch.delattr(os, "killpg", raising=False)
+        fake_pid = 909091
+        with patch("gateway.status._pid_exists", return_value=False), \
+             patch("agent.deadline.has_live_descendants", return_value=False):
+            self._server()._release_spawned_children({fake_pid})
+
+        from tools.mcp_tool import _lock
+        with _lock:
+            assert fake_pid not in _orphan_stdio_pids
+
+
+# ---------------------------------------------------------------------------
 # Fix 3: MCP reload timeout (cli.py)
 # ---------------------------------------------------------------------------
 

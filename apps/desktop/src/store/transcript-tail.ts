@@ -110,7 +110,8 @@ function resolveTailEntry(
   return matches.length === 1 ? matches[0] : undefined
 }
 
-function tailStateFromPage(page: TailPage, profile?: TranscriptProfileScope): TranscriptTailState {
+/** Paging state after `page`: the next older offset and whether older rows may exist. */
+export function tailStateFromPage(page: TailPage, profile?: TranscriptProfileScope): TranscriptTailState {
   const pagination = page.pagination
 
   // No pagination metadata is a legacy backend that ignored the paging query

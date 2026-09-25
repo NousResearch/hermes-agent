@@ -764,7 +764,7 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
 
 
 def _write_profile_cfg(home: Path, cwd: str | None) -> Path:
-    import yaml
+    import hermes_yaml as yaml
 
     home.mkdir(parents=True, exist_ok=True)
     cfg = {"terminal": {"cwd": cwd}} if cwd is not None else {}
@@ -2458,6 +2458,33 @@ def test_load_enabled_toolsets_all_env_means_all(monkeypatch):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "all")
 
     assert server._load_enabled_toolsets() is None
+
+
+def test_load_disabled_toolsets_reads_agent_config(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"agent": {"disabled_toolsets": ["browser"]}},
+    )
+
+    assert server._load_disabled_toolsets() == ["browser"]
+
+
+def test_load_disabled_toolsets_none_when_unset_or_config_fails(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {"agent": {"disabled_toolsets": []}})
+    assert server._load_disabled_toolsets() is None
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    assert server._load_disabled_toolsets() is None
+
+    monkeypatch.setattr(
+        config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    assert server._load_disabled_toolsets() is None
 
 
 
@@ -4364,6 +4391,29 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     assert captured["platform"] == "tui"
 
 
+def test_make_agent_forwards_agent_disabled_toolsets(monkeypatch):
+    """``agent.disabled_toolsets`` must reach AIAgent in gateway sessions too: only the AIAgent
+    filter strips a toolset out of composite defaults (``hermes-cli``), which the gateway's
+    enabled-list resolver can't reach into (#44499)."""
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["browser"])
+
+    server._make_agent("sid", "session-key")
+
+    assert captured["disabled_toolsets"] == ["browser"]
+
+
+def test_make_agent_disabled_toolsets_none_by_default(monkeypatch):
+    captured = _capture_make_agent_kwargs(monkeypatch)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: None)
+
+    server._make_agent("sid", "session-key")
+
+    assert captured["disabled_toolsets"] is None
+
+
 def _capture_make_agent_kwargs(monkeypatch) -> dict:
     """Stub AIAgent so ``server._make_agent`` records the kwargs it was built with."""
     captured = {}
@@ -4544,6 +4594,38 @@ def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
     kwargs = server._background_agent_kwargs(agent, "task-id")
 
     assert kwargs["fallback_model"] == []
+
+
+def test_background_agent_kwargs_forwards_agent_disabled_toolsets(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="anthropic",
+        _fallback_chain=[],
+        disabled_toolsets=["browser"],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["disabled_toolsets"] == ["browser"]
+
+
+def test_background_agent_kwargs_falls_back_to_config_disabled_toolsets(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="anthropic",
+        _fallback_chain=[],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda *_a, **_kw: ["file"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["browser"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["disabled_toolsets"] == ["browser"]
 
 
 def test_startup_runtime_resolves_short_alias_without_network(monkeypatch):
@@ -8243,7 +8325,7 @@ def test_config_set_yolo_stale_session_id_is_refused_not_process_scoped(monkeypa
 
 def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatch):
     """Shift+click the desktop zap -> scope="global" flips persistent approvals.mode."""
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
@@ -8274,7 +8356,7 @@ def test_config_set_yolo_global_scope_writes_approvals_mode(tmp_path, monkeypatc
 def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # Point the canonical resolver (load_config → env HERMES_HOME) at the
@@ -8294,7 +8376,7 @@ def test_config_get_approval_mode_uses_smart_default_when_key_is_missing(
 def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_value(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # _load_approval_mode delegates to the canonical resolver in
@@ -8313,7 +8395,7 @@ def test_config_get_approval_mode_fails_safe_to_manual_for_invalid_explicit_valu
 
 
 def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # See fail-safe test above: the canonical resolver reads via
@@ -8332,7 +8414,7 @@ def test_config_get_approval_mode_normalizes_yaml_off(tmp_path, monkeypatch):
 def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status(
     tmp_path, monkeypatch
 ):
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     # config.set writes via server._hermes_home, but the post-write
@@ -8367,7 +8449,7 @@ def test_pet_gallery_quoted_false_enabled_reports_disabled(tmp_path, monkeypatch
     quoted YAML value kept the petdex mascot enabled against the operator's
     explicit intent.
     """
-    import yaml
+    import hermes_yaml as yaml
 
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -8446,7 +8528,7 @@ def test_config_set_approval_mode_rejects_unknown_value():
 
 def test_config_set_yolo_global_scope_honors_explicit_value(tmp_path, monkeypatch):
     """An explicit value pins global approvals.mode regardless of prior state."""
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"approvals": {"mode": "manual"}}))
@@ -8688,7 +8770,7 @@ def test_config_get_busy_survives_non_dict_display(monkeypatch):
 
 
 def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(yaml.safe_dump({"display": "broken"}))
@@ -8708,7 +8790,7 @@ def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
 
 
 def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -8738,7 +8820,7 @@ def test_config_set_details_mode_pins_all_sections(tmp_path, monkeypatch):
 
 
 def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -8757,7 +8839,7 @@ def test_config_set_section_writes_per_section_override(tmp_path, monkeypatch):
 
 
 def test_config_set_section_clears_override_on_empty_value(tmp_path, monkeypatch):
-    import yaml
+    import hermes_yaml as yaml
 
     cfg_path = tmp_path / "config.yaml"
     cfg_path.write_text(
@@ -17121,6 +17203,41 @@ def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     assert resp["result"]["session_id"] is None
 
 
+def test_session_most_recent_skips_unknown_source_rows(monkeypatch):
+    """#54320: a token-accounting guard placeholder (source='unknown') must never be
+    picked for auto-resume — the row can outrank the session the user actually opened."""
+
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
+            return [
+                {"id": "guard-1", "source": "unknown", "title": "", "started_at": 101},
+                {"id": "tui-1", "source": "tui", "title": "real", "started_at": 100},
+            ]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] == "tui-1"
+    assert resp["result"]["source"] == "tui"
+
+
+def test_session_most_recent_returns_null_when_only_unknown_rows(monkeypatch):
+    class _DB:
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False, compact_rows=False):
+            return [{"id": "guard-1", "source": "unknown", "started_at": 1}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.most_recent", "params": {}}
+    )
+
+    assert resp["result"]["session_id"] is None
+
+
 def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
     """Per contract, errors are folded into the null-result shape so
     callers don't have to special-case JSON-RPC error envelopes for
@@ -20867,7 +20984,7 @@ def test_save_cfg_preserves_user_comments(tmp_path, monkeypatch):
     assert "# provider rationale" in text
     assert "# trailing skin note" in text
 
-    import yaml as _yaml
+    import hermes_yaml as _yaml
 
     parsed = _yaml.safe_load(text)
     assert parsed["display"]["skin"] == "mono"

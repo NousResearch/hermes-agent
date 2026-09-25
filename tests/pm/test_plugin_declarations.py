@@ -13,8 +13,50 @@ import pytest
 
 from pm.environment import PythonEnvironment
 from pm.plugin_declarations import read_python_declaration, unsupported_requirements
-from pm.workspace import enabled_member_dirs, lock_and_sync
+from pm.workspace import _generate_pyproject, enabled_member_dirs, lock_and_sync
 from tests.pm import _fixtures
+
+@pytest.mark.parametrize("manifest_deps", [False, True])
+def test_tooling_only_pyproject_falls_back_to_manifest_during_workspace_lock(
+        tmp_path, manifest_deps):
+    """Regression for #122148: a lint config is not a uv workspace project."""
+    uv = shutil.which("uv")
+    assert uv is not None, "real resolver is required"
+    core = tmp_path / "core"
+    core.mkdir()
+    wheels = tmp_path / "wheels"
+    wheels.mkdir()
+    _fixtures._wheel(wheels, "fixturedep", "1.0")
+    (core / "pyproject.toml").write_text(
+        '[project]\nname="core"\nversion="1"\nrequires-python=">=3.11"\n'
+        '[tool.uv]\npackage=false\nno-index=true\n'
+        f'find-links=[{json.dumps(wheels.as_posix())}]\n', encoding="utf-8",
+    )
+    plugin = tmp_path / "plugin"
+    plugin.mkdir()
+    (plugin / "pyproject.toml").write_text('[tool.ruff]\nline-length=88\n', encoding="utf-8")
+    if manifest_deps:
+        (plugin / "plugin.yaml").write_text(
+            'name: plugin\npython_dependencies: ["fixturedep>=1,<2"]\n', encoding="utf-8",
+        )
+    declaration = read_python_declaration(plugin)
+    assert declaration.pyproject is None
+    assert plugin / "pyproject.toml" in declaration.files
+    assert declaration.is_member == manifest_deps
+    assert declaration.requirements == (("fixturedep>=1,<2",) if manifest_deps else ())
+
+    root = tmp_path / "workspace"
+    _generate_pyproject([plugin], root, source=core)
+    result = subprocess.run([uv, "lock", "--offline", "--python", sys.executable],
+                            cwd=root, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    root_doc = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    members = root_doc.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", [])
+    assert bool(members) == manifest_deps
+    if manifest_deps:
+        member = tomllib.loads((root / members[0] / "pyproject.toml").read_text(encoding="utf-8"))
+        assert member["project"]["dependencies"] == ["fixturedep>=1,<2"]
+    assert (plugin / "pyproject.toml").read_text(encoding="utf-8") == '[tool.ruff]\nline-length=88\n'
 
 
 @pytest.mark.parametrize("modern", [False, True])

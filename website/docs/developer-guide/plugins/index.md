@@ -358,12 +358,17 @@ dependencies = [
 ]
 ```
 
-When both exist the `pyproject.toml` wins. What Hermes does with them:
+When both exist, a `pyproject.toml` with `[project]` wins. A tooling-only
+`pyproject.toml` (for example, `[tool.ruff]` without `[project]`) does not
+declare a Python package; PM uses the manifest dependencies instead, if any.
+For a plugin that joins the workspace, set `requires-python` to include the
+Python version of the user's Hermes runtime. A higher minimum prevents uv from
+resolving the entire environment during updates. What Hermes does with them:
 
 - **Install / enable** — PM resolves core, selected extras, and the enabled plugin union
   across every profile sharing the dependency home, including custom `HERMES_HOME` roots.
   A new plugin is downloaded disabled; Python dependency consent precedes enablement.
-  `pyproject.toml` takes precedence over `python_dependencies` and legacy `pip_dependencies`.
+  `[project]` takes precedence over `python_dependencies` and legacy `pip_dependencies`.
 - **Atomic publication** — PM prepares a fresh environment generation before publishing
   an enablement or an active plugin replacement. Resolution, download, or build failure
   preserves the previous environment and plugin selection; no existing plugin is sacrificed.

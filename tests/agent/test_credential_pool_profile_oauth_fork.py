@@ -130,6 +130,88 @@ def test_clone_all_strips_oauth_grant_but_keeps_api_keys(fleet):
     assert store["credential_pool"]["openai"][0]["access_token"] == "sk-static-key"
     assert not (pdir / ".anthropic_oauth.json").exists()
 
+def test_nous_clone_borrows_root_without_forking_oauth(fleet):
+    from agent.credential_pool import load_pool
+
+    root = fleet["root"]
+    store = json.loads((root / "auth.json").read_text())
+    store["providers"]["nous"] = {"access_token": "at-root", "refresh_token": "rt-root"}
+    store["credential_pool"]["nous"] = [
+        {"id": "oauth", "auth_type": "oauth", "source": "device_code",
+         "access_token": "at-root", "refresh_token": "rt-root"},
+        {"id": "key", "auth_type": "api_key", "access_token": "static-key"},
+    ]
+    (root / "auth.json").write_text(json.dumps(store))
+
+    kid = _profile(fleet, "nous-clone", clone_all=True)
+    cloned = json.loads((kid / "auth.json").read_text())
+    assert "nous" not in cloned["providers"]
+    assert [row["id"] for row in cloned["credential_pool"]["nous"]] == ["key"]
+    fleet["use"](kid)
+    assert {entry.id for entry in load_pool("nous").entries()} == {"key"}
+    assert all(not row.get("refresh_token") for row in
+               json.loads((kid / "auth.json").read_text())["credential_pool"]["nous"])
+    assert json.loads((root / "auth.json").read_text())["credential_pool"]["nous"][0]["refresh_token"] == "rt-root"
+
+def test_nous_existing_fork_heals_only_proven_lineage(fleet):
+    from agent.credential_pool import load_pool
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    root = fleet["root"] / "auth.json"
+    store = json.loads(root.read_text())
+    old_exp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 3600))
+    new_exp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 7200))
+    store["providers"]["nous"] = {
+        "access_token": "at-root", "refresh_token": "rt-root", "expires_at": old_exp}
+    store["credential_pool"]["nous"] = [
+        {"id": "shared", "auth_type": "oauth", "access_token": "at-root",
+         "refresh_token": "rt-root", "expires_at": old_exp},
+        {"id": "static", "auth_type": "api_key", "access_token": "key-root"},
+    ]
+    root.write_text(json.dumps(store))
+    kid = _profile(fleet, "old-fork")
+    fork = json.loads(root.read_text())
+    fork["providers"]["nous"] = {
+        "access_token": "at-new", "refresh_token": "rt-new", "expires_at": new_exp}
+    fork["credential_pool"]["nous"][0].update(
+        access_token="at-new", refresh_token="rt-new", expires_at=new_exp)
+    (kid / "auth.json").write_text(json.dumps(fork))
+    fleet["use"](kid)
+    assert heal_forked_single_use_oauth_grants("nous")["adopted"] is True
+    assert {row.id for row in load_pool("nous").entries()} == {"static"}
+    healed = json.loads((kid / "auth.json").read_text())
+    owner = json.loads(root.read_text())
+    assert [row["id"] for row in healed["credential_pool"]["nous"]] == ["static"]
+    assert "nous" not in healed["providers"]
+    assert owner["providers"]["nous"]["refresh_token"] == "rt-new"
+    fleet["use"](fleet["root"])
+    load_pool("nous")  # Root reseeds its device_code row from providers.nous.
+    owner = json.loads(root.read_text())
+    assert owner["credential_pool"]["nous"][0]["refresh_token"] == "rt-new"
+    assert owner["credential_pool"]["nous"][1]["access_token"] == "key-root"
+
+def test_nous_independent_flat_grant_is_not_healed(fleet):
+    from hermes_cli.auth import heal_forked_single_use_oauth_grants
+
+    root = fleet["root"] / "auth.json"
+    kid = _profile(fleet, "independent-nous")
+    store = json.loads(root.read_text())
+    store["providers"]["nous"] = {"access_token": "at-root", "refresh_token": "rt-root"}
+    store["credential_pool"]["nous"] = [
+        {"id": "root-grant", "auth_type": "oauth", "access_token": "at-root", "refresh_token": "rt-root"}]
+    root.write_text(json.dumps(store))
+    independent = json.loads(json.dumps(store))
+    independent["providers"]["nous"] = {"access_token": "at-other", "refresh_token": "rt-other"}
+    independent["credential_pool"]["nous"] = [
+        {"id": "other-grant", "auth_type": "oauth", "access_token": "at-other", "refresh_token": "rt-other"},
+        {"id": "static", "auth_type": "api_key", "access_token": "key-other"}]
+    local = kid / "auth.json"
+    local.write_text(json.dumps(independent))
+    before = (root.read_bytes(), local.read_bytes())
+    fleet["use"](kid)
+    assert heal_forked_single_use_oauth_grants("nous") is None
+    assert (root.read_bytes(), local.read_bytes()) == before
+
 
 def test_strip_helper_drops_device_code_blocks_and_reports(tmp_path):
     from hermes_cli.auth import strip_cloned_single_use_oauth_grants
@@ -149,10 +231,10 @@ def test_strip_helper_drops_device_code_blocks_and_reports(tmp_path):
     summary = strip_cloned_single_use_oauth_grants(pdir)
     store = json.loads((pdir / "auth.json").read_text())
     assert sorted(summary["pool"]) == ["anthropic", "xai-oauth"]
-    assert summary["providers"] == ["openai-codex"]
+    assert summary["providers"] == ["openai-codex", "nous"]
     assert "xai-oauth" not in store["credential_pool"]
     assert [e["id"] for e in store["credential_pool"]["anthropic"]] == ["key"]
-    assert "openai-codex" not in store["providers"] and "nous" in store["providers"]
+    assert "openai-codex" not in store["providers"] and "nous" not in store["providers"]
 
 
 def test_strip_helper_is_a_noop_without_credentials(tmp_path):

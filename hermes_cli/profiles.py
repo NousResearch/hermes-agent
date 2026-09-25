@@ -1238,7 +1238,7 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
     for stale in _CLONE_ALL_STRIP:
         (profile_dir / stale).unlink(missing_ok=True)
     # auth.json / .anthropic_oauth.json copied verbatim fork single-use OAuth grants
-    # (Anthropic / Codex / xAI): one credential with two owners, and the first profile to
+    # (Anthropic / Codex / xAI / Nous): one credential with two owners, and the first profile to
     # refresh revokes the pair for every sibling. Drop the copies; the clone reads the root
     # grant through the credential-pool fallback.
     from hermes_cli.auth import strip_cloned_single_use_oauth_grants

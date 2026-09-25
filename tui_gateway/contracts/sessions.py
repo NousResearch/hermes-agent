@@ -130,6 +130,10 @@ class SessionCreateParams(ProfileParams):
     hidden: bool = False
     room_plumbing: bool = False
     follow_profile_config: bool = False
+    # End-user id forwarded by the calling backend; kept on the session and re-bound as
+    # HERMES_SESSION_USER_ID every turn (see methods_session.py::session.create). The handler
+    # reads it via _str_param, so the contract must declare it or extra="forbid" answers 4000.
+    user_id: str | None = None
 
 
 class SessionCreateResult(Result):

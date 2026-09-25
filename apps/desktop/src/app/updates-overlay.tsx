@@ -130,6 +130,7 @@ export function UpdatesOverlay() {
         {phase === 'manual' && (
           <ManualView
             command={apply.command ?? null}
+            isBackend={isBackend}
             message={apply.message}
             onDone={() => handleClose(false)}
             refused={apply.error !== null}
@@ -338,11 +339,13 @@ function IdleView({
 
 function ManualView({
   command,
+  isBackend,
   message,
   onDone,
   refused = false
 }: {
   command: string | null
+  isBackend: boolean
   message?: string
   onDone: () => void
   refused?: boolean
@@ -390,7 +393,9 @@ function ManualView({
         <Terminal className="size-8 text-primary" />
 
         <DialogTitle className="text-center text-xl">{u.manualTitle}</DialogTitle>
-        <DialogDescription className="text-center text-sm">{guidance ?? u.manualBody}</DialogDescription>
+        <DialogDescription className="text-center text-sm">
+          {guidance ?? (isBackend ? u.manualBodyBackend : u.manualBody)}
+        </DialogDescription>
       </div>
 
       <button
@@ -416,7 +421,11 @@ function ManualView({
         </span>
       </button>
 
-      {!guidance && <p className="text-center text-xs text-muted-foreground">{u.manualPickedUp}</p>}
+      {!guidance && (
+        <p className="text-center text-xs text-muted-foreground">
+          {isBackend ? u.manualPickedUpBackend : u.manualPickedUp}
+        </p>
+      )}
 
       <Button className="font-semibold" onClick={onDone} size="lg" variant="secondary">
         {u.done}

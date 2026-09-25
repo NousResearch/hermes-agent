@@ -1,5 +1,7 @@
 import { Component, type ReactNode } from 'react'
 
+import { Button } from '@/components/ui/button'
+
 // `@assistant-ui/store`'s index-keyed child-scope lookup (`useClientLookup`)
 // throws — rather than returning undefined — when a subscriber reads an index
 // that the message/parts list no longer has. This races during high-frequency
@@ -12,8 +14,7 @@ import { Component, type ReactNode } from 'react'
 const isTransientLookupError = (error: unknown): boolean =>
   error instanceof Error && /(useClientLookup|tapClient(Lookup|Resource)).*out of bounds/.test(error.message)
 
-// Consecutive transient retries before giving up and waiting for a structural
-// resetKey change (the pre-retry behavior). The race heals on the next
+// Consecutive transient retries before offering manual recovery. The race heals on the next
 // consistent store snapshot, so one retry almost always recovers; the cap
 // only bounds a pathological loop where the lookup stays out of bounds.
 const MAX_TRANSIENT_RETRIES = 5
@@ -27,6 +28,7 @@ interface Props {
   // streamed token (measured: 540 wasted Block renders per explain() sample
   // with two threads streaming).
   resetKey: string
+  retryLabel?: string
   children: ReactNode
 }
 
@@ -95,7 +97,19 @@ export class MessageRenderBoundary extends Component<Props, { error: Error | nul
         throw this.state.error
       }
 
-      return null
+      return this.transientRetries >= MAX_TRANSIENT_RETRIES ? (
+        <Button
+          onClick={() => {
+            this.transientRetries = 0
+            this.setState({ error: null })
+          }}
+          size="sm"
+          type="button"
+          variant="text"
+        >
+          {this.props.retryLabel ?? 'Retry'}
+        </Button>
+      ) : null
     }
 
     return this.props.children

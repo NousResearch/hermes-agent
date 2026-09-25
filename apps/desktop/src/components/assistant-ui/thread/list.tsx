@@ -408,6 +408,7 @@ interface TurnRowProps {
   components: ThreadMessageComponents
   group: MessageGroup
   resetKey: string
+  retryLabel: string
   virtualized: boolean
 }
 
@@ -433,7 +434,7 @@ interface TurnRowProps {
 // The live tail (newest turns) is exempt: virtualizing a turn whose final
 // size hasn't been remembered yet snaps it to a stale height when it scrolls
 // off, drifting stick-to-bottom up over old turns. See liveTailStart.
-const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized }: TurnRowProps) {
+const TurnRow = memo(function TurnRow({ components, group, resetKey, retryLabel, virtualized }: TurnRowProps) {
   return (
     <div
       className={cn(
@@ -442,7 +443,7 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
       )}
       data-slot="aui_message-group"
     >
-      <MessageRenderBoundary resetKey={resetKey}>
+      <MessageRenderBoundary resetKey={resetKey} retryLabel={retryLabel}>
         {group.kind === 'turn' ? (
           <div
             className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
@@ -1421,10 +1422,11 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
           group={group}
           key={group.id}
           resetKey={structuralSignature}
+          retryLabel={t.common.retry}
           virtualized={indexInVisible < tailStart}
         />
       )),
-    [visibleGroups, components, structuralSignature, tailStart]
+    [visibleGroups, components, structuralSignature, tailStart, t.common.retry]
   )
 
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey, sessionId: scrollSessionId })

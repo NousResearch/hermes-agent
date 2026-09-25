@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { Component, type ReactNode } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -149,7 +149,7 @@ describe('MessageRenderBoundary', () => {
   it('stops retrying after the transient retry cap', () => {
     // If the lookup stays out of bounds the boundary must give up instead of
     // looping a setState/render cycle forever: initial render plus 5 retries,
-    // then it stays null and arms no further timer.
+    // then it offers manual recovery and arms no further timer.
     vi.useFakeTimers()
     const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
@@ -160,7 +160,7 @@ describe('MessageRenderBoundary', () => {
       throw lookupError
     }
 
-    const { container } = render(
+    render(
       <MessageRenderBoundary resetKey="a">
         <AlwaysBoom />
       </MessageRenderBoundary>
@@ -183,17 +183,47 @@ describe('MessageRenderBoundary', () => {
       })
     }
 
-    // Initial render plus 5 retries, then the boundary gives up: it stays
-    // null and arms no further timer.
+    // Initial render plus 5 retries, then the boundary gives up automatically.
     expect(attempts).toBe(mountAttempts + perRetry * 5)
     expect(vi.getTimerCount()).toBe(0)
-    expect(container.innerHTML).toBe('')
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy()
 
     act(() => {
       vi.advanceTimersByTime(1000)
     })
 
     expect(attempts).toBe(mountAttempts + perRetry * 5)
+    spy.mockRestore()
+  })
+
+  it('recovers after retry exhaustion when the store heals without changing turn identity', () => {
+    vi.useFakeTimers()
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    let failing = true
+
+    function MaybeBoom() {
+      if (failing) {
+        throw lookupError
+      }
+
+      return <div>just sent</div>
+    }
+
+    render(
+      <MessageRenderBoundary resetKey="0:m1:user" retryLabel="Retry">
+        <MaybeBoom />
+      </MessageRenderBoundary>
+    )
+
+    for (let retry = 0; retry < 5; retry += 1) {
+      act(() => vi.advanceTimersByTime(0))
+    }
+
+    expect(screen.queryByText('just sent')).toBeNull()
+    failing = false
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(screen.getByText('just sent')).toBeTruthy()
+    expect(vi.getTimerCount()).toBe(0)
     spy.mockRestore()
   })
 

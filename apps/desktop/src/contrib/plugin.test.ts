@@ -4,8 +4,21 @@ import { dispatchPluginNativeNotification } from '@/store/native-notifications'
 
 import { emitGatewayEvent } from './events'
 import { createPluginContext } from './plugin'
+import { isPluginSource, pluginIdFromSource } from './plugin-source'
 
 vi.mock('@/store/native-notifications', () => ({ dispatchPluginNativeNotification: vi.fn() }))
+
+describe('plugin contribution source contract', () => {
+  it('emits and recognizes the canonical plugin:<id> provenance', () => {
+    const source = createPluginContext('demo').source
+
+    expect(source).toBe('plugin:demo')
+    expect(isPluginSource(source)).toBe(true)
+    expect(pluginIdFromSource(source)).toBe('demo')
+    expect(isPluginSource('core')).toBe(false)
+    expect(isPluginSource(undefined)).toBe(false)
+  })
+})
 
 describe('createPluginContext.onDispose', () => {
   it('collects arbitrary cleanups so the host runs them on deactivate', () => {

@@ -199,11 +199,14 @@ def _nvidia_vram() -> tuple[int, int] | None:
     exe = _nvidia_smi_path()
     if exe is None:
         return None
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
     with suppress(OSError, ValueError, subprocess.TimeoutExpired):
         out = subprocess.run(
             [exe, "--query-gpu=memory.total,memory.free",
              "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10)
+            capture_output=True, text=True, timeout=10,
+            creationflags=windows_hide_flags())
         if out.returncode != 0 or not out.stdout.strip():
             return None
         total_mib, free_mib = (int(x) for x in out.stdout.strip().splitlines()[0].split(","))

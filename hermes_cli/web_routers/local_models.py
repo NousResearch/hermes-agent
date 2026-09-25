@@ -527,8 +527,11 @@ def _nvidia_smi_facts() -> dict:
     smi_exe = hardware._nvidia_smi_path()
     if not smi_exe:
         return {}
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
     smi = subprocess.run([smi_exe, "--query-gpu=name,utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
-                         capture_output=True, text=True, timeout=5)
+                         capture_output=True, text=True, timeout=5,
+                         creationflags=windows_hide_flags())
     if smi.returncode != 0 or not smi.stdout.strip():
         return {}
     name, util, used_mib = (x.strip() for x in smi.stdout.strip().splitlines()[0].split(","))

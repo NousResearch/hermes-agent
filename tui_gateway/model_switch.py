@@ -411,6 +411,20 @@ def _sync_bot_capabilities(sid: str, session: dict) -> None:
         logger.warning("Bot capability sync failed for %s: %s", sid, e)
 
 
+def _session_db_model(session: dict) -> str:
+    """Model last persisted for this chat. Empty when the row is missing or unreadable."""
+    agent = session.get("agent")
+    db = getattr(agent, "_session_db", None)
+    key = session.get("session_key") or getattr(agent, "session_id", None)
+    if db is None or not key or not hasattr(db, "get_session"):
+        return ""
+    try:
+        row = db.get_session(key) or {}
+    except Exception:
+        return ""
+    return str(row.get("model") or "").strip()
+
+
 def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     """Adopt a config.yaml model change at turn start (like gateways do per message). Sessions
     pinned with /model keep their choice; a failed switch keeps the current model.
@@ -419,6 +433,12 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     default model) at turn start is what yanked a grok/xAI session onto
     OmniRoute Gemini after a gateway restart. Bot rooms opt in via
     ``follow_profile_config``.
+
+    A chat whose persisted model already differs from ``model.default`` is a session pick, not
+    an unpinned chat waiting to inherit the profile. Desktop resume restores that model onto the
+    agent but the RAM pin can be missing (rebuild, reload race, one-turn restore). Without this
+    guard the next turn treats "agent ≠ config" as a config edit and rewrites the chat — and,
+    because the OpenAI client is process-shared, every sibling session — onto the profile default.
     """
     agent = session.get("agent")
     if agent is None:
@@ -452,6 +472,9 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     if model == getattr(agent, "model", "") and (not provider or provider == getattr(agent, "provider", "")):
         if superseded_pin is not None:
             _persist_live_session_runtime(session)
+        return
+    persisted = _session_db_model(session)
+    if persisted and persisted != model:
         return
     raw = f"{model} --provider {provider}" if provider else model
     try:

@@ -446,6 +446,25 @@ def test_delete_task(client):
     r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
     assert r.status_code == 404
 
+def test_delete_task_honors_board_param(client):
+    """DELETE /tasks/:id?board=<slug> deletes on that board and leaves the default board
+    alone: the contract the dashboard's delete callbacks rely on (#29347)."""
+    kb.create_board("side-project")
+    with kbc.connect(board="side-project") as conn:
+        side_id = kb.create_task(conn, title="lives on side-project")
+    default_id = client.post(
+        "/api/plugins/kanban/tasks", json={"title": "stays on default"},
+    ).json()["task"]["id"]
+
+    r = client.delete(f"/api/plugins/kanban/tasks/{side_id}", params={"board": "side-project"})
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted"] is True
+    assert r.json()["task_id"] == side_id
+
+    with kbc.connect(board="side-project") as conn:
+        assert kb.get_task(conn, side_id) is None
+    assert client.get(f"/api/plugins/kanban/tasks/{default_id}").status_code == 200
+
 # ---------------------------------------------------------------------------
 # Comments + Links
 # ---------------------------------------------------------------------------
@@ -1058,6 +1077,29 @@ def test_touch_card_tap_opens_instead_of_dragging():
         pytest.skip("node not available")
     bundle = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
     probe = Path(__file__).parent / "fixtures" / "kanban_touch_drag_probe.js"
+    result = subprocess.run(
+        [node, str(probe), str(bundle)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, f"stdout={result.stdout!r} stderr={result.stderr!r}"
+    assert "PASS" in result.stdout
+
+# ---------------------------------------------------------------------------
+# Deletes target the selected board (#29347)
+# ---------------------------------------------------------------------------
+
+def test_dashboard_deletes_target_the_selected_board():
+    """deleteTask() and deleteSelected() must send ?board=<selected board> on every DELETE.
+    Without it the backend resolves its own board (env var, then the ``current`` pointer,
+    then default), so on any other board the task is looked up in the wrong database and
+    the delete 404s (#29347). Runs the real callbacks from the shipped bundle with stubbed
+    dependencies, like the touch-drag probe above.
+    """
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node not available")
+    bundle = Path(__file__).resolve().parents[2] / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    probe = Path(__file__).parent / "fixtures" / "kanban_delete_board_probe.js"
     result = subprocess.run(
         [node, str(probe), str(bundle)],
         capture_output=True, text=True, timeout=30,

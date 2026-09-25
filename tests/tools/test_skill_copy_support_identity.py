@@ -8,7 +8,10 @@ import pytest
 from tools.skills_tool import skill_view
 
 
-@pytest.mark.parametrize("support", ["scripts/run.py", "references/guide.md", "templates/item.txt", "assets/data.bin"])
+@pytest.mark.parametrize("support", [
+    "scripts/run.py", "references/guide.md", "templates/item.txt", "assets/data.bin",
+    "assets/.config.json", "assets/.settings/data.json", "scripts/shipped.pyc",
+])
 def test_skill_view_refuses_support_drift_but_preserves_explicit_selection(tmp_path, monkeypatch, support):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.chdir(tmp_path)

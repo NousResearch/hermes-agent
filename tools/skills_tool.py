@@ -504,13 +504,15 @@ def _skill_copy_content(skill_md: Path) -> dict:
         raise error
 
     for directory, dirs, files in os.walk(skill_md.parent, onerror=unreadable):
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in _EXCLUDED_SKILL_DIRS]
+        dirs[:] = [d for d in dirs if d not in _EXCLUDED_SKILL_DIRS]
         # os.walk does not follow directory links. Silently omitting their content
         # would prove equality without comparing what the skill can actually load.
         if any((Path(directory) / d).is_symlink() for d in dirs):
             raise OSError("Cannot establish skill-copy identity through a directory link")
         for name in files:
-            if name.startswith(".") or name.endswith((".pyc", ".pyo")):
+            if name == ".DS_Store" or (
+                name.endswith((".pyc", ".pyo")) and (Path(directory) / name).with_suffix(".py").is_file()
+            ):
                 continue
             path = Path(directory) / name
             if not stat.S_ISREG(path.stat().st_mode):
@@ -522,8 +524,8 @@ def _skill_copy_content(skill_md: Path) -> dict:
 def _provably_same_skill(candidates) -> bool:
     """Only collapse copies with matching instructions AND support files (#119959).
 
-    Runtime caches and hidden metadata are not package content: including them
-    would make running an unchanged skill turn its copies into an ambiguity.
+    Known runtime caches and Finder metadata are not package content: including
+    them would make running an unchanged skill turn its copies into an ambiguity.
     """
     try:
         if len({os.path.realpath(smd.parent) for _sd, smd in candidates}) == 1:

@@ -452,6 +452,10 @@ class ComputeHost:
         command = str(frame.get("command") or "")
         if route_name in {"session.save", "session.compress"}:
             params = {"session_id": sid}
+            if route_name == "session.save":
+                for key in ("fmt", "filename", "redact"):
+                    if frame.get(key) is not None:
+                        params[key] = frame[key]
             if route_name == "session.compress":
                 focus_topic = command.removeprefix("/compress").strip()
                 if focus_topic:

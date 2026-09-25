@@ -138,10 +138,87 @@ describe('desktop slash command curation', () => {
       }
 
       expect(surface.rpc).toBe(rpcName)
-      expect(surface.buildParams({ arg: 'topic A', command: name, name: name.slice(1), sessionId: 's-1' })).toEqual({
-        session_id: 's-1'
-      })
+      expect(surface.buildParams({ arg: '', command: name, name: name.slice(1), sessionId: 's-1' })).toEqual(
+        name === '/save' ? { session_id: 's-1', fmt: 'json' } : { session_id: 's-1' }
+      )
     }
+  })
+
+  it('/save parses format, filename and redact from its argument', () => {
+    const surface = resolveDesktopCommand('/save')?.surface
+    expect(surface?.kind).toBe('rpc')
+    if (surface?.kind !== 'rpc') {
+      return
+    }
+
+    const base = { command: '/save', name: 'save', sessionId: 's-1' }
+    expect(surface.buildParams({ ...base, arg: 'md' })).toEqual({ session_id: 's-1', fmt: 'md' })
+    expect(surface.buildParams({ ...base, arg: 'markdown' })).toEqual({ session_id: 's-1', fmt: 'md' })
+    expect(surface.buildParams({ ...base, arg: 'html session.html' })).toEqual({
+      session_id: 's-1',
+      fmt: 'html',
+      filename: 'session.html'
+    })
+    expect(surface.buildParams({ ...base, arg: 'md notes.md redact' })).toEqual({
+      session_id: 's-1',
+      fmt: 'md',
+      filename: 'notes.md',
+      redact: true
+    })
+  })
+
+  it('keeps commands with richer CLI semantics on the slash worker', () => {
+    for (const name of ['/agents', '/steer', '/usage']) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
+  })
+
+  it('still routes commands without dedicated RPCs through exec()', () => {
+    // /btw is an action (prompt.btw) — the slash-worker print never reached Desktop.
+    const execNames = [
+      '/bg',
+      '/debug',
+      '/goal',
+      '/personality',
+      '/queue',
+      '/retry',
+      '/rollback',
+      '/tools',
+      '/undo',
+      '/version'
+    ]
+
+    for (const name of execNames) {
+      expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
+    }
+  })
+
+  it('routes /btw to the prompt.btw side-question action', () => {
+    expect(resolveDesktopCommand('/btw')?.surface).toEqual({ kind: 'action', action: 'btw' })
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(isDesktopSlashSuggestion('/btw')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/btw')).toBeNull()
+  })
+
+  it('distinguishes free prose from finite slash option lists', () => {
+    expect(desktopSlashCommandArgumentMode('/goal')).toBe('mixed')
+    expect(desktopSlashCommandArgumentMode('/steer')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/queue')).toBe('text')
+    expect(desktopSlashCommandArgumentMode('/personality')).toBe('options')
+    expect(desktopSlashCommandArgumentMode('/handoff')).toBe('options')
+    expect(desktopSlashCommandArgumentMode('/version')).toBeNull()
+  })
+
+  it('routes /journey (and aliases) to the memory graph overlay action', () => {
+    expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/learning')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(isDesktopSlashCommand('/journey')).toBe(true)
+    expect(isDesktopSlashCommand('/memory-graph')).toBe(true)
+    expect(isDesktopSlashSuggestion('/journey')).toBe(true)
+    // Aliases execute but stay out of the popover.
+    expect(isDesktopSlashSuggestion('/memory-graph')).toBe(false)
+    expect(desktopSlashUnavailableMessage('/journey')).toBeNull()
   })
 
   it('allows aliases to execute without cluttering the popover', () => {

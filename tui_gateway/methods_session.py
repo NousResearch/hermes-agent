@@ -1879,8 +1879,10 @@ def _compute_host_ack_error(rid, ack: dict, code: int, default: str):
 
 def _save_via_compute_host(rid, params: dict) -> dict:
     """``session.save`` for a turn-isolated session: the host owns the transcript file."""
+    save_opts = {key: params[key] for key in ("fmt", "filename", "redact") if params.get(key) is not None}
     try:
-        ack = _send_compute_host_control(str(params.get("session_id") or ""), route_name="session.save", wait=True)
+        ack = _send_compute_host_control(str(params.get("session_id") or ""), route_name="session.save",
+                                       payload=save_opts, wait=True)
     except Exception as exc:
         return _err(rid, 5011, f"compute-host session save failed: {exc}")
     if (resp := _compute_host_ack_error(rid, ack, 5011, "compute-host session save failed")) is not None:
@@ -2002,14 +2004,26 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict, session: dict) -> dict:
     if _session_uses_compute_host(session):
         return _save_via_compute_host(rid, params)
+    from hermes_cli.session_export import (SAVE_USAGE, normalize_save_format,
+                                          render_session_for_save)
     agent = session["agent"]
+    try:
+        fmt = normalize_save_format(params.get("fmt") or "json")
+    except ValueError as e:
+        return _err(rid, 4000, f"{e}\n\n{SAVE_USAGE}")
     # Classic CLI /save: under the profile home, with the system prompt (dashboard parity).
     saved_dir = get_hermes_home() / "sessions" / "saved"
     try:
         saved_dir.mkdir(parents=True, exist_ok=True)
     except Exception as e:
         return _err(rid, 5011, f"failed to create save directory {saved_dir}: {e}")
-    path = saved_dir / f"hermes_conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    filename = params.get("filename")
+    if filename:
+        # Never trust path separators from chat/RPC input; the name lands in the saved dir only.
+        filename = os.path.basename(str(filename))
+        path = Path(saved_dir) / filename
+    else:
+        path = saved_dir / f"hermes_conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{fmt}"
     with session["history_lock"]:
         messages = list(session.get("history", []))
     # Prefer the agent's session_start (classic CLI export); else the gateway created_at.
@@ -2017,16 +2031,22 @@ def _(rid, params: dict, session: dict) -> dict:
     if not isinstance(started, datetime):
         created_at = session.get("created_at")
         started = datetime.fromtimestamp(created_at) if isinstance(created_at, (int, float)) else None
+    data = {"model": getattr(agent, "model", ""),
+            "session_id": getattr(agent, "session_id", None) or session.get("session_key") or "",
+            "session_start": started.isoformat() if started else "",
+            "started_at": started.timestamp() if started else None,
+            "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
+            "messages": messages}
+    if params.get("redact"):
+        from hermes_cli.session_export_md import redact_session_data
+        data = redact_session_data(data)
     try:
+        content = render_session_for_save(data, fmt)
         with open(path, "w", encoding="utf-8") as f:
-            json.dump({"model": getattr(agent, "model", ""),
-                       "session_id": getattr(agent, "session_id", None) or session.get("session_key") or "",
-                       "session_start": started.isoformat() if started else "",
-                       "system_prompt": getattr(agent, "_cached_system_prompt", "") or "",
-                       "messages": messages}, f, indent=2, ensure_ascii=False)
+            f.write(content)
     except Exception as e:
         return _err(rid, 5011, str(e))
-    return _ok(rid, {"file": str(path)})
+    return _ok(rid, {"file": str(path), "format": fmt})
 
 
 @method("session.close")

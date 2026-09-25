@@ -535,9 +535,9 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'save the current transcript to JSON',
+    help: 'save the current transcript: /save [json|md|html] [filename] [redact]',
     name: 'save',
-    run: (_arg, ctx) => {
+    run: (arg, ctx) => {
       const hasConversation = ctx.local
         .getHistoryItems()
         .some(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
@@ -550,8 +550,32 @@ export const coreCommands: SlashCommand[] = [
         return ctx.transcript.sys('no active session — nothing to save')
       }
 
+      // Mirror the CLI grammar: /save <format> [filename] [redact] (default: json)
+      const parts = arg.trim().split(/\s+/).filter(Boolean)
+      const redact = parts.length > 0 && ['redact', '--redact'].includes(parts[parts.length - 1].toLowerCase())
+
+      if (redact) {
+        parts.pop()
+      }
+
+      const fmt = (parts[0] || 'json').toLowerCase()
+
+      if (!['json', 'md', 'markdown', 'html'].includes(fmt)) {
+        return ctx.transcript.sys(`unknown format '${fmt}' — expected: json, md, html`)
+      }
+
+      const params: Record<string, unknown> = { session_id: ctx.sid, fmt: fmt === 'markdown' ? 'md' : fmt }
+
+      if (parts[1]) {
+        params.filename = parts[1]
+      }
+
+      if (redact) {
+        params.redact = true
+      }
+
       ctx.gateway
-        .rpc<SessionSaveResponse>('session.save', { session_id: ctx.sid })
+        .rpc<SessionSaveResponse>('session.save', params)
         .then(
           ctx.guarded<SessionSaveResponse>(r => {
             const file = r?.file

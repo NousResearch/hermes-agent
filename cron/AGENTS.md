@@ -70,6 +70,14 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   fail-closed instead of that profile's live adapters. The gate compares the liveness PID against
   `os.getpid()` — this process holds the launch `gateway.pid` AND publishes every served profile
   in `served_profiles`, so a bare liveness answer would stand cron down host-wide.
+- **The restart-safe external worker boots itself.** `_launch_external_cron_worker` pins the
+  checkout — and, on a PM install, the committed generation's `site-packages` — on the child's
+  `PYTHONPATH` and marks it `HERMES_CRON_EXTERNAL_WORKER`; the child's own entry
+  (`cron/scheduler.py` → `cron/worker_bootstrap.py`) then runs PM's `activate_dependencies`,
+  which leases that generation for the worker's lifetime and activates it before the first
+  application import. Neither half is redundant (the pin is what the child can import through,
+  the boot is what keeps the generation alive and its `.pth` files executed) and the gateway
+  never re-runs the boot — `hermes_bootstrap` already did at its own launch (#122222).
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,

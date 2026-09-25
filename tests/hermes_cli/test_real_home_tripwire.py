@@ -174,6 +174,25 @@ def test_checkout_inside_a_guarded_root_is_not_hermes_state():
         guard.check(PROJECT_ROOT.parent / "config.yaml")
 
 
+def test_payload_marker_beside_the_checkout_is_layout_not_state():
+    """``store_root`` probes ``<checkout>/../manifest.json`` to detect a sealed payload
+    (``pm.environments.store_root``). On the default install shape the checkout lives
+    inside the home, so that metadata probe lands beside the checkout rather than in
+    Hermes state. Exempt exactly that probe: opening the marker, a lookalike name, and
+    every other sibling stay refused."""
+    from tests.home_io_guard import HomeIOGuard
+
+    marker = PROJECT_ROOT.parent / "manifest.json"
+    guard = HomeIOGuard(lambda: [PROJECT_ROOT.parent])
+    guard.check(marker, metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(marker)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(PROJECT_ROOT.parent / "manifest.json.orig", metadata=True)
+    with pytest.raises(AssertionError, match="REAL hermes home"):
+        guard.check(PROJECT_ROOT.parent / "config.yaml", metadata=True)
+
+
 def test_hermes_exported_scratch_tmp_is_not_the_test_temp_root(tmp_path):
     """A Hermes-launched shell hands pytest TMPDIR=<home>/cache/scratch (tagged by
     HERMES_SCRATCH_DIR). With that home guarded, honoring it would put the session

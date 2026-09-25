@@ -10,13 +10,25 @@ import { $gatewayState, setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
   const gatewayState = useStore($gatewayState)
+  // Reactive companion to `gatewayRef`. The ref exists so `requestGateway`
+  // keeps a stable identity and always reaches the live socket, but it is only
+  // populated by the subscription effect below — i.e. AFTER the first render.
+  // A component that reads `gatewayRef.current` while rendering therefore sees
+  // null on mount, and if the connection state doesn't happen to flip
+  // afterwards it never re-renders to pick the instance up. Anything that needs
+  // the gateway as a render-time VALUE (props, memo deps) must use this.
   const gateway = useStore($gateway) as HermesGateway | null
   const gatewayRef = useRef<HermesGateway | null>(null)
+
   const connectionRef = useRef<Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null>(
     null
   )
+
   const gatewayStateRef = useRef(gatewayState)
   const reconnectingRef = useRef<Promise<HermesGateway | null> | null>(null)
+  // Holds the reauth error from the most recent failed reconnect so
+  // requestGateway can surface the gateway's "session expired, sign in again"
+  // message instead of the opaque "connection closed" that triggered the retry.
   const reauthErrorRef = useRef<unknown>(null)
 
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
@@ -24,6 +36,8 @@ export function useGatewayRequest() {
     gatewayStateRef.current = gatewayState
   }, [gatewayState])
 
+  // Track the active gateway (primary or a background profile's socket) so
+  // outbound requests and overlay props always target the focused profile.
   useEffect(
     () =>
       $gateway.subscribe(gateway => {
@@ -57,6 +71,17 @@ export function useGatewayRequest() {
       reauthErrorRef.current = null
 
       try {
+        // This path recovers only the window primary (requestGateway routes
+        // secondaries to ensureActiveGatewayOpen). Call getConnection() with no
+        // profile so main resolves the sender's full route — passing the
+        // profile name would look it up in the LOCAL pool, which fails for a
+        // profile that exists only on a remote gateway (peer windows).
+        // Both awaits below are IPC round-trips into the main process with no
+        // timeout of their own (#93454) — a wedged main-process round-trip
+        // otherwise hangs this await forever, latching reconnectingRef.current
+        // so every later requestGateway() call returns the same never-settling
+        // promise. Bound the same way use-gateway-boot.ts bounds the primary
+        // boot/soft-switch equivalents.
         const conn = await withTimeout(
           desktop.getConnection(),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
@@ -66,6 +91,12 @@ export function useGatewayRequest() {
         connectionRef.current = conn
         setConnection(conn)
 
+        // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
+        // and short-lived, so the cached conn.wsUrl ticket is dead here;
+        // resolveGatewayWsUrl() never connects with a stale ticket. An explicit
+        // auth rejection becomes a reauth error; transport failures remain
+        // retryable. Stash only the former so requestGateway can show the
+        // actionable "sign in again" message.
         const wsUrl = await withTimeout(
           resolveDesktopGatewayWsUrl(desktop, conn),
           RECONNECT_ATTEMPT_TIMEOUT_MS,
@@ -107,9 +138,15 @@ export function useGatewayRequest() {
           throw error
         }
 
+        // Primary keeps the OAuth-aware reconnect (remote gateways re-mint a
+        // single-use ticket). Background profiles stay on the registry's
+        // connection-owned reconnect path, including composite remote/SSH
+        // sources.
         const recovered = isActivePrimary() ? await ensureGatewayOpen() : await ensureActiveGatewayOpen()
 
         if (!recovered) {
+          // Prefer the reauth error from the failed reconnect (OAuth session
+          // expired) over the generic transport error that triggered the retry.
           const reauthError = reauthErrorRef.current
           reauthErrorRef.current = null
 

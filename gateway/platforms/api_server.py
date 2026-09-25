@@ -873,8 +873,21 @@ if AIOHTTP_AVAILABLE:
         for k, v in _SECURITY_HEADERS.items():
             response.headers.setdefault(k, v)
         return response
+
+    @web.middleware
+    async def request_metrics_middleware(request, handler):
+        """Track request counters on the adapter so the heartbeat loop can publish live
+        runtime metrics to gateway.status (#52323)."""
+        adapter = request.app.get("api_server_adapter")
+        if adapter is not None:
+            adapter._record_request_start()
+        try:
+            return await handler(request)
+        finally:
+            if adapter is not None:
+                adapter._record_request_end()
 else:
-    cors_middleware = body_limit_middleware = security_headers_middleware = None  # type: ignore
+    cors_middleware = body_limit_middleware = security_headers_middleware = request_metrics_middleware = None  # type: ignore
 
 _MEDIA_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
                ".webp": "image/webp", ".bmp": "image/bmp"}
@@ -1192,6 +1205,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             extra.get("model_name", _get_scoped_secret("API_SERVER_MODEL_NAME", "")))
         # alias (client "model") -> {model, provider?, api_key? (UPSTREAM, never logged), base_url?}
         self._model_routes: Dict[str, Dict[str, Any]] = self._parse_model_routes(extra.get("model_routes"))
+        # Request metrics published by the heartbeat loop (#52323).
+        self._requests_total = 0
+        self._requests_in_flight = 0
+        self._last_request_at: Optional[float] = None
         # Opt-in bare ``model`` passthrough on OpenAI-compatible surfaces (generic clients
         # hardcode "gpt-4o" etc., hence off by default).
         # Off by default: generic OpenAI clients routinely hardcode model names ("gpt-4o", ...), and
@@ -3889,6 +3906,38 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
 
     # -- Agent execution --------------------------------------------------------------
 
+    # Heartbeat cadence for the periodic gateway.status republish (#52323): well under the
+    # 120s runtime-status staleness TTL so an idle API server never reads as frozen.
+    _HEARTBEAT_INTERVAL_S = 30
+
+    def _record_request_start(self) -> None:
+        self._requests_total += 1
+        self._requests_in_flight += 1
+        self._last_request_at = time.time()
+
+    def _record_request_end(self) -> None:
+        self._requests_in_flight = max(0, self._requests_in_flight - 1)
+
+    async def _heartbeat_loop(self) -> None:
+        """Republish runtime status on an interval so the platform's gateway.status entry
+        stays fresh while the API server is idle (#52323). Nothing else writes status for
+        this platform between boot and shutdown — publish only happens on state transitions —
+        so dashboards keyed off ``updated_at`` read an idle-but-healthy server as frozen."""
+        while self._running and not self.has_fatal_error:
+            await asyncio.sleep(self._HEARTBEAT_INTERVAL_S)
+            if not self._running or self.has_fatal_error:
+                return
+            self._publish_heartbeat()
+
+    def _publish_heartbeat(self) -> None:
+        from gateway.platforms.shared_ingress import listener_base_url
+        self._write_runtime_status_safe(
+            "heartbeat", platform_state="connected",
+            listener_base=listener_base_url(self._host, self._port))
+        logger.debug(
+            "[%s] heartbeat: total=%d in_flight=%d",
+            self.name, self._requests_total, self._requests_in_flight)
+
     def _track_background_task(self, task, *, tolerate_missing: bool = False) -> None:
         """Register a task in ``_background_tasks`` (tolerates test doubles) with auto-discard.
         ``tolerate_missing`` (cron fire paths) also swallows AttributeError from the whole
@@ -4300,7 +4349,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         try:
             mws = [mw for mw in (
                 self._make_profile_prefix_middleware(), cors_middleware, body_limit_middleware,
-                security_headers_middleware) if mw is not None]
+                security_headers_middleware, request_metrics_middleware) if mw is not None]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             assert self._app is not None
             # Native routes + multiplex /p/<profile>/ mirrors (the prefix middleware validates and
@@ -4317,6 +4366,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if self.gateway_runner is not None:
                 self._app["gateway_runner"] = self.gateway_runner
             self._track_background_task(asyncio.create_task(self._sweep_orphaned_runs()))
+            # Heartbeat + runtime metrics: without an inbound-request-driven publish, the
+            # platform's gateway.status entry goes stale after boot and dashboards read the
+            # API server as frozen (#52323).
+            self._track_background_task(asyncio.create_task(self._heartbeat_loop()))
             # Network-accessible + unsandboxed local terminal backend = host-user RCE surface;
             # warn, don't refuse (the operator may have a firewall / strong key).
             if is_network_accessible(self._host):

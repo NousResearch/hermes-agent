@@ -47,6 +47,8 @@ def read_git_head(root: Path) -> str | None:
             [git, "-C", str(root), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             check=False,
         )

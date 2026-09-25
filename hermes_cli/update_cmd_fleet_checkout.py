@@ -34,7 +34,7 @@ def checkout_contains(sha: str) -> bool:
     try:
         result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", sha, "HEAD"],
-            cwd=_m().PROJECT_ROOT, capture_output=True, text=True, timeout=10,
+            cwd=_m().PROJECT_ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         return result.returncode == 0
     except Exception as exc:

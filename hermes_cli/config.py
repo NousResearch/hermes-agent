@@ -1723,19 +1723,31 @@ def _preserve_env_ref_templates(current, raw, loaded_expanded=None):
     return current
 
 
-def _explicit_config_paths(config: Dict[str, Any]) -> Set[Tuple[str, ...]]:
-    """Leaf paths explicitly present in a RAW (un-normalized) config, so values injected by
-    normalisation are never mistaken for user-set ones. Feeds ``_strip_default_values``."""
+def _explicit_config_paths(
+    config: Dict[str, Any], defaults: Dict[str, Any] = DEFAULT_CONFIG
+) -> Set[Tuple[str, ...]]:
+    """Leaf paths — plus unknown dict NODE paths — explicitly present in a RAW
+    (un-normalized) config, so values injected by normalisation are never mistaken
+    for user-set ones. Feeds ``_strip_default_values``.
+
+    A dict node is recorded only when the schema has no dict at that position
+    (e.g. the whole ``mcp_servers`` map): preserving the node then protects a
+    user-data subtree wholesale. Known-defaulted dict subtrees stay leaf-only —
+    a preserved node would otherwise also pin caller-injected default-equal
+    leaves inside it, defeating the strip pass."""
     paths: Set[Tuple[str, ...]] = set()
 
-    def _walk(value: Any, path: Tuple[str, ...]) -> None:
+    def _walk(value: Any, default: Any, path: Tuple[str, ...]) -> None:
         if isinstance(value, dict):
+            if path and not isinstance(default, dict):
+                paths.add(path)
+            default_children = default if isinstance(default, dict) else {}
             for key, child in value.items():
-                _walk(child, path + (key,))
+                _walk(child, default_children.get(key), path + (key,))
         elif path:
             paths.add(path)
 
-    _walk(config, ())
+    _walk(config, defaults, ())
     return paths
 
 

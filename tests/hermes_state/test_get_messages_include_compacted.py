@@ -65,6 +65,44 @@ def _row_ids(db, sid, **kwargs):
 
 
 class TestIncludeCompacted:
+    @pytest.mark.parametrize("read_only", [False, True])
+    def test_carrier_with_stale_display_identity_folds_before_paging(self, tmp_path, read_only):
+        path = tmp_path / "carriers.db"
+        writer = SessionDB(path)
+        writer.create_session("carriers", source="cli")
+        original = writer.append_message("carriers", "assistant", "protected reply", timestamp=100)
+        writer.archive_and_compact("carriers", [
+            {"role": "user", "content": "summary"},
+            {"role": "assistant", "content": "protected reply", "timestamp": 100},
+        ])
+        # A prior writer gave the carried generation its own slot and identity.
+        writer._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_identity = ?, display_order = id "
+            "WHERE session_id = ? AND active = 1 AND role = 'assistant'",
+            (b"old-generation", "carriers")))
+        reader = SessionDB(path, read_only=True) if read_only else writer
+        page = reader.get_messages("carriers", include_compacted=True, latest=True, limit=1)
+        all_rows = reader.get_messages("carriers", include_compacted=True)
+        assert len([row for row in all_rows if row["content"] == "protected reply"]) == 1
+        assert page[0]["id"] == all_rows[-1]["id"]
+        assert all(row["active"] or row["compacted"] for row in all_rows)
+        assert original != all_rows[-1]["id"]
+
+    def test_summary_prefixed_tail_does_not_replace_visible_user_turn(self, db):
+        sid = "merged"
+        db.create_session(sid, source="cli")
+        db.append_message(sid, "user", "earlier", timestamp=10)
+        db.append_message(sid, "assistant", "reply", timestamp=11)
+        db.append_message(sid, "user", "my question", timestamp=12)
+        merged = f"[CONTEXT COMPACTION] summary\n\n{_SUMMARY_END_MARKER}\n\nmy question"
+        db.archive_and_compact(sid, [{
+            "role": "user", "content": merged, "timestamp": 12,
+            "_compressed_summary": True,
+        }], tail_count=1)
+        visible = db.get_messages(sid, include_compacted=True)
+        assert [m["content"] for m in visible] == ["earlier", "reply", "my question", merged]
+        assert [m["content"] for m in db.get_messages(sid)] == [merged]
+
     def test_default_returns_only_active_rows(self, db):
         """Regression guard: the default read must not change behaviour."""
         sid = "s1"

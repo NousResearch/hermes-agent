@@ -264,7 +264,7 @@ class SessionMessagesMixin:
             "role": role, "content": encoded_content, "timestamp": message_timestamp,
             "tool_call_id": msg.get("tool_call_id"), "tool_calls": encoded_tool_calls,
             "tool_name": encoded_tool_name, "display_kind": msg.get("display_kind"),
-            "display_metadata": display_metadata,
+            "display_metadata": display_metadata, "_compressed_summary": msg.get("_compressed_summary"),
         }
         return (session_id, role, encoded_content, msg.get("tool_call_id"),
             encoded_tool_calls, encoded_tool_name,
@@ -706,6 +706,13 @@ class SessionMessagesMixin:
                     f"SELECT id FROM messages WHERE session_id = ? AND active = 1{' AND id <= ?' if bound else ''} "
                     "ORDER BY id DESC LIMIT ?",
                     (session_id, *((int(watermark),) if bound else ()), int(tail_count))).fetchall()]
+            # The carried rows correspond to the last N active rows, in source order.
+            # Capture their display slots before the visibility update hides them; an
+            # insert trigger cannot find a rewind-only source row afterwards.
+            carried_sources = list(reversed(rewind_ids))
+            merged_sources = [source_id for source_id, msg in zip(
+                carried_sources, compacted_messages[-len(carried_sources):])
+                if msg.get("_compressed_summary")]
             rewind_ids += tail_ids
             if rewind_ids:
                 placeholders = _placeholders(rewind_ids)
@@ -714,7 +721,18 @@ class SessionMessagesMixin:
                 conn.execute(f"{_ARCHIVE_ACTIVE_SQL} AND id NOT IN ({placeholders})", [session_id, *rewind_ids])
             else:
                 conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
+            if merged_sources:
+                conn.execute(
+                    f"UPDATE messages SET compacted = 1 WHERE session_id = ? AND id IN ({_placeholders(merged_sources)})",
+                    [session_id, *merged_sources])
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
+            for source_id, msg in zip(carried_sources, compacted_messages[-len(carried_sources):]):
+                if msg.get("_compressed_summary") or not isinstance(msg.get("_row_id"), int):
+                    continue
+                source = conn.execute("SELECT display_order FROM messages WHERE id = ?", (source_id,)).fetchone()
+                if source is not None and source[0] is not None:
+                    conn.execute("UPDATE messages SET display_order = ? WHERE id = ?",
+                                 (source[0], msg["_row_id"]))
             if tail_ids:
                 self._clone_message_rows(conn, tail_ids)
                 inserted += len(tail_ids)
@@ -794,7 +812,7 @@ class SessionMessagesMixin:
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
         dedupe_content = row["content"]
-        if row["role"] == "user":
+        if row["role"] == "user" and not ("_compressed_summary" in row.keys() and row["_compressed_summary"]):
             handoff, live_view = split_user_originated_turn({
                 "role": "user", "content": self._decode_content(row["content"]),
                 "display_kind": row["display_kind"],
@@ -826,29 +844,30 @@ class SessionMessagesMixin:
         return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
 
     def _ensure_display_order(self, session_id: str) -> bool:
-        """Backfill one legacy session once, preserving the pre-index display identity exactly."""
+        """Reconcile historical display identities once per session in this store instance.
+
+        Older compaction carriers can have a stored identity/order from an earlier
+        generation even when neither column is NULL. Recompute the logical key
+        before indexed paging so those slots collapse as one message.
+        """
         with self._read_ctx() as conn:
             columns = set(self._message_column_names(conn))
         if not {"display_order", "display_identity"} <= columns:
             return False
-        missing_sql = (
-            "SELECT 1 FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
-            "AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1")
-        if self._read_one(missing_sql, (session_id,)) is None:
+        checked = getattr(self, "_display_order_checked_sessions", None)
+        if checked is not None and session_id in checked:
             return True
         if getattr(self, "read_only", False):
+            # The legacy page scanner recomputes identities without changing the DB.
             return False
 
         def _do(conn):
-            missing = conn.execute(missing_sql, (session_id,)).fetchone()
-            if missing is None:
-                return True
             first_id: Dict[bytes, int] = {}
             last_id = 0
             while True:
                 rows = conn.execute(
                     "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, "
-                    "display_kind, display_metadata, display_order, display_identity "
+                    "display_kind, display_metadata, _compressed_summary, display_order, display_identity "
                     "FROM messages INDEXED BY idx_messages_session_id "
                     "WHERE session_id = ? AND id > ? AND (active = 1 OR compacted = 1) "
                     "ORDER BY id LIMIT 1000",
@@ -868,7 +887,12 @@ class SessionMessagesMixin:
                     "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
             return True
 
-        return bool(self._execute_write(_do))
+        result = bool(self._execute_write(_do))
+        if result:
+            if checked is None:
+                checked = self._display_order_checked_sessions = set()
+            checked.add(session_id)
+        return result
 
     def _legacy_display_page(self, session_id: str, *, active_clause: str, limit: Optional[int], offset: int,
                              latest: bool) -> List[Any]:
@@ -884,7 +908,7 @@ class SessionMessagesMixin:
                 index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
                 rows = conn.execute(
                     "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
-                    f"display_kind, display_metadata FROM messages {index_hint} "
+                    "display_kind, display_metadata, _compressed_summary FROM messages {index_hint} "
                     f"WHERE session_id = ?{active_clause} ORDER BY id ASC",
                     (session_id,))
                 for row in rows:

@@ -1330,7 +1330,14 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     // Apply load intent in the commit, without spending an unchanged anchor.
     if (paneVisible && (restoreFromBottom == null || liveScrollStateRef.current.kind === 'bottom')) {
-      applyRestoreRef.current?.()
+      if (applyRestoreRef.current) {
+        applyRestoreRef.current()
+      } else if (loadSettledRef.current && liveScrollStateRef.current.kind === 'bottom') {
+        // A settled thread has no restore callback. When its message set is
+        // replaced, follow the new bottom before paint rather than leaving a
+        // just-submitted turn below the old, clamped viewport.
+        void scrollToBottomUnlessSelecting('instant')
+      }
     }
 
     if (
@@ -1346,7 +1353,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       loadSettledRef.current = true
     }
     // renderBudget covers DOM pages; groups.length covers store-window expands.
-  }, [scrollRef, renderBudget, structuralSignature, paneVisible])
+  }, [scrollRef, renderBudget, structuralSignature, paneVisible, scrollToBottomUnlessSelecting])
 
   // Regrow toward a parked reading offset through the existing paging path.
   // Keep its target intact until reachable; exhaustion releases it at the

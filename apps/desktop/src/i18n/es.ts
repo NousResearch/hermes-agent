@@ -3770,6 +3770,8 @@ export const esOverrides = {
     nameLabel: 'Nombre',
     namePlaceholder: 'Resumen matutino',
     promptLabel: 'Prompt',
+    scriptLabel: 'Script',
+    scriptBadge: 'script',
     promptPlaceholder: 'Resume mis hilos de Slack sin leer y envíame por email los 5 principales...',
     frequencyLabel: 'Frecuencia',
     deliverLabel: 'Entregar a',

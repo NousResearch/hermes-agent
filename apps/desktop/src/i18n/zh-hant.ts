@@ -2553,6 +2553,8 @@ export const zhHant = defineLocale({
     nameLabel: '名稱',
     namePlaceholder: '例如：每日摘要',
     promptLabel: '提示詞',
+    scriptLabel: '指令碼',
+    scriptBadge: '指令碼',
     promptPlaceholder: '代理每次執行時應做什麼？',
     frequencyLabel: '頻率',
     deliverLabel: '傳遞至',

@@ -7,6 +7,11 @@ export function jobIsScriptOnly(job: Pick<CronJob, 'no_agent' | 'script'>): bool
   return Boolean(job.no_agent) && Boolean(asText(job.script).trim())
 }
 
+/** Description shown for a cron job: the prompt, or the script when script-only. */
+export function jobDescription(job: Pick<CronJob, 'prompt' | 'script'>): string {
+  return asText(job.prompt) || asText(job.script)
+}
+
 export type CronEditorValidationError = 'prompt' | 'prompt_and_schedule' | 'schedule'
 
 export interface CronEditorValidationInput {

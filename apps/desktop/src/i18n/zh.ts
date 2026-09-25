@@ -3192,6 +3192,8 @@ export const zh = defineLocale({
     nameLabel: '名称',
     namePlaceholder: '晨间简报',
     promptLabel: '提示词',
+    scriptLabel: '脚本',
+    scriptBadge: '脚本',
     promptPlaceholder: '总结我未读的 Slack 话题，并把前 5 条邮件发给我…',
     frequencyLabel: '频率',
     deliverLabel: '投递至',

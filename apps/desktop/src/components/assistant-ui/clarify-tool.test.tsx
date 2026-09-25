@@ -755,6 +755,99 @@ describe('ClarifyTool batch card', () => {
     expect((screen.getByRole('button', { name: /Confirm and continue/ }) as HTMLButtonElement).disabled).toBe(true)
   })
 
+  // #98645: when the request never reaches this window the preview used to
+  // sit disabled for the tool's whole 300s timeout with nothing said.
+  it('asks the backend to re-deliver a request that never arrived, then says it did not reach the app', async () => {
+    vi.useFakeTimers()
+
+    try {
+      const request = vi.fn(async (..._args: unknown[]) => ({ events: [], open_requests: [] }))
+      $activeSessionId.set('session-1')
+      $gateway.set({ request } as never)
+      renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+      expect(screen.queryByText(/didn't reach the app/)).toBeNull()
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000)
+      })
+
+      expect(request.mock.calls[0]?.slice(0, 2)).toEqual([
+        'session.events.since',
+        { last_seen: Number.MAX_SAFE_INTEGER, session_id: 'session-1' }
+      ])
+      expect(screen.getByRole('status').textContent).toMatch(/didn't reach the app.*Press Stop/)
+      expect(document.querySelector('[data-clarify-batch-preview]')?.getAttribute('aria-busy')).toBeNull()
+      // Nothing on the card can answer, so the actions go rather than sit disabled.
+      expect(screen.queryByRole('button', { name: /Confirm and continue/ })).toBeNull()
+      expect(screen.queryByRole('button', { name: /Skip/ })).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('goes live when the re-delivery finds the request still open on the backend', async () => {
+    vi.useFakeTimers()
+
+    try {
+      liveServerRequest('request-batch')
+
+      // The channel re-delivers `open_requests` to the request handlers (which
+      // park the clarify) before the call resolves.
+      const request = vi.fn(async (method: string) => {
+        if (method === 'session.events.since') {
+          setClarifyRequest({
+            choices: null,
+            multiSelect: false,
+            question: '',
+            questions: [
+              { choices: ['red', 'blue'], multiSelect: false, qid: 'q0', question: 'Color?' },
+              { choices: null, multiSelect: false, qid: 'q1', question: 'Name?' }
+            ],
+            requestId: 'request-batch',
+            sessionId: 'session-1'
+          })
+        }
+
+        return { events: [], open_requests: [] }
+      })
+
+      $activeSessionId.set('session-1')
+      $gateway.set({ request } as never)
+      renderClarify(<ClarifyTool {...liveBatchProps()} />)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000)
+      })
+
+      expect((screen.getByRole('button', { name: /red/ }) as HTMLButtonElement).disabled).toBe(false)
+      expect(document.querySelector('[data-clarify-batch-preview]')).toBeNull()
+      expect(screen.queryByText(/didn't reach the app/)).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows the same notice on a single-question card whose request never arrived', async () => {
+    vi.useFakeTimers()
+
+    try {
+      $activeSessionId.set('session-1')
+      $gateway.set({ request: vi.fn(async () => ({ events: [], open_requests: [] })) } as never)
+      renderClarify(<ClarifyTool {...liveClarifyProps()} />)
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000)
+      })
+
+      expect(screen.getByRole('status').textContent).toMatch(/didn't reach the app/)
+      expect(screen.queryByRole('button', { name: /Continue/ })).toBeNull()
+      expect(screen.queryByRole('button', { name: /Skip/ })).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('swaps the preview for the live form and answers with the request qids', async () => {
     const request = vi.fn().mockResolvedValue({ ok: true, remaining: [] })
     $activeSessionId.set('session-1')

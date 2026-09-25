@@ -4363,6 +4363,7 @@ export interface Translations {
       lateAnswer: (question: string, choice: string) => string
       lateAnswerTip: string
       lateAnswerHint: string
+      notDelivered: string
     }
     catalogInstall: {
       preparing: string

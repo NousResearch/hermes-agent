@@ -5634,7 +5634,9 @@ export const esOverrides = {
       lateAnswer: (question, choice) => `Con respecto a “${question}”: mi respuesta es ${choice}`,
       lateAnswerTip: 'Redactar esta respuesta como mensaje de seguimiento',
       lateAnswerHint:
-        'Este prompt ya no espera una respuesta. Elige una opción para redactarla como mensaje de seguimiento.'
+        'Este prompt ya no espera una respuesta. Elige una opción para redactarla como mensaje de seguimiento.',
+      notDelivered:
+        'Esta pregunta no llegó a la app, así que no se puede responder aquí. Pulsa Detener para terminar el turno y luego responde en el chat.'
     },
     catalogInstall: {
       preparing: 'Preparando la instalación…',

@@ -2,7 +2,12 @@
 (method_ctx.bind_module) and reference them bare. ``config.set`` lives in methods_config_set.
 """
 
+import atexit
+import concurrent.futures
+import threading
+
 from .method_ctx import HandlerRegistry, bind_module
+from ._env import env_int
 
 from hermes_constants import DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES
 from hermes_constants import display_hermes_home as _display_hermes_home
@@ -10,6 +15,39 @@ from hermes_constants import display_hermes_home as _display_hermes_home
 _registry = HandlerRegistry()
 method = _registry.method
 _profile_scoped = _registry.profile_scoped
+
+
+# ── setup readiness single-flight (#65151) ─────────────────────────────────
+#
+# Readiness probes are Desktop-polled and execute on the shared RPC pool via
+# ``_LONG_HANDLERS``. A slow probe (blocked keyring, OAuth refresh, GIL pressure)
+# used to run one provider-resolution call per overlapping poll, each occupying
+# another shared worker while they all resolved the same state. The probe now
+# runs on this small dedicated executor, single-flighted per
+# ``(kind, profile, requested provider)``:
+#
+# * the first caller submits the probe and waits a bounded budget;
+# * an overlapping poll for a still-running probe answers a retryable error
+#   immediately — a JSON-RPC error, never a fabricated ``ok`` (the result
+#   contract requires the real shape, and the desktop already treats an errored
+#   runtime_check as unknown, keeping setup.status authoritative);
+# * a probe that outlives the budget answers the same retryable error while it
+#   keeps running in the background; the in-flight entry is cleared when it
+#   settles, so the next poll starts a fresh probe and never reads a stale one.
+_readiness_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=max(2, min(4, env_int("HERMES_TUI_RPC_POOL_WORKERS", 8))),
+    thread_name_prefix="tui-readiness")
+atexit.register(lambda: _readiness_pool.shutdown(wait=False, cancel_futures=True))
+_readiness_lock = threading.Lock()
+_readiness_inflight: dict[tuple, concurrent.futures.Future] = {}
+_READINESS_SHARE_WAIT_SECONDS = 4.0
+# setup.status's probe legitimately blocks on the boot bootstrap's record
+# (free_tier_bootstrap.SETUP_READY_WAIT_SECONDS = 8s): its join budget must
+# cover that wait or every boot poll would answer the retryable error.
+_READINESS_STATUS_SHARE_WAIT_SECONDS = 12.0
+# Retryable-transient code for "the probe is still running / outlived its
+# budget"; the client treats an errored runtime_check as unknown readiness.
+_READINESS_IN_PROGRESS_ERR = 5097
 
 
 def _projects_handler(name: str):
@@ -246,12 +284,54 @@ def _(rid, params: dict) -> dict:
 
 # ── setup readiness
 
-def _readiness_check(rid, params, probe):
+def _readiness_cleared(key):
+    """Done-callback for a single-flighted probe: forget the entry (the next poll
+    re-probes — completed answers are never cached), and surface a failure nobody
+    waited for (every caller timed out) in the log instead of dropping it."""
+    def _clear(future):
+        with _readiness_lock:
+            if _readiness_inflight.get(key) is future:
+                _readiness_inflight.pop(key, None)
+        if not future.cancelled() and future.exception() is not None:
+            logger.debug("readiness probe %s failed after its callers returned: %s",
+                         key, future.exception())
+    return _clear
+
+
+def _readiness_share(rid, key, run_probe, wait_seconds):
+    """Run ``run_probe`` single-flighted under ``key`` on the dedicated readiness pool.
+
+    The first caller submits the probe and waits up to ``wait_seconds``; a caller that
+    finds a still-running probe answers the retryable error immediately (its shared RPC
+    worker is freed at once — the probe keeps running for the first caller), and one that
+    finds it settled reads the shared result. A probe that outlives the budget answers
+    the same retryable error while it continues in the background."""
+    with _readiness_lock:
+        future = _readiness_inflight.get(key)
+        owner = future is None
+        if owner:
+            future = _readiness_pool.submit(run_probe)
+            _readiness_inflight[key] = future
+            future.add_done_callback(_readiness_cleared(key))
+    if not owner and not future.done():
+        return _err(rid, _READINESS_IN_PROGRESS_ERR,
+                    "readiness check still in progress; retrying next tick")
+    try:
+        return _ok(rid, future.result(timeout=wait_seconds))
+    except concurrent.futures.TimeoutError:
+        logger.warning("readiness probe %s exceeded %.1fs; it continues in the background",
+                       key, wait_seconds)
+        return _err(rid, _READINESS_IN_PROGRESS_ERR,
+                    f"readiness check timed out after {wait_seconds:.0f}s; retrying next tick")
+
+
+def _readiness_check(rid, params, probe, *, probe_key, wait_seconds):
     """Shared shell of setup.status / setup.runtime_check. ``probe(profile, scoped)`` runs inside the
     optional ``profile`` param's HERMES_HOME + ``.env`` secret scope (ContextVars: concurrent checks
     stay isolated); ``scoped`` is the ``{"profile": ...}`` payload stamp (``{}`` for the launch
     profile). An unknown profile answers ``ok=False`` (never a JSON-RPC error, never a quiet answer
-    for the launch profile instead)."""
+    for the launch profile instead). ``probe_key`` + the profile single-flight the probe, and
+    ``wait_seconds`` bounds how long this shared-RPC worker waits for it (#65151)."""
     profile = str(params.get("profile") or "").strip() if isinstance(params, dict) else ""
     home = None
     if profile:
@@ -264,9 +344,14 @@ def _readiness_check(rid, params, probe):
     # run under its own frozen secret scope too (``_profile_runtime_scope_tokens`` binds nothing in
     # a single-profile process), or the first profile-scoped read inside the resolver
     # (``HERMES_CODEX_BASE_URL`` for openai-codex) fails closed and the UI shows onboarding.
-    with _session_profile_runtime_scope({"profile_home": str(home) if home is not None else None}):
-        payload = probe(profile, {"profile": profile} if profile else {})
-    return _ok(rid, payload)
+    def run_probe():
+        # Applied on the readiness pool thread: ContextVars do not cross threads, and
+        # concurrent probes (different profiles) stay isolated exactly as they did when
+        # each ran on its caller's handler thread.
+        with _session_profile_runtime_scope({"profile_home": str(home) if home is not None else None}):
+            return probe(profile, {"profile": profile} if profile else {})
+
+    return _readiness_share(rid, (probe_key, profile), run_probe, wait_seconds)
 
 
 @method("setup.status")
@@ -301,7 +386,8 @@ def _(rid, params: dict) -> dict:
             return {"provider_configured": record.provider_configured, "ready": True,
                     "free_tier": record.free_tier, "other_providers": record.other_providers,
                     "inference_provider": record.inference_provider, **record.failure_fields(), **scoped}
-        return _readiness_check(rid, params, probe)
+        return _readiness_check(rid, params, probe, probe_key="status",
+                                wait_seconds=_READINESS_STATUS_SHARE_WAIT_SECONDS)
     except Exception as e:
         return _err(rid, 5016, str(e))
 
@@ -351,7 +437,8 @@ def _(rid, params: dict) -> dict:
                     "source": runtime.get("source"),
                     "free_tier": provider == "nous" and route_is_welcome_host(runtime.get("base_url")),
                     **scoped}
-        return _readiness_check(rid, params, probe)
+        return _readiness_check(rid, params, probe, probe_key=f"runtime:{requested or ''}",
+                                wait_seconds=_READINESS_SHARE_WAIT_SECONDS)
     except Exception as e:
         return _ok(rid, {"ok": False, "error": str(e)})
 

@@ -2441,7 +2441,19 @@ export const zh = defineLocale({
     recallIntoChat: '插入到当前对话',
     addToSession: '添加到会话',
     addToSessionDone: title => `已添加到“${title}” — 打开该会话即可查看并发送。`,
-    recallFailed: '无法加载该记忆以供插入。'
+    recallFailed: '无法加载该记忆以供插入。',
+    // 多档案模式 (机器人记忆整合)
+    profileSelector: '选择机器人',
+    profileSelectorHint: '勾选要在此图谱中显示其记忆和技能的机器人。',
+    profileAll: '全部机器人',
+    profileNone: '未选择机器人',
+    profileCount: n => `已选择 ${n} 个机器人`,
+    profileBadge: name => name,
+    insertIntoProfile: name => `插入到 ${name}`,
+    insertIntoAllSelected: '插入到所有已选机器人',
+    insertIntoProfileDone: name => `已插入到 ${name} 的记忆中。`,
+    insertIntoAllDone: n => `已插入到 ${n} 个机器人。`,
+    crossProfileInsertFailed: '无法插入到该机器人的记忆中。'
   },
   agents: {
     extendedTranscript: '扩展记录',

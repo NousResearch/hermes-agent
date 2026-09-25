@@ -2620,7 +2620,19 @@ export const en: Translations = {
     recallIntoChat: 'Insert into this chat',
     addToSession: 'Add to a session',
     addToSessionDone: (title: string) => `Added to "${title}" — open it to review and send.`,
-    recallFailed: 'Could not load that memory to insert.'
+    recallFailed: 'Could not load that memory to insert.',
+    // Multi-profile mode (bot memory consolidation)
+    profileSelector: 'Select bots',
+    profileSelectorHint: 'Check bots to include their memories and skills on this map.',
+    profileAll: 'All bots',
+    profileNone: 'No bots selected',
+    profileCount: (n: number) => `${n} ${n === 1 ? 'bot' : 'bots'} selected`,
+    profileBadge: (name: string) => name,
+    insertIntoProfile: (name: string) => `Insert into ${name}`,
+    insertIntoAllSelected: 'Insert into all selected bots',
+    insertIntoProfileDone: (name: string) => `Inserted into ${name}'s memory.`,
+    insertIntoAllDone: (n: number) => `Inserted into ${n} ${n === 1 ? 'bot' : 'bots'}.`,
+    crossProfileInsertFailed: "Could not insert into that bot's memory."
   },
   agents: {
     extendedTranscript: 'Extended transcript',

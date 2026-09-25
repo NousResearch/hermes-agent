@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
-import { getStarmapGraph } from '@/hermes'
+import { getStarmapGraph, getStarmapGraphMultiProfile } from '@/hermes'
+import { persistStringArray, storedStringArray } from '@/lib/storage'
 import type { StarmapGraph } from '@/types/hermes'
 
 // On-demand cache for the star map. The graph scan touches the skills catalog +
@@ -9,6 +10,30 @@ import type { StarmapGraph } from '@/types/hermes'
 export const $starmapGraph = atom<StarmapGraph | null>(null)
 export const $starmapLoading = atom(false)
 export const $starmapError = atom<null | string>(null)
+
+// ── Multi-profile selection ─────────────────────────────────────────────────
+// Persisted list of profile names to include in the journey map. An empty list
+// means "current profile only" (single-profile mode, backwards compatible).
+// The first profile in the list is considered the "primary" (checked by default
+// on first load).
+const SELECTED_PROFILES_STORAGE_KEY = 'hermes.desktop.starmap.selectedProfiles'
+
+export const $starmapSelectedProfiles = atom<string[]>(storedStringArray(SELECTED_PROFILES_STORAGE_KEY))
+
+// Persist on change
+$starmapSelectedProfiles.subscribe(value => persistStringArray(SELECTED_PROFILES_STORAGE_KEY, [...value]))
+
+export function setStarmapSelectedProfiles(profiles: string[]): void {
+  $starmapSelectedProfiles.set(profiles)
+}
+
+export function toggleStarmapProfile(profile: string, enabled: boolean): void {
+  const current = $starmapSelectedProfiles.get()
+  const next = enabled
+    ? [...new Set([...current, profile])]
+    : current.filter(p => p !== profile)
+  $starmapSelectedProfiles.set(next)
+}
 
 let inflight: Promise<void> | null = null
 
@@ -26,7 +51,16 @@ export async function loadStarmapGraph(force = false): Promise<void> {
 
   inflight = (async () => {
     try {
-      $starmapGraph.set(await getStarmapGraph())
+      const selectedProfiles = $starmapSelectedProfiles.get()
+
+      // Multi-profile mode: fetch merged graph when multiple profiles selected
+      if (selectedProfiles.length > 1) {
+        $starmapGraph.set(await getStarmapGraphMultiProfile(selectedProfiles))
+      } else {
+        // Single-profile mode (or empty = current profile)
+        const profile = selectedProfiles.length === 1 ? selectedProfiles[0] : undefined
+        $starmapGraph.set(await getStarmapGraph(profile))
+      }
     } catch (err) {
       $starmapError.set(err instanceof Error ? err.message : String(err))
     } finally {

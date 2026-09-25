@@ -583,3 +583,52 @@ def build_recall_draft(node_id: str, max_body_chars: int = _RECALL_MAX_BODY_CHAR
         "connected_count": len(connected),
         "text": text,
     }
+
+
+# ── Copy a memory node into another profile ────────────────────────────────
+
+def memory_node_text(node_id: str) -> dict[str, Any]:
+    """Text of a memory node for copying it into another profile, in the current profile's
+    scope: a file memory's whole entry, or a provider memory's card text. Provider ids
+    index the graph's combined card list (file cards first), so they resolve through the
+    graph rather than the provider's own list. Skills are refused."""
+    if parse_node_kind(node_id) != "memory":
+        return {"ok": False, "message": "only memory nodes can be copied between profiles; skills are not supported"}
+    parts = node_id.split(":")
+    if len(parts) > 1 and parts[1] in _MEMORY_FILES:
+        detail = node_detail(node_id)
+        if not detail.get("ok"):
+            return detail
+        return {"ok": True, "content": str(detail.get("content") or "")}
+    try:
+        from agent.learning_graph import build_learning_graph
+
+        meta = _recall_resolve(node_id, build_learning_graph())
+    except (ValueError, IndexError) as exc:
+        return {"ok": False, "message": str(exc)}
+    return {"ok": True, "content": str(meta.get("body") or "")}
+
+
+def import_memory_entry(content: str, source_profile: str) -> dict[str, Any]:
+    """Append *content* to the current profile's ``MEMORY.md`` as one entry whose first line
+    names the profile it came from.
+
+    Uses the memory tool's own ``add``: the cross-process file lock, the strict threat
+    scan (memory is injected into the system prompt), the duplicate check and the
+    character limit all apply, and a refusal writes nothing."""
+    from tools.memory_tool import load_on_disk_store
+
+    text = content.strip()
+    if not text:
+        return {"ok": False, "message": "node has no content to insert"}
+    store = load_on_disk_store()
+    if not store.target_enabled("memory"):
+        return {"ok": False, "message": "MEMORY.md writes are disabled in this profile's memory config"}
+    result = store.add("memory", f"[Imported from profile: {source_profile}]\n{text}")
+    if result.get("success"):
+        return {"ok": True, "message": str(result.get("message") or "Entry added.")}
+    if "current_entries" in result:  # over the character limit
+        return {"ok": False, "message": (
+            f"MEMORY.md has no room for this entry ({result.get('usage', '?')} characters used); "
+            "remove or shorten entries in that profile first")}
+    return {"ok": False, "message": str(result.get("error") or "MEMORY.md write failed")}

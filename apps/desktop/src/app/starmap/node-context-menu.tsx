@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { useRef, useState } from 'react'
 
 import { ArchiveSkillConfirmDialog, fireOptimistic } from '@/app/learning/archive-skill-confirm-dialog'
@@ -18,7 +19,8 @@ import {
 import { deleteLearningNode, editLearningNode, getLearningNode } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { evictStarmapNode, loadStarmapGraph } from '@/store/starmap'
+import { $profiles, normalizeProfileKey, profileLabel } from '@/store/profile'
+import { evictStarmapNode, loadStarmapGraph, $starmapSelectedProfiles } from '@/store/starmap'
 
 import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 
@@ -35,6 +37,10 @@ export interface NodeMenuTarget {
   /** Memory nodes only: 'memory' | 'profile' | a provider name ('honcho', …).
    *  Provider-backed nodes are read-only — the menu offers no Edit/Delete. */
   memorySource?: string
+  /** Multi-profile mode: which profile this node belongs to. */
+  profile?: string
+  /** Multi-profile mode: the original node id without the profile prefix. */
+  _originalId?: string
   x: number
   y: number
 }
@@ -62,6 +68,9 @@ interface NodeContextMenuProps {
   /** /recall: insert this node's knowledge into the CURRENT chat's
    *  composer for review. Available for ALL node kinds. */
   onRecallIntoChat?: (target: NodeMenuTarget) => void
+  /** Cross-profile insert: copy this node's content into another profile's memory.
+   *  Available when in multi-profile mode and the node kind is 'memory'. */
+  onInsertIntoProfile?: (target: NodeMenuTarget, profileName: string) => void
   /** Most-recently-active sessions (already capped + ordered) for the
    *  "Add to a session" submenu. Empty/undefined hides that action. */
   recentSessions?: RecallSessionOption[]
@@ -74,12 +83,67 @@ interface EditState {
   label: string
 }
 
+function CrossProfileSubmenu({
+  onInsertIntoProfile,
+  target,
+  title
+}: {
+  onInsertIntoProfile: (target: NodeMenuTarget, profileName: string) => void
+  target: NodeMenuTarget
+  title: (profile: string) => string
+}) {
+  const { t } = useI18n()
+  const profiles = useStore($profiles)
+  const selectedProfiles = useStore($starmapSelectedProfiles)
+  const targets =
+    Array.isArray(profiles) && Array.isArray(selectedProfiles)
+      ? profiles.filter(profile => {
+          const key = normalizeProfileKey(profile.name)
+
+          return selectedProfiles.includes(key) && key !== target.profile
+        })
+      : []
+
+  if (targets.length === 0) {
+    return null
+  }
+
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>{title(targets.length === 1 ? profileLabel(targets[0]) : '…')}</DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>
+        {targets.length > 1 ? (
+          <DropdownMenuItem
+            className="font-medium"
+            onSelect={() => {
+              targets.forEach(profile => onInsertIntoProfile(target, normalizeProfileKey(profile.name)))
+            }}
+          >
+            {t.starmap.insertIntoAllSelected}
+          </DropdownMenuItem>
+        ) : null}
+        {targets.map(profile => (
+          <DropdownMenuItem
+            className="max-w-64"
+            key={normalizeProfileKey(profile.name)}
+            onSelect={() => onInsertIntoProfile(target, normalizeProfileKey(profile.name))}
+            title={profileLabel(profile)}
+          >
+            <span className="truncate">{profileLabel(profile)}</span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
+  )
+}
+
 /** Right-click actions for a star-map node: provenance, edit (modal), delete (confirm).
  *  Provider-backed memory nodes are read-only (their storage lives in the
  *  provider's backend), so Edit/Delete are replaced by a hint. */
 export function NodeContextMenu({
   onAddToSession,
   onClose,
+  onInsertIntoProfile,
   onNodeRemoved,
   onRecallIntoChat,
   onShowProvenance,
@@ -200,6 +264,13 @@ export function NodeContextMenu({
                   ))}
                 </DropdownMenuSubContent>
               </DropdownMenuSub>
+            ) : null}
+            {onInsertIntoProfile && target.profile ? (
+              <CrossProfileSubmenu
+                onInsertIntoProfile={onInsertIntoProfile}
+                target={target}
+                title={t.starmap.insertIntoProfile}
+              />
             ) : null}
             {isProviderSource(target.memorySource) ? (
               <>

@@ -2229,6 +2229,18 @@ export interface Translations {
     addToSession: string
     addToSessionDone: (title: string) => string
     recallFailed: string
+    // Multi-profile mode (bot memory consolidation)
+    profileSelector: string
+    profileSelectorHint: string
+    profileAll: string
+    profileNone: string
+    profileCount: (n: number) => string
+    profileBadge: (name: string) => string
+    insertIntoProfile: (name: string) => string
+    insertIntoAllSelected: string
+    insertIntoProfileDone: (name: string) => string
+    insertIntoAllDone: (n: number) => string
+    crossProfileInsertFailed: string
   }
   agents: {
     extendedTranscript: string

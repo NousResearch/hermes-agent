@@ -838,12 +838,20 @@ export interface StarmapNode {
    *  Hermes session id; for imported history it only resolves in the
    *  provider backend. Absent on skills and file-based memory chunks. */
   sessionId?: string
+  /** Multi-profile mode: which profile this node belongs to. Absent in
+   *  single-profile mode (backwards compatible). */
+  profile?: string
+  /** Multi-profile mode: the original node id without the profile prefix,
+   *  used for mutations/edits. */
+  _originalId?: string
 }
 
 /** A declared `related_skills` link; both endpoints are guaranteed to be nodes. */
 export interface StarmapEdge {
   source: string
   target: string
+  /** Multi-profile mode: which profile this edge belongs to. */
+  profile?: string
 }
 
 export interface StarmapCluster {
@@ -861,6 +869,8 @@ export interface StarmapMemoryCard {
   /** Digest of the card's text, carried in its node id so an edit names this card and not
    *  whatever now sits at its index. Absent on an imported or pre-fingerprint graph. */
   fingerprint?: string
+  /** Multi-profile mode: which profile this card belongs to. */
+  profile?: string
 }
 
 export interface StarmapGraph {
@@ -874,6 +884,10 @@ export interface StarmapGraph {
    *  node kind, which is only meaningful when Honcho is the active provider.
    *  Absent from an un-upgraded backend, so treat missing as null. */
   memoryProvider?: null | string
+  /** Multi-profile mode: true when the graph merges multiple profiles. */
+  multiProfile?: boolean
+  /** Multi-profile mode: the list of profiles included in this graph. */
+  profiles?: string[]
 }
 
 export interface ContextUsageCategory {

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 
 import { requestComposerInsert } from '@/app/chat/composer/focus'
 import { PageLoader } from '@/components/page-loader'
-import { getLearningRecallDraft } from '@/hermes'
+import { crossInsertLearningNode, getLearningRecallDraft } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { stashSessionDraft, takeSessionDraft } from '@/store/composer'
@@ -23,6 +23,7 @@ import type { StarmapGraph } from '@/types/hermes'
 
 import { Panel, PanelEmpty } from '../overlays/panel'
 
+import { type RecallNodeRef, resolveRecallTarget } from './recall'
 import { StarMap } from './star-map'
 
 // How many most-recently-active sessions the "Add to a session" submenu offers.
@@ -76,9 +77,17 @@ export function StarmapView({ onClose }: { onClose: () => void }) {
   // Fetch the injection-hardened, provenance-tagged draft for a node. The body
   // is scanned + defanged + wrapped server-side; we only place the returned
   // text. Returns null (after a toast) when the node has no recallable content.
-  const fetchRecallText = async (node: { id: string; kind: 'memory' | 'skill'; label: string }): Promise<null | string> => {
+  //
+  // Multi-profile mode: node ids arrive PREFIXED (`<profile>:<id>`) and the
+  // node may live in a DIFFERENT profile than the active one — resolve the
+  // unprefixed id and scope the request to the node's own profile, mirroring
+  // the onInsertIntoProfile contract (same bug class: the server only knows
+  // original ids).
+  const fetchRecallText = async (node: RecallNodeRef): Promise<null | string> => {
+    const target = resolveRecallTarget(node)
+
     try {
-      const draft = await getLearningRecallDraft(node.id)
+      const draft = await getLearningRecallDraft(target.id, target.profile)
 
       if (!draft.ok || !draft.text.trim()) {
         notify({ kind: 'warning', message: t.starmap.recallFailed })
@@ -126,6 +135,34 @@ export function StarmapView({ onClose }: { onClose: () => void }) {
             notify({ kind: 'success', message: t.starmap.addToSessionDone(target?.title ?? node.label) })
           }}
           onImport={setImported}
+          onInsertIntoProfile={async (node, targetProfile) => {
+            // Cross-profile insert: copy this node's content into another profile's
+            // MEMORY.md. The source profile is embedded in the node; we use the
+            // _originalId to fetch the content without the profile prefix.
+            if (!node.profile) {
+              notify({ kind: 'warning', message: t.starmap.crossProfileInsertFailed })
+
+              return
+            }
+
+            try {
+              // Same addressing contract as recall: unprefixed id, node's own
+              // profile (shared resolver — see recall.ts).
+              const { id: nodeId } = resolveRecallTarget(node)
+
+              const result = await crossInsertLearningNode(nodeId, node.profile, targetProfile)
+
+              if (result.ok) {
+                notify({ kind: 'success', message: t.starmap.insertIntoProfileDone(targetProfile) })
+                // Refresh the graph to show the new entry
+                void loadStarmapGraph(true)
+              } else {
+                notify({ kind: 'warning', message: result.message || t.starmap.crossProfileInsertFailed })
+              }
+            } catch {
+              notify({ kind: 'warning', message: t.starmap.crossProfileInsertFailed })
+            }
+          }}
           onOpenSession={id => {
             // Drill-down from a node: open the conversation as a tile stacked
             // into the main zone, then close the map so it's readable.

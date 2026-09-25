@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import { type Simulation } from 'd3-force'
 import { atom, type WritableAtom } from 'nanostores'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -7,6 +8,7 @@ import { useI18n } from '@/i18n'
 import { Search, SlidersHorizontal } from '@/lib/icons'
 import { createRendererLoopPauseController } from '@/lib/renderer-loop-pause'
 import { createDoubleTapDetector, isSmartZoomWheel } from '@/lib/trackpad-gestures'
+import { $activeProfile } from '@/store/profile'
 import type { StarmapGraph } from '@/types/hermes'
 
 import { computePalette, conclusionInkFor, memoryInkFor, resolveRgb, rgba } from './color'
@@ -15,6 +17,8 @@ import { clamp, distToSegmentSq, fitScale, fitViewport, nodeRadius } from './geo
 import { NodeContextMenu, type NodeMenuTarget } from './node-context-menu'
 import { NodeSessionsDialog } from './node-sessions-dialog'
 import { shouldIgnorePlaybackHotkey } from './playback-hotkey'
+import { ProfileSelector } from './profile-selector'
+import type { RecallNodeRef } from './recall'
 import { drawScene, drawScramble, drawSearchPulse } from './render'
 import { conclusionsEnabled, isConclusion } from './search'
 import { SearchSidebar } from './search-sidebar'
@@ -109,6 +113,7 @@ export function StarMap({
   initialSearchFocus = false,
   onAddToSession,
   onImport,
+  onInsertIntoProfile,
   onOpenSession,
   onRecallIntoChat,
   onResetMap,
@@ -120,6 +125,11 @@ export function StarMap({
   /** Open with the search sidebar already focused (the /recall entry point). */
   initialSearchFocus?: boolean
   onImport?: (graph: StarmapGraph) => void
+  /** Cross-profile insert: copy a node's content into another profile's memory. */
+  onInsertIntoProfile?: (
+    node: { id: string; kind: 'memory' | 'skill'; label: string; profile?: string; _originalId?: string },
+    targetProfile: string
+  ) => void
   onOpenSession?: (storedSessionId: string) => void
   onResetMap?: () => void
   /** Conclusion nodes only: seed a NEW chat about this conclusion's text (for
@@ -127,15 +137,16 @@ export function StarMap({
   onStartConversation?: (conclusion: { id: string; label: string }) => void
   /** Stash a node's knowledge into an existing session's composer
    *  (injection-hardened, provenance-tagged). Given node id + kind + session key. */
-  onAddToSession?: (node: Pick<NodeMenuTarget, 'id' | 'kind' | 'label'>, sessionKey: string) => void
+  onAddToSession?: (node: RecallNodeRef, sessionKey: string) => void
   /** /recall: insert a node's knowledge into the CURRENT chat's composer. */
-  onRecallIntoChat?: (node: Pick<NodeMenuTarget, 'id' | 'kind' | 'label'>) => void
+  onRecallIntoChat?: (node: RecallNodeRef) => void
   /** Recent sessions offered in the "Add to a session" submenu (host-provided). */
   recentSessions?: { key: string; title: string }[]
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const { t } = useI18n()
+  const activeProfile = useStore($activeProfile)
 
   const simRef = useRef<null | Simulation<SimNode, SimLink>>(null)
   const nodesRef = useRef<SimNode[]>([])
@@ -325,6 +336,12 @@ export function StarMap({
       kind: node.kind === 'memory' ? 'memory' : 'skill',
       label: node.label,
       memorySource: node.memorySource,
+      // Multi-profile mode: pass the profile and original id so recall /
+      // cross-profile ops resolve against the node's OWN profile — the canvas
+      // path already does this; dropping it here made sidebar-opened menus
+      // fail with "Could not load that memory" on prefixed ids.
+      profile: node.profile,
+      _originalId: node._originalId,
       x,
       y
     })
@@ -1076,6 +1093,9 @@ export function StarMap({
       // profile memory) correctly show the read-only hint + conclusion action —
       // the canvas path previously dropped this, unlike the sidebar path.
       memorySource: node.memorySource,
+      // Multi-profile mode: pass the profile and original id for cross-profile ops
+      profile: node.profile,
+      _originalId: node._originalId,
       x: e.clientX,
       y: e.clientY
     })
@@ -1125,10 +1145,28 @@ export function StarMap({
         onAddToSession={
           onAddToSession
             ? (tgt, sessionKey) =>
-                onAddToSession({ id: tgt.id, kind: tgt.kind, label: tgt.label }, sessionKey)
+                onAddToSession(
+                  { _originalId: tgt._originalId, id: tgt.id, kind: tgt.kind, label: tgt.label, profile: tgt.profile },
+                  sessionKey
+                )
             : undefined
         }
         onClose={() => setMenuTarget(null)}
+        onInsertIntoProfile={
+          onInsertIntoProfile
+            ? (tgt, targetProfile) =>
+                onInsertIntoProfile(
+                  {
+                    id: tgt.id,
+                    kind: tgt.kind,
+                    label: tgt.label,
+                    profile: tgt.profile,
+                    _originalId: tgt._originalId
+                  },
+                  targetProfile
+                )
+            : undefined
+        }
         onNodeRemoved={() => {
           setMenuTarget(null)
           setSelectedId(null)
@@ -1136,7 +1174,13 @@ export function StarMap({
         onRecallIntoChat={
           onRecallIntoChat
             ? tgt =>
-                onRecallIntoChat({ id: tgt.id, kind: tgt.kind, label: tgt.label })
+                onRecallIntoChat({
+                  _originalId: tgt._originalId,
+                  id: tgt.id,
+                  kind: tgt.kind,
+                  label: tgt.label,
+                  profile: tgt.profile
+                })
             : undefined
         }
         onShowProvenance={id => {
@@ -1250,6 +1294,11 @@ export function StarMap({
       {/* Share / import (WoW-talent-style code) — bottom-right, mirroring the legend. */}
       <div className="pointer-events-auto absolute bottom-2 right-2 z-20 [-webkit-app-region:no-drag]">
         <ShareControls imported={imported} onImport={importCode} onResetMap={onResetMap} shareCode={shareCode} />
+      </div>
+
+      {/* Profile selector — top-left, for multi-bot memory consolidation. */}
+      <div className="pointer-events-auto absolute left-2 top-14 z-20 [-webkit-app-region:no-drag]">
+        <ProfileSelector activeProfile={activeProfile} />
       </div>
 
       {/* Legend — bottom-left, one entry per line like a conventional key. */}

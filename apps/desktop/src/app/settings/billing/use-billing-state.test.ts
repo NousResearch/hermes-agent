@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { TRANSLATIONS } from '@/i18n'
+import { $freeTierSignIn } from '@/store/free-tier-sign-in'
 
 import type { BillingRefusal } from './api'
 import { resolveRefusal } from './errors'
@@ -140,9 +141,13 @@ describe('deriveBillingView', () => {
         expect(local.action).toEqual(english.action)
         expect(refusal).toEqual(before)
 
-        if (kind === 'monthly_cap_exceeded') {expect(local.message).toContain('17.42')}
+        if (kind === 'monthly_cap_exceeded') {
+          expect(local.message).toContain('17.42')
+        }
 
-        if (kind === 'stripe_unavailable') {expect(local.message).toContain('2')}
+        if (kind === 'stripe_unavailable') {
+          expect(local.message).toContain('2')
+        }
       }
 
       expect(resolveRefusal({ kind: 'unknown', message: 'Server notice Ω' }, copy).message).toBe('Server notice Ω')
@@ -242,6 +247,18 @@ describe('deriveBillingView', () => {
     expect(view.topupRow).toBeUndefined()
     expect(view.refillRow).toBeUndefined()
     expect(view.usageRows).toEqual([])
+  })
+
+  it('signs in from the logged-out notice through the shared sign-in dialog, not a portal link', () => {
+    // A plain portal link never writes a credential, so the page would stay logged out forever
+    // (#87792). The action must open the one Nous sign-in dialog (device-code + poll).
+    $freeTierSignIn.set({ status: 'closed' })
+    const view = deriveBillingView(okBilling(loggedOutBillingState), okSubscription(loggedOutSubscriptionState))
+
+    expect(view.notice?.action?.url).toBeUndefined()
+    view.notice?.action?.onSelect?.()
+    expect($freeTierSignIn.get()).toEqual({ status: 'requested' })
+    $freeTierSignIn.set({ status: 'closed' })
   })
 
   it('derives the free-tier view before the logged-out one, with nothing to pay', () => {

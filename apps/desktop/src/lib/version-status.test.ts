@@ -13,11 +13,11 @@ const backend = (over: Partial<Parameters<typeof resolveVersionStatus>[0]> = {})
   resolveVersionStatus({ applying: false, copy, remote: true, restarting: false, target: 'backend', ...over })
 
 describe('resolveVersionStatus', () => {
-  it('labels a current local client with its version and sha detail', () => {
-    const status = client({ sha: 'abc1234', version: '0.4.2' })
+  it('labels a current local client with its distance, keeping the commit for the tooltip', () => {
+    const status = client({ sha: 'abc1234', version: '0.4.2+1913.gabc1234' })
 
-    expect(status.label).toBe('v0.4.2')
-    expect(status.detail).toBe('abc1234')
+    expect(status.label).toBe('v0.4.2+1913')
+    expect(status.tooltip).toContain('abc1234')
     expect(status.hasUpdate).toBe(false)
     expect(status.unknown).toBe(false)
   })
@@ -49,11 +49,10 @@ describe('resolveVersionStatus', () => {
     expect(client().unknown).toBe(true)
   })
 
-  it('drops the diff and the sha detail while an apply is in flight', () => {
+  it('drops the diff while an apply is in flight', () => {
     const applying = client({ applying: true, behind: 3, sha: 'abc1234', version: '0.4.2' })
 
     expect(applying.label).toBe('v0.4.2 · update')
-    expect(applying.detail).toBeUndefined()
     expect(applying.hasUpdate).toBe(false)
 
     expect(client({ applying: true, restarting: true, version: '0.4.2' }).label).toBe('v0.4.2 · restart')
@@ -63,7 +62,6 @@ describe('resolveVersionStatus', () => {
     const status = backend({ sha: 'abc1234', version: '0.4.2' })
 
     expect(status.label).toBe('backend v0.4.2')
-    expect(status.detail).toBeUndefined()
     expect(status.tooltip).toBe('Backend v0.4.2')
   })
 
@@ -80,5 +78,28 @@ describe('resolveVersionStatus', () => {
 
   it('hides a backend row that has no version at all', () => {
     expect(backend().unknown).toBe(true)
+  })
+
+  it('stable channel: releases use the update word, never a commit count', () => {
+    const label = client({ behind: 4, updateAvailable: true, channel: 'stable', version: '0.4.2' }).label
+    expect(label).toBe('v0.4.2 (update)')
+  })
+
+  it('stable channel tooltip names the release tag', () => {
+    const tooltip = client({ behind: 1, channel: 'stable', latestTag: 'v0.18.0', version: '0.4.2' }).tooltip
+    expect(tooltip).toContain(`${copy.releaseAvailable('v0.18.0')}`)
+  })
+
+  it('stable channel never names a branch (a stable checkout sits on a tag)', () => {
+    const tooltip = client({
+      behind: 1,
+      branch: 'main',
+      channel: 'stable',
+      latestTag: 'v0.18.0',
+      version: '0.4.2'
+    }).tooltip
+
+    expect(tooltip).not.toContain('main')
+    expect(tooltip).toContain(`${copy.releaseAvailable('v0.18.0')}`)
   })
 })

@@ -1204,7 +1204,7 @@ def list_authenticated_providers(
         except Exception:
             pass
 
-    # PyYAML parses unquoted numeric names (`provider: 2070`) as int.
+    # YAML parses unquoted numeric names (`provider: 2070`) as int.
     # seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
     current_provider = coerce_provider_id(current_provider)
     current_base_url = str(current_base_url or "").strip()
@@ -1343,4 +1343,7 @@ def list_picker_providers(
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))
         if p.get("models") or is_custom_endpoint:
             filtered.append(p)
+    from hermes_cli.models_validate import drop_unofferable_model_ids
+
+    drop_unofferable_model_ids(filtered)
     return filtered

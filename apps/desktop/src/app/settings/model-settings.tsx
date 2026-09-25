@@ -1,5 +1,6 @@
 import type { ModelOptionProvider } from '@hermes/shared'
 import { DEFAULT_REASONING_EFFORT, isReasoningEffort, REASONING_EFFORT_VALUES } from '@hermes/shared'
+import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
@@ -30,6 +31,7 @@ import { isCodeSkewRestartRequired } from '@/lib/code-skew-error'
 import { AlertTriangle, Cpu, Loader2 } from '@/lib/icons'
 import { isSubmitEnter } from '@/lib/ime'
 import { cn } from '@/lib/utils'
+import { $customModels, withCustomModels } from '@/store/custom-models'
 import { setMainModelAssignment } from '@/store/model-assignment'
 import { notifyError, readableError } from '@/store/notifications'
 import { startManualLocalEndpoint, startManualOnboarding, startManualProviderOAuth } from '@/store/onboarding'
@@ -40,7 +42,8 @@ import { PanelEmpty } from '../overlays/panel'
 
 import { CONTROL_TEXT } from './constants'
 import { getNested, setNested } from './helpers'
-import { ListRow, Pill, SectionHeading } from './primitives'
+import { ModelSelect, withActive } from './model-select'
+import { ListRow, ListRowSkeleton, Pill, SectionHeading, SectionHeadingSkeleton } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 // Skeleton mirror of the Model settings DOM so the page keeps its shape while
@@ -67,22 +70,10 @@ export function ModelSettingsSkeleton({ subpage }: Pick<ModelSettingsProps, 'sub
 
       {(subpage === undefined || subpage === 'auxiliary' || subpage === 'moa') && (
         <section>
-          <div className="mb-2.5 flex items-center gap-2 pt-2">
-            <Skeleton className="size-4" />
-            <Skeleton className="h-4 w-36" />
-          </div>
+          <SectionHeadingSkeleton />
           <div className="grid gap-1">
             {[0, 1, 2, 3].map(row => (
-              <div
-                className="grid gap-3 py-3 @2xl:grid-cols-[minmax(0,1fr)_minmax(15rem,22rem)] @2xl:items-center"
-                key={row}
-              >
-                <div className="min-w-0 space-y-1.5">
-                  <Skeleton className="h-3.5 w-32" />
-                  <Skeleton className="h-3 w-52 max-w-full" />
-                </div>
-                <Skeleton className="h-8 w-full @2xl:justify-self-end @2xl:w-56" />
-              </div>
+              <ListRowSkeleton key={row} />
             ))}
           </div>
         </section>
@@ -132,12 +123,6 @@ const AUX_TASKS: readonly AuxTaskMeta[] = [
 ]
 
 const NO_PROVIDERS: readonly ModelOptionProvider[] = [{ name: '—', slug: '', models: [] }]
-
-// Radix <Select> renders a blank trigger when `value` matches no <SelectItem>.
-// A custom model (e.g. one added via config that isn't in the provider's
-// curated list) would vanish — surface the active value so it stays selectable.
-export const withActive = (models: readonly string[], active: string): readonly string[] =>
-  active && !models.includes(active) ? [active, ...models] : models
 
 // A slot is complete when both halves are chosen. Changing a slot's provider
 // intentionally clears its model (see updateMoaSlot), so every provider change
@@ -244,7 +229,11 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
   const [skewRestart, setSkewRestart] = useState(false)
   const [restartingBackend, setRestartingBackend] = useState(false)
   const [mainModel, setMainModel] = useState<{ model: string; provider: string } | null>(null)
-  const [providers, setProviders] = useState<ModelOptionProvider[]>([])
+  const [catalogProviders, setCatalogProviders] = useState<ModelOptionProvider[]>([])
+  // Slugs typed into any picker ride along as rows of their provider, so a
+  // model added from the composer is selectable here too.
+  const customModels = useStore($customModels)
+  const providers = useMemo(() => withCustomModels(catalogProviders, customModels), [catalogProviders, customModels])
   const [selectedProvider, setSelectedProvider] = useState('')
   const [selectedModel, setSelectedModel] = useState('')
   const [auxiliary, setAuxiliary] = useState<AuxiliaryModelsResponse | null>(null)
@@ -314,7 +303,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         }
 
         setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
-        setProviders(modelOptions.providers || [])
+        setCatalogProviders(modelOptions.providers || [])
 
         if (replaceSelection) {
           setSelectedProvider(modelInfo.provider)
@@ -642,7 +631,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
         return
       }
 
-      setProviders(options.providers || [])
+      setCatalogProviders(options.providers || [])
       const refreshedRow = options.providers?.find(p => p.slug === slug)
       const fallbackModel = refreshedRow?.models?.[0] ?? ''
       setSelectedModel(nextModel || fallbackModel)
@@ -669,15 +658,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
     const lower = slug.toLowerCase()
 
     if (lower === 'custom' || lower === 'local' || lower.startsWith('custom:')) {
-      startManualLocalEndpoint()
+      startManualLocalEndpoint(null, scopeProfile)
     } else if (rowSlug) {
-      startManualProviderOAuth(rowSlug)
+      startManualProviderOAuth(rowSlug, scopeProfile)
     } else {
       // An absent row has no trustworthy auth metadata. Open the generic
       // provider picker instead of deep-linking an unknown or stale slug.
-      startManualOnboarding()
+      startManualOnboarding(undefined, scopeProfile)
     }
-  }, [selectedProvider, selectedProviderRow])
+  }, [scopeProfile, selectedProvider, selectedProviderRow])
 
   const applyMainModel = useCallback(async () => {
     if (!selectedProvider || !selectedModel) {
@@ -936,18 +925,14 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
               )
             ) : (
               <>
-                <Select onValueChange={setSelectedModel} value={selectedModel}>
-                  <SelectTrigger className={cn('min-w-60', CONTROL_TEXT)}>
-                    <SelectValue placeholder={m.model} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {withActive(selectedProviderModels, selectedModel).map(model => (
-                      <SelectItem key={model} value={model}>
-                        {model}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <ModelSelect
+                  className="min-w-60"
+                  models={selectedProviderModels}
+                  onValueChange={setSelectedModel}
+                  provider={selectedProviderRow}
+                  providerSlug={selectedProvider}
+                  value={selectedModel}
+                />
                 <Button
                   disabled={!selectedProvider || !selectedModel || applying}
                   onClick={() => void applyMainModel()}
@@ -1095,24 +1080,15 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                                 ))}
                               </SelectContent>
                             </Select>
-                            <Select
+                            <ModelSelect
+                              aria-label={`${copy.label} model`}
+                              className="min-w-48"
+                              models={auxDraftProviderModels}
                               onValueChange={value => setAuxDraft(prev => ({ ...prev, model: value }))}
+                              provider={providers.find(row => row.slug === auxDraft.provider)}
+                              providerSlug={auxDraft.provider}
                               value={auxDraft.model}
-                            >
-                              <SelectTrigger
-                                aria-label={`${copy.label} model`}
-                                className={cn('min-w-48', CONTROL_TEXT)}
-                              >
-                                <SelectValue placeholder={m.model} />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {withActive(auxDraftProviderModels, auxDraft.model).map(model => (
-                                  <SelectItem key={model} value={model}>
-                                    {model}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                            />
                           </div>
                           <div className="flex flex-wrap items-center gap-2 text-xs">
                             <span className="text-muted-foreground">{m.reasoning}</span>
@@ -1330,7 +1306,9 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                         })}
                       </SelectContent>
                     </Select>
-                    <Select
+                    <ModelSelect
+                      className="min-w-48"
+                      models={modelsForProvider(slot.provider)}
                       onValueChange={value =>
                         updateMoaPreset(prev => ({
                           ...prev,
@@ -1339,19 +1317,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                           )
                         }))
                       }
+                      provider={providers.find(row => row.slug === slot.provider)}
+                      providerSlug={slot.provider}
                       value={slot.model}
-                    >
-                      <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                        <SelectValue placeholder={m.model} />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {withActive(modelsForProvider(slot.provider), slot.model).map(model => (
-                          <SelectItem key={model} value={model}>
-                            {model}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    />
                     <Button
                       disabled={currentMoaPreset.reference_models.length <= 1 || applying}
                       onClick={() =>
@@ -1425,29 +1394,19 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
                       })}
                     </SelectContent>
                   </Select>
-                  <Select
+                  <ModelSelect
+                    className="min-w-48"
+                    models={modelsForProvider(currentMoaPreset.aggregator.provider)}
                     onValueChange={value =>
                       updateMoaPreset(prev => ({
                         ...prev,
                         aggregator: updateMoaSlot(prev.aggregator, { model: value })
                       }))
                     }
+                    provider={providers.find(row => row.slug === currentMoaPreset.aggregator.provider)}
+                    providerSlug={currentMoaPreset.aggregator.provider}
                     value={currentMoaPreset.aggregator.model}
-                  >
-                    <SelectTrigger className={cn('min-w-48', CONTROL_TEXT)}>
-                      <SelectValue placeholder={m.model} />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {withActive(
-                        modelsForProvider(currentMoaPreset.aggregator.provider),
-                        currentMoaPreset.aggregator.model
-                      ).map(model => (
-                        <SelectItem key={model} value={model}>
-                          {model}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  />
                 </div>
               }
               description={

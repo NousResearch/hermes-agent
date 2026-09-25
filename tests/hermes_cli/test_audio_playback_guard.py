@@ -32,9 +32,7 @@ import os
 import sys
 import types
 
-
 from tui_gateway import server
-
 
 def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch):
     """The dangerous primitive is neutralised even when the flag IS set.
@@ -92,7 +90,6 @@ def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch)
         "provider, played through the speakers"
     )
 
-
 def test_voice_env_does_not_leak_into_the_next_test():
     """Second defence: the flag the previous test set must not have survived.
 
@@ -105,5 +102,3 @@ def test_voice_env_does_not_leak_into_the_next_test():
     assert "HERMES_VOICE" not in os.environ
     assert server._voice_tts_enabled() is False
     assert server._voice_mode_enabled() is False
-
-

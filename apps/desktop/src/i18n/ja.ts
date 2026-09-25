@@ -1,8 +1,16 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { introJa } from './intro-ja'
 
 export const ja = defineLocale({
+  externalOpenFailed: {
+    title: 'このリンクを開けませんでした',
+    message: 'このアドレスを開くブラウザが登録されていません。リンクをコピーして手動で開いてください。',
+    copyUrl: 'リンクをコピー',
+    close: '閉じる'
+  },
+  intro: introJa,
   sessionImport: {
     title: '別のアプリから続ける',
     subtitle: '会話をHermesに取り込み、続きを始めましょう。',
@@ -161,6 +169,8 @@ export const ja = defineLocale({
   },
 
   notifications: {
+    sharedProfileWarning:
+      '別の Hermes インストールがこのプロファイルを使用しています。両方が設定とデータを共有しているため、変更が競合する可能性があります。このまま続けるか、変更する前にもう一方を終了してください。',
     region: '通知',
     hide: '非表示',
     show: '表示',
@@ -391,6 +401,8 @@ export const ja = defineLocale({
     plugins: {
       openFolder: 'デスクトッププラグインフォルダーを開く',
       installModal: {
+        installUncertain:
+          'Hermes はインストール結果の待機を終了しましたが、プラグインのインストールはまだ進行中の可能性があります。この画面を閉じ、再インストールする前にプラグイン一覧を再スキャンしてください。',
         installFromGit: 'Git からインストール',
         reviewRepository: 'リポジトリを確認',
         repoPlaceholder: 'https://github.com/owner/repo',
@@ -422,6 +434,7 @@ export const ja = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: 'アーカイブ済みチャット',
+      sessions: 'セッション',
       about: '情報',
       billing: '請求',
       notifications: '通知',
@@ -641,6 +654,10 @@ export const ja = defineLocale({
       backdropDesc: '会話の背後に表示される淡い彫像の画像。',
       userBubbleTitle: 'メッセージの吹き出し',
       userBubbleDesc: '自分のメッセージの透け具合。0 で不透明、100 で枠線だけが残ります。',
+      textDirectionTitle: 'テキストの方向',
+      textDirectionDesc:
+        'チャットのメッセージと入力欄の文字方向を設定します。「自動」は各段落の最初の文字で判断します。混在したテキストの並びがおかしいときは方向を選んでください。コードは常に左から右に表示されます。',
+      textDirection: { auto: '自動', rtl: '右から左', ltr: '左から右' },
       introSplashTitle: 'イントロ表示',
       introSplashDesc: '空のチャットに表示されるワードマークとプロンプト。',
       reactionsTitle: 'メッセージリアクション',
@@ -696,8 +713,6 @@ export const ja = defineLocale({
         scaleDesc: '浮遊マスコットの大きさを変更します。すべての画面に即時反映されます。',
         roamTitle: '散歩',
         roamDesc: 'アイドル中にペットがウィンドウ内を自由に歩き回ります。',
-        on: 'オン',
-        off: 'オフ',
         chooseTitle: 'ペットを選ぶ',
         chooseDesc: '選ぶと（必要に応じて）インストールされ、アクティブになります。',
         searchPlaceholder: 'ペットを検索…',
@@ -788,7 +803,6 @@ export const ja = defineLocale({
         maxSnapshots: 'チェックポイント上限'
       },
       voice: {
-        recordKey: '音声ショートカット',
         maxRecordingSeconds: '最大録音時間',
         autoTts: '応答を読み上げる'
       },
@@ -964,40 +978,7 @@ export const ja = defineLocale({
       }
     }),
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `バージョン ${value}`,
-      versionUnavailable: 'バージョンを取得できません',
-      bundleOutOfSync: 'アプリのビルドが古くなっています',
-      bundleOutOfSyncDesc:
-        'Hermes ランタイムは更新されましたが、デスクトップアプリ自体は古いビルドのままです。アプリを更新するまで、新しいインターフェース機能(Bot Mode など)は表示されません。下の更新を実行してアプリを再ビルドしてください。それでもこの警告が消えない場合は、最新のデスクトップインストーラーから再インストールしてください。',
-      bundleOutOfSyncAction: 'インストーラーを入手',
-      bundleSwapPending: '再起動して更新を完了',
-      bundleSwapPendingDesc:
-        '更新されたアプリはすでにインストール済みです。Hermes を再起動するだけで新しいビルドが読み込まれます。チャットや設定はそのまま保持されます。',
-      bundleSwapPendingAction: 'Hermes を再起動',
-      updates: '更新',
-      checkNow: '今すぐ確認',
-      checking: '確認中…',
-      seeWhatsNew: '新機能を見る',
-      updateNow: '今すぐ更新',
-      releaseNotes: 'リリースノート',
-      onLatest: '最新バージョンです。',
-      installing: '更新をインストール中です。',
-      cantUpdate: 'このビルドはアプリ内から更新できません。',
-      cantReach: '更新サーバーに接続できませんでした。',
-      tapCheck: '更新を探すには「今すぐ確認」を押してください。',
-      updateReady: count => `新しい更新の準備ができました (${count} 件の変更を含みます)。`,
-      updateReadyUnknown: '新しい更新の準備ができました。',
-      lastChecked: age => `前回確認: ${age}`,
-      justNowSuffix: ' · たった今',
-      automaticUpdates: '自動更新',
-      automaticUpdatesDesc: 'Hermes はバックグラウンドで自動的に更新を確認し、利用可能になったら通知します。',
-      branchCommit: (branch, commit) => `ブランチ ${branch} · コミット ${commit}`,
-      never: '未確認',
-      justNow: 'たった今',
-      minAgo: count => `${count} 分前`,
-      hoursAgo: count => `${count} 時間前`,
-      daysAgo: count => `${count} 日前`
+      updates: '更新'
     },
     config: {
       minimizeToTrayTitle: 'トレイに最小化',
@@ -1021,7 +1002,10 @@ export const ja = defineLocale({
       imported: '設定をインポートしました',
       invalidJson: '設定 JSON が無効です',
       keepAwakeTitle: 'コンピューターをスリープさせない',
-      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。'
+      keepAwakeDesc: '本体のスリープを防ぎ、長時間や夜通しの実行を継続します。画面は暗転できます。',
+      voiceShortcutHintTitle: '音声録音ショートカット',
+      voiceShortcutHintDesc:
+        '「設定 → キーボードショートカット」で音声録音ショートカット（「Start / stop voice conversation」）を設定します。voice.record_key は CLI と TUI 専用です。'
     },
     hudModifier: {
       title: 'キーをタップして HUD を呼び出す',
@@ -1278,6 +1262,9 @@ export const ja = defineLocale({
       moaSetDefault: 'デフォルトに設定',
       moaNewPresetPlaceholder: '新しいプリセット',
       moaAddPreset: 'プリセットを追加',
+      customModel: 'カスタムモデル…',
+      customModelPlaceholder: 'モデル ID',
+      chooseFromList: 'リストから選択',
       moaDefault: 'デフォルト:',
       moaReferenceToggle: (enabled, index) => `参照 ${index} を${enabled ? '無効化' : '有効化'}`,
       moaReferenceTitle: index => `参照 ${index}`,
@@ -1318,6 +1305,7 @@ export const ja = defineLocale({
       }
     },
     localModels: {
+      connectionChanged: 'ローカルモデルの接続が変更されました',
       title: 'ローカルモデル',
       runtimeTitle: 'ローカルランタイム',
       runtimeReady: backend => `準備完了 · ${backend}`,
@@ -1353,7 +1341,13 @@ export const ja = defineLocale({
       quickstartConfigure: '自分で選ぶ',
       downloaded: 'ダウンロード済み',
       downloadAction: size => `ダウンロード · ${size}`,
-      downloadProgress: (done, total) => `ダウンロード中 ${done} / ${total}`,
+      downloadProgress: (done, total) => `${done} / ${total}`,
+      downloadStatusRunning: 'ダウンロード中',
+      downloadSpeed: rate => `${rate}`,
+      downloadEta: time => `残り約${time}`,
+      downloadPausedLabel: '一時停止中',
+      downloadPauseAction: '一時停止',
+      downloadResumeAction: '再開',
       downloadDoneToast: model => `${model} の準備ができました。`,
       installDoneToast: 'ローカルランタイムのインストールが完了しました。',
       useAction: '使用する',
@@ -1364,7 +1358,7 @@ export const ja = defineLocale({
       updateAction: 'エンジンを更新',
       updating: 'エンジンを更新中…',
       upToDateTitle: 'エンジンは最新です',
-      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中——設定されたビルドです。`,
+      upToDateDetail: (tag, backend) => `llama.cpp ${tag}（${backend}）で動作中。`,
       activeDetail: '新しいチャットはこのモデルを使用——最初のメッセージ送信時に読み込みます',
       activeNotLoaded: '最初のメッセージで読み込みます',
       loadedPill: '読み込み済み',
@@ -1582,6 +1576,16 @@ export const ja = defineLocale({
     plugins: {
       pageBlurb:
         'プラグインはこのアプリ、エージェント、または両方を拡張できます。それぞれに独立したスイッチがあります。'
+    },
+    hub: {
+      search: '検索',
+      searching: '検索中…',
+      noResults: '一致するスキルがハブにありません。',
+      installed: 'インストール済み',
+      installStarted: name => `「${name}」をインストール中…`,
+      pickerBrowse: 'ハブ全体を見る',
+      pickerHide: 'ハブのブラウザーを隠す',
+      pickerHint: 'スキルの「+ Add to this Agent」を押すと、インストールされて上の一覧に表示されます。'
     },
     tabSkills: 'スキル',
     tabToolsets: 'ツールセット',
@@ -2038,6 +2042,18 @@ export const ja = defineLocale({
     switchToConnection: name => `${name} に切り替え`,
     switchConnectionFailed: name => `${name} に接続できませんでした`,
     manageProfiles: 'プロファイルを管理…',
+    fleet: {
+      localDevice:
+        'このデバイス（ローカルバックエンド — Hermes が無ければインストールし、あれば新しいセッションを開きます）',
+      switchDeviceTitle: 'このデバイスに切り替えますか？',
+      switchDeviceDesc: 'このコンピュータで新しいセッションを開きます。今の会話は別のゲートウェイに残ります。',
+      switchDeviceConfirm: '切り替える',
+      installDeviceTitle: 'このデバイスに切り替えますか？',
+      installDeviceDesc:
+        'Hermes をローカルにインストールしてから、このコンピュータで新しいセッションを開きます。確認するまでインストールは始まりません。',
+      installDeviceConfirm: 'ローカルにインストール',
+      connectExistingInstead: '代わりに既存環境へ接続'
+    },
     remoteOverride: {
       menuItem: 'リモートホストに接続…',
       badge: (host: string) => `${host} で実行中`,
@@ -2346,6 +2362,39 @@ export const ja = defineLocale({
   },
 
   sidebar: {
+    profileRail: 'プロファイルバー',
+    markAllRead: 'すべて既読にする',
+    filter: {
+      grouping: 'グループ化',
+      ordering: '並び替え',
+      show: '表示',
+      filters: 'フィルター',
+      status: 'ステータス',
+      pullRequest: 'プルリクエスト',
+      profile: 'プロファイル',
+      project: 'プロジェクト',
+      archived: 'アーカイブ',
+      resetToDefaults: 'デフォルトに戻す',
+      expandAll: 'すべて展開',
+      collapseAll: 'すべて折りたたむ',
+      inboxStyle: '受信トレイスタイル',
+      updated: '更新',
+      created: '作成',
+      tokens: 'トークン',
+      cost: 'コスト',
+      manual: '手動',
+      preview: 'プレビュー',
+      pr: 'PR',
+      needsInput: '入力待ち',
+      working: '実行中',
+      unread: '未読',
+      draft: '下書き',
+      idle: 'アイドル',
+      open: 'オープン',
+      merged: 'マージ済み',
+      closed: 'クローズ済み',
+      noPR: 'PRなし'
+    },
     gatewayGroups: {
       grouping: 'ゲートウェイとプロファイル',
       rename: 'グループ名を変更',
@@ -2478,6 +2527,7 @@ export const ja = defineLocale({
       branchFrom: '分岐',
       rename: '名前を変更…',
       archive: 'アーカイブ',
+      unarchive: 'アーカイブを解除',
       newWindow: '新しいウィンドウ',
       openInTerminal: 'ターミナルで開く',
       copyIdFailed: 'セッション ID をコピーできませんでした',
@@ -2881,6 +2931,13 @@ export const ja = defineLocale({
   },
 
   updates: {
+    discontinuedTitle: 'このHermesビルドはサポートされていません',
+    discontinuedBody: 'このHermesビルドはサポートが終了し、動作しなくなる可能性があります。アンインストールしてください。データはディスクに残ります。',
+    channels: { stable: '安定版', canary: '先行版' },
+    bundleSwapPending: '再起動して更新を完了',
+    bundleSwapPendingDesc:
+      '更新されたアプリはすでにインストール済みです。Hermes を再起動するだけで新しいビルドが読み込まれます。チャットや設定はそのまま保持されます。',
+    bundleSwapPendingAction: 'Hermes を再起動',
     stages: {
       idle: '準備中…',
       prepare: '準備中…',
@@ -2903,6 +2960,7 @@ export const ja = defineLocale({
     connectionRetry: '接続を確認してもう一度試してください。',
     gitUnusable: 'このコンピューターで Git を実行できなかったため、更新を確認できませんでした。',
     latestBody: '最新バージョンを実行しています。',
+    versionDetailsDistributionStore: 'Microsoft Store',
     latestBodyBackend: 'バックエンドは最新バージョンを実行しています。',
     allSetTitle: '準備完了',
     availableTitle: '新しい更新が利用可能',
@@ -2968,7 +3026,31 @@ export const ja = defineLocale({
       failed: 'バックエンドの更新に失敗しました。',
       noReturn:
         'バックエンドがオンラインに戻りませんでした。更新が完了していない可能性があります。バックエンドホストを確認してください。'
-    }
+    },
+    // Restored About-card strings (moved from `settings.about.*` to `updates.*`).
+    version: value => `バージョン ${value}`,
+    versionUnavailable: 'バージョンを取得できません',
+    checkNow: '今すぐ確認',
+    seeWhatsNew: '新機能を見る',
+    releaseNotes: 'リリースノート',
+    onLatest: '最新バージョンです。',
+    installing: '更新をインストール中です。',
+    cantReach: '更新サーバーに接続できませんでした。',
+    tapCheck: '更新を探すには「今すぐ確認」を押してください。',
+    updateReady: count => `新しい更新の準備ができました (${count} 件の変更を含みます)。`,
+    updateReadyUnknown: '新しい更新の準備ができました。',
+    lastChecked: age => `前回確認: ${age}`,
+    never: '未確認',
+    justNow: 'たった今',
+    minAgo: count => `${count} 分前`,
+    hoursAgo: count => `${count} 時間前`,
+    daysAgo: count => `${count} 日前`,
+    justNowSuffix: ' · たった今',
+    bundleOutOfSync: 'アプリのビルドが古くなっています',
+    bundleOutOfSyncDesc:
+      'Hermes ランタイムは更新されましたが、デスクトップアプリ自体は古いビルドのままです。アプリを更新するまで、新しいインターフェース機能(Bot Mode など)は表示されません。下の更新を実行してアプリを再ビルドしてください。それでもこの警告が消えない場合は、最新のデスクトップインストーラーから再インストールしてください。',
+    bundleOutOfSyncAction: 'インストーラーを入手',
+    checkingShort: '確認中…'
   },
 
   guidedGreeting: {
@@ -3148,14 +3230,19 @@ export const ja = defineLocale({
     free: '無料',
     freeTier: '無料プラン',
     priceTitle: '100 万トークンあたりの入力/出力価格',
-    wasPrice: '旧価格'
+    wasPrice: '旧価格',
+    customModel: 'カスタムモデル',
+    addCustomModelAction: 'カスタムモデルを追加…',
+    customModelPlaceholder: 'モデル ID を入力（例: openai/gpt-5）'
   },
 
   modelVisibility: {
     title: 'モデル',
     search: 'モデルを検索',
     noAuthenticatedProviders: '認証済みプロバイダーがありません。',
-    addProvider: 'プロバイダーを追加…'
+    addProvider: 'プロバイダーを追加…',
+    addCustomModel: 'カスタムモデルを追加',
+    removeCustomModel: 'カスタムモデルを削除'
   },
 
   shell: {
@@ -3281,7 +3368,8 @@ export const ja = defineLocale({
         title: 'コンテキスト使用状況',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-      session: 'セッション',
+      focusedSince: 'フォーカスしてから',
+      focusedSinceTitle: 'このチャットをフォーカスしてからの時間。ターンの実行時間ではありません',
       yoloOn: 'YOLO オン — 危険なコマンドを自動承認中。Shift+クリックで全体に切り替え。',
       yoloOff: 'YOLO オフ。Shift+クリックで全体に切り替え。',
       modelNone: 'なし',
@@ -3304,6 +3392,11 @@ export const ja = defineLocale({
     remotePickerTitle: 'リモートフォルダーを選択',
     remotePickerDescription: '接続中のバックエンド上のフォルダーを参照します。',
     remotePickerSelect: 'フォルダーを選択',
+    remotePickerNewFolder: '新しいフォルダー',
+    remotePickerFolderName: 'フォルダー名',
+    remotePickerCreateFolder: 'フォルダーを作成',
+    remotePickerInvalidFolderName: 'スラッシュを含まない 1 つのフォルダー名を入力してください。',
+    remotePickerCreateFolderFailed: error => `フォルダーを作成できませんでした (${error})。`,
     folderTip: cwd => cwd,
     openFolder: 'フォルダーを開く',
     refreshTree: 'ツリーを更新',
@@ -3875,6 +3968,9 @@ export const ja = defineLocale({
     sessionUnavailable: 'セッションが利用できません',
     createSessionFailed: '新しいセッションを作成できませんでした',
     promptFailed: 'プロンプトに失敗しました',
+    staleSessionTitle: 'チャットが最新ではありません',
+    staleSessionBody:
+      'このウィンドウは同じチャットの別ビューより遅れています。最新のメッセージを読み込みました。送信する場合はもう一度送ってください。',
     providerCredentialRequired: '最初のメッセージを送信する前にプロバイダー認証情報を追加してください。',
     emptySlashCommand: '空のスラッシュコマンド',
     desktopCommands: 'デスクトップコマンド',
@@ -3918,6 +4014,8 @@ export const ja = defineLocale({
     deleteFailed: '削除に失敗しました',
     archived: 'アーカイブしました',
     archiveFailed: 'アーカイブに失敗しました',
+    restored: '復元しました',
+    unarchiveFailed: 'アーカイブ解除に失敗しました',
     cwdChangeFailed: '作業ディレクトリの変更に失敗しました',
     cwdStagedTitle: '作業ディレクトリがステージングされました',
     cwdStagedMessage:

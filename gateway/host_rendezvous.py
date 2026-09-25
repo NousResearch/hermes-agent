@@ -300,7 +300,7 @@ def read_record(role: str, *, include_stale: bool = False) -> Optional[HostRecor
     if not _record_is_own(path):
         return None
     try:
-        raw = path.read_text(encoding="utf-8")
+        raw = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError):
         return None
     try:
@@ -322,7 +322,7 @@ def read_token(role: str) -> str:
     of, same-OS-user authority — the authority boundary the host lock is scoped to.
     """
     try:
-        return token_path(role).read_text(encoding="utf-8").strip()
+        return token_path(role).read_text(encoding="utf-8-sig").strip()
     except (OSError, UnicodeDecodeError):
         return ""
 

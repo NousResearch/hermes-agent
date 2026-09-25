@@ -44,8 +44,7 @@ $chatOnboardingSolo.subscribe(solo => setOnboardingSurfaceActive('solo-chat', so
  *  identify the conversation that gets onboarding transcript treatment. */
 export const $chatOnboardingThreadIds = atom<readonly string[]>([])
 
-/** Holds the localized opener so it is ready before inference: cold first turns took 10 s. The typed reveal and the
- *  seed rows read this same string, so the model receives the text the user saw. */
+/** The greeting is seeded locally, without an inference request. */
 export const $onboardingGreeting = atom('')
 
 /** First-write-wins keeps the opener stable through profile and backend boot. */
@@ -59,9 +58,10 @@ export function pickOnboardingGreeting(): string {
   const copy = TRANSLATIONS[getRuntimeI18nLocale()].guidedGreeting
   const suggested = machineUserName()
 
-  $onboardingGreeting.set(suggested ? `${copy.line}\n\n${copy.nameSuggestion(suggested)}` : copy.line)
+  const greeting = suggested ? `${copy.line}\n\n${copy.nameSuggestion(suggested)}` : copy.line
+  $onboardingGreeting.set(greeting)
 
-  return $onboardingGreeting.get()
+  return greeting
 }
 
 /** Applying a layout remounts the card, so its selection must outlive the component. */
@@ -103,13 +103,7 @@ export function startChatOnboardingSolo(): void {
   }
   $chatOnboardingSolo.set(true)
   $chatLayoutPicked.set(false)
-  // The local machine probe finishes before the backend boots, letting the
-  // greeting type while kickoff is still waiting for a session.
-  void loadMachineProfile().then(() => {
-    if ($chatOnboardingSolo.get()) {
-      pickOnboardingGreeting()
-    }
-  })
+  void loadMachineProfile()
   // Adoption puts other panes in this same group. Hiding its strip keeps them
   // invisible, including reactive arrivals, until a layout places them.
   applyLayoutPreset('chat-solo', group(['workspace'], { tabStrip: 'never' }))

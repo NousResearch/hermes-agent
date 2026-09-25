@@ -31,6 +31,7 @@ import { isTodoToolName } from '@/lib/todos'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
+import { useForcedTextDirection } from '@/store/text-direction'
 
 type TimelineToolCallProps = ToolCallMessagePartProps & { completedAt?: number; timestamp?: number }
 
@@ -390,6 +391,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   // rendered without a ReasoningGroup wrapper (assistant-ui drops the group
   // when a ChainOfThought component is registered).
   const showReasoning = useStore($showReasoning)
+  const textDirection = useForcedTextDirection()
 
   if (!showReasoning) {
     return null
@@ -402,6 +404,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
       isRunning={status.type === 'running' || messageRunning}
       scratchpad
       text={separateGluedReasoningBlocks(text.trimStart())}
+      textDirection={textDirection}
     />
   )
 }

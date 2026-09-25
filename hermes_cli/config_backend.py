@@ -217,3 +217,11 @@ def write_config_key(config_path: PathLike, key_path: str, value: Any) -> None:
 def supports_file_tooling() -> bool:
     """Gate for tools that copy, edit or back up the config FILE itself (§4.3, §4.7)."""
     return get_config_backend().supports_file_tooling()
+
+
+def require_file_tooling(what: str) -> None:
+    """Refuse *what* (a file-copy tool) with a clear message when the backend has no config file."""
+    if not supports_file_tooling():
+        raise ConfigBackendUnavailable(
+            f"{what} copies the local config.yaml, and the {get_config_backend().name!r} config "
+            "backend has none. It is not available with this backend.")

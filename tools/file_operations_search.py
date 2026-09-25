@@ -23,6 +23,24 @@ _MACOS_TCC_PROTECTED_HOME_DIRS = (
     "Desktop", "Documents", "Downloads", "Library", "Movies", "Music", "Pictures",
 )
 
+# Cloud-sync folder names that dehydrate files into reparse-point placeholders:
+# a recursive search that reads file data downloads every placeholder it touches.
+# Compared with spaces stripped and casefolded, against any path component of
+# the search root. Distinctive vendor prefixes (OneDrive - Personal,
+# Dropbox (Company)) match by prefix; short generic names ("box") are
+# boundary-anchored via the exact-name set only.
+_CLOUD_FOLDER_NAMES = frozenset({
+    "googledrive", "mydrive", "iclouddrive", "cloudstorage", "box", "boxsync",
+})
+_CLOUD_FOLDER_PREFIXES = ("onedrive", "dropbox", "icloud~")
+
+
+def _component_is_cloud_folder(segment: str) -> bool:
+    """Whether one path component names a cloud-sync folder (case/space-insensitive;
+    prefixes match only distinctive vendor names so ``work/box/src`` is safe)."""
+    n = re.sub(r"\s+", "", segment).casefold()
+    return n in _CLOUD_FOLDER_NAMES or n.startswith(_CLOUD_FOLDER_PREFIXES)
+
 
 def _macos_protected_search_exclusions(
     path: str, *, cwd: Optional[str] = None, home: Optional[str] = None, platform: Optional[str] = None,
@@ -493,10 +511,13 @@ class SearchMixin:
 
     def _dispatch_search(self, pattern: str, path: str, target: str,
                          file_glob: Optional[str], limit: int, offset: int,
-                         output_mode: str, context: int, order: str = "discovery") -> SearchResult:
+                         output_mode: str, context: int, order: str = "discovery",
+                         broad_root_opt_in: bool = False) -> SearchResult:
         if target == "files":
-            return self._search_files(pattern, path, limit, offset, order)
-        return self._search_content(pattern, path, file_glob, limit, offset, output_mode, context)
+            return self._search_files(pattern, path, limit, offset, order,
+                                      broad_root_opt_in=broad_root_opt_in)
+        return self._search_content(pattern, path, file_glob, limit, offset, output_mode, context,
+                                    broad_root_opt_in=broad_root_opt_in)
 
     def _path_not_found_result(self, path: str) -> SearchResult:
         """Error result for a missing search root, with nearby-entry suggestions."""
@@ -518,7 +539,8 @@ class SearchMixin:
     def _try_multi_path_search(self, pattern: str, path: str, target: str,
                                file_glob: Optional[str], limit: int, offset: int,
                                output_mode: str, context: int,
-                               order: str = "discovery") -> Optional[SearchResult]:
+                               order: str = "discovery",
+                               broad_root_opt_in: bool = False) -> Optional[SearchResult]:
         """Recover a not-found ``path`` that is really several paths in one string.
         Commas explicitly delimit paths (internal spaces preserved); without commas
         split on whitespace. Search every existing part, merge, and note skipped
@@ -538,11 +560,13 @@ class SearchMixin:
         if target == "files":
             # One global traversal across roots so modified ordering and pagination
             # are exact; root admission wraps the actual rg/find invocation.
-            merged = self._search_files(pattern, existing, limit, offset, order)
+            merged = self._search_files(pattern, existing, limit, offset, order,
+                                        broad_root_opt_in=broad_root_opt_in)
         else:
             merged = SearchResult()
             for root in existing:
-                sub = self._search_content(pattern, root, file_glob, limit, offset, output_mode, context)
+                sub = self._search_content(pattern, root, file_glob, limit, offset, output_mode, context,
+                                           broad_root_opt_in=broad_root_opt_in)
                 if sub.error:
                     return sub
                 merged.matches.extend(sub.matches)
@@ -624,8 +648,19 @@ class SearchMixin:
         return None
 
     def _is_broad_local_search_root(self, path: str) -> bool:
-        """Whether a no-rg LOCAL root (filesystem root, $HOME or an ancestor of it) is
-        unsafe for recursive find. Controller paths never classify remotes."""
+        """Whether a LOCAL root is unsafe for a recursive search that reads file data
+        (filesystem root, $HOME or an ancestor of it, or any ancestor/descendant of a
+        cloud-sync folder). Controller paths never classify remotes.
+
+        Cloud folders (OneDrive et al.) dehydrate files into reparse-point
+        placeholders; a full traversal downloads every file it touches. Guarded on
+        the rg AND grep paths (#registry 0002 incident): the cost of a broad search
+        is indistinguishable from a cheap one in a transcript, so the guard must
+        fire before the walk, not after. The Windows reparse-tag probe of the root
+        was REMOVED after review: os.lstat cannot read the cloud tag on this host's
+        incident root (dwReserved0 is only meaningful with the reparse attribute
+        set, which the OneDrive root does not carry), so the component match is the
+        actual protection and must not read as if a tag probe backs it."""
         from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
 
         if not isinstance(self.env, LocalEnvironment):
@@ -649,14 +684,68 @@ class SearchMixin:
         anchor = drive + os.sep if drive else os.path.abspath(os.sep)
         if root == os.path.normcase(anchor):
             return True
+        # Cloud-sync folder check: any component of the ROOT named like a cloud
+        # folder (catches the folder itself and everything beneath it).
+        if any(_component_is_cloud_folder(s) for s in root.replace("/", "\\").split("\\") if s):
+            return True
         try:
             common = os.path.commonpath([root, home])
         except ValueError:
             return False
         return root == home or common == root
 
+    def _broad_search_reason(self, path: str) -> Optional[str]:
+        """WHY the root is refused, for the refusal message: one of the matched
+        predicates, not a generic label (a root INSIDE OneDrive is not an
+        'ancestor of' it)."""
+        from tools.environments.local import LocalEnvironment, _IS_WINDOWS, _msys_to_windows_path
+
+        if not isinstance(self.env, LocalEnvironment):
+            return None
+
+        def normalized(value: str) -> str:
+            if _IS_WINDOWS:
+                value = _msys_to_windows_path(value).replace("\\", "/")
+            if not os.path.isabs(value):
+                value = os.path.join(getattr(self.env, "cwd", None) or self.cwd, value)
+            return os.path.normcase(os.path.realpath(value))
+
+        from tools import file_operations as _fo
+        root = normalized(path)
+        home = normalized(_fo._HOME)
+        drive = os.path.splitdrive(root)[0]
+        anchor = drive + os.sep if drive else os.path.abspath(os.sep)
+        if root == os.path.normcase(anchor):
+            return "a filesystem root"
+        cloud = next((s for s in root.replace("/", "\\").split("\\")
+                      if s and _component_is_cloud_folder(s)), None)
+        if cloud:
+            return f"a path through cloud-sync folder {cloud!r}"
+        try:
+            common = os.path.commonpath([root, home])
+        except ValueError:
+            return None
+        if root == home:
+            return "$HOME itself"
+        if common == root:
+            return "an ancestor of $HOME"
+        return None
+
+    def _broad_search_refusal(self, roots: List[str]) -> Optional[str]:
+        """Actionable refusal message for the first broad local root, else None."""
+        for root in roots:
+            reason = self._broad_search_reason(root)
+            if reason:
+                return (
+                    "Search refused: root "
+                    f"{root!r} is {reason}. A recursive search there reads or "
+                    "downloads every file under it (cloud-sync placeholders hydrate "
+                    "on first data read). Search a narrower directory instead, or "
+                    "pass broad_root_opt_in=true if this root is intentional.")
+        return None
+
     def _search_files(self, pattern: str, path: str | List[str], limit: int, offset: int,
-                      order: str = "discovery") -> SearchResult:
+                      order: str = "discovery", broad_root_opt_in: bool = False) -> SearchResult:
         """Search for files by name (glob-like) across one or more roots: rg --files,
         else a bounded find. ``order``: "discovery" (fast, bounded) or "modified"
         (exact global newest-first; needs rg 14+ or GNU find)."""
@@ -680,17 +769,19 @@ class SearchMixin:
                 return SearchResult(error=_ADMISSION_INTERRUPTED_ERROR)
             try:
                 return self._search_files_rg(search_pattern, path, limit, offset, order,
-                                             rg_executable=rg_executable)
+                                             rg_executable=rg_executable,
+                                             broad_root_opt_in=broad_root_opt_in)
             finally:
                 _release_filename_search_roots(keys)
 
         # A local find rooted at/above $HOME or a filesystem root can take minutes and
         # prompt on protected paths: refuse before invoking find.
-        if any(self._is_broad_local_search_root(root) for root in roots):
-            return SearchResult(error=(
+        if not broad_root_opt_in and any(self._is_broad_local_search_root(root) for root in roots):
+            return SearchResult(error=self._broad_search_refusal(roots) or (
                 "Broad local file search without ripgrep is disabled because "
                 "find cannot keep this traversal safely bounded. Install "
-                "ripgrep or search a narrower directory."))
+                "ripgrep or search a narrower directory, or pass "
+                "broad_root_opt_in=true if this root is intentional."))
         if not self._has_command("find"):
             return SearchResult(
                 error="File search requires 'rg' (ripgrep) or 'find'. "
@@ -757,10 +848,19 @@ class SearchMixin:
             truncated=len(raw_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)
 
     def _search_files_rg(self, pattern: str, path: str | List[str], limit: int, offset: int,
-                         order: str = "discovery", rg_executable: Optional[str] = None) -> SearchResult:
+                         order: str = "discovery", rg_executable: Optional[str] = None,
+                         broad_root_opt_in: bool = False) -> SearchResult:
         """File-name search via ``rg --files`` (respects .gitignore, skips hidden dirs,
         parallel walk). Discovery order stays bounded and fast; exact modification-time
         ordering is explicit because it scans globally."""
+        if not broad_root_opt_in:
+            # Note on target="files": ``rg --files`` enumerates names and reads no
+            # file DATA, so it cannot hydrate a cloud placeholder — the refusal
+            # here is a bounded-traversal guard, not a hydration guard. Kept for
+            # symmetry; the refusal message names the matched reason.
+            refusal = self._broad_search_refusal([path] if isinstance(path, str) else list(path))
+            if refusal:
+                return SearchResult(error=refusal)
         # Wrap bare names so -g matches at any depth (equivalent to find -name).
         glob_pattern = f"*{pattern}" if ('/' not in pattern and not pattern.startswith('*')) else pattern
         roots = [path] if isinstance(path, str) else path
@@ -820,14 +920,17 @@ class SearchMixin:
             truncated=len(all_files) > offset + limit or bool(limit_reason), limit_reason=limit_reason)
 
     def _search_content(self, pattern: str, path: str, file_glob: Optional[str],
-                        limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                        limit: int, offset: int, output_mode: str, context: int,
+                        broad_root_opt_in: bool = False) -> SearchResult:
         """Content search: rg, else grep; attaches zero-match steering hints."""
         used_rg = self._has_command('rg')
         if used_rg:
             result = self._search_with_rg(pattern, path, file_glob, limit, offset, output_mode, context,
-                                          rg_executable=self._resolve_command("rg") or "rg")
+                                          rg_executable=self._resolve_command("rg") or "rg",
+                                          broad_root_opt_in=broad_root_opt_in)
         elif self._has_command('grep'):
-            result = self._search_with_grep(pattern, path, file_glob, limit, offset, output_mode, context)
+            result = self._search_with_grep(pattern, path, file_glob, limit, offset, output_mode, context,
+                                            broad_root_opt_in=broad_root_opt_in)
         else:
             return SearchResult(
                 error="Content search requires ripgrep (rg) or grep. "
@@ -869,8 +972,13 @@ class SearchMixin:
 
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int,
-                        rg_executable: Optional[str] = None) -> SearchResult:
+                        rg_executable: Optional[str] = None,
+                        broad_root_opt_in: bool = False) -> SearchResult:
         """Search using ripgrep."""
+        if not broad_root_opt_in:
+            refusal = self._broad_search_refusal([path])
+            if refusal:
+                return SearchResult(error=refusal)
         rg_executable = rg_executable or self._resolve_command("rg")
         if not rg_executable:
             return SearchResult(error="Content search requires ripgrep (rg).")
@@ -916,8 +1024,13 @@ class SearchMixin:
         return parts
 
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
-                          limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
+                          limit: int, offset: int, output_mode: str, context: int,
+                          broad_root_opt_in: bool = False) -> SearchResult:
         """Fallback search using grep."""
+        if not broad_root_opt_in:
+            refusal = self._broad_search_refusal([path])
+            if refusal:
+                return SearchResult(error=refusal)
         # grep's --exclude-dir matches BASENAMES anywhere, so it can't express "only
         # the home-level Downloads"; route pruning through find's path-scoped -prune.
         protected_paths = self._protected_prune_paths(path)
@@ -949,7 +1062,11 @@ class SearchMixin:
         """grep fallback via ``find ... -prune -exec grep {} +``, used when the root needs
         path-scoped pruning (macOS protected dirs) or is itself under a dot-directory
         (#18473: grep's ``--exclude-dir='.*'`` would drop the root). Trade-off: find folds
-        grep's exit code, so a hard grep error surfaces as an empty result."""
+        grep's exit code, so a hard grep error surfaces as an empty result.
+
+        NOT independently guarded: its ONLY caller is ``_search_with_grep``, which
+        refuses broad roots before reaching here. Keep it that way — any new
+        caller must guard first (or thread broad_root_opt_in)."""
         grep_parts = self._grep_cmd(["grep", "-nHE"], pattern, output_mode, context)
         q_root = self._escape_shell_arg(path or ".")
         # ``-H``: follow a symlink handed in as the OPERAND (and only the operand). Without

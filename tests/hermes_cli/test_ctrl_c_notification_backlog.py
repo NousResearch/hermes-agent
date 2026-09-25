@@ -155,6 +155,15 @@ def test_empty_purge_still_interrupts(monkeypatch):
     assert registry.completion_queue.empty()
 
 
+def test_ctrl_c_purges_legacy_delegation_without_ledger_row(monkeypatch):
+    cli, registry, event = cli_fixture(monkeypatch)
+    registry.completion_queue.put({"type": "async_delegation", "delegation_id": "legacy",
+                                   "session_key": "owner", "summary": "legacy result"})
+    cli._tui_handle_ctrl_c(event)
+    cli._drain_process_notifications("cli-post-turn")
+    assert cli._pending_input.empty()
+
+
 def test_completed_real_process_keeps_output_after_ctrl_c(monkeypatch, tmp_path):
     import subprocess
     import sys

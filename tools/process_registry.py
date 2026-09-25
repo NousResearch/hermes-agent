@@ -1841,6 +1841,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         """
         from tools.async_delegation import (
             claim_event_delivery, defer_completion_delivery, drop_completion_delivery,
+            get_durable_delegation,
         )
 
         requeue = []
@@ -1861,7 +1862,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     if claim is None:
                         requeue.append(event)
                         continue
-                    if claim and not drop_completion_delivery(str(event["delegation_id"]), claim):
+                    if (claim and get_durable_delegation(str(event["delegation_id"])) is not None
+                            and not drop_completion_delivery(str(event["delegation_id"]), claim)):
                         defer_completion_delivery(str(event["delegation_id"]), claim)
                         requeue.append(event)
                         continue

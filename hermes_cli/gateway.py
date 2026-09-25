@@ -4593,6 +4593,32 @@ _WATCHDOG_EXIT_REASONS = {
 }
 
 
+def _root_multiplexer_gateway_live() -> bool:
+    """Best-effort probe: is the install-root gateway (the multiplexer) live with a fresh
+    heartbeat? A served named profile owns no runtime record of its own (#97120), so when the
+    root multiplexer is healthy a dead-PID per-profile file is an abandoned pre-multiplex
+    record (#122439) — not an ungraceful shutdown. Any probe failure means "not live"."""
+    try:
+        from gateway.status import (
+            read_runtime_status as _read_status,
+            runtime_status_is_stale as _is_stale,
+            runtime_status_pid_is_live as _pid_live,
+        )
+        from hermes_constants import get_default_hermes_root
+
+        root_state = _read_status(get_default_hermes_root() / "gateway_state.json")
+    except Exception:
+        return False
+    if not isinstance(root_state, dict):
+        return False
+    if root_state.get("gateway_state") not in ("running", "degraded", "starting", "draining"):
+        return False
+    try:
+        return not _is_stale(root_state) and bool(_pid_live(root_state))
+    except Exception:
+        return False
+
+
 def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
@@ -4617,6 +4643,11 @@ def _runtime_health_lines() -> list[str]:
     # the freshness TTL with the recorded PID gone, say so instead of rendering stale live state.
     if gateway_state in ("running", "degraded", "starting", "draining") and runtime_status_is_stale(state):
         if not runtime_status_pid_is_live(state):
+            # Multiplexed topology (#122439): a named profile served by the live root
+            # multiplexer owns no runtime record of its own, so a dead-PID per-profile
+            # file is an abandoned pre-multiplex record, not an ungraceful shutdown.
+            if _root_multiplexer_gateway_live():
+                return lines
             lines.append(
                 f"⚠ Stale gateway_state.json: recorded state '{gateway_state}' but the "
                 "recorded process is gone (likely an ungraceful shutdown)"

@@ -583,3 +583,65 @@ class TestBlueBubblesGateBeforeDownload:
         assert response.status == 200
         assert download.await_count == downloads
         assert len(handled) == handled_count
+
+
+# ---------------------------------------------------------------------------
+# Regression for #122949: text sends that are not replies must also carry
+# method=private-api when the private API is live. The method-less legacy
+# path stalls (30 s ReadTimeout, nothing delivered) on helper-only setups.
+# ---------------------------------------------------------------------------
+
+class TestBlueBubblesPrivateApiMethod:
+    def _adapter(self, monkeypatch, private_api=True, helper=True):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = private_api
+        adapter._helper_connected = helper
+
+        async def fake_resolve(chat_id):
+            return "iMessage;+;chat-123"
+
+        async def fake_api_post(path, payload):
+            fake_api_post.payloads.append(payload)
+            return {"status": 200, "data": {"guid": "msg-guid-1"}}
+
+        fake_api_post.payloads = []
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_plain_send_carries_private_api_method(self, monkeypatch):
+        """Non-reply sends (cron delivery, send_message) must not fall back to
+        the legacy method-less path when the private API is live."""
+        adapter = self._adapter(monkeypatch)
+        result = await adapter.send("chat-1", "hello world")
+        assert result.success
+        assert len(adapter._api_post.payloads) == 1
+        assert adapter._api_post.payloads[0]["method"] == "private-api"
+        assert "selectedMessageGuid" not in adapter._api_post.payloads[0]
+
+    @pytest.mark.asyncio
+    async def test_reply_send_keeps_reply_fields(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        result = await adapter.send("chat-1", "hello world", reply_to="orig-guid")
+        assert result.success
+        payload = adapter._api_post.payloads[0]
+        assert payload["method"] == "private-api"
+        assert payload["selectedMessageGuid"] == "orig-guid"
+        assert payload["partIndex"] == 0
+
+    @pytest.mark.asyncio
+    async def test_every_chunk_of_multi_paragraph_send_carries_method(self, monkeypatch):
+        adapter = self._adapter(monkeypatch)
+        result = await adapter.send("chat-1", "first bubble\n\nsecond bubble")
+        assert result.success
+        assert len(adapter._api_post.payloads) == 2
+        assert all(p["method"] == "private-api" for p in adapter._api_post.payloads)
+
+    @pytest.mark.asyncio
+    async def test_send_without_private_api_keeps_legacy_payload(self, monkeypatch):
+        """Servers without the private API keep the method-less payload."""
+        adapter = self._adapter(monkeypatch, private_api=False)
+        result = await adapter.send("chat-1", "hello world")
+        assert result.success
+        assert "method" not in adapter._api_post.payloads[0]

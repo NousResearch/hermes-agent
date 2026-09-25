@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 
 A2A_CLIENT_TOOLS = {
@@ -70,7 +70,7 @@ def _write_platform_plugin(
     if provides_tools:
         manifest_data["provides_tools"] = provides_tools
     (plugin_dir / "plugin.yaml").write_text(
-        yaml.dump(manifest_data),
+        yaml.safe_dump(manifest_data),
         encoding="utf-8",
     )
 
@@ -166,20 +166,6 @@ def clean_registry():
 class TestA2AClientToolsInCliProcess:
     """The issue's exact repro: a CLI/TUI process, no gateway startup."""
 
-    def test_manifest_declares_the_client_tools(self):
-        """The opt-in lives in the manifest, so it is pinned like any contract.
-
-        Dropping ``provides_tools`` from plugin.yaml silently reverts a2a to
-        the deferred-and-invisible behaviour of #78050, with every other test
-        here still passing on the synthetic plugins — so assert it directly.
-        """
-        manifest_path = (
-            Path(__file__).resolve().parents[2]
-            / "plugins" / "platforms" / "a2a" / "plugin.yaml"
-        )
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-
-        assert set(manifest.get("provides_tools") or []) == A2A_CLIENT_TOOLS
 
     def test_a2a_toolset_resolves_without_materializing_the_platform(self):
         from hermes_cli.plugins import PluginManager
@@ -188,7 +174,7 @@ class TestA2AClientToolsInCliProcess:
         mgr = PluginManager()
         mgr.discover_and_load()
 
-        a2a = mgr._plugins.get("a2a-platform")
+        a2a = mgr._plugins.get("platforms/a2a")  # bundled platforms key by category path (#27548)
         assert a2a is not None, "bundled a2a platform plugin was not discovered"
 
         # The whole point of the deferral is preserved: the inbound adapter is

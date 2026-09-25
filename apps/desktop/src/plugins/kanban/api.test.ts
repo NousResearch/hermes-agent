@@ -50,7 +50,7 @@ describe('kanban event stream cursor', () => {
   })
 
   it('starts after the cached board snapshot instead of replaying event history', () => {
-    queryClient.setQueryData(boardKey('ops', false), {
+    queryClient.setQueryData(boardKey('local', 'ops', false), {
       assignees: [],
       columns: [],
       latest_event_id: 14_386,
@@ -67,7 +67,7 @@ describe('kanban event stream cursor', () => {
   })
 
   it('resumes a board from the last frame it saw this session, not from its snapshot', () => {
-    queryClient.setQueryData(boardKey('ship', false), {
+    queryClient.setQueryData(boardKey('local', 'ship', false), {
       assignees: [],
       columns: [],
       latest_event_id: 10,

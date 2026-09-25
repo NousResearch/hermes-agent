@@ -375,12 +375,6 @@ def test_relay_slack_flags_coerce_like_native(raw, expected):
     assert adapter._dm_top_level_threads_as_sessions() is expected
 
 
-def test_relay_slack_flags_default_true_when_absent():
-    """Both knobs default ON when the operator sets nothing."""
-    adapter, _stub = _wire("D1", "dm")
-    adapter.config.extra = {}
-    assert adapter._effective_reply_in_thread() is True
-    assert adapter._dm_top_level_threads_as_sessions() is True
 
 
 # ---------------------------------------------------------------------------

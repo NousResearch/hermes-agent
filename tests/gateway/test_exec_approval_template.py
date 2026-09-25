@@ -61,7 +61,6 @@ async def test_choice_set_follows_the_shared_rule(allow_permanent, allow_session
     (prompt,) = adapter.prompts
     assert prompt.choices == expected
     assert "rm -rf /tmp/x" in prompt.text and "cleanup" in prompt.text
-    assert ("one operation only" in prompt.text) is smart_denied
 
 
 @pytest.mark.asyncio

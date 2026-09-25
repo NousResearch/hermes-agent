@@ -3,6 +3,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { IS_MAC } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import type { InterfaceMode } from '@/store/interface-mode'
 import { readableInk } from '@/themes/color'
 
 // Curated leaders for the first-run picker. Other enabled catalog entries
@@ -78,6 +79,7 @@ export function AccentSwatch({
     'relative inline-flex size-9 items-center justify-center rounded-full border border-foreground/15 transition-transform duration-150',
     !active && 'hover:scale-105'
   )
+
   const style = {
     background: hex,
     boxShadow: active ? `0 0 0 2px var(--dt-background), 0 0 0 4px ${hex}` : undefined
@@ -99,7 +101,14 @@ export function AccentSwatch({
           />
         </label>
       ) : (
-        <button aria-label={name} aria-pressed={active} className={className} onClick={onPick} style={style} type="button" />
+        <button
+          aria-label={name}
+          aria-pressed={active}
+          className={className}
+          onClick={onPick}
+          style={style}
+          type="button"
+        />
       )}
     </Tip>
   )
@@ -112,10 +121,23 @@ export type MiniNode = 1 | { dir: 'column' | 'row'; children: MiniNode[]; weight
 
 export const ELITE_LAYOUT_ID = 'terminal-deck'
 
-export const LAYOUTS: Array<{ id: string; name: string; tree: MiniNode }> = [
-  { id: 'basic', name: 'Basic', tree: { children: [1, 1], dir: 'row', weights: [1, 4.6] } },
+// Each pick is an arrangement AND an interface mode. First launch is the one
+// place a single question can answer both: someone here to talk to Hermes
+// should not have to find Simple mode afterwards, and a developer who asked
+// for the terminal deck wants the tooling on. Basic applies Simple's own
+// preset so its shelf shows the pick as active.
+export const LAYOUTS: Array<{ description: string; id: string; mode: InterfaceMode; name: string; tree: MiniNode }> = [
   {
+    description: 'For talking to Hermes.',
+    id: 'sidebar-left',
+    mode: 'simple',
+    name: 'Basic',
+    tree: { children: [1, 1], dir: 'row', weights: [1, 4.6] }
+  },
+  {
+    description: 'For developers: terminal, files, diffs.',
     id: ELITE_LAYOUT_ID,
+    mode: 'advanced',
     name: 'Elite',
     tree: {
       children: [{ children: [1, 1, 1], dir: 'row', weights: [1, 3.2, 1.2] }, 1],
@@ -173,11 +195,13 @@ function MiniWindowButtons() {
 
 export function LayoutPreviewCard({
   active,
+  description,
   name,
   onSelect,
   tree
 }: {
   active: boolean
+  description?: string
   name: string
   onSelect: () => void
   tree: MiniNode
@@ -190,7 +214,10 @@ export function LayoutPreviewCard({
           <MiniTree node={tree} />
         </span>
       </span>
-      <span className={cn('text-xs', active ? 'text-foreground' : 'text-muted-foreground')}>{name}</span>
+      <span className="flex flex-col items-center gap-0.5">
+        <span className={cn('text-xs', active ? 'text-foreground' : 'text-muted-foreground')}>{name}</span>
+        {description && <span className="text-[0.68rem] text-muted-foreground/70">{description}</span>}
+      </span>
     </button>
   )
 }

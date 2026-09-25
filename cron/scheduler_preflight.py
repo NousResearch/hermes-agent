@@ -85,10 +85,11 @@ def _cron_preflight_enabled(cfg: dict) -> bool:
 
 def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
     """READ-ONLY probe: would provider resolution fail for lack of a key? Mirrors run_job's
-    requested-provider computation. Skipped when a fallback chain exists — auth-fallback may
-    legitimately rescue a missing primary key, so blocking here would break that contract."""
+    requested-provider computation. Skipped when the job has a fallback chain — auth-fallback may
+    legitimately rescue a missing primary key. A pinned job has none (``_job_fallback_chain``), so
+    its missing key blocks even when the global chain is configured."""
     try:
-        if _sched.get_fallback_chain(cfg):
+        if _sched._job_fallback_chain(job, cfg):
             return None
     except Exception:
         return None  # fail-open: never block on a preflight-internal error
@@ -98,7 +99,7 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
         job.get("provider") or str((_cron_cfg or {}).get("model_provider") or "").strip() or None)
     model = job.get("model") or cron_env_setting("HERMES_MODEL") or ""
 
-    from hermes_cli.auth import AuthError
+    from hermes_cli.auth import AuthError, is_rate_limited_auth_error
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         kwargs = {"requested": requested, "target_model": model}
@@ -106,15 +107,32 @@ def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
             kwargs["explicit_base_url"] = job.get("base_url")
         resolve_runtime_provider(**kwargs)
     except AuthError as exc:
+        if is_rate_limited_auth_error(exc):
+            # Quota/rate-limit is not a missing credential: let the real path report it and hold
+            # the job through the provider's window (cron/quota_hold.py, #89376).
+            return None
         return (
-            f"provider credential missing: {exc}. "
-            "Set the provider API key in .env (or `hermes setup`), or pin a "
+            f"provider credential missing: {exc} {_credential_store_scope_label()}. "
+            "Set the provider API key in .env (or `hermes setup`) for that home, or pin a "
             "working provider via `hermes cron edit "
             f"{job.get('id')} --provider <p>`."
         )
     except Exception:
         return None  # non-auth errors are not a missing-credential verdict; real path reports them
     return None
+
+
+def _credential_store_scope_label() -> str:
+    """``[profile '<name>', HERMES_HOME <path>]`` for the home this preflight read credentials from.
+
+    The verdict must name the store it judged: a scheduler process whose home differs from the
+    shell where "the same credential works" (Docker HOME vs HERMES_HOME, a multiplexed satellite
+    profile, a gateway launched without the shell's env) otherwise reports a bare "No credentials
+    stored" that cannot be told apart from a real login gap (#116213).
+    """
+    from hermes_cli.profiles import get_active_profile_name
+    from hermes_constants import get_hermes_home
+    return f"[profile '{get_active_profile_name() or 'default'}', HERMES_HOME {get_hermes_home()}]"
 
 
 def _primary_profile_routes_for_current_home() -> list:

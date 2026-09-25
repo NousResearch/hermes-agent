@@ -270,11 +270,11 @@ export function readExistingPreference(
  * `--profile` instead of pinning `default`.
  */
 export function migrateActiveProfileIfMissing(desktopProfileConfigPath: string, deps: MigrationDeps): boolean {
-  const existing = deps.existsSync(desktopProfileConfigPath)
-    ? readExistingPreference(desktopProfileConfigPath, deps.readFileSync)
-    : null
+  const exists: boolean = deps.existsSync(desktopProfileConfigPath)
 
-  if (existing && !existing.migrated) {
+  const existing = exists ? readExistingPreference(desktopProfileConfigPath, deps.readFileSync) : null
+
+  if (exists && (!existing || !existing.migrated)) {
     return false
   }
 

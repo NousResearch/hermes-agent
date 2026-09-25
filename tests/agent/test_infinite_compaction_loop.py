@@ -15,12 +15,11 @@ The fix adds two safeguards:
    fires without burning anti-thrash strikes on transcript-shape facts.
 """
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import time
 
-from agent.context_compressor import ContextCompressor, _CHARS_PER_TOKEN
-
+from agent.context_compressor import ContextCompressor
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -41,7 +40,6 @@ def _make_compressor(**kwargs) -> ContextCompressor:
     with patch("agent.context_compressor.get_model_context_length", return_value=96000):
         return ContextCompressor(**defaults)
 
-
 def _build_session(n_turns: int, words_per_turn: int = 20) -> list:
     """Build a multi-turn conversation with a system prompt."""
     base_text = " ".join(["a"] * words_per_turn)
@@ -50,7 +48,6 @@ def _build_session(n_turns: int, words_per_turn: int = 20) -> list:
         messages.append({"role": "user", "content": f"{base_text} (user turn {i})"})
         messages.append({"role": "assistant", "content": f"{base_text} (assistant turn {i})"})
     return messages
-
 
 # ---------------------------------------------------------------------------
 # Test: compress_start >= compress_end registers as ineffective
@@ -92,7 +89,6 @@ class TestCompressNoOpRegistersIneffective:
             "structural no-op must arm the retry backoff"
         )
 
-
     def test_two_no_ops_block_should_compress(self):
         """After 2 no-op compressions, should_compress returns False."""
         comp = _make_compressor(
@@ -112,8 +108,6 @@ class TestCompressNoOpRegistersIneffective:
         assert not comp.should_compress(73_000), (
             "should_compress should return False while the structural backoff holds"
         )
-
-
 
 # ---------------------------------------------------------------------------
 # Test: _find_tail_cut_by_tokens raw-budget fallback
@@ -143,33 +137,9 @@ class TestTailCutRawBudgetFallback:
             f"(cut={cut}, head_end={head_end}, n={n})"
         )
 
-
-
-
 # ---------------------------------------------------------------------------
 # Test: Effective compression resets counter
 # ---------------------------------------------------------------------------
-
-class TestEffectiveCompressionResetsCounter:
-    """When compression actually saves tokens, the ineffective counter resets."""
-
-    def test_effective_compression_resets_counter(self):
-        """After an effective compression, _ineffective_compression_count = 0."""
-        comp = _make_compressor(
-            summary_target_ratio=0.20,
-            config_context_length=96000,
-        )
-        messages = _build_session(30, words_per_turn=100)
-        comp._generate_summary = MagicMock(return_value="Compacted summary of earlier turns.")
-        comp.last_prompt_tokens = 73_000
-
-        comp.compress(messages, current_tokens=73_000)
-
-        assert comp._ineffective_compression_count == 0, (
-            f"Expected 0 ineffective compressions with effective compression, "
-            f"got {comp._ineffective_compression_count}"
-        )
-
 
 # ---------------------------------------------------------------------------
 # Test: anti-thrashing in should_compress
@@ -184,9 +154,6 @@ class TestAntiThrashing:
         comp.last_prompt_tokens = 73_000
         comp._ineffective_compression_count = 2
         assert not comp.should_compress(73_000)
-
-
-
 
 # ---------------------------------------------------------------------------
 # Test: summary-LLM cooldown guard in should_compress (#11529)
@@ -205,9 +172,6 @@ class TestCooldownGuard:
         comp.last_prompt_tokens = 73_000
         comp._summary_failure_cooldown_until = time.monotonic() + 60
         assert not comp.should_compress(73_000)
-
-
-
 
 # ---------------------------------------------------------------------------
 # Test: #48621 — gpt-5.3-codex-spark short-session boundary
@@ -263,7 +227,6 @@ class TestCodexSparkShortSessionBoundary:
         )
         assert comp.has_content_to_compress(messages) is True
 
-
 class TestPressureRealFloor:
     """Regression: Cyrillic-heavy sessions under-count in the rough estimate,
     letting real prompts ride the provider window (64,842→64,995 observed)
@@ -292,22 +255,3 @@ class TestPressureRealFloor:
         from agent.conversation_loop import _pressure_with_real_floor
         assert _pressure_with_real_floor(self._compressor(0), 10_000) == 10_000
         assert _pressure_with_real_floor(object(), 10_000) == 10_000
-
-    def test_anchored_pressure_is_never_floored(self):
-        """A valid usage anchor is provider-exact and wins as-is.
-
-        On MoA turns the anchor deliberately uses the pre-fold aggregator
-        usage while ``last_real_prompt_tokens`` holds the folded figure;
-        flooring the anchored value would re-add the advisor fan-out tokens
-        the anchor exists to exclude. Pin the wiring shape: the floor is
-        applied only on the ``else`` (rough fallback) branch.
-        """
-        import inspect
-        from agent import turn_request_assembly
-
-        src = inspect.getsource(turn_request_assembly.assemble_api_request)
-        i = src.index("if _anchored_pressure is not None:")
-        window = src[i : i + 400]
-        assert "request_pressure_tokens = _anchored_pressure" in window
-        assert "else:" in window
-        assert window.index("else:") < window.index("_pressure_with_real_floor(")

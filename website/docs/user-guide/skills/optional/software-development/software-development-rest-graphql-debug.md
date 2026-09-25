@@ -15,7 +15,7 @@ Debug REST/GraphQL APIs: status codes, auth, schemas, repro.
 | | |
 |---|---|
 | Source | Optional — install with `hermes skills install official/software-development/rest-graphql-debug` |
-| Path | `optional-skills/software-development\rest-graphql-debug` |
+| Path | `optional-skills/software-development/rest-graphql-debug` |
 | Version | `1.2.0` |
 | Author | eren-karakus0 |
 | License | MIT |

@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_restart_without_service_unit_runs_gateway_even_without_linger(monkeypatch):
     from hermes_cli import gateway as gw
 
@@ -29,7 +29,7 @@ def test_restart_without_service_unit_runs_gateway_even_without_linger(monkeypat
     assert started, "no unit installed: restart must fall through to run_gateway, linger or not"
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_restart_with_systemd_unit_still_reports_missing_linger(monkeypatch):
     from hermes_cli import gateway as gw
 

@@ -2,6 +2,7 @@
 
 Auto-tracks and cleans up ephemeral files created during Hermes Agent
 sessions — test scripts, temp outputs, cron logs, stale chrome profiles.
+<!-- no-tmp: ok — documents the legacy scratch scope this plugin cleans up -->
 Scoped strictly to `$HERMES_HOME` and `/tmp/hermes-*`.
 
 Originally contributed by [@LVT382009](https://github.com/LVT382009) as a
@@ -41,6 +42,7 @@ Deletion rules (same as the original PR):
 
 ## Safety
 
+<!-- no-tmp: ok — documents the legacy scratch scope this plugin cleans up -->
 - `is_safe_path()` rejects anything outside `HERMES_HOME` or `/tmp/hermes-*`
 - Windows mounts (`/mnt/c` etc.) are rejected
 - The state directory `$HERMES_HOME/disk-cleanup/` is itself excluded

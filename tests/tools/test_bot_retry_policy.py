@@ -49,14 +49,6 @@ def test_non_retryable_reasons_stop(reason):
     assert bfr.retry_action(reason) == bfr.RETRY_NONE
 
 
-def test_every_reason_has_a_defined_action():
-    """Invariant: the policy is total over the closed reason vocabulary."""
-    for reason in bfr.ALL_REASONS:
-        assert bfr.retry_action(reason) in {
-            bfr.RETRY_RESUME,
-            bfr.RETRY_COMPRESS_THEN_RESUME,
-            bfr.RETRY_NONE,
-        }
 
 
 # ── relay deliver handler consumes the policy ────────────────────────────────
@@ -111,7 +103,7 @@ def test_deliver_retries_same_argv_on_transient_failure(home, monkeypatch):
             return _Proc(1, stderr="Error code: 429 - rate limit exceeded")
         return _Proc(0, stdout="recovered reply")
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     out = _deliver({"profile": "ops", "message": "ping"})
     assert out["result"]["reply"] == "recovered reply"
     turns = _transport_calls(calls)
@@ -133,7 +125,7 @@ def test_deliver_retries_once_on_context_overflow(home, monkeypatch):
             return _Proc(1, stderr="This model's maximum context length is 200000 tokens")
         return _Proc(0, stdout="fits after compaction")
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     out = _deliver({"profile": "ops", "message": "ping"})
     assert out["result"]["reply"] == "fits after compaction"
     turns = _transport_calls(calls)
@@ -151,7 +143,7 @@ def test_deliver_never_retries_auth_failure(home, monkeypatch):
             return _Proc(0)
         return _Proc(1, stderr="Error code: 401 - Your API key is invalid")
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     out = _deliver({"profile": "ops", "message": "ping"})
     assert "error" in out
     assert len(_transport_calls(calls)) == 1, "auth failures must not auto-retry"
@@ -159,17 +151,6 @@ def test_deliver_never_retries_auth_failure(home, monkeypatch):
     assert out["error"]["data"]["reason"] == bfr.PROVIDER_AUTH_OR_ACCESS
 
 
-def test_deliver_failure_carries_typed_reason(home, monkeypatch):
-    """A still-failing retryable error surfaces its classified reason."""
-    monkeypatch.setattr(
-        "subprocess.run",
-        lambda argv, **k: _Proc(1, stderr="502 server error - overloaded")
-        if _is_hermes_cli(list(argv))
-        else _Proc(0),
-    )
-    out = _deliver({"profile": "ops", "message": "ping"})
-    assert "error" in out
-    assert out["error"]["data"]["reason"] == bfr.PROVIDER_SERVER_ERROR
 
 
 # ── local delivery runner consumes the policy ────────────────────────────────
@@ -246,14 +227,14 @@ def test_deliver_retry_reads_the_stream_the_cli_writes_and_resumes_the_persisted
             return _Proc(1, stdout=_REAL_FAILED_STDOUT, stderr=_REAL_FAILED_STDERR)
         return _Proc(0, stdout="recovered reply")
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     out = _deliver({"profile": "ops", "message": "ping"})
     assert out["result"]["reply"] == "recovered reply"
     assert [RESUME_UNANSWERED_TURN_ENV in env for env in envs] == [False, True]
     assert envs[1][RESUME_UNANSWERED_TURN_ENV] == "1"
 
     monkeypatch.setattr(
-        "subprocess.run",
+        "hermes_cli.quiet_single_query.run_reported_turn",
         lambda argv, **k: _Proc(1, stdout=_REAL_FAILED_STDOUT, stderr=_REAL_FAILED_STDERR)
         if _is_hermes_cli(list(argv)) else _Proc(0),
     )

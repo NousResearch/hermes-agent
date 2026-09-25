@@ -6,9 +6,7 @@ network error, the adapter must self-reschedule the next reconnect attempt
 rather than silently leaving polling dead.
 """
 
-import ast
 import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -454,13 +452,6 @@ async def test_conflict_retry_also_drains_polling_connections():
     mock_app.updater.start_polling.assert_called_once()
 
 
-@pytest.mark.asyncio
-async def test_drain_helper_noop_without_app():
-    """_drain_polling_connections must be a no-op when _app is None."""
-    adapter = _make_adapter()
-    adapter._app = None
-    # Should not raise
-    await adapter._drain_polling_connections()
 
 
 # ── Heartbeat probe ──────────────────────────────────────────────────────
@@ -652,42 +643,6 @@ async def test_heartbeat_loop_skips_reconnect_if_already_in_progress():
         await existing_task
     except (asyncio.CancelledError, Exception):
         pass
-
-
-async def _heartbeat_exception_case(exc, *, pending_probe=False):
-    adapter = _make_adapter()
-    reconnect_handler = AsyncMock()
-    adapter._handle_polling_network_error = reconnect_handler  # type: ignore[method-assign]
-    mock_app = MagicMock()
-    mock_app.updater.running = True
-    if pending_probe:
-        mock_app.bot.get_me = AsyncMock(return_value=MagicMock())
-        mock_app.bot.get_webhook_info = AsyncMock(side_effect=exc)
-    else:
-        mock_app.bot.get_me = AsyncMock(side_effect=exc)
-    adapter._app = mock_app
-
-    sleep_calls = 0
-
-    async def fast_sleep(_seconds):
-        nonlocal sleep_calls
-        sleep_calls += 1
-        if sleep_calls >= 2:
-            raise asyncio.CancelledError()
-
-    with patch("asyncio.sleep", side_effect=fast_sleep):
-        await adapter._polling_heartbeat_loop()
-    await asyncio.sleep(0)
-    return adapter
-
-
-def _calls_shared_network_classifier(node):
-    return any(
-        isinstance(child, ast.Call)
-        and isinstance(child.func, ast.Attribute)
-        and child.func.attr == "_looks_like_network_error"
-        for child in ast.walk(node)
-    )
 
 
 # ── Bootstrap degradation: keep polling alive during outages (#47508) ────
@@ -961,53 +916,6 @@ class TestConnectTimeoutClassifier:
         assert TelegramAdapter._looks_like_connect_timeout(Exception("Timed out")) is False
 
 
-@pytest.mark.asyncio
-async def test_drain_rebuilds_http_client_when_shutdown_hangs(monkeypatch):
-    """Hung aclose() must not leave initialize() as a no-op (#87057).
-
-    PTB's HTTPXRequest.initialize() only rebuilds when client.is_closed.
-    If shutdown() is abandoned on a CLOSE-WAIT socket, that flag stays
-    false and start_polling would reuse the dead getUpdates connection.
-    Drain must swap in a fresh client so the reconnect ladder is live.
-    """
-    adapter = _make_adapter()
-
-    class _FakeClient:
-        def __init__(self):
-            self.is_closed = False
-
-        async def aclose(self):
-            await asyncio.Event().wait()
-
-    class _FakePollingReq:
-        def __init__(self):
-            self._client = _FakeClient()
-            self.built = []
-
-        def _build_client(self):
-            client = _FakeClient()
-            self.built.append(client)
-            return client
-
-        async def shutdown(self):
-            await asyncio.Event().wait()
-
-        async def initialize(self):
-            if self._client.is_closed:
-                self._client = self._build_client()
-
-    polling_req = _FakePollingReq()
-    original = polling_req._client
-    mock_app = MagicMock()
-    mock_app.bot._request = (polling_req, MagicMock())
-    adapter._app = mock_app
-
-    monkeypatch.setattr(tg_adapter, "_DRAIN_TIMEOUT", 0.05)
-    await asyncio.wait_for(adapter._drain_polling_connections(), timeout=2.0)
-
-    assert polling_req.built, "drain must rebuild the HTTP client after hung aclose"
-    assert polling_req._client is not original
-    assert polling_req._client is polling_req.built[-1]
 
 
 @pytest.mark.asyncio

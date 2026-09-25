@@ -241,3 +241,42 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+
+
+# ---------------------------------------------------------------------------
+# `kanban log` board resolution (worker logs are board-anchored)
+# ---------------------------------------------------------------------------
+
+
+def _write_worker_log(home: Path, board: str, task_id: str, text: str) -> None:
+    logs = kb.worker_logs_dir(board=board)
+    logs.mkdir(parents=True, exist_ok=True)
+    (logs / f"{task_id}.log").write_text(text, encoding="utf-8")
+
+
+def test_kanban_log_names_searched_board_and_points_at_real_one(kanban_home):
+    """A log that lives on another board is reported as such — never as
+    'task may not have spawned yet', which asserts a false cause."""
+    kc.run_slash("boards create trading")
+    _write_worker_log(kanban_home, "trading", "t_cross", "ran on trading\n")
+    out = kc.run_slash("log t_cross")
+    assert "board 'default'" in out
+    assert "board 'trading'" in out
+    assert "--board trading" in out
+    assert "may not have spawned" not in out
+
+
+def test_kanban_log_missing_everywhere_keeps_spawn_hint_scoped_to_board(kanban_home):
+    _write_worker_log(kanban_home, "default", "t_other", "unrelated\n")
+    out = kc.run_slash("log t_nolog")
+    assert "board 'default'" in out
+    assert "may not have spawned" in out
+
+
+def test_kanban_log_accepts_board_after_subcommand(kanban_home):
+    """`kanban log <id> --board <slug>` must parse (it used to be
+    'unrecognized arguments'); the parent-level flag keeps working too."""
+    kc.run_slash("boards create trading")
+    _write_worker_log(kanban_home, "trading", "t_sub", "sub-level flag\n")
+    assert "sub-level flag" in kc.run_slash("log t_sub --board trading")
+    assert "sub-level flag" in kc.run_slash("--board trading log t_sub")

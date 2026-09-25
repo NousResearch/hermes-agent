@@ -517,6 +517,12 @@ class GatewayAgentCacheMixin:
             except Exception:
                 logger.debug("agent_loop_stopped hook dispatch failed", exc_info=True)
         adapter = self._delivery_adapter_for(source)
+        # /stop, /new, and /reset invalidate the adapter-side deferred-command queue too. The
+        # runner's turn generation protects agent state, but queued slash events live on adapters
+        # and otherwise could drain into the replacement session.
+        invalidate_deferred = getattr(adapter, "_invalidate_deferred_commands", None)
+        if adapter and callable(invalidate_deferred):
+            invalidate_deferred(session_key)
         interrupt_session_activity = getattr(type(adapter), "interrupt_session_activity", None)
         if adapter and callable(interrupt_session_activity):
             metadata = self._thread_metadata_for_source(source)

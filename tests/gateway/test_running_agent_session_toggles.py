@@ -9,14 +9,8 @@ slash commands with "⏳ Agent is running — /{cmd} can't run mid-turn"
   * /verbose — cycles the per-platform tool-progress display mode;
     affects the ongoing stream.
 
-Commands whose handlers say "takes effect on next message" stay on the
-catch-all by design:
-
-  * /fast — writes config.yaml only
-  * /reasoning — writes config.yaml only
-
-These tests lock in both behaviors so the allowlist doesn't silently
-grow or shrink.
+Safe session settings, titles, and informational commands must reach their
+handlers through the same busy path without interrupting the active agent.
 """
 
 from datetime import datetime
@@ -166,3 +160,20 @@ async def test_fresh_ancient_turn_remains_controllable(monkeypatch):
     assert result == "tool progress: new"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["title", "fast", "reasoning", "usage", "whoami"])
+async def test_safe_commands_reach_handler_during_active_turn(command):
+    runner = _make_runner()
+    key = build_session_key(_make_source())
+    agent = runner._running_agents[key]
+    handler = AsyncMock(return_value="command handled")
+    setattr(runner, f"_handle_{command}_command", handler)
+    event = _make_event(f"/{command}")
+
+    result = await runner._handle_message(event)
+
+    handler.assert_awaited_once_with(event)
+    assert result == "command handled"
+    assert runner._running_agents[key] is agent
+    agent.interrupt.assert_not_called()
+    assert not runner._pending_messages

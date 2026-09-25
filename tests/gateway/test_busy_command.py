@@ -93,3 +93,12 @@ class TestBusyCommandPersistence:
         result = await runner._handle_busy_command(event)
         assert "unchanged" in str(result).lower()
         assert runner._busy_input_mode == "steer"
+
+
+def test_deferred_policy_registry_covers_session_mutations():
+    from hermes_cli.commands import resolve_command
+
+    for name in ("compress", "undo", "retry", "save", "branch"):
+        assert resolve_command(name).busy_policy == "defer_until_idle"
+    for name in ("fast", "reasoning", "title"):
+        assert resolve_command(name).busy_policy == "dispatch"

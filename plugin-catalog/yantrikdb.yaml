@@ -1,9 +1,8 @@
 name: yantrikdb
 repo: https://github.com/yantrikos/yantrikdb-hermes-plugin
-sha: d7ccc7ec423591438f1897ad9a2f4ca197500fe5
-description: YantrikDB — self-maintaining memory for Hermes with canonicalization, contradiction tracking,
-  recency-aware ranking, explainable recall, and pluggable embedders (bundled potion-2M default; first-class
-  loaders for the model2vec family and the HF sentence-transformers ecosystem; custom Python embedder
+sha: 7b22578ada5bf68512461cce4765f81633291aa8
+version: "0.27.0"
+description: "Persistent memory for Hermes. Canonicalizes duplicate memories, surfaces contradictions between structured or recognized single-valued claims for review, and returns a why_retrieved reason list with every recall. Embedded by default: no server, no token, no GPU. Optional HTTP backend for HA clusters; pluggable embedders (bundled potion-2M default)."
 maintainer: yantrikos
 tier: community
 category: memory

@@ -97,6 +97,78 @@ def vertex_adapter(monkeypatch):
 
 
 
+def test_rejected_fresh_token_is_reminted_for_main_client(vertex_adapter, monkeypatch):
+    from agent.client_lifecycle import ClientLifecycleMixin
+
+    token, base_url = vertex_adapter.get_vertex_config()
+    creds = next(iter(vertex_adapter._creds_cache.values()))[0]
+    creds.token = "rejected-but-not-expired"
+    refreshed = []
+
+    def refresh(request):
+        refreshed.append(request)
+        creds.token = "replacement-token"
+
+    monkeypatch.setattr(creds, "refresh", refresh)
+    client = ClientLifecycleMixin()
+    client.provider = "vertex"
+    client.api_mode = "chat_completions"
+    client.api_key = creds.token
+    client.base_url = base_url
+    client._client_kwargs = {"api_key": creds.token, "base_url": base_url}
+    rebuilt = []
+    client._replace_primary_openai_client = lambda **kw: rebuilt.append(dict(client._client_kwargs)) or True
+
+    assert client._try_refresh_vertex_client_credentials() is True
+    assert client.api_key == "replacement-token"
+    assert len(refreshed) == 1
+    assert rebuilt == [{"api_key": "replacement-token", "base_url": base_url}]
+    assert vertex_adapter.get_vertex_config() == ("replacement-token", base_url)
+    assert len(refreshed) == 1  # ordinary resolution still reuses a fresh token
+
+
+@pytest.mark.parametrize("failure", ["raise", "empty"])
+def test_failed_forced_refresh_does_not_adopt_credentials(vertex_adapter, monkeypatch, failure):
+    from agent.client_lifecycle import ClientLifecycleMixin
+
+    token, base_url = vertex_adapter.get_vertex_config()
+    creds = next(iter(vertex_adapter._creds_cache.values()))[0]
+
+    def refresh(request):
+        if failure == "raise":
+            raise RuntimeError("credential revoked")
+        creds.token = None
+
+    monkeypatch.setattr(creds, "refresh", refresh)
+    client = ClientLifecycleMixin()
+    client.provider, client.api_mode = "vertex", "chat_completions"
+    client.api_key, client.base_url = token, base_url
+    client._client_kwargs = {"api_key": token, "base_url": base_url}
+    client._replace_primary_openai_client = lambda **kw: pytest.fail("invalid credentials adopted")
+    assert client._try_refresh_vertex_client_credentials() is False
+    assert client._client_kwargs == {"api_key": token, "base_url": base_url}
+    assert client.api_key == token
+
+
+def test_force_refresh_keeps_other_credential_identities(vertex_adapter, monkeypatch, tmp_path):
+    paths = [tmp_path / "a.json", tmp_path / "b.json"]
+    for path in paths:
+        path.write_text('{"project_id": "test"}')
+        vertex_adapter.get_vertex_credentials(str(path))
+    entries = dict(vertex_adapter._creds_cache)
+    a_key, b_key = entries
+    a, b = entries[a_key][0], entries[b_key][0]
+    a.token, b.token = "a-old", "b-still-valid"
+    monkeypatch.setattr(vertex_adapter, "_vertex_config", lambda: {"project_id": "caller-project"})
+    token, url = vertex_adapter.get_vertex_config(str(paths[0]), "europe-west1", force_refresh=True)
+    assert token == "ya29.FAKE"
+    assert "/projects/caller-project/locations/europe-west1/" in url
+    assert vertex_adapter._creds_cache[b_key][0] is b
+    assert b.token == "b-still-valid"
+    assert vertex_adapter.get_vertex_credentials(str(paths[1])) == ("b-still-valid", "caller-project")
+    assert vertex_adapter.get_vertex_credentials(str(paths[0])) == (token, "caller-project")
+
+
 def test_has_vertex_credentials_via_config_project(vertex_adapter, monkeypatch):
     monkeypatch.setattr(vertex_adapter, "_vertex_config", lambda: {"project_id": "p"})
     assert vertex_adapter.has_vertex_credentials() is True

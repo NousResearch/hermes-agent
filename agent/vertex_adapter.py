@@ -145,8 +145,10 @@ def _needs_refresh(creds) -> bool:
     )
 
 
-def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Optional[str], Optional[str]]:
-    """Return (fresh access_token, project_id) or (None, None); Credentials cached per file content."""
+def get_vertex_credentials(
+    credentials_path: Optional[str] = None, *, force_refresh: bool = False
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return (access_token, project_id); force_refresh re-mints a server-rejected fresh token."""
     if not _ensure_google_auth():
         return None, None
 
@@ -166,7 +168,7 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
             for k in [k for k in _creds_cache if k != cache_key and k[0] == cache_key[0]]:
                 _creds_cache.pop(k, None)
         creds, project_id = cached
-        if _needs_refresh(creds):
+        if force_refresh or _needs_refresh(creds):
             creds.refresh(google.auth.transport.requests.Request())
         return creds.token, _resolve_project_override() or project_id
     except Exception as e:
@@ -177,7 +179,7 @@ def get_vertex_credentials(credentials_path: Optional[str] = None) -> Tuple[Opti
         sa_path = None if resolved_path else _resolve_credentials_path(credentials_path)
         if sa_path:
             logger.info("ADC failed, retrying with service account: %s", sa_path)
-            return get_vertex_credentials(sa_path)
+            return get_vertex_credentials(sa_path, force_refresh=force_refresh)
         return None, None
 
 
@@ -188,10 +190,10 @@ def build_vertex_base_url(project_id: str, region: str = DEFAULT_REGION) -> str:
 
 
 def get_vertex_config(
-    credentials_path: Optional[str] = None, region: Optional[str] = None
+    credentials_path: Optional[str] = None, region: Optional[str] = None, *, force_refresh: bool = False
 ) -> Tuple[Optional[str], Optional[str]]:
     """Resolve (access_token, base_url) for Vertex AI, or (None, None) on failure."""
-    token, project_id = get_vertex_credentials(credentials_path)
+    token, project_id = get_vertex_credentials(credentials_path, force_refresh=force_refresh)
     if not token or not project_id:
         return None, None
     return token, build_vertex_base_url(project_id, _resolve_region(region))

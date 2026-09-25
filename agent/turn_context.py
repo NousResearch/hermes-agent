@@ -1073,7 +1073,7 @@ def build_turn_context(
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
     from agent.tool_selection import capture_selection_context
-    capture_selection_context(agent, original_user_message, messages, current_turn_user_idx)
+    capture_selection_context(agent, original_user_message, messages, current_turn_user_idx, current_row=user_msg)
     should_review_memory = _tick_memory_nudge(agent)
     _emit_reaction(agent, original_user_message)
 

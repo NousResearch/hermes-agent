@@ -59,31 +59,53 @@ def _plain_text(value, cap):
             and not any(0xD800 <= ord(c) <= 0xDFFF for c in value))
 
 
-def bounded_task_context(current, messages, current_index):
-    """Only actual current input and prior plain conversational text, never tool bodies."""
+# Legacy transcripts can lack display_kind. These markers come from process /
+# delegation notifications and surface-generated system notes, not human /steer.
+_LEGACY_INTERNAL_PREFIXES = (
+    "[Background process ", "[IMPORTANT:", "[ASYNC DELEGATION",
+    "[System:", "[System note:", "Cronjob Response:",
+)
+
+
+def _plain_conversation_row(row):
+    from agent.context_compressor import ContextCompressor
+    from agent.prompt_builder import STEER_DISPLAY_KIND
+
+    if not isinstance(row, dict) or row.get("role") not in ("user", "assistant"):
+        return False
+    # Typed /steer is human input. All other typed rows are machinery, including
+    # opaque notices whose text no longer has a recognizable content marker.
+    kind = row.get("display_kind")
+    if kind and not (row["role"] == "user" and kind == STEER_DISPLAY_KIND):
+        return False
+    text = row.get("content")
+    return (isinstance(text, str)
+            and not any(row.get(key) for key in ("tool_calls", "reasoning", "reasoning_content", "is_summary"))
+            and not ContextCompressor._is_context_summary_message(row)
+            and not ContextCompressor._is_synthetic_compression_user_turn(row)
+            and not text.lstrip().startswith(_LEGACY_INTERNAL_PREFIXES)
+            and "<think>" not in text and "<analysis>" not in text)
+
+
+def bounded_task_context(current, messages, current_index, *, current_row=None):
+    """Only actual human input and prior plain conversation, never tool-origin bodies."""
     if not _plain_text(current, 128 * 1024) or not current:
         return None
     if not isinstance(messages, list) or not isinstance(current_index, int) or not 0 <= current_index <= len(messages):
         return None
-    from agent.context_compressor import ContextCompressor
+    # Keep provenance from the staged row while selecting the original, unnudged
+    # text. A synthetic current turn must not invoke a potentially remote router.
+    row = {"role": "user"} if current_row is None else dict(current_row)
+    row["content"] = current
+    if row.get("role") != "user" or not _plain_conversation_row(row):
+        return None
     recent, size = [], 0
     partial = current_index > 4096
     for row in reversed(messages[max(0, current_index - 4096):current_index]):
-        if not isinstance(row, dict) or row.get("role") not in ("user", "assistant"):
+        if not _plain_conversation_row(row) or not _plain_text(row["content"], 32768):
             partial = True
             continue
-        text = row.get("content")
-        # Tool-call/reasoning turns aren't plain assistant conversation. Omit whole
-        # rows rather than accidentally exporting embedded internal reasoning.
-        if (row.get("tool_calls") or row.get("reasoning") or row.get("reasoning_content")
-                or row.get("is_summary") or not isinstance(text, str) or not _plain_text(text, 32768)):
-            partial = True
-            continue
-        if (ContextCompressor._is_context_summary_message(row)
-                or ContextCompressor._is_synthetic_compression_user_turn(row)
-                or "<think>" in text or "<analysis>" in text):
-            partial = True
-            continue
+        text = row["content"]
         if len(recent) == 4 or size + len(text) > 32768:
             partial = True
             continue
@@ -92,7 +114,7 @@ def bounded_task_context(current, messages, current_index):
     return {"current_user_message": current, "recent_messages": list(reversed(recent)), "partial": partial}
 
 
-def capture_selection_context(agent, current, messages, current_index):
+def capture_selection_context(agent, current, messages, current_index, *, current_row=None):
     cfg = load_config_readonly()
     if not cfg.selection_enabled:
         agent._tool_selection_context = None
@@ -102,7 +124,7 @@ def capture_selection_context(agent, current, messages, current_index):
         raise ValueError("tools.tool_search.selection requires enabled: on and defer: all")
     if getattr(agent, "api_mode", "") == "codex_app_server" or getattr(agent, "provider", "") == "moa":
         raise ValueError("Tool selection is not supported by codex_app_server or MoA")
-    agent._tool_selection_context = bounded_task_context(current, messages, current_index)
+    agent._tool_selection_context = bounded_task_context(current, messages, current_index, current_row=current_row)
     agent._tool_selection_context_turn = getattr(agent, "_current_turn_id", "")
     agent._tool_selection_context_home = hermes_home_key()
     agent._tool_selection_cache = None
@@ -158,7 +180,7 @@ def authorized_catalog(agent):
         schemas = model_tools.get_tool_definitions(
             enabled_toolsets=getattr(agent, "enabled_toolsets", None),
             disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-            quiet_mode=True, skip_tool_search_assembly=True,
+            quiet_mode=True, skip_tool_search_assembly=True, use_cache=False,
         ) or []
         schemas = _dynamic_schemas(agent, schemas)
         drops = side_agent_tool_drops(agent)

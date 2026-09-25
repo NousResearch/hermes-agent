@@ -192,7 +192,8 @@ _LEGACY_TOOLSET_MAP = {
 # non-quiet path prints). Hot callers (gateway runner, AIAgent.__init__) hit it
 # every turn; a miss costs ~7 ms of registry walk + check_fn probing. The key
 # includes registry._generation (bumped on register/deregister/alias) so
-# invalidation is transparent; check_fn drift is handled by registry.py's 30 s TTL.
+# invalidation is transparent. Authoritative opt-in inventories bypass this memo;
+# only those registry walks observe check_fn drift under registry.py's probe/TTL policy.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
 _tool_defs_cache_lock = threading.Lock()
 # FIFO cap: 8 covers a long-lived gateway's warm set of platform/toolset combos.
@@ -211,18 +212,21 @@ def _clear_tool_defs_cache() -> None:
 
 
 def get_tool_definitions(enabled_toolsets: Optional[List[str]] = None, disabled_toolsets: Optional[List[str]] = None,
-                         quiet_mode: bool = False, skip_tool_search_assembly: bool = False) -> List[Dict[str, Any]]:
+                         quiet_mode: bool = False, skip_tool_search_assembly: bool = False,
+                         *, use_cache: bool = True) -> List[Dict[str, Any]]:
     """Tool definitions for model API calls, filtered by toolset.
 
     enabled_toolsets None = all; disabled_toolsets are subtracted after enabling.
-    quiet_mode suppresses status prints and enables memoization.
+    quiet_mode suppresses status prints and enables memoization by default.
+    use_cache=False bypasses only this schema memo (neither reads nor writes it),
+    retaining registry availability probe/TTL semantics and schema normalization.
     skip_tool_search_assembly returns raw schemas for every enabled tool — only
     the tool_search bridge should use it (it reads the real, uncollapsed catalog).
     """
     def compute():
         return _compute_tool_definitions(enabled_toolsets, disabled_toolsets, quiet_mode,
                                          skip_tool_search_assembly=skip_tool_search_assembly)
-    if not quiet_mode:
+    if not quiet_mode or not use_cache:
         return compute()
     cache_key = _tool_defs_cache_key(enabled_toolsets, disabled_toolsets, skip_tool_search_assembly)
     # Cache the freshly-computed list, but hand callers a shallow copy so downstream mutations (e.g.

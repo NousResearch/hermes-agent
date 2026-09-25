@@ -76,9 +76,12 @@ inputs does not alter host schemas, history or other callbacks' inputs.
 The current input is the actual `original_user_message`, **not** a reconstructed
 summary or tool output. Prior context contains at most four plain user/assistant
 messages, excluding the current input, system messages, tool bodies, assistant
-tool-call/reasoning rows and known synthetic compression/recovery messages. Prior
-text totals at most 32,768 Unicode codepoints. The current input is capped at
-131,072 codepoints. Any omission sets `partial: true`. Invalid, oversized or
+tool-call/reasoning rows, typed internal notifications and known synthetic
+compression/recovery/process/delegation messages (including legacy untyped markers).
+Human `/steer` rows remain conversational input. The current row's provenance is
+retained even when using its original, unnudged text. Prior text totals at most
+32,768 Unicode codepoints. The current input is capped at 131,072 codepoints. Any
+prior omission sets `partial: true`. Synthetic/tool-origin, invalid, oversized or
 non-string current input makes context unavailable: the callback is not invoked
 and the host uses discovery only. Oversized/invalid prior rows are omitted, not
 forwarded unchecked. Neither task text nor exception text from selection is logged.
@@ -116,7 +119,10 @@ minimum necessary excerpts. Do not log raw task text in a plugin.
 - Selected and bridge-unwrapped calls take the ordinary native hooks, guardrails,
   approvals, inline/provider handlers and result processing. Selection grants no
   execution shortcut. Scope is refreshed before dispatch, including after policy
-  hooks; revocation never falls back to stale `agent.tools`.
+  hooks; revocation never falls back to stale `agent.tools`. The opt-in inventory
+  bypasses the model-schema memo without reading or updating it; availability
+  still follows the registry's existing uncached-probe, TTL and failure-grace
+  policies. Default schema-prefix memoization is unchanged.
 
 ## Compatibility boundaries
 

@@ -417,3 +417,230 @@ def test_execute_code_reachability_uses_authorized_inventory_not_working_set(sco
     })
     assert len(seen) == 1
 
+
+@pytest.fixture
+def sdk_bodies(monkeypatch):
+    """Use the real OpenAI SDK/Responses serializer, with an offline HTTP transport."""
+    from run_agent import AIAgent
+    from agent import auxiliary_client
+
+    bodies = []
+    response = {"id": "resp_boundary", "object": "response", "created_at": 0,
+                "status": "completed", "model": "gpt-5", "output": [{
+                    "type": "message", "id": "msg_boundary", "role": "assistant", "status": "completed",
+                    "content": [{"type": "output_text", "text": "ok", "annotations": []}],
+                }]}
+    def respond(request):
+        body = json.loads(request.content)
+        bodies.append(body)
+        if body.get("stream"):
+            events = [{"type": "response.output_item.done", "output_index": 0, "item": response["output"][0]},
+                      {"type": "response.completed", "response": response}]
+            return httpx.Response(200, headers={"Content-Type": "text/event-stream"},
+                                  content="".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n")
+        return httpx.Response(200, json=response)
+    def http_client(*args, async_mode=False, **kwargs):
+        cls = httpx.AsyncClient if async_mode else httpx.Client
+        return cls(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(AIAgent, "_build_keepalive_http_client", staticmethod(http_client))
+    monkeypatch.setattr(auxiliary_client, "_openai_http_client_kwargs",
+                        lambda url, *, async_mode=False: {"http_client": http_client(async_mode=async_mode)})
+    return bodies
+
+
+@pytest.mark.parametrize("kind", ["internal_notification", "process_complete", "async_delegation_complete",
+                                  "auto_continue", "hidden", "model_switch", "personality_switch"])
+def test_typed_opaque_context_is_not_conversation(scoped, kind):
+    row = {"role": "user", "content": "PRIVATE_TOOL_OUTPUT", "display_kind": kind}
+    original = copy.deepcopy(row)
+    context = selection.bounded_task_context("human input", [row], 1)
+    assert context == {"current_user_message": "human input", "recent_messages": [], "partial": True}
+    assert selection.bounded_task_context(row["content"], [], 0, current_row=row) is None
+    assert row == original
+    # Assistant timeline/control rows are not ordinary conversation either.
+    row["role"] = "assistant"
+    assert selection.bounded_task_context("human input", [row], 1)["recent_messages"] == []
+
+
+@pytest.mark.parametrize("event_type", ["heartbeat", "watch_match", "completion", "async_delegation"])
+@pytest.mark.parametrize("typed", [False, True], ids=["legacy", "typed"])
+@pytest.mark.parametrize("current_notice", [False, True], ids=["history", "current"])
+def test_native_notification_context_privacy(scoped, sdk_bodies, event_type, typed, current_notice):
+    from tools.process_registry_notifications import format_process_notification
+
+    text = format_process_notification({
+        "type": event_type, "session_id": "process-1", "command": "PRIVATE_COMMAND",
+        "output": "PRIVATE_TOOL_OUTPUT", "summary": "PRIVATE_TOOL_OUTPUT",
+        "seq": 1, "elapsed": 10, "interval": 60, "completed_at": 1,
+    })
+    assert "PRIVATE_TOOL_OUTPUT" in text  # prove the real producer carries the private body
+    row = {"role": "user", "content": text}
+    if typed:
+        row["display_kind"] = "internal_notification"
+    original = copy.deepcopy(row)
+    seen = []
+    scoped.ctx.register_middleware("tool_selection", lambda **kw: seen.append(kw) or proposal(kw, ["selection_alpha"]))
+    agent = make_agent()
+    try:
+        if current_notice:
+            result = agent.run_conversation(text, persist_user_display_kind=row.get("display_kind"))
+            assert seen == []
+            assert {s["name"] for s in sdk_bodies[-1]["tools"]} == (BRIDGE_TOOL_NAMES - {"tool_search"}) | {"hermes_tool_search"}
+        else:
+            result = agent.run_conversation("human request", conversation_history=[row, {"role": "assistant", "content": "ack"}])
+            assert len(seen) == 1
+            assert seen[0]["task_context"] == {"current_user_message": "human request", "partial": True,
+                                               "recent_messages": [{"role": "assistant", "content": "ack"}]}
+        assert result["final_response"] == "ok" and sdk_bodies
+        assert "PRIVATE_TOOL_OUTPUT" not in json.dumps(seen)
+        assert "PRIVATE_COMMAND" not in json.dumps(seen)
+        assert row == original
+    finally:
+        agent.client.close()
+
+
+@pytest.mark.parametrize("steer", [False, True], ids=["plain-human", "human-steer"])
+def test_native_human_current_and_history_remain_available(scoped, sdk_bodies, steer):
+    from agent.prompt_builder import steer_user_row
+
+    row = steer_user_row("use beta instead") if steer else {"role": "user", "content": "use beta instead"}
+    seen = []
+    scoped.ctx.register_middleware("tool_selection", lambda **kw: seen.append(kw) or proposal(kw, ["selection_beta"]))
+    agent = make_agent()
+    try:
+        agent.run_conversation(row["content"], persist_user_display_kind=row.get("display_kind"))
+        assert seen[-1]["task_context"] == {"current_user_message": row["content"], "recent_messages": [], "partial": False}
+        agent.run_conversation("now continue", conversation_history=[row, {"role": "assistant", "content": "ack"}])
+        assert seen[-1]["task_context"] == {"current_user_message": "now continue", "partial": False,
+                                           "recent_messages": [{"role": "user", "content": row["content"]},
+                                                               {"role": "assistant", "content": "ack"}]}
+        assert len(seen) == 2
+        assert "selection_beta" in {s["name"] for s in sdk_bodies[-1]["tools"]}
+    finally:
+        agent.client.close()
+
+
+@pytest.fixture
+def volatile_tool(scoped):
+    from tools.registry import no_cache_check_fn
+
+    state = SimpleNamespace(available=True, calls=[], probes=[])
+    @no_cache_check_fn
+    def available():
+        state.probes.append(state.available)
+        return state.available
+    scoped.ctx.register_tool("selection_volatile", "mcp-selection-test", schema("selection_volatile"),
+                             lambda args, **kw: state.calls.append(args) or '{"executed":true}', check_fn=available)
+    return state
+
+
+@pytest.mark.parametrize("concurrent", [False, True])
+@pytest.mark.parametrize("deferred", [False, True], ids=["direct", "bridge"])
+def test_availability_loss_and_recovery_at_native_dispatch(scoped, volatile_tool, concurrent, deferred):
+    from tools.registry import registry
+
+    agent = make_agent()
+    state = volatile_tool
+    def execute():
+        return (bridge(agent, "selection_volatile", concurrent=concurrent) if deferred else
+                dispatch(agent, "selection_volatile", {"value": "ok"}, concurrent=concurrent))
+    try:
+        assert "selection_volatile" in tool_names(selection.authorized_catalog(agent))
+        state.available = False
+        assert registry.get_definitions({"selection_volatile"}, quiet=True) == []
+        assert "selection_volatile" not in tool_names(selection.authorized_catalog(agent))
+        assert "error" in execute() and state.calls == []
+        state.available = True
+        assert execute() == {"executed": True}
+        state.calls.clear()
+        # A second revocation happens AFTER admission, in the actual native hook.
+        hook = scoped.ctx.register_hook("pre_tool_call", lambda **kw: setattr(state, "available", False))
+        assert "error" in execute() and state.calls == []
+        hook.release()
+        state.available = True
+        assert execute() == {"executed": True}
+        assert state.calls == [{"value": "ok"}]
+    finally:
+        agent.client.close()
+
+
+def test_native_request_availability_recovery_and_default_memo(scoped, volatile_tool, sdk_bodies):
+    import model_tools
+
+    state = volatile_tool
+    seen = []
+    def route(**kw):
+        seen.append(kw)
+        return proposal(kw, [r["name"] for r in kw["catalog"] if r["name"] == "selection_volatile"])
+    scoped.ctx.register_middleware("tool_selection", route)
+    # Warm the default schema memo exactly as the old authorized_catalog path did.
+    kwargs = {"enabled_toolsets": ["mcp-selection-test"], "quiet_mode": True, "skip_tool_search_assembly": True}
+    warm = model_tools.get_tool_definitions(**kwargs)
+    probes = len(state.probes)
+    assert model_tools.get_tool_definitions(**kwargs) == warm
+    assert len(state.probes) == probes
+    agent = make_agent()
+    try:
+        for available in (True, False, True):
+            state.available = available
+            # Same-turn assembly must invalidate the cached decision on availability drift.
+            offered = selection.tools_for_request(agent)
+            assert ("selection_volatile" in tool_names(offered)) == available
+            agent.run_conversation("use the volatile capability")
+            assert ("selection_volatile" in {s["name"] for s in sdk_bodies[-1]["tools"]}) == available
+            assert ("selection_volatile" in {r["name"] for r in seen[-1]["catalog"]}) == available
+            assert ("selection_volatile" in dispatch(agent, "tool_describe", {"names": ["selection_volatile"]})["tools"]) == available
+            # The authoritative path neither clears nor overwrites default prefix caches.
+            probes = len(state.probes)
+            assert model_tools.get_tool_definitions(**kwargs) == warm
+            assert len(state.probes) == probes
+        revisions = [seen[i]["catalog_revision"] for i in (0, 2, 4)]
+        assert revisions[0] != revisions[1] and revisions[0] == revisions[2]
+    finally:
+        agent.client.close()
+
+
+def test_availability_changes_during_callback_reject_stale_decision(scoped, volatile_tool):
+    state = volatile_tool
+    def route(**kw):
+        state.available = False
+        return proposal(kw, ["selection_volatile"])
+    handle = scoped.ctx.register_middleware("tool_selection", route)
+    agent = make_agent()
+    try:
+        assert tool_names(selection.tools_for_request(agent)) == BRIDGE_TOOL_NAMES
+        assert "selection_volatile" not in agent.valid_tool_names
+        handle.release()
+        state.available = True
+        scoped.ctx.register_middleware("tool_selection", lambda **kw: proposal(kw, ["selection_volatile"]))
+        assert "selection_volatile" in tool_names(selection.tools_for_request(agent))
+    finally:
+        agent.client.close()
+
+
+def test_authoritative_catalog_preserves_registry_probe_ttl(scoped, monkeypatch):
+    import importlib
+    reg = importlib.import_module("tools.registry")
+    state = SimpleNamespace(available=False, probes=0, now=1000.0)
+    def available():
+        state.probes += 1
+        return state.available
+    monkeypatch.setattr(reg, "time", SimpleNamespace(monotonic=lambda: state.now))
+    scoped.ctx.register_tool("selection_ttl", "mcp-selection-test", schema("selection_ttl"),
+                             lambda args, **kw: '{}', check_fn=available)
+    agent = make_agent()
+    try:
+        assert "selection_ttl" not in tool_names(selection.authorized_catalog(agent))
+        probes = state.probes
+        state.available = True
+        assert "selection_ttl" not in tool_names(selection.authorized_catalog(agent))
+        assert state.probes == probes  # bypass the schema memo, NOT the registry TTL
+        state.now += reg._CHECK_FN_TTL_SECONDS + 1
+        assert "selection_ttl" in tool_names(selection.authorized_catalog(agent))
+        assert state.probes == probes + 1
+        state.available = False
+        state.now += reg._CHECK_FN_FAILURE_GRACE_SECONDS + reg._CHECK_FN_TTL_SECONDS + 1
+        assert "selection_ttl" not in tool_names(selection.authorized_catalog(agent))
+        assert state.probes == probes + 2
+    finally:
+        agent.client.close()

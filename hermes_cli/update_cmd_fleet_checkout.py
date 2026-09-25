@@ -14,6 +14,13 @@ from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_
 
 logger = logging.getLogger(__name__)
 
+# Stamp-baked provenance per version_info: any of these means the running tree has no
+# history to walk, so "contained" collapses to "equal to the stamp". "git" is live git
+# (history exists); "unknown" carries no sha at all and stays fail-closed below.
+_STAMPED_SOURCES = frozenset(
+    {"build", "commit-build", "ci", "docker", "fallback", "local", "nix"}
+)
+
 
 def checkout_contains(sha: str) -> bool:
     """True when ``sha`` is an ancestor of (or equal to) the code this checkout runs; False on any
@@ -21,16 +28,16 @@ def checkout_contains(sha: str) -> bool:
 
     Fail-closed on purpose: an unknown ancestry is not evidence that the fleet serves the update.
 
-    A Docker/Cloud image has no ``.git``; its identity is the baked build stamp
-    (``build_info.get_code_identity`` → ``source == "build-file"``). There is no history to walk, so
+    A Docker/Cloud/Nix image has no ``.git``; its identity is the baked install stamp
+    (``version_info.get_code_identity`` → a stamped ``source``). There is no history to walk, so
     "contained" collapses to "equal to the stamp" — without this the probe was always False on an
     image and the pending-restart catch-up printed "every gateway serves the checkout" and "still
     off the checkout code" in the same breath.
     """
-    from hermes_cli.build_info import get_code_identity
     from hermes_cli.update_cmd import _m
+    from hermes_cli.version_info import get_code_identity
     identity = get_code_identity() or {}
-    if identity.get("source") == "build-file":
+    if identity.get("source") in _STAMPED_SOURCES:
         stamped = str(identity.get("sha") or "")
         return bool(stamped) and (stamped == sha or stamped.startswith(sha) or sha.startswith(stamped))
     try:

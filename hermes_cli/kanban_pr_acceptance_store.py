@@ -41,5 +41,12 @@ def record_acceptance(conn, task_id, acceptance):
     _append_event(conn, task_id, "pr_acceptance", receipt, run_id=snapshot[0])
     if not receipt["ok"]:
         detail = f"PR acceptance {receipt['classification']}: {receipt.get('detail', '')} {receipt['recovery']}"
-        conn.execute("UPDATE tasks SET last_failure_error=? WHERE id=?", (detail, task_id))
+        # Acceptance diagnostics have their own durable receipt above. Never
+        # replace a worker failure: the dispatcher still uses it to decide
+        # whether this card may spawn, independently of publication acceptance.
+        conn.execute(
+            "UPDATE tasks SET last_failure_error=? WHERE id=? "
+            "AND (last_failure_error IS NULL OR last_failure_error = '')",
+            (detail, task_id),
+        )
     return receipt["ok"]

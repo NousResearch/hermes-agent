@@ -6,7 +6,7 @@ import pytest
 from hermes_cli.linux_desktop_entry import install_desktop_entry
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 def test_launcher_optout_preserves_custom_entry_but_creates_missing(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()

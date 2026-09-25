@@ -1,7 +1,6 @@
 """Tests for plugins.platforms.feishu.adapter — Feishu scan-to-create registration."""
 
 import json
-import sys
 from unittest.mock import patch, MagicMock
 import pytest
 
@@ -202,7 +201,8 @@ class TestQrRegister:
     def test_qr_fallback_tip_targets_active_interpreter(
         self, mock_init, mock_begin, mock_poll, mock_render, capsys
     ):
-        """#111695: the install tip must target the running venv (uv, no pip module)."""
+        """#111695: the install tip goes through PM, never a bare pip that targets the wrong env."""
+        from pm import install_hint
         from plugins.platforms.feishu.adapter import _qr_register_inner
 
         mock_begin.return_value = {
@@ -217,7 +217,8 @@ class TestQrRegister:
 
         output = capsys.readouterr().out
         assert "https://example.com/qr" in output
-        assert sys.executable in output
+        assert install_hint("messaging") in output
+        assert "pip install" not in output
 
     # -- Contract: expected errors → None, unexpected errors → propagate --
 

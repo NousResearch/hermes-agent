@@ -223,7 +223,7 @@ def stable_device_id() -> str:
     """Per-device label at ~/.hermes/skills/.sync_device_id. An existing file always wins; else seeded
     from HERMES_SYNC_DEVICE_NAME (first use only, for Hermes Cloud) or a friendly default, then persisted."""
     with suppress(OSError):
-        val = _device_id_path().read_text(encoding="utf-8").strip()
+        val = _device_id_path().read_text(encoding="utf-8-sig").strip()
         if val:
             return val
     val = (os.environ.get("HERMES_SYNC_DEVICE_NAME") or "").strip() or _default_device_label()
@@ -259,7 +259,7 @@ _EMPTY_STATE: Dict[str, Any] = {"head": None, "skills": {}}
 def _load_state_file(path: Path, what: str = "sync state read") -> Optional[Dict[str, Any]]:
     """Parse a state file; None if missing / corrupt / not a dict."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("skills_sync_client: %s failed: %s", what, e)
         return None

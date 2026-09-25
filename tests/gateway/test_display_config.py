@@ -1,6 +1,5 @@
 """Tests for gateway.display_config — per-platform display/verbosity resolver."""
 
-
 # ---------------------------------------------------------------------------
 # Resolver: resolution order
 # ---------------------------------------------------------------------------
@@ -22,7 +21,6 @@ class TestToolProgressProvenance:
         ]
         for display, env, expected in cases:
             assert resolve_tool_progress({"display": display}, "slack", env) == expected
-
 
 class TestResolveDisplaySetting:
     """resolve_display_setting() resolves with correct priority."""
@@ -53,7 +51,6 @@ class TestResolveDisplaySetting:
         }
         assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
 
-
     def test_platform_override_only_affects_that_platform(self):
         """Other platforms are unaffected by a specific platform override."""
         from gateway.display_config import resolve_display_setting
@@ -68,7 +65,6 @@ class TestResolveDisplaySetting:
         }
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "all"
-
 
 # ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides
@@ -93,7 +89,6 @@ class TestBackwardCompat:
         assert resolve_display_setting(config, "signal", "tool_progress") == "off"
         assert resolve_display_setting(config, "telegram", "tool_progress") == "verbose"
 
-
 # ---------------------------------------------------------------------------
 # YAML normalisation
 # ---------------------------------------------------------------------------
@@ -107,7 +102,6 @@ class TestYAMLNormalisation:
 
         config = {"display": {"tool_progress": False}}
         assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
-
 
     def test_only_long_running_visibility_accepts_generic_mode(self):
         from gateway.display_config import resolve_display_setting
@@ -132,7 +126,6 @@ class TestYAMLNormalisation:
 
         config = {"display": {"platforms": {"whatsapp": {"thinking_progress": "false"}}}}
         assert resolve_display_setting(config, "whatsapp", "thinking_progress") is False
-
 
 # ---------------------------------------------------------------------------
 # Built-in platform defaults (tier system)
@@ -208,7 +201,7 @@ class TestConfigMigration:
 
     def test_migration_creates_platforms_entries(self, tmp_path, monkeypatch):
         """Old overrides are migrated into display.platforms.<plat>.tool_progress."""
-        import yaml
+        import hermes_yaml as yaml
 
         config_path = tmp_path / "config.yaml"
         config = {
@@ -220,7 +213,7 @@ class TestConfigMigration:
                 },
             },
         }
-        config_path.write_text(yaml.dump(config), encoding="utf-8")
+        config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         # Re-import to pick up the new HERMES_HOME
@@ -235,14 +228,12 @@ class TestConfigMigration:
         assert platforms.get("signal", {}).get("tool_progress") == "off"
         assert platforms.get("telegram", {}).get("tool_progress") == "all"
 
-
 # ---------------------------------------------------------------------------
 # Streaming per-platform (None = follow global)
 # ---------------------------------------------------------------------------
 
 class TestStreamingPerPlatform:
     """Streaming per-platform override semantics."""
-
 
     def test_explicit_false_disables(self):
         """Explicit False disables streaming for that platform."""
@@ -255,18 +246,12 @@ class TestStreamingPerPlatform:
         }
         assert resolve_display_setting(config, "telegram", "streaming") is False
 
-
-
-
-
 # ---------------------------------------------------------------------------
 # cleanup_progress — opt-in deletion of temporary progress bubbles
 # ---------------------------------------------------------------------------
 
 class TestCleanupProgress:
     """``cleanup_progress`` is off by default and resolvable per-platform."""
-
-
 
     def test_yaml_true_string_normalises_to_true(self):
         """String 'true'/'yes'/'on' all resolve to True."""
@@ -279,11 +264,3 @@ class TestCleanupProgress:
                 }
             }
             assert resolve_display_setting(config, "telegram", "cleanup_progress") is True, val
-
-
-
-
-
-
-
-

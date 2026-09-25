@@ -65,7 +65,7 @@ def _scan_source(content: str, rel_path: str) -> List[Finding]:
 
 def _scan_file(py: Path, rel: str) -> List[Finding]:
     try:
-        return _scan_source(py.read_text(encoding="utf-8", errors="replace"), rel)
+        return _scan_source(py.read_text(encoding="utf-8-sig", errors="replace"), rel)
     except OSError:
         return []
 

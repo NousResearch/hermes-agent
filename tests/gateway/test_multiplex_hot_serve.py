@@ -161,7 +161,7 @@ async def test_profile_control_verbs_round_trip_and_refusals(tmp_path, monkeypat
         assert runner._profile_adapters["worker"][Platform.DISCORD].token.endswith("new-worker-token\n")
 
 
-@pytest.mark.linux_only
+@pytest.mark.platforms("linux")
 @pytest.mark.asyncio
 async def test_profile_lifecycle_over_real_control_socket(tmp_path, monkeypatch):
     from gateway.run import _start_gateway_start_control_socket

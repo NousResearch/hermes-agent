@@ -252,7 +252,7 @@ def _hermes_holder_subcommand(cmdline: str) -> str | None:
     # ``python -c <src> … -m hermes_cli.main <subcommand>``: the entry token belongs to the argv the
     # inline source carries for a LATER spawn, not to this holder (#107002).
     from gateway.status import command_line_runs_inline_source
-    if command_line_runs_inline_source([t.strip('"').replace("\\", "/").lower() for t in tokens]):
+    if command_line_runs_inline_source([t.strip('"').replace("\\", "/") for t in tokens]):
         return None
     value_flags = _holder_value_flags()
     i = entry_idx + 1

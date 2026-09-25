@@ -528,12 +528,9 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
     return None
 
 
-# ``-c``, and the combined short-option spellings CPython accepts for it (``-uc``, ``-Ic``…).
-_INLINE_SOURCE_FLAG_RE = re.compile(r"-[A-Za-z]*c")
 
-
-def command_line_runs_inline_source(tokens: list[str]) -> bool:
-    """True when *tokens* is an interpreter running INLINE SOURCE (``python -c <src> [args]``).
+def inline_source_flag_index(tokens: list[str]) -> int | None:
+    """Index of the ``-c`` token when *tokens* is an interpreter running INLINE SOURCE, else None.
 
     Everything after ``-c`` is data the inline program receives, not this process's own identity.
     The detached gateway restart watcher (``gateway._spawn_gateway_restart_watcher``) is spawned as
@@ -543,13 +540,52 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
 
     Only interpreter options may precede ``-c``; the first non-option token ends the option block
     (``python -m hermes_cli.main …`` therefore never matches).
+
+    The walk is VALUE-AWARE: ``-X``/``-W``/``-Q`` and ``--check-hash-based-pycs``/``--jit`` take a
+    SEPARATE operand, so a naive "first non-option token ends the block" walk mistakes that operand
+    for the end of the block and never reaches the ``-c`` behind it (``python -X utf8 -c <src> …``
+    was still read as a live gateway). The operand sets are the canonical ones in
+    ``hermes_state_holders``, not a second hand-rolled copy.
+
+    *tokens* must be CASE-PRESERVING: the operand-taking ``-Q``/``-W``/``-X`` differ from the
+    operand-less ``-q``/``-b``, so a lowercased argv would skip the token after a plain ``-q``.
     """
-    for token in tokens[1:]:
-        if _INLINE_SOURCE_FLAG_RE.fullmatch(token):
-            return True
-        if not token.startswith("-"):
-            return False
-    return False
+    from hermes_state_holders import (
+        _PYTHON_LONG_OPTIONS_WITH_OPERANDS,
+        _PYTHON_SHORT_OPTIONS_WITH_OPERANDS,
+    )
+
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--":
+            return None
+        if token in _PYTHON_LONG_OPTIONS_WITH_OPERANDS:
+            index += 2  # the next token is this option's operand, not the end of the option block
+            continue
+        if token.startswith("--"):
+            index += 1  # ``--opt=value`` and operand-less long options
+            continue
+        if not token.startswith("-") or token == "-":
+            return None
+        # Clustered short options (``-uc``, ``-IsB``). An operand-taking letter consumes the rest of
+        # the cluster as its attached value, or the following token when the cluster ends there --
+        # so ``-Xc`` is ``-X c``, NOT an inline-source ``-c``.
+        cluster = token[1:]
+        for position, letter in enumerate(cluster):
+            if letter == "c":
+                return index
+            if letter in _PYTHON_SHORT_OPTIONS_WITH_OPERANDS:
+                index += 1 if cluster[position + 1 :] else 2
+                break
+        else:
+            index += 1
+    return None
+
+
+def command_line_runs_inline_source(tokens: list[str]) -> bool:
+    """True when *tokens* is an interpreter running INLINE SOURCE (``python -c <src> [args]``)."""
+    return inline_source_flag_index(tokens) is not None
 
 
 def _gateway_command_subcommand(command: str | None) -> str | None:
@@ -565,13 +601,15 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     except ValueError:
         raw_tokens = command.split()
     # Strip surrounding quotes, normalize slashes + case per token.
-    tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
+    cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    tokens = [t.lower() for t in cased_tokens]
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
-    # the inline source will spawn later, not to this process (#107002).
-    if command_line_runs_inline_source(tokens):
+    # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
+    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
+    if command_line_runs_inline_source(cased_tokens):
         return None
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
@@ -630,13 +668,14 @@ def gateway_spawn_intent_subcommand(command: str | None) -> str | None:
         raw_tokens = shlex.split(command, posix=False)
     except ValueError:
         raw_tokens = command.split()
-    tokens = [t.strip("\"'").replace("\\", "/").lower() for t in raw_tokens]
-    if not command_line_runs_inline_source(tokens):
+    cased_tokens = [t.strip("\"'").replace("\\", "/") for t in raw_tokens]
+    flag_index = inline_source_flag_index(cased_tokens)
+    if flag_index is None:
         return None
     # Skip the interpreter, its options, ``-c`` and the source literal; then try every suffix —
     # the embedded argv starts at an unknown offset (the watcher prefixes it with the old PID).
-    start = next(i for i, t in enumerate(tokens[1:], start=1) if _INLINE_SOURCE_FLAG_RE.fullmatch(t)) + 2
-    for i in range(start, len(tokens)):
+    start = flag_index + 2
+    for i in range(start, len(cased_tokens)):
         nested = _gateway_command_subcommand(" ".join(raw_tokens[i:]))
         if nested is not None:
             return nested

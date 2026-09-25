@@ -3,7 +3,7 @@
 import asyncio
 import threading
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -446,16 +446,10 @@ async def test_compress_command_cleanup_does_not_block_event_loop():
     ]
     runner = _make_runner(history)
 
-    close_started = threading.Event()
     release_close = threading.Event()
-
-    def slow_close():
-        close_started.set()
-        release_close.wait(timeout=5)
 
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
-    agent_instance.close = slow_close
     agent_instance._cached_system_prompt = ""
     agent_instance.tools = None
     agent_instance.context_compressor.has_content_to_compress.return_value = True
@@ -479,37 +473,46 @@ async def test_compress_command_cleanup_does_not_block_event_loop():
             ticks["n"] += 1
             await asyncio.sleep(0.005)
 
-    def _observer():
-        # threading.Event wait does not need the event loop. Sample ticks
-        # while close() is still held so an on-loop teardown is visible.
-        if not close_started.wait(timeout=5):
-            observed["error"] = "close() never started"
-            release_close.set()
-            return
+    def slow_close():
+        observed["close_started"] = True
         baseline = ticks["n"]
-        time.sleep(0.12)
-        observed["ticks_during_block"] = ticks["n"] - baseline
-        release_close.set()
 
+        def _observer():
+            # Start observation from the cleanup call itself. This excludes all
+            # unrelated setup/import time before teardown begins.
+            time.sleep(0.12)
+            observed["ticks_during_block"] = ticks["n"] - baseline
+            release_close.set()
+
+        observer = threading.Thread(target=_observer, name="compress-cleanup-observer", daemon=True)
+        observer.start()
+        release_close.wait()
+        observer.join()
+
+    agent_instance.close = slow_close
     hb = asyncio.create_task(_heartbeat())
-    observer = threading.Thread(target=_observer, name="compress-cleanup-observer", daemon=True)
-    observer.start()
 
     with (
-        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
-        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch.object(
+            runner,
+            "_resolve_session_agent_runtime",
+            return_value=("test-model", {"api_key": "***"}),
+        ),
+        patch.object(
+            runner,
+            "_build_manual_compression_agent",
+            AsyncMock(return_value=agent_instance),
+        ),
         patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
     ):
         result = await runner._handle_compress_command(_make_event())
 
-    observer.join(timeout=5)
     stop.set()
     await hb
     runner._shutdown_executor()
 
     assert "Compressed:" in result
-    assert "error" not in observed, observed.get("error")
+    assert observed.get("close_started") is True
     assert observed.get("ticks_during_block", 0) >= 5, (
         "event loop was blocked during manual /compress cleanup: only "
         f"{observed.get('ticks_during_block')} ticks while agent.close() was running"

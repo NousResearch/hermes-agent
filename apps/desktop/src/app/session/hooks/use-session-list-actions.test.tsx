@@ -18,6 +18,7 @@ import {
   $sessionProfilesTruncated,
   $sessionProfilesUsage,
   $sessions,
+  $sessionsLoadError,
   $sessionsLoading,
   setCronSessions,
   setMessagingPlatformTotals,
@@ -26,6 +27,7 @@ import {
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
   setSessions,
+  setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
 
@@ -119,6 +121,7 @@ beforeEach(() => {
   setSessionProfilesTruncated({})
   setSessionProfilesUsage({})
   setSessionsLoading(false)
+  setSessionsLoadError(false)
 })
 
 afterEach(() => {
@@ -131,6 +134,71 @@ afterEach(() => {
   setSessionProfilesTruncated({})
   setSessionProfilesUsage({})
   setSessionsLoading(false)
+  setSessionsLoadError(false)
+})
+
+// #67600: a cold-start read that fails must not render as "No sessions yet".
+describe('refreshSessions cold-start load error', () => {
+  const failedScan = (storage?: Record<string, 'corrupt'>): SidebarSessionsResponse => ({
+    ...sidebar({ sessions: [] }),
+    errors: [{ error: 'boom', profile: 'default' }],
+    storage
+  })
+
+  it('flags a thrown first read and clears the flag once a retry lands rows', async () => {
+    listSidebarSessions.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions().catch(() => undefined)
+    })
+
+    expect($sessionsLoadError.get()).toBe(true)
+    expect($sessionsLoading.get()).toBe(false)
+
+    listSidebarSessions.mockResolvedValueOnce(sidebar({ sessions: [row('a')] }))
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionsLoadError.get()).toBe(false)
+    expect($sessions.get().map(s => s.id)).toEqual(['a'])
+  })
+
+  it('flags a reported scan failure that leaves the list empty', async () => {
+    listSidebarSessions.mockResolvedValueOnce(failedScan())
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionsLoadError.get()).toBe(true)
+  })
+
+  it('leaves a corrupt store to its own notice instead of offering retry', async () => {
+    listSidebarSessions.mockResolvedValueOnce(failedScan({ default: 'corrupt' }))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions()
+    })
+
+    expect($sessionsLoadError.get()).toBe(false)
+  })
+
+  it('never flags a failed refresh over rows already on screen', async () => {
+    setSessions([row('a')])
+    listSidebarSessions.mockRejectedValueOnce(new Error('ECONNREFUSED'))
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+
+    await act(async () => {
+      await result.current.refreshSessions().catch(() => undefined)
+    })
+
+    expect($sessionsLoadError.get()).toBe(false)
+    expect($sessions.get().map(s => s.id)).toEqual(['a'])
+  })
 })
 
 describe('refreshSessions identity + loading hygiene', () => {

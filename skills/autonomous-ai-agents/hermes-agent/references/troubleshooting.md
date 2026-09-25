@@ -2,7 +2,7 @@
 
 ### Voice not working
 1. Check `stt.enabled: true` in config.yaml
-2. Verify provider: `pip install faster-whisper` or set API key
+2. Verify provider: `python -c "import pm; pm.sync_venv(['stt-whisper'], explicit=True)"` or set API key
 3. In gateway: `/restart`. In CLI: exit and relaunch.
 
 ### Tool not available

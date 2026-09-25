@@ -36,6 +36,7 @@ import {
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
   setSessions,
+  setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
@@ -271,6 +272,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       const showLoading = $sessions.get().length === 0
 
       if (showLoading && shouldPublish()) {
+        setSessionsLoadError(false)
         setSessionsLoading(true)
       }
 
@@ -323,8 +325,12 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
         if (owns()) {
           const recents = result.recents
+          const recentsErrors = recents.errors ?? result.errors
 
           setCorruptSessionStores(result.storage)
+          // A damaged store already has its own notice; Retry can't repair it.
+          const retryableErrors = recentsErrors?.filter(e => !result.storage?.[e.profile])
+          setSessionsLoadError(Boolean(showLoading && retryableErrors?.length && recents.sessions.length === 0))
 
           // Drop rows the user just deleted/archived: a refresh can race an
           // in-flight mutation and the backend page still carries the doomed row.
@@ -348,7 +354,6 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
           // top of the rows it already read (the old exact totals ran a COUNT(*)
           // per profile DB on every refresh). Reference-stable when unchanged so
           // the sidebar's group memos don't recompute per refresh.
-          const recentsErrors = recents.errors ?? result.errors
           setSessionProfilesTruncated(prev => {
             const next = keepFailedProfileMeta(prev, recents.profiles_truncated ?? {}, recentsErrors)
             const prevKeys = Object.keys(prev)
@@ -403,6 +408,12 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
             messagingErrors?.length ? prev : result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT
           )
         }
+      } catch (error) {
+        if (owns() && showLoading) {
+          setSessionsLoadError(true)
+        }
+
+        throw error
       } finally {
         // Request identity preserves the zero-argument refresh contract across a
         // failed activation epoch; an explicit owner predicate is stronger and

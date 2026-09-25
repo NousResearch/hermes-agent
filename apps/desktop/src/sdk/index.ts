@@ -106,6 +106,7 @@ import {
 import { runGatewayRestart } from '@/store/system-actions'
 import type { PaginatedSessions, UsageStats } from '@/types/hermes'
 
+import { pluginDecisions, profiles, skills, toolsets } from './bridge'
 import { composerHost } from './composer'
 import { planPluginOpenSession } from './plugin-open-session-plan'
 import { sessionsHost } from './sessions'
@@ -922,6 +923,13 @@ export const host = {
   /** Session-list mutations (pin, reorder, colour) — see `./sessions`. */
   sessions: sessionsHost,
 
+  /** Typed capabilities bridge — see `./bridge.ts`. `pluginDecisions` is
+   *  read-only: plugin toggling stays in the app's Plugins tab. */
+  skills,
+  toolsets,
+  profiles,
+  pluginDecisions,
+
   /** Open a stored session the way core surfaces do. A plugin/Bot Mode open
    *  is navigation, not a workspace or chrome API-home switch —
    *  keepAllProfilesScope defaults true so `$activeGatewayProfile` /
@@ -1598,7 +1606,9 @@ export {
   type ComposerAtCompletionItem,
   type ComposerAtCompletionSource,
   type ComposerAttachmentProvider,
-  type ComposerMiddleware
+  type ComposerMiddleware,
+  type ComposerModelPillContext,
+  type ComposerModelPillProvider
 } from '@/app/chat/composer/contrib'
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
@@ -1660,6 +1670,12 @@ export {
   type SidebarNavContribution,
   WORKSPACE_PAGE_HEADER_AREA
 } from '@/app/routes'
+/** Appearance settings' plugin seam: register a render contribution at
+ *  `APPEARANCE_AREAS.extra` to add controls at the end of the Appearance page.
+ *  `ColorSwatches` is the app's own swatch grid (profile rail / project dialog
+ *  look) — use it for colour picking instead of driving app widgets through
+ *  React internals; pair it with `host.sessions.setColor` for session colours. */
+export { APPEARANCE_AREAS } from '@/app/settings/appearance-contrib'
 
 /** THE settings rows: `ListRow` is label + description with the control beside
  *  it (wide) or under it (narrow); `ToggleRow` is the one on/off row — a Switch,
@@ -1759,6 +1775,10 @@ export { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
  *  layout classes — it just bakes in `type="button"` and a stable `data-slot`.
  *  Use it for rows and regions; `Button` is for ordinary compact actions. */
 export { RowButton } from '@/components/ui/row-button'
+/** The sanctioned embed primitive for external web content: a sandboxed
+ *  iframe (opaque origin, `allow-scripts` by default) — never a raw
+ *  `<webview>`, which would land on the app's own preview partition. */
+export { SandboxedFrame, type SandboxedFrameProps } from '@/components/ui/sandboxed-frame'
 export { ScrollArea } from '@/components/ui/scroll-area'
 export { SearchField } from '@/components/ui/search-field'
 export { SegmentedControl } from '@/components/ui/segmented-control'
@@ -1850,6 +1870,8 @@ export { formatModifierToken } from '@/lib/keybinds/combo'
  *  a renderer that stays open for days. Only for values that can be
  *  regenerated — eviction costs a recompute or a refetch, never correctness. */
 export { LruCache } from '@/lib/lru-cache'
+/** Capture a gateway file download alongside a REST read (see the SDK guide). */
+export { captureGatewayFileDownload } from '@/lib/media'
 /** The app's deterministic identity color for a name (profiles, assignees,
  *  authors), its translucent tag fill, and the curated picker swatches — so
  *  plugin-rendered identities read the same hue as everywhere else. The
@@ -1912,6 +1934,12 @@ export { cn } from '@/lib/utils'
  *  is gone. Pass the owning profile — a hidden session has no row to read it
  *  from, and the persisted half is bucketed per profile. */
 export { ackStoredSessionId, forgetSessionUnread, markSessionUnreadFinished } from '@/store/session-unread'
+/** `sidebarNav.prefs`: hide / re-order the sidebar's nav rows by CONTRIBUTING a
+ *  preference (union of hides, `capabilities` never hidden; the first order
+ *  in registry area order — lowest `order`, then registration — wins). A
+ *  contribution, not a `host.sidebar` verb, so it is attributed and dropped
+ *  on disable. */
+export { SIDEBAR_NAV_PREFS_AREA, type SidebarNavPrefsContribution } from '@/store/sidebar-nav'
 /** Live accent override — set a hex and the ACTIVE theme repaints with its
  *  accent family re-seeded from it (see `retintTheme`); `null` restores the
  *  authored palette. Deliberately not persisted: it is an authoring knob, not

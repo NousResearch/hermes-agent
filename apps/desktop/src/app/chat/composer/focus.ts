@@ -500,9 +500,7 @@ export const requestComposerGetDraft = (
   const token = ++draftToken
 
   const promise =
-    cleaned.length || active
-      ? requestDraftOnce('get', GET_DRAFT_EVENT, { active, ids: cleaned, token })
-      : null
+    cleaned.length || active ? requestDraftOnce('get', GET_DRAFT_EVENT, { active, ids: cleaned, token }) : null
 
   if (!promise) {
     return Promise.resolve(null)
@@ -515,19 +513,13 @@ export const requestComposerGetDraft = (
  *  re-renders through `renderComposerContents`, so `@`-ref / `/`-command
  *  tokens hydrate as chips exactly like official paste). Returns false when
  *  no mounted surface answers; never writes another session's composer. */
-export const requestComposerSetDraft = (
-  ids: string[],
-  text: string,
-  opts?: { active?: boolean }
-): Promise<boolean> => {
+export const requestComposerSetDraft = (ids: string[], text: string, opts?: { active?: boolean }): Promise<boolean> => {
   const cleaned = [...new Set(ids.map(id => id?.trim()).filter(Boolean))] as string[]
   const active = opts?.active === true
   const token = ++draftToken
 
   const promise =
-    cleaned.length || active
-      ? requestDraftOnce('set', SET_DRAFT_EVENT, { active, ids: cleaned, text, token })
-      : null
+    cleaned.length || active ? requestDraftOnce('set', SET_DRAFT_EVENT, { active, ids: cleaned, text, token }) : null
 
   return promise ? promise.then(reply => reply?.ok === true) : Promise.resolve(false)
 }
@@ -588,7 +580,9 @@ export const onComposerDraftRequests = (
     } else if (e.type === SET_DRAFT_EVENT) {
       const ok = handlers.write(e.detail.text ?? '')
 
-      window.dispatchEvent(new CustomEvent<DraftReplyDetail>(DRAFT_REPLY_EVENT, { detail: { ok, token: e.detail.token } }))
+      window.dispatchEvent(
+        new CustomEvent<DraftReplyDetail>(DRAFT_REPLY_EVENT, { detail: { ok, token: e.detail.token } })
+      )
     }
   }
 
@@ -642,7 +636,7 @@ export const onComposerSubmitRequest = (handler: (detail: SubmitDetail) => void)
   subscribe<SubmitDetail>(SUBMIT_EVENT, handler)
 
 /** Toggle ONE composer's voice conversation — the `composer.voice` hotkey
- *  (Ctrl+B) reaches the composer that owns voice. Defaults to the active
+ *  reaches the composer that owns voice. Defaults to the active
  *  composer so N tiles don't all flip together. */
 export const requestVoiceToggle = (target: ComposerTarget | 'active' = 'active') =>
   dispatch<{ target: ComposerTarget }>(VOICE_TOGGLE_EVENT, { target: resolve(target) })

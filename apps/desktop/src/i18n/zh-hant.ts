@@ -4,6 +4,12 @@ import { defineLocale } from './define-locale'
 import { introZhHant } from './intro-zh-hant'
 
 export const zhHant = defineLocale({
+  externalOpenFailed: {
+    title: '無法開啟此連結',
+    message: '沒有註冊用於開啟此位址的瀏覽器。請複製連結並手動開啟。',
+    copyUrl: '複製連結',
+    close: '關閉'
+  },
   intro: introZhHant,
   sessionImport: {
     title: '從其他應用程式繼續',
@@ -159,6 +165,8 @@ export const zhHant = defineLocale({
   },
 
   notifications: {
+    sharedProfileWarning:
+      '另一個 Hermes 安裝實例正在使用此設定檔。兩個實例共用此設定檔的設定和資料，因此變更可能發生衝突。你可以繼續使用，也可以在變更前關閉另一個實例。',
     region: '通知',
     hide: '隱藏',
     show: '顯示',
@@ -1029,40 +1037,7 @@ export const zhHant = defineLocale({
       driverHealth: '驅動程式健康狀態'
     },
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `版本 ${value}`,
-      versionUnavailable: '版本不可用',
-      bundleOutOfSync: '應用程式建置版本過舊',
-      bundleOutOfSyncDesc:
-        'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
-      bundleOutOfSyncAction: '取得安裝程式',
-      bundleSwapPending: '重新啟動以完成更新',
-      bundleSwapPendingDesc:
-        '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
-      bundleSwapPendingAction: '重新啟動 Hermes',
-      updates: '更新',
-      checkNow: '立即檢查',
-      checking: '檢查中…',
-      seeWhatsNew: '查看新增內容',
-      updateNow: '立即更新',
-      releaseNotes: '發行說明',
-      onLatest: '你已是最新版本。',
-      installing: '正在安裝更新。',
-      cantUpdate: '此版本無法從應用程式內自行更新。',
-      cantReach: '無法連線到更新伺服器。',
-      tapCheck: '點選「立即檢查」以尋找更新。',
-      updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
-      updateReadyUnknown: '新更新已就緒。',
-      lastChecked: age => `上次檢查：${age}`,
-      justNowSuffix: ' · 剛剛',
-      automaticUpdates: '自動更新',
-      automaticUpdatesDesc: 'Hermes 會在背景自動檢查更新，並在有可用更新時通知你。',
-      branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
-      never: '從未',
-      justNow: '剛剛',
-      minAgo: count => `${count} 分鐘前`,
-      hoursAgo: count => `${count} 小時前`,
-      daysAgo: count => `${count} 天前`
+      updates: '更新'
     },
     config: {
       minimizeToTrayTitle: '最小化至系統匣',
@@ -1088,7 +1063,7 @@ export const zhHant = defineLocale({
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
       voiceShortcutHintTitle: '語音錄製快捷鍵',
       voiceShortcutHintDesc:
-        '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「開始 / 停止聽寫」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
+        '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
       showOptions: '顯示選項'
     },
     hudModifier: {
@@ -1366,6 +1341,7 @@ export const zhHant = defineLocale({
       }
     },
     localModels: {
+      connectionChanged: '本地模型連線已變更',
       title: '本地模型',
       runtimeTitle: '本地執行環境',
       runtimeReady: backend => `就緒 · ${backend}`,
@@ -1397,7 +1373,13 @@ export const zhHant = defineLocale({
       quickstartConfigure: '讓我選擇',
       downloaded: '已下載',
       downloadAction: size => `下載 · ${size}`,
-      downloadProgress: (done, total) => `正在下載 ${done} / ${total}`,
+      downloadProgress: (done, total) => `${done} / ${total}`,
+      downloadStatusRunning: '下載中',
+      downloadSpeed: rate => `${rate}`,
+      downloadEta: time => `剩餘約 ${time}`,
+      downloadPausedLabel: '已暫停',
+      downloadPauseAction: '暫停',
+      downloadResumeAction: '繼續',
       downloadDoneToast: model => `${model} 已就緒。`,
       installDoneToast: '本地執行環境已安裝就緒。',
       useAction: '使用',
@@ -1408,7 +1390,7 @@ export const zhHant = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——已設定的組建。`,
+      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend})。`,
       activeDetail: '新對話使用此模型——傳送首條訊息時載入',
       activeNotLoaded: '首條訊息時載入',
       loadedPill: '已載入',
@@ -1575,9 +1557,10 @@ export const zhHant = defineLocale({
         notice: {
           loggedOut: {
             title: '連接你的 Nous 帳戶',
-            message: '在 TUI 中執行 /portal，或開啟 Nous 入口網站連接帳戶。',
-            action: '開啟入口網站 ↗'
+            message: '登入你的 Nous 帳戶，即可在此查看餘額、方案和用量。',
+            action: '登入'
           },
+          openPortal: '開啟入口網站 ↗',
           noCard: {
             title: '尚未新增付款方式',
             message: '新增銀行卡後才能購買額度和使用自動儲值。請在入口網站中新增。',
@@ -3148,6 +3131,13 @@ export const zhHant = defineLocale({
   },
 
   updates: {
+    discontinuedTitle: '此版本的 Hermes 已停止支援',
+    discontinuedBody: '此版本的 Hermes 已停止支援，可能無法正常運作——請解除安裝。您的資料仍保留在磁碟上。',
+    channels: { stable: '穩定版', canary: '預覽版' },
+    bundleSwapPending: '重新啟動以完成更新',
+    bundleSwapPendingDesc:
+      '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
+    bundleSwapPendingAction: '重新啟動 Hermes',
     stages: {
       idle: '準備中…',
       prepare: '準備中…',
@@ -3170,6 +3160,7 @@ export const zhHant = defineLocale({
     connectionRetry: '請檢查網路連線後重試。',
     gitUnusable: 'Hermes 無法在這台電腦上執行 Git，因此無法檢查更新。',
     latestBody: '您正在執行最新版本。',
+    versionDetailsDistributionStore: 'Microsoft Store',
     latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',
@@ -3229,7 +3220,31 @@ export const zhHant = defineLocale({
       notAvailable: '此後端無法更新。',
       failed: '後端更新失敗。',
       noReturn: '後端未恢復連線。更新可能未完成——請檢查後端主機。'
-    }
+    },
+    // Restored About-card strings (moved from `settings.about.*` to `updates.*`).
+    version: value => `版本 ${value}`,
+    versionUnavailable: '版本不可用',
+    checkNow: '立即檢查',
+    seeWhatsNew: '查看新增內容',
+    releaseNotes: '發行說明',
+    onLatest: '你已是最新版本。',
+    installing: '正在安裝更新。',
+    cantReach: '無法連線到更新伺服器。',
+    tapCheck: '點選「立即檢查」以尋找更新。',
+    updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
+    updateReadyUnknown: '新更新已就緒。',
+    lastChecked: age => `上次檢查：${age}`,
+    never: '從未',
+    justNow: '剛剛',
+    minAgo: count => `${count} 分鐘前`,
+    hoursAgo: count => `${count} 小時前`,
+    daysAgo: count => `${count} 天前`,
+    justNowSuffix: ' · 剛剛',
+    bundleOutOfSync: '應用程式建置版本過舊',
+    bundleOutOfSyncDesc:
+      'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
+    bundleOutOfSyncAction: '取得安裝程式',
+    checkingShort: '檢查中…'
   },
 
   guidedGreeting: {

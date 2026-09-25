@@ -34,7 +34,7 @@ class MemoryInfo:
 
 def _read_int(path: Path) -> Optional[int]:
     try:
-        text = path.read_text(encoding="utf-8").strip()
+        text = path.read_text(encoding="utf-8-sig").strip()
     except OSError:
         return None
     return int(text) if text.isdigit() else None  # "max" → None
@@ -42,7 +42,7 @@ def _read_int(path: Path) -> Optional[int]:
 
 def _meminfo() -> dict[str, int]:
     try:
-        lines = _MEMINFO.read_text(encoding="utf-8").splitlines()
+        lines = _MEMINFO.read_text(encoding="utf-8-sig").splitlines()
     except OSError:
         return {}
     out: dict[str, int] = {}
@@ -57,7 +57,7 @@ def _meminfo() -> dict[str, int]:
 def _stat_value(path: Path, key: str) -> Optional[int]:
     """One ``<key> <bytes>`` line out of a cgroup ``memory.stat``."""
     try:
-        for line in path.read_text(encoding="utf-8").splitlines():
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
             name, _, rest = line.partition(" ")
             if name == key:
                 return int(rest.strip())

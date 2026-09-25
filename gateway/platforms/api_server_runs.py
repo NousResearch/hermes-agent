@@ -799,18 +799,8 @@ def _make_approval_notify(self, run: _RunLaunch, *, _api_server) -> Callable[[Di
     run_id, q, loop = run.run_id, run.queue, asyncio.get_running_loop()
 
     def _approval_notify(approval_data: Dict[str, Any]) -> None:
-        event = dict(approval_data or {})
-        # Clients must never receive the raw flagged command: redact before it hits the stream.
-        # Redact credentials from the command before it enters the SSE/API event stream — same egress bug as
-        # #48456, second transport: API/desktop clients would otherwise receive the raw command Tirith
-        # flagged. Reuse the gateway seam.
-        if "command" in event:
-            from gateway.run import _redact_approval_command
-            event["command"] = _redact_approval_command(event.get("command"))
-        event.update(_run_event(run_id, "approval.request", choices=_api_server._approval_event_choices(
-            smart_denied=bool(event.get("smart_denied")),
-            allow_session=event.get("allow_session") is not False,
-            allow_permanent=event.get("allow_permanent") is not False)))
+        # Clients must never receive the raw flagged command (#48456): the shared builder redacts.
+        event = _api_server._approval_request_event(run_id, approval_data)
         self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
         with suppress(Exception):
             loop.call_soon_threadsafe(q.put_nowait, event)
@@ -899,7 +889,9 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
             extra = {}
         self._set_run_status(run_id, status, **fields, last_event=f"run.{status}", **extra)
         with suppress(Exception):
-            run.put_event(_run_event(run_id, f"run.{status}", **fields, **extra))
+            # A worker can finish before its Future is wrapped, so awaiting it
+            # need not yield to already-scheduled commentary/tool callbacks.
+            loop.call_soon(run.put_event, _run_event(run_id, f"run.{status}", **fields, **extra))
 
     try:
         # Shutdown landed between admission and the task's first tick: nothing to
@@ -951,7 +943,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         # Event; unregistering releases it. Idempotent on normal completion.
         _unregister_approval_notify(run.approval_session_key)
         with suppress(Exception):
-            run.put_event(None)  # sentinel: close the SSE stream
+            loop.call_soon(run.put_event, None)  # close after the queued events
         _retire_live_run(self, run_id)
 
 

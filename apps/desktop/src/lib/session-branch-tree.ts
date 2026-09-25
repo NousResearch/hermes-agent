@@ -82,6 +82,17 @@ export function flattenSessionsWithBranches(
     }
   }
 
+  // A collapsed stale tip still names its conversation: its /branch children nest under the survivor.
+  const survivorByLineage = new Map(sessions.map(session => [lineageKey(session), session]))
+
+  for (const session of input) {
+    const survivor = survivorByLineage.get(lineageKey(session))
+
+    if (survivor && !byVisibleId.has(session.id)) {
+      byVisibleId.set(session.id, survivor)
+    }
+  }
+
   const childrenByParent = new Map<string, SessionInfo[]>()
   const nestedIds = new Set<string>()
 

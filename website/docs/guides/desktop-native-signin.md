@@ -105,8 +105,8 @@ same native pattern, but talks to the Nous Portal directly instead of going
 through a gateway:
 
 - **Sign-in opens your default browser.** You log in to the portal there (or
-  reuse the session you already have), then see a consent screen — *Allow
-  Hermes Desktop to access your Hermes Cloud agents in &lt;organization&gt;?* —
+  reuse the session you already have), then see a consent screen — _Allow
+  Hermes Desktop to access your Hermes Cloud agents in &lt;organization&gt;?_ —
   with **Allow** / **Deny**. **Deny** changes nothing: a first sign-in stays
   signed out, and during **Change org** your existing session stays signed in.
 - **While the browser is open**, Settings shows **Cancel sign-in** (stops

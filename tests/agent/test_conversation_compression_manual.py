@@ -130,9 +130,10 @@ def _exchanges(n, *, unanswered=()):
     return history
 
 
-def _stored_agent(db, history):
+def _stored_agent(db, history, *, create=True):
     """A real AIAgent (default in-place mode) over ``history`` as stored rows, loaded back like the gateway does."""
-    db.create_session("sid", "telegram", model="test/model")
+    if create:
+        db.create_session("sid", "telegram", model="test/model")
     for message in history:
         db.append_message("sid", message["role"], message["content"])
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
@@ -144,12 +145,15 @@ def _stored_agent(db, history):
 
 
 def _compress_here(agent, history, keep):
+    return _compress(agent, history, f"here {keep}")
+
+
+def _compress(agent, history, raw):
     response = MagicMock()
     response.choices = [MagicMock()]
     response.choices[0].message.content = "## Goal\nNumbered fruit questions.\n## Progress\nEarly ones answered."
     with patch("agent.context_compressor.call_llm", lambda **_kw: response):
-        return compress_now(agent, history, parse_compress_args(f"here {keep}"), system_message="",
-                            skip_without_window=True)
+        return compress_now(agent, history, parse_compress_args(raw), system_message="", skip_without_window=True)
 
 
 def _flags(db, content):
@@ -208,3 +212,122 @@ def test_in_place_here_n_folds_the_seam_once(session_db):
     assert _live(durable) == _live(result.after_messages)
     assert f"{history[-5]['content']}\n\n{history[-4]['content']}" in [m["content"] for m in durable]
     assert _live(durable[-3:]) == _live(history[-3:])
+
+
+FOREIGN_TURN = [("user", "[from Telegram] the vault code is 7741"), ("assistant", "Noted: the vault code is 7741.")]
+
+
+@pytest.mark.parametrize("raw", ["", "here 2"])
+def test_in_place_compress_keeps_turns_the_caller_never_held(session_db, raw):
+    """A surface compacts the history it holds (Desktop/TUI and CLI /compress), and another surface may have
+    appended turns to the same session since. The archive runs under state.db's newest row, so unless it stops at
+    the caller's newest row it takes those turns away unseen: the summarizer never read them, and they leave every
+    surface's history and search."""
+    agent, _ = _stored_agent(session_db, _exchanges(10))
+    held = session_db.get_resume_conversations("sid")[0]  # what a resume restores: row ids included
+    for role, content in FOREIGN_TURN:
+        session_db.append_message("sid", role, content)
+
+    assert _compress(agent, held, raw).status == "compressed"
+
+    durable = session_db.get_messages_as_conversation("sid")
+    assert _live(durable[-2:]) == FOREIGN_TURN
+    assert len({m["content"] for m in durable}) == len(durable)  # kept (`here 2`) and carried rows once each
+    model_history, display_history = session_db.get_resume_conversations("sid")
+    for _role, content in FOREIGN_TURN:
+        assert [m["content"] for m in model_history].count(content) == 1
+        assert [m["content"] for m in display_history].count(content) == 1
+    assert session_db.search_messages("vault 7741")
+
+
+@pytest.mark.parametrize("stale", ["compacted elsewhere", "newest rows without ids", "trailing row without any stamp"])
+def test_in_place_compress_never_leaves_two_live_copies_of_a_row(session_db, stale):
+    """Stopping the archive at the caller's newest row is only exact while the held history is a live prefix of the
+    session. After another surface compacted it, every live row is newer than the held (now archived) ones; a
+    durable row held without its row id may sit above the stop; and a trailing row held with neither a row id nor
+    the persisted marker can still be durable under the lease watermark (the TUI model-switch marker is appended
+    to history and written with a bare ``append_message``). Either way the rows above the stop would be cloned
+    beside their own copies in the new transcript."""
+    agent, _ = _stored_agent(session_db, _exchanges(10))
+    held = session_db.get_resume_conversations("sid")[0]
+    if stale == "compacted elsewhere":
+        other, _ = _stored_agent(session_db, [], create=False)
+        assert _compress(other, session_db.get_messages_as_conversation("sid"), "").status == "compressed"
+    elif stale == "trailing row without any stamp":
+        marker = "[Model switched to test/other.]"
+        held.append({"role": "user", "content": marker, "display_kind": "model_switch"})
+        session_db.append_message("sid", "user", marker, display_kind="model_switch")
+    else:
+        for message in held[-2:]:
+            message.pop("_row_id")
+        for role, content in FOREIGN_TURN:
+            session_db.append_message("sid", role, content)
+
+    assert _compress(agent, held, "").status == "compressed"
+
+    contents = [m["content"] for m in session_db.get_messages_as_conversation("sid")]
+    assert len(contents) == len(set(contents))
+
+
+@pytest.mark.parametrize("raw", ["", "here 2"])
+def test_in_place_compress_never_clones_a_row_a_merge_already_carried(session_db, raw):
+    """Resume repair merges consecutive user rows into the first one's dict: that dict keeps its row id, drops the
+    persisted marker, and the later row's id leaves the held history. Stopping the archive at the newest held id
+    would then leave the later row above the stop, cloned as a concurrent append beside the merged row that
+    already carries its content. Two strings, so the exact-duplicate check above cannot see it. With ``here 2``
+    the merged row is the newest row of the verbatim tail, whose marker-swept copy must not vouch for its id."""
+    agent, _ = _stored_agent(session_db, _exchanges(10))
+    session_db.append_message("sid", "user", "first half of a split prompt")
+    session_db.append_message("sid", "user", "second half 9931")
+    held = session_db.get_resume_conversations("sid")[0]  # the resume path merges the two user rows
+    assert "second half 9931" in held[-1]["content"] and held[-1]["content"] != "second half 9931"
+
+    assert _compress(agent, held, raw).status == "compressed"
+
+    contents = [m["content"] for m in session_db.get_messages_as_conversation("sid")]
+    assert sum("second half 9931" in c for c in contents) == 1
+
+
+def test_in_place_compress_keeps_a_gap_below_the_newest_held_row(session_db):
+    """A surface can hold rows 1–N, miss another surface's rows, then persist its own later rows.
+    The newest held id is then the lease watermark, so a cap at that id archives the unseen gap.
+    Those rows were never summarized; they must stay live, once each."""
+    from agent.context_compressor import _DB_PERSISTED_MARKER
+
+    agent, _ = _stored_agent(session_db, _exchanges(10))
+    held = session_db.get_resume_conversations("sid")[0]
+    for role, content in FOREIGN_TURN:
+        session_db.append_message("sid", role, content)
+    own_id = session_db.append_message("sid", "user", "continued on this surface")
+    held.append({
+        "role": "user", "content": "continued on this surface",
+        "_row_id": own_id, _DB_PERSISTED_MARKER: True,
+    })
+
+    assert _compress(agent, held, "").status == "compressed"
+
+    model_history, display_history = session_db.get_resume_conversations("sid")
+    for _role, content in FOREIGN_TURN:
+        assert any(content in (m.get("content") or "") for m in model_history)
+        assert any(content in (m.get("content") or "") for m in display_history)
+        assert _flags(session_db, content) == [(0, 0), (1, 0)]
+    assert session_db.search_messages("vault 7741")
+
+
+def test_in_place_compress_keeps_foreign_rows_above_an_unpersisted_turn(session_db):
+    """Turn preflight appends the current user message before compression and persists it afterward,
+    so the last dict has no row id. That must not fall back to the lease watermark and archive turns
+    another surface appended since this process loaded."""
+    agent, _ = _stored_agent(session_db, _exchanges(10))
+    held = session_db.get_resume_conversations("sid")[0]
+    for role, content in FOREIGN_TURN:
+        session_db.append_message("sid", role, content)
+    held.append({"role": "user", "content": "this turn is not persisted yet"})
+
+    assert _compress(agent, held, "").status == "compressed"
+
+    model_history, _display = session_db.get_resume_conversations("sid")
+    for _role, content in FOREIGN_TURN:
+        assert any(content in (m.get("content") or "") for m in model_history)
+        assert _flags(session_db, content) == [(0, 0), (1, 0)]
+    assert session_db.search_messages("vault 7741")

@@ -1,9 +1,9 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, type TranslationOverrides } from './define-locale'
 import { introFr } from './intro-fr'
 
-export const fr = defineLocale({
+export const frOverrides = {
   intro: introFr,
   connectors: {
     title: 'Connectez vos applications',
@@ -1610,41 +1610,7 @@ export const fr = defineLocale({
       driverHealth: 'État du pilote'
     },
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `Version ${value}`,
-      versionUnavailable: 'Version indisponible',
-      bundleOutOfSync: "Version de l'application obsolète",
-      bundleOutOfSyncDesc:
-        "Le runtime Hermes a été mis à jour, mais l'application Desktop utilise encore une ancienne version. Les nouvelles fonctions de l'interface, comme le mode Bot, resteront absentes jusqu'à sa mise à jour. Lancez la mise à jour ci-dessous pour reconstruire l'application. Si cet avertissement persiste, réinstallez-la avec le dernier installateur Desktop.",
-      bundleOutOfSyncAction: "Obtenir l'installateur",
-      bundleSwapPending: 'Redémarrez pour terminer la mise à jour',
-      bundleSwapPendingDesc:
-        "L'application mise à jour est déjà installée — Hermes doit seulement redémarrer pour la charger. Vos conversations et paramètres sont préservés.",
-      bundleSwapPendingAction: 'Redémarrer Hermes',
-      updates: 'Mises à jour',
-      checkNow: 'Vérifier maintenant',
-      checking: 'Vérification…',
-      seeWhatsNew: 'Voir les nouveautés',
-      updateNow: 'Mettre à jour',
-      releaseNotes: 'Notes de version',
-      onLatest: 'Vous utilisez la dernière version.',
-      installing: "Une mise à jour est en cours d'installation.",
-      cantUpdate: "Cette version ne peut pas se mettre à jour depuis l'application.",
-      cantReach: "Impossible d'atteindre le serveur de mises à jour.",
-      tapCheck: 'Cliquez sur « Vérifier maintenant » pour rechercher des mises à jour.',
-      updateReady: count => `Une nouvelle mise à jour est prête (${count} changement${count === 1 ? '' : 's'} inclus).`,
-      updateReadyUnknown: 'Une nouvelle mise à jour est prête.',
-      lastChecked: age => `Dernière vérification ${age}`,
-      justNowSuffix: " · à l'instant",
-      automaticUpdates: 'Mises à jour automatiques',
-      automaticUpdatesDesc:
-        "Hermes vérifie automatiquement les mises à jour en arrière-plan et vous informe quand l'une est prête.",
-      branchCommit: (branch, commit) => `Branche ${branch} · Commit ${commit}`,
-      never: 'jamais',
-      justNow: "à l'instant",
-      minAgo: count => `il y a ${count} min`,
-      hoursAgo: count => `il y a ${count} h`,
-      daysAgo: count => `il y a ${count} j`
+      updates: 'Mises à jour'
     },
     config: {
       minimizeToTrayTitle: 'Réduire dans la barre d’état',
@@ -2154,6 +2120,7 @@ export const fr = defineLocale({
       }
     },
     localModels: {
+      connectionChanged: 'La connexion des modèles locaux a changé',
       title: 'Modèles locaux',
       runtimeTitle: 'Moteur local',
       runtimeReady: backend => `Prêt · ${backend}`,
@@ -2394,9 +2361,11 @@ export const fr = defineLocale({
         notice: {
           loggedOut: {
             title: 'Connectez votre compte Nous',
-            message: 'Exécutez /portal dans la TUI ou ouvrez le portail Nous pour connecter votre compte.',
-            action: 'Ouvrir le portail ↗'
+            message:
+              'Connectez-vous avec votre compte Nous pour voir ici votre solde, votre offre et votre utilisation.',
+            action: 'Se connecter'
           },
+          openPortal: 'Ouvrir le portail ↗',
           noCard: {
             title: 'Aucun moyen de paiement enregistré',
             message:
@@ -4527,6 +4496,63 @@ export const fr = defineLocale({
     }
   },
   updates: {
+    discontinuedTitle: "Cette version de Hermes n'est plus prise en charge",
+    discontinuedBody: "Cette version de Hermes n'est plus prise en charge et risque de ne plus fonctionner — désinstallez-la. Vos données restent sur le disque.",
+    channels: { stable: 'Stable', canary: 'Canary' },
+    appName: 'Hermes',
+    availableBodyRelease: tag => `La version ${tag} est prête à être installée.`,
+    releaseAvailable: tag => `La version ${tag} est disponible.`,
+    checkingShort: 'Vérification…',
+    availableBodyAppInstaller: "Une nouvelle version de Hermes est prête. Hermes va se fermer, Windows terminera la mise à jour, puis Hermes rouvrira automatiquement.",
+    applyingBodyAppInstaller: "Hermes va se fermer et Windows terminera la mise à jour. Hermes rouvrira ensuite automatiquement — vous n'avez rien à faire.",
+    applyingCloseAppInstaller: 'Cette fenêtre va se fermer, Windows terminera la mise à jour et Hermes rouvrira automatiquement.',
+    checkUnknownTitleAppInstaller: 'Impossible de vérifier les mises à jour',
+    checkUnknownBodyAppInstaller: "Windows n'a pas pu rechercher les mises à jour. Elles s'installent également automatiquement au redémarrage de Hermes.",
+    versionDetailsTitle: 'Détails de la version',
+    versionDetailsBody: "Cette installation est gérée hors de l'application. Mettez-la à jour de la même manière que vous l'avez installée.",
+    versionDetailsVersion: 'Version',
+    versionDetailsCommit: 'Commit',
+    versionDetailsBuildOrigin: 'Origine de la compilation',
+    versionDetailsDistribution: 'Distribution',
+    versionDetailsDistributionDesktop: 'Application Desktop',
+    versionDetailsDistributionDesktopMsix: 'Application Desktop (MSIX)',
+    versionDetailsDistributionDesktopInstaller: 'Application Desktop (installateur)',
+    versionDetailsDistributionSourceInstaller: "Code source (script d'installation)",
+    versionDetailsDistributionSourceInstallerDesktop: "Code source (script d'installation) + hermes desktop",
+    versionDetailsDistributionSource: 'Code source',
+    versionDetailsDistributionSourceDesktop: 'Code source + hermes desktop',
+    versionDetailsDistributionStore: 'Microsoft Store',
+    versionDetailsRuntime: "Environnement d'exécution",
+    versionDetailsRuntimeEmbedded: "Environnement d'exécution intégré",
+    versionDetailsRuntimeExternal: "Externe (utilise l'environnement d'exécution du système)",
+    versionDetailsInstallId: "ID d'installation",
+    versionDetailsUncommittedChanges: 'modifications non commitées',
+    version: value => `Version ${value}`,
+    versionUnavailable: 'Version indisponible',
+    bundleOutOfSync: "Version de l'application obsolète",
+    bundleOutOfSyncDesc:
+        "Le runtime Hermes a été mis à jour, mais l'application Desktop utilise encore une ancienne version. Les nouvelles fonctions de l'interface, comme le mode Bot, resteront absentes jusqu'à sa mise à jour. Lancez la mise à jour ci-dessous pour reconstruire l'application. Si cet avertissement persiste, réinstallez-la avec le dernier installateur Desktop.",
+    bundleOutOfSyncAction: "Obtenir l'installateur",
+    bundleSwapPending: 'Redémarrez pour terminer la mise à jour',
+    bundleSwapPendingDesc:
+        "L'application mise à jour est déjà installée — Hermes doit seulement redémarrer pour la charger. Vos conversations et paramètres sont préservés.",
+    bundleSwapPendingAction: 'Redémarrer Hermes',
+    checkNow: 'Vérifier maintenant',
+    seeWhatsNew: 'Voir les nouveautés',
+    releaseNotes: 'Notes de version',
+    onLatest: 'Vous utilisez la dernière version.',
+    installing: "Une mise à jour est en cours d'installation.",
+    cantReach: "Impossible d'atteindre le serveur de mises à jour.",
+    tapCheck: 'Cliquez sur « Vérifier maintenant » pour rechercher des mises à jour.',
+    updateReady: count => `Une nouvelle mise à jour est prête (${count} changement${count === 1 ? '' : 's'} inclus).`,
+    updateReadyUnknown: 'Une nouvelle mise à jour est prête.',
+    lastChecked: age => `Dernière vérification ${age}`,
+    justNowSuffix: " · à l'instant",
+    never: 'jamais',
+    justNow: "à l'instant",
+    minAgo: count => `il y a ${count} min`,
+    hoursAgo: count => `il y a ${count} h`,
+    daysAgo: count => `il y a ${count} j`,
     stages: {
       idle: 'Préparation…',
       prepare: 'Préparation…',
@@ -6029,4 +6055,6 @@ export const fr = defineLocale({
       toggle: open => `${open ? 'Afficher' : 'Masquer'} la barre latérale`
     }
   }
-})
+} satisfies TranslationOverrides
+
+export const fr = defineLocale(frOverrides)

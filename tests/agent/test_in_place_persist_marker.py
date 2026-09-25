@@ -17,6 +17,7 @@ stamps after its ``archive_and_compact`` call; both now share
 """
 
 import os
+from contextlib import closing
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -83,8 +84,7 @@ class TestInPlaceCommitPersistMarker:
         from agent.conversation_compression import compress_context
         from agent.context_compressor import _DB_PERSISTED_MARKER
 
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "t.db")
+        with tempfile.TemporaryDirectory() as tmp, closing(SessionDB(db_path=Path(tmp) / "t.db")) as db:
             sid = "20260830_120000_marker"
             _seed(db, sid, n=8)
             agent = _make_agent(db, sid)
@@ -150,8 +150,7 @@ class TestInPlaceCommitPersistMarker:
             _DB_PERSISTED_MARKER,
         )
 
-        with tempfile.TemporaryDirectory() as tmp:
-            db = SessionDB(db_path=Path(tmp) / "m.db")
+        with tempfile.TemporaryDirectory() as tmp, closing(SessionDB(db_path=Path(tmp) / "m.db")) as db:
             sid = "20260830_120001_micro0"
             _seed(db, sid, n=4)
             compressor = ContextCompressor.__new__(ContextCompressor)

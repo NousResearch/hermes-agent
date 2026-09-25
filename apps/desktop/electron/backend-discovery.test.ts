@@ -109,22 +109,19 @@ test('a relaunch adopts a backend that published a session token instead of spaw
   const setup = await runPrimaryBackendStartup({
     assertCurrentAttempt: () => {},
     attachHostBackend: () =>
-      attachToHostBackend(
-        { isolated: false, ledgerPath: '/ledger.json' },
-        {
-          ...attachDeps(LEDGER),
-          log: message => {
-            logs.push(message)
-          },
-          probeWebSocket: async wsUrl => {
-            assert.match(wsUrl, /token=published-session-token/)
+      attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, {
+        ...attachDeps(LEDGER),
+        log: message => {
+          logs.push(message)
+        },
+        probeWebSocket: async wsUrl => {
+          assert.match(wsUrl, /token=published-session-token/)
 
-            return { ok: true }
-          },
-          publishedTokenFor: () => token,
-          resolveServedToken: async () => null
-        } as Parameters<typeof attachToHostBackend>[1]
-      ),
+          return { ok: true }
+        },
+        publishedTokenFor: () => token,
+        resolveServedToken: async () => null
+      } as Parameters<typeof attachToHostBackend>[1]),
     connectRemote: async () => ({ mode: 'remote' }),
     ensureLocalRuntime: async backend => backend,
     prepareLocalBackend: () => {
@@ -149,19 +146,16 @@ test('a relaunch adopts a backend that published a session token instead of spaw
 test('a published token the websocket rejects is not adopted', async () => {
   let probed = 0
 
-  const attached = await attachToHostBackend(
-    { isolated: false, ledgerPath: '/ledger.json' },
-    {
-      ...attachDeps(LEDGER),
-      probeWebSocket: async () => {
-        probed += 1
+  const attached = await attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, {
+    ...attachDeps(LEDGER),
+    probeWebSocket: async () => {
+      probed += 1
 
-        return { ok: false, reason: 'unauthorized' }
-      },
-      publishedTokenFor: () => 'published-session-token',
-      resolveServedToken: async () => null
-    } as Parameters<typeof attachToHostBackend>[1]
-  )
+      return { ok: false, reason: 'unauthorized' }
+    },
+    publishedTokenFor: () => 'published-session-token',
+    resolveServedToken: async () => null
+  } as Parameters<typeof attachToHostBackend>[1])
 
   assert.equal(attached, null)
   assert.equal(probed, 1)

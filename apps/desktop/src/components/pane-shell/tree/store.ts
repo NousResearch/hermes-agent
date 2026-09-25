@@ -251,9 +251,7 @@ const $paneSharePartners = modeLayout.atom<Record<string, string>>(
   () => ({}),
   Codecs.json(value =>
     value && typeof value === 'object'
-      ? Object.fromEntries(
-          Object.entries(value).filter(([, partner]) => typeof partner === 'string' && partner)
-        )
+      ? Object.fromEntries(Object.entries(value).filter(([, partner]) => typeof partner === 'string' && partner))
       : {}
   )
 )
@@ -321,8 +319,8 @@ function rememberPaneShare(tree: LayoutNode, paneId: string) {
     // partner-validated, so it records without a partner and falls back to
     // even on any mismatched recall.
     const partnerGroup = parent.children[partner] as LayoutNode
-    const partnerPane =
-      partnerGroup.type === 'group' && partnerGroup.panes.length === 1 ? partnerGroup.panes[0] : null
+
+    const partnerPane = partnerGroup.type === 'group' && partnerGroup.panes.length === 1 ? partnerGroup.panes[0] : null
 
     $paneShares.set({ ...$paneShares.get(), [paneId]: share })
 
@@ -1734,15 +1732,7 @@ export function dockPaneBeside(paneId: string, anchorPaneId: string) {
 
   const next = findGroupOfPane(tree, paneId)
     ? movePaneOp(tree, paneId, { groupId: anchor.id, pos })
-    : insertAtGroup(
-        tree,
-        anchor.id,
-        paneId,
-        pos,
-        undefined,
-        true,
-        recalledEdgeWeights(paneId, anchorPaneId)
-      )
+    : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledEdgeWeights(paneId, anchorPaneId))
 
   if (next && next !== tree) {
     commit(next)

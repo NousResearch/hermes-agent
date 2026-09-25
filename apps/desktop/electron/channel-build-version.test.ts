@@ -352,6 +352,7 @@ test('actual MSIX manifest writer consumes the channel quad across rollover inst
     for (const tree of ['pm', 'scripts/releases']) {
       fs.cpSync(path.join(repo, tree), path.join(root, tree), { recursive: true })
     }
+
     fs.symlinkSync(path.join(repo, 'node_modules'), path.join(root, 'node_modules'), 'junction')
     const assets: string = path.join(app, 'assets/appx')
     fs.mkdirSync(assets)

@@ -72,6 +72,7 @@ def test_sync_venv_allows_frozen_extras_when_lazy_off(rooted, monkeypatch):
     # the recorded selection while retaining the disabled acquisition policy.
     repo = rooted / "repo"
     repo.mkdir()
+    (repo / "pyproject.toml").write_text('[project.optional-dependencies]\nweb=[]\n')
     monkeypatch.setattr(paths, "repo_root", lambda: repo)
     environment = install_state_dir(repo) / "environments" / "frozen" / "venv"
     environment.mkdir(parents=True)
@@ -105,6 +106,7 @@ def test_lazy_sync_never_creates_the_first_selection_for_a_foreign_interpreter(r
 
     repo = rooted / "repo"
     repo.mkdir()
+    (repo / "pyproject.toml").write_text('[project.optional-dependencies]\nbedrock=[]\n')
     (repo / "venv").mkdir()  # the install's own base venv, which this pytest process is NOT running from
     monkeypatch.setattr(paths, "repo_root", lambda: repo)
     monkeypatch.setattr(client, "is_runtime", lambda: True)

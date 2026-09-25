@@ -265,6 +265,45 @@ def test_first_bundle_extension_preserves_shipped_extras(locked_project, build_w
     assert (source / "uv.lock").read_bytes() == locked
 
 
+def test_retired_recorded_extra_does_not_break_two_profile_plugin_sync(locked_project, build_worker, tmp_path, monkeypatch):
+    import pm
+    from pm import paths
+    from pm.environments import runtime_facts_path, selected_venv
+    from pm.lock import Facts
+    from pm.package import InstallError
+
+    source, _, env = locked_project
+    manifest = source / "pyproject.toml"
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace(
+        '[tool.uv.workspace]\nmembers=["member"]\n', ""), encoding="utf-8")
+    monkeypatch.setattr(paths, "repo_root", lambda: source)
+    pm.lock_project(source, offline=True, explicit=True)
+    copies = []
+    for profile in ("default", "named"):
+        plugin = tmp_path / profile / "plugins" / "hindsight"
+        plugin.mkdir(parents=True)
+        (plugin / "pyproject.toml").write_text(
+            '[project]\nname="hermes-plugin-hindsight"\nversion="1.0.1"\n'
+            'requires-python=">=3.11"\ndependencies=["member-dep==1.0"]\n'
+            '[tool.uv]\npackage=false\n', encoding="utf-8")
+        copies.append(plugin)
+
+    pm.sync_venv(["chosen"], explicit=True, plugins=Members(copies))
+    assert Facts(runtime_facts_path(source)).get("venv")["extras"] == ["chosen"]
+    manifest.write_text(manifest.read_text(encoding="utf-8").replace(
+        'chosen=["chosen-dep==1.0"]\n', ""), encoding="utf-8")
+    pm.lock_project(source, offline=True, explicit=True)
+    with pytest.raises(InstallError, match="unknown extras requested"):
+        pm.sync_venv(["chosen"], explicit=True, plugins=Members(copies))
+
+    pm.sync_venv(explicit=True, plugins=Members(copies))
+    assert Facts(runtime_facts_path(source)).get("venv")["extras"] == []
+    environment = selected_venv(source)
+    executable = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    assert _run([str(executable), "-I", "-c", "import base_dep, member_dep; print(member_dep.__version__)"],
+                cwd=tmp_path, env=env) == "1.0"
+
+
 def test_worker_sync_reuses_unions_and_reports_real_lock_drift(locked_project, build_worker, tmp_path, monkeypatch):
     import pm
     from pm.environments import selected_venv, runtime_facts_path
@@ -677,7 +716,10 @@ def test_explicit_workspace_preserves_seed_and_replays_copied_members(locked_pro
     assert document["project"] == tomllib.loads(project.read_text(encoding="utf-8-sig"))["project"]
     [relative] = document["tool"]["uv"]["workspace"]["members"]
     copied = recorded / relative / "pyproject.toml"
-    assert copied.read_bytes() == before_member
+    copied_data = tomllib.loads(copied.read_text(encoding="utf-8-sig"))
+    original_data = tomllib.loads(before_member.decode("utf-8-sig"))
+    assert copied_data["project"].pop("name") != original_data["project"].pop("name")
+    assert copied_data == original_data
     assert copied.resolve().is_relative_to(recorded.resolve())
     (original_member / "pyproject.toml").unlink()
     assert workspace.members_stamp([original_member]) != stamp

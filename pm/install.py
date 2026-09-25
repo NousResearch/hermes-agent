@@ -649,9 +649,16 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
         enabled = list(fact.get("extras", frozen if frozen is not None else ["all"]))
         stamp = fact.get("stamp") or package.expected_stamp(enabled, plugin_dirs=[])
         return enabled, stamp, {"repair": True}
-    # The first writable generation replaces, rather than layers on,
-    # the payload. Retain its extras until a recorded selection owns them.
-    enabled = sorted(set(fact.get("extras", shipped or [])) | set(extras or []))
+    from pm.features import declared_extras
+
+    declared = set(declared_extras(paths.repo_root()))
+    unknown = sorted(set(extras or []) - declared)
+    if unknown:
+        raise InstallError("venv", f"unknown extras requested: {unknown}")
+    # The first writable generation replaces, rather than layers on, the payload.
+    # Retain its still-declared extras until a recorded selection owns them.
+    carried = set(fact.get("extras", shipped or [])) & declared
+    enabled = sorted(carried | set(extras or []))
     return enabled, package.expected_stamp(enabled, **inputs), inputs
 
 

@@ -1937,6 +1937,10 @@ DEFAULT_CONFIG = {
         # before failing with a structured 'target_busy' error. Deliveries are serialized per
         # profile with a cross-process file lock.
         "turn_wait_seconds": 120,
+        # Cap on ONE CLI delivery turn into a teammate. A target that answers and then never exits
+        # is stopped here: any reply it printed is forwarded and the sender gets a structured
+        # 'delivery_timeout' error instead of a silent loss. 0 = no cap.
+        "delivery_timeout_seconds": 1800,
     },
     "code_execution": {  # execute_code settings (programmatic tool calls).
         # project = run in the session cwd with the active venv/conda python so project deps and

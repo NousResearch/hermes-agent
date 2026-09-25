@@ -415,15 +415,66 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
+DEFAULT_DELIVERY_TIMEOUT_SECONDS = 1800
+
+
+def _delivery_timeout_seconds() -> Optional[int]:
+    """Cap on ONE CLI delivery turn (``bot_mode.delivery_timeout_seconds``); None = unbounded.
+
+    ``turn_wait_seconds`` only bounds the wait for the target's turn lock. A transport that
+    answered and then never exited blocked ``subprocess.run`` forever: the reply was never
+    re-emitted, no completion notification fired, and the sender kept the optimistic "sent".
+    Generous by default because a real teammate turn can run for many minutes; ``0`` or
+    negative disables the cap."""
+    from tools.bot_relay import _bot_mode_cfg
+
+    val = _bot_mode_cfg("delivery_timeout_seconds", loader="load_config_readonly")
+    if val is None:
+        return DEFAULT_DELIVERY_TIMEOUT_SECONDS
+    try:
+        seconds = int(val)
+    except (TypeError, ValueError, OverflowError):
+        logger.debug("Invalid bot_mode.delivery_timeout_seconds %r; using fallback", val)
+        return DEFAULT_DELIVERY_TIMEOUT_SECONDS
+    return seconds if seconds > 0 else None
+
+
+class DeliveryTimeout(Exception):
+    """One CLI delivery turn outran ``bot_mode.delivery_timeout_seconds``."""
+
+    def __init__(self, seconds: int) -> None:
+        from tools.bot_failure_reasons import DELIVERY_TIMEOUT
+
+        super().__init__(f"Delivery turn exceeded {seconds}s and was stopped. The target may have "
+                         "answered: check its own session before re-sending so the message is not delivered twice.")
+        self.reason = DELIVERY_TIMEOUT
+
+
+def _emit_partial(exc: subprocess.TimeoutExpired) -> None:
+    """Forward what a timed-out transport printed before the kill: a turn that answered and
+    then hung has its reply sitting in this buffer (bytes even for text-mode runs)."""
+    for buf, sink in ((exc.stdout, sys.stdout), (exc.stderr, sys.stderr)):
+        if buf:
+            sink.write(buf.decode("utf-8", "replace") if isinstance(buf, bytes) else buf)
+            sink.flush()
+
+
 def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> int:
     """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry); re-emits
     the transport's streams and returns its exit code. Transient failures re-run the
     same session; a context_overflow re-run lets the retried turn's pre-API compaction
     compact the transcript first (no fresh session is ever minted). Auth/quota/config never retry."""
 
+    budget = _delivery_timeout_seconds()
+
     def _turn(turn_env=env):
-        return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
-                              capture_output=True, text=True, encoding="utf-8", errors="replace", env=turn_env)
+        try:
+            return subprocess.run([*argv, "--query-file", dm_file], check=False, stdin=subprocess.DEVNULL,
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                  env=turn_env, timeout=budget)
+        except subprocess.TimeoutExpired as exc:
+            _emit_partial(exc)
+            raise DeliveryTimeout(budget) from None
 
     proc = _turn()
     if proc.returncode != 0:
@@ -576,7 +627,12 @@ def _run_delivery(argv: list[str], dm_file: str, *, stdin_file: bool,
             # after subprocess.run returns, not merely after stdin reaches EOF.
             with open(dm_file, "r", encoding="utf-8-sig") as stream:
                 # Passing the file descriptor as stdin bypasses the BOM-aware decoder.
-                return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env).returncode
+                budget = _delivery_timeout_seconds()
+                try:
+                    return subprocess.run(argv, input=stream.read().encode("utf-8"), check=False, env=env,
+                                          timeout=budget).returncode
+                except subprocess.TimeoutExpired:
+                    raise DeliveryTimeout(budget) from None  # stdout was not captured; nothing to re-emit
     finally:
         _unlink_dm_file(dm_file)
 

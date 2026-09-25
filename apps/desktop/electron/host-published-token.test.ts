@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
 import { test } from 'vitest'
 
+import { resolveServedDashboardToken } from './dashboard-token'
 import { attachToHostBackend } from './host-backend-attach'
 import { lookupPublishedSessionToken, publishedTokenForRecord } from './host-published-token'
 
@@ -152,4 +154,86 @@ test('a withheld dashboard token adopts the on-disk published token instead of s
     false
   )
   fs.rmSync(directory, { recursive: true, force: true })
+})
+
+test('a refused local port does not read a stale on-disk published token', async () => {
+  const server = createServer()
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+
+  const address = server.address()
+  assert(address && typeof address !== 'string')
+  const port = address.port
+
+  await new Promise<void>((resolve, reject) => {
+    server.close(error => (error ? reject(error) : resolve()))
+  })
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-host-token-refused-'))
+  const token = 'stale-published-session-token'
+  const record = { ...RECORD, port }
+
+  fs.writeFileSync(
+    path.join(directory, 'host-desktop-serve.json'),
+    JSON.stringify({
+      createTime: record.createTime,
+      host: record.host,
+      pid: record.pid,
+      port,
+      protocolVersion: 1,
+      role: 'desktop-serve',
+      tokenFingerprint: fingerprint(token)
+    })
+  )
+  fs.writeFileSync(path.join(directory, 'host-desktop-serve.token'), token)
+
+  let publicationReads = 0
+  let readyProbes = 0
+
+  try {
+    const attached = await attachToHostBackend(
+      { isolated: false, ledgerPath: '/ledger.json' },
+      {
+        log: () => {},
+        probeWebSocket: async () => ({ ok: true }),
+        publishedTokenFor: candidate => {
+          publicationReads += 1
+
+          return lookupPublishedSessionToken(
+            candidate,
+            { home: os.homedir(), lockDir: directory, platform: process.platform },
+            {
+              lstat: target => fs.lstatSync(target),
+              readFile: target => fs.readFileSync(target, 'utf8'),
+              uid: typeof process.getuid === 'function' ? process.getuid() : null
+            }
+          )
+        },
+        readLedger: () =>
+          JSON.stringify([
+            {
+              host: record.host,
+              pid: record.pid,
+              port,
+              profile: record.profile,
+              purpose: 'serve',
+              registered_at: record.registeredAt
+            }
+          ]),
+        resolveServedToken: baseUrl => resolveServedDashboardToken(baseUrl, '', { timeoutMs: 1_000 }),
+        waitForReady: async () => {
+          readyProbes += 1
+        }
+      }
+    )
+
+    assert.equal(attached, null)
+    assert.equal(publicationReads, 0)
+    assert.equal(readyProbes, 0)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })

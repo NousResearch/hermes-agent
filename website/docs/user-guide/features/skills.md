@@ -1025,7 +1025,22 @@ Hermes ships with a set of bundled skills in `skills/` inside the repo. On insta
 On each sync, Hermes recomputes the hash of your local copy and compares it to the origin hash:
 
 - **Unchanged** → safe to pull upstream changes, copy the new bundled version in, record the new origin hash.
-- **Changed** → treated as **user-modified** and skipped forever, so your edits never get stomped.
+- **Only new local files under `references/`** → keep those files byte-for-byte and update the bundled package normally. This also works across repeated updates and upstream category/name-of-directory moves.
+- **Shipped files changed or deleted** (including shipped references and `SKILL.md`), or additions outside `references/` → treated as **user-modified** and skipped, so your edits never get stomped.
+
+A profile-local `.bundled_references.json` remembers which reference paths belonged to each
+origin hash. The original `.bundled_manifest` and its hash remain authoritative; local
+additions are excluded only when the remaining package exactly matches that origin. If a
+new upstream path collides with a local reference (including file/directory collisions),
+Hermes keeps the local package and reports it as user-modified rather than overwriting it.
+Reference symlinks are also kept without automatic updates.
+
+Existing hash-only installations migrate automatically when the original package can be
+proved intact. If the old reference inventory is unavailable and simultaneous upstream
+removals make ownership ambiguous, Hermes conservatively keeps the local copy. Do not
+use `reset --restore` to resolve this unless you intend to discard local additions too.
+`hermes skills diff` still shows local additions; `list-modified` lists update-blocking
+changes. Opt-out cleanup does not delete a skill containing local reference additions.
 
 Generated runtime caches inside a skill (`__pycache__/`, `.pytest_cache/`, `.mypy_cache/`, `.ruff_cache/`, and a `.pyc` sitting next to its `.py`) are not part of the hash, so running a skill's helper script never marks it user-modified or hides it from `hermes skills list-modified` / `diff`.
 

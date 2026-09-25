@@ -4,6 +4,7 @@ receives, SMTP sends. Configured via EMAIL_* env vars or ``platforms.email`` in 
 import asyncio
 import email as email_lib
 from contextlib import contextmanager, suppress
+from datetime import datetime, timezone
 import imaplib
 import logging
 import os
@@ -16,7 +17,7 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
-from email.utils import formatdate
+from email.utils import formatdate, parsedate_to_datetime
 from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -66,6 +67,19 @@ def _esecret_int(name: str, default: int) -> int:
 def _esecret_bool(name: str, default: bool = False) -> bool:
     """Scope-aware boolean read."""
     return is_truthy_value(raw, default=default) if (raw := str(_get_secret(name, "")).strip()) else default
+
+
+def _provider_timestamp(value: str) -> Optional[datetime]:
+    """Parse an RFC email Date header without inventing a timestamp when it is absent or invalid."""
+    if not value:
+        return None
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if parsed is None:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed
 
 
 def _normalize_security(value: Any, default: str = "tls") -> str:
@@ -639,13 +653,20 @@ class EmailAdapter(BasePlatformAdapter):
         kinds = {att["type"] for att in attachments}
         self._thread_context[sender_addr] = {"subject": subject, "message_id": msg_data["message_id"]}
         name = msg_data["sender_name"] or sender_addr
+        occurred_at = _provider_timestamp(msg_data.get("date", ""))
+        transport_metadata = {"email_sender": sender_addr, "email_subject": subject}
+        if occurred_at is not None:
+            transport_metadata["email_occurred_at"] = occurred_at.isoformat()
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
             message_type=MessageType.DOCUMENT if "document" in kinds else MessageType.PHOTO if "image" in kinds else MessageType.TEXT,
             source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name,
                                      message_id=msg_data["message_id"]),
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
-            reply_to_message_id=msg_data["in_reply_to"] or None)
+            reply_to_message_id=msg_data["in_reply_to"] or None,
+            metadata=transport_metadata)
+        if occurred_at is not None:
+            event.timestamp = occurred_at
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
 

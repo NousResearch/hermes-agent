@@ -206,6 +206,39 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertIn("[Subject: Help with Python]", captured_events[0].text)
         self.assertIn("How do I use lists?", captured_events[0].text)
 
+    def test_dispatch_exposes_exact_email_transport_evidence(self):
+        """The model sidecar can record the current message without a second mailbox lookup."""
+        import asyncio
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture(event):
+            captured_events.append(event)
+
+        adapter.set_message_handler(capture)
+        msg_data = {
+            "uid": b"evidence",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": 'Cleaning "request"',
+            "message_id": "<evidence@test.com>",
+            "in_reply_to": "",
+            "body": "Please clean my home",
+            "attachments": [],
+            "date": "Thu, 24 Sep 2026 18:41:23 -0700",
+        }
+
+        asyncio.run(adapter._dispatch_message(msg_data))
+
+        self.assertEqual(len(captured_events), 1)
+        event = captured_events[0]
+        self.assertEqual(event.metadata, {
+            "email_sender": "user@test.com",
+            "email_subject": 'Cleaning "request"',
+            "email_occurred_at": "2026-09-24T18:41:23-07:00",
+        })
+        self.assertEqual(event.timestamp.isoformat(), "2026-09-24T18:41:23-07:00")
+
     def test_reply_subject_not_duplicated(self):
         """Re: subjects should not be prepended to body."""
         import asyncio

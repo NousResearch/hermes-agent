@@ -1389,16 +1389,23 @@ class GatewayTurnMixin:
 
     @staticmethod
     def _hmwa_add_email_message_id_sidecar(event, source, turn_sidecar_notes) -> None:
-        """Expose the current inbound email's provider ID to the model, not the transcript."""
+        """Expose exact current inbound email transport evidence to the model, not the transcript."""
         message_id = getattr(event, "message_id", None)
-        if (
-            source.platform != Platform.EMAIL
-            or getattr(event, "internal", False)
-            or not message_id
-        ):
+        if source.platform != Platform.EMAIL or getattr(event, "internal", False):
+            return
+        payload = {}
+        if message_id:
+            payload["inbound_message_id"] = message_id
+        event_metadata = getattr(event, "metadata", None)
+        if isinstance(event_metadata, dict):
+            for key in ("email_sender", "email_subject", "email_occurred_at"):
+                value = event_metadata.get(key)
+                if isinstance(value, str) and value:
+                    payload[key] = value
+        if not payload:
             return
         data = json.dumps(
-            {"inbound_message_id": message_id},
+            payload,
             ensure_ascii=True,
             separators=(",", ":"),
         )

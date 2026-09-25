@@ -40,6 +40,27 @@ def test_linux_terminal_commands_keep_profile_out_of_shell_text():
     assert all("HERMES_SETUP_PROFILE_NAME" in " ".join(argv) for _, argv in commands)
 
 
+def test_macos_terminal_argv_keeps_profile_out_of_applescript():
+    from hermes_cli.web_routers.profiles import _macos_terminal_argv
+
+    name = "worker\" & do shell script \"touch should-not-run"
+    args = _macos_terminal_argv(name)
+    assert args[:2] == ["osascript", "-e"]
+    assert args[-2:] == ["--", name]
+    assert name not in args[2]
+    assert "quoted form of (item 1 of argv)" in args[2]
+    assert _macos_terminal_argv("default")[-1] == "--"
+
+
+@pytest.mark.macos_only
+def test_osascript_option_delimiter_is_not_a_run_argument():
+    result = subprocess.run(
+        ["osascript", "-e", "on run argv\nreturn item 1 of argv\nend run", "--", "worker"],
+        capture_output=True, text=True, check=True,
+    )
+    assert result.stdout.strip() == "worker"
+
+
 @pytest.mark.linux_only
 def test_linux_terminal_launch_passes_profile_as_one_argument(tmp_path):
     from hermes_cli.web_routers.profiles import _linux_terminal_commands
@@ -61,18 +82,42 @@ def test_linux_terminal_launch_passes_profile_as_one_argument(tmp_path):
 
 
 @pytest.mark.windows_only
-@pytest.mark.parametrize("name,expected", [
-    ("default", ["hermes", "setup"]),
-    ("worker", ["hermes", "-p", "worker", "setup"]),
-])
-def test_open_profile_terminal_uses_direct_argv_on_windows(name, expected, monkeypatch, tmp_path):
+def test_open_profile_terminal_scopes_child_home_on_windows(monkeypatch, tmp_path):
     from hermes_cli.web_routers import profiles as routes
 
+    home = tmp_path / ".hermes"
+    profile = home / "profiles" / "worker"
+    profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}\n")
+    (home / "active_profile").write_text("worker\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "other")
+    monkeypatch.setenv("HERMES_PROFILE", "other")
     calls = []
-    monkeypatch.setattr(routes, "_resolve_profile_dir", lambda profile: tmp_path)
     monkeypatch.setattr(routes.subprocess, "Popen", lambda *args, **kwargs: calls.append((args, kwargs)))
 
-    result = asyncio.run(routes.open_profile_terminal_endpoint(name))
+    # A→B→A checks that opening a named profile never retargets the dashboard's
+    # own environment or a later default launch.
+    for name, expected in (
+        ("default", ["hermes", "-p", "default", "setup"]),
+        ("worker", ["hermes", "setup"]),
+        ("default", ["hermes", "-p", "default", "setup"]),
+    ):
+        result = asyncio.run(routes.open_profile_terminal_endpoint(name))
+        assert result["ok"] is True
+        args, kwargs = calls[-1]
+        assert args == (expected,)
+        assert kwargs["creationflags"] == subprocess.CREATE_NEW_CONSOLE
+        assert kwargs["env"]["HERMES_HOME"] == str(home if name == "default" else profile)
+        assert "HERMES_PROFILE_NAME" not in kwargs["env"]
+        assert "HERMES_PROFILE" not in kwargs["env"]
+        assert os.environ["HERMES_HOME"] == str(home), "the dashboard process stays on its own home"
 
-    assert result["ok"] is True
-    assert calls == [((expected,), {"creationflags": subprocess.CREATE_NEW_CONSOLE})]
+        # The launched command has no profile name in argv; the child still resolves the
+        # selected home to the intended profile identity.
+        with monkeypatch.context() as child:
+            child.setenv("HERMES_HOME", kwargs["env"]["HERMES_HOME"])
+            child.delenv("HERMES_PROFILE_NAME")
+            child.delenv("HERMES_PROFILE")
+            assert profiles.get_active_profile_name() == name
+    assert len(calls) == 3

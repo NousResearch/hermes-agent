@@ -71,6 +71,28 @@ class TestApplyProfileOverrideHermesHomeGuard:
     profile directory IS trusted as-is.
     """
 
+    def test_setup_child_honors_named_profile_home_despite_sticky_active(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        profile = home / "profiles" / "worker"
+        profile.mkdir(parents=True)
+        (profile / "config.yaml").write_text("{}\n")
+
+        result = _run_apply_profile_override(
+            tmp_path, monkeypatch, hermes_home=str(profile),
+            active_profile="other", argv=["hermes", "setup"],
+        )
+
+        assert result == str(profile)
+
+    def test_setup_child_explicit_default_overrides_sticky_active(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        result = _run_apply_profile_override(
+            tmp_path, monkeypatch, hermes_home=str(home),
+            active_profile="other", argv=["hermes", "-p", "default", "setup"],
+        )
+
+        assert result == str(home)
+
     def test_hermes_home_at_root_with_active_profile_is_redirected(
         self, tmp_path, monkeypatch
     ):

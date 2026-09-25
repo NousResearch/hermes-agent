@@ -831,23 +831,38 @@ def _linux_terminal_commands(name: str) -> list:
         for exe, flag in _LINUX_TERMINALS]
 
 
+def _macos_terminal_argv(name: str) -> list[str]:
+    # The profile is an osascript argument, never AppleScript source. `--` ends
+    # osascript option parsing and is not included in the run handler's argv.
+    script = ('on run argv\n'
+              'tell application "Terminal"\nactivate\n'
+              + ('do script "exec hermes setup"\n' if name == "default" else
+                 'do script "exec hermes -p " & quoted form of (item 1 of argv) & " setup"\n')
+              + 'end tell\nend run')
+    return ["osascript", "-e", script, "--", *([] if name == "default" else [name])]
+
+
 @router.post("/api/profiles/{name}/open-terminal")
 async def open_profile_terminal_endpoint(name: str):
     with _profile_errors("POST /api/profiles/%s/open-terminal failed", name):
         command = _profile_setup_command(name)
 
         if sys.platform.startswith("win"):
-            argv = ["hermes", "setup"] if name == "default" else ["hermes", "-p", name, "setup"]
-            subprocess.Popen(argv, creationflags=subprocess.CREATE_NEW_CONSOLE)
+            # The CLI trusts a profile-shaped HERMES_HOME before reading the sticky active
+            # profile. Keep the command line constant so the route name is never parsed by
+            # CreateProcess or cmd.exe; only the child gets the selected home.
+            profile_dir = _resolve_profile_dir(name)
+            env = os.environ.copy()
+            env["HERMES_HOME"] = str(profile_dir)
+            env.pop("HERMES_PROFILE_NAME", None)
+            env.pop("HERMES_PROFILE", None)
+            # A root HERMES_HOME still follows active_profile unless default is explicit.
+            argv = ["hermes", "-p", "default", "setup"] if name == "default" else ["hermes", "setup"]
+            subprocess.Popen(argv, env=env, creationflags=subprocess.CREATE_NEW_CONSOLE)
         elif sys.platform == "darwin":
             # osascript receives the name as data. AppleScript's `quoted form of` makes the
             # resulting Terminal command one shell argument even for metacharacters.
-            script = ('on run argv\n'
-                      'tell application "Terminal"\nactivate\n'
-                      + ('do script "exec hermes setup"\n' if name == "default" else
-                         'do script "exec hermes -p " & quoted form of (item 1 of argv) & " setup"\n')
-                      + 'end tell\nend run')
-            subprocess.Popen(["osascript", "-e", script, "--", *([] if name == "default" else [name])])
+            subprocess.Popen(_macos_terminal_argv(name))
         else:
             env = os.environ.copy()
             env["HERMES_SETUP_PROFILE_NAME"] = name

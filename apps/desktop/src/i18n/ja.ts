@@ -2916,7 +2916,8 @@ export const ja = defineLocale({
 
   updates: {
     discontinuedTitle: 'このHermesビルドはサポートされていません',
-    discontinuedBody: 'このHermesビルドはサポートが終了し、動作しなくなる可能性があります。アンインストールしてください。データはディスクに残ります。',
+    discontinuedBody:
+      'このHermesビルドはサポートが終了し、動作しなくなる可能性があります。アンインストールしてください。データはディスクに残ります。',
     channels: { stable: '安定版', canary: '先行版' },
     bundleSwapPending: '再起動して更新を完了',
     bundleSwapPendingDesc:

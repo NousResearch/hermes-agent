@@ -176,7 +176,11 @@ describe('projects RPC profile forwarding', () => {
 
     const next = payload()
     next.projects[1] = { ...next.projects[1], sessionCount: 1, sessionIds: ['s2'] }
-    const request = vi.fn().mockResolvedValueOnce(payload()).mockResolvedValueOnce(payload()).mockResolvedValueOnce(next)
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(payload())
+      .mockResolvedValueOnce(payload())
+      .mockResolvedValueOnce(next)
     const gateway = { connectionState: 'open', request }
     activeGateway.mockReturnValue(gateway as never)
     gatewayAtom.set(gateway as never)

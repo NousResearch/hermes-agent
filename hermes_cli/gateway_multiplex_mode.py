@@ -324,12 +324,16 @@ def standalone_warning_lines(decision: MultiplexDecision, unserved: Optional[lis
 
 def recorded_standalone_warning_lines() -> list[str]:
     """Same box, rebuilt from the live gateway's ``gateway_state.json`` for processes that did not
-    make the decision (``hermes update``'s summary, ``hermes gateway status``)."""
+    make the decision (``hermes update``'s summary, ``hermes gateway status``).
+
+    Only a LIVE writer's reason counts: a profile folded into the multiplexer keeps the file its old
+    per-profile gateway left behind, and replaying that reason told every update the fleet was split."""
     try:
-        from gateway.status import read_runtime_status
-        reason = (read_runtime_status() or {}).get("multiplex_standalone_reason")
+        from gateway.status import get_runtime_status_running_pid, read_runtime_status
+        record = read_runtime_status() or {}
+        reason = record.get("multiplex_standalone_reason")
+        if not reason or get_runtime_status_running_pid(record) is None:
+            return []
     except Exception:
-        return []
-    if not reason:
         return []
     return standalone_warning_lines(MultiplexDecision(False, "guard", str(reason)))

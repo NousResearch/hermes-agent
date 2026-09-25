@@ -2259,6 +2259,15 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
         if isinstance(api_msg, dict):
             for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
                 del api_msg[internal_key]
+    # Same whitespace strip + tool-call JSON canonicalization the main send path applies
+    # (turn_request_assembly.assemble_api_request): the summary re-sends the conversation, and
+    # stored key order in tool-call arguments would break the bit-perfect prefix local servers
+    # with prefix caching had already warmed (#123002 — a 555k-token re-prefill at 0% cached).
+    for api_msg in api_messages:
+        if isinstance(api_msg.get("content"), str):
+            api_msg["content"] = api_msg["content"].strip()
+    from agent.conversation_loop import _canonicalize_api_tool_calls
+    _canonicalize_api_tool_calls(api_messages)
     return api_messages
 
 

@@ -125,6 +125,29 @@ export function resetBackgroundPollingGuardAfterRebind(
  *  2-arg call shape is kept exactly (gateway.request callers assert on it). */
 export function ambientRequestFor(gateway: {
   request: (method: string, params: Record<string, unknown>) => Promise<unknown>
-}): <R>(method: string, params?: Record<string, unknown>) => Promise<R> {
-  return <R>(method: string, params?: Record<string, unknown>) => gateway.request(method, params ?? {}) as Promise<R>
+}): <R>(
+  method: string,
+  params?: Record<string, unknown>,
+  timeoutMs?: number,
+  signal?: AbortSignal
+) => Promise<R> {
+  // #60654: forward the optional deadline/signal so long-wait RPCs
+  // (approval.respond) can raise their client timeout above the generic
+  // default without a per-caller dispatcher.
+  return <R>(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs?: number,
+    signal?: AbortSignal
+  ) =>
+    timeoutMs === undefined && signal === undefined
+      ? (gateway.request(method, params ?? {}) as Promise<R>)
+      : (
+          gateway.request as (
+            method: string,
+            params: Record<string, unknown>,
+            timeoutMs?: number,
+            signal?: AbortSignal
+          ) => Promise<unknown>
+        )(method, params ?? {}, timeoutMs, signal) as Promise<R>
 }

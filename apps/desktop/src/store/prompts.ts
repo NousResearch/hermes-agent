@@ -1,5 +1,7 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
+import { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
+
 import { $clarifyRequest, $clarifyRequests } from './clarify'
 import { isSessionGone, isSessionGoneForBackgroundPolling, markSessionGone } from './runtime-gone'
 import { respondToServerRequest } from './server-requests'
@@ -363,7 +365,11 @@ export async function answerApproval(
     choice,
     ...(request.requestId ? { request_id: request.requestId } : {}),
     session_id: request.sessionId ?? undefined
-  })
+    // Ride the backend's approvals.timeout (300s default), not the generic
+    // request timeout: the user has the full approval window to answer, and a
+    // shorter client deadline rejects its own RPC while the backend still
+    // applies the decision (#60654).
+  }, APPROVAL_RESPOND_TIMEOUT_MS)
 }
 
 /** The prompt request for one specific session — the tile counterpart of the

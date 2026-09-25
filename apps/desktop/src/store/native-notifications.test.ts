@@ -1,3 +1,4 @@
+import { APPROVAL_RESPOND_TIMEOUT_MS } from '@hermes/shared'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createClientSessionState } from '@/lib/chat-runtime'
@@ -319,7 +320,7 @@ describe('respondToApprovalAction', () => {
 
     await respondToApprovalAction('bg', 'approve')
 
-    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'once', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'once', session_id: 'bg' }, APPROVAL_RESPOND_TIMEOUT_MS, undefined)
     expect($approvalRequest.get()).toBeNull()
   })
 
@@ -333,7 +334,7 @@ describe('respondToApprovalAction', () => {
       choice: 'once',
       request_id: 'r1',
       session_id: 'bg'
-    })
+    }, APPROVAL_RESPOND_TIMEOUT_MS, undefined)
     expect($approvalRequest.get()?.requestId).toBe('r2')
     await respondToApprovalAction('bg', 'approve:r1')
     expect($approvalRequest.get()?.requestId).toBe('r2')
@@ -341,7 +342,7 @@ describe('respondToApprovalAction', () => {
 
   it('rejects via approval.respond {choice: "deny"}', async () => {
     await respondToApprovalAction('bg', 'reject')
-    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'deny', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'deny', session_id: 'bg' }, APPROVAL_RESPOND_TIMEOUT_MS, undefined)
   })
 
   it('ignores unknown action ids', async () => {

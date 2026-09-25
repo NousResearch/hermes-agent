@@ -250,6 +250,11 @@ The desktop workflow takes a `jobs` input with the groups `darwin-arm64`,
 groups, which wait for a real Linux build. Each Mac arch and the Windows bundle
 stage a receipt, and each install arm starts from its own receipt as soon as
 its own bytes are staged. `acceptance` is the one join that blocks publication.
+
+Every gate and every candidate starts straight after `admit`. CI is a gate that
+`acceptance` requires, not a lock the signed builds wait behind, so a slow gate
+cannot delay a bundle; the price is that a broken `main` still pays for signed
+candidates that `acceptance` then refuses.
 The `smoke-win32-universal` job is gone; the per-arch MSIX smokes cover each
 arch, and the Windows install arms install the `.msixbundle` on both arches.
 

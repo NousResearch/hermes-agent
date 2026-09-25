@@ -5188,6 +5188,7 @@ export const en: Translations = {
       openSafetySettings: 'Open Safety settings',
       run: 'Run',
       command: 'Command',
+      commandDetails: 'Command details',
       moreOptions: 'More approval options',
       allowSession: 'Allow this session',
       alwaysAllowMenu: 'Always allow…',

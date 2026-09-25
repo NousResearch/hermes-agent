@@ -82,6 +82,45 @@ describe('PendingApprovalStack', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeTruthy()
   })
 
+  it('renders the description instead of a synthetic plugin-rule placeholder', () => {
+    // A pre_tool_call plugin returning {"action": "approve"} escalates through
+    // the same gate with a synthetic display target; the real command lives in
+    // the description. The card must show what would actually run.
+    setRequest('<terminal> (plugin approval rule)', undefined, { requestId: 'apr-synth' })
+    // setRequest stamps a generic description; overwrite with the plugin one.
+    $approvalRequest.get() && setApprovalRequest({
+      command: '<terminal> (plugin approval rule)',
+      description: 'Plugin requires approval for terminal: run\npwd',
+      requestId: 'apr-synth',
+      sessionId: 'sess-1'
+    })
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText(/Plugin requires approval for terminal: run/)).toBeTruthy()
+    expect(screen.getByText(/pwd/)).toBeTruthy()
+    expect(screen.queryByText(/plugin approval rule/)).toBeNull()
+  })
+
+  it('keeps showing the real command for ordinary dangerous-command approvals', () => {
+    setRequest('chmod -R 777 /tmp/x')
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText('chmod -R 777 /tmp/x')).toBeTruthy()
+  })
+
+  it('falls back to the description when a request carries no command at all', () => {
+    setRequest('', undefined, { requestId: 'apr-nocmd' })
+    setApprovalRequest({
+      command: '',
+      description: 'Approve config change: allow SSH tunnel',
+      requestId: 'apr-nocmd',
+      sessionId: 'sess-1'
+    })
+    render(<PendingApprovalStack />)
+
+    expect(screen.getByText('Approve config change: allow SSH tunnel')).toBeTruthy()
+  })
+
   it('answers the live approval request with {choice: "once"} and clears the request on Run', async () => {
     const request = mockGateway()
     const respond = liveApproval()

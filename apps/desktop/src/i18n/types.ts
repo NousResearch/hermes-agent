@@ -4321,6 +4321,7 @@ export interface Translations {
       openSafetySettings: string
       run: string
       command: string
+      commandDetails: string
       moreOptions: string
       allowSession: string
       alwaysAllowMenu: string

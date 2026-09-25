@@ -367,7 +367,13 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     co = _read_checkout(root, git, embedded)
     desktop_config = _read_json(branch_config_path) if branch_config_path else None
     configured_branch = _configured_branch(desktop_config)
-    selected_branch = branch or configured_branch or _checked_out_branch(co.current_branch, "main")
+    updates = config.get("updates")
+    # An opted-in maintained branch receives main's updates without leaving the
+    # checkout. Probe that source, not a local-only branch absent from GitHub.
+    in_place_main = (channel == "main" and isinstance(updates, dict)
+                     and updates.get("parked_branch_strategy") == "update_in_place")
+    check_branch = None if in_place_main else co.current_branch
+    selected_branch = branch or configured_branch or _checked_out_branch(check_branch, "main")
     result.update(supported=True, currentSha=co.head, currentBranch=co.current_branch, dirty=co.dirty)
     if channel != "main":
         result["channel"] = channel
@@ -387,8 +393,8 @@ def check_for_updates(*, install_root: Path | None = None, home: Path | None = N
     elif branch is None:
         source_target = _resolve_channel(result, channel, co)
         if source_target is not None and not source_target.commit:
-            # The record supplies a default, not permission to leave the user's branch.
-            selected_branch = configured_branch or _checked_out_branch(co.current_branch, source_target.branch)
+            # Explicit pins still win; in-place main follows its update source.
+            selected_branch = configured_branch or _checked_out_branch(check_branch, source_target.branch)
     if "error" not in result and (source_target is None or source_target.branch is not None):
         # Only a Desktop-configured branch the caller did not override is healed.
         heal = branch_config_path and not branch and configured_branch == selected_branch

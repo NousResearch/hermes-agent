@@ -290,9 +290,11 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
     event = make_event(platform, text, **event_kwargs)
     adapter.send.reset_mock()
     await adapter.handle_message(event)
-    for _ in range(40):  # up to ~2s; returns as soon as the send lands
-        if adapter.send.called:
-            break
+    # Returns as soon as the send lands; the budget only matters on a starved e2e runner,
+    # where the first parametrization pays cold imports and worker-thread DB hops (2 s
+    # timed out on main twice in a day: runs 35994487653, 35996302026).
+    deadline = asyncio.get_running_loop().time() + 15.0
+    while not adapter.send.called and asyncio.get_running_loop().time() < deadline:
         await asyncio.sleep(0.05)
     return adapter.send
 

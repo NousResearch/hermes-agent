@@ -1970,6 +1970,26 @@ def get_running_pid(
     return runtime_pid
 
 
+def _live_gateway_uses_this_checkout(pid: int) -> bool:
+    """Require a live source path when the lock is the only persisted identity.
+
+    Detached Windows gateways can run store Python from a shared Hermes home,
+    so neither the executable nor the working directory identifies the checkout.
+    The launcher places the checkout on the child's PYTHONPATH.
+    """
+    try:
+        import psutil  # type: ignore
+
+        pythonpath = psutil.Process(pid).environ().get("PYTHONPATH", "")
+        checkout = Path(__file__).resolve().parent.parent
+        return any(
+            _same_hermes_home(part, checkout)
+            for part in pythonpath.split(os.pathsep) if part.strip()
+        )
+    except Exception:
+        return False
+
+
 def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float]]:
     """Return a verified process identity or fail on ambiguous runtime state."""
     resolved_pid_path = Path(pid_path)
@@ -1981,16 +2001,37 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
         return None
     if not _is_gateway_runtime_lock_active_strict(resolved_lock_path):
         return None
-    if not pid_exists:
+    lock_record = _read_gateway_lock_record(resolved_lock_path)
+    if not pid_exists and not _IS_WINDOWS:
         raise RuntimeError("active gateway lock has no PID metadata")
-    records = (_read_pid_record(resolved_pid_path), _read_gateway_lock_record(resolved_lock_path))
+    pid_record = _read_pid_record(resolved_pid_path) if pid_exists else None
+    records = (pid_record, lock_record) if pid_exists else (lock_record,)
     if not all(records):
         raise RuntimeError("gateway PID or lock metadata is malformed")
     pid = _pid_from_record(records[0])
-    if pid is None or pid <= 0 or _pid_from_record(records[1]) != pid:
+    if pid is None or pid <= 0 or (pid_exists and _pid_from_record(lock_record) != pid):
         raise RuntimeError("gateway PID and lock identities disagree")
     if not _pid_exists(pid):
         raise RuntimeError("gateway identity is not live")
+    if not pid_exists:
+        # A live Windows gateway can lose gateway.pid while retaining its OS lock.
+        # With only one identity record, require explicit home and live argv proof.
+        recorded_home = lock_record.get("hermes_home")
+        home_conflicts = recorded_gateway_home_conflicts(
+            lock_record, expected_home=resolved_pid_path.parent
+        )
+        if (not _record_looks_like_gateway(lock_record)
+                or not isinstance(recorded_home, str) or not recorded_home.strip()
+                or home_conflicts):
+            raise RuntimeError("gateway lock does not identify this profile")
+        live_command = _read_process_cmdline(pid)
+        if not live_command or not looks_like_gateway_runtime_command_line(live_command):
+            raise RuntimeError("gateway command line does not identify a live gateway")
+        if not (_host_gateway_serves_home(pid, resolved_pid_path.parent)
+                or _command_line_belongs_to_profile(live_command, resolved_pid_path.parent)):
+            raise RuntimeError("gateway command line belongs to another profile")
+        if not _live_gateway_uses_this_checkout(pid):
+            raise RuntimeError("gateway process belongs to another Hermes checkout")
     current_start = _get_process_start_time(pid)
     starts = tuple(record.get("start_time") for record in records)
     if current_start is None or any(start is None for start in starts):
@@ -2000,7 +2041,7 @@ def get_running_pid_identity_strict(pid_path: Path) -> Optional[tuple[int, float
             raise RuntimeError("gateway process identity changed")
     except (TypeError, ValueError) as exc:
         raise RuntimeError("gateway creation time is malformed") from exc
-    if not all(_record_matches_live_gateway_pid(record, pid) for record in records):
+    if pid_exists and not all(_record_matches_live_gateway_pid(record, pid) for record in records):
         raise RuntimeError("runtime metadata does not identify a live gateway")
     current = float(current_start)
     if not _IS_WINDOWS:

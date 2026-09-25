@@ -1673,6 +1673,71 @@ def test_strict_gateway_identity_returns_none_for_confirmed_absence(tmp_path):
     assert status.get_running_pid_identity_strict(tmp_path / "gateway.pid") is None
 
 
+def test_strict_gateway_identity_recovers_windows_lock_without_pid(tmp_path, monkeypatch):
+    import psutil
+
+    record = {"pid": 123, "start_time": 10000, "kind": "hermes-gateway",
+              "hermes_home": str(tmp_path), "argv": ["hermes", "gateway", "run"]}
+    (tmp_path / "gateway.lock").write_text(json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(status, "_IS_WINDOWS", True)
+    monkeypatch.setattr(status, "_is_gateway_runtime_lock_active_strict", lambda _path: True)
+    monkeypatch.setattr(status, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 10000)
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: "hermes gateway run")
+    monkeypatch.setattr(status, "_live_gateway_uses_this_checkout", lambda _pid: True)
+    monkeypatch.setattr(psutil, "Process", lambda _pid: SimpleNamespace(create_time=lambda: 100.0))
+
+    assert status.get_running_pid_identity_strict(tmp_path / "gateway.pid") == (123, 100.0)
+
+
+def test_live_gateway_checkout_proof_requires_exact_pythonpath_entry(monkeypatch):
+    import psutil
+
+    checkout = str(Path(status.__file__).resolve().parent.parent)
+    process = SimpleNamespace(environ=lambda: {"PYTHONPATH": os.pathsep.join(
+        [str(Path(checkout).parent / "another-agent"), checkout]
+    )})
+    monkeypatch.setattr(psutil, "Process", lambda _pid: process)
+    assert status._live_gateway_uses_this_checkout(123)
+
+    process = SimpleNamespace(environ=lambda: {"PYTHONPATH": checkout + "-other"})
+    assert not status._live_gateway_uses_this_checkout(123)
+    process = SimpleNamespace(environ=lambda: {})
+    assert not status._live_gateway_uses_this_checkout(123)
+
+
+@pytest.mark.parametrize("fault", ["malformed", "missing_home", "invalid_home", "other_home", "dead",
+                                   "reused", "unreadable_argv", "other_profile", "other_checkout",
+                                   "wrong_kind"])
+def test_strict_gateway_identity_rejects_unproven_windows_lock(tmp_path, monkeypatch, fault):
+    import psutil
+
+    record = {"pid": 123, "start_time": 10000, "kind": "hermes-gateway",
+              "hermes_home": str(tmp_path), "argv": ["hermes", "gateway", "run"]}
+    if fault == "missing_home":
+        del record["hermes_home"]
+    elif fault == "invalid_home":
+        record["hermes_home"] = 123
+    elif fault == "other_home":
+        record["hermes_home"] = str(tmp_path / "profiles" / "ops")
+    elif fault == "wrong_kind":
+        record["kind"] = "other"
+    (tmp_path / "gateway.lock").write_text(
+        "bad" if fault == "malformed" else json.dumps(record), encoding="utf-8")
+    monkeypatch.setattr(status, "_IS_WINDOWS", True)
+    monkeypatch.setattr(status, "_is_gateway_runtime_lock_active_strict", lambda _path: True)
+    monkeypatch.setattr(status, "_pid_exists", lambda _pid: fault != "dead")
+    monkeypatch.setattr(status, "_get_process_start_time", lambda _pid: 10001 if fault == "reused" else 10000)
+    monkeypatch.setattr(status, "_read_process_cmdline", lambda _pid: None if fault == "unreadable_argv"
+                        else "hermes --profile ops gateway run" if fault == "other_profile"
+                        else "hermes gateway run")
+    monkeypatch.setattr(status, "_live_gateway_uses_this_checkout", lambda _pid: fault != "other_checkout")
+    monkeypatch.setattr(psutil, "Process", lambda _pid: SimpleNamespace(create_time=lambda: 100.0))
+
+    with pytest.raises(RuntimeError):
+        status.get_running_pid_identity_strict(tmp_path / "gateway.pid")
+
+
 def test_strict_gateway_identity_raises_when_metadata_stat_is_denied(
     tmp_path, monkeypatch
 ):

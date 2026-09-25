@@ -1109,9 +1109,14 @@ let lastConnectionKey: string | undefined
 // mode alone can't tell two remote backends apart — switching directly from
 // remote profile A to remote profile B leaves mode === 'remote' both times.
 // Key on the actual backend target so a target change re-checks even when
-// the mode doesn't.
+// the mode doesn't. Pooled profiles share a baseUrl, so the profile joins
+// the key: the update check is profile-scoped (per-profile overrides can
+// pin a different channel/branch).
 function connectionKey(conn: HermesConnection | null): string {
-  return conn?.mode === 'remote' ? `remote:${conn.baseUrl}` : String(conn?.mode)
+  if (conn?.mode !== 'remote') {
+    return String(conn?.mode)
+  }
+  return conn.profile ? `remote:${conn.baseUrl}:${conn.profile}` : `remote:${conn.baseUrl}`
 }
 
 export const BACKGROUND_UPDATE_CHECK_MS = 24 * 60 * 60 * 1000

@@ -181,14 +181,18 @@ const TranscriptPane = memo(function TranscriptPane({
     [transcript.historyItems]
   )
 
+  const clearBlankSelection = (e: { cellIsBlank?: boolean }) => {
+    if (e.cellIsBlank) {
+      actions.clearSelection()
+    }
+  }
+
   const transcriptContent = (
     <Box flexDirection="column" paddingX={1}>
-      {!nativeMode && transcript.virtualHistory.topSpacer > 0 ? (
-        <Box height={transcript.virtualHistory.topSpacer} />
-      ) : null}
+      {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
       {transcript.virtualRows
-        .slice(nativeMode ? 0 : transcript.virtualHistory.start, nativeMode ? undefined : transcript.virtualHistory.end)
+        .slice(transcript.virtualHistory.start, transcript.virtualHistory.end)
         .map(row => (
           <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
             {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
@@ -236,9 +240,7 @@ const TranscriptPane = memo(function TranscriptPane({
           </Box>
         ))}
 
-      {!nativeMode && transcript.virtualHistory.bottomSpacer > 0 ? (
-        <Box height={transcript.virtualHistory.bottomSpacer} />
-      ) : null}
+      {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
 
       <StreamingAssistant
         cols={bodyCols}
@@ -258,15 +260,7 @@ const TranscriptPane = memo(function TranscriptPane({
   return (
     <>
       {nativeMode ? (
-        <Box
-          flexDirection="column"
-          flexGrow={1}
-          onClick={(e: { cellIsBlank?: boolean }) => {
-            if (e.cellIsBlank) {
-              actions.clearSelection()
-            }
-          }}
-        >
+        <Box flexDirection="column" flexGrow={1} onClick={clearBlankSelection}>
           {transcriptContent}
         </Box>
       ) : (
@@ -274,11 +268,7 @@ const TranscriptPane = memo(function TranscriptPane({
           flexDirection="column"
           flexGrow={1}
           flexShrink={1}
-          onClick={(e: { cellIsBlank?: boolean }) => {
-            if (e.cellIsBlank) {
-              actions.clearSelection()
-            }
-          }}
+          onClick={clearBlankSelection}
           ref={transcript.scrollRef}
           stickyScroll
         >
@@ -421,10 +411,10 @@ const ComposerPane = memo(function ComposerPane({
 
       <Box
         flexDirection="column"
-        marginTop={nativeMode ? 0 : ui.statusBar === 'top' ? 0 : 1}
+        marginTop={nativeMode || ui.statusBar === 'top' ? 0 : 1}
         position={nativeMode ? undefined : 'relative'}
       >
-        {!nativeMode && <FloatingOverlays {...floatingOverlayProps} nativeMode={false} />}
+        {!nativeMode && <FloatingOverlays {...floatingOverlayProps} />}
 
         {!nativeMode && composer.input === '?' && !composer.inputBuf.length && <HelpHint t={ui.theme} />}
 

@@ -21,6 +21,11 @@ export const TERMINAL_MODE_RESET =
   '\x1b[0m' + // attributes
   '\x1b[?25h' // cursor visible
 
+type ResettableStream = Pick<NodeJS.WriteStream, 'isTTY' | 'write'> & {
+  fd?: number
+}
+
+/** Native mode leaves its frame in the primary buffer; wipe it on exit so the shell prompt starts clean. */
 export function clearNativeTuiFrame(stream: ResettableStream = process.stdout): boolean {
   if (!stream.isTTY) {
     return false
@@ -32,10 +37,6 @@ export function clearNativeTuiFrame(stream: ResettableStream = process.stdout): 
   } catch {
     return false
   }
-}
-
-type ResettableStream = Pick<NodeJS.WriteStream, 'isTTY' | 'write'> & {
-  fd?: number
 }
 
 // OSC 10/11 set the terminal's DEFAULT foreground/background — so every cell,

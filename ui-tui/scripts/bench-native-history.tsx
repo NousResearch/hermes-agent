@@ -91,7 +91,7 @@ function VirtualHarness({ items, scrollRef }: VirtualProps) {
       <Box flexDirection="column" width="100%">
         {virtual.topSpacer > 0 ? <Box height={virtual.topSpacer} /> : null}
         {items.slice(virtual.start, virtual.end).map(item => (
-          <Box flexDirection="column" key={item.key} ref={virtual.measureRef(item.key)} minHeight={item.height}>
+          <Box flexDirection="column" key={item.key} minHeight={item.height} ref={virtual.measureRef(item.key)}>
             <Text>{item.text}</Text>
           </Box>
         ))}
@@ -108,6 +108,7 @@ async function runSample(mode: 'native' | 'virtual', itemCount: number): Promise
   const scrollRef = { current: null as ScrollBoxHandle | null }
 
   const items = makeItems(itemCount)
+
   const renderHarness = (nextItems: readonly Item[]) =>
     mode === 'native' ? (
       <NativeHarness items={nextItems} />
@@ -117,23 +118,27 @@ async function runSample(mode: 'native' | 'virtual', itemCount: number): Promise
 
   const heapBefore = process.memoryUsage?.().heapUsed ?? null
   const mountStart = performance.now()
+
   const instance = renderSync(renderHarness(items), {
     patchConsole: false,
     stderr: stderr as unknown as NodeJS.WriteStream,
     stdin: stdin as unknown as NodeJS.ReadStream,
     stdout: stdout as unknown as NodeJS.WriteStream
   })
+
   await settle()
   const mountMs = performance.now() - mountStart
 
   const rerenderItems = items.map((item, index) =>
     index === items.length - 1 ? { ...item, text: `${item.text} rerender` } : item
   )
+
   const rerenderStart = performance.now()
   instance.rerender(renderHarness(rerenderItems))
   await settle()
   const rerenderMs = performance.now() - rerenderStart
   const heapAfter = process.memoryUsage?.().heapUsed ?? null
+
   const sample = {
     heapDeltaBytes: heapBefore === null || heapAfter === null ? null : heapAfter - heapBefore,
     mountMs,
@@ -147,13 +152,16 @@ async function runSample(mode: 'native' | 'virtual', itemCount: number): Promise
   stdin.destroy()
   stdout.destroy()
   stderr.destroy()
+
   return sample
 }
 
 function distribution(values: number[]) {
   const sorted = [...values].sort((a, b) => a - b)
+
   const percentile = (p: number) =>
     sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * p) - 1))] ?? 0
+
   return {
     max: sorted.at(-1) ?? 0,
     mean: sorted.reduce((sum, value) => sum + value, 0) / Math.max(1, sorted.length),
@@ -168,7 +176,9 @@ function numericArg(name: string, fallback: number) {
     .slice(2)
     .find(arg => arg.startsWith(`--${name}=`))
     ?.split('=', 2)[1]
+
   const parsed = Number(raw)
+
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : fallback
 }
 
@@ -177,11 +187,16 @@ function workloadsArg() {
     .slice(2)
     .find(arg => arg.startsWith('--items='))
     ?.split('=', 2)[1]
-  if (!raw) return DEFAULT_WORKLOADS
+
+  if (!raw) {
+    return DEFAULT_WORKLOADS
+  }
   const parsed = raw.split(',').map(Number)
+
   if (parsed.some(value => !Number.isSafeInteger(value) || value <= 0)) {
     throw new Error(`invalid --items workload list: ${raw}`)
   }
+
   return parsed
 }
 
@@ -209,6 +224,7 @@ async function main() {
 
     const virtual: Sample[] = []
     const native: Sample[] = []
+
     for (let sample = 0; sample < sampleCount; sample++) {
       virtual.push(await runSample('virtual', itemCount))
       native.push(await runSample('native', itemCount))

@@ -17596,6 +17596,18 @@
             "default": null,
             "title": "Response Previewed"
           },
+          "response_transformed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Response Transformed"
+          },
           "billing": {
             "anyOf": [
               {

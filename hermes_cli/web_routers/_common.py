@@ -160,26 +160,44 @@ CORRUPT_STORE_DETAIL = {
     "error": "state_db_corrupt",
     "message": "state.db corrupt — run `hermes doctor` (then `hermes doctor --fix` or `hermes sessions repair`).",
 }
+# One payload per persistence-cause bucket (``classify_persistence_error``); ``error`` codes
+# all follow the ``state_db_*`` scheme of the pre-existing ``state_db_corrupt``.
+# Same guidance as the deleted_wal / replaced turn explainers: `doctor --fix` while a holder
+# lives would repair the wrong generation in place, so it is deliberately NOT suggested here.
+DELETED_WAL_DETAIL = {
+    "error": "state_db_deleted_wal",
+    "message": "another Hermes process still holds an old copy of the session database's write-ahead log — "
+               "quit every Hermes process on this profile, run `hermes doctor` (it names the holders), "
+               "then start Hermes again. Do not run `hermes doctor --fix` while they run.",
+}
+STATE_DB_REPLACED_DETAIL = {
+    "error": "state_db_replaced",
+    "message": "state.db was replaced while Hermes was running — stop Hermes, run `hermes doctor`, "
+               "then start it again. Do not run `hermes doctor --fix`, which would repair the wrong file in place.",
+}
+# Every other bucket a malformed image can classify as ("corrupt", "fts_index") is the corrupt payload.
+_STORE_STATUS_DETAIL_BY_CAUSE = {"deleted_wal": DELETED_WAL_DETAIL, "replaced": STATE_DB_REPLACED_DETAIL}
 
 
 @contextlib.contextmanager
 def corrupt_store_as_status(db_path):
-    """Map a corrupt-image ``sqlite3.DatabaseError`` from a state.db read to a 503 status
+    """Map a corrupt-image ``sqlite3.DatabaseError`` or ``StateDbReplacedError`` from a state.db read to a 503 status
     payload, warning once per store per :data:`_CORRUPT_STORE_WARN_INTERVAL_S`.
     Busy/locked and every other error propagate unchanged."""
-    from hermes_state_errors import is_malformed_db_error
+    from hermes_state_errors import StateDbReplacedError, classify_persistence_error, is_malformed_db_error
 
     try:
         yield
-    except sqlite3.DatabaseError as exc:
-        if not is_malformed_db_error(exc):
+    except (sqlite3.DatabaseError, StateDbReplacedError) as exc:
+        if not isinstance(exc, StateDbReplacedError) and not is_malformed_db_error(exc):
             raise
         key, now = str(db_path), time.monotonic()
         last = _corrupt_store_warned_at.get(key)
+        detail = _STORE_STATUS_DETAIL_BY_CAUSE.get(classify_persistence_error(exc), CORRUPT_STORE_DETAIL)
         if last is None or now - last >= _CORRUPT_STORE_WARN_INTERVAL_S:
             _corrupt_store_warned_at[key] = now
-            log.warning("state.db at %s is corrupt (%s); dashboard reads return a status payload until it is "
+            log.warning("state.db at %s is unreadable (%s); dashboard reads return a status payload until it is "
                         "repaired — run `hermes doctor`", db_path, exc)
         else:
-            log.debug("state.db at %s still corrupt: %s", db_path, exc)
-        raise HTTPException(status_code=503, detail={**CORRUPT_STORE_DETAIL, "path": key}) from exc
+            log.debug("state.db at %s still has error: %s", db_path, exc)
+        raise HTTPException(status_code=503, detail={**detail, "path": key}) from exc

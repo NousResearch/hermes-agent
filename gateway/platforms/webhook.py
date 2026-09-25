@@ -471,7 +471,11 @@ class WebhookAdapter(BasePlatformAdapter):
         """JSON, falling back to form-encoded; ``_UNPARSEABLE`` when neither parses."""
         try:
             return json.loads(raw_body)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # ``json.loads(bytes)`` raises UnicodeDecodeError (a ValueError, not a
+            # JSONDecodeError) on bytes undecodable in the encoding it detects; catch
+            # it so the body reaches the form-encoded fallback instead of escaping
+            # the handler as an unhandled 500 (#122754).
             try:
                 import urllib.parse
                 return dict(urllib.parse.parse_qsl(raw_body.decode("utf-8")))

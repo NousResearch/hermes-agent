@@ -83,7 +83,7 @@ def test_metadata_uses_same_registry_and_empty_result(monkeypatch):
     from pm import update
     monkeypatch.setenv('NPM_CONFIG_REGISTRY', 'https://mirror.example/npm/')
     seen = []
-    def get_json(address):
+    def get_json(address, **kwargs):
         seen.append(address)
         return {}
     monkeypatch.setattr(update, '_get_json', get_json)
@@ -97,3 +97,22 @@ def test_default_registry_preserves_public_fallback(tmp_path):
     source = pinned_source(original, tmp_path / 'archive', 'c' * 64)
     assert source.url == original
     assert source.fallbacks == (mirror_url('c' * 64),)
+
+
+@pytest.mark.parametrize('origin', ['https://api.github.com/', 'https://huggingface.co/'])
+def test_registry_metadata_never_borrows_supplier_credentials(monkeypatch, origin):
+    import io
+    from hermes_cli import urllib_security
+    from pm import update
+
+    monkeypatch.setenv('NPM_CONFIG_REGISTRY', origin)
+    monkeypatch.setenv('GH_TOKEN', 'fixture-gh-secret')
+    monkeypatch.setenv('HF_TOKEN', 'fixture-hf-secret')
+    seen = []
+    def open_request(request, **kwargs):
+        seen.append(request)
+        return io.BytesIO(b'{}')
+    monkeypatch.setattr(urllib_security, 'open_credentialed_url', open_request)
+    assert update.npm_dist_tags('npm') == {}
+    assert seen[0].get_header('Authorization') is None
+    assert seen[0].get_header('User-agent') == 'hermes-pm'

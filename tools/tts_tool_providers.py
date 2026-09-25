@@ -660,9 +660,14 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     if is_google_official:
         try:
             from hermes_cli.version_info import get_version_info
-            headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
+            version = str(get_version_info().base_version)
         except Exception:
-            headers["X-Goog-Api-Client"] = "hermes-agent/0.0.0"
+            try:
+                import hermes_cli
+                version = str(getattr(hermes_cli, "__version__", "0.0.0"))
+            except Exception:
+                version = "0.0.0"
+        headers["X-Goog-Api-Client"] = f"hermes-agent/{version}"
 
     response: Any = None
     if use_interactions:

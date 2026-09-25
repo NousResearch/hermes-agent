@@ -158,7 +158,7 @@ def path_in_use(path: Path) -> bool:
 
 def _load_cards(db_path: Optional[Path]) -> dict[str, tuple[str, Optional[int]]]:
     """``{task_id: (status, completed_at)}`` for every card on the board."""
-    from hermes_cli import kanban_db as kbc
+    from hermes_cli import kanban_db_connect as kbc
 
     try:
         with kbc.connect_closing(db_path=db_path) as conn:
@@ -404,7 +404,7 @@ def default_roots(
                 add(match)
     # Parents of worktrees the board itself created (board repos may live
     # anywhere, so the DB is the only honest source for those).
-    from hermes_cli import kanban_db as kbc
+    from hermes_cli import kanban_db_connect as kbc
     try:
         with kbc.connect_closing(db_path=db_path) as conn:
             rows = conn.execute(
@@ -696,7 +696,7 @@ def record_reclaim_comments(
         return 0
     body = format_reclaim_report(decisions, before_mb=before_mb, after_mb=after_mb)
     from hermes_cli import kanban_db as kb
-    from hermes_cli import kanban_db as kbc
+    from hermes_cli import kanban_db_connect as kbc
 
     written = 0
     try:

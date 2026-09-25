@@ -84,13 +84,8 @@ _SLUG = _arg("slug")
 _TENANT = _arg("--tenant", help="Tenant namespace")
 _PRIORITY = _arg("--priority", type=int, default=0, help="Priority tiebreaker")
 _RECLAIM_REASON = _reason("Human-readable reason (recorded on the reclaimed event)")
-_NOTIFY_TARGET = (
-    _arg("--platform", required=True),
-    _arg("--chat-id", required=True),
-    _arg("--thread-id"),
-)
-# Shared by ``gc`` and ``reclaim`` so the disk guard and the GC sweep run the same
-# code path with the same knobs.
+# Shared by ``gc`` and ``reclaim`` so the disk guard and the GC sweep run the
+# very same code path with the very same knobs.
 _WORKTREE_RECLAIM_ARGS = (
     _arg("--worktree-min-age-hours", type=int, default=6,
          help="Only reclaim worktrees of cards completed longer ago than N hours (default: 6)"),
@@ -101,6 +96,11 @@ _WORKTREE_RECLAIM_ARGS = (
     _arg("--dry-run", action="store_true", help="Report what would be reclaimed, remove nothing"),
     _arg("--no-comment", action="store_true",
          help="Do not record the before/after free space on the reclaimed cards"),
+)
+_NOTIFY_TARGET = (
+    _arg("--platform", required=True),
+    _arg("--chat-id", required=True),
+    _arg("--thread-id"),
 )
 _STEP_HANDOFF = (
     _arg("--summary", help="Structured handoff summary. Falls back to --result if omitted."),
@@ -280,7 +280,8 @@ _SPECS = [
              help="Also move finished cards' sibling *-pi*.log / *-spec*.md files into <root>/logs/"),
         _arg("--log-min-age-days", type=int, default=7,
              help="With --logs: only move sibling files of cards done longer ago than N days (default: 7)"),
-    ], help="Release an active worker claim on a running task"),
+    ], help="Release an active worker claim on a running task, or (with no task id) "
+            "reclaim the worktrees of done cards"),
     _cmd("reassign", [
         _TASK_ID,
         _arg("profile", help="New profile name (or 'none' to unassign)"),
@@ -478,7 +479,7 @@ _SPECS = [
         _arg("--log-retention-days", type=_nonnegative_int, default=30,
              help="Delete worker log files older than N days (default: 30; 0 disables)"),
         *_WORKTREE_RECLAIM_ARGS,
-    ], help="Garbage-collect archived-task workspaces, old events, and old logs"),
+    ], help="Garbage-collect archived-task workspaces, done-card worktrees, old events, and old logs"),
     _cmd("repair", [_json_flag(help="Emit the repair report as JSON")],
          help="Check kanban.db integrity and auto-repair index-only corruption",
          description=(

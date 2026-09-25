@@ -29,7 +29,8 @@ from hermes_cli.kanban_output import (
 )
 from hermes_cli.kanban_boards import _dispatch_boards
 from hermes_cli.kanban_ops import (
-    _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
+    _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_reclaim_worktrees, _cmd_repair,
+    _cmd_tail, _cmd_watch,
 )
 from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: hermes_cli.main, run_slash)
 
@@ -605,61 +606,6 @@ def _cmd_set_model(args: argparse.Namespace) -> int:
         print(f"Set model override on {args.task_id}: {label} (applies on next dispatch)")
     else:
         print(f"Cleared model override on {args.task_id} (worker uses its profile default)")
-    return 0
-
-
-def _reclaim_roots(args: argparse.Namespace) -> list:
-    """``--worktree-root`` when given, else the globbed/board-derived defaults."""
-    from hermes_cli import kanban_reclaim as kbr
-    explicit = getattr(args, "worktree_roots", None)
-    if explicit:
-        return [Path(p).expanduser() for p in explicit]
-    return kbr.default_roots()
-
-
-def _reclaim_worktrees(args: argparse.Namespace) -> int:
-    """Reap done cards' worktrees, printing the reason for every refusal (a pass
-    that silently removes nothing is the failure mode this replaces)."""
-    from hermes_cli import kanban_reclaim as kbr
-    if getattr(args, "no_worktrees", False):
-        return 0
-    roots = _reclaim_roots(args)
-    if not roots:
-        return 0
-    dry_run = bool(getattr(args, "dry_run", False))
-    # Before/after free space is measured in the scheduled path and recorded on the card.
-    before_mb = kbr.free_space_mb(roots[0])
-    decisions = kbr.reclaim_done_worktrees(
-        roots=roots, min_age_hours=getattr(args, "worktree_min_age_hours", 6), dry_run=dry_run,
-    )
-    after_mb = kbr.free_space_mb(roots[0])
-    print(f"Worktree reclaim over {len(roots)} root(s):")
-    for line in kbr.format_decisions(decisions):
-        print(line)
-    removed = sum(1 for d in decisions if d.removed)
-    print(f"  -> {removed} removed, {len(decisions) - removed} kept")
-    print(f"  -> free before {before_mb}MB, after {after_mb}MB")
-    if removed and not dry_run and not getattr(args, "no_comment", False):
-        written = kbr.record_reclaim_comments(decisions, before_mb=before_mb, after_mb=after_mb)
-        print(f"  -> recorded the before/after df on {written} card(s)")
-    return removed
-
-
-def _cmd_reclaim_worktrees(args: argparse.Namespace) -> int:
-    """``hermes kanban reclaim`` with no task id — the disk-guard entry point."""
-    from hermes_cli import kanban_reclaim as kbr
-    _reclaim_worktrees(args)
-    if getattr(args, "logs", False):
-        for root in _reclaim_roots(args):
-            decisions = kbr.reclaim_stale_sibling_logs(
-                root=Path(root).expanduser(),
-                min_age_days=getattr(args, "log_min_age_days", 7),
-                dry_run=bool(getattr(args, "dry_run", False)),
-            )
-            if decisions:
-                print(f"Sibling logs under {root}:")
-                for line in kbr.format_decisions(decisions):
-                    print(line)
     return 0
 
 

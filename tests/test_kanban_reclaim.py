@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import kanban_db as kbc
-from hermes_cli import kanban as kanban_ops, kanban_reclaim as kbr
+from hermes_cli import kanban_db_connect as kbc
+from hermes_cli import kanban_ops, kanban_reclaim as kbr
 
 HOUR = 3600
 DAY = 86400

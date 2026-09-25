@@ -114,6 +114,27 @@ def resolve_store_python(repo_root: Path) -> Path | None:
     return None
 
 
+def running_on_store_python() -> bool:
+    """True when this process runs PM's store interpreter for the current install.
+
+    The store Python owns only the ABI: it carries no application packages and
+    no ``hermes_cli`` — those arrive from the launcher prelude (repo root on
+    ``sys.path`` plus ``hermes_bootstrap``'s dependency lease) and exist only in
+    the parent that ran the prelude. A bare ``sys.executable -m hermes_cli.main``
+    child of such a process dies with ``ModuleNotFoundError`` before any Hermes
+    code runs (#122620), so children must go through ``runtime_command()``
+    instead. A venv/dev interpreter keeps the module form.
+    """
+    root = Path(__file__).resolve().parents[1]
+    store = resolve_store_python(root)
+    if store is None:
+        return False
+    try:
+        return Path(sys.executable).resolve() == store.resolve()
+    except OSError:
+        return False
+
+
 def _load_script_maker():
     """distlib's ScriptMaker — standalone first, then pip's vendored copy."""
     try:

@@ -2913,7 +2913,21 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     """Hermes update/restart argv: the running interpreter's ``python -m hermes_cli.main``
     (exactly this install), else ``hermes`` on PATH, else None. The module argv must win: a
     PATH-first lookup lets an attacker-planted ``hermes`` shadow the running install when
-    /update or /restart re-execs it (#111569)."""
+    /update or /restart re-execs it (#111569).
+
+    Store Python exception (#122620): the PM store interpreter carries no application
+    packages, so the bare module form re-execs into ``ModuleNotFoundError`` — this
+    process resolves ``hermes_cli`` only via the launcher prelude's ``sys.path`` entry.
+    Return the launcher prelude argv so the re-exec'd child gets the repo root and the
+    bootstrap dependency lease (both the POSIX shell path and the Windows watcher run
+    these argv elements verbatim).
+"""
+    from hermes_cli._launchers import running_on_store_python
+
+    if running_on_store_python():
+        from hermes_cli._launchers import runtime_command
+
+        return runtime_command(Path(__file__).resolve().parents[1])
     try:
         import importlib.util
         if importlib.util.find_spec("hermes_cli") is not None:

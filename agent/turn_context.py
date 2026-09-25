@@ -769,7 +769,7 @@ def _apply_pre_persist_hook(
     ``messages``, so the composed body is written back into that dict in place.
     Returns the composed ``user_message``."""
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _pp = _invoke_hook(
             "pre_persist_user_message",
             session_id=agent.session_id or "",

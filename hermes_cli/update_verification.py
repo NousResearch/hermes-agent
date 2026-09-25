@@ -129,6 +129,7 @@ def _pre_state_path(path: Optional[Path] = None) -> Path:
 
 
 def save_pre_state(state: Dict[str, Any]) -> Path:
+    """Spec §5.1 — persist the captured pre-state to logs/update_receipts/."""
     path = _pre_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
@@ -136,10 +137,12 @@ def save_pre_state(state: Dict[str, Any]) -> Path:
 
 
 def load_pre_state(path: Optional[Path] = None) -> Dict[str, Any]:
+    """Spec §5.2 — load a persisted pre-state for verification."""
     return json.loads(_pre_state_path(path).read_text(encoding="utf-8"))
 
 
 def check_config_parity(pre_state: Dict[str, Any]) -> Tuple[bool, str]:
+    """Spec §5.1 — verify every pre-state root key still exists on disk."""
     missing_all: List[str] = []
     for name, snapshot in pre_state.get("profiles", {}).items():
         raw = _read_raw_config(Path(snapshot["home"]) / "config.yaml")
@@ -152,6 +155,7 @@ def check_config_parity(pre_state: Dict[str, Any]) -> Tuple[bool, str]:
 
 
 def check_mcp_fingerprint_parity(pre_state: Dict[str, Any]) -> Tuple[bool, str]:
+    """Spec §5.3 — verify each profile's MCP server shape (name/enabled/command/url) is unchanged."""
     diffs: List[str] = []
     for name, snapshot in pre_state.get("profiles", {}).items():
         raw = _read_raw_config(Path(snapshot["home"]) / "config.yaml")
@@ -191,6 +195,7 @@ def check_gateway_liveness(timeout: float = LIVENESS_TIMEOUT_SECONDS) -> Tuple[b
 
 def run_verification(pre_state: Dict[str, Any], *,
                      timeout: float = LIVENESS_TIMEOUT_SECONDS) -> List[Dict[str, Any]]:
+    """Spec §5 — run all three verification checks and return per-check results."""
     results: List[Dict[str, Any]] = []
     ok, detail = check_config_parity(pre_state)
     results.append({"name": "config_parity", "passed": ok, "detail": detail})
@@ -276,6 +281,7 @@ def verify_or_rollback(pre_state: Dict[str, Any], *, checkout: Path,
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    """Spec §5 — CLI entry point: verify or roll back, exit 0 on success, 1 on failure."""
     parser = argparse.ArgumentParser(
         description="Verify the post-update state; roll back and exit 1 on failure.")
     parser.add_argument("--pre-state", type=Path, default=None,

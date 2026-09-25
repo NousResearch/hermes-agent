@@ -201,7 +201,12 @@ def _tool_result_needs_user(result: object) -> bool:
     if data.get("success") is False or data.get("ok") is False:
         return True
     error = data.get("error")
-    return isinstance(error, str) and bool(error.strip())
+    if isinstance(error, str) and bool(error.strip()):
+        return True
+    # terminal reports a failed command as {output, exit_code: 1, error: null}:
+    # a non-zero exit is a failure the user must see even without an error string.
+    exit_code = data.get("exit_code")
+    return isinstance(exit_code, int) and exit_code != 0 and not isinstance(exit_code, bool)
 
 
 def _tool_labels(name: str, args: dict) -> list[dict] | None:
@@ -425,7 +430,7 @@ _SUBAGENT_FIELDS = (
 )
 
 
-def _progress_subagent(sid, name, preview, kw, event_type):
+def _progress_subagent(sid: str, name: str, preview, kw, event_type):
     payload = {"goal": str(kw.get("goal") or ""), "task_count": int(kw.get("task_count") or 1), "task_index": int(kw.get("task_index") or 0)}
     source = {**kw, "tool_name": name, "text": preview}
     for key, present, coerce in _SUBAGENT_FIELDS:
@@ -433,6 +438,10 @@ def _progress_subagent(sid, name, preview, kw, event_type):
             val = coerce(source[key])
             if val is not None:
                 payload[key] = val
+    # subagent.thinking's text is the child's chain of thought: with reasoning hidden the
+    # delegate card must not leak it, same policy as the child-mirror's reasoning.delta.
+    if event_type == "subagent.thinking" and not _session_show_reasoning(sid):
+        payload.pop("text", None)
     if preview and event_type == "subagent.tool":
         payload["tool_preview"] = str(preview)
         payload["text"] = str(preview)
@@ -443,12 +452,20 @@ def _progress_subagent(sid, name, preview, kw, event_type):
     _mirror_subagent_to_child(event_type, payload)
 
 
+def _progress_moa_aggregating(sid, name, preview, kw):
+    # Aggregation is the fan-out's tail: the same answer-only policy that drops
+    # moa.progress/moa.phase (status-bar counters) applies to this announcement.
+    if not _session_show_reasoning(sid):
+        return
+    _emit("moa.aggregating", sid, {"aggregator": str(name or "")})
+
+
 # event_type -> (handler, requires): `requires` names the arg that must be truthy for the row to be
 # emitted at all ("name" / "preview" / None).
 _PROGRESS_HANDLERS = {
     "tool.output_risk": (_progress_output_risk, "name"), "reasoning.available": (_progress_reasoning, "preview"),
     "moa.reference": (_progress_moa_reference, "name"),
-    "moa.aggregating": (lambda sid, name, preview, kw: _emit("moa.aggregating", sid, {"aggregator": str(name or "")}), None),
+    "moa.aggregating": (_progress_moa_aggregating, None),
     "moa.progress": (_progress_moa_progress, None), "moa.phase": (_progress_moa_phase, None),
 }
 

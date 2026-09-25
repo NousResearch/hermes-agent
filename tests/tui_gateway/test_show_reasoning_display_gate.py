@@ -119,3 +119,109 @@ def test_hidden_reasoning_drops_moa_reference_chrome(monkeypatch):
     server._on_tool_progress("hide-moa", "moa.reference", "reference-a", "other model's thoughts", None)
 
     assert events == []
+
+
+def test_hidden_reasoning_drops_moa_status_and_aggregating_chrome(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "hide-moa-status", show_reasoning=False, effort="high")
+
+    server._on_tool_progress(
+        "hide-moa-status", "moa.progress", "aggregator-a", None, None, moa_refs_done=1, moa_refs_total=3
+    )
+    server._on_tool_progress(
+        "hide-moa-status", "moa.phase", "aggregator-a", None, None, moa_phase="aggregator"
+    )
+    server._on_tool_progress("hide-moa-status", "moa.aggregating", "aggregator-a", None, None)
+
+    assert events == []
+
+
+def test_shown_reasoning_still_emits_moa_aggregating(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "show-moa-status", show_reasoning=True, effort="high")
+
+    server._on_tool_progress("show-moa-status", "moa.aggregating", "aggregator-a", None, None)
+
+    assert [event[0] for event in events] == ["moa.aggregating"]
+    assert events[0][2]["aggregator"] == "aggregator-a"
+
+
+def test_hidden_reasoning_drops_subagent_thinking_text_on_parent(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "hide-sub", show_reasoning=False)
+
+    server._on_tool_progress(
+        "hide-sub",
+        "subagent.thinking",
+        "tool",
+        "the child's private chain of thought",
+        None,
+        child_session_id="child-key",
+    )
+
+    # The lifecycle frame still reaches the parent (the delegate card renders
+    # progress), but the child's reasoning text must not ride along.
+    assert [event[0] for event in events] == ["subagent.thinking"]
+    assert "text" not in events[0][2]
+    assert events[0][2]["child_session_id"] == "child-key"
+
+
+def test_shown_reasoning_keeps_subagent_thinking_text(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "show-sub", show_reasoning=True)
+
+    server._on_tool_progress(
+        "show-sub",
+        "subagent.thinking",
+        "tool",
+        "the child's visible thought",
+        None,
+        child_session_id="child-key",
+    )
+
+    assert [event[0] for event in events] == ["subagent.thinking"]
+    assert events[0][2]["text"] == "the child's visible thought"
+
+
+def test_hidden_reasoning_shows_failed_terminal_exit_code(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "hide-exit", show_reasoning=False, effort="high")
+
+    server._on_tool_complete(
+        "hide-exit",
+        "tool-exit",
+        "terminal",
+        {"command": "deploy"},
+        json.dumps({"output": "boom", "exit_code": 1, "error": None}),
+    )
+
+    failed = [event for event in events if event[2].get("tool_id") == "tool-exit"]
+    assert [event[0] for event in failed] == ["tool.complete"]
+    assert failed[0][2]["result"]["exit_code"] == 1
+
+
+def test_hidden_reasoning_hides_successful_terminal_exit(monkeypatch):
+    events = _capture(monkeypatch)
+    _session(monkeypatch, "hide-exit-ok", show_reasoning=False, effort="high")
+
+    server._on_tool_complete(
+        "hide-exit-ok",
+        "tool-exit-ok",
+        "terminal",
+        {"command": "deploy"},
+        json.dumps({"output": "ok", "exit_code": 0, "error": None}),
+    )
+
+    assert not any(event[2].get("tool_id") == "tool-exit-ok" for event in events)
+
+
+def test_tool_result_needs_user_treats_nonzero_exit_code_as_failure():
+    assert server._tool_result_needs_user(json.dumps({"output": "boom", "exit_code": 1, "error": None})) is True
+    assert server._tool_result_needs_user(json.dumps({"output": "ok", "exit_code": 0, "error": None})) is False
+    # A boolean exit_code is not an exit status; True must not read as failure-by-1.
+    assert server._tool_result_needs_user(json.dumps({"exit_code": True})) is False
+    assert server._tool_result_needs_user(json.dumps({"exit_code": "1"})) is False
+    assert server._tool_result_needs_user(json.dumps({"success": False})) is True
+    assert server._tool_result_needs_user(json.dumps({"ok": False, "output": "denied"})) is True
+    assert server._tool_result_needs_user(json.dumps({"error": "disk full"})) is True
+    assert server._tool_result_needs_user("not json") is False

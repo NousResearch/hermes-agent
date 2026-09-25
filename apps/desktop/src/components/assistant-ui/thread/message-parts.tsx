@@ -27,8 +27,9 @@ import { useI18n } from '@/i18n'
 import { mcpTargets, toolLabels } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
-import { isCardTool } from '@/lib/tool-render-class'
 import { isTodoToolName } from '@/lib/todos'
+import { isCardTool } from '@/lib/tool-render-class'
+import { extractToolErrorMessage } from '@/lib/tool-result-summary'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $reasoningCollapsedByDefault, $showReasoning } from '@/store/reasoning-disclosure'
@@ -72,6 +73,34 @@ const DelegateToolPart: FC<TimelineToolCallProps> = props => {
       <TimelineTimestamp className="mb-0.5 block" completedAt={props.completedAt} timestamp={props.timestamp} />
       <DelegateTool args={props.args} result={props.result} toolCallId={props.toolCallId} />
     </>
+  )
+}
+
+// A failure the user still has to see: the part's isError comes from a
+// top-level payload.error the gateway's tool.complete never sets (the failure
+// sits inside result), so the same predicate the summary rows use applies —
+// with explicit success beating stale envelope errors, as in toolStatus, and
+// a non-zero exit_code counting as failure, mirroring the gateway's
+// _tool_result_needs_user (terminal reports {output, exit_code: 1, error: null}).
+const failedCallNeedsUser = ({ isError, result }: TimelineToolCallProps): boolean => {
+  if (isError || result === undefined) {
+    return isError === true
+  }
+
+  const record =
+    typeof result === 'object' && result !== null && !Array.isArray(result)
+      ? (result as Record<string, unknown>)
+      : undefined
+
+  if (record?.success === true || record?.ok === true) {
+    return false
+  }
+
+  return Boolean(
+    record?.success === false ||
+    record?.ok === false ||
+    extractToolErrorMessage(result) ||
+    (typeof record?.exit_code === 'number' && record.exit_code !== 0)
   )
 }
 
@@ -144,8 +173,10 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
 
   // Answer-only: process chrome (reads, searches, commands) stays off the
   // transcript. Cards, approvals, and failed calls the user must act on remain.
-  // reasoning_effort is not a display switch.
-  if (!showReasoning && !props.isError && !isCardTool(props.toolName)) {
+  // reasoning_effort is not a display switch. The failure check reads the
+  // result body too: gateway tool.complete carries failures inside `result`,
+  // never as a top-level error that would set the part's isError.
+  if (!showReasoning && !failedCallNeedsUser(props) && !isCardTool(props.toolName)) {
     return null
   }
 

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '@/components/assistant-ui/test-utils'
 import { Thread } from '@/components/assistant-ui/thread'
+import { type GatewayEventPayload, upsertToolPart } from '@/lib/chat-messages'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $showReasoning } from '@/store/reasoning-disclosure'
 import { $activeSessionId } from '@/store/session'
@@ -74,6 +75,43 @@ function Harness() {
   )
 }
 
+// Feed real gateway payloads through the store's event-to-part mapping
+// (upsertToolPart), the same path `handleToolEvent` drives on tool.complete —
+// instead of hand-setting isError on the part, which skips the mapping.
+function toolCompleteMessage(...payloads: GatewayEventPayload[]): ThreadMessage {
+  const content = payloads.reduce(
+    (acc, payload) => upsertToolPart(acc, payload, 'complete', 3),
+    [] as ReturnType<typeof upsertToolPart>
+  )
+
+  return {
+    id: 'assistant-tool-complete',
+    role: 'assistant',
+    content: [
+      ...content,
+      {
+        type: 'text',
+        text: 'done'
+      }
+    ],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as unknown as ThreadMessage
+}
+
+const completionHarness = (payload: GatewayEventPayload) => (
+  <ThreadRuntime messages={[toolCompleteMessage(payload)]}>
+    <Thread />
+  </ThreadRuntime>
+)
+
 beforeEach(() => {
   clearAllPrompts()
   $activeSessionId.set('sess-1')
@@ -106,5 +144,72 @@ describe('answer-only display policy', () => {
 
     expect(await screen.findByText(/Explored 2 files/)).toBeTruthy()
     expect(container.querySelector('[data-slot="aui_thinking-disclosure"]')).not.toBeNull()
+  })
+
+  it('keeps a failed call whose error sits inside result, from a real tool.complete payload', async () => {
+    // The gateway's tool.complete never sets a top-level error: a read_file
+    // failure rides inside result. The answer-only gate must still show it.
+    $showReasoning.set(false)
+
+    const { container } = render(
+      completionHarness({
+        name: 'read_file',
+        tool_id: 'read-fail-1',
+        args: { path: '/repo/src/status.tsx' },
+        result: { error: 'disk full, act now' }
+      })
+    )
+
+    expect(await screen.findByText('done')).toBeTruthy()
+    const rows = container.querySelectorAll('[data-tool-row]')
+    expect(rows).toHaveLength(1)
+  })
+
+  it('keeps a failed terminal call with a non-zero exit_code, from a real tool.complete payload', async () => {
+    $showReasoning.set(false)
+
+    const { container } = render(
+      completionHarness({
+        name: 'terminal',
+        tool_id: 'term-fail-1',
+        args: { command: 'deploy' },
+        result: { output: 'Error: deploy failed', exit_code: 1, error: null }
+      })
+    )
+
+    expect(await screen.findByText('done')).toBeTruthy()
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(1)
+  })
+
+  it('keeps a call that reports success: false, from a real tool.complete payload', async () => {
+    $showReasoning.set(false)
+
+    const { container } = render(
+      completionHarness({
+        name: 'write_file',
+        tool_id: 'write-fail-1',
+        args: { path: '/repo/out.txt' },
+        result: { success: false }
+      })
+    )
+
+    expect(await screen.findByText('done')).toBeTruthy()
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(1)
+  })
+
+  it('still hides a successful call driven through the same tool.complete mapping', async () => {
+    $showReasoning.set(false)
+
+    const { container } = render(
+      completionHarness({
+        name: 'read_file',
+        tool_id: 'read-ok-1',
+        args: { path: '/repo/src/status.tsx' },
+        result: { content: 'export const Status = () => null' }
+      })
+    )
+
+    expect(await screen.findByText('done')).toBeTruthy()
+    expect(container.querySelectorAll('[data-tool-row]')).toHaveLength(0)
   })
 })

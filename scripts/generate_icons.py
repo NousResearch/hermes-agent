@@ -175,8 +175,9 @@ TARGETS: list[tuple[str, str, object]] = [
     ("apps/desktop/assets/appx/StoreLogo-dark.png", "png_dark", 50),
     ("apps/desktop/assets/appx/Square44x44Logo-dark.png", "png_dark", 44),
     ("apps/desktop/assets/appx/Square150x150Logo-dark.png", "png_dark", 150),
-    # The dev-run Dock icon (app.dock.setIcon), so it sits on the mac grid too.
-    ("apps/desktop/public/apple-touch-icon.png", "png_mac", 1024),
+    ("apps/desktop/public/apple-touch-icon.png", "png", 1024),
+    # The dev-run Dock icon (app.dock.setIcon): same mac grid as the icns.
+    ("apps/desktop/assets/icon-mac.png", "png_mac", 1024),
     ("apps/desktop/public/nous-girl.png", "girl_light", 256),
     ("apps/desktop/public/nous-girl-dark.png", "girl_dark", 256),
     ("apps/bootstrap-installer/src-tauri/icons/32x32.png", "png", 32),

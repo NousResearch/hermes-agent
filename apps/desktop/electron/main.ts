@@ -14710,7 +14710,8 @@ function createWindow() {
 
     // Packaged builds keep the bundle icon so macOS can style it (#73195).
     if (icon && shouldOverrideDockIcon({ platform: process.platform, isPackaged: app.isPackaged })) {
-      app.dock?.setIcon(icon)
+      // The window icon is full-bleed for Linux; the Dock wants the mac grid.
+      app.dock?.setIcon(resolveAppIcon([path.join(APP_ROOT, 'assets', 'icon-mac.png')]) ?? icon)
     }
   }
 

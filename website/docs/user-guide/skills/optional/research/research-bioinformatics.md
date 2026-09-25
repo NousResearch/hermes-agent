@@ -40,7 +40,7 @@ This skill is a gateway to two open-source bioinformatics skill libraries. Inste
   Repo: https://github.com/GPTomics/bioSkills
   Format: SKILL.md per topic with code examples. Python/R/CLI.
 
-◆ **ClawBio** — 33 runnable pipeline skills (executable scripts, reproducibility bundles)
+◆ **ClawBio** — 97 pipeline skills (executable scripts, reproducibility bundles)
   Repo: https://github.com/ClawBio/ClawBio
   Format: Python scripts with demos. Each analysis exports report.md + commands.sh + environment.yml.
 
@@ -61,7 +61,7 @@ This skill is a gateway to two open-source bioinformatics skill libraries. Inste
    cat ~/.hermes/cache/scratch/bioSkills/variant-calling/gatk-variant-calling/SKILL.md
 
    # ClawBio — each skill is at: skills/<skill-name>/
-   cat ~/.hermes/cache/scratch/ClawBio/skills/pharmgx-reporter/README.md
+   cat ~/.hermes/cache/scratch/ClawBio/skills/pharmgx-reporter/SKILL.md
    ```
 4. Follow the fetched skill as reference material. These are NOT Hermes-format skills — treat them as expert domain guides. They contain correct parameters, proper tool flags, and validated pipelines.
 
@@ -250,5 +250,5 @@ conda install -c bioconda samtools bcftools blast minimap2 bedtools fastp kraken
 - bioSkills are reference guides — they show correct parameters and code patterns but aren't executable pipelines.
 - ClawBio skills are executable — many have `--demo` flags and can be run directly.
 - Both repos assume bioinformatics tools are installed. Check prerequisites before running pipelines.
-- For ClawBio, run `pip install -r requirements.txt` in the cloned repo first.
+- Run ClawBio with `uvx clawbio run <skill> --demo` (no install needed), or `pip install clawbio` (Python 3.11+). `clawbio list` shows the skill names it runs.
 - Genomic data files can be very large. Be mindful of disk space when downloading reference genomes, SRA datasets, or building indices.

@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
+
+# Substituted by ``_PostSetupHelpFormatter`` when the ``post-setup`` help is actually rendered.
+# The parser tree is assembled on every CLI invocation, but the key list is needed only by
+# `hermes tools post-setup --help`, so the hook-registry import is deferred to render time.
+_POST_SETUP_KEYS_TOKEN = "%(post_setup_keys)s"
 
 
 def _post_setup_keys_text() -> str:
     """Comma-separated post-setup hook keys, single-sourced from the hook registry.
 
-    This runs while every CLI invocation assembles its argparse tree, so it reads the light
-    ``_POST_SETUP_HOOKS`` registry (already imported on the CLI startup path) rather than
-    ``valid_post_setup_keys()``, whose plugin-catalog import is far heavier. Any failure degrades
-    to a static list — help text must never break the CLI.
+    Runs at help-render time only (via ``_PostSetupHelpFormatter``), never while the argparse
+    tree is assembled. Any failure degrades to a static list — help text must never break the CLI.
     """
     try:
         from hermes_cli.tools_config_post_setup import _POST_SETUP_HOOKS
@@ -23,6 +27,19 @@ def _post_setup_keys_text() -> str:
         pass
     return ("agent_browser, browser_use_cli, browserbase, camofox, cua_driver, ddgs, faster_whisper, "
             "kittentts, langfuse, lightpanda, openai_codex, piper, spotify, xai_grok")
+
+
+class _PostSetupHelpFormatter(argparse.HelpFormatter):
+    """Substitute ``_POST_SETUP_KEYS_TOKEN`` when this subcommand's help is rendered.
+
+    Keeps the hook-registry import out of the parser build that runs on every CLI invocation;
+    the keys are only needed when `hermes tools post-setup --help` is actually printed.
+    """
+
+    def _format_text(self, text: str) -> str:
+        if _POST_SETUP_KEYS_TOKEN in text:
+            text = text.replace(_POST_SETUP_KEYS_TOKEN, _post_setup_keys_text())
+        return super()._format_text(text)
 
 
 def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
@@ -57,12 +74,13 @@ def build_tools_parser(subparsers, *, cmd_tools: Callable) -> None:
 
     tools_postsetup_p = tools_sub.add_parser(
         "post-setup", help="Run a provider's post-setup install hook (npm/pip/binary)",
+        formatter_class=_PostSetupHelpFormatter,
         description="Run the install/bootstrap hook a tool backend declares — the\n"
             "same step `hermes tools` runs after you pick a provider that\n"
             "needs extra dependencies (browser Chromium, Camofox, cua-driver,\n"
             "KittenTTS/Piper, ddgs, Spotify, Langfuse, xAI, Codex). Stable,\n"
             "non-interactive target the dashboard spawns to drive backend\n"
-            f"setup. Keys: {_post_setup_keys_text()}.")
+            f"setup. Keys: {_POST_SETUP_KEYS_TOKEN}.")
     tools_postsetup_p.add_argument(
         "post_setup_key", metavar="KEY",
         help="Post-setup hook key (e.g. agent_browser, camofox, kittentts)")

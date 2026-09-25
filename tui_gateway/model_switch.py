@@ -460,15 +460,26 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
             platform="tui", user_config=getattr(session.get("agent"), "_notification_config", None))
 
 
-def _pending_switch_selection_warning(model: str, provider: str) -> str | None:
+def _pending_switch_selection_warning(model: str, provider: str, agent: object = None) -> str | None:
     """Selection-guard message for a model queued mid-turn, or ``None``. Runs BEFORE the pick is
-    stashed (the client can still turn the response into a confirm prompt); only pre-resolution
-    inputs exist so it can only under-fire — ``_apply_model_switch`` is the backstop."""
+    stashed (the client can still turn the response into a confirm prompt).
+
+    Model-only guards (cost, data-policy) run from the pre-resolution inputs alone. The switch-aware
+    context-cache guard additionally needs the live conversation size and the model the session is
+    already on — and the stash branch runs with a live agent, so it must pass them: leaving them out
+    let a large-context pick be queued unconfirmed, and ``_apply_pending_model_switch`` then ran the
+    guard a turn later, dropped the pick, and surfaced an error where a confirm belonged (no
+    round-trip is possible by then). Anything still missed here is caught by the
+    ``_apply_model_switch`` backstop, which guards the actual swap.
+    """
     if not model:
         return None
     try:
-        from hermes_cli.model_selection_guards import combined_selection_warning
-        warning = combined_selection_warning(model, provider=provider or None)
+        from hermes_cli.model_selection_guards import (
+            combined_selection_warning, selection_context_for_agent)
+        warning = combined_selection_warning(
+            model, provider=provider or None,
+            selection_context=selection_context_for_agent(agent))
     except Exception:
         return None
     return warning.message if warning is not None else None

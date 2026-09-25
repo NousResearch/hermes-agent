@@ -148,3 +148,118 @@ class TestGuardFailureIsNotFatal:
 
         assert result["deferred"] is True
         assert running_session["pending_model_switch"]["raw"] == GUARDED_MODEL
+
+
+# The context-cache guard is the one guard that cannot run from the model id
+# alone: it needs the live conversation size and the model the session is
+# already on. The stash branch has a live agent, so it can supply both -- and
+# must, because the apply-time backstop runs one turn later when the pick has
+# already been queued and no confirm round-trip is possible any more.
+LARGE_CONTEXT_TOKENS = 557_846
+
+# The target is a model the suite already proves trips neither the cost nor the
+# data-policy guard, so the context-cache guard is the ONLY one that can fire
+# here. The session sits on a different model, so the cache really would be
+# abandoned.
+CURRENT_MODEL = "deepseek/deepseek-flash"
+
+
+def _agent_with_context(tokens, model):
+    """A live agent exposing a measured prompt size, the way a real turn does."""
+    agent = types.SimpleNamespace(model=model)
+    agent.context_compressor = types.SimpleNamespace(last_prompt_tokens=tokens)
+
+    return agent
+
+
+@pytest.fixture
+def large_context_session(monkeypatch):
+    """A busy session that has already read a large prompt on its current model."""
+
+    def _must_not_run(*_args, **_kwargs):
+        raise AssertionError(
+            "_apply_model_switch ran on the busy path -- it would race the "
+            "worker thread reading agent.model / agent.client"
+        )
+
+    monkeypatch.setattr(server, "_apply_model_switch", _must_not_run)
+    server._sessions["sid"] = _session(
+        running=True, agent=_agent_with_context(LARGE_CONTEXT_TOKENS, CURRENT_MODEL))
+    try:
+        yield server._sessions["sid"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+class TestLargeContextPickAsksBeforeStashing:
+    """An unconfirmed pick that only the context-cache guard objects to."""
+
+    def test_reports_confirm_required_instead_of_deferring(self, large_context_session):
+        resp = _config_set_model(UNGUARDED_MODEL)
+
+        assert not resp.get("error")
+        result = resp["result"]
+        assert result["confirm_required"] is True, (
+            "the stash branch answered confirm_required=False because it never "
+            "supplied the live context, so a correct client cannot prompt -- "
+            "the next turn start then drops the queued pick with an error"
+        )
+        assert "LARGE CONTEXT MODEL SWITCH" in result["confirm_message"]
+        assert f"{LARGE_CONTEXT_TOKENS:,}" in result["confirm_message"]
+        assert result["deferred"] is False
+
+    def test_leaves_the_session_untouched(self, large_context_session):
+        _config_set_model(UNGUARDED_MODEL)
+
+        assert "pending_model_switch" not in large_context_session, (
+            "an unconfirmed large-context pick must not be queued -- the next "
+            "turn start would drop it anyway, with no way to consent"
+        )
+
+    def test_reconfirming_queues_the_pick(self, large_context_session):
+        resp = _config_set_model(UNGUARDED_MODEL, confirm_expensive_model=True)
+
+        result = resp["result"]
+        assert result["deferred"] is True
+        assert result["confirm_required"] is False
+
+        pending = large_context_session["pending_model_switch"]
+        assert pending["raw"] == UNGUARDED_MODEL
+        assert pending["confirm_expensive_model"] is True, (
+            "the ack must survive into the stash or _apply_pending_model_switch "
+            "re-runs the guard at turn start and drops the confirmed pick"
+        )
+
+
+class TestLargeContextPickStillDefersWhenTheCacheStaysWarm:
+    """The guard is about abandoning a cache, not about the size of the session."""
+
+    def test_reselecting_the_current_model_stays_silent(self, large_context_session):
+        large_context_session["agent"] = _agent_with_context(
+            LARGE_CONTEXT_TOKENS, UNGUARDED_MODEL)
+
+        result = _config_set_model(UNGUARDED_MODEL)["result"]
+
+        assert result["deferred"] is True
+        assert result["confirm_required"] is False, (
+            "re-selecting the model already in use keeps the cache warm, so "
+            "there is nothing to confirm"
+        )
+        assert large_context_session["pending_model_switch"]["raw"] == UNGUARDED_MODEL
+
+    def test_a_small_session_stays_silent(self, large_context_session):
+        large_context_session["agent"] = _agent_with_context(1_000, CURRENT_MODEL)
+
+        result = _config_set_model(UNGUARDED_MODEL)["result"]
+
+        assert result["deferred"] is True
+        assert result["confirm_required"] is False
+
+    def test_an_unmeasured_session_stays_silent(self, large_context_session):
+        """No live size means no verdict -- never guess a warning into existence."""
+        large_context_session["agent"] = types.SimpleNamespace(model=CURRENT_MODEL)
+
+        result = _config_set_model(UNGUARDED_MODEL)["result"]
+
+        assert result["deferred"] is True
+        assert result["confirm_required"] is False

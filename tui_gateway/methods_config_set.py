@@ -74,14 +74,16 @@ def _stash_pending_model_switch(rid, key, value, session, confirmed, parsed):
     """No live swap while a turn streams (agent.switch_model() mutates fields the worker thread
     reads every iteration): stash the pick for the NEXT turn start. Selection guards run HERE (the
     only moment a confirm round-trip is possible; an unconfirmed stashed pick is dropped at turn
-    start) — on a warning nothing is stashed."""
+    start) — on a warning nothing is stashed. The live agent goes in so the context-cache guard can
+    see the size of the conversation the switch would re-read uncached."""
     try:
         pending_model = parsed.model_input
     except Exception:
         pending_model = str(value)
     pending_provider = (getattr(parsed, "explicit_provider", "") or "").strip()
     if not confirmed:
-        pending_warning = _pending_switch_selection_warning(pending_model, pending_provider)
+        pending_warning = _pending_switch_selection_warning(
+            pending_model, pending_provider, session.get("agent"))
         if pending_warning is not None:
             return _cfgset_model_ok(rid, key, pending_model, pending_warning, pending_warning, deferred=False)
     # display_*: _session_info shows the user's pick while pending, not the live old model.

@@ -337,6 +337,19 @@ def test_poll_refusal_logs_error_but_keeps_running(plane, caplog):
     assert [r.levelname for r in caplog.records if "poll for profile" in r.getMessage()] == ["WARNING"]
 
 
+def test_forked_child_rearms_its_poller(plane):
+    import os
+
+    from hermes_cli.config import load_config
+    load_config()
+    backend = remote_pkg.get_remote_backend()
+    first = backend._poller
+    backend._poller_pid = -1  # as in a child after fork: the parent's thread did not survive
+    load_config()
+    assert backend._poller_pid == os.getpid() and backend._poller is not first
+    assert backend._poller is not None and backend._poller.is_alive()
+
+
 def test_poll_interval_floor(monkeypatch):
     monkeypatch.setenv("HERMES_CONFIG_REMOTE_POLL_SECONDS", "1")
     assert backend_mod.poll_interval() == backend_mod.MIN_POLL_SECONDS

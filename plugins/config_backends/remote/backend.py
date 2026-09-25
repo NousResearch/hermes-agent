@@ -119,6 +119,8 @@ class RemoteBackend:
         key = self._key(home)
         st = self._states.get(key)
         if st is not None:
+            if self._poller_pid != os.getpid():  # a forked child has no poller thread
+                self._ensure_poller()
             return st
         with self._lock:
             fetch_lock = self._fetch_locks.setdefault(key, threading.Lock())
@@ -209,30 +211,33 @@ class RemoteBackend:
         when the boot fetch runs."""
         if st.postprocessed or st.in_postprocess:
             return
+        # The flag, not st.lock, guards the work: a migration reads through hermes_cli.config (its
+        # _CONFIG_LOCK), and holding st.lock across that could deadlock against a writer that holds
+        # _CONFIG_LOCK and waits for st.lock. A concurrent reader meanwhile gets the unmigrated doc.
         with st.lock:
             if st.postprocessed or st.in_postprocess:
                 return
             st.in_postprocess = True
+        etag = st.etag
+        try:
             try:
                 from hermes_cli.config import _known_top_level_keys
                 from hermes_cli.config_migrations import SUPPORT_FLOOR_VERSION, run_migrations
             except ImportError:
-                st.in_postprocess = False
                 return  # still importing; the next read retries
-            try:
-                for key in sorted(set(st.doc) - _known_top_level_keys() - {"_config_version"}):
-                    if key not in self._unknown_warned:
-                        self._unknown_warned.add(key)
-                        logger.warning("Remote Config: unknown config key %r is ignored by this Hermes version", key)
-                current, latest = int(st.doc.get("_config_version") or 0), _latest_config_version()
-                if SUPPORT_FLOOR_VERSION <= current < latest:
-                    self._migrate_in_memory(st, current, run_migrations)
-                elif current < SUPPORT_FLOOR_VERSION:
-                    logger.warning("Remote Config: profile %r was written by config version %d, below the "
-                                   "migration floor %d; not migrated", st.profile, current, SUPPORT_FLOOR_VERSION)
-                st.postprocessed = True
-            finally:
-                st.in_postprocess = False
+            for key in sorted(set(st.doc) - _known_top_level_keys() - {"_config_version"}):
+                if key not in self._unknown_warned:
+                    self._unknown_warned.add(key)
+                    logger.warning("Remote Config: unknown config key %r is ignored by this Hermes version", key)
+            current, latest = int(st.doc.get("_config_version") or 0), _latest_config_version()
+            if SUPPORT_FLOOR_VERSION <= current < latest:
+                self._migrate_in_memory(st, current, run_migrations)
+            elif current < SUPPORT_FLOOR_VERSION:
+                logger.warning("Remote Config: profile %r was written by config version %d, below the "
+                               "migration floor %d; not migrated", st.profile, current, SUPPORT_FLOOR_VERSION)
+            st.postprocessed = st.etag == etag  # a poll that landed meanwhile needs its own pass
+        finally:
+            st.in_postprocess = False
 
     def _migrate_in_memory(self, st: _ProfileState, current: int, run_migrations) -> None:
         from hermes_constants import reset_hermes_home_override, set_hermes_home_override

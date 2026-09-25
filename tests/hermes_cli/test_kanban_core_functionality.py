@@ -1499,7 +1499,7 @@ def test_route_failure_budget_ignores_task_max_retries(kanban_home):
         conn.close()
 
 
-@pytest.mark.linux_only  # reads Linux-only /proc/<pid>/stat to observe zombie state
+@pytest.mark.platforms("linux")  # reads Linux-only /proc/<pid>/stat to observe zombie state
 def test_reap_ordering_classifies_real_exit_status_not_unknown(kanban_home):
     """A child that exits between two reaper passes must be classified from
     its real exit status, not fall into the ``unknown``/``pid not alive``

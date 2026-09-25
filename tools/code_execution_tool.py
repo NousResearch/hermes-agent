@@ -19,7 +19,6 @@ import re
 import secrets
 import shlex
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -466,10 +465,23 @@ def _env_temp_dir(env: Any) -> str:
             temp_dir = get_temp_dir()
         except Exception as exc:
             logger.debug("Could not resolve execute_code env temp dir: %s", exc)
-    for candidate in (temp_dir, tempfile.gettempdir()):
-        if isinstance(candidate, str) and candidate.startswith("/"):
-            return candidate.rstrip("/") or "/"
-    return tempfile.gettempdir()
+    if isinstance(temp_dir, str):
+        temp_dir = temp_dir.strip()
+        # The env's own answer is authoritative for its shell: POSIX-absolute
+        # ("/tmp", Termux's /data/data/...), or a drive-letter path for a
+        # Windows-local shell, which git bash accepts as C:/. POSIX answers
+        # pass through verbatim (a backslash is a legal POSIX filename byte).
+        if temp_dir.startswith("/"):
+            return temp_dir.rstrip("/") or "/"
+        normalized = temp_dir.replace("\\", "/").rstrip("/")
+        if re.match(r"[A-Za-z]:/", normalized) and getattr(env, "is_local", False) is True:
+            # Only a local shell can have a drive-letter temp dir; on a remote
+            # env "z:/x" is a relative path, not a drive root.
+            return normalized
+    # "/tmp" is the base-env contract for sandbox temp; never the host
+    # tempfile.gettempdir(), which on a Windows host yields a backslash path
+    # that is meaningless inside a POSIX remote shell.
+    return "/tmp"  # no-tmp: ok: POSIX remote-shell fallback, not host scratch
 
 
 def _format_interrupted_output(stdout_text: str) -> str:

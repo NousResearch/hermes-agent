@@ -10,7 +10,6 @@ import logging
 import os
 import re
 import shlex
-import tempfile
 import threading
 import time
 
@@ -19,7 +18,6 @@ from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAUL
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
-STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
 SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
@@ -142,14 +140,11 @@ def _sandbox_visible_spillover_path(host_path: str, env) -> str | None:
 
 def _resolve_storage_dir(env) -> str:
     """Return the best temp-backed storage dir for this environment."""
-    get_temp_dir = getattr(env, "get_temp_dir", None)
-    temp_dir = None
-    if callable(get_temp_dir):
-        try:
-            temp_dir = get_temp_dir()
-        except Exception as exc:
-            logger.debug("Could not resolve env temp dir: %s", exc)
-    return f"{temp_dir.rstrip('/') or '/'}/hermes-results" if temp_dir else STORAGE_DIR
+    # This result only ever feeds remote sandbox writes (the not-host_side
+    # branch), so it shares the env-authoritative resolver: the env's own temp
+    # dir when usable, else POSIX "/tmp"; never the host's temp path.
+    from tools.code_execution_tool import _env_temp_dir
+    return f"{_env_temp_dir(env)}/hermes-results"
 
 
 def _safe_result_filename(tool_use_id: str) -> str:

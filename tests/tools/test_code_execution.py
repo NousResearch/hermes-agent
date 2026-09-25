@@ -204,6 +204,124 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertIn("TZ='US/Eastern; echo PWNED'", run_cmd,
                       "TZ value must be wrapped in single quotes by shlex.quote()")
 
+    def test_env_temp_dir_accepts_windows_env_answer(self):
+        """A Windows-local env answers with a forward-slash drive path; it is
+        valid for its git-bash shell and must not be filtered out."""
+        from tools.code_execution_tool import _env_temp_dir
+
+        class FakeEnv:
+            is_local = True
+
+            def get_temp_dir(self):
+                return "C:/Users/x/.hermes/cache/terminal"
+
+        self.assertEqual(_env_temp_dir(FakeEnv()), "C:/Users/x/.hermes/cache/terminal")
+
+    def test_env_temp_dir_normalizes_backslashes(self):
+        from tools.code_execution_tool import _env_temp_dir
+
+        class FakeEnv:
+            is_local = True
+
+            def get_temp_dir(self):
+                return "C:\\Users\\x\\Temp"
+
+        self.assertEqual(_env_temp_dir(FakeEnv()), "C:/Users/x/Temp")
+
+    def test_env_temp_dir_preserves_posix_backslashes(self):
+        """A backslash is a legal POSIX filename byte; only drive-letter answers
+        are normalized."""
+        from tools.code_execution_tool import _env_temp_dir
+
+        class FakeEnv:
+            def get_temp_dir(self):
+                return "/data/dir\\name"
+
+        self.assertEqual(_env_temp_dir(FakeEnv()), "/data/dir\\name")
+
+    def test_env_temp_dir_rejects_drive_path_on_remote_env(self):
+        """On a POSIX-shelled remote env a drive-letter answer is a relative
+        path, not a drive root: mkdir would run at '/' while cd ran at cwd."""
+        from tools.code_execution_tool import _env_temp_dir
+
+        class RemoteEnv:
+            is_local = False
+
+            def get_temp_dir(self):
+                return "z:/evil"
+
+        self.assertEqual(_env_temp_dir(RemoteEnv()), "/tmp")
+
+    def test_env_temp_dir_falls_back_to_posix_tmp(self):
+        """With no usable env answer the fallback is POSIX /tmp, never the host
+        tempfile.gettempdir() (a Windows host path breaks a POSIX remote)."""
+        from tools.code_execution_tool import _env_temp_dir
+
+        class BareEnv:
+            def execute(self, command, cwd=None, timeout=None):
+                return {"output": ""}
+
+        class RaisingEnv:
+            def get_temp_dir(self):
+                raise RuntimeError("no temp")
+
+        class RelativeEnv:
+            def get_temp_dir(self):
+                return "scratch/rel"
+
+        class NonStrEnv:
+            def get_temp_dir(self):
+                return 5
+
+        # Inert on fixed code (the fallback never consults gettempdir), but it
+        # keeps this test RED on the pre-fix host-path fallback: do not remove.
+        with patch("tempfile.gettempdir",
+                   return_value="C:\\Users\\x\\AppData\\Local\\Temp"):
+            for env in (BareEnv(), RaisingEnv(), RelativeEnv(), NonStrEnv()):
+                self.assertEqual(_env_temp_dir(env), "/tmp", env)
+
+
+@pytest.mark.platforms("posix")
+class TestEnvTempDirE2E(unittest.TestCase):
+    """Real-transport e2e: _run_remote_per_call through a real LocalEnvironment
+    creates its sandbox under the resolved temp dir for real."""
+
+    def _run(self, env):
+        from tools.code_execution_tool import _run_remote_per_call
+        code = "import os\nprint('RPCDIR:' + os.environ.get('HERMES_RPC_DIR', 'NONE'))\n"
+        return json.loads(_run_remote_per_call(
+            env, "local", code, "t-e2e-tmp", frozenset(),
+            timeout=60, max_tool_calls=5, exec_start=time.monotonic()))
+
+    def test_sandbox_created_under_env_temp_dir(self):
+        # A sentinel dir keeps the arm load-bearing on every host: on Linux the
+        # env's real answer is already /tmp, which a hardcoded-/tmp regression
+        # would satisfy vacuously.
+        import shutil
+        import tempfile
+        from tools.environments.local import LocalEnvironment
+        env = LocalEnvironment(cwd="/", timeout=60)
+        sentinel = tempfile.mkdtemp(prefix="hermes_e2e_sentinel_")
+        self.addCleanup(shutil.rmtree, sentinel, True)
+        with patch.object(env, "get_temp_dir", return_value=sentinel):
+            out = self._run(env)
+        self.assertEqual(out["status"], "success", out)
+        self.assertIn(f"RPCDIR:{sentinel}/hermes_exec_", out["output"])
+
+    def test_sandbox_falls_back_to_posix_tmp_for_real(self):
+        """Windows host + no env answer: the host path must not leak into remote
+        commands; the real mkdir lands under /tmp."""
+        from tools.environments.local import LocalEnvironment
+        env = LocalEnvironment(cwd="/", timeout=60)
+        # The gettempdir patch is inert on fixed code but keeps this e2e RED on
+        # the pre-fix host-path fallback: do not remove.
+        with patch.object(env, "get_temp_dir", side_effect=RuntimeError("no temp")), \
+             patch("tempfile.gettempdir",
+                   return_value="C:\\Users\\x\\AppData\\Local\\Temp"):
+            out = self._run(env)
+        self.assertEqual(out["status"], "success", out)
+        self.assertIn("RPCDIR:/tmp/hermes_exec_", out["output"])
+
 
 @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
 class TestExecuteCode(unittest.TestCase):

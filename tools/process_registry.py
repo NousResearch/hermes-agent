@@ -14,7 +14,6 @@ import shlex
 import signal
 import stat
 import subprocess
-import tempfile
 import threading
 import time
 import uuid
@@ -1134,15 +1133,8 @@ class ProcessRegistry(ProcessCheckpointMixin):
     @staticmethod
     def _env_temp_dir(env: Any) -> str:
         """Return the writable sandbox temp dir for env-backed background tasks."""
-        get_temp_dir = getattr(env, "get_temp_dir", None)
-        if callable(get_temp_dir):
-            try:
-                temp_dir = get_temp_dir()
-                if isinstance(temp_dir, str) and temp_dir.startswith("/"):
-                    return temp_dir.rstrip("/") or "/"
-            except Exception as exc:
-                logger.debug("Could not resolve environment temp dir: %s", exc)
-        return tempfile.gettempdir()
+        from tools.code_execution_tool import _env_temp_dir
+        return _env_temp_dir(env)
 
     def _scope_argv(self, session: ProcessSession, safe_command: str, unit_suffix: str, label: str) -> List[str]:
         """Login-shell argv for *safe_command* (parity with LocalEnvironment: rc files
@@ -1320,7 +1312,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         log_path, pid_path, exit_path = (f"{temp_dir}/hermes_bg_{session.id}.{ext}" for ext in ("log", "pid", "exit"))
         q = shlex.quote
         bg_command = (
-            f"mkdir -p {q(temp_dir)} && "
+            # mkdir runs synchronously: backgrounded, the pid write below could
+            # redirect into a temp_dir that does not exist yet, reporting
+            # failed_start while the subshell still runs the command untracked.
+            f"mkdir -p {q(temp_dir)}; "
             f"( nohup bash -lc {q(command)} > {q(log_path)} 2>&1; "
             f"rc=$?; printf '%s\\n' \"$rc\" > {q(exit_path)} ) & "
             f"echo $! > {q(pid_path)} && cat {q(pid_path)}")

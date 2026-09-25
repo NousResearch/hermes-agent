@@ -13,7 +13,6 @@ from gateway.shutdown_watchdog import (
     start_loop_liveness_watchdog,
 )
 
-
 def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
     handle_ready = threading.Event()
@@ -44,7 +43,6 @@ def test_loop_liveness_watchdog_stop_during_dump_disarms_hard_exit():
     critical.assert_called_once()
     dump.assert_called_once_with(all_threads=True)
     assert exit_codes == []
-
 
 def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
@@ -95,7 +93,6 @@ def test_loop_liveness_watchdog_stop_during_final_miss_disarms_hard_exit():
     critical.assert_not_called()
     dump.assert_not_called()
 
-
 def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
     loop = MagicMock(spec=asyncio.AbstractEventLoop)
     probe_scheduled = threading.Event()
@@ -142,7 +139,6 @@ def test_loop_liveness_watchdog_stop_after_first_recheck_skips_final_actions():
     dump.assert_not_called()
     hard_exit.assert_not_called()
 
-
 def test_gateway_config_loop_watchdog_round_trip():
     """loop_watchdog is a config.yaml knob: default on, nested-gateway form honored."""
     from gateway.config import GatewayConfig
@@ -157,7 +153,6 @@ def test_gateway_config_loop_watchdog_round_trip():
     )
     config = GatewayConfig.from_dict({"loop_watchdog": False})
     assert config.to_dict()["loop_watchdog"] is False
-
 
 def test_gateway_config_loop_watchdog_tuning_round_trip():
     """Watchdog tolerance knobs parse, serialize, and clamp malformed values."""
@@ -212,7 +207,6 @@ def test_gateway_config_loop_watchdog_tuning_round_trip():
     assert clamped.loop_watchdog_probe_timeout_s == 10.0
     assert clamped.loop_watchdog_max_strikes == 3
 
-
 def test_gateway_config_loop_watchdog_nonfinite_values_degrade():
     """NaN/Inf tuning values fall back to defaults instead of reaching the
     watchdog's Event.wait loop (or aborting config load via int(inf))."""
@@ -241,7 +235,6 @@ def test_gateway_config_loop_watchdog_nonfinite_values_degrade():
     assert big.loop_watchdog_probe_timeout_s == 10.0
     assert big.loop_watchdog_max_strikes == 3
 
-
 def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
     """The real startup loader must honor gateway.loop_watchdog* from
     config.yaml — from_dict's nested fallback never sees the yaml gateway
@@ -263,7 +256,6 @@ def test_load_gateway_config_bridges_loop_watchdog_keys(tmp_path, monkeypatch):
     assert cfg.loop_watchdog_probe_interval_s == 45.0
     assert cfg.loop_watchdog_probe_timeout_s == 15.0
     assert cfg.loop_watchdog_max_strikes == 12
-
 
 def test_loop_liveness_watchdog_marks_runtime_degraded_before_restart():
     """The terminal watchdog observation must be visible before ``os._exit``."""
@@ -295,9 +287,6 @@ def test_loop_liveness_watchdog_marks_runtime_degraded_before_restart():
     assert record["gateway_state"] == "degraded"
     assert record["exit_reason"] == "loop_liveness_watchdog"
     assert record["restart_requested"] is True
-
-
-
 
 def test_heartbeat_write_does_not_block_the_loop_it_monitors():
     """The heartbeat write must not freeze the loop the watchdog is watching.
@@ -347,11 +336,3 @@ def test_heartbeat_write_does_not_block_the_loop_it_monitors():
         "the loop made only %d tick(s) while the heartbeat was writing — "
         "the write is blocking the loop again" % ticks
     )
-
-
-
-
-
-
-
-

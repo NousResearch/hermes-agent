@@ -620,6 +620,7 @@ class TestShallowCloneDeepening:
         )
 
 
+@pytest.mark.platforms("linux")
 class TestPrMergedEscapeHatch:
     """Rebase-merged PRs whose diff changed during salvage defeat ``git
     cherry`` (patch-id mismatch), so the pruner asks GitHub whether the

@@ -17,6 +17,7 @@ import json
 import time
 import types
 import uuid
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -766,7 +767,8 @@ class TestHealthEndpoint:
             data = await resp.json()
             assert "version" in data
             assert isinstance(data["version"], str)
-            assert data["version"] != ""
+            from hermes_cli.version_info import get_version_info
+            assert data["version"] == get_version_info().base_version
 
 
 # ---------------------------------------------------------------------------
@@ -2260,6 +2262,41 @@ class TestCORS:
             assert resp.status == 200
             assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
             assert "Authorization" in resp.headers.get("Access-Control-Allow-Headers", "")
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("live_bot_chat", [False, True], ids=["agent_turn", "live_bot_chat"])
+    async def test_cors_headers_present_on_session_chat_stream(self, live_bot_chat):
+        """Both session SSE writers (agent turn and live Bot Chat hand-off) must
+        resolve CORS up front: the middleware can't touch headers after
+        ``prepare()`` flushes them (#72892).
+        """
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        admitted = (Path("unused"), {"delivery_id": "d1", "status": "queued"}) if live_bot_chat else None
+        settled = {"delivery_id": "d1", "status": "settled", "reply": "ok"}
+        async with TestClient(TestServer(app)) as cli:
+            with (
+                patch.object(adapter, "_get_existing_session_or_404", return_value=({"id": "s1"}, None)),
+                patch.object(adapter, "_conversation_history_for_session", return_value=[]),
+                patch.object(adapter, "_admit_to_live_bot_chat", new_callable=AsyncMock, return_value=admitted),
+                patch.object(adapter, "_await_live_bot_chat_receipt", new_callable=AsyncMock, return_value=settled),
+                patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run,
+            ):
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/api/sessions/s1/chat/stream",
+                    json={"message": "hi"},
+                    headers={"Origin": "http://localhost:3000"},
+                )
+                assert resp.status == 200
+                await resp.text()  # consume SSE stream fully
+                assert mock_run.called is not live_bot_chat
+        assert resp.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
+        assert "POST" in resp.headers.get("Access-Control-Allow-Methods", "")
 
 
 # ---------------------------------------------------------------------------

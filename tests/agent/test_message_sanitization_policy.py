@@ -22,7 +22,6 @@ from agent.message_sanitization import (
     uniquify_tool_call_ids,
 )
 
-
 # ---------------------------------------------------------------------------
 # deterministic_call_id — byte-exact (prompt-cache keys)
 # ---------------------------------------------------------------------------
@@ -38,14 +37,12 @@ class TestDeterministicCallId:
             "call_567cb168d22d"
         assert deterministic_call_id("", "", 0) == "call_feda901d71ea"
 
-
     def test_index_disambiguates(self):
         assert deterministic_call_id("t", "{}", 0) != deterministic_call_id("t", "{}", 1)
 
     def test_surrogates_do_not_crash(self):
         out = deterministic_call_id("t", "bad \ud800 arg", 0)
         assert out.startswith("call_")
-
 
 # ---------------------------------------------------------------------------
 # coalesce_tool_call_id
@@ -66,7 +63,6 @@ class TestCoalesceToolCallId:
         assert coalesce_tool_call_id(SimpleNamespace(call_id="c", id="i")) == "c"
         assert coalesce_tool_call_id(SimpleNamespace(call_id=None, id=" i ")) == "i"
         assert coalesce_tool_call_id(SimpleNamespace(call_id=None, id=None)) == ""
-
 
 # ---------------------------------------------------------------------------
 # uniquify_tool_call_ids
@@ -137,7 +133,6 @@ class TestUniquifyToolCallIds:
         assert uniquify_tool_call_ids([]) == []
         assert uniquify_tool_call_ids(None) is None
 
-
 # ---------------------------------------------------------------------------
 # reasoning_echo_family — the provider-direction table
 # ---------------------------------------------------------------------------
@@ -180,7 +175,6 @@ class TestReasoningEchoFamily:
     def test_unknown_family_raises(self):
         with pytest.raises(KeyError):
             matches_reasoning_echo_family("nope", "p", "m", "https://x")
-
 
 # ---------------------------------------------------------------------------
 # apply_reasoning_content_policy
@@ -239,7 +233,6 @@ class TestApplyReasoningContentPolicy:
             {"role": "assistant", "content": "x", "reasoning_content": None}, api, False)
         assert "reasoning_content" not in api
 
-
 # ---------------------------------------------------------------------------
 # reapply_reasoning_echo
 # ---------------------------------------------------------------------------
@@ -273,7 +266,6 @@ class TestReapplyReasoningEcho:
         assert reapply_reasoning_echo(msgs, True) == 0
         reapply_reasoning_echo(msgs, False)
         assert reapply_reasoning_echo(msgs, False) == 0
-
 
 # ---------------------------------------------------------------------------
 # Per-provider reasoning_echo config opt-in — preserves reasoning_content
@@ -323,7 +315,6 @@ class TestPerProviderReasoningEcho:
         agent = self._make_agent(reasoning_echo_flag=True)
         assert agent._needs_thinking_reasoning_pad() is True
         assert agent._reasoning_echo_opt_in() is True
-
 
     def test_strict_fallback_strips_despite_primary_opt_in(self):
         """Primary has flag=True, fallback switches to a strict provider.
@@ -420,5 +411,3 @@ class TestPerProviderReasoningEcho:
         # Flag should be restored from snapshot
         assert agent._reasoning_echo_flag is True
         assert agent.model == "glm-5.2"
-
-

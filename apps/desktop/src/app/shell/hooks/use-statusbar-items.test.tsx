@@ -4,6 +4,7 @@ import { isValidElement, type ReactNode } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
 import {
   $connection,
   $currentCwd,
@@ -13,7 +14,6 @@ import {
   $tileSessionFocusStartedAt,
   setActiveSessionId
 } from '@/store/session'
-import { createClientSessionState } from '@/lib/chat-runtime'
 import { $focusedTreePaneId as $focusedTreePaneIdMock } from '@/store/session-focus'
 import { $sessionStates, $sessionTiles } from '@/store/session-states'
 

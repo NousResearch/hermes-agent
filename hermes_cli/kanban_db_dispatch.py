@@ -2509,8 +2509,9 @@ def _hermes_path_argv(path: str) -> list[str]:
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv for ``Popen``: ``$HERMES_BIN``
     (path-like -> absolute; bare names keep PATH semantics, never a
-    same-directory file), then the running interpreter's ``sys.executable -m
-    hermes_cli.main`` (exactly this install; also covers shim-less cron,
+    same-directory file), then this source install's published launcher when
+    available, then the running interpreter's ``sys.executable -m
+    hermes_cli.main`` (covers shim-less cron,
     systemd ``User=``, launchd), then ``which("hermes")`` (Windows: safe PATH
     search, batch shims fall back to the module form) only when ``hermes_cli``
     is not importable. The module argv must win over PATH: a PATH-first lookup
@@ -2520,6 +2521,9 @@ def _resolve_hermes_argv() -> list[str]:
     """
     import importlib.util
     import shutil
+    from pathlib import Path
+
+    from hermes_cli._launchers import source_install_launcher
 
     env_bin = os.environ.get("HERMES_BIN", "").strip()
     if env_bin:
@@ -2529,6 +2533,10 @@ def _resolve_hermes_argv() -> list[str]:
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
+
+    source_launcher = source_install_launcher(Path(__file__).resolve().parents[1])
+    if source_launcher is not None:
+        return [str(source_launcher)]
 
     try:
         if importlib.util.find_spec("hermes_cli") is not None:

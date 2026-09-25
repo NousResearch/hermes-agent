@@ -1558,8 +1558,10 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     import shutil
     import sys
     from hermes_cli import kanban_db_dispatch as kbd
+    from hermes_cli import _launchers
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(_launchers, "source_install_launcher", lambda root: None)
     monkeypatch.setattr(shutil, "which", lambda name: "/tmp/planted/hermes")
     monkeypatch.setattr(kbd, "_safe_which_no_cwd", lambda name: "/tmp/planted/hermes")
     assert kbd._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
@@ -1568,6 +1570,26 @@ def test_resolve_hermes_argv_prefers_module_form_over_path_shim(monkeypatch):
     assert kbd._resolve_hermes_argv() == ["/opt/hermes/bin/hermes"]
 
 
+
+
+def test_resolve_hermes_argv_uses_source_launcher_for_detached_worker(tmp_path, monkeypatch):
+    """The source shim bootstraps a fresh worker when the parent imports via sys.path."""
+    from hermes_cli import kanban_db_dispatch as kbd
+
+    module = tmp_path / "hermes_cli" / "kanban_db_dispatch.py"
+    module.parent.mkdir()
+    module.touch()
+    launcher = tmp_path / ".hermes" / "bin" / "hermes"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\nprintf 'source launcher works\\n'\n")
+    launcher.chmod(0o755)
+    monkeypatch.setattr(kbd, "__file__", str(module))
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+
+    argv = kbd._resolve_hermes_argv()
+    assert argv == [str(launcher)]
+    result = subprocess.run(argv + ["--version"], capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "source launcher works"
 
 
 def test_resolve_hermes_argv_module_actually_runs():
@@ -1586,7 +1608,8 @@ def test_resolve_hermes_argv_module_actually_runs():
 
     with mock.patch.dict(os.environ, {}, clear=False):
         os.environ.pop("HERMES_BIN", None)
-        with mock.patch.object(shutil, "which", return_value=None):
+        with mock.patch.object(shutil, "which", return_value=None), \
+             mock.patch("hermes_cli._launchers.source_install_launcher", return_value=None):
             argv = kbd._resolve_hermes_argv()
     r = subprocess.run(argv + ["--version"], capture_output=True, text=True, timeout=30)
     assert r.returncode == 0, (

@@ -138,7 +138,11 @@ export function registerPetOverlayIpc({
     petOverlayWindow.setFocusable(Boolean(focusable))
 
     if (focusable) {
-      petOverlayWindow.focus()
+      const mainWindow = getMainWindow()
+
+      if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.isFocused()) {
+        petOverlayWindow.focus()
+      }
     }
   })
   // Main renderer → overlay: forward the latest pet state for the overlay to render.

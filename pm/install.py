@@ -668,8 +668,20 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
                      or any(not isinstance(extra, str) for extra in fact["extras"])
                      or not isinstance(fact.get("stamp"), str) or not fact["stamp"]):
             raise InstallError("venv", "recorded dependency selection is incomplete; refusing to change its graph")
-        enabled = list(fact.get("extras", frozen if frozen is not None else ["all"]))
-        stamp = fact.get("stamp") or package.expected_stamp(enabled, plugin_dirs=[])
+        recorded = list(fact.get("extras", frozen if frozen is not None else ["all"]))
+        # A replay rebuilds the recorded workspace, which still declares what it
+        # was built with. Without one (refresh_dependencies' fallback shape, or
+        # a pre-workspace ledger) the rebuild resolves against the CURRENT tree,
+        # so an extra that tree no longer declares must not ride the ledger
+        # into `uv sync` — mirror _still_declared's launch-path prune here.
+        enabled = recorded if ("environment" in fact or "resolved_lock" in fact) \
+            else _still_declared(package, recorded)
+        if enabled != recorded:
+            # The recorded stamp hashed the stale selection; recompute so the
+            # repaired fact reads current against today's tree.
+            stamp = package.expected_stamp(enabled, plugin_dirs=[])
+        else:
+            stamp = fact.get("stamp") or package.expected_stamp(enabled, plugin_dirs=[])
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
     # the payload. Retain its extras until a recorded selection owns them.

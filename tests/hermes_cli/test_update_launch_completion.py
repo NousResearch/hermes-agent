@@ -291,3 +291,123 @@ def test_launch_under_the_owning_update_does_not_run_the_tail_again(tmp_path, mo
     assert completion_tail == []
     assert pending.is_file(), "the owning update's obligation was discharged by its own tail"
 
+
+@pytest.mark.parametrize("argv,expected", [
+    (["hermes", "status"], True),
+    (["hermes.exe", "status"], True),
+    (["C:\\Users\\admin\\venv\\Scripts\\hermes.exe", "status"], True),
+    (["/usr/local/bin/hermes", "run"], True),
+    (["hermes-agent", "run"], True),
+    (["hermes-acp", "--port", "1234"], True),
+    (["tui-gateway"], True),
+    (["tui-gateway.exe"], True),
+    (["/opt/hermes/venv/bin/tui-gateway"], True),
+    (["server.py"], False),
+    (["D:\\projects\\hermes-webui\\server.py"], False),
+    (["/home/user/app/main.py"], False),
+    (["pytest"], False),
+    (["-c", "print(1)"], False),
+    ([], False),
+])
+def test_is_hermes_entry_detects_launchers_and_external_scripts(tmp_path, argv, expected):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    # If argv[0] is in-repo:
+    if argv and argv[0] == "in_repo_script.py":
+        script = root / "in_repo_script.py"
+        script.write_text("")
+        argv = [str(script)]
+        expected = True
+    assert venv_sync.is_hermes_entry(root, argv) is expected
+
+
+def test_is_hermes_entry_detects_in_repo_script(tmp_path):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    script = root / "run_agent.py"
+    script.write_text("")
+    sub_script = root / "scripts" / "custom.py"
+    sub_script.parent.mkdir()
+    sub_script.write_text("")
+
+    assert venv_sync.is_hermes_entry(root, [str(script)]) is True
+    assert venv_sync.is_hermes_entry(root, [str(sub_script)]) is True
+
+
+def test_is_hermes_entry_detects_module_spec(tmp_path, monkeypatch):
+    import types
+    root = tmp_path / "checkout"
+    root.mkdir()
+
+    fake_main = types.ModuleType("__main__")
+    fake_main.__spec__ = types.SimpleNamespace(name="hermes_cli.main", origin=None)
+    monkeypatch.setitem(sys.modules, "__main__", fake_main)
+    assert venv_sync.is_hermes_entry(root, ["-m", "hermes_cli.main"]) is True
+
+    fake_main.__spec__ = types.SimpleNamespace(name="webui.server", origin=str(tmp_path / "server.py"))
+    assert venv_sync.is_hermes_entry(root, ["-m", "webui.server"]) is False
+
+
+def test_relaunch_command_preserves_external_script_directory(tmp_path):
+    root = tmp_path / "checkout"
+    root.mkdir()
+    external_dir = tmp_path / "hermes-webui"
+    external_dir.mkdir()
+    server_py = external_dir / "server.py"
+    server_py.write_text("")
+
+    argv = [str(server_py), "--port", "8000"]
+    command = venv_sync.relaunch_command(Path(sys.executable), root, argv, [sys.executable, *argv], None)
+    # The generated command must prepend the external script's directory so sibling packages import cleanly
+    code = command[-1]
+    assert f"sys.path.insert(0, '{str(external_dir)}')" in code or f'sys.path.insert(0, {str(external_dir)!r})' in code
+    assert f"sys.path.insert(0, '{str(root)}')" in code or f'sys.path.insert(0, {str(root)!r})' in code
+
+
+def test_external_consumer_importing_bootstrap_does_not_relaunch(tmp_path, monkeypatch):
+    """Regression test for #122160: external consumer importing hermes_bootstrap must not re-exec."""
+    root = _self_checkout(tmp_path, monkeypatch)
+    external_app = tmp_path / "external_consumer"
+    external_app.mkdir()
+
+    # Create sibling local package 'api' that the consumer relies on
+    api_pkg = external_app / "api"
+    api_pkg.mkdir()
+    (api_pkg / "__init__.py").write_text("API_LOADED = True\n", encoding="utf-8")
+
+    consumer_script = external_app / "server.py"
+    consumer_script.write_text(
+        "import sys\n"
+        "from pathlib import Path\n"
+        "import api\n"
+        "from hermes_cli.venv_sync import is_hermes_entry\n"
+        "import hermes_cli.venv_sync as vs\n"
+        "vs.prepare_launch_called = False\n"
+        "orig_prepare_launch = vs.prepare_launch\n"
+        "def tracking_prepare_launch(*a, **k):\n"
+        "    vs.prepare_launch_called = True\n"
+        "    return orig_prepare_launch(*a, **k)\n"
+        "vs.prepare_launch = tracking_prepare_launch\n"
+        "root = Path(sys.argv[1])\n"
+        "assert not is_hermes_entry(root, sys.argv)\n"
+        "import hermes_bootstrap\n"
+        "assert api.API_LOADED is True\n"
+        "assert vs.prepare_launch_called is False, 'prepare_launch was unexpectedly called!'\n"
+        "print('consumer_success')\n",
+        encoding="utf-8",
+    )
+
+    env = dict(os.environ)
+    env["PYTHONPATH"] = f"{str(Path(__file__).resolve().parents[2])};{env.get('PYTHONPATH', '')}"
+    res = subprocess.run(
+        [sys.executable, str(consumer_script), str(root)],
+        cwd=str(external_app),
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env=env,
+    )
+    assert res.returncode == 0, f"External consumer failed:\nstdout: {res.stdout}\nstderr: {res.stderr}"
+    assert "consumer_success" in res.stdout
+
+

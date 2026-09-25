@@ -69,6 +69,12 @@ class TestGenerateTitle:
         # Backtick-quoted (space-bearing) paths and @folder: refs too.
         assert is_titleable_user_message("@file:`my file.txt`") is False
         assert is_titleable_user_message("@folder:/some/dir") is False
+        # A quoted path with a line range is one reference token for the
+        # canonical parser (context_references.REFERENCE_PATTERN), so the
+        # guard must strip the range too, not leave ":3" behind as "prose".
+        assert is_titleable_user_message("@file:`my file.txt`:3") is False
+        assert is_titleable_user_message('@file:"spaced name.md":12-14') is False
+        assert is_titleable_user_message("@file:'single quoted.md':1") is False
         # The background model-title path refuses the same opener.
         assert generate_title(msg) is None
 

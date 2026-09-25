@@ -274,8 +274,12 @@ def _strip_one_wrapper(text: str) -> str:
 # written backtick-quoted). Kept local so the titler doesn't import the
 # context-reference machinery (circularity / startup cost) just to detect the
 # attachment-only shape (#92068).
+_QUOTED = r"(?:`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+')"
+# Mirrors the canonical agent.context_references value shape: a quoted
+# (space-bearing) path may carry a ``:start[-end]`` line-range suffix, and a
+# bare path swallows its own range via ``\S+``.
 _CONTEXT_REFERENCE_TOKEN_RE = re.compile(
-    r"(?<![\w/])@(?:file|folder):(?:(?:`[^`\n]+`|\"[^\"\n]+\"|'[^'\n]+')|\S+)"
+    rf"(?<![\w/])@(?:file|folder):(?:{_QUOTED}(?::\d+(?:-\d+)?)?|\S+)"
 )
 
 

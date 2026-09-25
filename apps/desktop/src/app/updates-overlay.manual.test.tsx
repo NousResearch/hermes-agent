@@ -58,7 +58,7 @@ it('titles a command-less backend refusal honestly and offers nothing to copy', 
     stage: 'manual',
     message,
     percent: null,
-    error: 'dashboard_update_managed_externally',
+    error: null,
     command: null,
     log: []
   })

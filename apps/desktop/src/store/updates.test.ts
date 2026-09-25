@@ -544,7 +544,6 @@ describe('requestActiveUpdate', () => {
     expect(result.command).toBeUndefined()
     expect($backendUpdateApply.get().stage).toBe('manual')
     expect($backendUpdateApply.get().command).toBeNull()
-    expect($backendUpdateApply.get().error).toBe('dashboard_update_managed_externally')
     expect($backendUpdateApply.get().message).toContain('managed outside this dashboard')
   })
 
@@ -739,24 +738,6 @@ describe('applyEverythingUpdate', () => {
 
     expect(updateHermesSpy).toHaveBeenCalledTimes(1)
     expect(applyClientMock).not.toHaveBeenCalled()
-  })
-
-  it('remote mode: skips a backend that reported it cannot update itself, and says why', async () => {
-    setRemote(true)
-    $backendUpdateStatus.set(
-      status({ supported: false, message: 'Hermes updates are managed outside this dashboard.' })
-    )
-    checkClientMock.mockResolvedValue(status({ behind: 2, updateAvailable: true }))
-
-    await applyEverythingUpdate()
-
-    expect(updateHermesSpy).not.toHaveBeenCalled()
-    expect($backendUpdateApply.get().stage).toBe('idle')
-    expect(notifySpy).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'Hermes updates are managed outside this dashboard.' })
-    )
-    // The client leg still runs.
-    expect(applyClientMock).toHaveBeenCalledTimes(1)
   })
 
   it('fans out to other registered connections, excluding local and the active backend', async () => {

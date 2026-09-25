@@ -133,7 +133,6 @@ export function UpdatesOverlay() {
             isBackend={isBackend}
             message={apply.message}
             onDone={() => handleClose(false)}
-            refused={apply.error !== null}
           />
         )}
 
@@ -341,14 +340,12 @@ function ManualView({
   command,
   isBackend,
   message,
-  onDone,
-  refused = false
+  onDone
 }: {
   command: string | null
   isBackend: boolean
   message?: string
   onDone: () => void
-  refused?: boolean
 }) {
   const { t } = useI18n()
   const u = t.updates
@@ -375,7 +372,7 @@ function ManualView({
           <Terminal className="size-8 text-primary" />
 
           <DialogTitle className="text-center text-xl">
-            {refused ? u.manualUnavailableTitle : u.manualTitle}
+            {isBackend ? u.manualUnavailableTitle : u.manualTitle}
           </DialogTitle>
           <DialogDescription className="text-center text-sm">{message || u.manualPickedUp}</DialogDescription>
         </div>

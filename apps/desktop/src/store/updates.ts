@@ -769,19 +769,10 @@ async function runBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       // An empty update_command is the backend saying "there is no command to
       // run here" (managed container, commit build) — render the message-only
       // view. Only a field absent from an older backend falls back.
-      const command = (started as { update_command?: string | null }).update_command ?? 'hermes update'
-      $backendUpdateApply.set({
-        ...IDLE,
-        applying: false,
-        stage: 'manual',
-        message,
-        command: command || null,
-        // The backend refused (as opposed to "run this yourself"): the overlay
-        // titles a command-less refusal honestly instead of "from your terminal".
-        error: (started as { error?: string }).error || 'refused'
-      })
+      const command = ((started as { update_command?: string | null }).update_command ?? 'hermes update') || null
+      $backendUpdateApply.set({ ...IDLE, applying: false, stage: 'manual', message, command })
 
-      return { ok: false, error: 'manual', manual: true, message, command: command || undefined }
+      return { ok: false, error: 'manual', manual: true, message, command: command ?? undefined }
     }
 
     $backendUpdateApply.set({
@@ -987,17 +978,7 @@ async function runEverythingUpdate(): Promise<void> {
     //    Its own finish path re-checks and nudges, but the everything-flow
     //    continues regardless of the outcome: one unreachable backend must
     //    not strand the other machines or the client.
-    //    A backend that already reported it cannot update itself (managed
-    //    container, commit build) is skipped with its own reason instead of
-    //    being asked anyway, which only lands on a dead-end manual dialog.
-    const backendStatus = $backendUpdateStatus.get()
-
-    if (isRemoteMode() && backendStatus?.supported === false) {
-      notify({
-        title: translateNow('updates.availableTitleBackend'),
-        message: backendStatus.message || translateNow('updates.everythingSkipped')
-      })
-    } else if (isRemoteMode()) {
+    if (isRemoteMode()) {
       $updateOverlayTarget.set('backend')
 
       await applyBackendUpdate().catch(() => null)

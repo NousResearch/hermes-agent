@@ -38,10 +38,11 @@ def stage_runtime(uv: Path, python: Path, destination: Path, *,
             shutil.copyfile(project / name, snapshot / name)
         environment.create()
         if wheelhouse is None:
-            # A mirrored default index makes uv --locked reject the committed lock
-            # (its entries record PyPI) before anything installs. The snapshot is
-            # a caller-owned copy, so re-resolve it against the mirror instead —
-            # exactly what sync's frozen=False path is reserved for.
+            # A mirrored default index makes uv --locked reject the committed lock:
+            # resolution against the mirror no longer matches the PyPI registry its
+            # entries record (#122112), so the assertion can never pass there.
+            # Install the committed versions verbatim (--frozen) instead — same
+            # versions, same recorded URLs, nothing re-resolved.
             environment.sync(snapshot, locked=default_index_override(env) is None,
                              no_default_groups=True, no_install_project=True, timeout=600)
         else:

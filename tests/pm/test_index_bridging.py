@@ -91,13 +91,22 @@ def test_default_index_override_detects_mirrors_only(clean_index_env):
 
     assert default_index_override({}) is None
     assert default_index_override({"UV_INDEX_URL": "https://pypi.org/simple"}) is None
-    # Trailing slash is the same registry; extra indexes never move the default.
+    # Equivalent spellings of PyPI: trailing slash, explicit :443, credentials
+    # in the netloc. Extra indexes never move the default.
     assert default_index_override({"UV_DEFAULT_INDEX": "https://pypi.org/simple/"}) is None
+    assert default_index_override({"UV_DEFAULT_INDEX": "https://pypi.org:443/simple"}) is None
+    assert default_index_override({"UV_INDEX_URL": "https://__token__:@pypi.org/simple"}) is None
     assert default_index_override({"UV_INDEX": "https://mirror.example/simple"}) is None
     assert default_index_override({"UV_INDEX_URL": "https://mirror.example/simple"}) == \
         "https://mirror.example/simple"
     assert default_index_override({"UV_DEFAULT_INDEX": "https://mirror.example/simple/"}) == \
         "https://mirror.example/simple"
+    # A non-default port or plain http is a different endpoint: uv compares it
+    # against the recorded https registry either way, so it counts as an override.
+    assert default_index_override({"UV_DEFAULT_INDEX": "https://pypi.org:8443/simple"}) == \
+        "https://pypi.org:8443/simple"
+    assert default_index_override({"UV_INDEX_URL": "http://pypi.org/simple"}) == \
+        "http://pypi.org/simple"
 
 
 def test_bridged_pip_mirror_counts_as_default_index_override(clean_index_env, monkeypatch):
@@ -109,11 +118,12 @@ def test_bridged_pip_mirror_counts_as_default_index_override(clean_index_env, mo
     assert default_index_override(env) == "https://mirror.example/simple"
 
 
-def test_stage_runtime_relocks_snapshot_when_index_is_mirrored(clean_index_env, monkeypatch, tmp_path):
+def test_stage_runtime_skips_lock_assertion_when_index_is_mirrored(clean_index_env, monkeypatch, tmp_path):
     """The pip.conf bridge is what breaks ``hermes pm doctor`` on mirrored hosts (#122112).
 
     uv --locked rejects the committed lock once resolution goes through a mirror,
-    so the staged snapshot — a caller-owned copy — must re-resolve instead.
+    so the staged snapshot must drop the assertion (locked=False → uv sync
+    --frozen) and install the committed versions verbatim.
     """
     import pm.runtime_stage as runtime_stage
     from pm.environment import PythonEnvironment

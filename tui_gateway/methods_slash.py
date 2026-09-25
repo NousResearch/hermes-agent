@@ -37,13 +37,26 @@ def _format_live_review_output(sid: str, session: Optional[dict], arg: str) -> s
     with session.get("history_lock") or contextlib.nullcontext():
         snapshot = list(session.get("history", []))
     snapshot = snapshot or list(getattr(agent, "_session_messages", None) or [])
+    # slash.exec runs on the RPC pool, not inside a turn: bind the same session identity a turn binds
+    # (HERMES_UI_SESSION_ID + steer authority), or delegate_task registers the reviewer with no owner
+    # and `subagent.list` hides it — the Desktop status stack then shows nothing for /review.
+    tokens = _set_session_context(session["session_key"], ui_session_id=sid)
+    runtime_token = _current_runtime_session_record.set(session)
     try:
         from agent.review_engine import format_dispatch_note, start_review
-        result = start_review(agent, snapshot, arg or "")
+        # slash.exec is off-turn (RPC pool). start_review → resolve_runtime_provider
+        # reads HERMES_CODEX_BASE_URL via get_secret; under multiplex that raises
+        # UnscopedSecretError unless the same runtime scope a turn binds is here
+        # (#117544; same wrap as _compress_live_with_feedback / #116611).
+        with _session_profile_runtime_scope(session):
+            result = start_review(agent, snapshot, arg or "")
     except ValueError as exc:
         return str(exc)
     except Exception as exc:
         return f"/review failed to start: {exc}"
+    finally:
+        _current_runtime_session_record.reset(runtime_token)
+        _clear_session_context(tokens)
     return format_dispatch_note(result, arg or "")
 
 
@@ -67,7 +80,8 @@ def _format_live_usage_output(sid: str, session: dict, arg: str) -> str:
              ("Total tokens:", n("total")), ("API calls:", n("calls"))]
     if usage.get("context_max"):
         pct = int(usage.get("context_percent") or 0)
-        rows.append(("Current context:", f"{n('context_used')} / {n('context_max')} ({pct}%)"))
+        mark = "~" if usage.get("context_estimated") else ""
+        rows.append(("Current context:", f"{mark}{n('context_used')} / {n('context_max')} ({mark}{pct}%)"))
     rows += [("Messages:", f"{message_count:,}"), ("Compressions:", n("compressions"))]
     model = usage.get("model") or _metadata_mirror(session).get("model") or getattr(agent, "model", "") or "(unknown)"
     lines = ["Session Token Usage", "────────────────────────────────────────", f"Model: {model}"]
@@ -90,7 +104,7 @@ def _format_live_history_output(sid: str, session: dict, arg: str) -> str:
     with session["history_lock"]:
         history = list(session.get("history", []))
     db_history = _live_session_messages(session)
-    messages = _history_to_messages(history if db_history is None else db_history)
+    messages = _history_to_messages(history if db_history is None else db_history, profile_home=session.get("profile_home"))
     if not messages:
         return "No conversation history yet."
     lines = ["Conversation History", "────────────────────────────────────────"]
@@ -119,12 +133,12 @@ def _format_live_prompt_output(sid: str, session: dict, arg: str) -> str:
 def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     from collections import Counter
     try:
-        messages = _history_to_messages(_live_session_messages(session) or [])
+        messages = _history_to_messages(_live_session_messages(session) or [], profile_home=session.get("profile_home"))
     except Exception:
         messages = []  # malformed db rows fall back to the live history below
     if not messages:
         with session["history_lock"]:
-            messages = _history_to_messages(list(session.get("history", [])))
+            messages = _history_to_messages(list(session.get("history", [])), profile_home=session.get("profile_home"))
     usage = _session_usage_snapshot(session)
     mirror = _metadata_mirror(session)
     lines = [f"Conversation: {len(messages)} messages" if messages else "Conversation is empty (no messages yet)."]
@@ -133,15 +147,26 @@ def _format_live_context_output(sid: str, session: dict, arg: str) -> str:
     if model := mirror.get("model") or usage.get("model") or "":
         lines.append(f"Model: {model}")
     lines.append(f"Provider: {mirror.get('provider') or 'auto'}")
-    context_used = int(usage.get("context_used") or usage.get("total") or 0)
+    context_used = int(usage.get("context_used") or 0)
+    mark = "~" if usage.get("context_estimated") else ""
     context_max = int(usage.get("context_max") or 0)
     if context_used and context_max:
         lines.append(
-            f"Context usage: ~{context_used:,} / {context_max:,} tokens ({(context_used / context_max) * 100:.1f}%)")
+            f"Context usage: {mark}{context_used:,} / {context_max:,} tokens ({mark}{(context_used / context_max) * 100:.1f}%)")
     elif context_used:
-        lines.append(f"Context usage: ~{context_used:,} tokens")
+        lines.append(f"Context usage: {mark}{context_used:,} tokens")
     if usage.get("compressions"):
         lines.append(f"Compressions: {int(usage.get('compressions') or 0):,}")
+    if (agent := session.get("agent")) is not None:
+        from agent.context_file_sources import context_file_sources_for_agent, render_context_file_lines
+        # RPC thread: bind the session cwd or the discovery walk keys on the backend's cwd, not the workspace.
+        tokens = _set_session_context(session["session_key"], cwd=_session_cwd(session))
+        try:
+            file_lines = render_context_file_lines(context_file_sources_for_agent(agent))
+        finally:
+            _clear_session_context(tokens)
+        if file_lines:
+            lines += [""] + file_lines
     return "\n".join(lines)
 
 
@@ -235,39 +260,47 @@ def _compress_live_with_feedback(sid: str, session: dict, agent, arg: str, *, sn
     ``here [N]`` / ``--keep N``). CompressionLockHeld is a clean no-op (skip note returned);
     other errors propagate to the caller, which finalizes the context-engine notification."""
     from agent.conversation_compression import finalize_context_engine_compression_notification
+    from agent.conversation_compression_manual import (
+        AGGRESSIVE_UNSUPPORTED, compress_now, parse_compress_args, render_compress_result)
     from agent.manual_compression_feedback import describe_compression_lock_skip, summarize_manual_compression
     from agent.model_metadata import estimate_request_tokens_rough
-    with session["history_lock"]:
-        before_messages = list(session.get("history", []))
-        history_version = int(session.get("history_version", 0))
-    sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
-    tools = getattr(agent, "tools", None) or None
+    with _session_profile_runtime_scope(session):
+        with session["history_lock"]:
+            before_messages = list(session.get("history", []))
+            history_version = int(session.get("history_version", 0))
+        request = parse_compress_args(arg)
+        if request.aggressive:
+            return AGGRESSIVE_UNSUPPORTED
+        if request.preview:  # report only — history, agent and session key untouched
+            return "\n".join(render_compress_result(compress_now(agent, before_messages, request)))
+        sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+        tools = getattr(agent, "tools", None) or None
 
-    def estimate(messages, prompt, tool_defs) -> int:
-        return estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tool_defs) if messages else 0
-    before_tokens = estimate(before_messages, sys_prompt, tools)
-    snapshot = {"approx_tokens": before_tokens, "before_messages": before_messages, "history_version": history_version}
-    try:
-        if snapshot_kwargs:
-            _compress_session_history(session, arg.strip() or None, **snapshot)
-        else:
-            # The raw argument goes through unparsed: _compress_session_history (the choke point shared by
-            # all three manual-compress routes) parses the boundary-aware forms (here [N], up to here,
-            # --keep N) and does the partial head/tail split there (#35533).
-            _compress_session_history(session, arg)
-    except CompressionLockHeld as e:
-        return describe_compression_lock_skip(e.holder)
-    _sync_session_key_after_compress(sid, session)
-    with session["history_lock"]:
-        after_messages = list(session.get("history", []))
-    after_tokens = estimate(
-        after_messages, getattr(agent, "_cached_system_prompt", "") or sys_prompt, getattr(agent, "tools", None) or tools)
-    _emit("session.info", sid, _session_info(agent, session))
-    fb = summarize_manual_compression(
-        before_messages, after_messages, before_tokens, after_tokens,
-        compression_state=getattr(agent, "context_compressor", None))
-    finalize_context_engine_compression_notification(agent, committed=True)
-    return "\n".join(filter(None, [fb["headline"], fb["token_line"], fb.get("note")]))
+        def estimate(messages, prompt, tool_defs) -> int:
+            return estimate_request_tokens_rough(messages, system_prompt=prompt, tools=tool_defs) if messages else 0
+        before_tokens = estimate(before_messages, sys_prompt, tools)
+        snapshot = {"approx_tokens": before_tokens, "before_messages": before_messages, "history_version": history_version}
+        try:
+            if snapshot_kwargs:
+                _compress_session_history(session, arg.strip() or None, **snapshot)
+            else:
+                # The raw argument goes through unparsed: _compress_session_history (the choke point shared by
+                # all three manual-compress routes) parses the boundary-aware forms (here [N], up to here,
+                # --keep N) and does the partial head/tail split there (#35533).
+                _compress_session_history(session, arg)
+        except CompressionLockHeld as e:
+            return describe_compression_lock_skip(e.holder)
+        _sync_session_key_after_compress(sid, session)
+        with session["history_lock"]:
+            after_messages = list(session.get("history", []))
+        after_tokens = estimate(
+            after_messages, getattr(agent, "_cached_system_prompt", "") or sys_prompt, getattr(agent, "tools", None) or tools)
+        _emit("session.info", sid, _session_info(agent, session))
+        fb = summarize_manual_compression(
+            before_messages, after_messages, before_tokens, after_tokens,
+            compression_state=getattr(agent, "context_compressor", None))
+        finalize_context_engine_compression_notification(agent, committed=True)
+        return "\n".join(filter(None, [fb["headline"], fb["token_line"], fb.get("note")]))
 
 
 def _mirror_approvals(sid, session, agent, arg) -> None:
@@ -359,7 +392,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
         if _session_uses_compute_host(session):
             return _compute_host_slash(sid, session, name, command)[1]
         if session.get("running"):
-            return f"session busy — /interrupt the current turn before running /{name}"
+            return busy_message(name)
     if (mirror := _SLASH_MIRRORS.get(name)) is None:
         return ""
     try:

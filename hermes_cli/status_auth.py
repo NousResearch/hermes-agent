@@ -10,6 +10,7 @@ from hermes_cli.nous_account import (
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from hermes_cli import config
+from hermes_time import safe_strftime
 
 
 def _format_iso_timestamp(value) -> str:
@@ -23,7 +24,7 @@ def _format_iso_timestamp(value) -> str:
         return value
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    return safe_strftime(parsed.astimezone(), "%Y-%m-%d %H:%M:%S %Z")
 
 
 def _qwen_expiry(expires_at_ms) -> str:
@@ -124,6 +125,17 @@ def _render_auth_providers(ctx):
     ctx.nous_inference_present = inference = bool(
         nous_status.get("inference_credential_present") or (info and info.inference_credential_present)
     )
+    if nous_status.get("free_tier"):
+        # Free tier: never rendered as an account login (no account ids, no refresh row).
+        from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
+        _status._row("Nous Portal", True, f"{FREE_TIER_LABEL} · {GUEST_MODEL}")
+        _status._detail("", UPGRADE_HINT)
+        inference_url = nous_status.get("inference_base_url")
+        if inference_url:
+            _status._detail("Inference:", inference_url)
+        for name, getter, hint, rows in _OAUTH_BLOCKS:
+            _oauth_block(name, statuses.get(getter, {}), hint, rows)
+        return
     nous_error = nous_status.get("error")
     _status._row("Nous Portal", logged_in,
          "logged in" if logged_in else "not logged in (Nous inference key configured)" if inference

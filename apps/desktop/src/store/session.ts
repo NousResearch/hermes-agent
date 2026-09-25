@@ -1,6 +1,7 @@
 import type { ConnectionState } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
+import { setApiRequestLocalMode } from '@/api/client'
 import { lastVisibleMessageIsUser } from '@/app/chat/thread-loading'
 import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
@@ -10,8 +11,9 @@ import {
   connectionScopeSuffix,
   rescopeConnectionScopedStores
 } from '@/lib/connection-scoped'
+import { isMessagingSource } from '@/lib/session-source'
+import type { TileSessionFocusStamp } from '@/lib/session-timer-since'
 import { persistBoolean, persistString, readJson, storedBoolean, storedString, writeJson } from '@/lib/storage'
-import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 import { isSessionRemovalPending } from './session-removal'
@@ -143,6 +145,48 @@ export function setRememberedSessionId(id: null | string, profile: string): void
   persistString(profileNavigationKey(LAST_SESSION_KEY, profile), id)
 }
 
+/** A renamed profile keeps its sessions, so the remembered session / route and
+ *  every owner hint pointing at the old name move to the new one instead of
+ *  routing the next open at a backend that no longer exists (#111868). */
+export function migrateRememberedNavigationForProfile(oldProfile: string, newProfile: string): void {
+  discardLegacyRememberedNavigation()
+
+  for (const base of [LAST_SESSION_KEY, LAST_ROUTE_KEY]) {
+    const value = storedString(profileNavigationKey(base, oldProfile))
+
+    if (value !== null) {
+      persistString(profileNavigationKey(base, newProfile), value)
+      persistString(profileNavigationKey(base, oldProfile), null)
+    }
+  }
+}
+
+export function migrateSessionOwnerHintsForProfile(oldProfile: string, newProfile: string): void {
+  const from = oldProfile.trim() || 'default'
+  const to = newProfile.trim() || 'default'
+  let changed = false
+
+  for (const [key, entry] of [...sessionOwnerHints]) {
+    const { route } = entry
+
+    if (route.profile !== from && route.targetProfile !== from) {
+      continue
+    }
+
+    sessionOwnerHints.delete(key)
+    rememberSessionOwnerHint(entry.id, {
+      ...route,
+      profile: route.profile === from ? to : route.profile,
+      ...(route.targetProfile === from ? { targetProfile: to } : {})
+    })
+    changed = true
+  }
+
+  if (changed) {
+    persistSessionOwnerHints()
+  }
+}
+
 export function sessionBelongsToProfile(
   sessions: readonly Pick<SessionInfo, '_lineage_root_id' | 'id' | 'profile'>[],
   storedSessionId: string,
@@ -172,6 +216,25 @@ export function knownSessionProfile(sessions: readonly SessionInfo[], sessionId:
   return typeof owner === 'string' ? owner : (owner?.targetProfile ?? owner?.profile)?.trim() || undefined
 }
 
+function messagingListOwnerForOmittedProfile(session: SessionInfo | undefined): SessionOwnerScope {
+  if (!session || !isMessagingSource(session.source) || !messagingListServer) {
+    return undefined
+  }
+
+  const connectionId = messagingListServer.connectionId?.trim() || ''
+  const profile = messagingListServer.profile?.trim() || 'default'
+
+  // Non-primary list: the connection is the owner. A bare profile would
+  // collapse onto the primary socket.
+  if (connectionId && connectionId !== 'local') {
+    return { connectionId, profile }
+  }
+
+  // Primary pool served this list. Name its profile door; do not fall through
+  // to the ambient request.
+  return profile
+}
+
 /**
  * The complete known owner of a session: the EXACT route when the row is
  * connection-tagged (an optimistic row from a routed create, a foreign
@@ -182,7 +245,10 @@ export function knownSessionProfile(sessions: readonly SessionInfo[], sessionId:
  * profile name, so returning only that name silently collapses the route back
  * to the local/profile-only path. The exact rungs are what let a session's
  * owner be reconstructed after the bounded hint map has evicted it or the app
- * relaunched.
+ * relaunched. A messaging row that omits `profile` is still owned by the
+ * backend that served its list: a non-primary list keeps that connection,
+ * and a primary-pool list names the primary profile door. An unrecorded
+ * list is not assumed to be primary.
  */
 export function knownSessionOwner(sessions: readonly SessionInfo[], sessionId: null | string): SessionOwnerScope {
   if (!sessionId) {
@@ -206,6 +272,12 @@ export function knownSessionOwner(sessions: readonly SessionInfo[], sessionId: n
 
   if (profile) {
     return profile
+  }
+
+  const served = messagingListOwnerForOmittedProfile(session)
+
+  if (served) {
+    return served
   }
 
   return hint
@@ -319,7 +391,14 @@ export async function ensureDefaultWorkspaceCwd(shouldPublish: () => boolean = (
   const remembered = getRememberedWorkspaceCwd()
 
   if ($connection.get()?.mode === 'remote') {
-    seedLiveCwd(remembered)
+    // Unlike the local branches below, an empty `remembered` here is meaningful:
+    // it means the incoming gateway has no memory of its own, so any workspace
+    // still live from the outgoing gateway is stale and must be cleared rather
+    // than left in place (seedLiveCwd's cwd-truthy guard would otherwise skip
+    // publishing and leave the old path looking valid — #114306).
+    if (shouldPublish() && !$activeSessionId.get()) {
+      setCurrentCwdTransient(remembered)
+    }
 
     return
   }
@@ -606,6 +685,10 @@ export function mergeSessionPage(
 
   const survivors = previous.filter(
     session =>
+      // The keep-list answers "live, not listed yet" — a hidden row (canonical
+      // Bot Chat, room plumbing) is LISTED-NEVER by design, so a live turn or
+      // open tab must not resurrect it into the sidebar (#113273).
+      !session.hidden &&
       !incomingIds.has(identity(session)) &&
       !incomingLineageKeys.has(lineageIdentity(session)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
@@ -648,6 +731,10 @@ export function mergeSessionPage(
   return interleaved
 }
 
+// Error scope for a failed unified read (Electron's primary fan-out): every
+// profile in the aggregate went unread, not a profile literally named `all`.
+const ALL_PROFILES_SCAN = 'all'
+
 function sidebarProfileKey(session: Pick<SessionInfo, 'profile'>): string {
   return (session.profile ?? '').trim() || 'default'
 }
@@ -680,7 +767,13 @@ export function carryForwardFailedProfileSessions(
   const carried: SessionInfo[] = []
 
   for (const session of previous) {
-    if (!failed.has(sidebarProfileKey(session)) || incomingIds.has(sessionListIdentity(session))) {
+    // A hidden row (canonical Bot Chat) is LISTED-NEVER by design: the
+    // failed-slice carry must not ride it back into the sidebar (#113273).
+    if (
+      session.hidden ||
+      !(failed.has(ALL_PROFILES_SCAN) || failed.has(sidebarProfileKey(session))) ||
+      incomingIds.has(sessionListIdentity(session))
+    ) {
       continue
     }
 
@@ -710,6 +803,10 @@ export function keepFailedProfileMeta<T>(
 ): Record<string, T> {
   if (!errors?.length) {
     return incoming
+  }
+
+  if (errors.some(error => error.profile?.trim() === ALL_PROFILES_SCAN)) {
+    return previous
   }
 
   const next = { ...incoming }
@@ -783,6 +880,64 @@ export const CRON_SECTION_LIMIT = 50
 // platform that exceeds this cap gets its own per-platform "load more".
 export const $messagingSessions = atom<SessionInfo[]>([])
 export const MESSAGING_SECTION_LIMIT = 100
+
+/** The backend that served the current messaging list. Null until a list
+ *  publish records it. `connectionId` is null for the primary pool; a
+ *  non-primary registry id must be kept. `profile` is null when the client
+ *  omitted a named profile on that request. */
+export interface MessagingListServer {
+  connectionId: null | string
+  profile: null | string
+}
+
+let messagingListServer: MessagingListServer | null = null
+
+export function setMessagingListServer(server: MessagingListServer | null): void {
+  messagingListServer = server
+}
+
+export function messagingListServerForFetch(
+  scopeProfile: string,
+  connectionId: null | string | undefined
+): MessagingListServer {
+  const connection = String(connectionId ?? '').trim()
+  const profile = scopeProfile.trim()
+
+  return {
+    connectionId: connection && connection !== 'local' ? connection : null,
+    profile: profile && profile !== 'all' ? profile : null
+  }
+}
+
+/** Keep a non-primary list's connection on messaging rows that arrived without
+ *  one. Does not invent a profile and does not tag the primary pool — a bare
+ *  primary row already routes through the profile door, and a `local` tag
+ *  would pin it to the wrong source once primary is remote. */
+export function stampMessagingRowsWithListServer(
+  rows: readonly SessionInfo[],
+  server: MessagingListServer | null
+): SessionInfo[] {
+  const connectionId = server?.connectionId?.trim() || ''
+
+  if (!connectionId || connectionId === 'local') {
+    return rows as SessionInfo[]
+  }
+
+  let changed = false
+
+  const next = rows.map(row => {
+    if (!isMessagingSource(row.source) || row.connection_id?.trim()) {
+      return row
+    }
+
+    changed = true
+
+    return { ...row, connection_id: connectionId }
+  })
+
+  return changed ? next : (rows as SessionInfo[])
+}
+
 // Exact per-platform conversation totals, keyed by source id. Empty until a
 // per-platform "load more" fetch resolves it (the combined seed fetch only
 // knows the aggregate), so sections fall back to their loaded count.
@@ -790,6 +945,44 @@ export const $messagingPlatformTotals = atom<Record<string, number>>({})
 // True when the combined seed fetch hit MESSAGING_SECTION_LIMIT, so at least
 // one platform may have more rows on disk than were loaded.
 export const $messagingTruncated = atom<boolean>(false)
+
+/**
+ * Ownership stubs for UNLISTED draft tiles (the tab-strip "+" / project
+ * sidebar "+" with `listed: false`, see `openNewSessionTile`). A brand-new
+ * backend session is in-memory only until its first turn persists a row, so
+ * these drafts have no row in any sidebar slice — yet the tile's immediate
+ * `session.resume` must still name the backend that minted them. Without a
+ * stub, a draft minted on the legacy ambient route (null owner route: local
+ * source + named profile) records its owner NOWHERE — no tile route, no hint,
+ * no row — and every session-scoped RPC fails closed with
+ * SessionOwnerResolutionError on multi-profile installs (#102792).
+ *
+ * Stubs carry the SAME owner stamps an optimistic row would (ambient profile
+ * when the create was unrouted, exact connection tag when routed) but live
+ * outside $sessions so the drafts stay out of the visible sidebar list. Real
+ * rows always outrank stubs (shadow-filtered below); the first send replaces
+ * the stub via the normal optimistic upsert.
+ */
+export const $unlistedSessionOwnerRows = atom<SessionInfo[]>([])
+
+/** Drop stubs shadowed by a real row `id` already present in `rows`. Returns
+ *  `rows` untouched (same reference) when there is nothing to append, so
+ *  per-list memo caches keyed on the array identity still hit. */
+function withUnlistedOwnerStubs(rows: SessionInfo[], stubs: readonly SessionInfo[]): SessionInfo[] {
+  if (!stubs.length) {
+    return rows
+  }
+
+  const listed = new Set<string>()
+
+  for (const row of rows) {
+    listed.add(row.id)
+  }
+
+  const visible = stubs.filter(stub => !listed.has(stub.id))
+
+  return visible.length ? [...rows, ...visible] : rows
+}
 
 /**
  * Every session row the renderer knows, for OWNER lookups. The sidebar splits
@@ -801,19 +994,22 @@ export const $messagingTruncated = atom<boolean>(false)
  * install failed closed with SessionOwnerResolutionError even though the row
  * naming its owner was already in memory, one atom over. Concatenation order
  * mirrors lookup priority: recents first (they can carry fresher optimistic
- * connection tags), then the cron and messaging slices.
+ * connection tags), then the cron and messaging slices. Unlisted-draft stubs
+ * ($unlistedSessionOwnerRows) ride last: a real row for the same id always
+ * shadows its stub, so a listed session never resolves off a stale stamp.
  */
 export function ownerLookupSessionRows(): SessionInfo[] {
   const cron = $cronSessions.get()
   const messaging = $messagingSessions.get()
+  const stubs = $unlistedSessionOwnerRows.get()
 
   // Recents-only stays the common case; keep its array identity (no copy) so
   // per-list memo caches (lineageAliases) keyed on the reference still hit.
   if (!cron.length && !messaging.length) {
-    return $sessions.get()
+    return withUnlistedOwnerStubs($sessions.get(), stubs)
   }
 
-  return [...$sessions.get(), ...cron, ...messaging]
+  return withUnlistedOwnerStubs([...$sessions.get(), ...cron, ...messaging], stubs)
 }
 
 // Whether a profile's last session page was CAPPED by the request limit, keyed
@@ -833,7 +1029,14 @@ export interface ProfileUsage {
 }
 
 export const $sessionProfilesUsage = atom<Record<string, ProfileUsage>>({})
+
+/** Profiles whose state.db the backend reports as structurally corrupt (the list
+ *  endpoints' `storage` map, #72046). An empty or partial list for one of these
+ *  is a damaged store, not deleted history, and the sidebar says so. */
+export const $corruptSessionStores = atom<string[]>([])
 export const $sessionsLoading = atom(true)
+/** True when the first sidebar read failed before it could populate any rows. */
+export const $sessionsLoadError = atom(false)
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export interface ActiveSessionStoredIdRotation {
@@ -1134,6 +1337,9 @@ export const $currentUsage = atom<UsageStats>({
   total: 0
 })
 export const $sessionStartedAt = atom<number | null>(null)
+// $sessionStartedAt is primary-only; tiles get their own "focused since" stamp
+// for the statusbar timer (#103123), set when a tile becomes the focused surface.
+export const $tileSessionFocusStartedAt = atom<null | TileSessionFocusStamp>(null)
 export const $turnStartedAt = atom<number | null>(null)
 export const $introPersonality = atom('')
 export const $currentPersonality = atom('')
@@ -1175,12 +1381,21 @@ export const setConnection = (next: Updater<HermesConnection | null>) => {
   // consumer reconciles against it. A null descriptor (reconnect blip)
   // keeps the current scope.
   rescopeConnectionScopedStores($connection.get())
-  syncCronModelImpactConnection($connection.get())
+
+  // Null descriptor = reconnect blip; keep the last resolved mode (same
+  // contract as rescopeConnectionScopedStores above).
+  const mode = $connection.get()?.mode
+
+  if (mode) {
+    setApiRequestLocalMode(mode === 'local')
+  }
+
   rescopeComposerSelection(composerScopeForConnection($connection.get()))
 }
 
 export const setGatewayState = (next: Updater<ConnectionState>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
+export const setUnlistedSessionOwnerRows = (next: Updater<SessionInfo[]>) => updateAtom($unlistedSessionOwnerRows, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
 export const setMessagingSessions = (next: Updater<SessionInfo[]>) => updateAtom($messagingSessions, next)
 export const setMessagingPlatformTotals = (next: Updater<Record<string, number>>) =>
@@ -1191,6 +1406,21 @@ export const setSessionProfilesTruncated = (next: Updater<Record<string, boolean
 export const setSessionProfilesUsage = (next: Updater<Record<string, ProfileUsage>>) =>
   updateAtom($sessionProfilesUsage, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
+export const setSessionsLoadError = (next: Updater<boolean>) => updateAtom($sessionsLoadError, next)
+
+/** Publish the corrupt-store profiles from one sidebar refresh; identity-stable when unchanged. */
+export function setCorruptSessionStores(storage: Record<string, string> | undefined) {
+  const next = Object.keys(storage ?? {})
+    .filter(profile => storage?.[profile] === 'corrupt')
+    .sort()
+
+  const prev = $corruptSessionStores.get()
+
+  if (prev.length !== next.length || prev.some((profile, i) => profile !== next[i])) {
+    $corruptSessionStores.set(next)
+  }
+}
+
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStoredIdRotation | null>) =>
   updateAtom($activeSessionStoredIdRotation, next)
@@ -1364,6 +1594,19 @@ export const markComposerSelectionManual = (): void => {
 export const setCurrentReasoningEffort = (next: Updater<string>) => {
   updateAtom($currentReasoningEffort, next)
   persistString(COMPOSER_EFFORT_KEY, $currentReasoningEffort.get() || null)
+  // The wire level is only meaningful for the effort the gateway computed it
+  // for; an optimistic pick clears it until the next session.info re-stamps.
+  $currentReasoningEffortWire.set('')
+}
+
+/** The level the route actually sends for `$currentReasoningEffort`
+ *  (`session.info.reasoning_effort_wire`): '' when unknown, equal when verbatim,
+ *  weaker when the route clamps a Hermes-internal step such as `ultra`. Never
+ *  persisted — it describes the live route, not a user preference. */
+export const $currentReasoningEffortWire = atom('')
+
+export const setCurrentReasoningEffortWire = (next: string) => {
+  $currentReasoningEffortWire.set(next)
 }
 
 // The profile's `agent.reasoning_effort`, mirrored from config so surfaces that
@@ -1476,6 +1719,8 @@ export const workspaceCwdForNewSession = (): string => {
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
 export const setSessionStartedAt = (next: Updater<number | null>) => updateAtom($sessionStartedAt, next)
+export const setTileSessionFocusStartedAt = (next: Updater<null | TileSessionFocusStamp>) =>
+  updateAtom($tileSessionFocusStartedAt, next)
 export const setTurnStartedAt = (next: Updater<number | null>) => updateAtom($turnStartedAt, next)
 export const setIntroPersonality = (next: Updater<string>) => updateAtom($introPersonality, next)
 export const setCurrentPersonality = (next: Updater<string>) => updateAtom($currentPersonality, next)

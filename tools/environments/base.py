@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import shlex
+import subprocess
 import threading
 import time
 import uuid
@@ -19,7 +20,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from hermes_constants import get_hermes_home
-from tools.interrupt import is_interrupted, is_thread_interrupted
+from tools.interrupt import consume_yield, is_interrupted, is_thread_interrupted
 from tools.environments.base_output import (
     ProcessHandle, _finalize_wait_result, _new_output_collector, _start_drain_thread,
 )
@@ -28,12 +29,13 @@ from tools.environments.base_session_env import (
     _wrap_command_script,
 )
 from tools.environments.base_wait import _WaitTrace
+from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
 # Opt-in debug tracing for the interrupt/activity/poll machinery
 # (HERMES_DEBUG_INTERRUPT=1). Off by default to avoid flooding gateway logs.
-_DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
+_DEBUG_INTERRUPT = env_var_enabled("HERMES_DEBUG_INTERRUPT")
 
 # Extra seconds the ``run_bounded_sync`` backstop waits past the inner ``_wait_for_process``
 # deadline: the inner loop returns partial output + 124; the outer bound only fires when that
@@ -50,6 +52,81 @@ if _DEBUG_INTERRUPT:
 # Thread-local activity callback: the agent sets it before a tool call so
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
+
+# Foreground commands in flight in THIS process, across every environment. Each runs in its
+# own session/process group, so a host that exits mid-command (TUI client gone, SIGTERM) would
+# orphan the whole tree; the process-exit funnel ``cleanup_all_environments`` kills them.
+_live_foreground: dict[int, tuple["BaseEnvironment", "ProcessHandle"]] = {}
+# Reentrant, and the hard-exit path only ever takes it with a timeout: a signal handler can run
+# on a thread that already holds it.
+_live_foreground_cond = threading.Condition(threading.RLock())
+_exit_fenced = False  # one-way, set by the hard-exit kill: no foreground command spawns after it
+_spawns_in_flight = 0  # past the fence check, child maybe alive, not yet in _live_foreground
+_HARD_KILL_BUDGET_S = 0.5
+
+
+def _enter_foreground_spawn() -> bool:
+    global _spawns_in_flight
+    with _live_foreground_cond:
+        if _exit_fenced:
+            return False
+        _spawns_in_flight += 1
+        return True
+
+
+def _leave_foreground_spawn(env: "BaseEnvironment", spawned) -> bool:
+    """Publish ``spawned`` (None: the spawn failed); True when the exit fence went up meanwhile."""
+    global _spawns_in_flight
+    with _live_foreground_cond:
+        _spawns_in_flight -= 1
+        if spawned is not None:
+            _live_foreground[id(spawned)] = (env, spawned)
+        _live_foreground_cond.notify_all()
+        return _exit_fenced
+
+
+def _quiet_kill(kill: Callable, proc) -> None:
+    try:
+        kill(proc)
+    except Exception:
+        logger.debug("exit-time kill of a foreground command failed", exc_info=True)
+
+
+def kill_live_foreground_processes(*, now: bool = False) -> int:
+    """Kill every in-flight foreground command's process tree; returns how many were signalled.
+
+    ``now=True`` is for a caller about to ``os._exit``: the graceful kill TERMs, waits and only then
+    KILLs, so a SIGTERM-ignoring command outlives a hard exit that lands inside that window. It also
+    raises the exit fence and waits for spawns already past it to register, so no command started
+    around the snapshot survives, and it never blocks past ``_HARD_KILL_BUDGET_S``: SDK cancels
+    (Modal, Daytona, Vercel) run on daemon threads under that one deadline."""
+    global _exit_fenced
+    if not now:
+        with _live_foreground_cond:
+            live = list(_live_foreground.values())
+        for env, proc in live:
+            _quiet_kill(env._kill_process, proc)
+        return len(live)
+    deadline = time.monotonic() + _HARD_KILL_BUDGET_S
+    _exit_fenced = True
+    if _live_foreground_cond.acquire(timeout=_HARD_KILL_BUDGET_S):
+        try:
+            _live_foreground_cond.wait_for(lambda: _spawns_in_flight == 0, max(0.0, deadline - time.monotonic()))
+            live = list(_live_foreground.values())
+        finally:
+            _live_foreground_cond.release()
+    else:  # the holder is stuck under our signal: a lock-free copy beats hanging the exit
+        live = list(_live_foreground.values())
+    remote = []
+    for env, proc in live:
+        if isinstance(proc, subprocess.Popen):  # killpg/kill: never blocks
+            _quiet_kill(env._force_kill_process, proc)
+        else:
+            remote.append(threading.Thread(target=_quiet_kill, args=(env._force_kill_process, proc), daemon=True))
+            remote[-1].start()
+    for t in remote:
+        t.join(max(0.0, deadline - time.monotonic()))
+    return len(live)
 
 
 class FileFetchError(RuntimeError):
@@ -104,7 +181,7 @@ def touch_activity_if_due(state: dict, label: str) -> None:
         if cb:
             cb(f"{label} ({int(now - state['start'])}s elapsed)")
     except Exception:
-        pass
+        logger.debug("activity callback failed during a long-running command", exc_info=True)
 
 
 def get_sandbox_dir() -> Path:
@@ -117,11 +194,12 @@ def get_sandbox_dir() -> Path:
 
 
 def _load_json_store(path: Path) -> dict:
-    """Load a JSON file as a dict, returning ``{}`` on any error."""
+    """Treat a missing or damaged snapshot store as empty."""
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _save_json_store(path: Path, data: dict) -> None:
@@ -139,6 +217,11 @@ def _file_mtime_key(host_path: str) -> tuple[float, int] | None:
         return None
 
 
+# ---------------------------------------------------------------------------
+# BaseEnvironment
+# ---------------------------------------------------------------------------
+
+
 class BaseEnvironment(ABC):
     """Common interface and unified execution flow for all Hermes backends. Subclasses
     implement ``_run_bash()`` and ``cleanup()``; the base provides ``execute()`` with
@@ -154,14 +237,22 @@ class BaseEnvironment(ABC):
     # Snapshot creation timeout (override for slow cold-starts).
     _snapshot_timeout: int = 30
 
+    # Opt in only when a timed-out probe can kill its command without tearing
+    # down the whole backend. SDK adapters cancel by stopping the sandbox.
+    _sudo_nopasswd_probe_supported: bool = False
+
     # Local and Docker override this because they resolve allowlisted values
     # through the active profile scope; other backends keep plain snapshots.
     _profile_scoped_passthrough: bool = False
 
     def get_temp_dir(self) -> str:
-        """Backend temp directory for session artifacts (``/tmp`` in sandboxes;
-        LocalEnvironment overrides for Termux where only ``TMPDIR`` is writable)."""
-        return "/tmp"
+        """Return the backend temp directory used for session artifacts.
+
+        Most sandboxed backends use ``/tmp`` inside the target environment.
+        LocalEnvironment overrides this on hosts where ``/tmp`` may be missing
+        and ``TMPDIR`` is the portable writable location.
+        """
+        return "/tmp"  # no-tmp: ok — sandbox-side (remote container) temp dir, not the host
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd
@@ -337,8 +428,13 @@ class BaseEnvironment(ABC):
     # --- Process lifecycle ---
     def _wait_for_process(
         self, proc: ProcessHandle, timeout: int = 120, *,
-        bounded_capture: bool = False, watch_interrupt_tid: int | None = None) -> dict:
+        bounded_capture: bool = False, watch_interrupt_tid: int | None = None,
+        output=None, yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
         """Poll-based wait with interrupt checking and stdout draining (shared, not overridden).
+        ``yield_handler(proc, output_so_far)``: when the tool thread is asked to yield
+        (``tools.interrupt.request_yield`` — a user message arrived mid-command), the drain
+        thread is stopped, the still-running process is handed to the handler and its dict
+        is returned as the result; the process is NOT killed.
         ``bounded_capture=True`` (foreground terminal-tool path only) retains at most
         ``tool_output.max_bytes`` in a head/tail window so a verbose subprocess cannot OOM the
         process; the default keeps full fidelity for internal consumers. Fires the activity
@@ -353,8 +449,10 @@ class BaseEnvironment(ABC):
         reads feeding the patch engine, code-execution RPC reads, log reads — where truncation would corrupt
         data. See #64435.
         """
-        output = _new_output_collector(proc, bounded_capture)
-        drain_thread = _start_drain_thread(proc, output)
+        if output is None:
+            output = _new_output_collector(proc, bounded_capture)
+        drain_stop = threading.Event() if yield_handler is not None else None
+        drain_thread = _start_drain_thread(proc, output, drain_stop)
         _now = time.monotonic()
         deadline = _now + timeout
         _activity_state = {"last_touch": _now, "start": _now}
@@ -375,6 +473,19 @@ class BaseEnvironment(ABC):
                     trace.interrupted()
                     _kill_and_join()
                     return self._finalize_wait_result(output, output.render(suffix="\n[Command interrupted]"), 130)
+                if yield_handler is not None and consume_yield(watch_interrupt_tid):
+                    drain_stop.set()
+                    drain_thread.join(timeout=1)
+                    try:
+                        handed = yield_handler(proc, output.render())
+                    except Exception:
+                        logger.warning("yield-to-background handoff failed; continuing to wait", exc_info=True)
+                        handed = None
+                    if handed is not None:
+                        output.close_spill()
+                        return handed
+                    drain_stop.clear()
+                    drain_thread = _start_drain_thread(proc, output, drain_stop)
                 if time.monotonic() > deadline:
                     trace.timed_out()
                     _kill_and_join()
@@ -426,6 +537,10 @@ class BaseEnvironment(ABC):
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
+    def _force_kill_process(self, proc: ProcessHandle):
+        """Kill without waiting, for a host that hard-exits next. Subclasses kill the whole tree."""
+        self._kill_process(proc)
+
     # --- CWD extraction ---
     def _update_cwd(self, result: dict):
         """Extract CWD from command output. Override for local file-based read."""
@@ -453,6 +568,15 @@ class BaseEnvironment(ABC):
         trigger their FileSyncManager here; bind-mount backends and Local don't."""
         pass
 
+    def _mark_recreated(self) -> None:
+        """Flag that the live container/sandbox was replaced while serving the
+        current command. ``execute`` folds the flag into the result as
+        ``environment_recreated`` so the tool layer can warn the model that
+        background processes died and non-persisted files may be gone —
+        without this the recovery is silent and the model keeps assuming the
+        old workspace state (lobehub/lobehub#19329 class)."""
+        self._recreated_notice_pending = True
+
     # --- Unified execute() ---
     def execute(
         self,
@@ -462,7 +586,8 @@ class BaseEnvironment(ABC):
         timeout: int | None = None,
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
-        bounded_capture: bool = False) -> dict:
+        bounded_capture: bool = False,
+        yield_handler: Callable[[ProcessHandle, str], dict] | None = None) -> dict:
         """Execute a command, return {"output": str, "returncode": int}. ``bounded_capture=True``
         caps retention at ``tool_output.max_bytes`` WHILE draining; only the foreground terminal
         tool may set it — internal full-fidelity consumers (file-op ``cat`` reads feeding the
@@ -502,14 +627,31 @@ class BaseEnvironment(ABC):
         # deadline worker, so copy it across or long commands look idle.
         parent_activity_cb = get_activity_callback()
         proc_holder: list = []
+        output_holder: list = []
 
         def _spawn_and_wait() -> dict:
             if parent_activity_cb is not None:
                 set_activity_callback(parent_activity_cb)
-            spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
+            if not _enter_foreground_spawn():
+                return {"output": "[host is exiting: command not started]", "returncode": 130}
+            spawned = None
+            try:
+                spawned = self._run_bash(wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin)
+            finally:
+                fenced = _leave_foreground_spawn(self, spawned)
             proc_holder.append(spawned)
-            return self._wait_for_process(
-                spawned, timeout=effective_timeout, bounded_capture=bounded_capture, watch_interrupt_tid=parent_tid)
+            if fenced:  # the hard-exit kill may have stopped waiting for us before we registered
+                self._force_kill_process(spawned)
+            output = _new_output_collector(spawned, bounded_capture)
+            output_holder.append(output)
+            try:
+                return self._wait_for_process(
+                    spawned, timeout=effective_timeout, bounded_capture=bounded_capture,
+                    watch_interrupt_tid=parent_tid, output=output,
+                    **({"yield_handler": yield_handler} if yield_handler is not None else {}))
+            finally:
+                with _live_foreground_cond:
+                    _live_foreground.pop(id(spawned), None)
 
         def _on_timeout() -> None:
             if proc_holder:
@@ -536,10 +678,19 @@ class BaseEnvironment(ABC):
             _on_timeout()
             raise
 
-        result = (
-            {"output": f"[Command timed out after {effective_timeout}s]", "returncode": 124}
-            if bounded.timed_out else bounded.value)
+        if bounded.timed_out:
+            suffix = f"\n[Command timed out after {effective_timeout}s]"
+            if output_holder:
+                collector = output_holder[0]
+                result = self._finalize_wait_result(collector, collector.render(suffix=suffix).lstrip("\n"), 124)
+            else:
+                result = {"output": suffix.lstrip(), "returncode": 124}
+        else:
+            result = bounded.value
         self._update_cwd(result)
+        if getattr(self, "_recreated_notice_pending", False):
+            self._recreated_notice_pending = False
+            result["environment_recreated"] = True
         return result
 
     def _kill_spawned_tree(self, spawned) -> None:
@@ -565,9 +716,22 @@ class BaseEnvironment(ABC):
             pass
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Transform sudo commands if SUDO_PASSWORD is available."""
+        """Rewrite sudo for a piped password, or leave it alone when this backend has NOPASSWD."""
         from tools.terminal_tool_sudo import _transform_sudo_command
-        return _transform_sudo_command(command)
+        return _transform_sudo_command(command, sudo_nopasswd_check=self._sudo_nopasswd_works)
+
+    _SUDO_PROBE_TIMEOUT_S = 3
+
+    def _sudo_nopasswd_works(self) -> bool:
+        """``sudo -n true`` inside THIS backend (host sudo state must not leak into a sandbox).
+        Fails closed: any error or a timed-out probe means "assume a password is needed"."""
+        if not self._sudo_nopasswd_probe_supported:
+            return False
+        try:
+            proc = self._run_bash("sudo -n true", timeout=self._SUDO_PROBE_TIMEOUT_S)
+            return self._wait_for_process(proc, timeout=self._SUDO_PROBE_TIMEOUT_S).get("returncode") == 0
+        except Exception:
+            return False
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

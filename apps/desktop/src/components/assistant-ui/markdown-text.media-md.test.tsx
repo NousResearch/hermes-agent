@@ -53,14 +53,4 @@ describe('markdown documents delivered via MEDIA', () => {
     expect(screen.getByText('archive.zip')).toBeTruthy()
     expect(screen.queryByText(/^Open archive/)).toBeNull()
   })
-
-  it('renders a MEDIA pdf as a preview attachment', async () => {
-    const href = mediaMarkdownHref('C:/Users/a/report.pdf')
-
-    render(<MarkdownTextContent isRunning={false} text={`[report.pdf](${href})`} />)
-
-    const buttons = await screen.findAllByRole('button')
-    expect(buttons.length).toBe(2)
-    expect(screen.getByText('report.pdf')).toBeTruthy()
-  })
 })

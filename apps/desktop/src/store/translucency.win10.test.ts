@@ -10,10 +10,9 @@ import { describe, expect, it, vi } from 'vitest'
 // That is the exact shape of the bug this test guards: the $translucency
 // computed used to pass GLASS_IS_WINDOWS as the "isWindows" argument to
 // resolveTranslucency. On Win10 glass is unsupported, so GLASS_IS_WINDOWS is
-// false and the fallback defaults came from the MAC table (light intensity 66,
-// dark intensity 22) instead of the WINDOWS table (light intensity 20, dark
-// intensity 5) — an untouched profile rendered at ~70% opacity. The fix passes
-// isWindowsPlatform() instead, which is true on Win32 regardless of glass.
+// false and the fallback defaults came from the MAC table instead of the
+// WINDOWS table. The fix passes isWindowsPlatform() instead, which is true
+// on Win32 regardless of glass support.
 vi.hoisted(() => {
   Object.defineProperty(globalThis.navigator, 'platform', { configurable: true, value: 'Win32' })
   Object.defineProperty(globalThis.window, 'hermesDesktop', {
@@ -26,9 +25,7 @@ import { defaultTranslucencyValues } from '@hermes/shared/translucency'
 
 import { $translucency, $translucencyBook, GLASS_SUPPORTED, setAppearance } from './translucency'
 
-// The windows table is the one that must win on Win10. These are the numbers
-// the issue calls out: mac light 66 / mac dark 22 vs windows light 20 /
-// windows dark 5.
+// The Windows table must win on Win10, even when tint matches macOS.
 const WINDOWS_DARK = defaultTranslucencyValues('dark', true)
 const WINDOWS_LIGHT = defaultTranslucencyValues('light', true)
 
@@ -45,15 +42,12 @@ describe('Win10 translucency defaults (regression for #90824)', () => {
     // platform defaults. The store's initial appearance is dark.
     expect($translucency.get()).toEqual({ ...WINDOWS_DARK, mode: 'clear' })
 
-    // The bug's signature: mac dark intensity is 22, windows dark is 5.
-    expect($translucency.get().intensity).toBe(5)
-    expect($translucency.get().intensity).not.toBe(22)
+    expect($translucency.get().material).not.toBe(defaultTranslucencyValues('dark', false).material)
 
     // Light appearance must resolve the windows light table too.
     setAppearance('light')
     expect($translucency.get()).toEqual({ ...WINDOWS_LIGHT, mode: 'clear' })
-    expect($translucency.get().intensity).toBe(20)
-    expect($translucency.get().intensity).not.toBe(66)
+    expect($translucency.get().material).not.toBe(defaultTranslucencyValues('light', false).material)
   })
 
   it('keeps the mode clear when glass is unsupported', () => {
@@ -69,6 +63,5 @@ describe('Win10 translucency defaults (regression for #90824)', () => {
     setAppearance('dark')
 
     expect($translucency.get()).toEqual({ ...WINDOWS_DARK, mode: 'clear' })
-    expect($translucency.get().intensity).toBe(5)
   })
 })

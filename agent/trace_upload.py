@@ -7,11 +7,11 @@ programmatic callers use :func:`build_trace_jsonl` + :func:`_do_upload`."""
 
 from __future__ import annotations
 
+from pm import install_hint
 import json
 import logging
 import os
 import uuid
-from contextlib import suppress
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -172,15 +172,31 @@ def _resolve_hf_token() -> Optional[str]:
     return next((val for var in _TOKEN_ENV_VARS if (val := (os.getenv(var) or "").strip())), None)
 
 
-def _do_upload(jsonl: str, *, token: str, session_id: str, dataset_name: str = DEFAULT_DATASET_NAME, private: bool = True) -> str:
-    """Create the dataset (idempotent) and push the trace file; user-facing status string, never raises."""
-    with suppress(Exception):  # lazy-install unavailable/declined — the import below surfaces the hint
-        from tools import lazy_deps
-        lazy_deps.ensure("tool.trace_upload", prompt=False)
+
+def _do_upload(
+    jsonl: str,
+    *,
+    token: str,
+    session_id: str,
+    dataset_name: str = DEFAULT_DATASET_NAME,
+    private: bool = True,
+) -> str:
+    """Create (idempotently) the private dataset and push the trace file.
+
+    Returns a user-facing status string. Never raises.
+    """
+    try:
+        import pm
+        pm.ensure_import("trace-upload")
+    except Exception:
+        # lazy-install unavailable — fall through to the import, which
+        # surfaces the install hint below if the package is missing.
+        pass
     try:
         from huggingface_hub import HfApi
     except ImportError:
-        return "Hugging Face upload needs the `huggingface_hub` package (`pip install huggingface_hub`)."
+        return ("Hugging Face upload needs the `huggingface_hub` package. Run: "
+                f"{install_hint('trace-upload')}")
     api = HfApi(token=token)
     try:
         who = api.whoami()
@@ -210,17 +226,14 @@ def _do_upload(jsonl: str, *, token: str, session_id: str, dataset_name: str = D
 def load_session_messages(session_id: str, db_path=None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """``(messages, meta)`` from SQLite; ``meta`` is ``{}`` when the session row is missing (a live, untitled
     session may still have messages)."""
-    from hermes_state import SessionDB
-    db = SessionDB(db_path=db_path) if db_path else SessionDB()
+    from hermes_state_registry import acquire, release_or_close
+    db = acquire(db_path or None)
     try:
         resolved = db.resolve_session_id(session_id) or session_id
         meta = db.get_session(resolved) or {}
         return db.get_messages_as_conversation(resolved), meta
     finally:
-        try:
-            db.close()
-        except Exception:
-            logger.debug("Failed to close trace-upload SessionDB", exc_info=True)
+        release_or_close(db)
 
 
 def upload_session_trace(

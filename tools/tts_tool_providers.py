@@ -3,7 +3,7 @@
 Each ``_generate_<provider>(text, output_path, tts_config) -> path`` writes one final-encoded
 file. Shared here: bounded upstream response reading (16 MiB cap so a hostile endpoint can't
 feed unbounded audio) and the auxiliary-model speech-tag rewrites. OpenAI/DeepInfra live in
-``tts_tool_openai``. Origin seams (``get_env_value``, ``_resolve_provider_key``, ``_import_*``)
+``tts_tool_openai``. Origin seams (``_resolve_provider_key``, ``_import_*``)
 are resolved through :func:`_origin` at call time.
 """
 
@@ -314,7 +314,8 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     if creds.get("provider") == "xai-oauth":
         base_url = creds.get("base_url")
     else:
-        base_url = xai_config.get("base_url") or creds.get("base_url") or _origin().get_env_value("XAI_BASE_URL")
+        from hermes_cli.config import get_env_value
+        base_url = xai_config.get("base_url") or creds.get("base_url") or get_env_value("XAI_BASE_URL")
     base_url = str(base_url or DEFAULT_XAI_BASE_URL).strip().rstrip("/")
 
     # Documented minimal POST /v1/tts shape; optional fields only when they differ from defaults.
@@ -399,8 +400,9 @@ def _generate_minimax_tts(text: str, output_path: str, tts_config: Dict[str, Any
     base_url = runtime.endpoint
     # MiniMax scopes TTS requests by GroupId (``?GroupId=<id>`` on the t2a_v2 URL): config or
     # MINIMAX_GROUP_ID, attached only when absent from the URL.
+    from hermes_cli.config import get_env_value
     group_id = (str(mm_config.get("group_id") or "").strip()
-                or (_origin().get_env_value("MINIMAX_GROUP_ID") or "").strip())
+                or (get_env_value("MINIMAX_GROUP_ID") or "").strip())
     if group_id and "GroupId=" not in base_url:
         base_url = f"{base_url}{'&' if '?' in base_url else '?'}GroupId={group_id}"
     is_t2a_v2 = "t2a_v2" in base_url
@@ -480,7 +482,7 @@ def _read_gemini_persona_prompt(gemini_config: Dict[str, Any]) -> str:
         except Exception:
             path = Path.cwd() / path
     try:
-        return path.read_text(encoding="utf-8").strip()
+        return path.read_text(encoding="utf-8-sig").strip()
     except (OSError, UnicodeDecodeError) as exc:
         logger.warning("Gemini TTS persona prompt file unavailable at %s: %s", path, exc)
         return ""
@@ -565,8 +567,11 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     gemini_config = _section(tts_config, "gemini")
     model = str(gemini_config.get("model", DEFAULT_GEMINI_TTS_MODEL)).strip() or DEFAULT_GEMINI_TTS_MODEL
     voice = str(gemini_config.get("voice", DEFAULT_GEMINI_TTS_VOICE)).strip() or DEFAULT_GEMINI_TTS_VOICE
-    base_url = str(gemini_config.get("base_url") or origin.get_env_value("GEMINI_BASE_URL")
-                   or DEFAULT_GEMINI_TTS_BASE_URL).strip().rstrip("/")
+    from hermes_cli.config import get_env_value
+    from agent.gemini_native_adapter import normalize_gemini_base_url
+    base_url = normalize_gemini_base_url(
+        gemini_config.get("base_url") or get_env_value("GEMINI_BASE_URL") or DEFAULT_GEMINI_TTS_BASE_URL,
+    )
     persona_prompt = _read_gemini_persona_prompt(gemini_config)
     tts_script = text
     if _gemini_audio_tags_enabled(gemini_config, model):
@@ -590,11 +595,10 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
     headers = {"Content-Type": "application/json"}
     if urlparse(base_url).hostname == "generativelanguage.googleapis.com":
         try:
-            import hermes_cli
-            version = str(hermes_cli.__version__)
+            from hermes_cli.version_info import get_version_info
+            headers["X-Goog-Api-Client"] = f"hermes-agent/{get_version_info().base_version}"
         except Exception:
-            version = "0.0.0"
-        headers["X-Goog-Api-Client"] = f"hermes-agent/{version}"  # partner-integration guidance
+            headers["X-Goog-Api-Client"] = "hermes-agent/0.0.0"
     response = _post_json(f"{base_url}/models/{model}:generateContent", payload, headers, params={"key": api_key})
     if response.status_code != 200:
         raise RuntimeError(f"Gemini TTS API error (HTTP {response.status_code}): {_gemini_error_detail(response)}")

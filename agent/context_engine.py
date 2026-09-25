@@ -8,6 +8,7 @@ should_compress() / compress() -> on_session_end() at real session boundaries on
 (CLI exit, /reset, gateway expiry), never per-turn.
 """
 
+import copy
 import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -222,6 +223,13 @@ class ContextEngine(ABC):
             "compression_count": self.compression_count,
         }
 
+    def clone_for_agent(self) -> "ContextEngine":
+        """Per-agent instance of a plugin-registered engine (the plugin system holds ONE shared
+        instance; every AIAgent gets its own so a child's update_model() cannot mutate the parent's).
+        Override when the engine holds uncopyable state (locks, DB connections): return a fresh
+        engine sharing the durable backend and copying only mutable budget state."""
+        return copy.deepcopy(self)
+
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: str = "",
         provider: str = "", api_mode: str = "",
@@ -237,6 +245,6 @@ class ContextEngine(ABC):
         if not hasattr(self, "_config_threshold_percent"):
             self._config_threshold_percent = self.threshold_percent
         self._base_threshold_percent = resolve_model_threshold(
-            model, getattr(self, "model_thresholds", {}), self._config_threshold_percent)
+            model, getattr(self, "model_thresholds", {}), self._config_threshold_percent, provider)
         self.threshold_percent = self._base_threshold_percent
         self.threshold_tokens = int(context_length * self.threshold_percent)

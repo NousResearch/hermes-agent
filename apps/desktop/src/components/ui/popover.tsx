@@ -3,6 +3,7 @@ import { Popover as PopoverPrimitive } from 'radix-ui'
 import * as React from 'react'
 
 import { usePopoverPortalContainer } from '@/components/ui/dialog-portal-context'
+import { menuSurfaceClass } from '@/components/ui/menu'
 import { cn } from '@/lib/utils'
 
 function Popover({ ...props }: React.ComponentProps<typeof PopoverPrimitive.Root>) {
@@ -36,7 +37,11 @@ const popoverContentVariants = cva(
         // `primary`: a pale accent would otherwise fill this with a pastel and
         // pair it with near-black text (themes/context.tsx).
         accent:
-          'bg-(--popover-surface) text-(--dt-primary-solid-foreground) [--popover-surface:var(--dt-primary-solid)]'
+          'bg-(--popover-surface) text-(--dt-primary-solid-foreground) [--popover-surface:var(--dt-primary-solid)]',
+        // A picker list (Popover + `<Command variant="menu">`): the exact
+        // DropdownMenu/Select surface, and no arrow — menus drop from their
+        // trigger, they don't point at it.
+        menu: cn(menuSurfaceClass, 'w-auto')
       }
     },
     defaultVariants: { variant: 'default' }
@@ -55,8 +60,8 @@ function PopoverContent({
   children,
   className,
   collisionPadding = 8,
-  sideOffset = 6,
   variant,
+  sideOffset = variant === 'menu' ? 4 : 6,
   ...props
 }: PopoverContentProps) {
   // Portal into the enclosing dialog when nested in one (keeps focus inside so
@@ -80,19 +85,21 @@ function PopoverContent({
             the border on its two outer edges only. Radix authors the child pointing
             "down" and rotates the wrapper per side, so the V always faces outward.
             The square's inner half tucks under the body, opening the border seam. */}
-        <PopoverPrimitive.Arrow asChild height={7} width={16}>
-          <span className="relative block h-[7px] w-4 overflow-visible">
-            <span
-              className={cn(
-                'absolute top-0 left-1/2 size-[11px] -translate-x-1/2 -translate-y-1/2 rotate-45 bg-(--popover-surface)',
-                variant === 'accent'
-                  ? // Borderless and opaque: nothing to seam, nothing to blur.
-                    'rounded-[1px]'
-                  : 'border-r border-b border-(--ui-stroke-secondary) backdrop-blur-md'
-              )}
-            />
-          </span>
-        </PopoverPrimitive.Arrow>
+        {variant !== 'menu' && (
+          <PopoverPrimitive.Arrow asChild height={7} width={16}>
+            <span className="relative block h-[7px] w-4 overflow-visible">
+              <span
+                className={cn(
+                  'absolute top-0 left-1/2 size-[11px] -translate-x-1/2 -translate-y-1/2 rotate-45 bg-(--popover-surface)',
+                  variant === 'accent'
+                    ? // Borderless and opaque: nothing to seam, nothing to blur.
+                      'rounded-[1px]'
+                    : 'border-r border-b border-(--ui-stroke-secondary) backdrop-blur-md'
+                )}
+              />
+            </span>
+          </PopoverPrimitive.Arrow>
+        )}
       </PopoverPrimitive.Content>
     </PopoverPrimitive.Portal>
   )

@@ -2,28 +2,28 @@
 background loop (``cua_backend_session``); the same tool surface works on all three platforms, and per-host gaps
 (no DISPLAY, missing AT-SPI, TCC) surface via `hermes computer-use doctor` instead of failing silently. Install
 with `hermes computer-use install`. The macOS path uses private SkyLight SPIs that can break on OS updates.
-Siblings: ``cua_backend_driver`` (binary/contract/update), ``cua_backend_capture`` + ``cua_backend_input``
+Siblings: ``cua_backend_driver`` (binary/contract), ``cua_backend_capture`` + ``cua_backend_input``
 (mixins), ``cua_backend_parse``, ``cua_backend_session`` (bridge + session + CLI fallback), ``cua_backend_daemon``
 (private daemon + macOS app identity). Siblings look this module's config/policy helpers up lazily."""
 
 from __future__ import annotations
 
 import contextlib
-import importlib
 import logging
 import os
 import subprocess
 import sys
-import threading
 import uuid
-from typing import Any, Dict, List, Optional
+from pathlib import PureWindowsPath
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_platform.host.runtime import is_wsl
 from tools.computer_use.backend import ActionResult, ComputerUseBackend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
 from tools.computer_use.cua_backend_daemon import _EmbeddedCuaDaemon
-from tools.computer_use.cua_backend_driver import (
-    _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status, cua_driver_update_nudge,
+from tools.computer_use.cua_backend_driver import (  # noqa: F401 — resolve_cua_driver_cmd: frozen updater surface
+    _CUA_DRIVER_CMD_ENV, cua_driver_binary_available, cua_driver_runtime_contract_status,
     resolve_cua_driver_cmd)
 from tools.computer_use.cua_backend_input import _InputMixin
 from tools.computer_use.cua_backend_parse import _action_result_from
@@ -53,9 +53,7 @@ def _cua_no_overlay() -> bool:
     val = _computer_use_cfg().get("no_overlay")
     if val is not None or sys.platform != "linux":
         return bool(val) if val is not None else sys.platform == "darwin"
-    wsl = False
-    with contextlib.suppress(Exception), open("/proc/version", encoding="utf-8") as f:
-        wsl = "microsoft" in f.read().lower()
+    wsl = is_wsl()
     return wsl or not os.environ.get("DISPLAY") or (
         # Linux/X11: the cursor overlay is a fullscreen, always-on-top, all-workspaces X11 window
         # (save-unders path). An unclean session end (agent interrupted mid-capture, stale target window)
@@ -65,6 +63,7 @@ def _cua_no_overlay() -> bool:
         # X11 too; set computer_use.no_overlay: false to keep the cursor. Wayland keeps it: the compositor
         # owns the overlay surface lifecycle there.
         os.environ.get("XDG_SESSION_TYPE") != "wayland" and not os.environ.get("WAYLAND_DISPLAY"))
+
 
 def _cua_telemetry_disabled() -> bool:
     """True unless ``computer_use.cua_telemetry`` opts in (unreadable config fails SAFE toward disabling)."""
@@ -77,14 +76,37 @@ def _cua_configured_permission_mode() -> str:
     raw = str(_computer_use_cfg().get("permission_mode", "standard") or "").strip().lower()
     return "bounded" if raw == "bounded" else "standard"
 
+# ``computer_use.ax_max_elements``: bound on the DRIVER's accessibility-tree walk per capture. The
+# visible-element cap in tool.py (_DEFAULT_MAX_ELEMENTS) trims the RESPONSE only, so without this an
+# unbounded walk pays for nodes the model never sees; 0 disables the bound (driver default: 2,000
+# elements / depth 25).
+_DEFAULT_AX_MAX_ELEMENTS = 200
+
+def _cua_configured_ax_max_elements() -> int:
+    """Bound on ``get_window_state``'s AX walk; 0 = no bound (driver default). Unreadable config fails to
+    the default, never to unbounded. Measured on macOS (cua-driver 0.28.2, M-series): a 1,444-node Chrome
+    window 540 ms -> 83 ms and a 456-node Finder window 6.9 s -> 0.6 s at 200, on the CLI transport. The
+    bounded result is a prefix of the unbounded walk, so the elements the model sees are unchanged. Raise
+    it toward 400 to keep the full first 100 visible elements on a pathological tree (~1.4 s on Finder);
+    cost grows with the bound, and a bound in the thousands buys nothing the response cap keeps. This
+    bounds the nodes COLLECTED, not the walk's wall clock: a target whose accessibility surface exceeds the
+    driver's own 20 s walk timeout still fails at every bound (and every depth bound), so a timeout error is
+    never an argument for a smaller or larger value here."""
+    raw = _computer_use_cfg().get("ax_max_elements", _DEFAULT_AX_MAX_ELEMENTS)
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return _DEFAULT_AX_MAX_ELEMENTS
+
 def _manifest_is_mode_independent(path: str) -> bool:
     """True when this manifest may accompany any permission mode: v1/v2 declare ``mode: bounded`` and abort
     startup under an unrestricted runtime; v3 has no mode and is the ceiling the driver accepts alongside any
     mode. Unreadable / unparseable -> False (forwarding one would turn a working session into a hard startup
     failure; bounded forwards unconditionally anyway)."""
     try:
-        import yaml
-        with open(path, "r", encoding="utf-8") as handle:
+        import hermes_yaml as yaml
+
+        with open(path, "r", encoding="utf-8-sig") as handle:
             parsed = yaml.safe_load(handle)
     except Exception:
         logger.debug("could not read capability manifest %s", path, exc_info=True)
@@ -100,12 +122,28 @@ def _computer_use_max_image_dimension() -> Optional[int]:
         dim = 1456
     return dim if dim > 0 else None
 
+def desktop_identity(env: Optional[Dict[str, str]] = None) -> str:
+    """The screen a backend spawned from ``env`` acts on: its DISPLAY (``''`` when none). Recorded next to the
+    cached backend so a Bot Desktop that starts (or restarts on another number) AFTER the backend was cached is
+    noticed — the cached cua-driver still points at the old seat or at no display at all."""
+    return str((cua_driver_child_env(env) if env is None else env).get("DISPLAY") or "")
+
+
+def backend_display_stale(recorded: str, current: str) -> bool:
+    """True when a cached backend's recorded display identity no longer matches the one a fresh spawn would get."""
+    return (recorded or "") != (current or "")
+
+
 def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     """Env for spawning cua-driver: ``base_env`` (default ``os.environ``) plus ``CUA_DRIVER_RS_TELEMETRY_ENABLED=0``
     unless the user opted in, plus the native-Wayland bridge (``computer_use.native_wayland`` config opt-in, only when
     the child has a Wayland display). Used by every spawn site (MCP, status, doctor, install) so CLI and gateway
     runtimes share one policy."""
     env = dict(os.environ if base_env is None else base_env)
+    # A running Bot Desktop for this profile owns the agent's screen: DISPLAY/XAUTHORITY/DBUS point there so
+    # cua-driver never acts on a seat the human is sitting at (#90374 class) and headless hosts get a display.
+    from tools.bot_desktop.runtime import desktop_env as _bot_desktop_env
+    env = _bot_desktop_env(env)
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
     if sys.platform == "linux" and env.get("WAYLAND_DISPLAY") and bool(_computer_use_cfg().get("native_wayland", False)):
@@ -142,6 +180,19 @@ def _run_driver(driver_cmd: str, *args: str, timeout: float, swallow: Any = ()) 
     return _run_quiet([driver_cmd, *args], timeout=timeout, swallow=swallow, encoding="utf-8",
                       errors="replace", creationflags=windows_hide_flags(), env=sanitized_cua_driver_env())
 
+def cua_daemon_listening(driver_cmd: str, socket_path: Optional[str] = None, *, timeout: float = 3.0) -> Optional[bool]:
+    """Socket-level liveness of a ``cua-driver serve`` daemon: ``cua-driver status`` connects to the daemon
+    socket (the driver's default, or ``socket_path``) and exits 0 only when a daemon answers. False when the
+    CLI reports the daemon is not running, None when the probe itself failed (unknown). Never raises.
+    The binary-level runtime contract (``manifest``) cannot see this — a dead daemon looks healthy there (#114748)."""
+    args = ("status", "--socket", socket_path) if socket_path else ("status",)
+    proc = _run_driver(driver_cmd, *args, timeout=timeout, swallow=(OSError, subprocess.SubprocessError))
+    if proc is None:
+        return None
+    if proc.returncode == 0:
+        return True
+    return False if "not running" in f"{proc.stdout}\n{proc.stderr}".lower() else None
+
 def _linux_session_locked() -> Optional[bool]:
     """Is the graphical session locked? (Linux; best-effort.) A locked KDE/GNOME session freezes renderers and
     half-disables the AX tree, so discovery legitimately returns nothing — which otherwise reads as a driver bug.
@@ -172,48 +223,6 @@ def _empty_discovery_reason() -> str:
                 "panel asleep) — wake the display or attach a monitor/HDMI dummy, then run `hermes computer-use doctor`")
     return "window discovery returned no windows; run `hermes computer-use doctor` (display reachability, AX capability)"
 
-_update_checked = False
-# One auto-repair attempt per process: when the runtime-contract gate fails for something a reinstall fixes
-# (old version, missing manifest verbs) run the standard install path once instead of telling the user to.
-# Guarded so a failing installer can't loop — the second start() goes straight to the error.
-_contract_repair_attempted = False
-
-def _maybe_repair_runtime_contract(contract: Dict[str, Any]) -> Dict[str, Any]:
-    """Try one automatic driver repair; return the post-repair contract (or the original when no repair was
-    attempted / it failed). Never raises. An explicit ``HERMES_CUA_DRIVER_CMD`` override is authoritative even
-    when broken, and a missing binary means installation was never requested."""
-    global _contract_repair_attempted
-    if contract.get("ready") or _contract_repair_attempted or os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() or not contract.get("binary"):
-        return contract
-    _contract_repair_attempted = True
-    logger.info("computer_use: installed cua-driver is not usable (%s); attempting automatic repair",
-                contract.get("reason") or "runtime contract is incomplete")
-    try:
-        from hermes_cli.tools_config import install_cua_driver
-        repaired = install_cua_driver(upgrade=False, show_installer_progress=False)
-    except Exception as exc:
-        logger.warning("computer_use: automatic cua-driver repair failed: %s", exc)
-        return contract
-    with contextlib.suppress(Exception):
-        return cua_driver_runtime_contract_status() if repaired else contract
-    return contract
-
-def _maybe_nudge_update() -> None:
-    """Emit an update nudge at most once per process, off-thread so the (cached, ~20h) GitHub poll never blocks
-    the first computer_use action."""
-    global _update_checked
-    if _update_checked:
-        return
-    _update_checked = True
-
-    def _run() -> None:
-        with contextlib.suppress(Exception):
-            msg = cua_driver_update_nudge()
-            msg and logger.info("computer_use: %s", msg)
-
-    threading.Thread(target=_run, name="cua-driver-update-check", daemon=True).start()
-
-
 class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
     """Default computer-use backend. Cross-platform via cua-driver MCP."""
 
@@ -226,8 +235,9 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
             # Manifest: mandatory for bounded (the daemon validates it), optional for unrestricted where it still
             # caps what an approval-bypassed run may touch.
             raw = _computer_use_cfg().get("capability_manifest")
+            # Resolve at daemon launch, after start() reconciles the PM pin.
             self._embedded_daemon = _EmbeddedCuaDaemon(
-                resolve_cua_driver_cmd() or "", permission_mode,
+                "", permission_mode,
                 capability_manifest=raw.strip() if isinstance(raw, str) and raw.strip() else None)
         self._bridge = _AsyncBridge()
         self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
@@ -246,19 +256,31 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         self._clear_active_target()
 
     def start(self) -> None:
+        # Runtime acquisition is on-demand, never the explicit install command
+        # (which may elevate for host setup and bypass the lazy-install gate).
+        if not os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+            from pm import ensure
+            ensure("cua-driver")
         contract = cua_driver_runtime_contract_status()
-        if not contract.get("ready"):
-            contract = _maybe_repair_runtime_contract(contract)
         if not contract.get("ready"):
             raise RuntimeError(f"cua-driver is not ready: {contract.get('reason') or 'runtime contract is incomplete'}. "
                                + ("Update the binary selected by HERMES_CUA_DRIVER_CMD or remove that override."
                                   if os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip() else "Run `hermes computer-use install` to repair it."))
-        _maybe_nudge_update()
-        # `mcp` is an optional extra: lazy-install on first use (gated by `security.allow_lazy_installs`); failure
-        # raises FeatureUnavailable with the exact `uv pip install` hint.
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.computer_use", prompt=False)
-        importlib.invalidate_caches()  # a just-installed package may not be importable yet
+
+        # The MCP client SDK (`mcp`) is an optional dependency (the
+        # `computer-use` / `mcp` extras), not part of Hermes' minimal core.
+        # Lazy-install it on first use — the same pattern every other optional
+        # backend uses — so users never hit an opaque `No module named 'mcp'`
+        # at invoke time. Auto-install is gated by `security.allow_lazy_installs`
+        # (default on); when it's disabled or fails, ensure_import() raises
+        # InstallError explaining why PM could not enable the SDK,
+        # which surfaces via the backend-unavailable path in tool.py.
+        from pm import ensure_import
+        ensure_import("computer-use")
+        # A just-installed package may not be importable until the import
+        # machinery's caches are refreshed within this process.
+        import importlib
+        importlib.invalidate_caches()
         with contextlib.ExitStack() as rollback:  # a failed start stops the private daemon, then re-raises
             if self._embedded_daemon is not None:
                 rollback.callback(self._embedded_daemon.stop) and self._embedded_daemon.start()
@@ -354,10 +376,15 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
 
     def _action(self, name: str, args: Dict[str, Any], *, inject_session: bool = True) -> ActionResult:
         # Attach the snapshot's `element_token` to an `element_index` call so a superseded snapshot yields an explicit
-        # 'stale' error. Gated on the per-tool capability: older drivers (`additionalProperties: false`) must never see it.
+        # 'stale' error. Two ways to establish support, the live input schema first: cua-driver 0.21+ stopped
+        # publishing per-tool `capabilities[]` while still accepting `element_token` in its schema, and it REFUSES a
+        # bare `element_index` (`snapshot_id_required`) — gating on the capability alone broke EVERY element click and
+        # left only pixel clicks working. The capability check stays so older drivers that shipped the vocabulary keep
+        # working; drivers advertising neither (`additionalProperties: false`) must never see the property.
         idx = args.get("element_index")
         token = self._snapshot_tokens.get(idx) if isinstance(idx, int) else None
-        if token and self._session.supports_capability("accessibility.element_tokens", tool=name):
+        if token and (self._session.supports_input_property(name, "element_token")
+                      or self._session.supports_capability("accessibility.element_tokens", tool=name)):
             args["element_token"] = token
         if inject_session:  # setdefault preserves any explicit session a caller already supplied
             args.setdefault("session", self._session_id)

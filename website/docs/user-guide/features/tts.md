@@ -6,6 +6,10 @@ description: "Text-to-speech and voice message transcription across all platform
 
 # Voice & TTS
 
+Python dependency commands on this page use a
+[PM-prepared source checkout](../../reference/package-management.md#developer-workflow).
+After a dependency change, reactivate the checkout and restart Hermes.
+
 Hermes Agent supports both text-to-speech output and voice message transcription across all messaging platforms.
 
 :::tip Nous Subscribers
@@ -56,8 +60,12 @@ tts:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
+    pcm_sample_rate: 24000      # Streaming PCM rate expected from the endpoint (auto-overridden by X-Audio-Sample-Rate)
     speed: 1.0                  # 0.25 - 4.0
     # language: "es"            # Sent as lang_code — only for OpenAI-compatible endpoints that support it (e.g. Kokoro)
+    # consent_attestation: "I have the speaker's consent"  # Required by some OpenAI-compatible servers for cloned voices
+  streaming:
+    min_len: 20                 # Streaming TTS: shortest first sentence (chars) spoken on its own; CJK setups use ~6
   minimax:
     region: "global"           # "global" or "cn"; see selection rules below
     model: "speech-02-hd"     # speech-02-hd (default), speech-02-turbo
@@ -105,6 +113,8 @@ tts:
     # normalize_audio: true
 ```
 
+KittenTTS is not available on Intel macOS or Windows ARM64: its dependencies publish no `onnxruntime` or PyTorch wheels for those platforms. Selecting it there reports the provider unavailable.
+
 MiniMax TTS selects its region, endpoint, and credential together:
 
 - `region: "global"` uses `https://api.minimax.io/v1/t2a_v2` with `MINIMAX_API_KEY`.
@@ -144,7 +154,11 @@ tts:
 
 The rewrite uses `auxiliary.tts_audio_tags` and defaults to your main chat model. Override that auxiliary task if you want tag insertion handled by a cheaper or faster model.
 
+**Streaming sample rate (OpenAI-compatible endpoints)**: streaming playback receives headerless raw PCM, so Hermes must know its sample rate. The official OpenAI API emits 24 kHz. A compatible server that reports its rate — the `X-Audio-Sample-Rate` response header, or `rate=` in the `Content-Type` (`audio/pcm; rate=44100`) — is honored automatically: the speaker, the temp-WAV player and the gateway audio stream all open at the reported rate once the response arrives. For servers that report nothing, set `tts.openai.pcm_sample_rate` to the endpoint's output rate (e.g. `22050` for Piper-backed servers); otherwise speech plays at the wrong speed and pitch. Invalid values log a warning and fall back to `24000`.
+
 **Language (OpenAI-compatible endpoints)**: `tts.openai.language` is forwarded to the endpoint as a `lang_code` request parameter. It is intended for OpenAI-compatible TTS servers that support `lang_code` — for example [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), where `language: "es"` selects the Spanish phonemizer instead of the English default. Leave it unset when using the official OpenAI API, which does not accept this parameter. When unset, nothing extra is sent.
+
+**Cloned-voice consent (OpenAI-compatible endpoints)**: some self-hosted OpenAI-compatible TTS servers reject a cloned voice with `400 consent_required` unless the request carries a `consent_attestation` field. Set `tts.openai.consent_attestation` to the attestation text your server expects; Hermes forwards it verbatim in the request body on every OpenAI-compatible path (whole-file synthesis, streaming, and the desktop's client-direct voice). Leave it unset for the official OpenAI API — when unset, the field is not sent.
 
 
 ### Input length limits
@@ -231,7 +245,9 @@ See the [xAI Custom Voices docs](https://docs.x.ai/developers/model-capabilities
 
 Piper is a fast, local neural TTS engine from the Open Home Foundation (the Home Assistant maintainers). It runs entirely on CPU, supports **44 languages** with pre-trained voices, and needs no API key.
 
-**Install via `hermes tools`** → Voice & TTS → Piper — Hermes runs `pip install piper-tts` for you. Or install manually: `pip install piper-tts`.
+**Install via `hermes tools`** → Voice & TTS → Piper. Hermes requests the
+`piper` extra through PM. From a prepared source checkout, the explicit command
+is `python -c "import pm; pm.sync_venv(['piper'], explicit=True)"`. Platform markers still apply.
 
 **Switch to Piper:**
 
@@ -260,10 +276,10 @@ tts:
 
 Local engines (Piper, KittenTTS) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load — and on a fresh install the voice download — as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:
 
-- **Desktop** — turning on **Read replies aloud**, or starting a **voice conversation**, pre-loads the configured engine in the background right away. Turning both off again unloads the resident model (a Piper voice is tens of MB; KittenTTS up to ~80MB) so it isn't parked in RAM for nothing.
+- **Desktop** — **Read replies aloud** is a desktop-local preference, independent of the gateway's `voice.auto_tts` setting in Settings → Voice. It migrates the shared value once, then later gateway configuration changes do not override the desktop toggle. If local storage is full or unavailable, the choice still lasts for this window; persistence across a reload remains best-effort. Turning on **Read replies aloud**, or starting a **voice conversation**, pre-loads the configured engine in the background right away. Turning both off again unloads the resident model (a Piper voice is tens of MB; KittenTTS up to ~80MB) so it isn't parked in RAM for nothing.
 - **CLI / TUI** — `/voice tts` (and `/voice on` when `voice.auto_tts` is set) do the same; `/voice off` releases.
 
-Each toggle holds a *lease* on the engine; the model is only unloaded when the last lease across surfaces is released, so switching off read-aloud in one Desktop window never pulls the voice out from under a conversation running in another. For cloud providers there is no model to hold — the toggle only makes sure a lazily-installed SDK (edge-tts, ElevenLabs, Mistral) is present. Warm-up is best-effort: if the engine can't load, the toggle still succeeds and the first reply falls back to loading on demand as before.
+Each toggle holds a *lease* on the engine; the model is only unloaded when the last lease across surfaces is released, so switching off read-aloud in one Desktop window never pulls the voice out from under a conversation running in another. The unload waits `tts.keep_warm_seconds` (default `60`) after the last release, and any toggle turning speech back on within that window keeps the loaded model, so a wake-word loop or a quickly restarted voice conversation doesn't reload the voice each time. Set it to `0` to unload immediately. For cloud providers there is no model to hold — the toggle only makes sure a lazily-installed SDK (edge-tts, ElevenLabs, Mistral) is present. Warm-up is best-effort: if the engine can't load, the toggle still succeeds and the first reply falls back to loading on demand as before.
 
 The Desktop calls `POST /api/audio/tts-lease` with `{"lease": "<name>", "active": true|false}`; other frontends can use the same endpoint.
 
@@ -315,6 +331,9 @@ tts:
 #### Example: Doubao (Chinese seed-tts-2.0)
 
 For high-quality Chinese TTS via ByteDance's [seed-tts-2.0](https://www.volcengine.com/docs/6561/1257544) bidirectional-streaming API, install the [`doubao-speech`](https://pypi.org/project/doubao-speech/) PyPI package and wire it in as a command provider:
+
+Install this external command provider in its own tool environment, not in
+Hermes's Python environment. Make its executable available on `PATH`.
 
 ```bash
 pip install doubao-speech
@@ -502,11 +521,20 @@ stt:
 | `medium` | ~1.5 GB | Slower | Great |
 | `large-v3` | ~3 GB | Slowest | Best |
 
+The first use downloads the selected model from `huggingface.co`; later loads prefer the local cache and do not require an online revision check. On networks where the Hub is unavailable, export an accessible mirror in the shell or service that starts Hermes:
+
+```bash
+HF_ENDPOINT=https://your-hugging-face-mirror.example
+HF_HUB_DISABLE_XET=1
+```
+
+`HF_HUB_DISABLE_XET=1` keeps downloads on the mirror's regular HTTP path instead of contacting Xet CAS hosts that do not honor `HF_ENDPOINT`.
+
 **Groq API** — Requires `GROQ_API_KEY`. Good cloud fallback when you want a free hosted STT option. Set `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip Whisper's auto-detect and reduce latency on known-language audio.
 
 **OpenAI API** — Accepts `VOICE_TOOLS_OPENAI_KEY` first and falls back to `OPENAI_API_KEY`. Supports `whisper-1`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`, and `gpt-transcribe`.
 
-**Mistral API (Voxtral Transcribe)** — Requires `MISTRAL_API_KEY`. Uses Mistral's [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) models. Supports 13 languages, speaker diarization, and word-level timestamps. Install with `cd ~/.hermes/hermes-agent && uv pip install -e ".[mistral]"`.
+**Mistral API (Voxtral Transcribe)** — Requires `MISTRAL_API_KEY`. Uses Mistral's [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) models. Supports 13 languages, speaker diarization, and word-level timestamps. Install with `cd ~/.hermes/hermes-agent && python -c "import pm; pm.sync_venv(['mistral'], explicit=True)"`.
 
 **xAI Grok STT** — Requires `XAI_API_KEY`. Posts to `https://api.x.ai/v1/stt` as multipart/form-data. Good choice if you're already using xAI for chat or TTS and want one API key for everything. Auto-detection order puts it after Groq — explicitly set `stt.provider: xai` to force it.
 
@@ -515,6 +543,9 @@ stt:
 #### Example: Doubao / Volcengine ASR
 
 If you use [`doubao-speech`](https://pypi.org/project/doubao-speech/) for Doubao TTS (see [above](#example-doubao-chinese-seed-tts-20)), the same package handles speech-to-text via the local-command STT surface:
+
+Install this external command provider in its own tool environment, not in
+Hermes's Python environment. Make its executable available on `PATH`.
 
 ```bash
 pip install doubao-speech

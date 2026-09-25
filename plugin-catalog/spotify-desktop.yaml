@@ -1,0 +1,19 @@
+name: spotify-desktop
+repo: https://github.com/cruzlxyz/hermes-spotify-desktop
+sha: 9b564d53c219f9962404dee5f84d3bbb47683897
+description: 'Spotify Connect remote for Hermes Desktop — status-bar mini player (now playing,
+  transport, volume, devices, search, playlists, queue) reusing the bundled Spotify auth
+  (hermes auth spotify; Spotify Premium required for playback control). Unified agent+desktop
+  package: Electron status-bar player plus a dashboard-API backend (desktop-focused, no web UI).
+  No agent tools; config via plugins.entries.spotify-desktop.settings (poll intervals).'
+maintainer: cruzlxyz
+tier: community
+version: "0.1.2"
+category: desktop
+docs_url: https://github.com/cruzlxyz/hermes-spotify-desktop
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

@@ -6,8 +6,8 @@ Requires ``pip install "dingtalk-stream>=0.20" httpx``. config.yaml ``platforms.
 import asyncio
 import json
 import logging
-import os
 import re
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
@@ -48,8 +48,12 @@ except Exception:
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator, compile_mention_patterns
-from gateway.platforms.base import BasePlatformAdapter, MessageEvent, SendResult
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.event import MessageEvent
+from gateway.platforms._shared import (
+    apply_yaml_bridge as _apply_yaml_bridge, decode_json_list_literal as _decode_json_list_literal,
+    extra_or_secret as _extra_or_secret, get_scoped_secret as _get_scoped_secret, send_error
+)
 from plugins.platforms.dingtalk.inbound import collect_download_codes, extract_media, extract_text
 
 
@@ -57,6 +61,63 @@ logger = logging.getLogger(__name__)
 
 MAX_MESSAGE_LENGTH = 20000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
+RECONNECT_CIRCUIT_BREAKER_TRIPS = 5  # identical errors escaping start() before the breaker trips
+RECONNECT_CIRCUIT_BREAKER_DELAY = 300  # seconds between attempts while tripped (matches the runner's cap)
+_SDK_LOG_REPEAT_WINDOW = 300.0  # identical dingtalk_stream.client records are collapsed within this window
+
+
+def _is_sdk_incompat(exc: BaseException | None) -> bool:
+    """True for #24851: ``websockets.connect`` is not an async CM for this dingtalk-stream.
+
+    The SDK may surface it as the bare TypeError, or as an AttributeError (its ``except``
+    clause touches the unloaded ``websockets.exceptions``) chained on that TypeError.
+    """
+    for _ in range(4):
+        if exc is None:
+            return False
+        if isinstance(exc, TypeError) and "asynchronous context manager" in str(exc):
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+class _SdkLogGuard(logging.Filter):
+    """Collapse repeated dingtalk_stream.client records; never raises on bad format args.
+
+    dingtalk-stream 0.24.3 logs ``logger.exception('unknown exception', e)`` every 3 s from its
+    retry loop — a malformed call that also triggers stdlib "--- Logging error ---" tracebacks.
+    """
+
+    def __init__(self, on_exception=None, window: float = _SDK_LOG_REPEAT_WINDOW):
+        super().__init__()
+        self._on_exception, self._window = on_exception, window
+        self._seen: Dict[tuple, list] = {}  # key -> [last_emitted_monotonic, suppressed_count]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            try:
+                msg = record.getMessage()
+            except Exception:
+                args = record.args if isinstance(record.args, tuple) else (record.args,)
+                msg = " ".join(str(x) for x in (record.msg, *args))
+                record.msg, record.args = msg, ()
+            exc = record.exc_info[1] if record.exc_info else None
+            if exc is not None and self._on_exception is not None:
+                self._on_exception(exc)
+            key = (record.levelno, msg[:500], type(exc).__name__ if exc is not None else None)
+            now = time.monotonic()
+            entry = self._seen.get(key)
+            if entry is not None and now - entry[0] < self._window:
+                entry[1] += 1
+                return False
+            if entry is not None and entry[1]:
+                record.msg, record.args = f"{msg} (suppressed {entry[1]} identical repeats)", ()
+            if len(self._seen) >= 256:
+                self._seen.clear()
+            self._seen[key] = [now, 0]
+        except Exception:
+            pass  # a logging filter must never break the caller
+        return True
 _SESSION_WEBHOOKS_MAX = 500
 _DINGTALK_WEBHOOK_RE = re.compile(r'^https://(?:api|oapi)\.dingtalk\.com/')
 _TRUTHY = {"true", "1", "yes", "on"}
@@ -70,7 +131,8 @@ _NO_LOCAL_UPLOAD = "DingTalk session webhook replies do not support local %s. On
 
 
 def _csv_set(raw: Any) -> Set[str]:
-    """Split a list or comma-separated string into a set of stripped, non-empty items."""
+    """Split a list, JSON-list string or comma-separated string into a set of stripped, non-empty items."""
+    raw = _decode_json_list_literal(raw)
     parts = raw if isinstance(raw, list) else str(raw).split(",")
     return {str(part).strip() for part in parts if str(part).strip()}
 
@@ -100,8 +162,8 @@ def ensure_dingtalk_deps() -> bool:
     if DINGTALK_STREAM_AVAILABLE and HTTPX_AVAILABLE:
         return True
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("platform.dingtalk", prompt=False)
+        from pm.extras import ensure_import
+        ensure_import("dingtalk")
         import dingtalk_stream as _ds, httpx as _httpx  # noqa: E401
         from dingtalk_stream import ChatbotMessage as _CM
         from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
@@ -115,7 +177,10 @@ def ensure_dingtalk_deps() -> bool:
 def _credentials(extra: Optional[dict]) -> tuple:
     """(client_id, client_secret) from PlatformConfig.extra first, then env / scoped secret."""
     extra = extra or {}
-    return (extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID", ""), extra.get("client_secret") or _get_scoped_secret("DINGTALK_CLIENT_SECRET", ""))
+    # client_id goes through the same scoped reader as the secret: os.environ holds the DEFAULT
+    # profile's app id under multiplex, and pairing it with a secondary's secret authenticates as the wrong app.
+    return (extra.get("client_id") or _get_scoped_secret("DINGTALK_CLIENT_ID", ""),
+            extra.get("client_secret") or _get_scoped_secret("DINGTALK_CLIENT_SECRET", ""))
 
 
 def check_dingtalk_requirements() -> bool:
@@ -188,23 +253,86 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
     async def _run_stream(self) -> None:
-        """Run the async stream client with auto-reconnection."""
+        """Run the SDK stream client with auto-reconnection.
+
+        dingtalk-stream's ``start()`` runs its own catch-all retry loop, so most
+        errors never reach us: ``_SdkLogGuard`` collapses that loop's repeated
+        log records, and a dingtalk-stream/websockets incompatibility (#24851)
+        is handed to the gateway's reconnect watcher via ``_set_fatal_error``
+        instead of retrying forever.  For errors that do escape ``start()``,
+        exponential backoff (RECONNECT_BACKOFF) applies; after
+        RECONNECT_CIRCUIT_BREAKER_TRIPS identical errors in a row the breaker
+        trips and stays tripped (silent, RECONNECT_CIRCUIT_BREAKER_DELAY between
+        attempts) until the error type changes.
+        """
+        self._sdk_loop_task = asyncio.current_task()
+        sdk_logger = getattr(self._stream_client, "logger", None)
+        if not isinstance(sdk_logger, logging.Logger):
+            sdk_logger = logging.getLogger("dingtalk_stream.client")
+        guard = _SdkLogGuard(self._on_sdk_error)
+        sdk_logger.addFilter(guard)
+        try:
+            await self._run_stream_loop()
+        finally:
+            sdk_logger.removeFilter(guard)
+
+    async def _run_stream_loop(self) -> None:
         backoff_idx = 0
+        consecutive_same_error = 0
+        last_error_type: type | None = None
         while self._running:
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
                 await self._stream_client.start()
             except asyncio.CancelledError:
+                if getattr(self, "_fatal_error_code", None) == "dingtalk_stream_error":
+                    await self._notify_fatal_error()
                 return
             except Exception as e:
-                if self._running:
+                if not self._running:
+                    return
+                if _is_sdk_incompat(e):
+                    self._on_sdk_error(e, cancel=False)
+                    await self._notify_fatal_error()
+                    return
+                error_type = type(e)
+                if error_type is last_error_type:
+                    consecutive_same_error += 1
+                else:
+                    consecutive_same_error = 1
+                    last_error_type = error_type
+                if consecutive_same_error <= RECONNECT_CIRCUIT_BREAKER_TRIPS:
                     logger.warning("[%s] Stream client error: %s", self.name, e)
+                elif consecutive_same_error == RECONNECT_CIRCUIT_BREAKER_TRIPS + 1:
+                    logger.error(
+                        "[%s] Stream client error repeated %d times: %s — circuit breaker tripped; "
+                        "retrying every %ds silently until the error changes.",
+                        self.name, consecutive_same_error, e, RECONNECT_CIRCUIT_BREAKER_DELAY,
+                    )
             if not self._running:
                 return
-            delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
-            logger.info("[%s] Reconnecting in %ds...", self.name, delay)
-            await asyncio.sleep(delay)
-            backoff_idx += 1
+            if consecutive_same_error > RECONNECT_CIRCUIT_BREAKER_TRIPS:
+                await asyncio.sleep(RECONNECT_CIRCUIT_BREAKER_DELAY)
+            else:
+                delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
+                logger.info("[%s] Reconnecting in %ds...", self.name, delay)
+                await asyncio.sleep(delay)
+                backoff_idx += 1
+
+    def _on_sdk_error(self, exc: BaseException, *, cancel: bool = True) -> None:
+        """Called (sync, possibly from the SDK logger) with an SDK exception; hands off on incompat."""
+        if not _is_sdk_incompat(exc) or getattr(self, "_fatal_error_code", None) == "dingtalk_stream_error":
+            return
+        msg = (f"dingtalk-stream cannot open its websocket with the installed websockets package ({exc}). "
+               "Hermes pins dingtalk-stream==0.24.3 with websockets==15.0.1; reinstall the dingtalk extra "
+               "so those versions are used (e.g. `pip install 'hermes-agent[dingtalk]'`).")
+        logger.error("[%s] %s", self.name, msg)
+        # Not retryable: only a reinstall + restart fixes it, and connect() returns True before the
+        # socket exists, so a gateway reconnect would re-fail every watcher tick forever.
+        self._set_fatal_error("dingtalk_stream_error", msg, retryable=False)
+        task = getattr(self, "_sdk_loop_task", None)
+        if cancel and task is not None and not task.done():
+            task.cancel()  # SDK's own retry loop never exits; lands on its next await
 
     async def _quiet(self, coro, debug_fmt: str = "", *args) -> None:
         """Await *coro*, swallowing any exception (logged at debug as ``debug_fmt % (name, *args, exc)`` when given)."""
@@ -246,18 +374,13 @@ class DingTalkAdapter(BasePlatformAdapter):
             store.clear()
         logger.info("[%s] Disconnected", self.name)
 
-    def _extra_get(self, key: str, env_name: str = "", env_default: str = ""):
-        """config.extra[key]; when *env_name* is given, absent keys fall back to the env var."""
-        value = self.config.extra.get(key) if self.config.extra else None
-        return os.getenv(env_name, env_default) if value is None and env_name else value
-
     def _csv_setting(self, key: str, env_name: str) -> Set[str]:
         """List/CSV setting from config.extra[key], falling back to the env var."""
-        return _csv_set(self._extra_get(key, env_name))
+        return _csv_set(_extra_or_secret(self.config.extra, key, env_name, blank_is_unset=False))
 
     def _dingtalk_require_mention(self) -> bool:
         """Whether group chats require an explicit bot trigger."""
-        configured = self._extra_get("require_mention", "DINGTALK_REQUIRE_MENTION", "false")
+        configured = _extra_or_secret(self.config.extra, "require_mention", "DINGTALK_REQUIRE_MENTION", "false", blank_is_unset=False)
         return configured.lower() in _TRUTHY if isinstance(configured, str) else bool(configured)
 
     def _dingtalk_allowed_chats(self) -> Set[str]:
@@ -266,8 +389,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns (config list, or env as JSON / lines / CSV)."""
-        patterns = self._extra_get("mention_patterns")
-        if patterns is None and (raw := os.getenv("DINGTALK_MENTION_PATTERNS", "").strip()):
+        patterns = (self.config.extra or {}).get("mention_patterns")
+        if patterns is None and (raw := str(_get_scoped_secret("DINGTALK_MENTION_PATTERNS", "") or "").strip()):
             try:
                 patterns = json.loads(raw)
             except Exception:
@@ -359,7 +482,8 @@ class DingTalkAdapter(BasePlatformAdapter):
         if not text and not media_urls:
             return logger.debug("[%s] Empty message, skipping", self.name)
         source = self.build_source(chat_id=chat_id, chat_name=getattr(message, "conversation_title", None), chat_type="group" if is_group else "dm",
-                                   user_id=sender_id, user_name=sender_nick, user_id_alt=sender_staff_id if sender_staff_id else None)
+                                   user_id=sender_id, user_name=sender_nick, user_id_alt=sender_staff_id if sender_staff_id else None,
+                                   message_id=msg_id)
         create_at = getattr(message, "create_at", None)
         try:
             timestamp = datetime.fromtimestamp(int(create_at) / 1000, tz=timezone.utc) if create_at else datetime.now(tz=timezone.utc)
@@ -478,6 +602,8 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *, finalize: bool = False) -> SendResult:
         """Stream updated content to an AI Card; ``message_id`` is the creating ``send()``'s out_track_id (callers track their own ids so parallel flows on one chat don't interfere)."""
+        if not self.SUPPORTS_MESSAGE_EDITING:
+            return SendResult(success=False, error="AI Cards are not configured for message editing")
         token = await self._get_access_token() if message_id else None
         if not token:
             return SendResult(success=False, error="message_id required" if not message_id else "No access token")
@@ -625,36 +751,37 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     try:
         import httpx
     except ImportError:
-        return {"error": "httpx not installed"}
-    webhook_url = (getattr(pconfig, "extra", {}) or {}).get("webhook_url") or os.getenv("DINGTALK_WEBHOOK_URL", "")
+        return send_error("httpx not installed")
+    # Scoped: the webhook URL carries the robot's access_token and IS the delivery target — a raw
+    # environ read would post a secondary profile's cron output to the default profile's robot.
+    webhook_url = (getattr(pconfig, "extra", {}) or {}).get("webhook_url") or _get_scoped_secret("DINGTALK_WEBHOOK_URL", "")
     if not webhook_url:
-        return {"error": "DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config."}
+        return send_error("DingTalk not configured. Set DINGTALK_WEBHOOK_URL env var or webhook_url in dingtalk platform extra config.")
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(webhook_url, json={"msgtype": "text", "text": {"content": message}})
             resp.raise_for_status()
             data = resp.json()
         if data.get("errcode", 0) != 0:
-            return {"error": f"DingTalk API error: {data.get('errmsg', 'unknown')}"}
+            return send_error(f"DingTalk API error: {data.get('errmsg', 'unknown')}")
         return {"success": True, "platform": "dingtalk", "chat_id": chat_id}
     except Exception as e:
         try:  # send_message_tool._error redacts access_token from webhook URLs (lazy import avoids a circular)
             from tools.send_message_tool import _error as _redact_error
             return _redact_error(f"DingTalk send failed: {e}")
         except Exception:
-            return {"error": f"DingTalk send failed: {e}"}
+            return send_error(f"DingTalk send failed: {e}")
 
 
 def interactive_setup() -> None:
     """Configure DingTalk — QR scan (recommended) or manual credential entry."""
-    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.config import save_env_value
     from hermes_cli.setup import prompt_choice
-    from hermes_cli.cli_output import prompt, prompt_yes_no, print_header, print_success, print_warning
+    from hermes_cli.cli_output import prompt, print_header, print_success, print_warning
+    from hermes_cli.setup_platforms import declines_reconfigure
     print_header("DingTalk")
-    if existing := get_env_value("DINGTALK_CLIENT_ID"):
-        print_success(f"DingTalk is already configured (Client ID: {existing}).")
-        if not prompt_yes_no("Reconfigure DingTalk?", False):
-            return
+    if declines_reconfigure("DingTalk", "Reconfigure DingTalk?", "DINGTALK_CLIENT_ID"):
+        return
     choices = ["QR Code Scan (Recommended, auto-obtain Client ID and Client Secret)", "Manual Input (Client ID and Client Secret)"]
     result = None
     if prompt_choice("Choose setup method", choices, default=0) == 0:
@@ -682,12 +809,6 @@ def _manual_credential_entry(prompt, save_env_value, print_success) -> None:
     print_success("DingTalk credentials saved")
 
 
-def _bridge_list_env(env_name: str, value) -> None:
-    """Export a YAML list/scalar as a comma-joined env var unless the env var is already set."""
-    if value is not None and not os.getenv(env_name):
-        os.environ[env_name] = ",".join(str(v) for v in value) if isinstance(value, list) else str(value)
-
-
 def _nested_allowed_users(yaml_cfg: dict, dingtalk_cfg: dict):
     """Allowlist from ``extra.allowed_users``: this block's own extra first, then ``gateway.platforms.dingtalk.extra`` and ``platforms.dingtalk.extra``."""
     _gw = yaml_cfg.get("gateway")
@@ -699,22 +820,23 @@ def _nested_allowed_users(yaml_cfg: dict, dingtalk_cfg: dict):
     return None
 
 
-def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
-    """Translate config.yaml dingtalk: keys into DINGTALK_* env vars (apply_yaml_config_fn); env wins, returns None. The docs put the allowlist at
-    ``gateway.platforms.dingtalk.extra.allowed_users`` but gateway authz only consults DINGTALK_ALLOWED_USERS, so nested-only allowlists are bridged too.
+_YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
+    ("require_mention", "DINGTALK_REQUIRE_MENTION", "lower"), ("mention_patterns", "DINGTALK_MENTION_PATTERNS", "json"),
+    ("free_response_chats", "DINGTALK_FREE_RESPONSE_CHATS", "csv"), ("allowed_chats", "DINGTALK_ALLOWED_CHATS", "csv"),
+    ("allowed_users", "DINGTALK_ALLOWED_USERS", "csv"),
+)
 
-    Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy dingtalk_cfg block from
-    gateway/config.py::load_gateway_config(). Env vars take precedence over YAML (each assignment guarded by
-    not os.getenv(...)). Returns None — everything flows through env.
-    """
-    for key, env, encode in (("require_mention", "DINGTALK_REQUIRE_MENTION", lambda v: str(v).lower()), ("mention_patterns", "DINGTALK_MENTION_PATTERNS", json.dumps)):
-        if key in dingtalk_cfg and not os.getenv(env):
-            os.environ[env] = encode(dingtalk_cfg[key])
-    allowed = dingtalk_cfg.get("allowed_users")
-    for env, value in (("DINGTALK_FREE_RESPONSE_CHATS", dingtalk_cfg.get("free_response_chats")), ("DINGTALK_ALLOWED_CHATS", dingtalk_cfg.get("allowed_chats")),
-                       ("DINGTALK_ALLOWED_USERS", _nested_allowed_users(yaml_cfg, dingtalk_cfg) if allowed is None else allowed)):
-        _bridge_list_env(env, value)
-    return None
+
+def _apply_yaml_config(yaml_cfg: dict, dingtalk_cfg: dict) -> dict | None:
+    """``apply_yaml_config_fn`` (#24849): config.yaml dingtalk: keys → DINGTALK_* env (env wins; skipped under a
+    multiplexed secondary profile's scope) + ``PlatformConfig.extra``. The docs put the allowlist at
+    ``gateway.platforms.dingtalk.extra.allowed_users`` but gateway authz only consults DINGTALK_ALLOWED_USERS,
+    so nested-only allowlists are bridged too."""
+    cfg = dict(dingtalk_cfg)
+    if cfg.get("allowed_users") is None:
+        cfg["allowed_users"] = _nested_allowed_users(yaml_cfg, dingtalk_cfg)
+    return _apply_yaml_bridge(cfg, _YAML_BRIDGE)
+
 
 
 def _is_connected(config) -> bool:
@@ -722,14 +844,11 @@ def _is_connected(config) -> bool:
     return all(_credentials(getattr(config, "extra", {})))
 
 
-def _build_adapter(config):
-    return DingTalkAdapter(config)
-
 
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin system."""
     ctx.register_platform(
-        name="dingtalk", label="DingTalk", adapter_factory=_build_adapter, check_fn=dingtalk_deps_present,
+        name="dingtalk", label="DingTalk", adapter_factory=DingTalkAdapter, check_fn=dingtalk_deps_present,
         ensure_deps_fn=ensure_dingtalk_deps, is_connected=_is_connected, validate_config=_is_connected,
         required_env=["DINGTALK_CLIENT_ID", "DINGTALK_CLIENT_SECRET"], install_hint="pip install 'dingtalk-stream>=0.20' httpx",
         setup_fn=interactive_setup, apply_yaml_config_fn=_apply_yaml_config, allowed_users_env="DINGTALK_ALLOWED_USERS",
@@ -764,7 +883,7 @@ EXT_MAP = {
 
 _PLUGIN_COMPAT_LAZY = {
     'DINGTALK_TYPE_MAPPING': ('plugins.platforms.dingtalk.inbound', 'DINGTALK_TYPE_MAPPING'),
-    'MessageType': ('gateway.platforms.base', 'MessageType'),
+    'MessageType': ('gateway.platforms.event', 'MessageType'),
 }
 
 

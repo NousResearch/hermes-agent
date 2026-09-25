@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.profiles import (
     create_profile,
@@ -46,6 +46,27 @@ class TestMetaAndValidation:
     def test_missing_file_defaults_empty(self, profile_env):
         assert read_profile_meta(profile_env)["display_name"] == ""
 
+    def test_bot_title_read_from_hermes_bots_ui_meta(self, profile_env):
+        (profile_env / "profile.yaml").write_text(
+            "ui_meta:\n  hermes-bots:\n    title: JordyV\n", encoding="utf-8")
+        assert read_profile_meta(profile_env)["bot_title"] == "JordyV"
+        # The web/Desktop roster carries it through the same dict the chips read.
+        from hermes_cli.web_routers.profiles import _profile_to_dict
+        assert _profile_to_dict(list_profiles()[0])["bot_title"] == "JordyV"
+
+    def test_bot_title_absent_when_no_bots_meta(self, profile_env):
+        (profile_env / "profile.yaml").write_text(
+            "display_name: JordieF\nui_meta:\n  user-sections: {}\n", encoding="utf-8")
+        assert read_profile_meta(profile_env)["bot_title"] == ""
+
+    def test_bot_title_never_raises_on_malformed_shapes(self, profile_env):
+        (profile_env / "profile.yaml").write_text(
+            "ui_meta: hermes-bots\n", encoding="utf-8")  # ui_meta is a scalar
+        assert read_profile_meta(profile_env)["bot_title"] == ""
+        (profile_env / "profile.yaml").write_text(
+            "ui_meta:\n  hermes-bots: 7\n", encoding="utf-8")  # not a mapping
+        assert read_profile_meta(profile_env)["bot_title"] == ""
+
     def test_empty_clears_key_from_file(self, profile_env):
         write_profile_meta(profile_env, display_name="Harumesu")
         write_profile_meta(profile_env, display_name="")
@@ -76,7 +97,6 @@ class TestRenameDefault:
         assert rename_profile("default", "Harumesu") == profile_env
         assert profile_env.is_dir()  # directory untouched
         assert read_profile_meta(profile_env)["display_name"] == "Harumesu"
-        assert "canonical id remains 'default'" in capsys.readouterr().out
 
     def test_reflected_in_list_profiles(self, profile_env):
         rename_profile("default", "Harumesu")

@@ -16,13 +16,12 @@ Yuanbao is an enterprise messaging platform primarily used within Tencent and en
 
 - A Yuanbao account with bot creation permissions
 - Yuanbao APP_ID and APP_SECRET (from platform admin)
-- Python packages: `websockets` and `httpx`
-- For media support: `aiofiles`
+- Python packages: `websockets` and `httpx`, both core Hermes dependencies
 
-Install the required dependencies:
+If these core dependencies are damaged, repair the selected environment:
 
 ```bash
-pip install websockets httpx aiofiles
+hermes pm repair
 ```
 
 ## Setup
@@ -337,6 +336,6 @@ hermes chat -q "Send 'Hello from CLI' to yuanbao:group:group_code"
 ## Related Documentation
 
 - [Messaging Gateway Overview](./index.md)
-- [Slash Commands Reference](/reference/slash-commands)
-- [Cron Jobs](/user-guide/features/cron)
-- [Background Sessions](/user-guide/cli#background-sessions)
+- [Slash Commands Reference](../../reference/slash-commands.md)
+- [Cron Jobs](../features/cron.md)
+- [Background Sessions](../cli.md#background-sessions)

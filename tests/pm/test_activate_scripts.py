@@ -20,6 +20,7 @@ from pm.store import current_target
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ACTIVATE = REPO_ROOT / "activate"
+ACTIVATE_FISH = REPO_ROOT / "activate.fish"
 ACTIVATE_PS1 = REPO_ROOT / "activate.ps1"
 SETUP_HERMES_SH = REPO_ROOT / "setup-hermes.sh"
 SETUP_HERMES_PS1 = REPO_ROOT / "setup-hermes.ps1"
@@ -158,7 +159,7 @@ def _isolated_checkout(tmp_path: Path) -> Path:
     root.mkdir()
     shutil.copytree(REPO_ROOT / "pm", root / "pm", ignore=shutil.ignore_patterns("__pycache__"))
     (root / "hermes_cli").mkdir()
-    for relative in ("activate", "activate.ps1", "hermes_constants.py", "hermes_cli/__init__.py",
+    for relative in ("activate", "activate.fish", "activate.ps1", "hermes_constants.py", "hermes_cli/__init__.py",
                      "pm/environments.py", "hermes_cli/runtime_state.py"):
         shutil.copy2(REPO_ROOT / relative, root / relative)
     # Environment-only tests do not exercise provisioning; the runtime tests
@@ -193,6 +194,58 @@ def test_bash_scripts_pass_syntax_check():
             [_bash(), "-n", _posix(script)], capture_output=True, text=True, env=_child_env()
         )
         assert result.returncode == 0, f"{script.name}: {result.stderr}"
+
+
+def _fish() -> str | None:
+    found = shutil.which("fish")
+    if found and "windowsapps" not in str(found).lower():
+        return found
+    return None
+
+
+def test_fish_script_passes_syntax_check():
+    fish = _fish()
+    if fish is None:
+        pytest.skip("no fish shell available")
+    assert isinstance(fish, str)
+    result = subprocess.run(
+        [fish, "-n", _posix(ACTIVATE_FISH)],
+        capture_output=True,
+        text=True,
+        env=_child_env(),
+    )
+    assert result.returncode == 0, f"{ACTIVATE_FISH.name}: {result.stderr}"
+
+
+@pytest.mark.platforms("posix")
+def test_fish_source_activate_exports_and_deactivates(tmp_path: Path):
+    fish = _fish()
+    if fish is None:
+        pytest.skip("no fish shell available")
+    assert isinstance(fish, str)
+    root = _isolated_checkout(tmp_path)
+    store, _ = _fake_store(tmp_path)
+    script = (
+        f'source "{_posix(root / "activate.fish")}"\n'
+        f'test -n "$__HERMES_ACTIVATED"; or exit 2\n'
+        f'test "${CANARY}" = env-ok; or exit 3\n'
+        f'fish -c \'test -n "$__HERMES_ACTIVATED"\'; or exit 4\n'
+        f'deactivate\n'
+        f'set -q {CANARY}; and exit 5\n'
+        f'set -q __HERMES_ACTIVATED; and exit 6\n'
+        f'functions -q deactivate; and exit 7\n'
+        f'echo restored\n'
+    )
+    result = subprocess.run(
+        [fish, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=_posix(tmp_path),
+        env=_bash_env(store),
+        timeout=40,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.strip() == "restored"
 
 
 @pytest.mark.platforms("windows")

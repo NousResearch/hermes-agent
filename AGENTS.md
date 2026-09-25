@@ -181,7 +181,8 @@ source ./activate   # provisions/syncs PM tools + dependencies, then activates
 ```
 Select an isolated development `HERMES_HOME` and `HERMES_RUNTIME_DIR` first;
 see `website/docs/reference/package-management.md#developer-workflow`.
-PowerShell: `. .\activate.ps1`. `deactivate` restores the prior environment.
+Fish: `source ./activate.fish`. PowerShell: `. .\activate.ps1`.
+`deactivate` restores the prior environment.
 For tests, use the independent test environment in `CONTRIBUTING.md` (or Nix);
 PM activation's `PYTHONPATH` does not survive the test runner's environment scrub.
 `scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`

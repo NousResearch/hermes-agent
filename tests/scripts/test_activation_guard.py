@@ -25,8 +25,15 @@ def test_returns_when_activated_and_exits_naming_the_command_when_not(monkeypatc
 
 
 @pytest.mark.platforms("posix")
-def test_command_is_the_posix_source_line():
+def test_command_is_the_posix_source_line(monkeypatch):
+    monkeypatch.setenv("SHELL", "/bin/bash")
     assert activation_command() == "source ./activate"
+
+
+@pytest.mark.platforms("posix")
+def test_command_is_fish_when_shell_is_fish(monkeypatch):
+    monkeypatch.setenv("SHELL", "/usr/bin/fish")
+    assert activation_command() == "source ./activate.fish"
 
 
 @pytest.mark.platforms("windows")

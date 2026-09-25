@@ -255,6 +255,14 @@ export HERMES_RUNTIME_DIR="$HERMES_HOME/tools"
 source ./activate
 ```
 
+Fish, from the repository root:
+
+```fish
+set -gx HERMES_HOME "$HOME/hermes-dev-data"
+set -gx HERMES_RUNTIME_DIR "$HERMES_HOME/tools"
+source ./activate.fish
+```
+
 PowerShell, from the repository root:
 
 ```powershell

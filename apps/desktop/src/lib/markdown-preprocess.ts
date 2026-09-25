@@ -583,9 +583,12 @@ const CJK_RE = /[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufa
  * Escaping only the OPENING `$` is enough: the closing `$` loses its partner
  * and renders literally. Real math is untouched — its body carries no CJK —
  * and `$$` display runs are skipped by the same `$$`-run guard the currency
- * escape uses. The one accepted tradeoff: genuine inline math whose body
- * names a CJK variable (`$x = 变量$`) renders as literal prose. Losing one
- * equation is far cheaper than corrupting a sentence's copy-out.
+ * escape uses. A non-CJK span is consumed through its closer: otherwise that
+ * closer is scanned as the next opener, and CJK prose between two formulas
+ * makes the escape land on the first equation's real closing `$`. The one
+ * accepted tradeoff: genuine inline math whose body names a CJK variable
+ * (`$x = 变量$`) renders as literal prose. Losing one equation is far cheaper
+ * than corrupting a sentence's copy-out.
  */
 function escapeCjkProseDollars(text: string): string {
   let out = ''
@@ -605,6 +608,7 @@ function escapeCjkProseDollars(text: string): string {
     const body = text.slice(cursor + 1, closingIndex)
 
     if (!CJK_RE.test(body)) {
+      cursor = closingIndex
       continue
     }
 

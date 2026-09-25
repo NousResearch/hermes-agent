@@ -273,7 +273,7 @@ def prepare_launch(project_root: Path, argv: list[str]) -> Path | None:
     python = resolve_store_python(root)
     if python is None:
         raise RuntimeError("source update has no managed Python; run `hermes pm install`")
-    if not current or python.absolute() != Path(sys.executable).absolute():
+    if not current or python.resolve() != Path(sys.executable).resolve():
         publish_launchers(root)
         return python
     return None

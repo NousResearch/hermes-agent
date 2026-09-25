@@ -31,11 +31,14 @@ def server():
     # (a fixed shared path) forever, leaking active-session registry entries
     # across every later test in the process. Scope the patch to the import.
     #
-    # Import server_requests (pure stdlib) BEFORE the window: the patch drops every module first imported
-    # inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
+    # Import server_requests (pure stdlib) and transport BEFORE the window: the patch drops every module first
+    # imported inside it, so otherwise the module server.py binds its sinks on (write/emit/answerable) would vanish
     # from sys.modules and a test's own ``from tui_gateway import server_requests`` would get a fresh,
-    # unbound copy whose default sinks drop frames and treat every client as answerable.
+    # unbound copy whose default sinks drop frames and treat every client as answerable. Likewise a test's
+    # ``from tui_gateway.transport import bind_transport`` would bind a fresh module's ContextVar that the
+    # server's ``current_transport()`` never reads (first-in-process test sees ``_stdio_transport`` as caller).
     import tui_gateway.server_requests  # noqa: F401
+    import tui_gateway.transport  # noqa: F401
     with patch.dict("sys.modules", {
         "hermes_constants": MagicMock(get_hermes_home=MagicMock(return_value="/tmp/hermes_test")),
         "hermes_cli.env_loader": MagicMock(),
@@ -1162,8 +1165,10 @@ def test_make_agent_accepts_list_system_prompt(server, monkeypatch):
 # ── Config I/O ───────────────────────────────────────────────────────
 
 
-def test_config_roundtrip(server, tmp_path):
-    server._hermes_home = tmp_path
+def test_config_roundtrip(server, tmp_path, monkeypatch):
+    # monkeypatch, not assignment: a bare ``server._hermes_home = tmp_path`` outlives this test and every
+    # later ``_load_cfg()`` in the process reads this file's ``model: test/model`` shorthand.
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
     server._save_cfg({"model": "test/model"})
     assert server._load_cfg()["model"] == "test/model"
 
@@ -1365,8 +1370,48 @@ def test_dispatch_runs_short_handlers_inline(server):
     assert resp == {"jsonrpc": "2.0", "id": "r1", "result": {"pong": True}}
 
 
+@pytest.mark.parametrize(
+    "slow_method",
+    ["complete.path", "complete.slash", "voice.toggle", "voice.record", "voice.tts", "wake.start", "wake.status"],
+)
+def test_slow_handlers_run_off_the_reader_thread(slow_method, server, monkeypatch):
+    """dispatch() must hand these RPCs to the pool and return at once, so a stalled handler never blocks
+    the stdin/WS reader behind it. Completion (#21123: git ls-files / skill scan froze prompt.submit for
+    the 120s RPC timeout) and voice/wake (synchronous faster-whisper lazy install, up to 300s: sent
+    messages never reached the agent) are the same bug class as #50005."""
+    release = threading.Event()
+    written = []
 
+    class _Transport:
+        def write(self, obj):
+            written.append(obj)
+            return True
 
+        def close(self):
+            pass
+
+    ran_on = []
+
+    def _stalled(rid, params):
+        ran_on.append(threading.get_ident())
+        release.wait(timeout=10)
+        return server._ok(rid, {})
+
+    monkeypatch.setitem(server._methods, slow_method, _stalled)
+
+    t0 = time.monotonic()
+    resp = server.dispatch({"id": "slow", "method": slow_method, "params": {}}, _Transport())
+    elapsed = time.monotonic() - t0
+    release.set()
+
+    assert resp is None, f"{slow_method} ran inline on the reader thread"
+    assert elapsed < 5
+    deadline = time.monotonic() + 10
+    while not written and time.monotonic() < deadline:
+        time.sleep(0.01)
+    # The pool worker, not the reader, ran the handler and wrote its response frame.
+    assert written and written[0]["id"] == "slow", written
+    assert ran_on and ran_on[0] != threading.get_ident()
 
 
 def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
@@ -1480,6 +1525,34 @@ def test_approval_for_a_ws_client_that_never_advertised_settles_the_queue_entry(
     assert decision["choice"] is None and decision["cancelled"]
     assert peer.frames == []
     assert "ws-old-approval" not in approval_mod._gateway_queues
+
+
+def test_approval_that_ends_before_its_settle_hook_attaches_is_still_withdrawn(server):
+    """The client can answer (``approval.respond`` RPC, or another surface) between the frame going out and
+    the settle hook attaching; ``register_gateway_settle`` then reports the entry gone. The sent request must
+    still be withdrawn, or every later ``session.resume`` replays a prompt nobody is waiting on."""
+    from tui_gateway import server_requests
+    from tui_gateway.transport import bind_transport, reset_transport
+
+    peer = _silent_ws()
+    _ws_session(server, "ws-raced", peer)
+    token = bind_transport(peer)
+    try:
+        server.handle_request({"id": 1, "method": "client.capabilities", "params": {"server_requests": True}})
+    finally:
+        reset_transport(token)
+    try:
+        # No queue entry carries this request id: the wait already ended when the hook tries to attach.
+        server._emit_approval_request("ws-raced", {"command": "rm -rf build", "description": "",
+                                                   "request_id": "appr-already-resolved"})
+        assert len(peer.frames) == 2, f"the sent approval was never withdrawn: {peer.frames}"
+        sent, cancel = peer.frames
+        assert sent["method"] == "approval"
+        assert cancel["params"]["type"] == "request.cancel"
+        assert cancel["params"]["payload"]["id"] == sent["id"]
+        assert server_requests.open_requests("ws-raced") == []
+    finally:
+        server.unregister_live_transport(peer)
 
 
 def test_peerless_global_broadcast_never_reaches_stdout_in_ws_backend(capture, monkeypatch):

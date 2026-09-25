@@ -11,7 +11,7 @@
 #   * Env vars blanked (conftest.py also does this, but this
 #     is belt-and-suspenders for anyone running pytest outside our
 #     conftest path — e.g. on a single file)
-#   * Proper venv activation (probes .venv, venv, then ~/.hermes/...)
+#   * The activated checkout's test environment (activates when needed)
 #
 # Usage:
 #   scripts/run_tests.sh                            # full suite
@@ -38,64 +38,45 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Locate python ───────────────────────────────────────────────────────────
-# Probe local venvs first; fall back to the Nix devShell's editable venv
-# (HERMES_PYTHON is exported by the devShell hook and ships [dev] extras:
-# pytest, pytest-asyncio, pytest-timeout, ruff, ty).
+# The suite runs under the activated checkout's isolated test environment
+# (pm.testenv: `activate` builds it beside the checkout's install state, and CI
+# activates the same way). An inherited activation is re-checked against its
+# inputs (scripts/_activation.sh) and re-sourced when stale, so a branch switch
+# or lock edit never runs the suite against the previous dependency set.
 #
-# A candidate must have pytest INSTALLED, not merely exist. The release venv
-# at ~/.hermes/hermes-agent/venv has bin/activate but no pytest, so an
-# existence-only probe selected it in checkouts/worktrees without a local
-# .venv — every file then died with "No module named pytest" and the run
-# reported "0 tests passed" (which reads green at a glance even though the
-# exit code is 1). Skip such a venv and keep probing instead.
-VENV=""
-VENV_PYTHON=""
-SKIPPED_VENVS=""
-for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
-  if [ -f "$candidate/bin/activate" ]; then
-    if "$candidate/bin/python" -c 'import pytest' 2>/dev/null; then
-      VENV="$candidate"
-      VENV_PYTHON="$candidate/bin/python"
-      break
-    fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
-  fi
-  # Native Windows venv layout: python.exe and activate live under
-  # Scripts/, and there is no bin/. Anyone running this script from
-  # Git Bash / MSYS with a `python -m venv`- or uv-created venv hits
-  # this branch — without it the canonical runner refuses to start.
-  if [ -f "$candidate/Scripts/activate" ]; then
-    if "$candidate/Scripts/python.exe" -c 'import pytest' 2>/dev/null; then
-      VENV="$candidate"
-      VENV_PYTHON="$candidate/Scripts/python.exe"
-      break
-    fi
-    SKIPPED_VENVS="$SKIPPED_VENVS $candidate"
-  fi
-done
-
-if [ -n "$SKIPPED_VENVS" ]; then
-  for skipped in $SKIPPED_VENVS; do
-    echo "▶ skipping venv without pytest: $skipped" >&2
-  done
-fi
-
-if [ -n "$VENV" ]; then
-  PYTHON="$VENV_PYTHON"
-elif [ -n "${HERMES_PYTHON:-}" ] && [ -x "$HERMES_PYTHON" ] \
-    && "$HERMES_PYTHON" -c 'import pytest' 2>/dev/null; then
-  # Guard with an import check: HERMES_PYTHON may point at the RELEASE
-  # venv (no pytest) when inherited from a wrapped `hermes` binary rather
-  # than the devShell hook.
+# Without an activation, an explicit HERMES_PYTHON that has pytest is honored:
+# the Nix devShell's editable venv and CI's minimal installer lanes provide
+# one on purpose. The import check matters: a wrapped `hermes` binary exports
+# HERMES_PYTHON pointing at a release venv without pytest.
+_has_pytest() { [ -n "$1" ] && [ -x "$1" ] && "$1" -c 'import pytest' 2>/dev/null; }
+# shellcheck source=scripts/_activation.sh
+. "$SCRIPT_DIR/_activation.sh"
+if [ -z "${__HERMES_ACTIVATED:-}" ] && _has_pytest "${HERMES_PYTHON:-}"; then
   PYTHON="$HERMES_PYTHON"
-  echo "▶ no local venv — using Nix dev venv via HERMES_PYTHON: $PYTHON"
+  echo "▶ not activated — using HERMES_PYTHON: $PYTHON"
 else
-  echo "error: no virtualenv with pytest found in $REPO_ROOT/.venv or $REPO_ROOT/venv," >&2
-  echo "       and HERMES_PYTHON is not a python with pytest (enter the Nix devShell or create a venv)" >&2
-  if [ -n "$SKIPPED_VENVS" ]; then
-    echo "       (skipped for missing pytest:$SKIPPED_VENVS — install dev extras there, or create $REPO_ROOT/.venv)" >&2
+  test_stamp="${__HERMES_ACTIVATED:-}"
+  test_stamp="${test_stamp//\\//}"
+  if ! hermes_activation_current "$REPO_ROOT" ||
+     [ ! -f "${test_stamp%/*}/inputs/.test-environment" ] ||
+     ! _has_pytest "${__HERMES_TEST_PYTHON:-}"; then
+    echo "▶ activating $REPO_ROOT (environment missing or stale)" >&2
+    # activate is written for interactive shells, not errexit/nounset.
+    set +euo pipefail
+    # shellcheck source=/dev/null
+    . "$REPO_ROOT/activate" --
+    activated=$?
+    set -euo pipefail
+    if [ "$activated" != 0 ]; then
+      echo "error: activation failed (see above)" >&2
+      exit 1
+    fi
   fi
-  exit 1
+  PYTHON="${__HERMES_TEST_PYTHON:-}"
+  if ! _has_pytest "$PYTHON"; then
+    echo "error: activation provided no test interpreter with pytest (__HERMES_TEST_PYTHON=${PYTHON:-unset})" >&2
+    exit 1
+  fi
 fi
 
 
@@ -113,15 +94,38 @@ fi
 # resolves Path.home() from USERPROFILE (or HOMEDRIVE+HOMEPATH), stdlib
 # platform paths come from LOCALAPPDATA/APPDATA, ssl/sockets need SYSTEMROOT,
 # and tempfile needs TEMP/TMP. Dropping them breaks collection on native
-# Windows (issues #67385, #70813). These are location variables, not
+# Windows (issues #67385, #70813). PATHEXT is also required: without .EXE,
+# PowerShell opens a native child as a document without waiting for its exit.
+# These are location variables, not
 # credentials, so forwarding them keeps the isolation intent intact. Each is
 # only forwarded when actually set, so POSIX runs are byte-for-byte unchanged.
 WIN_ENV=()
-for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT TEMP TMP; do
+for _win_var in USERPROFILE HOMEDRIVE HOMEPATH LOCALAPPDATA APPDATA SYSTEMROOT TEMP TMP \
+    ComSpec PATHEXT PROGRAMFILES ProgramFiles PROGRAMDATA ProgramData; do
   if [ -n "${!_win_var:-}" ]; then
     WIN_ENV+=("$_win_var=${!_win_var}")
   fi
 done
+# Native build toolchain (Windows arm64 has no wheels for every pinned C extension, so
+# `uv sync` inside a PM test compiles ruamel-yaml-clib and friends). The MSVC developer
+# environment is exported by scripts/build/windows-deps.ps1 into the job env; without
+# INCLUDE/LIB/VSINSTALLDIR the build backend reports "Visual C++ 14.0 or greater is
+# required". These describe compiler locations, not credentials.
+for _tool_var in INCLUDE LIB LIBPATH VSINSTALLDIR VCINSTALLDIR VCToolsInstallDir VCToolsVersion \
+    VCToolsRedistDir WindowsSdkDir WindowsSDKVersion WindowsSdkBinPath WindowsSdkVerBinPath \
+    WindowsLibPath UCRTVersion UniversalCRTSdkDir VSCMD_ARG_HOST_ARCH VSCMD_ARG_TGT_ARCH VSCMD_VER \
+    DevEnvDir ExtensionSdkDir Platform CARGO_HOME RUSTUP_HOME RUSTUP_TOOLCHAIN \
+    CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_LINKER CC_aarch64_pc_windows_msvc CC CXX AR \
+    VCPKG_ROOT OPENSSL_DIR OPENSSL_STATIC OPENSSL_LIB_DIR OPENSSL_INCLUDE_DIR; do
+  if [ -n "${!_tool_var:-}" ]; then
+    WIN_ENV+=("$_tool_var=${!_tool_var}")
+  fi
+done
+# setuptools locates the compiler through vswhere under "%ProgramFiles(x86)%\Microsoft Visual
+# Studio\Installer"; without that variable a primed INCLUDE/LIB still reads as "Visual C++ 14.0
+# or greater is required". The parenthesised name cannot be read with ${!var}.
+_pf86="$(env | sed -n 's/^ProgramFiles(x86)=//p' | head -n1)"
+[ -z "$_pf86" ] || WIN_ENV+=("ProgramFiles(x86)=$_pf86")
 
 # ── Test-runner knobs (computed before we drop env) ────────────────────────
 # The runner's own documented environment knobs must survive the hermetic
@@ -136,15 +140,23 @@ done
 #     subprocess rebuild the 5GB image from a cold builder cache instead
 #     (~4 min per worker per run, and the rebuilt image lacked the
 #     HERMES_GIT_SHA build-arg the workflow bakes in).
+#   * HERMES_E2E_REQUIRE_TUI turns a missing Ink TUI build into a failure in
+#     tests/e2e/core/terminal instead of a skip (set by the e2e CI job).
+#   * CI / GITHUB_ACTIONS tell suites they run on a disposable runner (e.g.
+#     tests/e2e/core/upgrade runs the real updater unsandboxed only there).
 #
 # These are test-infrastructure knobs, not credentials — same class as the
-# HERMES_RUN_SLOW_PET_TESTS / HERMES_E2E_BROWSER opt-ins already forwarded.
+# HERMES_RUN_SLOW_PET_TESTS / HERMES_E2E_BROWSER / HERMES_RUN_E2E opt-ins
+# forwarded below.
+# SSL_CERT_FILE/DIR are trust-store locations: the pinned interpreter's
+# OpenSSL has no compiled-in bundle path on NixOS, so network tests (PM
+# downloads, channel reads) need the host's pointer to verify TLS.
 # Keep this an explicit allowlist (no HERMES_TEST_* glob) so the "no
 # credential can leak" property stays auditable at a glance.
 TEST_ENV=()
 for _test_var in HERMES_TEST_IMAGE HERMES_TEST_WORKERS HERMES_TEST_PATHS \
   HERMES_TEST_FILE_TIMEOUT HERMES_TEST_FILE_RETRIES HERMES_TEST_SLICE \
-  HERMES_GATEWAY_LOCK_DIR; do
+  SSL_CERT_FILE SSL_CERT_DIR HERMES_GATEWAY_LOCK_DIR HERMES_E2E_REQUIRE_TUI CI GITHUB_ACTIONS; do
   if [ -n "${!_test_var:-}" ]; then
     TEST_ENV+=("$_test_var=${!_test_var}")
   fi
@@ -179,6 +191,7 @@ exec env -i \
   PYTHONUTF8=1 \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
   ${HERMES_E2E_BROWSER:+HERMES_E2E_BROWSER="$HERMES_E2E_BROWSER"} \
+  ${HERMES_RUN_E2E:+HERMES_RUN_E2E="$HERMES_RUN_E2E"} \
   ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"

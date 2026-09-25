@@ -1,10 +1,14 @@
-"""Due-scan dispatch-limit guard: a re-armed consumed one-shot never fires twice.
+"""Due-scan dispatch-limit guard: removal of a re-armed consumed one-shot is
+operator-visible (#93524 follow-up to #93615).
 
 Pre-#93615 stores (or hand edits) can hold a record that already completed a
 run (last_run_at set) but was re-armed without a budget reset. The due-scan
-guard removes it without firing — re-runs go through `cron resume`.
+guard removes it without firing — correct, since #93615's policy routes
+re-runs through `cron resume` — but the removal must log at WARNING with a
+remediation hint, never a silent INFO delete.
 """
 
+import logging
 from datetime import timedelta
 
 import pytest
@@ -19,7 +23,6 @@ from cron.jobs import (
     _hermes_now,
 )
 
-
 @pytest.fixture()
 def temp_home(tmp_path, monkeypatch):
     """Redirect cron storage to a temp dir (same pattern as the sibling
@@ -29,8 +32,7 @@ def temp_home(tmp_path, monkeypatch):
     monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     return tmp_path
 
-
-def test_rearmed_consumed_oneshot_is_removed_without_firing(temp_home):
+def test_guard_warns_on_rearmed_consumed_record(temp_home, caplog):
     job = create_job(
         prompt="x",
         schedule=(_hermes_now() + timedelta(hours=1)).isoformat(),
@@ -50,9 +52,14 @@ def test_rearmed_consumed_oneshot_is_removed_without_firing(temp_home):
             j["next_run_at"] = (_hermes_now() - timedelta(seconds=5)).isoformat()
     save_jobs(jobs)
 
-    due = get_due_jobs()
+    with caplog.at_level(logging.INFO, logger="cron"):
+        due = get_due_jobs()
 
     assert jid not in [d["id"] for d in due]
     assert jid not in [j["id"] for j in load_jobs()]
-
-
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "WITHOUT firing" in r.getMessage()
+    ]
+    assert warnings, "expected WARNING on removal of a re-armed consumed one-shot"
+    assert "cron resume" in warnings[0].getMessage()

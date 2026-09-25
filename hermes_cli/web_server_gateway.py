@@ -156,6 +156,7 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
     gateways: List[Dict[str, Any]] = []
     profile_platforms: Dict[str, dict] = {}
     multiplex = False
+    standalone_reason: Optional[str] = None
     for name, home in homes:
         try:
             # A served profile's liveness is the multiplexer's: listing it here showed one phantom
@@ -171,6 +172,8 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         served = [str(p) for p in ((runtime or {}).get("served_profiles") or [])]
         if name == "default" and len(served) > 1:
             multiplex = True
+        if (runtime or {}).get("multiplex_standalone_reason"):
+            standalone_reason = str(runtime["multiplex_standalone_reason"])
         plats = (runtime or {}).get("platforms")
         owned: dict = {}
         if isinstance(plats, dict) and plats:
@@ -188,10 +191,16 @@ def _collect_profile_gateway_topology() -> Dict[str, Any]:
         mode = "multiplex"
     else:
         mode = {0: "none", 1: "single"}.get(len(gateways), "multiple")
+    # A guard refusal on a multi-profile host is what the dashboard banner shows; a single-profile
+    # install has nothing unserved and gets no banner.
+    from hermes_cli.gateway_multiplex_mode import SINGLE_PROFILE_REASON
+    if standalone_reason == SINGLE_PROFILE_REASON or len(homes) < 2:
+        standalone_reason = None
     return {
         "profiles": [name for name, _home in homes],
         "parked_profiles": [name for name, home in homes if name != "default" and profile_is_parked(home)],
         "gateway_mode": mode,
+        "multiplex_standalone_reason": standalone_reason,
         "gateways": gateways,
         "profile_platforms": profile_platforms}
 
@@ -295,38 +304,6 @@ def _terminate_desktop_managed_gateway() -> None:
             proc.terminate()
     except OSError:
         pass  # exited between poll() and terminate()
-
-
-def _dashboard_spawn_executable() -> str:
-    """Interpreter for detached dashboard actions: the install's venv python when it differs
-    from ``sys.executable``, else ``sys.executable``.
-
-    Under an SSH remote backend the server runs on the uv BASE interpreter with the venv's
-    site-packages injected into sys.path at startup, so ``sys.executable`` is dependency-less and
-    a detached child dies on its first third-party import; the venv launcher resolves the same
-    dependency set on its own. Paths are compared UNRESOLVED: the venv python is typically a
-    symlink to the base interpreter, so resolving would make them compare equal (exactly the
-    case this fixes), and pyvenv.cfg discovery keys off argv0's unresolved location. On Windows
-    the console python plus ``windows_detach_flags()`` keeps the action invisible without
-    pythonw.exe (which makes every console descendant flash its own conhost).
-
-    See #90026.
-    Falls back to ``sys.executable`` when no venv interpreter exists next to the install (in-process dev
-    runs, exotic layouts). See #54220, #56747.
-    """
-    from hermes_cli.web_server import PROJECT_ROOT
-    exe = Path(sys.executable)
-    try:
-        for rel in ("venv/bin/python", "venv/Scripts/python.exe"):
-            candidate = PROJECT_ROOT / rel
-            if candidate.is_file():
-                if os.path.normcase(os.path.normpath(str(candidate))) == (
-                    os.path.normcase(os.path.normpath(str(exe)))):
-                    return sys.executable
-                return str(candidate)
-    except OSError:
-        pass
-    return sys.executable
 
 
 def _named_profile_from_action(subcommand: List[str]) -> Optional[str]:
@@ -459,7 +436,8 @@ def _spawn_hermes_action(
     log_file = open(_ACTION_LOG_DIR / _ACTION_LOG_FILES[name], "ab", buffering=0)
     log_file.write(f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode())
 
-    cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
+    from hermes_cli._launchers import runtime_command
+    cmd = runtime_command(PROJECT_ROOT, subcommand)
     if _action_targets_system_gateway(subcommand):
         # A system-scope lifecycle verb spawned as the dashboard's own user can only ever write
         # "System gateway <verb> requires root" into this log, so the button never worked on a

@@ -17,17 +17,21 @@ primary clobbers fallback-owned state:
 Both are now guarded by a monotonic per-compressor attempt generation
 (``_claim_compressor_attempt``): restores and callback set/clear are keyed
 to the claiming generation and no-op when a newer attempt owns the
-compressor. These tests drive both interleavings deterministically —
-no timing, no threads.
+compressor. These tests drive both interleavings deterministically; the
+end-to-end checks use event handshakes rather than wall-clock timing.
 """
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.conversation_compression import (
+    _COMPRESSOR_ATTEMPT_GENERATION,
     _claim_compressor_attempt,
     _clear_compression_cancelled_check_if_owner,
     _compressor_attempt_is_current,
     _install_compression_cancelled_check,
+    _raise_if_stale_attempt,
     _restore_compressor_attempt_state,
     _snapshot_compressor_attempt_state,
 )
@@ -43,6 +47,26 @@ def _compressor(**overrides):
     }
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+class TestCallerAttemptOwnership:
+    """The caller generation only fences a compressor that has been claimed."""
+
+    def test_newer_entry_generation_without_marker_remains_stale(self):
+        """Control for the unclaimed-compressor carve-out: a CLAIMED compressor whose newer claim
+        never published a working marker still cancels the older caller."""
+        from agent.auxiliary_client import AuxiliaryExplicitCancellation
+
+        compressor = _compressor()
+        caller_gen = _claim_compressor_attempt(compressor)
+        _claim_compressor_attempt(compressor)
+
+        token = _COMPRESSOR_ATTEMPT_GENERATION.set(caller_gen)
+        try:
+            with pytest.raises(AuxiliaryExplicitCancellation):
+                _raise_if_stale_attempt(compressor)
+        finally:
+            _COMPRESSOR_ATTEMPT_GENERATION.reset(token)
 
 
 class TestLatePrimaryRestoreAfterFallbackCommit:
@@ -252,19 +276,17 @@ class TestStaleAttemptEndToEnd:
     ``compress()``, and the stale unwind propagating as a cancellation."""
 
     def _compressor(self):
-        from unittest.mock import patch
-
         from agent.context_compressor import ContextCompressor
 
-        with patch(
-            "agent.context_compressor.get_model_context_length",
-            return_value=100000,
-        ):
-            return ContextCompressor(
-                model="test/model", quiet_mode=True,
-                protect_first_n=2, protect_last_n=2,
-                abort_on_summary_failure=False,
-            )
+        compressor = ContextCompressor(
+            model="test/model", quiet_mode=True,
+            protect_first_n=2, protect_last_n=2,
+            abort_on_summary_failure=False,
+        )
+        # Context-length resolution is lazy. Set the property directly so the worker cannot
+        # disappear into unrelated provider discovery before reaching the synchronization point.
+        compressor.context_length = 100000
+        return compressor
 
     def _messages(self, n=12):
         return [
@@ -279,6 +301,35 @@ class TestStaleAttemptEndToEnd:
         resp.choices = [MagicMock()]
         resp.choices[0].message.content = content
         return resp
+
+    def test_outer_attempt_can_use_never_claimed_inner_compressor(self):
+        from unittest.mock import patch
+
+        from agent.conversation_compression import _run_summary_dispatch
+
+        inner = self._compressor()
+
+        class DelegatingEngine:
+            def compress(self, messages, **kwargs):
+                return inner.compress(messages, **kwargs)
+
+        engine = DelegatingEngine()
+        agent = SimpleNamespace(context_compressor=engine, session_id="s1")
+        messages = self._messages()
+        generation = _claim_compressor_attempt(engine)
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=self._llm_response("## Goal\ndelegated summary"),
+        ):
+            compressed = _run_summary_dispatch(
+                agent, messages, engine.compress,
+                {"current_tokens": 999999, "force": True},
+                commit_fence=None, attempt_generation=generation, hard_cancel_event=None,
+            )
+
+        assert compressed != messages
+        assert inner._previous_summary and "delegated summary" in inner._previous_summary
 
     def test_detached_primary_late_success_cannot_write_after_fallback(self):
         import threading
@@ -297,13 +348,14 @@ class TestStaleAttemptEndToEnd:
 
         a_in_llm = threading.Event()
         b_done = threading.Event()
+        a_done = threading.Event()
         outcomes_a = []
         thread_a = [None]
 
         def fake_call_llm(**kw):
             if threading.current_thread() is thread_a[0]:
                 a_in_llm.set()
-                assert b_done.wait(10), "fallback did not complete in time"
+                b_done.wait()
                 return self._llm_response("## Goal\nstale-era summary")
             return self._llm_response("## Goal\nfallback summary")
 
@@ -317,6 +369,8 @@ class TestStaleAttemptEndToEnd:
                 outcomes_a.append("cancelled")
             except BaseException as e:
                 outcomes_a.append(f"{type(e).__name__}: {e}")
+            finally:
+                a_done.set()
 
         gen1 = _claim_compressor_attempt(cc)
         assert gen1 == 1
@@ -324,21 +378,22 @@ class TestStaleAttemptEndToEnd:
             t = threading.Thread(target=attempt_a, daemon=True)
             thread_a[0] = t
             t.start()
-            assert a_in_llm.wait(10), "primary never reached the provider call"
+            a_in_llm.wait()
 
             # Host detaches the stalled primary and runs the fallback inline.
-            gen2 = _claim_compressor_attempt(cc)
-            assert gen2 == 2
-            _run_summary_dispatch(
-                agent, messages, cc.compress, kwargs,
-                commit_fence=None, attempt_generation=2, hard_cancel_event=None,
-            )
-            assert cc._previous_summary and "fallback summary" in cc._previous_summary
-
-            # The detached primary's provider call finally returns.
-            b_done.set()
-            t.join(10)
-            assert not t.is_alive()
+            try:
+                gen2 = _claim_compressor_attempt(cc)
+                assert gen2 == 2
+                _run_summary_dispatch(
+                    agent, messages, cc.compress, kwargs,
+                    commit_fence=None, attempt_generation=2, hard_cancel_event=None,
+                )
+                assert cc._previous_summary and "fallback summary" in cc._previous_summary
+            finally:
+                # The detached primary's provider call returns only after fallback completion.
+                b_done.set()
+                a_done.wait()
+                t.join()
 
         # The stale attempt unwound as a cancellation and wrote nothing.
         assert outcomes_a == ["cancelled"]
@@ -365,13 +420,14 @@ class TestStaleAttemptEndToEnd:
 
         a_in_llm = threading.Event()
         b_done = threading.Event()
+        a_done = threading.Event()
         outcomes_a = []
         thread_a = [None]
 
         def fake_call_llm(**kw):
             if threading.current_thread() is thread_a[0]:
                 a_in_llm.set()
-                assert b_done.wait(10), "fallback did not complete in time"
+                b_done.wait()
                 raise AuxiliaryExplicitCancellation()
             return self._llm_response("## Goal\nfallback summary")
 
@@ -385,24 +441,28 @@ class TestStaleAttemptEndToEnd:
                 outcomes_a.append("cancelled")
             except BaseException as e:
                 outcomes_a.append(f"{type(e).__name__}: {e}")
+            finally:
+                a_done.set()
 
         gen1 = _claim_compressor_attempt(cc)
         with patch("agent.context_compressor.call_llm", side_effect=fake_call_llm):
             t = threading.Thread(target=attempt_a, daemon=True)
             thread_a[0] = t
             t.start()
-            assert a_in_llm.wait(10)
+            a_in_llm.wait()
 
-            gen2 = _claim_compressor_attempt(cc)
-            _run_summary_dispatch(
-                agent, messages, cc.compress, kwargs,
-                commit_fence=None, attempt_generation=2, hard_cancel_event=None,
-            )
-            assert cc._previous_summary and "fallback summary" in cc._previous_summary
-
-            b_done.set()
-            t.join(10)
-            assert not t.is_alive()
+            try:
+                gen2 = _claim_compressor_attempt(cc)
+                assert gen2 == 2
+                _run_summary_dispatch(
+                    agent, messages, cc.compress, kwargs,
+                    commit_fence=None, attempt_generation=2, hard_cancel_event=None,
+                )
+                assert cc._previous_summary and "fallback summary" in cc._previous_summary
+            finally:
+                b_done.set()
+                a_done.wait()
+                t.join()
 
         assert outcomes_a == ["cancelled"]
         # The stale cancel did not roll _previous_summary back to the primary's snapshot.

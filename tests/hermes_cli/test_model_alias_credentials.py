@@ -756,5 +756,3 @@ class TestOneshotPassesAliasCredential:
 
         assert captured["explicit_base_url"] == ALIAS_HOST
         assert captured["explicit_api_key"] == "sk-theta-ALIAS"
-
-

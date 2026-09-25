@@ -12,13 +12,20 @@ Usage::
 # on Windows.  No-op on POSIX.  See hermes_bootstrap.py for full rationale.
 try:
     import hermes_bootstrap  # noqa: F401
-except ModuleNotFoundError:
-    # Partial ``hermes update`` (git-reset landed, ``uv pip install -e .`` did not):
-    # UTF-8 stdio setup is skipped on Windows; POSIX is unaffected.
-    pass
+except ModuleNotFoundError as exc:
+    # Partial ``hermes update`` (git-reset landed, ``uv pip install -e .`` did not).
+    if exc.name != "hermes_bootstrap":
+        raise  # the bootstrap exists but cannot load: skipping it would skip PM activation
 else:
     # Stop a ``utils/``/``proxy/``/``ui/`` package in the launch cwd from shadowing Hermes modules.
     hermes_bootstrap.harden_import_path()
+
+# `hermes-acp` runs without hermes_cli.main: repair a `hermes update` killed mid-pull here, before
+# importing anything else from the checkout (a no-op under `hermes acp`, which already did).
+from hermes_cli import _early_recovery
+
+if _early_recovery.restore_interrupted_pull():
+    _early_recovery.relaunch_after_restore()
 
 import argparse
 import asyncio
@@ -91,18 +98,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--setup", action="store_true",
                         help="Run interactive Hermes provider/model setup for ACP terminal auth")
     parser.add_argument("--setup-browser", action="store_true",
-                        help="Install agent-browser + Playwright Chromium into ~/.hermes/node/ "
-                             "for browser tool support. Idempotent.")
+                        help="Prepare PM's pinned browser tools and Chromium.")
     parser.add_argument("--yes", "-y", action="store_true", dest="assume_yes",
-                        help="Accept all prompts (currently used by --setup-browser to skip the "
-                             "~400 MB Chromium download confirmation).")
+                        help="Accept setup prompts.")
     return parser.parse_args(argv)
 
 
 def _print_version() -> None:
-    from hermes_cli import __version__ as hermes_version
+    from hermes_cli.version_info import get_version_info
 
-    print(hermes_version)
+    print(get_version_info().derived_version)
 
 
 def _run_check() -> None:
@@ -127,34 +132,24 @@ def _run_setup() -> None:
     if not sys.stdin.isatty():
         return
     try:
-        reply = input("\nInstall browser tools? Downloads agent-browser (npm) and "
-                      "optionally Playwright Chromium (~400 MB). [y/N] ").strip().lower()
+        reply = input("\nInstall browser tools? Downloads the pinned browser and "
+                      "Chromium through PM. [y/N] ").strip().lower()
     except (EOFError, KeyboardInterrupt):
         return
     if reply in {"y", "yes"}:
         _run_setup_browser(assume_yes=False)
 
 
-_SETUP_BROWSER_STEPS = (
-    ("node", "Node.js installation failed — cannot proceed with browser tools."),
-    ("browser", "Browser tools installation failed."),
-)
-
-
 def _run_setup_browser(assume_yes: bool = False) -> int:
-    """Bootstrap agent-browser + Chromium via dep_ensure -> install.{sh,ps1}
-    --ensure (shared with the runtime lazy installer). Returns 0 on success, 1 on failure."""
-    from hermes_cli.dep_ensure import ensure_dependency
+    """The setup command is an explicit request for PM's browser closure."""
+    import pm
 
     try:
-        for dep, failure_msg in _SETUP_BROWSER_STEPS:
-            if not ensure_dependency(dep, interactive=not assume_yes):
-                print(failure_msg, file=sys.stderr)
-                return 1
-        return 0
-    except OSError as exc:
-        print(f"Browser bootstrap failed: {exc}", file=sys.stderr)
+        pm.ensure("agent-browser", explicit=True)
+    except (pm.InstallError, OSError) as exc:
+        print(f"Browser setup failed: {exc}", file=sys.stderr)
         return 1
+    return 0
 
 
 def _warm_memory_provider_import(logger: logging.Logger) -> None:
@@ -186,6 +181,13 @@ def main(argv: list[str] | None = None) -> None:
     project_root = str(Path(__file__).resolve().parent.parent)
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
+
+    # One TLS authority: trust the OS store before any outbound call (bare
+    # requests/urllib included) resolves a CA bundle — see agent/ssl_verify.py.
+    # This console script bypasses hermes_cli.main, which does the same.
+    from agent.ssl_verify import install_truststore
+
+    install_truststore()
 
     import acp
     from .server import HermesACPAgent

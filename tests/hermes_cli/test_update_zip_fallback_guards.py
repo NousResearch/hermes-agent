@@ -313,8 +313,6 @@ def test_preserved_filter_does_not_split_non_rename_lines():
     )
 
 
-
-
 def test_zip_overlay_allows_ignored_preserved_entries(tmp_path, monkeypatch):
     """venv/node_modules are gitignored on every normal install and the swap
     preserves them — the ignored probe must not turn them into a false

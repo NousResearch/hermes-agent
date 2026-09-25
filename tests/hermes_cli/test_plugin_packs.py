@@ -10,7 +10,7 @@ import json
 from unittest import mock
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from hermes_cli.plugin_packs import (
     PackError,
@@ -253,10 +253,7 @@ def _fanout_patches(install_side_effect, consent_mock=None):
     patches = {
         "_install_plugin_core": mock.MagicMock(side_effect=install_side_effect),
         "_prompt_plugin_env_vars": mock.MagicMock(),
-        "_get_enabled_set": mock.MagicMock(return_value=set()),
-        "_get_disabled_set": mock.MagicMock(return_value=set()),
-        "_save_enabled_set": mock.MagicMock(),
-        "_save_disabled_set": mock.MagicMock(),
+        "_set_plugin_enabled": mock.MagicMock(),
         "_run_capability_consent": consent_mock or mock.MagicMock(return_value=True),
         "_declared_capabilities_from_manifest": mock.MagicMock(
             side_effect=lambda manifest, name: manifest.get("capabilities", [])

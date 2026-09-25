@@ -108,7 +108,7 @@ export const SETTINGS_MANIFEST = {
     ),
     composerPopout: appearanceSetting(
       'window-layout',
-      ['composer', 'floating', 'drag', 'popout', 'dock', 'input'],
+      ['composer', 'floating', 'drag', 'popout', 'pop out', 'dock', 'lock', 'peel', 'input'],
       'composerPopout'
     ),
     userBubble: appearanceSetting('chat-display', ['opacity', 'transparent', 'message', 'bubble'], 'userBubble'),

@@ -1,5 +1,11 @@
 import { botMentionTag } from './data'
-import { GROUP_CHAT_HISTORY_LIMIT, groupSpeakerLabel } from './group-chat'
+import {
+  compactGroupChatSyncText,
+  GROUP_CHAT_HISTORY_CHARS,
+  GROUP_CHAT_HISTORY_LIMIT,
+  GROUP_CHAT_HISTORY_LINE_CHARS,
+  groupSpeakerLabel
+} from './group-chat'
 import { groupMemberKey } from './group-membership'
 import type { GroupMember, GroupMessage, GroupMessageAuthor } from './types'
 
@@ -20,7 +26,9 @@ function relabelMemberControlFrames(text: string) {
 /** Viewer identity for a room-log line. A bare string is the local, unsourced
  *  profile name (legacy call sites and single-connection jobs). */
 export type GroupChatLineViewer =
-  string | (Pick<GroupMember, 'name'> & Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'remoteSource'>>)
+  | string
+  | (Pick<GroupMember, 'name'> &
+      Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'installId' | 'remoteSource'>>)
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
@@ -50,15 +58,37 @@ export function formatGroupChatLine(entry: GroupMessage, viewer: GroupChatLineVi
   return `${groupSpeakerLabel(entry.from.name, group)}${suffix}${source}: ${relabelMemberControlFrames(entry.text)}${attached}`
 }
 
-/** #114341: a member's turn renders only the last GROUP_CHAT_HISTORY_LIMIT
- *  delta lines while the watermark commit advances past the whole tail, so
- *  the head of an over-long delta is never delivered on any later turn
- *  either. Mark the cut — without it a member has no way to know its view
- *  of the room is partial (typically missing the very user instruction
- *  that started the exchange). */
+/** #114341: a member's turn renders the newest delta lines that fit the
+ *  window — GROUP_CHAT_HISTORY_LIMIT entries AND GROUP_CHAT_HISTORY_CHARS
+ *  characters, each body first cut to GROUP_CHAT_HISTORY_LINE_CHARS — while
+ *  the watermark commit advances past the whole tail, so the head of an
+ *  over-long delta is never delivered on any later turn either. Mark the
+ *  cut with the exact count — without it a member has no way to know its
+ *  view of the room is partial (typically missing the very user instruction
+ *  that started the exchange). The newest entry is always kept. */
 export function formatGroupDeltaLines(delta: GroupMessage[], viewer: GroupChatLineViewer, group?: null | string) {
-  const omitted = delta.length - GROUP_CHAT_HISTORY_LIMIT
-  const lines = delta.slice(-GROUP_CHAT_HISTORY_LIMIT).map(entry => formatGroupChatLine(entry, viewer, group))
+  const lines: string[] = []
+  let chars = 0
+
+  for (let i = delta.length - 1; i >= 0 && lines.length < GROUP_CHAT_HISTORY_LIMIT; i--) {
+    const entry = delta[i]
+
+    const line = formatGroupChatLine(
+      { ...entry, text: compactGroupChatSyncText(entry.text, GROUP_CHAT_HISTORY_LINE_CHARS).text },
+      viewer,
+      group
+    )
+
+    if (lines.length && chars + line.length > GROUP_CHAT_HISTORY_CHARS) {
+      break
+    }
+
+    lines.push(line)
+    chars += line.length + 1
+  }
+
+  lines.reverse()
+  const omitted = delta.length - lines.length
 
   if (omitted > 0) {
     lines.unshift(`… ${omitted} earlier room message${omitted === 1 ? '' : 's'} omitted since your last turn`)
@@ -71,30 +101,41 @@ function viewerNameOf(viewer: GroupChatLineViewer): string {
   return typeof viewer === 'string' ? viewer : viewer?.name || ''
 }
 
-/** Remote members stamp `from.source` as `connectionLabel || connectionId`.
- *  Only a remoteSource viewer exposes those tokens; a string or local member
- *  is unsourced so same-name remote lines fail open (no `(you)`). */
+/** Members stamp `from.source` as `connectionLabel || connectionId` (local
+ *  ones too, once they know their connection). A string viewer or a member
+ *  without a connection exposes no tokens. */
 function viewerConnectionSources(viewer: GroupChatLineViewer): string[] {
-  if (typeof viewer === 'string' || !viewer?.remoteSource) {
+  if (typeof viewer === 'string') {
     return []
   }
 
   return [viewer.connectionLabel, viewer.connectionId].filter((token): token is string => Boolean(token))
 }
 
-function isGroupChatSelf(from: GroupMessageAuthor, viewer: GroupChatLineViewer): boolean {
+/** Whether `from` is the viewer itself — the one authorship rule for the
+ *  `(you)` suffix and for the round's own-entry watermark walk. */
+export function isGroupChatSelf(from: GroupMessageAuthor, viewer: GroupChatLineViewer): boolean {
   if (!from.name || from.name !== viewerNameOf(viewer)) {
     return false
   }
 
-  const speakerSource = from.source || ''
-  const viewerSources = viewerConnectionSources(viewer)
-
-  if (!speakerSource && viewerSources.length === 0) {
-    return true
+  // Gateway identity first: the install_id is the same token on every
+  // Desktop, while `source` is whatever THIS Desktop labelled the connection
+  // (two Desktops calling one gateway "Central" / "Studio" agree here and
+  // disagree below). Only decisive when both sides carry it.
+  if (from.gateway && typeof viewer !== 'string' && viewer?.installId) {
+    return from.gateway === viewer.installId
   }
 
-  return Boolean(speakerSource) && viewerSources.includes(speakerSource)
+  const speakerSource = from.source || ''
+
+  // An unsourced same-name line is local by the room's resolution rule
+  // (routing.ts: no source ⇒ `!remoteSource`), so only a local viewer owns it.
+  if (!speakerSource) {
+    return typeof viewer === 'string' || !viewer?.remoteSource
+  }
+
+  return viewerConnectionSources(viewer).includes(speakerSource)
 }
 
 interface GroupChatTurnPromptInput {
@@ -103,6 +144,10 @@ interface GroupChatTurnPromptInput {
   members: GroupMember[]
   viewer: GroupMember
 }
+
+/** Opens every room-fed turn prompt; group-external-writes.ts tells the room's
+ *  own prompts apart from outside writes by it. */
+export const GROUP_PROMPT_HEADER_PREFIX = '[Group chat: "'
 
 /** The full per-turn payload for one member: participation rules + the room
  *  delta. Rules travel in the turn payload (not SOUL) so every existing bot
@@ -120,7 +165,7 @@ export function buildGroupChatTurnPrompt({ groupName, members, viewer, deltaLine
     .join(', ')
 
   return [
-    `[Group chat: "${groupName}"] You are @${botMentionTag(viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
+    `${GROUP_PROMPT_HEADER_PREFIX}${groupName}"] You are @${botMentionTag(viewer)}, one participant in a group chat with ${peerNames || 'no one else yet'} and the user.`,
     '',
     'New messages in the room since your last turn (oldest first):',
     ...deltaLines.map(line => `  ${line}`),

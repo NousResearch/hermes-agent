@@ -560,6 +560,24 @@ describe('liveSessionProjectId', () => {
       '/work/notes'
     )
   })
+
+  it('matches NFD and NFC spellings of the same accented folder (#65014)', () => {
+    // The same on-disk folder can reach us as NFC (typed paths, backend cwd)
+    // or NFD (macOS file pickers) — byte-different, visually identical.
+    const nfc = '/projects/sv/bist\u00e5nd'
+    const nfd = nfc.normalize('NFD')
+
+    expect(nfd).not.toBe(nfc) // premise: distinct byte strings
+    expect(liveSessionProjectId(makeCwdSession(nfd), [makeProject('p_bistand', [nfc])])).toBe('p_bistand')
+  })
+
+  it('matches a Windows cwd differing in both case and normalization form (#65014)', () => {
+    const id = liveSessionProjectId(makeCwdSession('d:/projects/sv/bist\u00e5nd'.normalize('NFD')), [
+      makeProject('p_sv', ['D:\\Projects\\SV\\Bist\u00e5nd'.normalize('NFC')])
+    ])
+
+    expect(id).toBe('p_sv')
+  })
 })
 
 describe('sessionProjectColor', () => {
@@ -625,11 +643,13 @@ describe('overlayLiveLanes', () => {
     'entering an ancestor project does not inject a backend-owned sibling worktree session (git_repo_root=%s)',
     gitRepoRoot => {
       const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: gitRepoRoot })
+
       const ancestor = projectNode({
         id: 'p_work',
         path: '/work',
         repos: [{ id: '/work', label: 'work', path: '/work', groups: [], sessionCount: 0 }]
       })
+
       const appRepo = {
         id: '/work/repos/app',
         label: 'app',
@@ -637,6 +657,7 @@ describe('overlayLiveLanes', () => {
         groups: [lane({ id: '/work/repos/app-2', label: 'app-2', path: '/work/repos/app-2', sessions: [] })],
         sessionCount: 0
       }
+
       // Overview snapshot: the row sits beyond the preview window, so only the
       // backend's claimed-id set knows the owner.
       const repo = projectNode({ id: 'p_app', path: '/work/repos/app', previewSessions: [], sessionIds: ['sibling'] })
@@ -1077,6 +1098,31 @@ describe('overlayLiveLanes', () => {
     expect(overlaid.sessionCount).toBe(2)
   })
 
+  it('never lists a chat owned by a named project in Home, even while its live copy is detached', () => {
+    // #77591: the snapshot assigns the chat to p_app, but session.info can land
+    // with an empty cwd + root. Home must defer to the one owner, including by
+    // lineage root after compression rotates the live id.
+    const home = homeNode([makeCwdSession(null, { id: 'stale' })])
+
+    const owners = new Map([
+      ['owned', 'p_app'],
+      ['root', 'p_app'],
+      ['stale', 'p_app'],
+      ['homeless', NO_PROJECT_ID]
+    ])
+
+    const live = [
+      makeCwdSession(null, { id: 'owned' }),
+      makeCwdSession(null, { id: 'tip', _lineage_root_id: 'root' }),
+      makeCwdSession(null, { id: 'homeless' })
+    ]
+
+    const overlaid = overlayLiveLanes(home, live, new Set(), owners)
+
+    expect(overlaid.repos[0].groups[0].sessions.map(s => s.id)).toEqual(['homeless'])
+    expect(overlaid.sessionCount).toBe(1)
+  })
+
   it('leaves Home alone for a session that has a cwd', () => {
     // A cwd-carrying row the backend hasn't placed yet (junk root, deleted
     // workspace) needs its probes — guessing here would flicker it into Home
@@ -1131,6 +1177,7 @@ describe('overlayLivePreviews', () => {
     gitRepoRoot => {
       const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: gitRepoRoot })
       const ancestor = projectNode({ id: 'p_work', path: '/work', previewSessions: [], sessionCount: 0 })
+
       const repo = projectNode({
         id: 'p_app',
         path: '/work/repos/app',

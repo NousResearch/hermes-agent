@@ -136,6 +136,8 @@ _BILLING_ERROR_CODES = frozenset({
     # terminal for this credential until limits are raised.
     "credit_balance_exhausted", "organization_spend_limit_exceeded",
     "organization_usage_limit_exceeded", "project_spend_limit_exceeded",
+    # Nous paid model behind an empty credit balance arrives as a 404 (#115702).
+    "insufficient_credits_for_paid_model",
 })
 
 # Transient rate limiting. Bedrock "Throttling error: Too many tokens" also
@@ -156,6 +158,8 @@ _OVERLOADED_PATTERNS = (
     "service may be temporarily overloaded", "server is overloaded", "server overloaded",
     "server overload", "server_overload",
     "service overloaded", "service is overloaded", "upstream overloaded", "currently overloaded",
+    # CommandCode's 429 body for an unavailable upstream model — the key is healthy (#117111).
+    "upstream model provider is temporarily unavailable. please try again in a moment.",
     "at capacity", "over capacity",
 )
 
@@ -338,16 +342,22 @@ _PROVIDER_POLICY_BLOCKED_PATTERNS = (
     "no endpoints found matching your data policy",
 )
 
+# Upstream account ban relayed by an aggregator, often as HTTP 200 + an SSE error
+# event (no status): permanent for this account, so never the transient retry ladder.
+_ACCOUNT_POLICY_BLOCK_PATTERNS = ("blocked for a previous policy violation",)
+
 # Per-prompt safety-filter blocks: deterministic for the unchanged request, so
 # fallback immediately. Each phrase is verbatim from one provider (Codex cyber
 # flags #18028, OpenAI moderation, Anthropic safety, Azure token, MiniMax
-# #32421) — never a generic word like "policy" that collides with billing/auth.
+# #32421, CommandCode gateway moderation #115218) — never a generic word like
+# "policy" that collides with billing/auth.
 # "content_filter" deliberately excludes the space variant seen in echoed config.
 _CONTENT_POLICY_BLOCKED_PATTERNS = (
     "flagged for possible cybersecurity risk", "trusted access for cyber",
     "violates our usage policies", "violates openai's usage policies", "your request was flagged by",
     "prompt was flagged by our safety", "responses cannot be generated due to safety",
     "content_filter", "responsibleaipolicyviolation", "new_sensitive",
+    "content exists risk",
 )
 
 # Auth patterns (non-status-code signals).
@@ -599,10 +609,15 @@ _400_TAIL_RULES = _OVERFLOW_AS_5XX_RULES + (
     (_RATE_LIMIT_PATTERNS, _V_RATE_LIMIT), (_BILLING_PATTERNS, _billing_hints),
 )
 
+# LM Studio / llama.cpp raise a bare status-less ``APIError`` when chat-template Jinja rendering
+# fails mid-stream (#62662). Deterministic for the request, so fall back instead of retrying.
+_STREAM_RENDER_ERROR_PATTERNS = ("error rendering", "rendering prompt", "jinja template", "jinja render")
+
 # Status-less message path, head (before usage-limit disambiguation).
 _MESSAGE_HEAD_RULES = ((_MEMORY_CEILING_PATTERNS, _V_OVERLOADED),
                        (_PAYLOAD_TOO_LARGE_PATTERNS, _V_PAYLOAD_TOO_LARGE),
-                       (_ROLE_ALTERNATION_PATTERNS, _V_ROLE_ALTERNATION)) + _IMAGE_TOOL_RULES
+                       (_ROLE_ALTERNATION_PATTERNS, _V_ROLE_ALTERNATION),
+                       (_STREAM_RENDER_ERROR_PATTERNS, _V_FORMAT_ERROR)) + _IMAGE_TOOL_RULES
 
 # Status-less tail. Overload before rate_limit/billing so "overloaded" backs off
 # instead of rotating; policy block before model_not_found; timeout/connection
@@ -700,6 +715,60 @@ def _plugin_verdict(c: _Ctx) -> Optional[Verdict]:
     return verdict
 
 
+def _profile_verdict(c: _Ctx) -> Optional[Verdict]:
+    """The current provider's own ``ProviderProfile.classify_api_error`` verdict, or None.
+
+    A ``kind: model-provider`` plugin never enters the PluginManager hook lifecycle, so without this a
+    vendor-specific body (a 403 ``quota_exhausted`` that is billing, not auth) could only be corrected by
+    shipping a second plugin component. Scoped to the provider that produced the error; no name table."""
+    if not c.provider_slug:
+        return None
+    try:
+        from providers import get_provider_profile
+        hook = getattr(get_provider_profile(c.provider_slug), "classify_api_error", None)
+        if not callable(hook):
+            return None
+        result = hook(c.error, status_code=c.status_code, error_code=c.error_code, message=c.msg,
+                      body=c.body, model=c.model)
+    except Exception as exc:
+        logger.debug("Provider profile error classification failed for %s: %s", c.provider_slug, exc)
+        return None
+    if not isinstance(result, dict):
+        return None
+    reason = result.get("reason")
+    if isinstance(reason, str):
+        try:
+            reason = FailoverReason(reason.strip().lower())
+        except ValueError:
+            return None
+    if not isinstance(reason, FailoverReason):
+        return None
+    hints = {k: bool(result[k]) for k in _HINT_FLAGS if k in result}
+    # turn_api_error walks the fallback chain only for non-retryable verdicts outside
+    # RETRYABLE_CLIENT_REASONS; the built-in terminal verdicts (billing, auth, model_not_found …) pin
+    # retryable=False, the rate-limit family stays retryable and reaches fallback after backoff. Give
+    # a hook that asks for fallback the built-in default for its reason, so it cascades like one.
+    if hints.get("should_fallback") and "retryable" not in hints and reason not in RETRYABLE_CLIENT_REASONS:
+        hints["retryable"] = False
+    verdict = _v(reason, **hints)
+    if isinstance(result.get("error_context"), dict):
+        verdict["error_context"] = result["error_context"]
+    logger.info("API error classified by provider profile: %s (provider=%s, status=%s)",
+                reason.value, c.provider, c.status_code)
+    return verdict
+
+
+_HINT_FLAGS = ("retryable", "should_compress", "should_rotate_credential", "should_fallback")
+
+# Reasons the retry loop keeps retrying (with backoff) even though the verdict may also carry
+# ``should_fallback``: the cascade for these runs after the backoff budget, not immediately.
+RETRYABLE_CLIENT_REASONS = frozenset({
+    FailoverReason.rate_limit, FailoverReason.upstream_rate_limit, FailoverReason.overloaded,
+    FailoverReason.context_overflow, FailoverReason.payload_too_large, FailoverReason.long_context_tier,
+    FailoverReason.thinking_signature,
+})
+
+
 # A welcome-host 403 that spells one of these out is a safety block or a billing wall, not the
 # tier refusing. The free-tier refusal phrases are left OUT: on the free route they mean exactly
 # "the tier refused", and an anonymous session has no credits to check.
@@ -760,6 +829,9 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # to format_error and a status-less block isn't left retryable (#18028).
     if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
         return _V_CONTENT_BLOCKED
+    # Status-agnostic: the stream-relayed ban has no status, and a 403 variant is not a bad key.
+    if any(p in msg for p in _ACCOUNT_POLICY_BLOCK_PATTERNS):
+        return _V_POLICY_BLOCKED
     # ChatGPT Codex masks a rejected encrypted-reasoning replay behind the same bare
     # ``invalid_prompt: Request blocked.`` it uses for real blocks (#92353). Exact envelope
     # + provider only. The verdict keeps format_error's abort-and-fallback hints; the one
@@ -877,11 +949,11 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
     return _STATUS_HANDLERS[status](c) if status in _STATUS_HANDLERS else default
 
 
-# Stage order: plugin hooks → provider-specific special cases → HTTP status →
-# MoA shapes → structured error code → message patterns → SSL → disconnect +
+# Stage order: plugin hooks → the provider's own profile hook → provider-specific special cases →
+# HTTP status → MoA shapes → structured error code → message patterns → SSL → disconnect +
 # large session → transport types → unknown (retryable with backoff).
 _STAGES: Sequence[Callable[[_Ctx], Optional[Verdict]]] = (
-    _plugin_verdict, _provider_special_cases, _by_status, _moa_special_cases,
+    _plugin_verdict, _profile_verdict, _provider_special_cases, _by_status, _moa_special_cases,
     _by_error_code, _by_message, _by_transport,
 )
 
@@ -957,6 +1029,10 @@ def _status_403(c: _Ctx) -> Verdict:
 
 
 def _status_404(c: _Ctx) -> Verdict:
+    # Structured billing code first, as in _status_429: this handler always returns,
+    # so _by_error_code never sees it; a bare "Not Found" message has nothing to match.
+    if c.code in _BILLING_ERROR_CODES:
+        return _V_BILLING
     verdict = _first_match(c.msg, _404_RULES)
     if verdict is not None:
         return verdict
@@ -1328,9 +1404,30 @@ def _headers_of(exc: Any) -> Any:
     return headers if headers and hasattr(headers, "get") else None
 
 
+def _status_code_from_body(body: Any) -> Optional[int]:
+    """Numeric HTTP error status (400-599) from ``error.code``/``code`` in a structured body.
+    An aggregator/relay can deliver the upstream failure only this way — as an
+    error object inside an HTTP-200 SSE stream — leaving the SDK to raise a
+    status-less ``APIError`` whose ``body`` carries the status (#121270). String
+    codes stay symbolic (``_code_from_payload``'s ``"400" is not a code``), unlike the
+    string-parsing text-SSE sibling ``chat_completion_helpers._status_code_from_payload``."""
+    if not isinstance(body, dict):
+        return None
+    error_obj = _error_obj(body)
+    candidates = [error_obj.get(k) for k in ("status_code", "status", "http_status", "code")] + [body.get("code")]
+    return next(
+        (c for c in candidates if isinstance(c, int) and not isinstance(c, bool) and 400 <= c < 600),
+        None,
+    )
+
+
 def _extract_status_code(error: Exception) -> Optional[int]:
-    """HTTP status code from the error or its cause chain."""
-    return _from_cause_chain(error, _status_of, None)
+    """HTTP status code from the error or its cause chain; a body-carried numeric
+    ``code`` counts when the exception itself carries no status (#121270)."""
+    status = _from_cause_chain(error, _status_of, None)
+    if status is None:
+        status = _status_code_from_body(_from_cause_chain(error, _body_of, {}))
+    return status
 
 
 def _extract_error_body(error: Exception) -> dict:

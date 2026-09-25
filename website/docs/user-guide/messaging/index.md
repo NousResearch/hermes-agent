@@ -281,13 +281,15 @@ Final agent responses are recorded in a durable **delivery ledger**
 (`state.db`) around each platform send. If the gateway crashes or restarts
 between producing a response and the platform confirming receipt, the next
 boot redelivers the stored response instead of losing it — or re-running the
-whole turn.
+whole turn. The ledger lives in the home the gateway was started from; a
+multiplexed gateway keeps every served profile's replies there too.
 
 Semantics are honest at-least-once:
 
 - A response whose send **never started** is redelivered as-is.
 - A response that was **mid-send** when the gateway died (the platform may or
-  may not have received it) is redelivered with a visible
+  may not have received it), including a redelivery an earlier boot was
+  still sending, is redelivered with a visible
   "♻️ Recovered reply — … may be a duplicate" prefix. Ambiguity is labeled,
   never silently resent.
 - A final send refused by **flood control** (such as Telegram rate limits) is retried automatically
@@ -416,7 +418,7 @@ gateway:
 
 #### Inspecting your access
 
-Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. See the [Telegram](./telegram.md#slash-command-access-control) and [Discord](./discord.md#slash-command-access-control) pages for platform-specific examples.
+Use `/whoami` from any platform to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run. When an admin list is configured, `/help` and `/commands` show a non-admin only the commands they can actually run (`/help`, `/whoami`, plus `user_allowed_commands`); admins see the full catalog. See the [Telegram](./telegram.md#slash-command-access-control) and [Discord](./discord.md#slash-command-access-control) pages for platform-specific examples.
 
 ## Redirecting the Agent
 
@@ -440,7 +442,11 @@ Gateway steers (including explicit `/steer`) and active-turn redirects carry the
 display:
   busy_input_mode: steer   # or queue, or interrupt (default)
   busy_ack_enabled: true   # set to false to suppress the ⚡/⏳/⏩ chat reply entirely
+  busy_text_debounce_seconds: 0.35   # quiet window before merged busy text is delivered
+  busy_text_hard_cap_seconds: 1.0    # never hold merged busy text longer than this
 ```
+
+All four keys are read from each profile's own `config.yaml`, so multiplexed profiles keep independent busy policies; there is no process-environment override.
 
 The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
 
@@ -604,6 +610,18 @@ Use the user service on laptops and dev boxes. Use the system service on VPS or 
 The unit Hermes installs already shuts the gateway down cleanly with `KillMode=mixed` + `KillSignal=SIGTERM`, and uses `Restart=always` with `RestartForceExitStatus` so updates and `/restart` respawn correctly. Do **not** add a systemd drop-in such as `ExecStopPost=/bin/kill -9 $MAINPID` — `ExecStopPost` fires on *every* stop, including clean restarts, so it `SIGKILL`s the freshly spawned instance before it stabilizes and `Restart=always` immediately respawns it. The result is an infinite restart loop (and, on Telegram, a flood of restart messages). If you've added such a drop-in, remove it: `systemctl --user edit hermes-gateway` (or `sudo systemctl edit hermes-gateway` for a system service) and delete the `ExecStopPost` line, then `systemctl --user daemon-reload`.
 :::
 
+### Direct `systemctl restart` / `stop` exits cleanly
+
+The installed unit declares `ExecStop=` to record a planned-stop marker for `$MAINPID` before `SIGTERM` is delivered, so stopping or restarting the service directly is classified as intentional: the gateway drains, persists `gateway_state=stopped`, and exits `0` — the journal shows a clean stop/start with no `Failed with result exit-code` line.
+
+```bash
+systemctl --user restart hermes-gateway   # or: sudo systemctl restart hermes-gateway
+```
+
+Prefer `hermes gateway restart` when in-flight agent turns matter: it asks the gateway to drain first (`SIGUSR1`, honoring the restart wait budget) and waits for the replacement, while a raw `systemctl restart` stops the current process on systemd's schedule. After updating Hermes, run `hermes gateway restart` once so the running service picks up the regenerated unit that contains the `ExecStop=` line (`hermes gateway status` warns while the installed unit is outdated).
+
+The installed unit also maps `systemctl reload hermes-gateway` to `SIGUSR1`. For Hermes, `reload` therefore means a graceful drain, process exit, and supervisor relaunch; it is **not** an in-process configuration reload. Use `hermes gateway restart` when you want the CLI to wait for and verify the replacement process.
+
 :::tip Headless VMs: user service + linger avoids root prompts
 A system service needs root for every restart — including the automatic gateway restart at the end of `hermes update`. When `hermes update` runs as a non-root user, it tries passwordless `sudo systemctl`; if that's unavailable, it skips the restart and prints the manual `sudo systemctl restart hermes-gateway` command (it never blocks on an interactive password prompt).
 
@@ -649,6 +667,14 @@ The generated plist lives at `~/Library/LaunchAgents/ai.hermes.gateway.plist`. I
 
 :::tip PATH changes after install
 launchd plists are static — if you install new tools (e.g. a new Node.js version via nvm, or ffmpeg via Homebrew) after setting up the gateway, run `hermes gateway install` again to capture the updated PATH. The gateway will detect the stale plist and reload automatically.
+:::
+
+:::info Installing without starting
+The plist sets `RunAtLoad`, so loading it starts the gateway. `hermes gateway install --no-start-now`, like answering No to "Start the gateway now?" in `hermes gateway setup`, writes the plist without loading it: the gateway starts at your next login, or when you run `hermes gateway start`. A gateway that launchd is already running is reloaded onto the new plist, not stopped.
+:::
+
+:::info Local Network access (LAN devices fail with "No route to host")
+macOS Local Network Privacy attributes a socket to the executable launchd spawned for the job. A bare venv Python has no application identity, so a launchd-run gateway could not reach LAN hosts (Home Assistant, local model servers) — every connect failed with `errno 65 No route to host` while the same URL worked from Terminal, and no prompt was ever shown to grant it. The generated plist therefore runs the gateway through `/usr/bin/osascript` (`do shell script "exec …"`), whose children macOS treats as osascript's own — an Apple platform binary, exempt from the check. `ps` shows `osascript → stderr_timestamp → gateway run`; stop/restart/KeepAlive behave exactly as before. A plist installed by an older Hermes is refreshed by `hermes gateway install` (or on the next `hermes gateway start`).
 :::
 
 :::tip Picking up new credentials after `hermes auth add` / `hermes auth reset`
@@ -836,6 +862,8 @@ Set `typing_indicator: false` on any platform where the indicator is unwanted. S
 
 When the gateway shuts down with an in-flight tool call or generation, the affected sessions are flagged as `restart_interrupted`. On the next startup, the gateway schedules an auto-resume for each one — the user gets a short heads-up in the chat ("Send any message after restart and I'll try to resume where you left off.") and the session picks up from the last committed turn when they reply.
 
+Only turns that were actually in flight are resumed, and each resumes once. A chat whose turn had already finished is never answered again just because it was active shortly before a crash. If the gateway was killed after the agent finished a reply but before it was sent, the stored reply is delivered (with a "Recovered reply" notice) instead of being regenerated.
+
 This behaviour is on by default and is logged at gateway start:
 
 ```
@@ -852,6 +880,8 @@ Telegram is usually a mobile inbox, so the defaults are tuned for that surface:
 - **`busy_ack_detail`** defaults to **`off`** — busy-state acknowledgments and long-running heartbeats stay terse (no `iteration 21/60` debug detail).
 - **`interim_assistant_messages`** stays **on** — real mid-turn assistant commentary (the model literally telling you what it's about to do) is signal, not noise.
 - **`long_running_notifications`** stays **on** — a single edit-in-place "⏳ Working — N min" bubble updates every few minutes so you have a heartbeat instead of staring at `typing…` for half an hour.
+
+These per-platform defaults apply only while the same key is unset directly under `display:`. A global `display.tool_progress`, `display.show_reasoning`, `display.busy_ack_detail`, `display.interim_assistant_messages` or `display.long_running_notifications` applies to every platform and replaces its default. A `config.yaml` copied from an older `cli-config.yaml.example` sets all five globally, and an older first-time `hermes setup` wrote `tool_progress: all`; delete those lines to get the per-platform defaults back.
 
 Opt out of either of the kept-on defaults or opt back into verbose progress per platform:
 

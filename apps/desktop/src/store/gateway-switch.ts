@@ -16,6 +16,7 @@ import {
   setCurrentCwdTransient,
   setFreshDraftReady,
   setMessages,
+  setMessagingListServer,
   setMessagingPlatformTotals,
   setMessagingSessions,
   setMessagingTruncated,
@@ -23,6 +24,7 @@ import {
   setSessionProfilesTruncated,
   setSessionProfilesUsage,
   setSessions,
+  setSessionsLoadError,
   setSessionsLoading
 } from '@/store/session'
 import { clearAllSessionControl } from '@/store/session-control'
@@ -200,6 +202,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   invalidateCronJobsRequests()
   setCronJobs([])
   setMessagingSessions([])
+  setMessagingListServer(null)
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
   // Clearing $sessionStates automatically clears $workingSessionIds and
@@ -217,6 +220,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   resetLiveSync()
   $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
+  setSessionsLoadError(false)
   resetSessionsLimit()
 
   setActiveSessionId(null)

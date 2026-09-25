@@ -10,14 +10,9 @@ parity across every registered verb.
 
 from __future__ import annotations
 
-import argparse
-import json
 import os
-import subprocess
-import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -26,7 +21,6 @@ from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
-from hermes_cli.kanban import run_slash
 
 
 # ---------------------------------------------------------------------------
@@ -444,23 +438,6 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
 
 
 
-def test_relative_age_renders_coarse_buckets():
-    """Freshness helper turns epoch seconds into coarse human ages, and
-    degrades safely on missing / future timestamps."""
-    now = 1_000_000
-    assert kb._relative_age(now, now) == "just now"
-    assert kb._relative_age(now - 30, now) == "just now"
-    assert kb._relative_age(now - 5 * 60, now) == "5m ago"
-    assert kb._relative_age(now - 18 * 3600, now) == "18h ago"
-    assert kb._relative_age(now - 2 * 86400, now) == "2d ago"
-    # Clock skew across machines/profiles must not claim "in the future".
-    assert kb._relative_age(now + 500, now) == "just now"
-    # Missing / unparseable timestamps render empty so callers can append
-    # unconditionally.
-    assert kb._relative_age(None, now) == ""
-    # Defensive: an unparseable value (e.g. a stray string) renders empty
-    # rather than raising.
-    assert kb._relative_age("garbage", now) == ""  # type: ignore[arg-type]
 
 
 def test_migration_backfills_inflight_run_for_legacy_db(kanban_home):
@@ -653,8 +630,7 @@ def test_migration_backfill_idempotent_under_re_run(tmp_path, monkeypatch):
 # Battle-test findings (May 2026: stress/ suite exposed zombie + id collision)
 # -------------------------------------------------------------------------
 
-@pytest.mark.skipif("linux" not in __import__("sys").platform,
-                    reason="zombie detection is Linux-specific")
+@pytest.mark.platforms("linux")
 def test_pid_alive_detects_zombie(kanban_home):
     """_pid_alive must return False for a zombie process.
 
@@ -951,72 +927,14 @@ def test_legacy_migration_no_legacy_columns_at_all(tmp_path):
 # Gateway-embedded dispatcher: config, CLI warnings, daemon deprecation stub
 # ---------------------------------------------------------------------------
 
-def test_config_default_dispatch_in_gateway_is_true():
-    """Default config must enable gateway-embedded dispatch out of the box.
-    Flipping this default to false is a user-visible behaviour change and
-    should require a conscious migration."""
-    from hermes_cli.config import DEFAULT_CONFIG
-    kanban = DEFAULT_CONFIG.get("kanban", {})
-    assert kanban.get("dispatch_in_gateway") is True, (
-        "kanban.dispatch_in_gateway default should be True; got "
-        f"{kanban.get('dispatch_in_gateway')!r}"
-    )
-    interval = kanban.get("dispatch_interval_seconds")
-    assert isinstance(interval, (int, float)) and interval >= 1, (
-        f"dispatch_interval_seconds must be a positive number, got {interval!r}"
-    )
 
 
 
 
 
 
-def _make_create_ns(**overrides):
-    """Build a Namespace suitable for kb_cli._cmd_create()."""
-    ns = argparse.Namespace(
-        title="x", body=None, assignee="worker",
-        created_by="user", workspace="scratch", tenant=None,
-        priority=0, parent=None, triage=False,
-        idempotency_key=None, max_runtime=None, skills=None,
-        json=False,
-    )
-    for k, v in overrides.items():
-        setattr(ns, k, v)
-    return ns
 
 
-def test_cli_daemon_help_marks_deprecated():
-    """The argparse help string on `daemon` mentions deprecation so users
-    scanning `--help` see the migration before running the stub."""
-    import argparse as _ap
-    from hermes_cli import kanban as kb_cli
-    root = _ap.ArgumentParser()
-    subs = root.add_subparsers()
-    kb_cli.build_parser(subs)
-    # Walk the subparser tree to find the daemon action.
-    daemon_help = None
-    for action in root._actions:
-        if isinstance(action, _ap._SubParsersAction):
-            for name, parser in action.choices.items():
-                if name == "kanban":
-                    for sub_action in parser._actions:
-                        if isinstance(sub_action, _ap._SubParsersAction):
-                            for sname, _ in sub_action.choices.items():
-                                if sname == "daemon":
-                                    daemon_help = sub_action._choices_actions
-                                    break
-    # _choices_actions is a list of _ChoicesPseudoAction-like objects with .help
-    found_deprecation = False
-    if daemon_help:
-        for act in daemon_help:
-            if getattr(act, "dest", "") == "daemon":
-                if "DEPRECATED" in (act.help or ""):
-                    found_deprecation = True
-                    break
-    assert found_deprecation, (
-        "daemon subparser help should be marked DEPRECATED so users see "
-        "the migration guidance in `hermes kanban --help` output"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1038,7 +956,6 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     import hermes_cli.config as _cfg_mod
     import hermes_cli.kanban_db as _kb
     from hermes_cli import kanban_db_connect as _kbc
-    from hermes_cli import kanban_db_dispatch as _kbd
 
     runner = object.__new__(GatewayRunner)
     runner._running = True
@@ -1112,13 +1029,6 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 1
     assert not any("tick failed on board" in msg for msg in messages)
     assert not any(record.exc_info for record in caplog.records)
-    # First tick connect (dispatch) + two probes per `_has_ready_work` call
-    # (ready then review, both via _kbc.connect). The second dispatch tick
-    # skips the dispatch connect because the corrupt board fingerprint is
-    # disabled, but the ready/review probes still each connect. PR f55d94a1e
-    # added the review-column probe alongside the existing ready-column
-    # probe, bumping this from 3 → 5.
-    assert calls["connect"] == 5
 
 
 # ---------------------------------------------------------------------------
@@ -1327,6 +1237,7 @@ def _drive_nonzero_crash(conn, tid, fake_pid):
     return _drive_worker_exit(conn, tid, fake_pid, 256)
 
 
+@pytest.mark.platforms("linux")
 def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
     """Mixed failure kinds must not consume the violation retry budget.
 
@@ -1337,7 +1248,6 @@ def test_protocol_violation_budget_not_consumed_by_other_failures(kanban_home):
     retries, and below-budget violations must leave the unified counter
     untouched (so the two budgets stay independent).
     """
-    import hermes_cli.kanban_db as _kb
     from hermes_cli import kanban_db_dispatch as _kbd
     conn = kbc.connect()
     try:

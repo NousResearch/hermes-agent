@@ -1,6 +1,7 @@
 """Credential-pool auth subcommands."""
 
 from __future__ import annotations
+from pm import install_hint
 from hermes_cli.cli_output import line_input
 
 import math
@@ -14,11 +15,13 @@ import uuid
 from agent.credential_pool import (
     AUTH_TYPE_API_KEY, AUTH_TYPE_OAUTH, CUSTOM_POOL_PREFIX, SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE, STATUS_EXHAUSTED, STRATEGY_FILL_FIRST, STRATEGY_ROUND_ROBIN,
-    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, REFRESHABLE_OAUTH_PROVIDERS, _codex_principal_identity,
+    STRATEGY_RANDOM, STRATEGY_LEAST_USED, PooledCredential, _codex_principal_identity,
     _exhausted_until, _normalize_custom_pool_name, get_pool_strategy, label_from_token, list_custom_pool_providers,
     load_pool)
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
+from hermes_cli.auth_plugin_providers import (
+    dispatch_plugin_auth, is_refreshable_oauth_provider, plugin_missing_auth_handler_error)
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -374,9 +377,13 @@ def _add_api_key_credential(args, provider: str, pool) -> PooledCredential:
 
 def auth_add_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
+    if dispatch_plugin_auth("add", args, provider):
+        return
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
         raise _unknown_provider_exit(provider)
+    if (error := plugin_missing_auth_handler_error(provider, "add")) is not None:
+        raise error
     if configured_provider is not None:
         _migrate_legacy_custom_pool_key(provider, configured_provider["pool_key"])
 
@@ -544,6 +551,15 @@ def _print_external_login_notice() -> None:
         print(EXTERNAL_LOGINS_NOT_ADOPTED_NOTICE)
 
 
+    _print_oauth_heal_notices()
+
+
+def _print_oauth_heal_notices() -> None:
+    """Tell the user when load_pool() just consolidated a forked OAuth grant."""
+    for note in auth_mod.consume_oauth_heal_notices():
+        print(f"note: {note}")
+
+
 def auth_remove_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
     target = getattr(args, "target", None)
@@ -600,6 +616,8 @@ def auth_refresh_command(args) -> None:
     429s and benches it again. Failure leaves the pool's own verdict in place.
     """
     provider = _normalize_provider(getattr(args, "provider", ""))
+    if dispatch_plugin_auth("refresh", args, provider):
+        return
     target = getattr(args, "target", None)
     pool = load_pool(provider)
     entries = pool.entries()
@@ -615,7 +633,7 @@ def auth_refresh_command(args) -> None:
         index, matched, error = pool.resolve_target(target)
         if matched is None or index is None:
             raise SystemExit(f"{error} Provider: {provider}.")
-    if (provider not in REFRESHABLE_OAUTH_PROVIDERS or matched.auth_type != AUTH_TYPE_OAUTH
+    if (not is_refreshable_oauth_provider(provider) or matched.auth_type != AUTH_TYPE_OAUTH
             or not matched.refresh_token):
         raise SystemExit(
             f"{provider} credential #{index} ({matched.label}) is not a refreshable OAuth "
@@ -648,7 +666,12 @@ def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
         raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
+    if dispatch_plugin_auth("status", args, provider):
+        return
+    if provider in auth_mod.SINGLE_USE_REFRESH_POOL_PROVIDERS:
+        load_pool(provider)  # runs the forked-grant heal first so the report reflects the consolidated grant
     status = auth_mod.get_auth_status(provider)
+    _print_oauth_heal_notices()
     if status.get("free_tier"):
         # Free tier: not an account login, so no account fields; point at the upgrade path.
         label, hint = _free_tier_lines()
@@ -669,7 +692,12 @@ def auth_status_command(args) -> None:
 
 
 def auth_logout_command(args) -> None:
-    auth_mod.logout_command(SimpleNamespace(provider=getattr(args, "provider", None)))
+    # The built-in path keeps receiving the raw provider id (byte-for-byte
+    # unchanged); the normalized alias is used only for the handler lookup.
+    raw_provider = getattr(args, "provider", None)
+    if dispatch_plugin_auth("logout", args, _normalize_provider(raw_provider or "")):
+        return
+    auth_mod.logout_command(SimpleNamespace(provider=raw_provider))
 
 
 def auth_spotify_command(args) -> None:
@@ -724,7 +752,10 @@ def _print_azure_entra_status() -> None:
         print(f"  Endpoint: {base_url or '(not configured)'}")
         print(f"  Scope: {scope}")
         if not has_azure_identity_installed():
-            print("  Status: ⚠ azure-identity not installed (pip install azure-identity)")
+            print("  Status: ⚠ azure-identity not installed")
+            print("  From the Hermes environment, run: "
+                  f"{install_hint('azure-identity')}")
+            print("  Then restart Hermes.")
         else:
             info = describe_active_credential(config=EntraIdentityConfig(scope=scope), timeout_seconds=10.0)
             env_sources = info.get("env_sources") or []
@@ -776,9 +807,13 @@ def _pick_provider(prompt: str = "Provider") -> str:
 
 def _interactive_add() -> None:
     provider = _pick_provider("Provider to add credential for")
+    if dispatch_plugin_auth("add", SimpleNamespace(provider=provider), provider):
+        return
     configured_provider = _configured_provider_entry(provider)
     if not _is_known_provider(provider, configured_provider):
         raise _unknown_provider_exit(provider)
+    if (error := plugin_missing_auth_handler_error(provider, "add")) is not None:
+        raise error
 
     auth_type = "api_key"
     if provider in _OAUTH_CAPABLE_PROVIDERS:

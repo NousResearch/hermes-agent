@@ -30,7 +30,7 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 
-import { $boardSlug, bindApi, boardKey, fetchBoard } from './api'
+import { $boardSlug, bindApi, boardKey, fetchBoard, useKanbanScope } from './api'
 import { KanbanBoardPage } from './board'
 import { FLEET_BOARD } from './card-face'
 import { KANBAN_LOCALES } from './i18n'
@@ -41,12 +41,13 @@ import { $newTaskLane, enterBoard, useKanban } from './ui'
 // the page); hidden when nothing is in flight (or unloaded).
 function KanbanCount() {
   const k = useKanban()
+  const scope = useKanbanScope()
   const slug = useValue($boardSlug)
 
   // Socket-invalidated like the page (same cache); slow socketless heartbeat.
   const { data: board } = useQuery({
     queryFn: () => fetchBoard(false, slug),
-    queryKey: boardKey(slug, false),
+    queryKey: boardKey(scope, slug, false),
     refetchInterval: 60_000
   })
 
@@ -112,63 +113,70 @@ const plugin: HermesPlugin = {
         render: () => <KanbanBoardPage />
       },
       {
-        id: 'nav',
-        area: SIDEBAR_NAV_AREA,
-        order: 50,
-        data: { codicon: 'project', label: 'Kanban', path: '/kanban' } satisfies SidebarNavContribution
-      },
-      {
         id: 'count',
         area: STATUSBAR_AREAS.right,
         order: 80,
         render: () => <KanbanCount />
-      },
-      {
-        id: 'open',
-        area: PALETTE_AREA,
-        data: {
-          id: 'kanban.open',
-          label: 'Kanban: Open board',
-          keywords: ['kanban', 'board', 'tasks', 'agents'],
-          run: () => host.navigate('/kanban')
-        } satisfies PaletteContribution
-      },
-      {
-        // The fleet-scoped entry: a fresh one-shot request per run (see
-        // enterBoard) — lands on the fleet board when this backend has one,
-        // leaves the operator's selection alone otherwise.
-        id: 'open-fleet',
-        area: PALETTE_AREA,
-        data: {
-          id: 'kanban.openFleet',
-          label: ctx.i18n.t('openFleetBoard'),
-          keywords: ['kanban', 'board', 'fleet', 'stallion'],
-          run: () => enterBoard(FLEET_BOARD)
-        } satisfies PaletteContribution
-      },
-      {
-        id: 'new-task',
-        area: PALETTE_AREA,
-        data: {
-          id: 'kanban.newTask',
-          action: 'kanban.newTask',
-          label: ctx.i18n.t('newTaskCommand'),
-          keywords: ['kanban', 'task', 'new', 'create', 'triage'],
-          run: newTask
-        } satisfies PaletteContribution
-      },
-      {
-        id: 'new-task',
-        area: KEYBINDS_AREA,
-        data: {
-          id: 'kanban.newTask',
-          category: 'view',
-          defaults: ['mod+alt+n'],
-          label: ctx.i18n.t('newTaskCommand'),
-          run: newTask
-        } satisfies KeybindContribution
       }
     ])
+
+    const registerLabels = () =>
+      ctx.registerMany([
+        {
+          id: 'nav',
+          area: SIDEBAR_NAV_AREA,
+          order: 50,
+          data: { codicon: 'project', label: ctx.i18n.t('nav'), path: '/kanban' } satisfies SidebarNavContribution
+        },
+        {
+          id: 'open',
+          area: PALETTE_AREA,
+          data: {
+            id: 'kanban.open',
+            label: ctx.i18n.t('openBoard'),
+            keywords: ['kanban', 'board', 'tasks', 'agents'],
+            run: () => host.navigate('/kanban')
+          } satisfies PaletteContribution
+        },
+        {
+          id: 'open-fleet',
+          area: PALETTE_AREA,
+          data: {
+            id: 'kanban.openFleet',
+            label: ctx.i18n.t('openFleetBoard'),
+            keywords: ['kanban', 'board', 'fleet', 'stallion'],
+            run: () => enterBoard(FLEET_BOARD)
+          } satisfies PaletteContribution
+        },
+        {
+          id: 'new-task',
+          area: PALETTE_AREA,
+          data: {
+            id: 'kanban.newTask',
+            action: 'kanban.newTask',
+            label: ctx.i18n.t('newTaskCommand'),
+            keywords: ['kanban', 'task', 'new', 'create', 'triage'],
+            run: newTask
+          } satisfies PaletteContribution
+        },
+        {
+          id: 'new-task',
+          area: KEYBINDS_AREA,
+          data: {
+            id: 'kanban.newTask',
+            category: 'view',
+            defaults: ['mod+alt+n'],
+            label: ctx.i18n.t('newTaskCommand'),
+            run: newTask
+          } satisfies KeybindContribution
+        }
+      ])
+
+    let disposeLabels = registerLabels()
+    ctx.i18n.onLocaleChange(() => {
+      disposeLabels()
+      disposeLabels = registerLabels()
+    })
   }
 }
 

@@ -67,7 +67,8 @@ import {
   $introDismissed,
   $lanesByProfile,
   boardKey,
-  BOARDS_KEY,
+  boardKeyPrefix,
+  boardsKey,
   bulkTasks,
   createTask,
   deleteTask,
@@ -76,7 +77,10 @@ import {
   fetchBoards,
   fetchProfiles,
   patchTask,
-  PROFILES_KEY
+  profilesKey,
+  routedToScope,
+  taskKey,
+  useKanbanScope
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { cardFace, isFleetBoard } from './card-face'
@@ -97,6 +101,7 @@ import {
   FIELD_LABEL,
   isLockedTarget,
   lockedReason,
+  PriorityGlyph,
   RunClock,
   shortId,
   useDefaultAssignee,
@@ -136,7 +141,7 @@ function removeCard(board: KanbanBoard, id: string): KanbanBoard {
   return { ...board, columns: board.columns.map(col => ({ ...col, tasks: col.tasks.filter(t => t.id !== id) })) }
 }
 
-/** The governed way OFF a board. Never a drop target, never a delete. */
+/** The governed way off a board. Never a drop target, never a delete. */
 const ARCHIVED = 'archived'
 
 // ── card ─────────────────────────────────────────────────────────────────────
@@ -192,8 +197,6 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           </span>
         </Tip>
       ) : task.assignee ? (
-        // The owner, by name — initials alone don't read on a fleet board
-        // where four conductors share a color family.
         <span className="inline-flex min-w-0 items-center gap-1 font-medium text-(--ui-text-secondary)">
           <Avatar name={task.assignee} size="1.125rem" />
           <span className="truncate">{task.assignee}</span>
@@ -220,12 +223,7 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
         </Tip>
       )}
       <div className="ml-auto flex min-w-0 shrink items-center gap-2">
-        {typeof task.priority === 'number' && task.priority > 0 && (
-          <span className="inline-flex items-center gap-0.5 text-amber-500">
-            <Codicon name="arrow-up" size="0.7rem" />
-            {task.priority}
-          </span>
-        )}
+        {typeof task.priority === 'number' && task.priority > 0 && <PriorityGlyph priority={task.priority} />}
         {task.progress && task.progress.total > 0 && (
           <Meta icon="checklist">
             {task.progress.done}/{task.progress.total}
@@ -248,10 +246,6 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
   )
 }
 
-/** The face's scan line: where the card is (status) and which fleet node it
- *  lives on (`tenant` — the sync adapter's current_node). The lane header says
- *  the status too, but a card is read on its own as well: in a per-profile
- *  lane, a search hit, a screenshot pasted into a thread. */
 function CardFacts({ fleet, task }: { fleet: boolean; task: KanbanTask }) {
   const k = useKanban()
   const meta = columnMeta(task.status)
@@ -288,7 +282,6 @@ function Card({
   task
 }: {
   columns: string[]
-  /** Verified fleet context — read through the sync decoration, show the node. */
   fleet: boolean
   onDelete: (id: string) => void
   onMove: (id: string, status: string) => void
@@ -300,9 +293,6 @@ function Card({
   const k = useKanban()
   const [dragging, setDragging] = useState(false)
   const meta = columnMeta(task.status)
-  // On the fleet board, read THROUGH the sync adapter's title/body decoration
-  // (card-face.ts): the face carries the readable card, the drawer keeps the
-  // bookkeeping. Elsewhere the task is shown literally.
   const face = cardFace(task, fleet)
   const summary = face.summary
   const fallback = useDefaultAssignee()
@@ -370,9 +360,6 @@ function Card({
             </ContextMenuItem>
           ))}
         <ContextMenuSeparator />
-        {/* Archive is the governed way off a board — a fleet board refuses hard
-            deletes outright (the sync adapter's no-delete trigger), so the card
-            offers the same archive the drawer and the bulk bar do. */}
         {task.status !== ARCHIVED && (
           <ContextMenuItem onSelect={() => onMove(task.id, ARCHIVED)}>
             <Codicon name="archive" size="0.85rem" />
@@ -606,7 +593,8 @@ function NewTaskDialog({
 }) {
   const k = useKanban()
   const qc = useQueryClient()
-  const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
+  const scope = useKanbanScope()
+  const { data: roster } = useQuery({ queryKey: profilesKey(scope), queryFn: fetchProfiles, staleTime: 60_000 })
   // Title-only creates must RUN: "auto" resolves to the orchestration default
   // (ultimately the active profile), applied at create time. Never silently
   // unassigned — parking a card is the explicit choice, not the default.
@@ -617,7 +605,7 @@ function NewTaskDialog({
   // dir) unless the operator overrides it below. Set the board default in the
   // board switcher's "Board settings…".
   const selectedSlug = useValue($boardSlug)
-  const { data: boards } = useQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 30_000 })
+  const { data: boards } = useQuery({ queryKey: boardsKey(scope), queryFn: fetchBoards, staleTime: 30_000 })
   const currentBoard = boards?.boards.find(b => b.slug === (selectedSlug || boards.current))
   const boardDefaultKind = currentBoard?.default_workspace_kind || 'scratch'
   const boardDefaultDir = currentBoard?.default_workdir || ''
@@ -717,7 +705,7 @@ function NewTaskDialog({
         host.notify({ kind: 'warning', message: warning })
       }
 
-      await qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
+      await qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
       onClose()
     } catch (err) {
       setError(errText(err))
@@ -1025,10 +1013,11 @@ function SelectionBar({
 }) {
   const k = useKanban()
   const qc = useQueryClient()
-  const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
+  const scope = useKanbanScope()
+  const { data: roster } = useQuery({ queryKey: profilesKey(scope), queryFn: fetchProfiles, staleTime: 60_000 })
 
   const finish = (failed: Array<{ error?: string; id: string }>) => {
-    void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
+    void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
 
     if (failed.length > 0) {
       host.notify({
@@ -1143,28 +1132,17 @@ function SelectionBar({
 export function KanbanBoardPage() {
   const k = useKanban()
   const qc = useQueryClient()
+  const scope = useKanbanScope()
   const slug = useValue($boardSlug)
   const [archived, setArchived] = useState(false)
 
-  // A scoped entry — the palette's "Open Fleet board" — parks a one-shot
-  // request in $boardRequest and navigates here. Until the board list has
-  // confirmed the slug, the page shows NOTHING actionable — not the previously
-  // selected board, whose cards would take the drags, drops and edits meant
-  // for the requested one — and issues no board fetch. Known slug: selected
-  // (the switcher's '' = server-current convention), request consumed. Unknown
-  // slug: the operator's own selection stands, with a toast. The check is a
-  // FRESH fetch of the list for this very request — cached data proves
-  // nothing — and if it rejects the request stays pending (still nothing
-  // actionable) behind the failure with Retry / Cancel; only a successful
-  // retry resolves it, only Cancel hands the page back to the operator's own
-  // board. Consumed once, so a later manual switch is never
-  // undone; a fresh request per command, so re-running it after that switch
-  // enters again.
+  // A scoped entry validates its target against a fresh board list before the
+  // page exposes any action. Cached board metadata cannot prove that the
+  // requested board still exists on the currently routed backend.
   const request = useValue($boardRequest)
-  const boardsQuery = useQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 30_000 })
+  const boardsQuery = useQuery({ queryKey: boardsKey(scope), queryFn: fetchBoards, staleTime: 30_000 })
   const boards = boardsQuery.data
   const resolving = request !== null
-  // The validation outcome for ONE request (by seq), and the operator's retries.
   const [validation, setValidation] = useState<null | { error: string; seq: number }>(null)
   const [attempt, setAttempt] = useState(0)
   const validationError = request && validation?.seq === request.seq ? validation.error : null
@@ -1176,12 +1154,7 @@ export function KanbanBoardPage() {
 
     let superseded = false
 
-    // A fresh list for this request, never merely cached data: the cache may
-    // name a board that is gone, and a refetch already in flight may be about
-    // to fail. staleTime 0 forces the fetch (deduped onto one in flight), and
-    // the promise rejects on failure instead of leaving an error beside stale
-    // data. A cancelled or replaced request ignores its answer.
-    qc.fetchQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 0 }).then(
+    qc.fetchQuery({ queryKey: boardsKey(scope), queryFn: fetchBoards, staleTime: 0 }).then(
       list => {
         if (superseded) {
           return
@@ -1209,24 +1182,20 @@ export function KanbanBoardPage() {
     return () => {
       superseded = true
     }
-  }, [request, attempt, qc, k])
+  }, [request, attempt, qc, scope, k])
 
-  // Verified fleet context: the selected slug, or — with nothing selected —
-  // the server's current board as the board list reports it. Until that list
-  // has answered (or failed) for an empty selection the board is not painted:
-  // a fleet card shown literally for a beat and then re-read is a flicker that
-  // reads as a bug. An explicit selection needs no wait.
+  // With no explicit slug, the board list is the only authority for whether
+  // the server-current board is Fleet. Avoid painting the wrong semantics
+  // while that identity is unresolved.
   const contextPending = !slug && !boards && !boardsQuery.isError
   const fleet = isFleetBoard(slug || boards?.current)
 
   // Live updates ride the events socket (bindApi); this interval is only the
   // slow heartbeat for socketless paths (OAuth remotes, dropped connections).
-  // The fetch is bound to the slug this render keyed it by — never to whatever
-  // the selection has become by the time it fires.
   const { data: fetched, error } = useQuery({
-    enabled: !resolving,
+    enabled: query => !resolving && routedToScope(query),
     queryFn: () => fetchBoard(archived, slug),
-    queryKey: boardKey(slug, archived),
+    queryKey: boardKey(scope, slug, archived),
     refetchInterval: 60_000
   })
 
@@ -1327,48 +1296,48 @@ export function KanbanBoardPage() {
   const moveMut = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => patchTask(id, { status }),
     onMutate: async ({ id, status }) => {
-      await qc.cancelQueries({ queryKey: boardKey(slug, archived) })
-      const previous = qc.getQueryData<KanbanBoard>(boardKey(slug, archived))
+      await qc.cancelQueries({ queryKey: boardKey(scope, slug, archived) })
+      const previous = qc.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
 
       if (previous) {
-        qc.setQueryData(boardKey(slug, archived), moveCard(previous, id, status))
+        qc.setQueryData(boardKey(scope, slug, archived), moveCard(previous, id, status))
       }
 
       return { previous }
     },
     onError: (err, _vars, context) => {
       if (context?.previous) {
-        qc.setQueryData(boardKey(slug, archived), context.previous)
+        qc.setQueryData(boardKey(scope, slug, archived), context.previous)
       }
 
       host.notify({ kind: 'error', message: errText(err) })
     },
     onSettled: (_data, _err, vars) => {
-      void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
-      void qc.invalidateQueries({ queryKey: ['kanban', 'task', slug, vars.id] })
+      void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
+      void qc.invalidateQueries({ queryKey: taskKey(scope, slug, vars.id) })
     }
   })
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => deleteTask(id),
     onMutate: async id => {
-      await qc.cancelQueries({ queryKey: boardKey(slug, archived) })
-      const previous = qc.getQueryData<KanbanBoard>(boardKey(slug, archived))
+      await qc.cancelQueries({ queryKey: boardKey(scope, slug, archived) })
+      const previous = qc.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
 
       if (previous) {
-        qc.setQueryData(boardKey(slug, archived), removeCard(previous, id))
+        qc.setQueryData(boardKey(scope, slug, archived), removeCard(previous, id))
       }
 
       return { previous }
     },
     onError: (err, _id, context) => {
       if (context?.previous) {
-        qc.setQueryData(boardKey(slug, archived), context.previous)
+        qc.setQueryData(boardKey(scope, slug, archived), context.previous)
       }
 
       host.notify({ kind: 'error', message: errText(err) })
     },
-    onSettled: () => void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
+    onSettled: () => void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   })
 
   const onMove = (id: string, status: string) => {

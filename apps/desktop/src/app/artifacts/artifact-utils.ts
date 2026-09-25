@@ -1,5 +1,5 @@
 import { mediaTagValues } from '@/lib/chat-messages/parts'
-import { isArtifactFilePath, mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
+import { isArtifactFilePath, mediaExternalUrl, mediaPathFromMarkdownHref, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -36,7 +36,7 @@ const WINDOWS_PATH_RE = /(^|[\s("'`])([A-Za-z]:[\\/][^\s"'`<>]+(?:\.[a-z0-9]{1,8
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
 
 const FILE_EXT_RE =
-  /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|avi|flac|m4a|mkv|mp3|ogg|opus|wav|webm|mp4|mov)(?:\?.*)?$/i
+  /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|xlsx?|docx?|pptx?|html|zip|tar|gz|avi|flac|m4a|mkv|mp3|ogg|opus|wav|webm|mp4|mov)(?:\?.*)?$/i
 
 const MAX_UNIX_SECONDS = 10_000_000_000
 
@@ -51,12 +51,43 @@ const PRODUCER_TOOL_ARTIFACT_KEY_RE =
 
 const SCREENSHOT_PATH_RE = /Screenshot path:\s*([^\r\n<>]+)/gi
 
+// A pushValue callback plus whether the value is an explicit delivery the
+// author asserted as an artifact (a raw `MEDIA:` tag), as opposed to a path
+// scraped heuristically out of prose or a tool payload.
+type PushValue = (value: string, explicit?: boolean) => void
+
+function looksLikeArtifact(value: string, explicit = false): boolean {
+  if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
+    return true
+  }
+
+  if (!looksLikePathOrUrl(value)) {
+    return false
+  }
+
+  // An explicitly delivered file is an artifact by definition even when its
+  // extension is unknown — it should be listed as an opaque `file` entry
+  // rather than silently vanish. Extensionless bare paths scraped from prose
+  // stay excluded.
+  if (explicit) {
+    return true
+  }
+
+  return IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value)
+}
+
 function artifactSessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
 }
 
 function normalizeValue(value: string): string {
   return value.trim().replace(/[),.;]+$/, '')
+}
+
+// Chat renders file refs as `[label](#media:<encoded path>)`. Decode before
+// classification so the Artifacts page keeps the path, not the href.
+function decodeMediaHrefValue(value: string): string {
+  return mediaPathFromMarkdownHref(value) ?? value
 }
 
 function unquoteMediaValue(value: string): string {
@@ -72,9 +103,9 @@ function unquoteMediaValue(value: string): string {
   return trimmed
 }
 
-function collectMediaValues(text: string, pushValue: (value: string) => void): void {
+function collectMediaValues(text: string, pushValue: PushValue): void {
   for (const value of mediaTagValues(text)) {
-    pushValue(unquoteMediaValue(value))
+    pushValue(unquoteMediaValue(value), true)
   }
 }
 
@@ -139,14 +170,6 @@ function looksLikePathOrUrl(value: string): boolean {
     value.startsWith('data:image/') ||
     isArtifactFilePath(value)
   )
-}
-
-function looksLikeArtifact(value: string): boolean {
-  if (/^(?:https?:\/\/|data:image\/)/.test(value)) {
-    return true
-  }
-
-  return looksLikePathOrUrl(value) && (IMAGE_EXT_RE.test(value) || FILE_EXT_RE.test(value))
 }
 
 function artifactKind(value: string): ArtifactKind {
@@ -257,7 +280,7 @@ function collectStringValues(
   }
 }
 
-function collectArtifactsFromText(text: string, pushValue: (value: string) => void): void {
+function collectArtifactsFromText(text: string, pushValue: PushValue): void {
   collectMediaValues(text, pushValue)
 
   for (const match of text.matchAll(MARKDOWN_IMAGE_RE)) {
@@ -271,7 +294,7 @@ function collectArtifactsFromText(text: string, pushValue: (value: string) => vo
       continue
     }
 
-    const value = match[2] || ''
+    const value = decodeMediaHrefValue(match[2] || '')
 
     if (looksLikeArtifact(value)) {
       pushValue(value)
@@ -306,6 +329,16 @@ function isArtifactProducerTool(name: string): boolean {
   return ARTIFACT_PRODUCER_TOOL_RE.test(name) || name.startsWith('bfl_flux3_')
 }
 
+function isTerminalTool(name: string): boolean {
+  return name === 'terminal'
+}
+
+// Shell-style tools report produced files as free text under generic keys
+// (`output` / `stdout` / `path`). Their values are scanned as prose (MEDIA
+// tags, markdown links, URLs, absolute paths) instead of being treated as a
+// single path value.
+const SHELL_OUTPUT_KEY_RE = /^(?:output|stdout|path)$/i
+
 function explicitToolArtifactKey(keyPath: string, producerTool: boolean): boolean {
   return keyPath
     .split('.')
@@ -330,7 +363,7 @@ function structuredToolPayload(message: SessionMessage): null | unknown {
   return content
 }
 
-function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value: string) => void): void {
+function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushValue): void {
   const text = messageText(message)
 
   if (message.role === 'assistant' && text) {
@@ -345,9 +378,10 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
 
   const name = toolName(message)
   const producerTool = isArtifactProducerTool(name)
+  const terminalTool = isTerminalTool(name)
 
-  if (text && producerTool) {
-    collectMediaValues(text, pushValue)
+  if (text && (producerTool || terminalTool)) {
+    collectArtifactsFromText(text, pushValue)
   }
 
   if (name === 'browser_vision' && text) {
@@ -365,13 +399,44 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: (value:
 
   for (const parsed of payloads) {
     collectStringValues(parsed, 'tool_result', (value, keyPath) => {
-      if (!explicitToolArtifactKey(keyPath, producerTool)) {
+      // Drop bare numeric array indices from the key path *intentionally*:
+      // array-of-results payloads (e.g. `outputs.0.output`) must match via
+      // their non-index segments, and with no index the shell-output/explicit
+      // key tests match the last real segment. Do NOT switch this to
+      // exact-key matching — it would silently stop indexing those shapes.
+      const segments = keyPath
+        .split('.')
+        .filter(segment => segment && !/^\d+$/.test(segment))
+      const shellOutput = terminalTool && segments.some(segment => SHELL_OUTPUT_KEY_RE.test(segment))
+
+      if (!shellOutput && !explicitToolArtifactKey(keyPath, producerTool)) {
+        return
+      }
+
+      if (shellOutput) {
+        // A shell result is free text: scan it for MEDIA tags, markdown
+        // references, URLs and absolute paths rather than treating the
+        // whole value as one path.
+        //
+        // False-positive budget: noisy stdout (`curl -v`, build logs) is
+        // kept from flooding the panel because every candidate is filtered
+        // through `looksLikeArtifact`, which requires a file/image extension
+        // (IMAGE_EXT_RE / FILE_EXT_RE) or an explicit http(s)/data: scheme —
+        // a bare error URL or un-extensioned path fails. Local file display
+        // then resolves existence through the media ladder
+        // (`artifactImageSrc` → `resolveMediaDisplaySrc`), so a candidate
+        // whose file no longer exists is resolved to its fallback rather
+        // than surfaced as a broken artifact.
+        if (value) {
+          collectArtifactsFromText(value, pushValue)
+        }
+
         return
       }
 
       collectMediaValues(value, pushValue)
 
-      const normalized = normalizeValue(value)
+      const normalized = normalizeValue(decodeMediaHrefValue(value))
 
       if (normalized && looksLikeArtifact(normalized)) {
         pushValue(normalized)
@@ -389,10 +454,10 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
       continue
     }
 
-    collectArtifactsFromMessage(message, candidate => {
-      const value = normalizeValue(candidate)
+    collectArtifactsFromMessage(message, (candidate, explicit = false) => {
+      const value = normalizeValue(decodeMediaHrefValue(candidate))
 
-      if (!value || !looksLikeArtifact(value)) {
+      if (!value || !looksLikeArtifact(value, explicit)) {
         return
       }
 

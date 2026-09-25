@@ -15,6 +15,12 @@ import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _platform_home(tmp_path, monkeypatch):
+    monkeypatch.setattr("hermes_constants._get_platform_default_hermes_home", lambda: tmp_path / ".hermes")
 
 
 def _run_apply_profile_override(
@@ -100,6 +106,7 @@ class TestApplyProfileOverrideHermesHomeGuard:
         )
 
 
+    @pytest.mark.platforms("posix")
     def test_sudo_explicit_profile_resolves_invoking_users_profile(self, tmp_path, monkeypatch):
         """sudo elias ... should resolve `-p elias` under SUDO_USER, not root."""
         root_home = tmp_path / "root"
@@ -307,3 +314,31 @@ class TestGeneralizedSupervisorMarkers:
 
         plist = generate_launchd_plist()
         assert "<key>HERMES_SUPERVISED_CHILD</key>" in plist
+
+
+class TestS6ContainerGatewayRun:
+    """Inside the s6 image a bare ``gateway run`` (the image's CMD) redirects to the supervised
+    ``gateway-default`` slot. It must keep that root identity whatever ``active_profile`` says;
+    otherwise every container boot starts the named slot the reconciler registered down."""
+
+    def test_the_redirected_run_keeps_the_root_home_despite_the_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("hermes_cli.service_manager._s6_running", lambda: True)
+        root = tmp_path / ".hermes"
+        result = _run_apply_profile_override(
+            tmp_path, monkeypatch, hermes_home=str(root), active_profile="coder",
+            argv=["hermes", "gateway", "run"],
+        )
+        assert result == str(root)
+
+    def test_a_foreground_run_and_other_verbs_still_follow_the_active_profile(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr("hermes_cli.service_manager._s6_running", lambda: True)
+        root = tmp_path / ".hermes"
+        for argv in (["hermes", "gateway", "run", "--no-supervise"], ["hermes", "chat"]):
+            result = _run_apply_profile_override(
+                tmp_path, monkeypatch, hermes_home=str(root), active_profile="coder", argv=argv,
+            )
+            assert result == str(root / "profiles" / "coder"), argv

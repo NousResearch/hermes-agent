@@ -16,7 +16,7 @@ function fakeContext() {
   const disposers: Array<() => void> = []
 
   const ctx = {
-    i18n: { register: vi.fn(), t: (key: string) => key },
+    i18n: { onLocaleChange: vi.fn(() => vi.fn()), register: vi.fn(), t: (key: string) => key },
     onDispose: (dispose: () => void) => disposers.push(dispose),
     os: undefined,
     registerMany: (items: Registered[]) => contributions.push(...items),

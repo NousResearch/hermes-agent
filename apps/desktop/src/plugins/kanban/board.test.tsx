@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { registerPluginLocales } from '@/i18n/plugin-i18n'
 
 import type * as KanbanApi from './api'
-import { $boardSlug, BOARDS_KEY, fetchBoards } from './api'
+import { $boardSlug, boardsKey, fetchBoards } from './api'
 import { KanbanBoardPage } from './board'
 import { en, KANBAN_LOCALES } from './i18n'
 import plugin from './plugin'
@@ -78,6 +78,8 @@ const boards: BoardsResponse = {
   current: 'default'
 }
 
+const BOARDS_KEY = boardsKey('local')
+
 // Per-test overrides (reset after each test).
 let boardsResponse = boards
 /** Which board each board fetch was bound to, in order. */
@@ -117,7 +119,7 @@ function registerPlugin() {
   const disposers: Array<() => void> = []
 
   plugin.register({
-    i18n: { register: vi.fn(), t: (key: string) => key },
+    i18n: { onLocaleChange: vi.fn(() => vi.fn()), register: vi.fn(), t: (key: string) => key },
     onDispose: (dispose: () => void) => disposers.push(dispose),
     os: undefined,
     registerMany: (items: Registered[]) => contributions.push(...items),

@@ -441,9 +441,15 @@ def get_current_board() -> str:
     try:
         f = current_board_path()
         if f.exists():
-            found = _existing(f.read_text(encoding="utf-8").strip())
-            if found:
-                return found
+            # utf-8-sig read fix (ours): tolerate BOM-persisted current-board files.
+            val = f.read_text(encoding="utf-8-sig").strip()
+            if val:
+                try:
+                    normed = _normalize_board_slug(val)
+                    if normed and board_exists(normed):
+                        return normed
+                except ValueError:
+                    pass
     except OSError:
         pass
     return DEFAULT_BOARD
@@ -562,7 +568,7 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
     try:
         p = board_metadata_path(slug)
         if p.exists():
-            raw = json.loads(p.read_text(encoding="utf-8"))
+            raw = json.loads(p.read_text(encoding="utf-8-sig"))
             if isinstance(raw, dict):
                 # Never let the metadata file claim a different slug than
                 # its directory — trust the filesystem.
@@ -1507,6 +1513,7 @@ VALID_SORT_ORDERS: dict[str, str] = {
     "assignee": "assignee ASC, created_at ASC",
     "title": "title ASC, id ASC",
     "updated": "started_at DESC NULLS LAST, created_at DESC",
+    "completed-desc": "completed_at DESC NULLS LAST, id DESC",
 }
 
 
@@ -2674,6 +2681,18 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+class EmptyCompletionError(ValueError):
+    """``complete_task`` refused: no substantive ``result``, ``summary``, or
+    stored result. A ``ValueError`` so tool error handlers treat it as
+    recoverable. Review approvals are exempt (the human is the record)."""
+
+    def __init__(self, task_id: str):
+        self.task_id = task_id
+        super().__init__(
+            f"completion blocked: {task_id} has no result or summary evidence"
+        )
+
+
 class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
@@ -2725,6 +2744,10 @@ def complete_task(
     ``created_cards`` are verified first — a phantom id raises
     :class:`HallucinatedCardsError` after an auditable event; afterwards the
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
+    Completions from non-review statuses need evidence: a stripped ``result``
+    or ``summary``, or a stripped result already stored on the card. Empty or
+    whitespace-only evidence raises :class:`EmptyCompletionError` after an
+    auditable event. Approving a card out of ``review`` stays exempt.
     """
     now = int(time.time())
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
@@ -2732,6 +2755,7 @@ def complete_task(
         return False
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
     verified_cards = _gate_created_cards(conn, task_id, created_cards, summary or result)
+    _gate_empty_completion(conn, task_id, result=result, summary=summary)
     metadata = _merge_completion_prose_artifacts(
         conn, task_id, metadata, summary=summary, result=result,
     )
@@ -2833,6 +2857,44 @@ def _gate_created_cards(
             )
         raise HallucinatedCardsError(phantom_cards, task_id)
     return verified_cards
+
+
+def _substantive_text(value: Optional[str]) -> bool:
+    return bool(value is not None and str(value).strip())
+
+
+def _gate_empty_completion(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    result: Optional[str],
+    summary: Optional[str],
+) -> None:
+    """Refuse a completion that would leave the card with no evidence.
+
+    Review approvals are exempt: a human vouches for the card and
+    ``_REVIEW_APPROVED_NOTE`` is the documented record.
+    """
+    row = conn.execute(
+        "SELECT status, result FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return
+    if row["status"] == "review":
+        return
+    stored = row["result"]
+    if _substantive_text(result) or _substantive_text(summary) or _substantive_text(stored):
+        return
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, "completion_blocked_empty_result",
+            {
+                "result_preview": _first_line(result, 200) or None,
+                "summary_preview": _first_line(summary, 200) or None,
+            },
+        )
+    raise EmptyCompletionError(task_id)
 
 
 def _stage_completion_artifacts(
@@ -3072,17 +3134,49 @@ def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> 
     return candidate
 
 
-def edit_completed_task_result(
-    conn: sqlite3.Connection, task_id: str, *, result: str, summary: Optional[str] = None,
-    metadata: Optional[dict] = None,
+def edit_task(
+    conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
+    body: Optional[str] = None, priority: Optional[int] = None,
+    result: Optional[str] = None, summary: Optional[str] = None,
+    metadata: Optional[dict] = None, board: Optional[str] = None,
 ) -> bool:
-    """Backfill the user-visible result for an already completed task."""
-    handoff_summary = summary if summary is not None else result
+    """Edit task fields, optionally backfilling a completed task's result."""
+    changed_fields = [
+        field for field, value in (("title", title), ("body", body), ("priority", priority))
+        if value is not None
+    ]
     with write_txn(conn):
-        if _task_status(conn, task_id) != "done":
+        status = _task_status(conn, task_id)
+        if status is None or (result is not None and status != "done"):
             return False
-        conn.execute("UPDATE tasks SET result = ? WHERE id = ?", (result, task_id))
-        run = conn.execute(
+        assignments = []
+        params = []
+        for field, value in (("title", title), ("body", body), ("priority", priority)):
+            if value is not None:
+                assignments.append(f"{field} = ?")
+                params.append(value)
+        if result is not None:
+            assignments.append("result = ?")
+            params.append(result)
+            changed_fields.append("result")
+        if not assignments:
+            return False
+        conn.execute(
+            f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?",
+            (*params, task_id),
+        )
+        if priority is not None:
+            _append_event(conn, task_id, "reprioritized", {"priority": priority})
+        if result is None:
+            non_priority_fields = [field for field in changed_fields if field != "priority"]
+            if non_priority_fields:
+                _append_event(conn, task_id, "edited", {"fields": non_priority_fields})
+        else:
+            handoff_summary = summary if summary is not None else result
+            changed_fields.append("summary")
+            if metadata is not None:
+                changed_fields.append("metadata")
+            run = conn.execute(
             """
             SELECT id FROM task_runs
              WHERE task_id = ?
@@ -3092,27 +3186,28 @@ def edit_completed_task_result(
             """,
             (task_id,),
         ).fetchone()
-        if run is None:
-            run_id = _synthesize_ended_run(
-                conn, task_id, outcome="completed", summary=handoff_summary, metadata=metadata,
-            )
-        else:
-            run_id = int(run["id"])
-            conn.execute("UPDATE task_runs SET summary = ? WHERE id = ?", (handoff_summary, run_id))
-            if metadata is not None:
-                conn.execute(
-                    "UPDATE task_runs SET metadata = ? WHERE id = ?",
-                    (json.dumps(metadata, ensure_ascii=False), run_id),
+            if run is None:
+                run_id = _synthesize_ended_run(
+                    conn, task_id, outcome="completed", summary=handoff_summary, metadata=metadata,
                 )
-        _append_event(
-            conn, task_id, "edited",
-            {
-                "fields": ["result", "summary"] + (["metadata"] if metadata is not None else []),
-                "result_len": len(result) if result else 0,
-                "summary": _first_line(handoff_summary, 400) or None,
-            },
-            run_id=run_id,
-        )
+            else:
+                run_id = int(run["id"])
+                conn.execute("UPDATE task_runs SET summary = ? WHERE id = ?", (handoff_summary, run_id))
+                if metadata is not None:
+                    conn.execute(
+                        "UPDATE task_runs SET metadata = ? WHERE id = ?",
+                        (json.dumps(metadata, ensure_ascii=False), run_id),
+                    )
+            _append_event(
+                conn, task_id, "edited",
+                {
+                    "fields": ["result", "summary"] + (["metadata"] if metadata is not None else []),
+                    "result_len": len(result) if result else 0,
+                    "summary": _first_line(handoff_summary, 400) or None,
+                },
+                run_id=run_id,
+            )
+    notify_task_updated(conn, task_id, changed_fields, board=board)
     return True
 
 
@@ -3125,7 +3220,15 @@ def block_task(
     re-kinded to ``needs_input`` (sticky) so ``recompute_ready`` cannot
     promote it into a context-free respawn. ``transient`` still counts
     toward the loop breaker so a forever-flaky task escalates. True on any
-    transition."""
+    transition.
+
+    An already-``blocked`` card that the failure breaker parked UNTYPED
+    (``block_kind IS NULL``, no live run) is classified in place when *kind*
+    is supplied: ``block_kind``/``block_recurrences`` are set and a ``blocked``
+    audit event is appended, while status, failure evidence and the terminal
+    runs stay exactly as the breaker left them. A typed block, a card with a
+    live run, or a kind-less call on a blocked card are still refused.
+    """
     if kind is not None and kind not in VALID_BLOCK_KINDS:
         raise ValueError(f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None")
     with write_txn(conn):
@@ -3134,6 +3237,28 @@ def block_task(
         ).fetchone()
         if cur_row is None:
             return False
+        # The breaker (``_record_task_failure``) parks cards ``blocked`` with no
+        # ``block_kind`` and no ``blocked`` event -- the policy is the
+        # supervisor's, not the kernel's -- but the transition guard below only
+        # matches running/ready, so that policy could never be attached later
+        # (#117363). Classify in place; never re-type or flap status. A caller
+        # asserting run ownership (``expected_run_id``) cannot own a parked
+        # card -- its run is over -- so it is refused like any stale worker.
+        if cur_row["status"] == "blocked":
+            if kind is None or expected_run_id is not None or _row_get(cur_row, "block_kind") is not None:
+                return False
+            classified = conn.execute(
+                "UPDATE tasks SET block_kind = ?, block_recurrences = 1 "
+                "WHERE id = ? AND status = 'blocked' AND block_kind IS NULL "
+                "AND current_run_id IS NULL",
+                (kind, task_id),
+            ).rowcount
+            if classified != 1:
+                return False
+            _append_event(conn, task_id, "blocked", {
+                "kind": kind, "reason": reason, "classified_in_place": True,
+            })
+            return True
         source_status = _retry_status_for_run(conn, task_id) if cur_row["status"] == "running" else "ready"
         requested_kind = kind
         rekind_reason = None
@@ -3279,7 +3404,6 @@ def request_review(
                     "(worker ownership) or force=True (explicit operator "
                     "override) instead of clearing the live run's claim",
                 )
-            implementer = trow["assignee"]
             if reviewer is None:
                 reviewer = _prior_reviewer(conn, task_id)
                 if reviewer is False:
@@ -3289,6 +3413,23 @@ def request_review(
                         "malformed); pass reviewer= explicitly",
                     )
             reviewer = _canonical_assignee(reviewer)
+            # The actor is the run that did the work. ``assignee`` is the actor
+            # only while a worker holds the card; on a never-claimed card it is
+            # whoever the operator assigned -- possibly the reviewer itself,
+            # which is what ``kanban create --assignee <reviewer>`` followed by
+            # ``request-review`` produces. Recording the reviewer as its own
+            # implementer is worse than recording nothing: request_changes()
+            # routes on this field, and it already refuses a handoff that
+            # carries no implementer provenance.
+            implementer = None
+            if trow["current_run_id"] is not None:
+                arow = conn.execute(
+                    "SELECT profile FROM task_runs WHERE id = ?",
+                    (trow["current_run_id"],),
+                ).fetchone()
+                implementer = arow["profile"] if arow else None
+            if implementer is None and trow["assignee"] != reviewer:
+                implementer = trow["assignee"]
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (
@@ -4136,9 +4277,29 @@ def task_age(task: Task) -> dict:
 
 # --- Retention + garbage collection ---
 
+def _retention_seconds(older_than_seconds: int) -> int:
+    """Normalise a gc retention window, rejecting negatives.
+
+    Shared by both gc sweeps: a negative window puts the cutoff in the future,
+    so "older than cutoff" would match every row / file instead of none —
+    refuse before any sweep runs.
+    """
+    older_than_seconds = int(older_than_seconds)
+    if older_than_seconds < 0:
+        raise ValueError(
+            f"older_than_seconds must be >= 0, got {older_than_seconds!r}: "
+            "a negative retention selects everything."
+        )
+    return older_than_seconds
+
+
 def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3600) -> int:
-    """Prune old done/archived events, retaining decomposition identity until task deletion."""
-    cutoff = int(time.time()) - int(older_than_seconds)
+    """Prune old done/archived events, retaining decomposition identity until task deletion.
+
+    ``older_than_seconds=0`` means everything older than now; the CLI maps
+    ``--event-retention-days 0`` to "disabled" before calling this.
+    """
+    cutoff = int(time.time()) - _retention_seconds(older_than_seconds)
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
@@ -4148,7 +4309,12 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
 
 
 def gc_worker_logs(*, older_than_seconds: int = 30 * 24 * 3600, board: Optional[str] = None) -> int:
-    """Delete worker log files older than the cutoff on one board; returns the count."""
+    """Delete worker log files older than the cutoff on one board; returns the count.
+
+    ``older_than_seconds=0`` means everything older than now; the CLI maps
+    ``--log-retention-days 0`` to "disabled" before calling this.
+    """
+    older_than_seconds = _retention_seconds(older_than_seconds)
     log_dir = worker_logs_dir(board=board)
     if not log_dir.exists():
         return 0
@@ -4179,7 +4345,7 @@ def read_worker_log(
         return None
     try:
         if tail_bytes is None:
-            return path.read_text(encoding="utf-8", errors="replace")
+            return path.read_text(encoding="utf-8-sig", errors="replace")
         size = path.stat().st_size
         with open(path, "rb") as f:
             if size > tail_bytes:

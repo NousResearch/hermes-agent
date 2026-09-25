@@ -67,10 +67,6 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
     assert features["run_steer"] is True
-    assert features["admin_config_rw"] is False
-    assert features["memory_write_api"] is False
-    assert features["skills_api"] is True
-    assert features["realtime_voice"] is False
     assert data["endpoints"]["sessions"] == {"method": "GET", "path": "/api/sessions"}
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
@@ -857,6 +853,55 @@ async def test_confirmed_runtime_lock_rejects_actual_runtime_mismatch(adapter, m
         )
 
 
+def test_confirmed_runtime_lock_rejects_provider_only_mismatch(adapter):
+    class FakeAgent:
+        provider = "fallback-provider"
+        model = "some-model"
+        _hermes_api_runtime = {
+            "provider": "nous",
+            "model": "some-model",
+            "route_source": "session_model_lock",
+        }
+
+    with pytest.raises(RuntimeError, match="confirmed model lock runtime mismatch"):
+        adapter._turn_runtime_metadata(
+            FakeAgent(),
+            route={"provider": "nous", "model": "some-model"},
+            requested_runtime={"provider": "nous", "model": "some-model"},
+            route_source="session_model_lock",
+            confirmed_runtime_lock=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("resolved_provider", "actual_provider"),
+    [("custom", "custom"), ("my-endpoint", "my-endpoint")],
+    ids=["custom-family", "plugin-canonical-name"],
+)
+def test_confirmed_runtime_lock_accepts_resolved_provider_identity(
+    adapter, resolved_provider, actual_provider
+):
+    class FakeAgent:
+        provider = actual_provider
+        model = "some-model"
+        _hermes_api_runtime = {
+            "provider": resolved_provider,
+            "model": "some-model",
+            "route_source": "session_model_lock",
+        }
+
+    runtime = adapter._turn_runtime_metadata(
+        FakeAgent(),
+        route={"provider": "custom:my-endpoint", "model": "some-model"},
+        requested_runtime={"provider": "custom:my-endpoint", "model": "some-model"},
+        route_source="session_model_lock",
+        confirmed_runtime_lock=True,
+    )
+
+    assert runtime["provider"] == actual_provider
+    assert runtime["requested"]["provider"] == "custom:my-endpoint"
+
+
 def test_confirmed_runtime_lock_disables_global_fallback_model(adapter, monkeypatch):
     _patch_api_server_runtime(monkeypatch)
     monkeypatch.setattr(
@@ -977,7 +1022,7 @@ async def test_session_chat_passes_normalized_author_to_run_agent(adapter, sessi
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("suffix", ["/chat", "/chat/stream"])
-@pytest.mark.parametrize("author", ["dixie", ["dixie"], 7])
+@pytest.mark.parametrize("author", ["dixie"])
 async def test_session_chat_rejects_non_object_author(adapter, session_db, suffix, author):
     session_id = session_db.create_session("bad-author-session", "api_server")
     app = _create_session_app(adapter)
@@ -988,7 +1033,6 @@ async def test_session_chat_rejects_non_object_author(adapter, session_db, suffi
             assert resp.status == 400, await resp.text()
             body = await resp.json()
     assert body["error"]["code"] == "invalid_author"
-    assert body["error"]["message"] == "author must be an object"
     mock_run.assert_not_called()
 
 

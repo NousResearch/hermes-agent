@@ -13,7 +13,7 @@ from time import monotonic_ns
 from typing import Any, Callable
 
 from agent import relay_runtime
-from hermes_cli import __version__
+from hermes_cli.version_info import get_version_info
 
 from .shared_metrics import SharedMetricsStore
 from . import shared_metrics_contract as contract
@@ -162,7 +162,7 @@ class _Runtime:
         self._send_thread: threading.Thread | None = None
         self._subscriber_name = f"{SUBSCRIBER_NAME}.{self.host.runtime_id}"
         self.subscriber = SharedMetricsSubscriber(
-            SharedMetricsStore(), __version__, runtime_id=self.host.runtime_id
+            SharedMetricsStore(), get_version_info().base_version, runtime_id=self.host.runtime_id
         )
         self.relay.subscribers.register(self._subscriber_name, self.subscriber)
         self.host.retain_managed_execution(self._subscriber_name)
@@ -738,11 +738,13 @@ class _Runtime:
             retry_count=task.retry_count,
         )
         try:
-            self._guarded(
+            popped = self._guarded(
                 "Hermes shared-metrics task close failed",
-                self._run_in_task, task, relay_runtime.pop_relay_scope, self.relay, task.handle,
+                self._run_in_task, task, relay_runtime.pop_relay_scope_if_top, self.relay, task.handle,
                 output=fields, metadata=self._event_metadata(),
             )
+            if popped is False:
+                logger.debug("Left shared-metrics task scope %s under a concurrent turn's scope; session close drains it", task_id)
         finally:
             session.tasks.pop(task_id, None)
             session.retired_turn_ids.extend(task.turn_ids)

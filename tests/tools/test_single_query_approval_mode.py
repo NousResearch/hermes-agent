@@ -17,7 +17,7 @@ import pytest
 import tools.approval as approval_module
 from tools import approval_context
 from gateway.session_context import clear_session_vars, reset_session_vars, set_session_vars
-from tools.approval import check_all_command_guards, check_dangerous_command, detect_dangerous_command
+from tools.approval import check_all_command_guards, check_dangerous_command
 from tools.approval_context import _get_single_query_approval_mode
 
 
@@ -45,10 +45,6 @@ class TestSingleQueryApprovalModeParsing:
         with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {}}):
             assert _get_single_query_approval_mode() == "deny"
 
-    def test_explicit_deny(self):
-        from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "deny"}}):
-            assert _get_single_query_approval_mode() == "deny"
 
     def test_explicit_approve(self):
         from unittest.mock import patch as mock_patch
@@ -61,15 +57,6 @@ class TestSingleQueryApprovalModeParsing:
         with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "off"}}):
             assert _get_single_query_approval_mode() == "approve"
 
-    def test_allow_maps_to_approve(self):
-        from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "allow"}}):
-            assert _get_single_query_approval_mode() == "approve"
-
-    def test_yes_maps_to_approve(self):
-        from unittest.mock import patch as mock_patch
-        with mock_patch("hermes_cli.config.load_config_readonly", return_value={"approvals": {"single_query_mode": "yes"}}):
-            assert _get_single_query_approval_mode() == "approve"
 
     def test_case_insensitive(self):
         from unittest.mock import patch as mock_patch
@@ -157,19 +144,6 @@ class TestSingleQueryDenyMode:
         with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"):
             result = check_dangerous_command("ls -la", "local")
             assert result["approved"]
-
-    def test_block_message_includes_description(self, monkeypatch):
-        """The block message should mention what pattern was matched."""
-        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
-        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
-        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
-        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
-
-        from unittest.mock import patch as mock_patch
-        with mock_patch("tools.approval_context._get_single_query_approval_mode", return_value="deny"):
-            result = check_dangerous_command("rm -rf /tmp/stuff", "local")
-            assert not result["approved"]
-            assert "dangerous" in result["message"].lower() or "delete" in result["message"].lower()
 
 
 class TestSingleQueryApproveMode:

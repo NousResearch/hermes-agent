@@ -607,7 +607,16 @@ def _merge_consecutive_users(messages: List[Dict]) -> Tuple[List[Dict], int]:
             # where a memory prefetch lives, and it is not in ``content`` (#121836).
             drop_stale_api_content(prev)
             if incoming_api and incoming_api != new_content:
-                if prev_content and prev_content not in incoming_api:
+                # The new sidecar is the visible turn plus an injected tail
+                # (the memory block). ``prev_content in incoming_api`` is not
+                # that: the earlier text often appears only inside
+                # <memory-context>, and treating that as "already present"
+                # drops the turn from the wire.
+                if new_content and incoming_api.startswith(new_content):
+                    prev["api_content"] = merged_content + incoming_api[len(new_content):]
+                elif merged_content and incoming_api.startswith(merged_content):
+                    prev["api_content"] = incoming_api
+                elif prev_content:
                     prev["api_content"] = prev_content + "\n\n" + incoming_api
                 else:
                     prev["api_content"] = incoming_api

@@ -32,6 +32,42 @@ def test_model_switch_merge_keeps_the_new_turns_memory_sidecar():
     assert merged["api_content"].startswith("[System:")
 
 
+def test_merge_keeps_earlier_turn_when_its_text_appears_only_inside_memory():
+    # ``prev_content in incoming_api`` is true here only because the word
+    # sits inside the memory block. The earlier visible turn must still be
+    # on the wire.
+    first = {"role": "user", "content": "memory"}
+    second = {
+        "role": "user",
+        "content": "hello",
+        "api_content": "hello\n\n<memory-context>memory facts</memory-context>",
+    }
+
+    out, repairs = _merge_consecutive_users([first, second])
+
+    assert repairs == 1
+    merged = out[0]
+    assert merged["content"] == "memory\n\nhello"
+    assert merged["api_content"] == (
+        "memory\n\nhello\n\n<memory-context>memory facts</memory-context>"
+    )
+
+
+def test_merge_does_not_duplicate_an_earlier_turn_already_in_the_sidecar():
+    first = {"role": "user", "content": "memory"}
+    second = {
+        "role": "user",
+        "content": "hello",
+        "api_content": "memory\n\nhello\n\n<memory-context>facts</memory-context>",
+    }
+
+    out, _repairs = _merge_consecutive_users([first, second])
+
+    assert out[0]["api_content"] == (
+        "memory\n\nhello\n\n<memory-context>facts</memory-context>"
+    )
+
+
 def test_plain_user_merge_still_drops_a_sidecar_that_matches_content():
     first = {"role": "user", "content": "one", "api_content": "one"}
     second = {"role": "user", "content": "two", "api_content": "two"}

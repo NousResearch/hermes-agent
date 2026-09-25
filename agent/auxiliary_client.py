@@ -5021,6 +5021,59 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
                           "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)")
 
 
+class _CommandCodeAlphaCompletionsAdapter:
+    """Sync ``completions.create()`` over Command Code /alpha/generate NDJSON."""
+
+    def __init__(self, api_key: str, default_model: str):
+        self._api_key = api_key
+        self._default_model = default_model
+
+    def create(self, **kwargs) -> Any:
+        from agent.commandcode_alpha_adapter import stream_commandcode_alpha
+        agent = SimpleNamespace(api_key=self._api_key, provider="commandcode-oauth")
+        kwargs.setdefault("model", self._default_model)
+        kwargs.setdefault("max_tokens", 1024)
+        return stream_commandcode_alpha(agent, dict(kwargs))
+
+
+class CommandCodeOAuthAuxiliaryClient:
+    """OpenAI-client-compatible wrapper routing aux tasks through /alpha/generate."""
+
+    def __init__(self, api_key: str, base_url: str, model: str):
+        self.chat = _ChatShim(_CommandCodeAlphaCompletionsAdapter(api_key, model))
+        self.api_key = api_key
+        self.base_url = base_url
+        self._model = model
+
+    def close(self):
+        pass
+
+
+def _build_commandcode_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+    """CommandCodeOAuthAuxiliaryClient for CLI-credential auth; (None, None) if not authed."""
+    from hermes_cli.auth_commandcode import resolve_commandcode_runtime_credentials
+    try:
+        creds = resolve_commandcode_runtime_credentials()
+    except Exception:
+        return None, None
+    api_key = str(creds.get("api_key") or "").strip()
+    if not api_key:
+        return None, None
+    base_url = str(creds.get("base_url") or "https://api.commandcode.ai").rstrip("/")
+    resolved_model = (model or "").strip() or "command-code/deepseek-deepseek-v4-flash"
+    return CommandCodeOAuthAuxiliaryClient(api_key, base_url, resolved_model), resolved_model
+
+
+def _resolve_commandcode_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
+    """Command Code OAuth (CLI credentials → /alpha/generate). Without this branch
+    commandcode-oauth falls to the generic oauth_external arm and every aux task
+    (title, compression, vision) fails as unavailable."""
+    client, default = _build_commandcode_oauth_aux_client(req.model)
+    return _route_or_warn(req, client, default,
+                          "resolve_provider_client: commandcode-oauth requested but no "
+                          "Command Code CLI credentials found (run: hermes auth add commandcode-oauth)")
+
+
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
@@ -5370,6 +5423,8 @@ _EXPLICIT_PROVIDER_BRANCHES: Dict[str, Callable[[_ResolveRequest], _ResolveResul
     "nous": _resolve_nous_branch,
     "openai-codex": _resolve_openai_codex_branch,
     "xai-oauth": _resolve_xai_oauth_branch,
+    "commandcode-oauth": _resolve_commandcode_oauth_branch,
+    "command-code": _resolve_commandcode_oauth_branch,
     "custom": _resolve_custom_branch,
 }
 

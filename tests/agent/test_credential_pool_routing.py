@@ -12,6 +12,7 @@ Covers:
 
 import json
 import time
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -102,6 +103,7 @@ class TestPoolRotationCycle:
         for i in range(pool_entries):
             e = MagicMock(name=f"entry_{i}")
             e.id = f"cred-{i}"
+            e.priority = i
             entries.append(e)
 
         pool = MagicMock()
@@ -139,6 +141,159 @@ class TestPoolRotationCycle:
         assert recovered is False
         assert has_retried is True
         pool.mark_exhausted_and_rotate.assert_not_called()
+
+    def test_first_429_with_long_reset_rotates_to_available_alternative(self):
+        """A reset horizon that signals quota end should bypass the retry wait."""
+        for reset_at in (
+            time.time() + 600,
+            datetime.fromtimestamp(time.time() + 600, timezone.utc).isoformat(),
+        ):
+            agent, pool, entries = self._make_agent_with_pool(2)
+            for index, entry in enumerate(entries):
+                entry.runtime_api_key = f"key-{index}"
+                entry.last_status = "ok"
+            pool.entries.return_value = entries
+            pool.current.return_value = entries[0]
+            agent._credential_pool_entry_id = entries[0].id
+            agent.api_key = entries[0].runtime_api_key
+
+            recovered, has_retried = agent._recover_with_credential_pool(
+                status_code=429,
+                has_retried_429=False,
+                error_context={"reason": "rate_limit_error", "reset_at": reset_at},
+            )
+
+            assert recovered is True
+            assert has_retried is False
+            agent._swap_credential.assert_called_once_with(entries[1])
+
+    def test_long_reset_without_alternative_and_short_reset_still_retry(self):
+        """Only a long reset plus another usable entry may bypass the first retry."""
+        for pool_entries, reset_delay in ((1, 600), (2, 30)):
+            agent, pool, entries = self._make_agent_with_pool(pool_entries)
+            for index, entry in enumerate(entries):
+                entry.runtime_api_key = f"key-{index}"
+                entry.last_status = "ok"
+            pool.entries.return_value = entries
+            pool.current.return_value = entries[0]
+            agent._credential_pool_entry_id = entries[0].id
+            agent.api_key = entries[0].runtime_api_key
+
+            recovered, has_retried = agent._recover_with_credential_pool(
+                status_code=429,
+                has_retried_429=False,
+                error_context={"reason": "rate_limit_error", "reset_at": time.time() + reset_delay},
+            )
+
+            assert recovered is False
+            assert has_retried is True
+            if reset_delay >= 600:
+                pool.mark_exhausted_and_rotate.assert_called_once()
+                assert (
+                    pool.mark_exhausted_and_rotate.call_args.kwargs["require_usable_alternative"]
+                    is True
+                )
+            else:
+                pool.mark_exhausted_and_rotate.assert_not_called()
+
+    def test_long_reset_ignores_non_selectable_pool_rows(self):
+        """Duplicate keys and route-ineligible rows are not rotation alternatives."""
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from agent.credential_pool import CredentialPool, PooledCredential, STATUS_OK
+
+        model = "test-model"
+        active_base_url = "https://active.example/v1"
+        candidate_shapes = (
+            {"access_token": "shared-key", "base_url": active_base_url},
+            {"access_token": "other-key", "base_url": "https://other.example/v1"},
+            {
+                "access_token": "other-key",
+                "base_url": active_base_url,
+                "model_cooldowns": {model: time.time() + 600},
+            },
+        )
+        for candidate_shape in candidate_shapes:
+            current = PooledCredential.from_dict("openrouter", {
+                "id": "current", "label": "current", "priority": 0,
+                "source": "manual", "access_token": "shared-key",
+                "base_url": active_base_url, "last_status": STATUS_OK,
+            })
+            candidate = PooledCredential.from_dict("openrouter", {
+                "id": "candidate", "label": "candidate", "priority": 1,
+                "source": "manual", "last_status": STATUS_OK, **candidate_shape,
+            })
+            pool = CredentialPool("openrouter", [current, candidate])
+            agent = SimpleNamespace(
+                provider="openrouter",
+                model=model,
+                base_url=active_base_url,
+                api_key=current.runtime_api_key,
+                _credential_pool_entry_id=current.id,
+                _credential_pool=pool,
+                _swap_credential=MagicMock(),
+            )
+
+            recovered, has_retried = recover_with_credential_pool(
+                agent,
+                status_code=429,
+                has_retried_429=False,
+                error_context={"reason": "rate_limit_error", "reset_at": time.time() + 600},
+            )
+
+            assert (recovered, has_retried) == (False, True)
+            assert {entry.last_status for entry in pool.entries()} == {STATUS_OK}
+            agent._swap_credential.assert_not_called()
+
+    def test_long_reset_skips_incompatible_row_and_rotates_to_compatible_one(self):
+        """Eligibility and selection must use the same route-filtered pool view."""
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from agent.credential_pool import CredentialPool, PooledCredential, STATUS_EXHAUSTED, STATUS_OK
+
+        active_base_url = "https://active.example/v1"
+        entries = [
+            PooledCredential.from_dict("openrouter", {
+                "id": "current", "label": "current", "priority": 0,
+                "source": "manual", "access_token": "current-key",
+                "base_url": active_base_url, "last_status": STATUS_OK,
+            }),
+            PooledCredential.from_dict("openrouter", {
+                "id": "wrong-route", "label": "wrong-route", "priority": 1,
+                "source": "manual", "access_token": "wrong-key",
+                "base_url": "https://other.example/v1", "last_status": STATUS_OK,
+            }),
+            PooledCredential.from_dict("openrouter", {
+                "id": "compatible", "label": "compatible", "priority": 2,
+                "source": "manual", "access_token": "compatible-key",
+                "base_url": active_base_url, "last_status": STATUS_OK,
+            }),
+        ]
+        pool = CredentialPool("openrouter", entries)
+        agent = SimpleNamespace(
+            provider="openrouter",
+            model="test-model",
+            base_url=active_base_url,
+            api_key=entries[0].runtime_api_key,
+            _credential_pool_entry_id=entries[0].id,
+            _credential_pool=pool,
+            _swap_credential=MagicMock(),
+        )
+
+        recovered, has_retried = recover_with_credential_pool(
+            agent,
+            status_code=429,
+            has_retried_429=False,
+            error_context={"reason": "rate_limit_error", "reset_at": time.time() + 600},
+        )
+
+        assert (recovered, has_retried) == (True, False)
+        agent._swap_credential.assert_called_once()
+        assert agent._swap_credential.call_args.args[0].id == "compatible"
+        statuses = {entry.id: entry.last_status for entry in pool.entries()}
+        assert statuses == {
+            "current": STATUS_EXHAUSTED,
+            "wrong-route": STATUS_OK,
+            "compatible": STATUS_OK,
+        }
 
     def test_second_429_rotates_to_next(self):
         """Second consecutive 429 should rotate to next credential."""

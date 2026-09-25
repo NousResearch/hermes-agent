@@ -24,7 +24,7 @@ from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_res
 from agent.think_scrubber import THINK_TAG_NAMES
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import (
-    STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
+    STATUS_DEAD, STATUS_EXHAUSTED, _parse_absolute_timestamp, credential_pool_entry_serves_endpoint,
     credential_pool_matches_provider, resolve_runtime_pool_key,
 )
 from agent.error_classifier import FailoverReason
@@ -729,6 +729,7 @@ _STATUS_TO_FAILOVER_REASON = {
 }
 _USAGE_LIMIT_REASON_TOKENS = ("usage_limit_reached", "gousagelimit")
 _USAGE_LIMIT_MESSAGE_TOKENS = ("usage limit reached", "usage limit has been reached")
+_QUOTA_END_RESET_HORIZON_SECONDS = 60.0
 
 
 def _failed_credential_identity(agent, pool) -> Tuple[Optional[str], Optional[str]]:
@@ -827,7 +828,10 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
     return True, has_retried_429
 
 
-def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
+def _recover_rate_limit(
+    pool, *, has_retried_429, error_context, api_key_hint, credential_id,
+    model, base_url, rotate_and_swap,
+):
     # Already-exhausted credential: rotate immediately. Avoids the "cancel-between-429s" trap where
     # the local has_retried_429 resets per prompt and retries forever.
     current_entry = None
@@ -847,14 +851,27 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
         )
         return (True, False) if rotate_and_swap(429, "rate limit, pre-exhausted") else (False, True)
     usage_limit_reached = False
+    has_long_reset_horizon = False
     if error_context:
         context_reason = str(error_context.get("reason") or "").lower()
         context_message = str(error_context.get("message") or "").lower()
         usage_limit_reached = any(t in context_reason for t in _USAGE_LIMIT_REASON_TOKENS) or any(
             t in context_message for t in _USAGE_LIMIT_MESSAGE_TOKENS
         )
-    if not has_retried_429 and not usage_limit_reached:
+        reset_at = _parse_absolute_timestamp(error_context.get("reset_at"))
+        has_long_reset_horizon = (
+            reset_at is not None
+            and reset_at - time.time() >= _QUOTA_END_RESET_HORIZON_SECONDS
+        )
+    if not has_retried_429 and not usage_limit_reached and not has_long_reset_horizon:
         return False, True
+    if has_long_reset_horizon and not usage_limit_reached and not has_retried_429:
+        rotated = rotate_and_swap(
+            429,
+            "rate limit, quota end",
+            require_usable_alternative=True,
+        )
+        return (True, False) if rotated else (False, True)
     return (True, False) if rotate_and_swap(429, "rate limit") else (False, True)
 
 
@@ -895,7 +912,12 @@ def recover_with_credential_pool(
     if effective_reason is None:
         effective_reason = _STATUS_TO_FAILOVER_REASON.get(status_code)
 
-    def _rotate_and_swap(default_status: int, label: str) -> bool:
+    def _rotate_and_swap(
+        default_status: int,
+        label: str,
+        *,
+        require_usable_alternative: bool = False,
+    ) -> bool:
         """Rotate away from the failed credential; True when a new entry was swapped in."""
         rotate_status = status_code if status_code is not None else default_status
         kwargs = {
@@ -917,6 +939,9 @@ def recover_with_credential_pool(
         model = getattr(agent, "model", None)
         if isinstance(model, str) and model.strip():
             kwargs["model"] = model
+        if require_usable_alternative:
+            kwargs["require_usable_alternative"] = True
+            kwargs["base_url"] = getattr(agent, "base_url", None)
         next_entry = pool.mark_exhausted_and_rotate(**kwargs)
         if next_entry is None:
             return False
@@ -973,6 +998,7 @@ def recover_with_credential_pool(
         return _recover_rate_limit(
             pool, has_retried_429=has_retried_429, error_context=error_context,
             api_key_hint=api_key_hint, credential_id=credential_id, rotate_and_swap=_rotate_and_swap,
+            model=getattr(agent, "model", None), base_url=getattr(agent, "base_url", None),
         )
     if effective_reason == FailoverReason.model_entitlement:
         # The pool benches (credential, model) only and hands back the next entry that is not

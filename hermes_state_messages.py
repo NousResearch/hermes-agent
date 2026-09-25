@@ -729,10 +729,12 @@ class SessionMessagesMixin:
             for source_id, msg in zip(carried_sources, compacted_messages[-len(carried_sources):]):
                 if msg.get("_compressed_summary") or not isinstance(msg.get("_row_id"), int):
                     continue
-                source = conn.execute("SELECT display_order FROM messages WHERE id = ?", (source_id,)).fetchone()
-                if source is not None and source[0] is not None:
+                source = conn.execute("SELECT * FROM messages WHERE id = ?", (source_id,)).fetchone()
+                carrier = conn.execute("SELECT * FROM messages WHERE id = ?", (msg["_row_id"],)).fetchone()
+                if (source is not None and carrier is not None and source["display_order"] is not None
+                        and self._display_dedupe_key(source) == self._display_dedupe_key(carrier)):
                     conn.execute("UPDATE messages SET display_order = ? WHERE id = ?",
-                                 (source[0], msg["_row_id"]))
+                                 (source["display_order"], msg["_row_id"]))
             if tail_ids:
                 self._clone_message_rows(conn, tail_ids)
                 inserted += len(tail_ids)
@@ -838,7 +840,8 @@ class SessionMessagesMixin:
             cur = seen.get(key)
             if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                 seen[key] = row
-            first_id[key] = min(first_id.get(key, row["id"]), row["id"])
+            order = row["display_order"] if row["display_order"] is not None else row["id"]
+            first_id[key] = min(first_id.get(key, order), order)
         # Order by the logical message's FIRST row, not the chosen representative's: a protected-tail
         # copy in a newer generation has a higher id than messages emitted after the original.
         return [seen[key] for key in sorted(seen, key=first_id.__getitem__)]
@@ -854,12 +857,25 @@ class SessionMessagesMixin:
             columns = set(self._message_column_names(conn))
         if not {"display_order", "display_identity"} <= columns:
             return False
-        checked = getattr(self, "_display_order_checked_sessions", None)
-        if checked is not None and session_id in checked:
-            return True
+        missing_sql = (
+            "SELECT 1 FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
+            "AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1")
+        missing = self._read_one(missing_sql, (session_id,)) is not None
+        ceiling_row = self._read_one("SELECT value FROM state_meta WHERE key = 'display_repair_ceiling'")
+        ceiling = int(ceiling_row[0]) if ceiling_row else 0
+        old_rows = ceiling > 0 and self._read_one(
+            "SELECT 1 FROM messages WHERE session_id = ? AND id <= ? LIMIT 1", (session_id, ceiling)) is not None
+        # A read-only pre-migration store has no marker yet. Recompute its
+        # identity in the bounded-memory legacy page scanner instead.
         if getattr(self, "read_only", False):
-            # The legacy page scanner recomputes identities without changing the DB.
-            return False
+            version = self._read_one("SELECT version FROM schema_version LIMIT 1")
+            repaired = self.get_meta("display_repaired:" + session_id) == "1" if old_rows else True
+            return not missing and repaired and version is not None and version[0] >= 31
+        checked = getattr(self, "_display_order_checked_sessions", None)
+        if not missing and (not old_rows or self.get_meta("display_repaired:" + session_id) == "1"):
+            return True
+        if not missing and checked is not None and session_id in checked:
+            return True
 
         def _do(conn):
             first_id: Dict[bytes, int] = {}
@@ -885,6 +901,10 @@ class SessionMessagesMixin:
                     break
                 conn.executemany(
                     "UPDATE messages SET display_order = ?, display_identity = ? WHERE id = ?", updates)
+            if old_rows:
+                conn.execute(
+                    "INSERT OR REPLACE INTO state_meta (key, value) VALUES (?, '1')",
+                    ("display_repaired:" + session_id,))
             return True
 
         result = bool(self._execute_write(_do))
@@ -908,7 +928,7 @@ class SessionMessagesMixin:
                 index_hint = "INDEXED BY idx_messages_session_id" if has_session_index else "NOT INDEXED"
                 rows = conn.execute(
                     "SELECT id, role, content, timestamp, tool_call_id, tool_calls, tool_name, active, "
-                    "display_kind, display_metadata, _compressed_summary FROM messages {index_hint} "
+                    f"display_kind, display_metadata, _compressed_summary FROM messages {index_hint} "
                     f"WHERE session_id = ?{active_clause} ORDER BY id ASC",
                     (session_id,))
                 for row in rows:

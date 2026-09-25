@@ -80,6 +80,8 @@ class TestIncludeCompacted:
             "UPDATE messages SET display_identity = ?, display_order = id "
             "WHERE session_id = ? AND active = 1 AND role = 'assistant'",
             (b"old-generation", "carriers")))
+        writer.set_meta("display_repair_ceiling", str(max(
+            row["id"] for row in writer.get_messages("carriers", include_inactive=True))))
         reader = SessionDB(path, read_only=True) if read_only else writer
         page = reader.get_messages("carriers", include_compacted=True, latest=True, limit=1)
         all_rows = reader.get_messages("carriers", include_compacted=True)
@@ -102,6 +104,31 @@ class TestIncludeCompacted:
         visible = db.get_messages(sid, include_compacted=True)
         assert [m["content"] for m in visible] == ["earlier", "reply", "my question", merged]
         assert [m["content"] for m in db.get_messages(sid)] == [merged]
+
+    def test_upgrade_repairs_historical_carrier_slots_once(self, tmp_path):
+        path = tmp_path / "upgrade.db"
+        old = SessionDB(path)
+        old.create_session("old", source="cli")
+        old.append_message("old", "assistant", "reply", timestamp=100)
+        old.archive_and_compact("old", [
+            {"role": "user", "content": "summary"},
+            {"role": "assistant", "content": "reply", "timestamp": 100},
+        ])
+        old._execute_write(lambda conn: (
+            conn.execute("UPDATE messages SET display_identity = ?, display_order = id "
+                         "WHERE session_id = 'old' AND active = 1 AND role = 'assistant'", (b"stale",)),
+            conn.execute("UPDATE schema_version SET version = 30"),
+        ))
+        old.close()
+        upgraded = SessionDB(path)
+        visible = upgraded.get_messages("old", include_compacted=True)
+        assert [m["content"] for m in visible] == ["reply", "summary"]
+        assert upgraded.get_meta("display_repaired:old") == "1"
+        assert upgraded.get_meta("display_repair_ceiling") is not None
+        upgraded.close()
+        reopened = SessionDB(path)
+        assert [m["content"] for m in reopened.get_messages("old", include_compacted=True)] == [
+            "reply", "summary"]
 
     def test_default_returns_only_active_rows(self, db):
         """Regression guard: the default read must not change behaviour."""

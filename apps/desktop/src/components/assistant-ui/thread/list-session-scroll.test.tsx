@@ -111,6 +111,22 @@ function ScrollHarness({ isRunning = false, messages, sessionKey, scrollProfile,
 }
 
 describe('list session-scroll restore', () => {
+  it.each([0, 800])('follows a replaced transcript only for a bottom reader (offset %i)', async offset => {
+    if (offset) {
+      saveThreadScrollPosition('a', { fromBottom: offset, kind: 'offset' })
+    }
+
+    const { container, rerender } = render(<ScrollHarness messages={sessionMessages('a')} sessionKey="a" />)
+    await settleScroll()
+    const vp = viewportEl(container)
+    expect(vp.scrollTop).toBe(SCROLL_H - CLIENT_H - offset)
+
+    scrollHeightValue += 300
+    rerender(<ScrollHarness messages={sessionMessages('a', 2)} sessionKey="a" />)
+    await settleScroll()
+    expect(vp.scrollTop).toBe(SCROLL_H + 300 - CLIENT_H - offset)
+  })
+
   it('lets a reader escape bottom-follow when a running transcript grows during the scroll gesture', async () => {
     // #116273: a pending clarify keeps the turn running while the transcript
     // can still resize. If that resize lands in the same frame as scroll-up,

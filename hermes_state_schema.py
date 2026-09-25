@@ -1050,6 +1050,12 @@ class SessionSchemaMixin:
         if current_version < 25:
             # v25: de-duplicate system prompt snapshots (old column stays a read fallback).
             self._dedupe_legacy_system_prompts(cursor)
+        if current_version < 31:
+            # Only pre-v31 rows need identity reconciliation. Capture the old
+            # row-id ceiling; fresh sessions never pay a full-history scan.
+            cursor.execute(
+                "INSERT OR IGNORE INTO state_meta (key, value) "
+                "SELECT 'display_repair_ceiling', COALESCE(MAX(id), 0) FROM messages")
         fts_migrations_complete = True
         if current_version < 30 and fts5_available:
             # v29: cron sessions leave the trigram substring index (they stay in the word index);

@@ -153,3 +153,36 @@ def test_empty_purge_still_interrupts(monkeypatch):
     cli._tui_handle_ctrl_c(event)
     cli.agent.hard_interrupt.assert_called_once()
     assert registry.completion_queue.empty()
+
+
+def test_completed_real_process_keeps_output_after_ctrl_c(monkeypatch, tmp_path):
+    import subprocess
+    import sys
+    cli, registry, event = cli_fixture(monkeypatch)
+    proc = subprocess.Popen([sys.executable, "-c", "print('actual-background-output')"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", cwd=tmp_path)
+    session = registry.adopt_local(proc, command="fixture python", cwd=str(tmp_path),
+                                   task_id="owner", session_key="owner", notify_on_complete=True)
+    assert session._completion_event.wait(10), "real child must complete"
+    cli._tui_handle_ctrl_c(event)
+    cli._drain_process_notifications("cli-post-turn")
+    assert cli._pending_input.empty()
+    assert registry.is_completion_consumed(session.id)
+    assert registry.get(session.id).exited
+    assert "actual-background-output" in registry.read_log(session.id)["output"]
+
+
+@pytest.mark.parametrize("failure", [False, OSError("drop failed")])
+def test_failed_durable_drop_releases_claim_for_normal_delivery(monkeypatch, failure):
+    from tools import async_delegation as durable
+    cli, registry, event = cli_fixture(monkeypatch)
+    notice = durable_notice()
+    registry.completion_queue.put(notice)
+    drop = Mock(side_effect=failure) if isinstance(failure, Exception) else Mock(return_value=False)
+    monkeypatch.setattr(durable, "drop_completion_delivery", drop)
+    cli._tui_handle_ctrl_c(event)
+    cli.agent.hard_interrupt.assert_called_once()
+    cli._drain_process_notifications("cli-post-turn")
+    assert not cli._pending_input.empty(), "failed purge must leave a normally deliverable result"
+    assert durable.get_durable_delegation("deleg_fixture")["delivery_state"] == "delivered"

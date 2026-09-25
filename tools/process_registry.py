@@ -1839,7 +1839,9 @@ class ProcessRegistry(ProcessCheckpointMixin):
         durable delegation results are claim-scoped drops, never successful deliveries.
         Only inspect the queue's starting size so new completions remain notifications.
         """
-        from tools.async_delegation import claim_event_delivery, drop_completion_delivery
+        from tools.async_delegation import (
+            claim_event_delivery, defer_completion_delivery, drop_completion_delivery,
+        )
 
         requeue = []
         purged = 0
@@ -1853,15 +1855,20 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 if not self._owns_event(event, session_key, owns_event, is_delegation):
                     requeue.append(event)
                     continue
+                claim = None
                 try:
                     claim = claim_event_delivery(event, "notification-purge")
                     if claim is None:
                         requeue.append(event)
                         continue
                     if claim and not drop_completion_delivery(str(event["delegation_id"]), claim):
+                        defer_completion_delivery(str(event["delegation_id"]), claim)
                         requeue.append(event)
                         continue
                 except Exception:
+                    if claim:
+                        with suppress(Exception):
+                            defer_completion_delivery(str(event["delegation_id"]), claim)
                     requeue.append(event)
                     raise
                 if not is_delegation and event.get("type", "completion") == "completion":

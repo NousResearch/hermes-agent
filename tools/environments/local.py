@@ -411,6 +411,21 @@ def served_profile_child_env(
     return env
 
 
+def host_gateway_child_env(
+    base: "Mapping[str, str] | None" = None,
+) -> dict[str, str]:
+    """Child env for the host gateway: the default profile's secrets, never the launcher's.
+
+    ``served_profile_child_env`` — not ``os.environ.copy()``. A profile-scoped parent
+    (desktop, fleet restart, detached watcher) must not donate its dotenv to the
+    multiplexer that owns the primary adapter map.
+    """
+    from hermes_constants import get_default_hermes_root
+    return served_profile_child_env(
+        base=base, target_home=get_default_hermes_root(), inherit_credentials=True,
+    )
+
+
 def _is_routed_home(target_home: "str | Path") -> bool:
     """True when ``target_home`` is not the process's own (launch) home.
 

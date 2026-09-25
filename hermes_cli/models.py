@@ -1596,6 +1596,12 @@ def _drop_delisted_opencode_models(normalized: str, rows: Optional[list[str]]) -
     return rows
 
 
+def _chat_catalog_rows(models):
+    """Drop generation ids from a chat-catalog list, keeping its list subclass."""
+    from hermes_cli.chat_catalog import without_generation_models
+    return without_generation_models(models)
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Best known model catalog for a provider: per-provider live fetchers, then the generic profile
     fetch, then the static list (merged with models.dev for ``_MODELS_DEV_PREFERRED`` providers)."""
@@ -1608,13 +1614,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if fetcher is not None:
         models = fetcher(normalized, force_refresh)
         if models is not None:
-            return models
+            return _chat_catalog_rows(models)
     try:
         models = _profile_live_catalog(normalized)
     except Exception:
         models = None
     if models is not None:
-        return models
+        return _chat_catalog_rows(models)
 
     # Merge static curated list with live API results so models that the live endpoint omits (stale cache,
     # partial rollout) still appear in the picker. Single providers (kimi, zai) use curated-first (commit
@@ -1628,10 +1634,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     # source is serving its authoritative catalog.
     curated_static = (CuratedFallbackModels if fetcher is not None else list)(_PROVIDER_MODELS.get(normalized, []))
     if normalized not in _MODELS_DEV_PREFERRED:
-        return _drop_delisted_opencode_models(normalized, curated_static)
+        return _chat_catalog_rows(_drop_delisted_opencode_models(normalized, curated_static))
     # models.dev keeps listing retired Zen ids too: filter after the merge, not before.
     merged = _drop_delisted_opencode_models(normalized, _merge_with_models_dev(normalized, curated_static))
-    return _xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged
+    return _chat_catalog_rows(_xai_finalize_catalog(merged) if normalized in {"xai", "xai-oauth"} else merged)
 
 
 # ---------------------------------------------------------------------------
@@ -1904,7 +1910,7 @@ def cached_provider_model_ids(
         if tier is not None:
             if tier == "stale":
                 _spawn_swr_refresh(normalized)
-            return list(entry["models"])
+            return _chat_catalog_rows(list(entry["models"]))
 
     if non_blocking and not force_refresh:
         # Read path: never touch the network in the caller's thread. A same-credentials row past the
@@ -1912,8 +1918,9 @@ def cached_provider_model_ids(
         # warms the next open; a cold row returns [] and the caller falls back to its curated list.
         _spawn_swr_refresh(normalized)
         if _cache_entry_valid(entry, fp, allow_empty=is_ollama):
-            return [model for model in entry["models"]
-                    if not _model_requires_account_discovery(normalized, model)]
+            return _chat_catalog_rows([
+                model for model in entry["models"]
+                if not _model_requires_account_discovery(normalized, model)])
         return []
 
     live = provider_model_ids(normalized, force_refresh=force_refresh)
@@ -1921,9 +1928,9 @@ def cached_provider_model_ids(
         fresh = _live_result_entry(fp, live, entry, now)
         if fresh is None:
             # The live fetch degraded to the curated list; the account's real catalog is on disk.
-            return [model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)]
+            return _chat_catalog_rows([model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)])
         _store_cache_entry(normalized, fresh, cache)
-        return list(live)
+        return _chat_catalog_rows(list(live))
 
     if is_ollama:
         if _ollama_native_probe_reachable():
@@ -1934,13 +1941,13 @@ def cached_provider_model_ids(
         # the picker during a transient outage.
         same_creds = isinstance(entry, dict) and entry.get("fp") == fp
         if same_creds and isinstance(entry.get("models"), list) and entry["models"]:
-            return list(entry["models"])
+            return _chat_catalog_rows(list(entry["models"]))
         return []
     # Live returned nothing: a stale same-fingerprint entry beats an empty result — minus account-gated
     # models, which only a successful discovery may advertise (the entry itself is untouched, so the
     # next successful fetch restores them).
     if _cache_entry_valid(entry, fp):
-        return [model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)]
+        return _chat_catalog_rows([model for model in entry["models"] if not _model_requires_account_discovery(normalized, model)])
     return []
 
 
@@ -2495,8 +2502,15 @@ def probe_api_models(
             continue
         if _neg_key is not None:
             _probe_neg_cache.pop(_neg_key, None)
+        from hermes_cli.chat_catalog import note_catalog_item
+
+        probed = []
+        for item in data.get("data", []):
+            if isinstance(item, dict) and note_catalog_item(item):
+                continue
+            probed.append(item.get("id", ""))
         return _probe_result(
-            [m.get("id", "") for m in data.get("data", [])], url, candidate_base.rstrip("/"),
+            probed, url, candidate_base.rstrip("/"),
             alternate_base if alternate_base != candidate_base else normalized, is_fallback)
 
     if _neg_key is not None and all_timed_out:
@@ -2713,7 +2727,8 @@ def cached_fetch_api_models(
     from hermes_cli.model_switch_providers import _NativePickerModelList
 
     def _catalog(entry):
-        return (_NativePickerModelList if entry.get("native_catalog") else list)(entry["models"])
+        rows = (_NativePickerModelList if entry.get("native_catalog") else list)(entry["models"])
+        return _chat_catalog_rows(rows)
 
     def _entry(live, at=None):
         return {**_cache_entry(fp, live, at), "native_catalog": isinstance(live, _NativePickerModelList)}
@@ -2726,7 +2741,7 @@ def cached_fetch_api_models(
 
     normalized_url = str(base_url or "").strip().rstrip("/").lower()
     if not normalized_url:  # nothing to key the cache on
-        return None if cache_only else _live()
+        return None if cache_only else _chat_catalog_rows(_live())
 
     # Key on URL AND credential fingerprint: N ``custom_providers`` rows can share one proxy URL
     # with distinct keys (#106184). A URL-only key let the last probe overwrite its siblings'
@@ -2771,7 +2786,7 @@ def cached_fetch_api_models(
     # (non-empty only: an empty native row is not worth resurrecting over the generic fallback).
     if _cache_entry_valid(entry, fp):
         return _catalog(entry)
-    return live
+    return _chat_catalog_rows(live)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

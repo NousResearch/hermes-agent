@@ -311,7 +311,9 @@ def _refresh_live_sessions(home=None, *, preserve_prefix: bool = False, note: st
         try:
             with _session_profile_runtime_scope(sess):
                 enabled = _load_enabled_toolsets(getattr(agent, "platform", None))
-                refresh(agent, enabled_override=enabled, quiet_mode=True, preserve_prefix=preserve_prefix)
+                disabled = _load_disabled_toolsets()
+                refresh(agent, enabled_override=enabled, disabled_override=disabled,
+                        quiet_mode=True, preserve_prefix=preserve_prefix)
         except Exception as _exc:
             logger.warning("Failed to refresh cached agent tools (session %s): %s", sid, _exc)
         if note:
@@ -1122,8 +1124,10 @@ def _(rid, params: dict) -> dict:
     mt = _tools_mod("model_tools")
     session = _sessions.get(params.get("session_id", ""))
     enabled = getattr(session["agent"], "enabled_toolsets", None) if session else _load_enabled_toolsets()
+    disabled = getattr(session["agent"], "disabled_toolsets", None) if session else _load_disabled_toolsets()
     # Pre-assembly list: /tools must also show tools deferred behind the tool_search bridge (as the CLI).
-    tools = mt.get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True, skip_tool_search_assembly=True)
+    tools = mt.get_tool_definitions(enabled_toolsets=enabled, disabled_toolsets=disabled, quiet_mode=True,
+                                    skip_tool_search_assembly=True)
     sections = {}
     for tool in sorted(tools, key=lambda t: t["function"]["name"]):
         name = tool["function"]["name"]

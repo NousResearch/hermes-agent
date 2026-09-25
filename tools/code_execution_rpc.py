@@ -142,13 +142,15 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
         if conn is None:
             return
         # Short recv poll so stop_event teardown is prompt. The idle contract
-        # is 300s without received bytes, kept by a deadline armed before each
-        # recv: a long dispatch must not consume the client's window.
+        # is 300s without received bytes: the deadline is armed once and only
+        # resets on received bytes. Arming it on every loop iteration would
+        # let the short recv polls re-arm it forever, so a silent peer would
+        # hold the server past the contract.
         conn.settimeout(_RPC_RECV_POLL_S)
         buf = b""
         conn_dead = False
+        idle_deadline = time.monotonic() + _RPC_IDLE_S
         while not (conn_dead or stop_event.is_set()):
-            idle_deadline = time.monotonic() + _RPC_IDLE_S
             try:
                 chunk = conn.recv(65536)
             except socket.timeout:
@@ -157,6 +159,7 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                 continue
             if not chunk:
                 break
+            idle_deadline = time.monotonic() + _RPC_IDLE_S
             # buf entering here has no newline (the inner loop consumes every
             # complete line), so only the appended bytes can hold the next one:
             # scanning from the append point keeps the dribble case linear.
@@ -202,6 +205,9 @@ def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: li
                             conn_dead = True
                             break
                 newline = buf.find(b"\n")
+            # Serving the request consumed wall-clock time; a long dispatch
+            # must not eat the client's idle window.
+            idle_deadline = time.monotonic() + _RPC_IDLE_S
     except OSError as e:
         logger.debug("RPC connection socket error: %s", e, exc_info=True)
     finally:
@@ -251,7 +257,7 @@ def _rpc_poll_loop(env, rpc_dir: str, task_id: str, tool_call_log: list, tool_ca
                     max_tool_calls=max_tool_calls, dispatch=dispatch, tool_call_log=tool_call_log,
                     call_start=call_start, where="remote sandbox",
                 )
-                # Write the response atomically (tmp + rename) via echo piping —
+                # Write the response atomically (tmp + rename) via echo piping:
                 # Modal doesn't reliably deliver stdin_data to chained commands.
                 quoted_res_file = shlex.quote(f"{rpc_dir}/res_{request.get('seq', 0):06d}")
                 encoded_result = base64.b64encode(tool_result.encode("utf-8")).decode("ascii")

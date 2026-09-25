@@ -13,7 +13,7 @@ Run with:  python -m pytest tests/test_code_execution.py -v
 """
 
 import pytest
-# pytestmark removed — tests run fine (61 pass, ~99s)
+# pytestmark removed: tests run fine (61 pass, ~99s)
 
 import json
 import os
@@ -102,7 +102,7 @@ class TestInterruptedOutput(unittest.TestCase):
 
         self.assertEqual(
             _format_interrupted_output("partial output"),
-            "partial output\n[execution interrupted — superseded by a new live turn]",
+            "partial output\n[execution interrupted - superseded by a new live turn]",
         )
 
 
@@ -197,7 +197,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
 
         self.assertEqual(result["status"], "success")
         run_cmd = next(cmd for cmd, _, _ in env.commands if "python3 script.py" in cmd)
-        # The TZ value must be shell-quoted — it should NOT contain unescaped semicolons
+        # The TZ value must be shell-quoted: it should NOT contain unescaped semicolons
         self.assertNotIn("TZ=US/Eastern; echo PWNED", run_cmd,
                          "TZ value with shell metacharacters must not appear unquoted")
         # shlex.quote wraps values containing special characters in single quotes
@@ -462,7 +462,7 @@ class TestStubSchemaDrift(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestBuildExecuteCodeSchema(unittest.TestCase):
-    """Tests for build_execute_code_schema — the dynamic schema generator."""
+    """Tests for build_execute_code_schema - the dynamic schema generator."""
 
     def test_default_includes_all_tools(self):
         schema = build_execute_code_schema()
@@ -514,7 +514,7 @@ class TestEnvVarFiltering(unittest.TestCase):
                  patch("tools.code_execution_tool._load_config",
                        return_value={"timeout": 10, "max_tool_calls": 50}):
                 # reset=True: a session kernel's env is frozen at spawn, so
-                # env-building rules are only observable on a FRESH kernel —
+                # env-building rules are only observable on a FRESH kernel:
                 # a reused one would (correctly) show the env from whenever
                 # it was first spawned, not this test's os.environ tweaks.
                 raw = execute_code(code, task_id="test-env",
@@ -1008,6 +1008,53 @@ class TestRpcTokenAuthorization(unittest.TestCase):
             srv.close()
             t.join(timeout=10)
 
+    def test_silent_connection_reaped_at_idle_timeout(self):
+        """A peer that connects and goes silent must be reaped when the idle
+        deadline elapses, with no help from stop_event. The deadline is armed
+        once before the loop and resets only on received bytes: arming it on
+        every iteration would let the short recv polls re-arm it forever, so
+        this test patches the poll short and the idle window to a few seconds.
+        On the re-arming bug the server thread would still be alive here."""
+        with patch("tools.code_execution_rpc._RPC_IDLE_S", 3.0), \
+             patch("tools.code_execution_rpc._RPC_RECV_POLL_S", 0.1):
+            cli, srv, t, stop_event, _, _ = self._start_raw_server()
+            try:
+                # The client connects and sends nothing: the server loop must
+                # exit on its own at the idle deadline.
+                t.join(timeout=15)
+                self.assertFalse(t.is_alive(),
+                    "server loop must exit when a silent peer idles past the deadline")
+                # The server closed the connection: the client reads EOF.
+                cli.settimeout(5)
+                self.assertEqual(cli.recv(65536), b"")
+            finally:
+                stop_event.set()
+                cli.close()
+                srv.close()
+                t.join(timeout=10)
+
+    def test_idle_deadline_resets_on_received_bytes(self):
+        """Wire activity keeps the connection alive: bytes received reset the
+        idle deadline, so an active peer is not reaped while talking."""
+        with patch("tools.code_execution_rpc._RPC_IDLE_S", 3.0), \
+             patch("tools.code_execution_rpc._RPC_RECV_POLL_S", 0.1):
+            cli, srv, t, stop_event, _, dispatched = self._start_raw_server()
+            try:
+                cli.settimeout(15)
+                for _ in range(6):
+                    cli.sendall((json.dumps(
+                        {"tool": "terminal", "args": {"command": "echo hi"},
+                         "token": "secret-token"}) + "\n").encode())
+                    self._read_line(cli)
+                    time.sleep(0.8)  # still inside the 3s idle window
+                self.assertTrue(t.is_alive(),
+                    "server loop must stay alive while the peer keeps sending")
+                self.assertEqual(dispatched, ["terminal"] * 6)
+            finally:
+                stop_event.set()
+                cli.close()
+                srv.close()
+                t.join(timeout=10)
 
 
 

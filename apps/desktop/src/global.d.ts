@@ -227,9 +227,7 @@ declare global {
         onEvent: (callback: (payload: { event: string; payload: unknown }) => void) => () => void
         import: {
           pick: (guestId: number, active: boolean) => Promise<void>
-          hover: (guestId: number, selector: null | string) => Promise<void>
           hoverPathEntry: (guestId: number, index: null | number) => Promise<void>
-          select: (guestId: number, selector: string) => Promise<PenImportPick | undefined>
           selectPathEntry: (guestId: number, index: number) => Promise<void>
           run: (guestId: number, options?: PenImportOptions) => Promise<PenImportResult>
           onPicker: (callback: (payload: { guestId: number; state: null | PenImportPickerState }) => void) => () => void

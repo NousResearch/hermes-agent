@@ -1,5 +1,4 @@
 import { activePreviewImport } from '@/app/chat/right-rail/preview-import'
-import { openAgentPreview } from '@/app/session/hooks/open-agent-preview'
 import { getAllSessionMessages } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { type WebImportIntent, webImportIntent } from '@/lib/pen-web-import-intent'
@@ -105,7 +104,7 @@ function openFileSuggestion(): ComposerSuggestion {
 }
 
 /** Import-from-the-web intent against the page the preview pane is showing right now. */
-export function webImportTrigger(text: string): null | WebImportIntent {
+function webImportTrigger(text: string): null | WebImportIntent {
   return webImportIntent(text, activePreviewImport()?.handle.page().url)
 }
 
@@ -116,11 +115,7 @@ function importWebSuggestion(target: WebImportIntent): ComposerSuggestion {
     icon: 'inspect',
     id: `import-web:${target.url ?? 'active'}`,
     invoke: async ({ cancelled, sessionId }) => {
-      const result = await importActivePreviewToCanvas({ url: target.url }, sessionId ?? null, async url => {
-        if (!(await openAgentPreview(url))) {
-          throw new Error(copy('importFailed'))
-        }
-      })
+      const result = await importActivePreviewToCanvas({ url: target.url }, sessionId ?? null)
 
       if (!result.success && !cancelled()) {
         throw new Error(result.error ?? copy('importFailed'))

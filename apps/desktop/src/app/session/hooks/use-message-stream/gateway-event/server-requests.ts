@@ -1,6 +1,5 @@
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
-import { openAgentPreview } from '@/app/session/hooks/open-agent-preview'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
 import { translateNow } from '@/i18n'
 import { restorePendingClarifyToolCall } from '@/lib/chat-messages'
@@ -452,6 +451,7 @@ const penTool: Handler = ({ request, sessionId }) => {
 
           const schema = await runPenTool('schema')
           const payload = schema.success ? schema.result : undefined
+
           const tools =
             payload && typeof payload === 'object' && 'tools' in payload ? (payload as { tools: unknown }).tools : payload
 
@@ -477,12 +477,7 @@ const penTool: Handler = ({ request, sessionId }) => {
                 selector: typeof args.selector === 'string' && args.selector.trim() ? args.selector.trim() : undefined,
                 url: typeof args.url === 'string' && args.url.trim() ? args.url.trim() : undefined
               },
-              sessionId || null,
-              async url => {
-                if (!(await openAgentPreview(url))) {
-                  throw new Error(`the preview pane cannot open ${url}`)
-                }
-              }
+              sessionId || null
             ).then(
               ({ error, imported, success, url }) => ({ success, result: { imported, url }, error }),
               (error: unknown) => ({ success: false, error: error instanceof Error ? error.message : String(error) })

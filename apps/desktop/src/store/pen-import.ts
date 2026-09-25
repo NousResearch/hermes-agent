@@ -12,6 +12,7 @@
 import { atom } from 'nanostores'
 
 import { activePreviewImport, previewImportHandle } from '@/app/chat/right-rail/preview-import'
+import { openAgentPreview } from '@/app/session/hooks/open-agent-preview'
 import type { PenImportOptions, PenImportPick, PenImportResult } from '@/global'
 import { translateNow } from '@/i18n'
 import { hostOf } from '@/lib/pen-web-import-intent'
@@ -118,13 +119,10 @@ export async function runPenImport(
     }
   }
 
-  const current = $penImport.get()
+  const prior = $penImport.get()
+  const live = prior?.tabId === tabId ? prior : null
 
-  if (!current || current.tabId !== tabId) {
-    $penImport.set({ guestId, pick: null, picking: false, progress: 0, tabId })
-  } else {
-    update({ progress: 0 })
-  }
+  $penImport.set({ guestId, pick: live?.pick ?? null, picking: live?.picking ?? false, progress: 0, tabId })
 
   try {
     return await pen.import.run(guestId, options)
@@ -158,15 +156,14 @@ export async function importFromPreviewStrip(tabId: string, mode: 'page' | 'sele
 
 /**
  * Agent door: `pen_canvas(action='import', args={url?, selector?})`. Works on
- * the ACTIVE preview tab; `openPage` is how the caller lands a URL there first.
+ * the ACTIVE preview tab, landing `url` there first when given.
  */
 export async function importActivePreviewToCanvas(
   options: PenImportOptions & { url?: string },
-  sessionId: null | string,
-  openPage: (url: string) => Promise<void>
+  sessionId: null | string
 ): Promise<PenImportResult & { url?: string }> {
-  if (options.url) {
-    await openPage(options.url)
+  if (options.url && !(await openAgentPreview(options.url))) {
+    return { error: `the preview pane cannot open ${options.url}`, success: false }
   }
 
   const active = await settledActivePreview()

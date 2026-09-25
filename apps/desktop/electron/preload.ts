@@ -292,9 +292,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     // preview <webview> guest, named by webContents id.
     import: {
       pick: (guestId, active) => ipcRenderer.invoke('hermes:pen:import:pick', guestId, active),
-      hover: (guestId, selector) => ipcRenderer.invoke('hermes:pen:import:hover', guestId, selector),
       hoverPathEntry: (guestId, index) => ipcRenderer.invoke('hermes:pen:import:hover-path', guestId, index),
-      select: (guestId, selector) => ipcRenderer.invoke('hermes:pen:import:select', guestId, selector),
       selectPathEntry: (guestId, index) => ipcRenderer.invoke('hermes:pen:import:path', guestId, index),
       run: (guestId, options) => ipcRenderer.invoke('hermes:pen:import:run', guestId, options),
       onPicker: callback => {

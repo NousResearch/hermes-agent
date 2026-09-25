@@ -167,10 +167,6 @@ export function wirePenImportIpc(): void {
     return entry.capturer.endPicking()
   })
 
-  ipcMain.handle('hermes:pen:import:hover', (event, guestId, selector) =>
-    capturerFor(Number(guestId), event.sender).capturer.hover(selector ? String(selector) : undefined)
-  )
-
   // Breadcrumb hover: the path only carries labels, so climb from the picked
   // element's selector — `pathIndex - index` ancestors up.
   ipcMain.handle('hermes:pen:import:hover-path', (event, guestId, index) => {
@@ -184,10 +180,6 @@ export function wirePenImportIpc(): void {
 
     return capturer.hover(selector)
   })
-
-  ipcMain.handle('hermes:pen:import:select', (event, guestId, selector) =>
-    capturerFor(Number(guestId), event.sender).capturer.select(String(selector || ''))
-  )
 
   ipcMain.handle('hermes:pen:import:path', (event, guestId, index) =>
     capturerFor(Number(guestId), event.sender).capturer.selectPathEntry(Number(index))

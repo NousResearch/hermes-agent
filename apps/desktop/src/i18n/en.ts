@@ -2489,6 +2489,7 @@ export const en: Translations = {
       serverStates: {
         connected: 'connected',
         app_not_running: 'app not running',
+        hermes_not_connected: 'MCP connection missing',
         endpoint_unavailable: 'endpoint unavailable',
         no_interactive_session: 'no interactive session',
         version_too_old: 'version too old',

@@ -115,6 +115,7 @@ function installAgentHalfHere(record: PluginRecord, profile: null | string) {
 const SERVER_TONE = {
   connected: 'success',
   app_not_running: 'warn',
+  hermes_not_connected: 'warn',
   endpoint_unavailable: 'warn',
   no_interactive_session: 'warn',
   unknown: 'warn',

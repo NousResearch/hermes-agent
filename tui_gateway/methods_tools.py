@@ -1531,6 +1531,16 @@ def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool) ->
     liveness = _tools_mod("tools.mcp_liveness")
     core = _tools_mod("tools.mcp_tool_common")._core
     resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
+    # The server sentence's app name: the curated catalog title when the package is a catalog
+    # install, else the manifest name, else the server slug the declaration carries — a raw
+    # slug reads like an error code (#119975).
+    display_name = str(package.manifest.get("name") or "") or None
+    sidecar = _tools_mod("hermes_cli.plugins_cmd_catalog").catalog_install_record(plugin_dir)
+    if sidecar:
+        entry = _tools_mod("hermes_cli.plugin_catalog").get_live_catalog_entry(
+            str(sidecar.get("catalog_name") or ""))
+        if entry is not None and entry.title:
+            display_name = entry.title
     rows = []
     for name in sorted(declared):
         internal_name = server_name_for(key, name)
@@ -1548,7 +1558,7 @@ def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool) ->
         rows.append({
             "name": name,
             "state": status.state,
-            "sentence": liveness.describe(decl, status.availability, status.state),
+            "sentence": liveness.describe(decl, status.availability, status.state, display_name),
         })
     return rows
 

@@ -77,6 +77,63 @@ def test_explicit_reset_timestamp_overrides_default_429_ttl(tmp_path, monkeypatc
     assert pool.select() is None
 
 
+def test_private_turn_provider_details_never_enter_credential_store(
+    tmp_path, monkeypatch,
+):
+    from agent.redact import bind_volatile_sensitive_text
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    shared_key = "sk-private-turn"
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "custom": [
+                    {
+                        "id": "cred-private",
+                        "label": "private",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": shared_key,
+                        "base_url": "https://example.test/v1",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom")
+    snapshot = "Latitude: 37.7749\nLongitude: -122.4194"
+    with bind_volatile_sensitive_text(snapshot):
+        pool.mark_exhausted_and_rotate(
+            status_code=429,
+            api_key_hint=shared_key,
+            error_context={
+                "reason": "provider_fragment_37.77",
+                "message": (
+                    "rejected request near longitude -122.41; "
+                    "retry after 122.4194s"
+                ),
+                "reset_at": 37.7749,
+            },
+        )
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = payload["credential_pool"]["custom"][0]
+    assert persisted.get("last_error_code") == 429
+    assert persisted.get("last_error_reason") is None
+    assert persisted.get("last_error_message") is None
+    assert persisted.get("last_error_reset_at") is None
+    serialized = json.dumps(payload)
+    assert "37.77" not in serialized
+    assert "-122.41" not in serialized
+    assert "122.4194" not in serialized
+
+
 
 
 def test_billing_rotation_marks_all_entries_sharing_failed_key(tmp_path, monkeypatch):

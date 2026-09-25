@@ -45,13 +45,18 @@ class _LimitAgent:
         self.valid_tool_names = []
         self.persisted_messages = None
         self._handle_max_iterations_called = False
+        self._handle_max_iterations_kwargs = None
         self._completion_explainer = completion_explainer
 
-    def _handle_max_iterations(self, messages, api_call_count):
+    def _handle_max_iterations(self, messages, api_call_count, **kwargs):
         self._handle_max_iterations_called = True
+        self._handle_max_iterations_kwargs = kwargs
         return "summary from extra call"
 
     def _emit_status(self, *_args, **_kwargs):
+        pass
+
+    def _emit_diagnostic_status(self, *_args, **_kwargs):
         pass
 
     def _safe_print(self, *_args, **_kwargs):
@@ -112,6 +117,32 @@ def _finalize(
         _turn_exit_reason=exit_reason,
         _pending_verification_response=pending_verification_response,
     )
+
+
+def test_inline_moa_budget_summary_disables_volatile_replay(monkeypatch):
+    """Even an empty explicit MoA config preserves the no-location boundary."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = _LimitAgent()
+
+    result = finalize_turn(
+        agent,
+        final_response=None,
+        api_call_count=60,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "task"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="task",
+        original_user_message="task",
+        _should_review_memory=False,
+        _turn_exit_reason="unknown",
+        moa_config={},
+    )
+
+    assert result["final_response"] == "summary from extra call"
+    assert agent._handle_max_iterations_kwargs == {"allow_volatile_replay": False}
 
 
 
@@ -368,7 +399,6 @@ def test_bounded_fallback_does_not_fire_when_budget_not_exhausted(monkeypatch):
     )
 
     record.assert_not_called()
-
 
 @pytest.mark.parametrize("scope", ["child", "non-owner"])
 def test_budget_exhausted_child_does_not_record_parent_kanban_timeout(monkeypatch, scope):

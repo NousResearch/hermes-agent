@@ -1619,6 +1619,8 @@ Manage MCP (Model Context Protocol) server configurations and run Hermes as an M
 | `configure <name>` (alias: `config`) | Toggle tool selection for a server. |
 | `login <name>` | Force re-authentication for an OAuth-based MCP server. |
 
+The exit status is the outcome, for scripts: `0` when the action completed, `1` when it did not (connection or sign-in failed, nothing saved, or a prompt was declined), `3` when the named server is not in the config.
+
 See [MCP Config Reference](./mcp-config-reference.md), [Use MCP with Hermes](../guides/use-mcp-with-hermes.md), and [MCP Server Mode](../user-guide/features/mcp.md#running-hermes-as-an-mcp-server).
 
 ## `hermes plugins`

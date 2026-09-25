@@ -911,9 +911,37 @@ class TestMcpReauth:
 
 def test_tool_filters_keeps_explicit_empty_include():
     """``include: []`` (block-all, as written by an all-unchecked picker) is a filter, not
-    "no filter"; only an absent/non-list key is None (#12865)."""
+    "no filter"; only an absent key is None (#12865). A scalar entry is a one-item filter,
+    matching runtime registration (#93313)."""
     from hermes_cli.mcp_config import _tool_filters
 
     assert _tool_filters({"tools": {"include": []}}) == ([], None)
-    assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
+    assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (["bad"], ["x"])
     assert _tool_filters({}) == (None, None)
+
+
+def test_tool_filters_shorthand_matches_runtime():
+    """``tools`` shorthand (string/list) is an include whitelist — ``hermes mcp list`` must
+    show the selection instead of "all" (PR #122381 review follow-up)."""
+    from hermes_cli.mcp_config import _tool_filters
+
+    assert _tool_filters({"tools": "a,b"}) == (["a", "b"], None)
+    assert _tool_filters({"tools": ["a", "b"]}) == (["a", "b"], None)
+    assert _tool_filters({"tools": {}}) == (None, None)
+
+
+def test_mcp_list_reports_shorthand_tools_selection(tmp_path, capsys):
+    """CLI-level regression: a server configured with ``tools: a,b`` lists "2 selected",
+    not "all"."""
+    _seed_config(tmp_path, {
+        "x_docs": {
+            "url": "https://docs.x.com/mcp",
+            "tools": "search_x,query_docs",
+        },
+    })
+    from hermes_cli.mcp_config import cmd_mcp_list
+
+    cmd_mcp_list()
+    out = capsys.readouterr().out
+    assert "x_docs" in out
+    assert "2 selected" in out

@@ -19,7 +19,7 @@ from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool_config import _ENV_VAR_PATTERN
-from tools.mcp_tool_common import _env_ref_name, mcp_server_enabled
+from tools.mcp_tool_common import _env_ref_name, mcp_server_enabled, normalize_tools_filter
 
 logger = logging.getLogger(__name__)
 
@@ -214,19 +214,34 @@ def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
     return servers if servers and isinstance(servers, dict) else {}
 
 
-def _tool_filters(cfg: dict) -> Tuple[Optional[list], Optional[list]]:
+def _tool_filters(cfg: dict, label: str = "mcp_servers.<server>.tools") -> Tuple[Optional[list], Optional[list]]:
     """Return the ``(include, exclude)`` tool lists from a server config; ``None`` = key absent.
 
-    An explicit ``include: []`` is a real (block-all) whitelist — the runtime registers nothing
+    Accepts every representation the runtime honors (tools/mcp_tool_registration.py): the
+    ``tools: "a,b"`` / ``tools: [a, b]`` shorthand becomes an include whitelist
+    (tools/mcp_tool_common.normalize_tools_filter), and a scalar include/exclude entry is a
+    one-item filter (tools/mcp_tool_schema._normalize_name_filter). An explicit
+    ``include: []`` is a real (block-all) whitelist — the runtime registers nothing
     (tools/mcp_tool_registration.py) — so it must not collapse to "no filter" here (#12865).
     """
-    tools_cfg = cfg.get("tools", {})
-    if not isinstance(tools_cfg, dict):
-        return None, None
+    tools_cfg = normalize_tools_filter(cfg.get("tools", {}), label)
     include, exclude = tools_cfg.get("include"), tools_cfg.get("exclude")
-    return (
-        include if isinstance(include, list) else None,
-        exclude if isinstance(exclude, list) else None)
+    return _name_filter_list(include), _name_filter_list(exclude)
+
+
+def _name_filter_list(value: Any) -> Optional[list]:
+    """Mirror runtime matching semantics for one include/exclude value (see
+    tools/mcp_tool_schema._normalize_name_filter): ``None`` = key absent; a string is a
+    one-item filter; a list/tuple/set yields its strings; any other type is an invalid
+    filter the runtime degrades to match-nothing — so it displays as an empty selection,
+    never as "all"."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item) for item in value]
+    return []
 
 
 def _save_mcp_server(name: str, server_config: dict) -> bool:
@@ -747,7 +762,7 @@ def cmd_mcp_list(args=None):
         if len(transport) > 28:
             transport = transport[:25] + "..."
 
-        include, exclude = _tool_filters(cfg)
+        include, exclude = _tool_filters(cfg, f"mcp_servers.{name}.tools")
         if include is not None:
             tools_str = f"{len(include)} selected"
         elif exclude:
@@ -1013,7 +1028,7 @@ def cmd_mcp_configure(args):
         _warning("Server reports no tools.")
         return
 
-    include, exclude = _tool_filters(cfg)
+    include, exclude = _tool_filters(cfg, f"mcp_servers.{name}.tools")
     tool_names = [t[0] for t in all_tools]
     total = len(all_tools)
 

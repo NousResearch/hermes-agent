@@ -124,6 +124,16 @@ class TestProviderModelIdsBedrock:
         assert all(m.startswith("us.") or m.lower() in _MANTLE_SET for m in us_result)
         assert eu_result != us_result
 
+    def test_static_fallback_still_offers_every_mantle_model(self):
+        """When live discovery is unavailable the curated fallback is what the picker shows; every
+        Mantle-served OpenAI id must be selectable there too, not only after a successful discovery."""
+        from hermes_cli.models import provider_model_ids
+
+        with patch("agent.bedrock_adapter.bedrock_model_ids_or_none", return_value=None):
+            result = {m.lower() for m in provider_model_ids("bedrock")}
+
+        assert _MANTLE_SET <= result, sorted(_MANTLE_SET - result)
+
 
 
 

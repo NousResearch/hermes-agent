@@ -76,3 +76,20 @@ def test_fallback_to_bedrock_binds_runtime_not_generic_client(aws_env, api_mode)
     assert agent.client is None and agent._client_kwargs == {}
     assert agent._bedrock_region == "eu-west-1"
     assert type(agent._anthropic_client).__name__ == ("AnthropicBedrock" if api_mode == "anthropic_messages" else "NoneType")
+
+
+@pytest.mark.parametrize("model, base_url, expected", [
+    # Mantle-served OpenAI ids: resolve_provider_client builds the Mantle client; the wire must be Responses.
+    ("openai.gpt-6-sol", MANTLE, "codex_responses"),
+    ("openai.gpt-5.6-sol", MANTLE, "codex_responses"),
+    # Inference-profile ids and every other vendor stay on Converse.
+    ("us.openai.gpt-6-sol", RUNTIME_EU, "bedrock_converse"),
+    ("us.amazon.nova-pro-v1:0", RUNTIME_EU, "bedrock_converse"),
+    ("openai.gpt-oss-120b-1:0", RUNTIME_EU, "bedrock_converse"),
+])
+def test_fallback_to_bedrock_picks_the_wire_the_primary_resolver_would(model, base_url, expected):
+    """A ``provider: bedrock`` fallback entry must land on the same wire as a primary Bedrock config
+    for that model; before the fix every Bedrock fallback was forced onto Converse, so a Mantle-only
+    id's Mantle client was discarded and boto3 sent the bare id to Converse (ValidationException)."""
+    from agent.chat_completion_helpers import _fallback_api_mode_resolved
+    assert _fallback_api_mode_resolved(_agent(), "bedrock", model, base_url) == expected

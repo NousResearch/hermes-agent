@@ -211,7 +211,14 @@ attempt anyway:
   deterministic fallback; the warning names the overload
   (`failure_class=summary_overload_failure`) and `/compress` retries once
   capacity recovers. Auth/quota, network and empty-content failures already
-  abort the same way.
+  abort the same way. *Sustained* overload escalates (#123167): after 3
+  consecutive overload aborts in one session the overload stops counting as
+  terminal and compress() commits the deterministic fallback
+  (`failure_class=summary_overload_degraded`) — a bounded middle-window loss
+  instead of letting the transcript grow into `compression_exhausted` and a
+  gateway auto-reset that discards the whole session. A successful summary
+  resets the budget; `abort_on_summary_failure: true` still hard-aborts every
+  attempt.
 - **Provider-proven overflow** — when the provider itself rejects the request
   with a context-length error, the recovery pass ignores the cooldown for one
   bounded attempt (`max_compression_attempts`) without clearing it. Deferring

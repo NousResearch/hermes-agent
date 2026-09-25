@@ -21,6 +21,11 @@ PLATFORM_MAP = {"macos": "darwin", "linux": "linux", "windows": "win32"}
 
 EXCLUDED_SKILL_DIRS = frozenset((
     ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks",
+    # File-sync / backup artifacts a sync client drops inside a synced skills tree:
+    # ``.stversions`` is Syncthing's versioning folder, ``_archive`` a manual retired-skill
+    # parking dir (distinct from ``.archive``). Their contents are stale copies, never live
+    # packages, so scanning them produces ghost skills and bare-name ambiguity errors (#122613).
+    ".stversions", "_archive",
     ".venv", "venv", "node_modules", "site-packages", "__pycache__",
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 ))

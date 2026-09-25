@@ -185,6 +185,22 @@ def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     assert is_excluded_skill_path(package / "SKILL.md") is True
 
 
+def test_iter_skill_index_files_prunes_sync_backup_dirs(tmp_path):
+    """Sync/backup artifacts (.stversions, _archive) inside a skills tree are not
+    scanned as live packages, so a synced tree does not surface ghost skills (#122613)."""
+    live = tmp_path / "umbrella"
+    live.mkdir()
+    (live / "SKILL.md").write_text("---\nname: umbrella\n---\n", encoding="utf-8")
+
+    for artifact in (".stversions", "_archive"):
+        stale = tmp_path / artifact / "umbrella"
+        stale.mkdir(parents=True)
+        (stale / "SKILL.md").write_text("---\nname: umbrella\n---\n", encoding="utf-8")
+        assert is_excluded_skill_path(stale / "SKILL.md") is True
+
+    assert list(iter_skill_index_files(tmp_path, "SKILL.md")) == [live / "SKILL.md"]
+
+
 def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     """A category named scripts/templates/assets/references is still valid."""
     scripts_skill = tmp_path / "scripts" / "bash-helper"

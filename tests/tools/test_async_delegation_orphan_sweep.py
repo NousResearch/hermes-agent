@@ -253,14 +253,16 @@ def test_offer_dropped_by_a_session_that_cannot_own_it_is_re_offered_to_the_owne
     delegation_id = _orphan(home)
     later = _row(home, delegation_id)["updated_at"] + ad._ORPHAN_STALE_S + 1
     q = queue.Queue()
-    registry = type("Registry", (), {"completion_queue": q, "is_completion_consumed": lambda self, sid: False})()
+    registry = type("Registry", (), {"completion_queue": q, "completion_routing_lock": threading.RLock(),
+                                     "is_completion_consumed": lambda self, sid: False})()
     started = []
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(server, "_run_prompt_submit", lambda rid, sid, session, text, **kw: started.append(sid))
 
     def drain(sid, session):
-        server._notif_handle_ready(sid, session, _drain(q), session["_notification_emitted"], registry,
-                                   format_process_notification, None)
+        ready, actions = server._notif_drain_ready(sid, session, registry)
+        server._notif_handle_ready(sid, session, ready, session["_notification_emitted"], registry,
+                                   format_process_notification, None, reservations=actions)
 
     other, owner = _tui_session("other-chat", home), _tui_session("bot-chat", home)
     with _Home(home):
@@ -282,23 +284,29 @@ def test_offer_dropped_by_a_session_that_cannot_own_it_is_re_offered_to_the_owne
 def test_offer_released_after_a_failed_tui_turn_is_re_offered(tmp_path, monkeypatch):
     """The TUI poller releases its claim and discards its copy when the turn cannot start; the row is
     pending again with one attempt spent, so the sweep offers it again instead of skipping it."""
+    from tools.process_registry_notifications import format_process_notification
     from tui_gateway import server
 
     home = tmp_path / "home"
     delegation_id = _orphan(home)
     later = _row(home, delegation_id)["updated_at"] + ad._ORPHAN_STALE_S + 1
     q = queue.Queue()
+    registry = type("Registry", (), {"completion_queue": q, "completion_routing_lock": threading.RLock(),
+                                     "is_completion_consumed": lambda self, sid: False})()
     monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
     monkeypatch.setattr(server, "_run_prompt_submit",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no free worker")))
     owner = _tui_session("bot-chat", home)
     with _Home(home):
+        monkeypatch.setitem(server._sessions, "sid-owner", owner)
         assert ad.sweep_orphaned_completions(q, now=later) == 1
-        (evt,) = _drain(q)
-        assert server._notif_claim_turn(owner)
-        server._notif_dispatch_event("sid-owner", owner, evt, "text")
+        ready, actions = server._notif_drain_ready("sid-owner", owner, registry)
+        server._notif_handle_ready("sid-owner", owner, ready, owner["_notification_emitted"],
+                                   registry, format_process_notification, None, reservations=actions)
         row = _row(home, delegation_id)
+        assert owner["running"] is False
         assert (row["delivery_state"], row["delivery_claim"], row["delivery_attempts"]) == ("pending", None, 1)
+        assert [e["delegation_id"] for e in _drain(q)] == [delegation_id]
         assert ad.sweep_orphaned_completions(q, now=row["updated_at"] + ad._ORPHAN_STALE_S + 1) == 1
     assert [e["delegation_id"] for e in _drain(q)] == [delegation_id]
 

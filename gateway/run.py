@@ -1148,6 +1148,11 @@ def _build_replay_entry(
             entry[_rkey] = _rval
     if preserve_timestamp and msg.get("timestamp"):
         entry["timestamp"] = msg["timestamp"]
+    if not entry.get("mirror"):
+        dm = msg.get("display_metadata")
+        if isinstance(dm, dict) and dm.get("mirror_source"):
+            entry["mirror"] = True
+            entry["mirror_source"] = dm["mirror_source"]
     return entry
 
 
@@ -1299,6 +1304,10 @@ def _build_gateway_agent_history(
                 mirror_src = msg.get("mirror_source", "another session")
                 entry["content"] = f"[Delivered from {mirror_src}] {entry['content']}"
                 entry.pop("api_content", None)  # prefix rewrite: the sidecar no longer matches
+            # Skip cron mirror user turns: they are stored as user turns (for safe consecutive-user
+            # merging) but must not become part of the turn context or drive an auto-reply.
+            if entry.get("mirror_source") == "cron" and entry.get("role") == "user":
+                continue
             agent_history.append(entry)
 
     # Keep gateway resume byte-identical to the TUI resume and send paths. The

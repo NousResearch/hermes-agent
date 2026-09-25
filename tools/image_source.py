@@ -13,7 +13,7 @@ import base64
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional
 
 # Raw-bytes INGEST budget: deliberately the 50MB download cap, NOT the 20MB provider
@@ -212,6 +212,39 @@ def _ensure_container_env(task_id: Optional[str]) -> None:
         pass
 
 
+def _to_sandbox_posix(src: str) -> str:
+    """Return the POSIX path that names *src* inside the sandbox.
+
+    On a Windows host with a non-local terminal backend (e.g. ssh -> WSL), a
+    bare Windows path like ``C:\\Users\\me\\img.png`` is a *host* file the
+    sandbox only sees through DrvFS at ``/mnt/c/Users/me/img.png``. A POSIX
+    path the host ``Path`` mangled to backslashes (``\\home\\me\\x.png``) must
+    be restored to forward slashes too. This normalizes both to the form the
+    in-sandbox exec-read needs; relative paths are left untouched so they
+    resolve against the sandbox cwd. Non-Windows hosts are unaffected (POSIX
+    paths already render with forward slashes there).
+    """
+    s = src.strip()
+    if s.lower().startswith("file://"):
+        s = s[len("file://"):]
+    s = os.path.expanduser(s)
+    if re.match(r"^[A-Za-z]:[\\/]", s):
+        try:
+            win = PureWindowsPath(s)
+            drive = (win.drive or "").rstrip(":").lower()
+            if drive:
+                return "/mnt/" + drive + "/" + "/".join(str(part) for part in win.parts[1:])
+        except Exception:  # noqa: BLE001 — malformed path: leave as-is
+            pass
+        return s
+    if s.startswith("/"):
+        try:
+            return str(PurePosixPath(s))
+        except Exception:  # noqa: BLE001 — malformed path: leave as-is
+            return s
+    return s
+
+
 async def _resolve_container_fallback(
     p: Path, ctx: ResolveContext, src: str, permitted: tuple = ("image",)) -> ResolvedImage:
     """Read the bytes inside the sandbox; fail-closed when no env exists (a non-cache host
@@ -225,19 +258,35 @@ async def _resolve_container_fallback(
     sandbox" on a file that is verifiably readable on the immediate retry. See #76566.
     """
     import shlex
-    # Bring the sandbox up on demand: without this, the first vision_analyze of a session (before any
-    # terminal command) has no active env to read from under a non-local backend (issue #62825).
+
+    # Normalize the source path to its POSIX form inside the sandbox: a Windows
+    # host path (C:\...) is only visible to the WSL sandbox via DrvFS
+    # (/mnt/<drive>/...), and a POSIX path must keep forward slashes. Read the
+    # POSIX form in the in-sandbox exec-read so user-provided images resolve.
+    sandbox_path = _to_sandbox_posix(src)
+
+    # Bring the sandbox up on demand: without this, the first vision_analyze of
+    # a session (before any terminal command) has no active env to read from
+    # under a non-local backend (issue #62825).
     _ensure_container_env(ctx.task_id)
     env = _get_active_env(ctx.task_id)
     if env is None:
         raise SourceNotFound(
-            f"'{p}' is not reachable inside the sandbox and no active sandbox "
+            f"'{sandbox_path}' is not reachable inside the sandbox and no active sandbox "
             f"session is available to read it",
             src=src, origin="container")
-    # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 (+1 distinguishes "at the
-    # cap" from "over") so /dev/zero can't stream unbounded base64 into host memory. The input
-    # redirect avoids argv (leading-dash paths); tr -d instead of GNU-only base64 -w0 (BusyBox).
-    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'"
+
+    # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 bytes
+    # so a huge file (or /dev/zero) can't stream unbounded base64 into host
+    # memory — the +1 byte lets us distinguish "exactly at the cap" from
+    # "over the cap" after decode. The input redirect (< path) avoids argv
+    # entirely, so leading-dash paths can't be parsed as options; base64
+    # -w0 is GNU-only, so pipe through tr -d for BusyBox.
+    # env.execute is a blocking backend exec; keep it off the event loop so a
+    # multi-MB base64 read doesn't stall every other coroutine.
+    qp = shlex.quote(sandbox_path)
+    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'"
+
     last_res: dict = {"returncode": 1, "output": ""}
     for attempt in range(2):
         last_res = await asyncio.to_thread(env.execute, cmd)
@@ -249,11 +298,13 @@ async def _resolve_container_fallback(
         diag = (last_res.get("output") or "").strip().splitlines()
         first = next((ln.strip() for ln in diag if ln.strip()), "")
         suffix = f" ({first[:200]})" if first else ""
-        raise SourceNotFound(f"could not read '{p}' inside the sandbox{suffix}", src=src, origin="container")
+        raise SourceNotFound(
+            f"could not read '{sandbox_path}' inside the sandbox{suffix}",
+            src=src, origin="container")
     try:
         data = base64.b64decode(last_res.get("output", ""), validate=True)
     except Exception as exc:
-        raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
+        raise NotAnImage(f"sandbox returned non-image data for '{sandbox_path}': {exc}", src=src)
     if len(data) > _MAX_INGEST_BYTES:
         raise SourceTooLarge("media exceeds size limit", src=src, origin="container")
     return _finalize(data, "", "container", src, permitted)

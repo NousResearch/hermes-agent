@@ -149,6 +149,158 @@ def test_build_gateway_argv_keeps_venv_console_python_for_uv_venv(monkeypatch, t
     assert str(project) in env_overlay["PYTHONPATH"].split(gateway_windows.os.pathsep)
 
 
+def _build_uv_venv_tree(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """tmp uv-style install: a base interpreter dir plus a venv whose ``pyvenv.cfg`` points ``home=`` at it."""
+    project = tmp_path / "project"
+    scripts = project / "venv" / "Scripts"
+    base = tmp_path / "uv" / "python" / "cpython-3.11-windows-x86_64-none"
+    scripts.mkdir(parents=True)
+    base.mkdir(parents=True)
+    venv_python = scripts / "python.exe"
+    base_python = base / "python.exe"
+    for exe in (venv_python, base_python, base / "pythonw.exe"):
+        exe.write_text("", encoding="utf-8")
+    (project / "venv" / "pyvenv.cfg").write_text(
+        f"home = {base}\nimplementation = CPython\nuv = 0.12.10\nversion_info = 3.11.16\n",
+        encoding="utf-8",
+    )
+    return base, base_python, project / "venv", venv_python
+
+
+@pytest.mark.platforms("windows")
+def test_resolve_detached_python_maps_uv_base_interpreter_to_venv_launcher(monkeypatch, tmp_path):
+    """A running uv-venv gateway shows argv[0] = the BASE interpreter (the trampoline's child);
+    replaying that captured argv must respawn on the venv launcher, not the bare base python
+    (which has no site-packages binding and dies at ``import yaml``, #106489)."""
+    base, base_python, venv_root, venv_python = _build_uv_venv_tree(tmp_path)
+    monkeypatch.setattr(gateway_windows.sys, "prefix", str(venv_root))
+    monkeypatch.setattr(gateway_windows.sys, "base_prefix", str(tmp_path / "not-a-venv-prefix"))
+
+    for captured in (str(base_python), str(base / "pythonw.exe")):
+        resolved, venv_dir, extra = gateway_windows._resolve_detached_python(captured)
+        assert resolved == str(venv_python)
+        assert venv_dir == venv_root
+        assert extra == []
+
+
+@pytest.mark.platforms("windows")
+def test_windowless_restart_spec_rewrites_uv_base_interpreter_captured_argv(monkeypatch, tmp_path):
+    """End-to-end respawn spec for the #106489 crash: the updater replays the live gateway's argv
+    (argv[0] = uv base interpreter); the spec must lead with the venv launcher, set VIRTUAL_ENV to
+    the real venv, and bind __PYVENV_LAUNCHER__ so site-packages resolve."""
+    base, base_python, venv_root, venv_python = _build_uv_venv_tree(tmp_path)
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", venv_root.parent)
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(gateway_windows.sys, "prefix", str(venv_root))
+    monkeypatch.setattr(gateway_windows.sys, "base_prefix", str(tmp_path / "not-a-venv-prefix"))
+
+    argv, cwd, env_overlay = gateway_windows.windowless_gateway_restart_spec(
+        [str(base_python), "-m", "hermes_cli.main", "gateway", "run"]
+    )
+
+    assert argv == [str(venv_python), "-m", "hermes_cli.main", "gateway", "run"]
+    assert cwd == str(hermes_home.resolve())
+    assert env_overlay["VIRTUAL_ENV"] == str(venv_root)
+    assert env_overlay["__PYVENV_LAUNCHER__"] == str(venv_python)
+
+
+@pytest.mark.platforms("windows")
+def test_windowless_restart_spec_keeps_venv_python_argv_and_binds_launcher(monkeypatch, tmp_path):
+    """The normal respawn (argv[0] already the venv console python) stays byte-identical; the
+    launcher binding is still added — harmless for the shim and covers a skipped rewrite."""
+    base, base_python, venv_root, venv_python = _build_uv_venv_tree(tmp_path)
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", venv_root.parent)
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(gateway_windows.sys, "prefix", str(venv_root))
+    monkeypatch.setattr(gateway_windows.sys, "base_prefix", str(tmp_path / "not-a-venv-prefix"))
+
+    argv, cwd, env_overlay = gateway_windows.windowless_gateway_restart_spec(
+        [str(venv_python), "-m", "hermes_cli.main", "gateway", "run"]
+    )
+
+    assert argv == [str(venv_python), "-m", "hermes_cli.main", "gateway", "run"]
+    assert env_overlay["VIRTUAL_ENV"] == str(venv_root)
+    assert env_overlay["__PYVENV_LAUNCHER__"] == str(venv_python)
+
+
+@pytest.mark.platforms("windows")
+def test_windowless_restart_spec_leaves_foreign_interpreter_alone(monkeypatch, tmp_path):
+    """An interpreter outside the watcher's venv (another install, a system python) must not be
+    rewritten and must not be bound to the watcher's venv."""
+    base, base_python, venv_root, venv_python = _build_uv_venv_tree(tmp_path)
+    foreign_dir = tmp_path / "Python313"
+    foreign_dir.mkdir()
+    foreign_python = foreign_dir / "python.exe"
+    foreign_python.write_text("", encoding="utf-8")
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", venv_root.parent)
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(gateway_windows.sys, "prefix", str(venv_root))
+    monkeypatch.setattr(gateway_windows.sys, "base_prefix", str(tmp_path / "not-a-venv-prefix"))
+
+    argv, cwd, env_overlay = gateway_windows.windowless_gateway_restart_spec(
+        [str(foreign_python), "-m", "hermes_cli.main", "gateway", "run"]
+    )
+
+    assert argv[0] == str(foreign_python)
+    assert env_overlay["VIRTUAL_ENV"] == str(foreign_dir.parent)
+    assert "__PYVENV_LAUNCHER__" not in env_overlay
+
+
+@pytest.mark.platforms("windows")
+def test_windowless_restart_spec_without_venv_watcher_sets_no_pyvenv_launcher(monkeypatch, tmp_path):
+    """A watcher running from a system python (sys.prefix == sys.base_prefix) must not invent a
+    venv binding for the respawn."""
+    base, base_python, venv_root, venv_python = _build_uv_venv_tree(tmp_path)
+    system_python = tmp_path / "system-python"
+    system_python.mkdir()
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+
+    monkeypatch.setattr(gateway, "PROJECT_ROOT", venv_root.parent)
+    monkeypatch.setattr("hermes_cli.config.get_hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(gateway_windows.sys, "prefix", str(system_python))
+    monkeypatch.setattr(gateway_windows.sys, "base_prefix", str(system_python))
+
+    argv, cwd, env_overlay = gateway_windows.windowless_gateway_restart_spec(
+        [str(venv_python), "-m", "hermes_cli.main", "gateway", "run"]
+    )
+
+    assert argv[0] == str(venv_python)
+    assert "__PYVENV_LAUNCHER__" not in env_overlay
+
+
+@pytest.mark.platforms("windows")
+def test_venv_launcher_for_base_interpreter_matches_pyvenv_home_explicit_prefix(tmp_path):
+    """Direct helper contract with an explicit venv prefix: match on the pyvenv.cfg home= dir,
+    refuse everything else (different install, missing launcher, missing cfg, non-venv prefix)."""
+    base, base_python, venv_root, venv_python = _build_uv_venv_tree(tmp_path)
+
+    assert gateway_windows._venv_launcher_for_base_interpreter(str(base_python), prefix=venv_root) == str(venv_python)
+    assert gateway_windows._venv_launcher_for_base_interpreter(str(venv_python), prefix=venv_root) is None
+
+    other_dir = tmp_path / "other-install"
+    other_dir.mkdir()
+    assert gateway_windows._venv_launcher_for_base_interpreter(str(other_dir / "python.exe"), prefix=venv_root) is None
+
+    no_launcher = tmp_path / "no-launcher-venv"
+    no_launcher.mkdir()
+    (no_launcher / "pyvenv.cfg").write_text(f"home = {base}\n", encoding="utf-8")
+    assert gateway_windows._venv_launcher_for_base_interpreter(str(base_python), prefix=no_launcher) is None
+
+    no_cfg = tmp_path / "no-cfg-venv"
+    no_cfg.mkdir()
+    assert gateway_windows._venv_launcher_for_base_interpreter(str(base_python), prefix=no_cfg) is None
+
+
 @pytest.mark.platforms("windows")
 def test_spawn_detached_marks_primary_breakaway_success(monkeypatch, tmp_path, caplog):
     """A successful breakaway spawn reports true without a warning."""

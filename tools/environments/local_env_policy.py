@@ -40,6 +40,9 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
     "GATEWAY_RELAY_DELIVERY_KEY", "VERCEL_OIDC_TOKEN", "VERCEL_TOKEN",
     "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID",
+    # Microsoft Graph app secret and webhook clientState: read in code only, and no
+    # adapter prefix owns them for the shape rule (``_is_platform_secret_env``).
+    "MSGRAPH_CLIENT_SECRET", "MSGRAPH_WEBHOOK_CLIENT_STATE",
 })
 
 
@@ -54,6 +57,14 @@ def _build_provider_env_blocklist() -> frozenset:
                 blocked.update(_AWS_SDK_CREDENTIAL_ENV_VARS)
             if pconfig.base_url_env_var:
                 blocked.add(pconfig.base_url_env_var)
+    except ImportError:
+        pass
+    try:
+        # The registry mirror copies env_vars only for api_key profiles, but OAuth
+        # profiles (nous, qwen-oauth) also accept a pasted key under theirs.
+        from providers import list_providers
+        for profile in list_providers():
+            blocked.update(profile.env_vars or ())
     except ImportError:
         pass
     try:
@@ -90,8 +101,21 @@ def _is_provider_env_blocklisted(name: str) -> bool:
     the environment block is case-insensitive, so ``openai_api_key`` IS
     ``OPENAI_API_KEY``; consistent with ``_is_hermes_internal_secret``, which
     already folds (``key.upper()``)."""
-    return (name in _HERMES_PROVIDER_ENV_BLOCKLIST
-            or name.upper() in _HERMES_PROVIDER_ENV_BLOCKLIST)
+    upper = name.upper()
+    return (name in _HERMES_PROVIDER_ENV_BLOCKLIST or upper in _HERMES_PROVIDER_ENV_BLOCKLIST
+            or _is_platform_secret_env(upper))
+
+
+# Adapters read many secrets straight from the environment without listing them in
+# OPTIONAL_ENV_VARS (TELEGRAM_WEBHOOK_SECRET, WHATSAPP_CLOUD_APP_SECRET, WEIXIN_TOKEN, ...), so
+# the list above never sees them. Match them by shape, like the authorization gates below: an
+# adapter prefix plus a secret suffix, so a new adapter secret needs no second edit.
+_PLATFORM_SECRET_ENV_SUFFIXES = ("_TOKEN", "_SECRET", "_PASSWORD", "_KEY")
+
+
+def _is_platform_secret_env(upper: str) -> bool:
+    return upper.endswith(_PLATFORM_SECRET_ENV_SUFFIXES) and any(
+        upper.startswith(prefix + "_") for prefix in _static_gate_env_prefixes())
 
 # First-party platform credentials (``BUZZ_*``, driving the platform-mandated ``buzz``
 # CLI) carved out of the TERMINAL scrub only (``_make_run_env``,

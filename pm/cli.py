@@ -1,4 +1,4 @@
-"""hermes pm: lock / install / repair / env / doctor / gc / bundle."""
+"""hermes pm: lock / install / sync / repair / env / doctor / gc / bundle."""
 
 from __future__ import annotations
 
@@ -736,6 +736,26 @@ def _pin_artifacts(package, decision, current: dict) -> dict:
     return artifacts
 
 
+def cmd_sync(args) -> int:
+    """Refresh the committed workspace snapshot from this checkout; keep its lock.
+
+    ``hermes update`` moves the checkout, but a code-only change leaves the venv
+    stamp current, so the dependency sync is a no-op and the committed workspace
+    snapshot keeps running the old code (#122425). This re-snapshots the code
+    without re-resolving dependencies; the graph-change path stays
+    ``hermes pm install``.
+    """
+    from pm.workspace import sync_sources
+
+    try:
+        workspace = sync_sources(repo_root())
+    except InstallError as exc:
+        print(f"\u2717 {exc}")
+        return 1
+    print(f"\u2713 workspace snapshot refreshed ({workspace})")
+    return 0
+
+
 def cmd_status(args) -> int:
     """Print the latest pm sync receipt — the reader surface for the
     CLI/TUI/desktop (same schema as update receipts; a failed venv
@@ -834,6 +854,8 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("status", help="print the latest pm sync receipt (machine-readable)")
     p.set_defaults(func=cmd_status)
+    p = sub.add_parser("sync", help="refresh the committed workspace snapshot from this checkout (keeps the dependency lock)")
+    p.set_defaults(func=cmd_sync)
     p = sub.add_parser("update", help="resolve latest versions and re-pin the lockfile")
     p.add_argument("names", nargs="*", help="packages to check/update (default: all with a latest source)")
     p.add_argument("--check", action="store_true",

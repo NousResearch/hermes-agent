@@ -149,8 +149,23 @@ def _prepare(request: dict, request_path: Path, result_path: Path) -> int:
             # This file runs from the new tree, so its lockfile carries the new
             # pins; tools (incl. bumped uv/python) land before the sync uses them.
             ensure_tools_for_sync()
+            # A code-only update leaves the venv stamp current, so the sync below
+            # is a no-op and the committed workspace snapshot would keep running
+            # the old code with the old install stamp (#122425). Refresh the
+            # snapshot whenever the sync has nothing to rebuild; a rebuilt
+            # generation is already current.
+            # The pm facade always carries venv_is_current; a stubbed pm in
+            # process tests (or a tree older than the probe) may not -- then
+            # the sync below owns freshness and the snapshot stays as built.
+            was_current = hasattr(pm, "venv_is_current") and pm.venv_is_current(project_root=root)
             # An update never fails because of a plugin: misfits are disabled and reported.
             pm.sync_venv(explicit=True, project_root=root, evict_incompatible_plugins=True)
+            if was_current:
+                from hermes_cli.source_stamp import write_source_stamp
+                from pm.workspace import sync_sources
+
+                write_source_stamp(root)
+                sync_sources(root)
         finally:
             request["pm_receipt"] = receipt.last_for_update(update_id)
             _write_json(request_path, request)

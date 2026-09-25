@@ -1286,9 +1286,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
 
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
+    # An installed Hermes.app only this update refreshes counts even with no release/ build
+    # beside it: without one it was never rebuilt, so it never got newer (#52339).
     had_desktop_app_before_update = (
         _m()._desktop_packaged_executable(desktop_dir) is not None
-        or _m()._desktop_dist_exists(desktop_dir))
+        or _m()._desktop_dist_exists(desktop_dir)
+        or bool(_m()._installed_desktop_apps()))
 
     use_zip_update, git_cmd, is_fork = _prepare_git_command()
 

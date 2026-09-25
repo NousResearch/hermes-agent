@@ -8,6 +8,7 @@ import logging
 import contextlib
 import argparse
 import hashlib
+import json
 import os
 import platform
 import re
@@ -947,10 +948,44 @@ def _install_rebuilt_desktop_app(desktop_dir: Path) -> tuple[list[Path], list[st
     rebuilt_exe = _desktop_packaged_executable(desktop_dir)
     if rebuilt_exe is None:
         return [], []
-    from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: PLC0415
     # .../Hermes.app/Contents/MacOS/Hermes -> .../Hermes.app
     return _install_rebuilt_macos_bundles(
-        rebuilt_exe.parents[2], packaged_gui_app_paths(), running=_running_macos_app_bundles())
+        rebuilt_exe.parents[2], _installed_desktop_apps(), running=_running_macos_app_bundles())
+
+
+def _update_owned_macos_bundles(candidates: list[Path]) -> list[Path]:
+    """The existing bundles in *candidates* that only ``hermes update`` keeps current (#52339).
+
+    Ownership comes from the bundle's own ``install-stamp.json``. ``updateMechanism: self`` is a
+    bootstrap build (a local pack or the bootstrap download), and stamps older than the field
+    predate every self-updating kind. Bundled/light releases update themselves and commit builds
+    are external, so a local build must never be copied over them. No readable stamp, no claim.
+    """
+    owned = []
+    for app in candidates:
+        try:
+            stamp = json.loads((app / "Contents" / "Resources" / "install-stamp.json").read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(stamp, dict) and stamp.get("updateMechanism", "self") == "self":
+            owned.append(app)
+    return owned
+
+
+def _installed_desktop_apps() -> list[Path]:
+    """Installed macOS ``Hermes.app`` bundles this checkout's update owns (none off macOS).
+
+    A packaged app runs the checkout under the default Hermes home, so only that checkout may
+    build for it: a bundle from any other tree (a dev worktree) would split shell from backend.
+    """
+    if sys.platform != "darwin":
+        return []
+    from hermes_cli.gui_uninstall import packaged_gui_app_paths  # noqa: PLC0415
+    from hermes_cli.main import PROJECT_ROOT  # noqa: PLC0415
+    from hermes_constants import get_default_hermes_root  # noqa: PLC0415
+    if Path(PROJECT_ROOT).resolve() != (get_default_hermes_root() / "hermes-agent").resolve():
+        return []
+    return _update_owned_macos_bundles(packaged_gui_app_paths())
 
 
 def _install_rebuilt_macos_bundles(

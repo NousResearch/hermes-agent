@@ -2577,8 +2577,15 @@ class SlackAdapter(BasePlatformAdapter):
         text = self._strip_stream_cursor(content)
         # Only claim sends that extend what was streamed; an empty ``sent``
         # prefix would match everything.
-        if not sent or not text.startswith(sent):
+        if not sent:
             return None
+        if not text.startswith(sent) and text.rstrip() != sent.rstrip():
+            # Not the stream's final text (e.g. interim commentary): leave it open.
+            return None
+        # A trailing-whitespace-only difference still claims the stream: the
+        # gateway's authoritative final is stripped while streamed frames kept
+        # it (#121326). Sealing shows one copy; the whitespace is invisible in
+        # the rendered message, while falling through would post a duplicate.
         self._active_streams.pop(chat_id, None)
         ts = stream["ts"]
         ok = await self._seal_stream(chat_id, stream, final_text=text)

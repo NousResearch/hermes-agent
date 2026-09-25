@@ -60,9 +60,17 @@ def github(tmp_path, monkeypatch):
     shim = tmp_path / "bin"
     shim.mkdir()
     gh = shim / "gh"
-    gh.write_text(f"#!{sys.executable}\nimport sys,urllib.request\n"
-                  f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
-                  "print(urllib.request.urlopen(u).read().decode())\n")
+    gh.write_text(
+        f"#!{sys.executable}\nimport json,sys,urllib.request\n"
+        "if '--slurp' in sys.argv:\n"
+        " print('unknown flag: --slurp', file=sys.stderr); raise SystemExit(1)\n"
+        f"u='http://127.0.0.1:{server.server_port}/'+sys.argv[2]\n"
+        "value=json.loads(urllib.request.urlopen(u).read().decode())\n"
+        "if '--paginate' in sys.argv:\n"
+        " [print(json.dumps(page)) for page in value]\n"
+        "else:\n"
+        " print(json.dumps(value))\n"
+    )
     gh.chmod(0o755)
     monkeypatch.setenv("PATH", str(shim) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))

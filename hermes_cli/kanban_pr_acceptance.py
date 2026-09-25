@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+from typing import Any
 from urllib.parse import quote
 
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -22,18 +23,43 @@ def validate_contract(value: str | None) -> str:
     return value
 
 
-def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
+def _decode_json_documents(text: str) -> list[Any]:
+    """Decode one or more JSON documents emitted by ``gh api --paginate``.
+
+    Older GitHub CLI releases do not provide ``--slurp``. Without it, each
+    response page is written as a consecutive JSON document, so ``json.loads``
+    alone only works for one-page responses.
+    """
+    decoder = json.JSONDecoder()
+    documents = []
+    offset = 0
+    while offset < len(text):
+        while offset < len(text) and text[offset].isspace():
+            offset += 1
+        if offset == len(text):
+            break
+        document, offset = decoder.raw_decode(text, offset)
+        documents.append(document)
+    if not documents:
+        raise ValueError("GitHub returned empty JSON evidence")
+    return documents
+
+
+def _api(endpoint: str, *, query: str | None = None, paginate: bool = False) -> Any:
     command = ["gh", "api", endpoint, "--hostname", "github.com"]
     if query is not None:
         command += ["-f", "query=" + query]
     if paginate:
-        command += ["--paginate", "--slurp"]
+        command.append("--paginate")
     result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True,
                             text=True, timeout=30, check=True)
-    value = json.loads(result.stdout)
-    if isinstance(value, dict) and value.get("errors"):
-        raise ValueError("GitHub returned incomplete GraphQL evidence")
-    return value
+    documents = _decode_json_documents(result.stdout)
+    if not paginate and len(documents) != 1:
+        raise ValueError("GitHub returned multiple JSON responses without pagination")
+    for document in documents:
+        if isinstance(document, dict) and document.get("errors"):
+            raise ValueError("GitHub returned incomplete GraphQL evidence")
+    return documents if paginate else documents[0]
 
 
 def collect_acceptance(contract: str, published_pr: str | None) -> dict:

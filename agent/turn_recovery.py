@@ -1525,7 +1525,7 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
                 or f"Responses API returned status '{_codex_resp_status}'"
             )
             logger.warning(
-                "Codex response status='%s' (error=%s). Routing to fallback. %s",
+                "Codex response status='%s' (error=%s). Entering recovery/fallback handling. %s",
                 _codex_resp_status, _codex_error_msg, agent._client_log_context(),
             )
             return True, [f"response.status={_codex_resp_status}: {_codex_error_msg}"]

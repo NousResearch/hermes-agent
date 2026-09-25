@@ -14,6 +14,7 @@ from agent.agent_runtime_helpers import recover_with_credential_pool
 from agent.credential_pool import STATUS_EXHAUSTED, CredentialPool, PooledCredential
 from agent.turn_response_check import retry_invalid_response
 from agent.turn_retry_state import TurnRetryState
+from run_agent import AIAgent
 
 _BASE_URL = "https://chatgpt.com/backend-api/codex"
 
@@ -35,6 +36,8 @@ class _Agent:
     _fallback_chain = ()
     _fallback_index = 0
     _credential_pool_revert_id = None
+    _codex_reasoning_replay_enabled = True
+    _disable_codex_reasoning_replay = AIAgent._disable_codex_reasoning_replay
 
     def __init__(self, pool: CredentialPool) -> None:
         self._credential_pool = pool
@@ -70,10 +73,10 @@ def _soft_failure(code: str, message: str) -> SimpleNamespace:
     return SimpleNamespace(status="failed", output=[], output_text="", error=SimpleNamespace(code=code, message=message))
 
 
-def _run(agent: _Agent, response: SimpleNamespace):
+def _run(agent: _Agent, response: SimpleNamespace, *, messages=None, retry_state=None):
     return retry_invalid_response(
-        agent, response=response, error_details=["response.status=failed"], _retry=TurnRetryState(),
-        thinking_spinner=None, messages=[], api_messages=[], api_kwargs=None, active_system_prompt=None,
+        agent, response=response, error_details=["response.status=failed"], _retry=retry_state or TurnRetryState(),
+        thinking_spinner=None, messages=messages if messages is not None else [], api_messages=[], api_kwargs=None, active_system_prompt=None,
         conversation_history=None, retry_count=0, max_retries=3, compression_attempts=0, api_call_count=1,
         api_request_id="r", api_start_time=0.0, api_duration=0.4, effective_task_id="t", turn_id="turn",
     )
@@ -102,3 +105,32 @@ def test_content_policy_soft_failure_leaves_pool_alone():
     assert agent.swapped_to == [] and agent.api_key == "tok-0-1234567890"
     assert all(e.last_status is None for e in pool.entries())
     agent._try_activate_fallback.assert_called()
+
+def test_invalid_encrypted_content_soft_failure_repairs_replay_before_fallback():
+    agent = _Agent(CredentialPool("openai-codex", [_entry(0)]))
+    agent._try_activate_fallback.return_value = True
+    messages = [{"role": "assistant", "content": "", "codex_reasoning_items": [
+        {"type": "reasoning", "encrypted_content": "opaque"},
+    ]}]
+    retry_state = TurnRetryState()
+    response = _soft_failure("invalid_encrypted_content", "Encrypted content could not be decrypted or parsed")
+
+    verdict = _run(agent, response, messages=messages, retry_state=retry_state)
+
+    assert verdict.action == "continue"
+    assert verdict.retry_count == 0
+    assert retry_state.invalid_encrypted_content_retry_attempted
+    assert agent._codex_reasoning_replay_enabled is False
+    assert "codex_reasoning_items" not in messages[0]
+    agent._try_activate_fallback.assert_not_called()
+
+
+def test_invalid_encrypted_content_soft_failure_without_replay_keeps_fallback():
+    agent = _Agent(CredentialPool("openai-codex", [_entry(0)]))
+    agent._try_activate_fallback.return_value = True
+
+    verdict = _run(agent, _soft_failure("invalid_encrypted_content", "Encrypted content rejected"))
+
+    assert verdict.action == "break"
+    assert agent._codex_reasoning_replay_enabled is True
+    agent._try_activate_fallback.assert_called_once()

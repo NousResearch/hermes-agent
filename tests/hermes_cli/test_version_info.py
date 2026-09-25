@@ -249,3 +249,58 @@ def test_old_updater_version_stub_reads_the_same_stamp_as_version_info(tmp_path)
     unstamped = tmp_path / "unstamped"
     unstamped.mkdir()
     assert read(unstamped)[0] == "0.0.0"
+
+
+def test_run_git_decodes_utf8_output_under_non_utf8_locale(tmp_path, monkeypatch):
+    """Non-ASCII git output must survive a non-UTF-8 locale (e.g. cp936/GBK Windows).
+
+    ``_run_git`` used to rely on the implicit ``text=True`` encoding, which is the
+    locale's preferred (ANSI) code page. A single em dash in a commit message --
+    or in a tagged ``pyproject.toml`` read via ``git show`` -- then killed the
+    subprocess reader thread with UnicodeDecodeError, silently dropping the
+    probe's stdout (version identity fell back to the "unknown" path).
+    """
+    import sys
+
+    import pytest
+
+    if sys.flags.utf8_mode:
+        pytest.skip("UTF-8 mode short-circuits the locale lookup this test forces")
+
+    import locale as locale_module
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args], cwd=repo, text=True, capture_output=True, check=True,
+            env={"HOME": str(tmp_path), "PATH": __import__("os").environ["PATH"]},
+        )
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Hermes Test")
+    git("config", "user.email", "hermes@example.invalid")
+    (repo / "tracked").write_text("initial\n", encoding="utf-8")
+    git("add", "tracked")
+    # -F reads the message as raw bytes, so the em dash is stored as UTF-8.
+    (repo / "msg.txt").write_text("fix — non-ascii commit subject\n", encoding="utf-8")
+    git("commit", "-q", "-F", "msg.txt")
+
+    # ``subprocess`` resolves an unspecified ``text=True`` encoding through
+    # ``locale.getencoding()`` (``getpreferredencoding`` on older CPythons);
+    # patch both so the probe sees a cp936-style locale on any host.
+    monkeypatch.setattr(
+        locale_module, "getencoding", lambda: "gbk", raising=False
+    )
+    monkeypatch.setattr(
+        locale_module, "getpreferredencoding", lambda do_setlocale=True: "gbk"
+    )
+
+    from hermes_cli.version_info import _run_git
+
+    subject = _run_git(repo, "log", "-1", "--format=%B")
+
+    assert subject is not None, "UTF-8 git output was lost under a non-UTF-8 locale"
+    assert "—" in subject

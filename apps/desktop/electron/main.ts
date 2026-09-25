@@ -391,10 +391,7 @@ import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
 import { capturePreviewContents } from './preview-capture'
-import {
-  onPreviewWatchOwnerDestroyed,
-  sendPreviewFileChangedToOwner
-} from './preview-file-watch'
+import { onPreviewWatchOwnerDestroyed, sendPreviewFileChangedToOwner } from './preview-file-watch'
 import { PreviewReachRegistry } from './preview-reach'
 import {
   createPrimaryRemoteConnection,
@@ -666,6 +663,7 @@ let windowsGpuStackCookieRelaunchAttempted = false
 
 if (IS_WINDOWS) {
   const windowsGpuUserData = app.getPath('userData')
+
   const gpuStackCookieDecision = decideWindowsGpuStackCookieLaunch({
     argv: process.argv,
     marker: readGpuStackCookieMarker(windowsGpuUserData),
@@ -2079,6 +2077,7 @@ async function openExternalFile(rawUrl: string) {
 
   if (lastReveal !== undefined && now - lastReveal < FILE_REVEAL_DEDUPE_MS) {
     rememberLog(`[file] duplicate reveal request within ${FILE_REVEAL_DEDUPE_MS}ms; ignored: ${localPath}`)
+
     return
   }
 
@@ -6059,10 +6058,7 @@ async function watchPreviewFile(owner, rawUrl) {
 
   // Proactive teardown: the watch must not outlive the window that asked for
   // it by whole quit-cycles waiting on a change event that never comes.
-  const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(
-    owner,
-    () => stopPreviewFileWatch(id)
-  )
+  const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(owner, () => stopPreviewFileWatch(id))
 
   const watcher = fs.watch(watchDir, (_eventType, filename) => {
     const changedName = filename ? path.basename(String(filename)) : ''
@@ -6082,10 +6078,8 @@ async function watchPreviewFile(owner, rawUrl) {
         return
       }
 
-      sendPreviewFileChangedToOwner(
-        owner,
-        { id, path: filePath, url: pathToFileURL(filePath).toString() },
-        () => stopPreviewFileWatch(id)
+      sendPreviewFileChangedToOwner(owner, { id, path: filePath, url: pathToFileURL(filePath).toString() }, () =>
+        stopPreviewFileWatch(id)
       )
     }, PREVIEW_WATCH_DEBOUNCE_MS)
   })
@@ -6094,6 +6088,7 @@ async function watchPreviewFile(owner, rawUrl) {
     owner,
     close: () => {
       offOwnerDestroyed()
+
       if (timer) {
         clearTimeout(timer)
       }
@@ -6151,10 +6146,7 @@ function watchDirectory(owner, rawDir) {
 
   // Same proactive teardown as a file watch: a closed window's directory
   // watch must not keep polling the disk-plugin door until quit.
-  const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(
-    owner,
-    () => stopPreviewFileWatch(id)
-  )
+  const offOwnerDestroyed = onPreviewWatchOwnerDestroyed(owner, () => stopPreviewFileWatch(id))
 
   const watcher = fs.watch(watchDir, () => {
     if (timer) {
@@ -6163,10 +6155,8 @@ function watchDirectory(owner, rawDir) {
 
     timer = setTimeout(() => {
       timer = null
-      sendPreviewFileChangedToOwner(
-        owner,
-        { id, path: watchDir, url: pathToFileURL(watchDir).toString() },
-        () => stopPreviewFileWatch(id)
+      sendPreviewFileChangedToOwner(owner, { id, path: watchDir, url: pathToFileURL(watchDir).toString() }, () =>
+        stopPreviewFileWatch(id)
       )
     }, PREVIEW_WATCH_DEBOUNCE_MS)
   })
@@ -6175,6 +6165,7 @@ function watchDirectory(owner, rawDir) {
     owner,
     close: () => {
       offOwnerDestroyed()
+
       if (timer) {
         clearTimeout(timer)
       }
@@ -10180,7 +10171,10 @@ function persistSshConnectionToken(profile, source, token, registryConnectionId 
 //   3. global remote (connection.json `mode: 'remote'`)
 // A null/empty profile resolves the env/global remote, so legacy callers and
 // the connection test (which pass no profile) are unchanged.
-async function resolveRemoteBackend(profile, options: { forceRegistryPrimary?: boolean; poolKey?: string; primary?: boolean } = {}) {
+async function resolveRemoteBackend(
+  profile,
+  options: { forceRegistryPrimary?: boolean; poolKey?: string; primary?: boolean } = {}
+) {
   const profileKey = String(profile || '').trim() || 'default'
 
   const managedPrimary = options.primary
@@ -12116,6 +12110,7 @@ async function runPoolBackendStart(
     WebSocketImpl: globalThis.WebSocket,
     ...spawnedBackendProbeOptions(childAlive)
   })
+
   assertPoolEntryStillOwned(poolKey, entry, backendPool, localBackendLifecycle.signal)
 
   if (!wsProbe.ok) {
@@ -12702,15 +12697,15 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   migrateActiveProfileIfMissing()
 
   const connectionAttempt = backendConnectionState.startAttempt()
+
   // ONE launch-profile decision for this attempt (#108417): routing pin,
   // --profile argv, and the child env all derive from the same read, so a
   // hermes:profile:remember landing mid-startup becomes the NEXT boot's
   // preference instead of splitting routing identity from the launch
   // argument. (The pin below still honors a live primary — but a primary
   // being live means startHermes never got here.)
-  const { argvProfile: activeProfile, routingProfile: primaryProfile } = resolveLaunchProfile(
-    readActiveDesktopProfile
-  )
+  const { argvProfile: activeProfile, routingProfile: primaryProfile } = resolveLaunchProfile(readActiveDesktopProfile)
+
   // Pin the routing table to the profile this primary actually boots as; a
   // later hermes:profile:remember must not retarget requests mid-life.
   primaryProfilePin.pin(primaryProfile)
@@ -12771,6 +12766,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     const token = crypto.randomBytes(32).toString('base64url')
     // --port 0: the OS assigns an ephemeral port; the child announces it on stdout.
     const backendArgs = ['serve', '--host', '127.0.0.1', '--port', '0']
+
     // Pin the desktop's chosen profile via the global --profile flag. This is
     // deterministic (it wins over the sticky ~/.hermes/active_profile file) and
     // resolves HERMES_HOME the same way `hermes -p <name>` does on the CLI. An
@@ -17330,13 +17326,9 @@ ipcMain.handle('hermes:normalizePreviewTarget', (_event, target, baseDir) =>
   normalizePreviewTarget(String(target || ''), baseDir ? String(baseDir) : '')
 )
 
-ipcMain.handle('hermes:watchPreviewFile', (event, url) =>
-  watchPreviewFile(event.sender, String(url || ''))
-)
+ipcMain.handle('hermes:watchPreviewFile', (event, url) => watchPreviewFile(event.sender, String(url || '')))
 
-ipcMain.handle('hermes:watchDirectory', (event, dir) =>
-  watchDirectory(event.sender, String(dir || ''))
-)
+ipcMain.handle('hermes:watchDirectory', (event, dir) => watchDirectory(event.sender, String(dir || '')))
 
 ipcMain.handle('hermes:stopPreviewFileWatch', (_event, id) => stopPreviewFileWatch(String(id || '')))
 

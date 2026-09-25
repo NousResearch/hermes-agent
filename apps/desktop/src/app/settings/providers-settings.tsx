@@ -463,6 +463,7 @@ export function ProvidersSettings({
 
       if (!result?.ok) {
         notifyError(new Error('No stored credentials were removed'), t.settings.providers.failedRemove(name))
+
         return
       }
 

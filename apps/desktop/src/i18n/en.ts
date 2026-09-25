@@ -1018,7 +1018,6 @@ export const en: Translations = {
       appearance: 'Appearance',
       workspace: 'Workspace',
       safety: 'Safety',
-      browser: 'Browser',
       memory: 'Memory & Context',
       voice: 'Voice',
       advanced: 'Advanced'

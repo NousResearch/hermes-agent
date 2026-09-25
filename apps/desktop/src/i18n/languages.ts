@@ -32,12 +32,6 @@ export const LOCALE_OPTIONS = [
     configValue: 'ja'
   },
   {
-    id: 'ko',
-    name: LOCALE_ENDONYMS.ko,
-    englishName: 'Korean',
-    configValue: 'ko'
-  },
-  {
     id: 'ar',
     name: LOCALE_ENDONYMS.ar,
     englishName: 'Arabic',
@@ -103,11 +97,6 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   ja: 'ja',
   'ja-jp': 'ja',
   ja_jp: 'ja',
-  ko: 'ko',
-  'ko-kr': 'ko',
-  ko_kr: 'ko',
-  korean: 'ko',
-  한국어: 'ko',
   ar: 'ar',
   'ar-sa': 'ar',
   ar_sa: 'ar',

@@ -260,6 +260,9 @@ def _record_sign_in_state(sess: Dict[str, Any], state: Any) -> None:
             sess["status"] = "error"
             sess["reason"] = state.reason or "error"
             sess["error_message"] = state.copy    # the chat form: no raw exception reaches the UI
+            # Whether a later attempt can succeed, and the wait the service named (seconds).
+            sess["retryable"] = bool(getattr(state, "retryable", False))
+            sess["retry_after"] = int(getattr(state, "retry_after", 0) or 0)
             return
         # already_signed_in / unavailable: the start route refuses these, so this is unreachable
         # through the dashboard; record rather than crash.

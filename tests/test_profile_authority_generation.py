@@ -135,3 +135,48 @@ def test_targeted_source_reset_keeps_sibling_authority_and_epoch_order(tmp_path)
     assert refreshed.status == "ready"
     assert refreshed.generation > before[0].generation
     assert env_loader.get_external_secret_snapshot(homes[1]) == before[1]
+
+
+@pytest.mark.parametrize("during_fetch", [False, True])
+def test_stale_startup_snapshot_cannot_restore_revoked_values(tmp_path, monkeypatch, during_fetch):
+    class ChangingSource(SecretSource):
+        name = "audit_restore_race"
+        shape = "bulk"
+        override_existing_default = True
+
+        def is_enabled(self, cfg):
+            return cfg.get("enabled") is True
+
+        def fetch(self, cfg, home_path):
+            if during_fetch:
+                (home_path / "config.yaml").write_text("secrets: {}\n", encoding="utf-8")
+            return FetchResult(secrets={"AUDIT_RESTORE_LOGIN": "stale-fetch"})
+
+    assert registry.register_source(ChangingSource())
+    (tmp_path / "config.yaml").write_text(
+        "secrets:\n  audit_restore_race:\n    enabled: true\n", encoding="utf-8")
+    env_loader._apply_external_secret_sources(tmp_path)
+    if not during_fetch:
+        assert env_loader.get_external_secret_snapshot(tmp_path).status == "ready"
+        (tmp_path / "config.yaml").write_text("secrets: {}\n", encoding="utf-8")
+    assert env_loader.get_external_secret_snapshot(tmp_path).status == "stale"
+    monkeypatch.delenv("AUDIT_RESTORE_LOGIN", raising=False)
+    env_loader.load_hermes_dotenv(hermes_home=tmp_path, load_external_secrets=False)
+    assert "AUDIT_RESTORE_LOGIN" not in os.environ
+
+
+def test_relative_and_absolute_profile_homes_share_generation(tmp_path, monkeypatch):
+    home = tmp_path / "profile"
+    home.mkdir()
+    (home / ".env").write_text("ACME_LOGIN=target-value\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    relative = secret_scope.build_profile_secret_scope(Path("profile"))
+    absolute = secret_scope.build_profile_secret_scope(home)
+    assert relative.profile_home == absolute.profile_home
+    assert relative.generation == absolute.generation
+    token = secret_scope.set_secret_scope(relative, profile_home=str(home))
+    try:
+        boundary = secret_scope.build_profile_env_boundary(tmp_path, home)
+        assert boundary.target_generation == relative.generation
+    finally:
+        secret_scope.reset_secret_scope(token)

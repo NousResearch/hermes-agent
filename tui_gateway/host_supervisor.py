@@ -142,9 +142,9 @@ class HostSupervisor:
         self.expected_hermes_home = (
             str(get_hermes_home()) if expected_hermes_home is None else expected_hermes_home)
         from agent.secret_scope import build_profile_env_boundary, is_multiplex_active
-        from hermes_constants import get_process_hermes_home
+        from hermes_constants import get_routing_process_hermes_home
 
-        source_home = Path(get_process_hermes_home()).resolve()
+        source_home = Path(get_routing_process_hermes_home()).resolve()
         target_home = Path(self.expected_hermes_home).resolve()
         self._profile_env_boundary = None
         if is_multiplex_active() or source_home != target_home:

@@ -20,7 +20,8 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent.bounded_response import read_streaming_error_body
-from agent.gemini_schema import sanitize_gemini_tool_parameters
+from agent.retry_utils import parse_retry_after_seconds
+from agent.gemini_schema import prepare_gemini_tool_parameters, sanitize_gemini_tool_parameters
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,12 @@ except Exception:
 _API_CLIENT = f"hermes-agent/{_HERMES_VERSION}"  # client context per Gemini's partner-integration guidance
 
 DEFAULT_GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+# A Vertex AI express-mode base, when the user configures one explicitly: aiplatform serves the
+# same native API under ``{version}/publishers/google/models/…``; the base carries that prefix so
+# every ``{base}/models/{model}:…`` builder (chat, tier probe, TTS) needs no path branching.
+# The key itself never decides routing — Google now issues ``AQ.…`` keys for BOTH Google AI Studio
+# and Vertex express mode (#115306), so an express key reaches aiplatform only via this base config.
+VERTEX_EXPRESS_BASE_URL = "https://aiplatform.googleapis.com/v1beta1/publishers/google"
 
 # Published max output-token ceiling shared by every current Gemini text model; used
 # for max_tokens=None because the native API's low internal default truncates output.
@@ -49,8 +56,23 @@ _STANDARD_KEY_GUIDANCE = (
     "'Standard' Google Cloud keys for the Gemini API on June 19, 2026, and all Standard keys stop working in "
     "September 2026. Open https://aistudio.google.com/api-keys, check the key's type and status, and create a "
     "replacement Gemini API key (or, as a temporary bridge, restrict the Standard key to "
-    "generativelanguage.googleapis.com). Then update GEMINI_API_KEY / GOOGLE_API_KEY in ~/.hermes/.env and "
-    "restart your session. Details: https://ai.google.dev/gemini-api/docs/api-key"
+    "generativelanguage.googleapis.com). Then update GEMINI_API_KEY / GOOGLE_API_KEY in ~/.hermes/.env, "
+    "delete any leftover Windows/system copy of those variables, and restart. A stale shell key can hide "
+    "the .env value. Details: https://ai.google.dev/gemini-api/docs/api-key"
+)
+# Google issues ``AQ.…`` keys for both AI Studio and Vertex express mode; each surface only accepts
+# its own keys, so a 403 usually means the key/host pairing is crossed rather than a bad key (#115306).
+_EXPRESS_KEY_ON_STUDIO_GUIDANCE = (
+    "\n\nGoogle issues 'AQ.' keys for both Google AI Studio and Vertex AI express mode, and each surface "
+    "only accepts its own keys: a Vertex express key always gets 403 PERMISSION_DENIED on "
+    "generativelanguage.googleapis.com. If this key came from Google Cloud / Vertex (express mode), point "
+    "the provider at the express surface, e.g. set base_url / GEMINI_BASE_URL to "
+    "https://aiplatform.googleapis.com/v1beta1."
+)
+_STUDIO_KEY_ON_EXPRESS_GUIDANCE = (
+    "\n\nIf this 'AQ.' key came from Google AI Studio (https://aistudio.google.com/apikey), it only works "
+    "on the default generativelanguage.googleapis.com host — remove the explicit aiplatform base_url so "
+    "the default surface is used."
 )
 # Stands in for a model turn that never arrived (stream failure / interrupt / quota
 # fallback) when a human user text turn directly follows a tool-result turn, keeping
@@ -95,10 +117,59 @@ def gemini_requires_tool_call_ids(model: str) -> bool:
     return match is not None and int(match.group(1)) >= 3
 
 
+_API_VERSION_SEGMENT = re.compile(r"^v\d+(?:alpha|beta)?\d*$", re.IGNORECASE)
+
+
+def is_vertex_express_base_url(base_url: str) -> bool:
+    """An aiplatform host without a project path — the express surface. The OAuth Vertex provider's
+    ``…/projects/{p}/locations/{r}/endpoints/openapi`` base is OpenAI-compatible and must stay off
+    the native adapter."""
+    normalized = str(base_url or "").strip().lower()
+    return "aiplatform.googleapis.com" in normalized and "/projects/" not in normalized
+
+
+def normalize_gemini_base_url(base_url: Optional[str]) -> str:
+    """Gemini native base URL with the API version segment guaranteed. Google's own client treats the
+    base as a host root and appends the version itself, so users configure ``GEMINI_BASE_URL`` (or a
+    proxy root like ``http://localhost:4000/gemini``) that way; our request builders expect
+    ``{base}/models/{model}:generateContent`` — without ``/v1beta`` that is a guaranteed 404. Trailing
+    slashes and an ``/openai`` suffix are stripped; an existing version segment (``v1``, ``v1beta``,
+    ``v1alpha``, ...) is kept; empty input returns ``DEFAULT_GEMINI_BASE_URL``. Only the LAST path
+    segment is inspected, so ``.../v1beta/extra`` still gets ``/v1beta`` appended; this does not
+    decide routing (see ``is_native_gemini_base_url``).
+
+    A Vertex express base (``aiplatform.googleapis.com``, ``…/v1beta1`` or the full
+    ``…/v1beta1/publishers/google``) is completed to the ``publishers/google`` form. The key never
+    decides routing: Google issues ``AQ.…`` keys for both AI Studio and Vertex express mode
+    (#115306), so an express key reaches aiplatform only through this explicit base configuration."""
+    trimmed = str(base_url or "").strip().rstrip("/")
+    trimmed = re.sub(r"/openai\Z", "", trimmed, flags=re.IGNORECASE).rstrip("/")
+    if not trimmed:
+        trimmed = DEFAULT_GEMINI_BASE_URL
+    if is_vertex_express_base_url(trimmed):
+        if trimmed.lower().endswith("/publishers/google"):
+            return trimmed
+        if not _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
+            trimmed = f"{trimmed}/v1beta1"
+        return f"{trimmed}/publishers/google"
+    if _API_VERSION_SEGMENT.match(trimmed.rsplit("/", 1)[-1]):
+        return trimmed
+    return f"{trimmed}/v1beta"
+
+
 def is_native_gemini_base_url(base_url: str) -> bool:
     """True when the endpoint speaks Gemini's native REST API (not ``/openai``)."""
     normalized = str(base_url or "").strip().rstrip("/").lower()
-    return "generativelanguage.googleapis.com" in normalized and not normalized.endswith("/openai")
+    if normalized.endswith("/openai"):
+        return False
+    return "generativelanguage.googleapis.com" in normalized or is_vertex_express_base_url(normalized)
+
+
+def gemini_accepts_parameters_json_schema(base_url: str) -> bool:
+    """``FunctionDeclaration.parametersJsonSchema`` exists only in the ``v1beta`` surface of
+    generativelanguage (absent from ``v1`` / ``v1alpha`` content.proto); other versions and
+    unknown proxies get the legacy ``parameters`` subset."""
+    return str(base_url or "").strip().rstrip("/").lower().endswith("/v1beta")
 
 
 def probe_gemini_tier(
@@ -108,8 +179,7 @@ def probe_gemini_tier(
     key = (api_key or "").strip()
     if not key:
         return "unknown"
-    base = str(base_url or DEFAULT_GEMINI_BASE_URL).strip().rstrip("/") or DEFAULT_GEMINI_BASE_URL
-    base = re.sub(r"/openai\Z", "", base, flags=re.IGNORECASE)
+    base = normalize_gemini_base_url(base_url)
     payload = {"contents": [{"role": "user", "parts": [{"text": "hi"}]}], "generationConfig": {"maxOutputTokens": 1}}
     headers = {"Content-Type": "application/json", "X-Goog-Api-Client": _API_CLIENT}
     try:
@@ -141,11 +211,46 @@ def is_free_tier_quota_error(error_message: str) -> bool:
     return bool(error_message) and "free_tier" in error_message.lower()
 
 
-def is_standard_key_auth_error(status: int, error_message: str, reason: str = "") -> bool:
-    """True when a Gemini 401 means Google rejected the key TYPE (legacy "Standard" Cloud key → misleading
-    "expected OAuth 2 access token" / ErrorInfo ``ACCESS_TOKEN_TYPE_UNSUPPORTED``). Narrow so ``API_KEY_INVALID``
-    keeps its message."""
-    return status == 401 and (reason == "ACCESS_TOKEN_TYPE_UNSUPPORTED" or "expected oauth 2 access token" in (error_message or "").lower())
+def wrong_gemini_surface_guidance(base_url: str, api_key: str, err_status: str) -> str:
+    """Guidance text for the 403 PERMISSION_DENIED key/host mismatches Google's AQ. rollout created.
+
+    Google issues ``AQ.…`` keys for both AI Studio and Vertex express mode, so neither the key prefix
+    nor the host alone proves the pairing; on a PERMISSION_DENIED, point the user at the surface their
+    key likely belongs to: an AQ. key rejected by the Studio host may be an express key (the explicit
+    aiplatform base_url is that key's only route there), and any key rejected by an explicitly
+    configured aiplatform base may be an AI Studio key (#115306). Empty string when the shape matches
+    neither."""
+    if (err_status or "").strip().upper() != "PERMISSION_DENIED":
+        return ""
+    normalized = str(base_url or "").strip().lower()
+    if is_vertex_express_base_url(normalized):
+        return _STUDIO_KEY_ON_EXPRESS_GUIDANCE
+    if "generativelanguage.googleapis.com" in normalized and str(api_key or "").strip().upper().startswith("AQ."):
+        return _EXPRESS_KEY_ON_STUDIO_GUIDANCE
+    return ""
+
+
+def is_standard_key_auth_error(
+    status: int, error_message: str, reason: str = "", *, api_key: str = "",
+) -> bool:
+    """True when Google rejected a legacy "Standard" (AIza) Cloud key.
+
+    Original shape (June 2026): 401 + ``ACCESS_TOKEN_TYPE_UNSUPPORTED`` / "expected OAuth 2
+    access token". After the September 2026 cutoff the same leftover AIza key often comes
+    back as 400 ``API_KEY_INVALID`` ("API key not valid") — attach migration guidance on
+    that 400 only when the presented key is still AIza-shaped, so a mistyped Auth (``AQ.``)
+    key keeps the raw invalid-key message.
+    """
+    msg = (error_message or "").lower()
+    if status == 401 and (reason == "ACCESS_TOKEN_TYPE_UNSUPPORTED" or "expected oauth 2 access token" in msg):
+        return True
+    if (
+        status == 400
+        and (api_key or "").startswith("AIza")
+        and (reason == "API_KEY_INVALID" or "api key not valid" in msg)
+    ):
+        return True
+    return False
 
 
 class GeminiAPIError(Exception):
@@ -328,7 +433,7 @@ def _build_gemini_contents(
     return _merge_alternating(contents), ({"role": "system", "parts": [{"text": joined_system}]} if joined_system else None)
 
 
-def _function_declaration(tool: Any) -> Optional[Dict[str, Any]]:
+def _function_declaration(tool: Any, *, json_schema: bool = False) -> Optional[Dict[str, Any]]:
     fn = (tool.get("function") or {}) if isinstance(tool, dict) else None
     if not isinstance(fn, dict) or not (isinstance(fn.get("name"), str) and fn["name"]):
         return None
@@ -336,12 +441,18 @@ def _function_declaration(tool: Any) -> Optional[Dict[str, Any]]:
     if isinstance(fn.get("description"), str) and fn["description"]:
         decl["description"] = fn["description"]
     if isinstance(fn.get("parameters"), dict):
-        decl["parameters"] = sanitize_gemini_tool_parameters(fn["parameters"])
+        # Full JSON Schema where the API version has the field (unions, bare arrays,
+        # $ref survive); the lossy OpenAPI subset elsewhere. Mutually exclusive on the wire.
+        if json_schema:
+            decl["parametersJsonSchema"] = prepare_gemini_tool_parameters(fn["parameters"])
+        else:
+            decl["parameters"] = sanitize_gemini_tool_parameters(fn["parameters"])
     return decl
 
 
-def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
-    declarations = [d for d in map(_function_declaration, tools if isinstance(tools, list) else []) if d]
+def _translate_tools_to_gemini(tools: Any, *, json_schema: bool = False) -> List[Dict[str, Any]]:
+    declarations = [d for d in (_function_declaration(t, json_schema=json_schema)
+                                for t in (tools if isinstance(tools, list) else [])) if d]
     return [{"functionDeclarations": declarations}] if declarations else []
 
 
@@ -392,18 +503,36 @@ def _effective_gemini_max_output_tokens(max_tokens: Optional[int], thinking_conf
     return requested
 
 
+def _translate_response_format(response_format: Any, *, json_schema: bool = False) -> Dict[str, Any]:
+    """OpenAI ``response_format`` → Gemini ``generationConfig`` JSON-output keys.
+
+    Full-JSON-Schema ``responseJsonSchema`` exists only on the generativelanguage ``v1beta``
+    surface (same gate as ``parametersJsonSchema``); ``v1`` / ``v1alpha``, Vertex express
+    ``v1beta1`` and unknown proxies take the OpenAPI-subset ``responseSchema`` path.
+    """
+    if not isinstance(response_format, dict) or response_format.get("type") not in ("json_object", "json_schema"):
+        return {}
+    spec = response_format.get("json_schema") if response_format.get("type") == "json_schema" else None
+    # A ``json_schema`` spec with no ``schema`` key has nothing to constrain with (the Anthropic
+    # translator bails the same way) — ask for JSON and let the model shape it.
+    schema = spec.get("schema") if isinstance(spec, dict) else None
+    if not isinstance(schema, dict):
+        return {"responseMimeType": "application/json"}
+    key, prep = ("responseJsonSchema", prepare_gemini_tool_parameters) if json_schema else ("responseSchema", sanitize_gemini_tool_parameters)
+    return {"responseMimeType": "application/json", key: prep(schema)}
+
+
 def build_gemini_request(
     *, messages: List[Dict[str, Any]], tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, top_p: Optional[float] = None, stop: Any = None, thinking_config: Any = None,
-    model: str = "",
+    response_format: Any = None, model: str = "", tools_as_json_schema: bool = False,
 ) -> Dict[str, Any]:
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
     is_gemini3 = gemini_requires_tool_call_ids(model)
     contents, system_instruction = _build_gemini_contents(messages, include_tool_call_ids=is_gemini3, is_gemini3=is_gemini3)
-    optional = (
-        ("systemInstruction", system_instruction), ("tools", _translate_tools_to_gemini(tools)),
-        ("toolConfig", _translate_tool_choice_to_gemini(tool_choice)),
-    )
+    gemini_tools = _translate_tools_to_gemini(tools, json_schema=tools_as_json_schema)
+    tool_config = _translate_tool_choice_to_gemini(tool_choice)
+    optional = (("systemInstruction", system_instruction), ("tools", gemini_tools), ("toolConfig", tool_config))
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
     generation = (
@@ -411,7 +540,18 @@ def build_gemini_request(
         ("topP", top_p), ("stopSequences", (stop if isinstance(stop, list) else [str(stop)]) if stop else None),
         ("thinkingConfig", _normalize_thinking_config(thinking_config)),
     )
-    request["generationConfig"] = {k: v for k, v in generation if v is not None}
+    json_output = _translate_response_format(response_format, json_schema=tools_as_json_schema)
+    # Gemini 400s when forced function calling (mode ANY, from ``tool_choice="required"`` or a named
+    # function) is combined with a JSON responseMimeType, and pre-Gemini-3 models reject JSON output
+    # alongside ANY function declarations ("Function calling with a response mime type:
+    # 'application/json' is unsupported"); only Gemini 3+ combines tools with structured output.
+    # The tools win; JSON can come on a later turn, and callers tolerate an unconstrained reply.
+    forced_call = (tool_config or {}).get("functionCallingConfig", {}).get("mode") == "ANY"
+    if json_output and (forced_call or (gemini_tools and not is_gemini3)):
+        logger.debug("Gemini: dropping JSON response_format — %s",
+                     "tool_choice forces function calling (mode ANY)" if forced_call else "pre-Gemini-3 model with tools")
+        json_output = {}
+    request["generationConfig"] = {**{k: v for k, v in generation if v is not None}, **json_output}
     return request
 
 
@@ -421,10 +561,14 @@ def _tool_call_extra_from_part(part: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return {"google": {"thought_signature": sig}} if isinstance(sig, str) and sig else None
 
 
+def _provider_call_id(fc: Dict[str, Any]) -> Optional[str]:
+    fc_id = fc.get("id")
+    return fc_id if isinstance(fc_id, str) and fc_id else None
+
+
 def _new_call_id(fc: Dict[str, Any]) -> str:
     """Echo the functionCall/delta ``id`` when present, else mint an OpenAI-style one."""
-    fc_id = fc.get("id")
-    return fc_id if isinstance(fc_id, str) and fc_id else f"call_{uuid.uuid4().hex[:12]}"
+    return _provider_call_id(fc) or f"call_{uuid.uuid4().hex[:12]}"
 
 
 def _dump_call_args(fc: Dict[str, Any], **kwargs: Any) -> str:
@@ -435,10 +579,21 @@ def _dump_call_args(fc: Dict[str, Any], **kwargs: Any) -> str:
 
 
 def _usage_from_metadata(usage_meta: Dict[str, Any]) -> SimpleNamespace:
+    """Gemini ``usageMetadata`` → OpenAI-shaped usage.
+
+    Hidden thinking is reported separately in ``thoughtsTokenCount``:
+    ``candidatesTokenCount`` counts visible output only, while ``totalTokenCount``
+    already includes thoughts. OpenAI's ``completion_tokens`` covers reasoning, so
+    thoughts are folded in (otherwise a thinking turn bills a few percent of its
+    real output and ``prompt + completion != total``) and also surfaced under
+    ``completion_tokens_details.reasoning_tokens``, where ``normalize_usage`` reads
+    them. Absent on non-thinking/older responses, which keeps their numbers as-is."""
     count = lambda key: int(usage_meta.get(key) or 0)  # noqa: E731
+    reasoning_tokens = count("thoughtsTokenCount")
     return SimpleNamespace(
-        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount"),
+        prompt_tokens=count("promptTokenCount"), completion_tokens=count("candidatesTokenCount") + reasoning_tokens,
         total_tokens=count("totalTokenCount"), prompt_tokens_details=SimpleNamespace(cached_tokens=count("cachedContentTokenCount")),
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=reasoning_tokens),
     )
 
 
@@ -506,24 +661,66 @@ def _make_stream_chunk(
     return _envelope(model, "chat.completion.chunk", choice, None, cls=_GeminiStreamChunk)
 
 
+_SSE_DONE = object()  # sentinel: terminal [DONE] frame
+
+
+def _parse_sse_line(line: str) -> Any:
+    """One SSE line → payload dict, ``_SSE_DONE`` for the terminal frame, or None."""
+    line = line.rstrip("\r")
+    if not line.startswith("data: "):
+        return None
+    if (data := line[6:]) == "[DONE]":
+        return _SSE_DONE
+    try:
+        payload = json.loads(data)
+    except json.JSONDecodeError:
+        logger.debug("Non-JSON Gemini SSE line: %s", data[:200])
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
     buffer = ""
     for chunk in response.iter_text():
         buffer += chunk or ""
         while "\n" in buffer:
             line, buffer = buffer.split("\n", 1)
-            line = line.rstrip("\r")
-            if not line.startswith("data: "):
-                continue
-            if (data := line[6:]) == "[DONE]":
+            payload = _parse_sse_line(line)
+            if payload is _SSE_DONE:
                 return
-            try:
-                payload = json.loads(data)
-            except json.JSONDecodeError:
-                logger.debug("Non-JSON Gemini SSE line: %s", data[:200])
-                continue
-            if isinstance(payload, dict):
+            if payload is not None:
                 yield payload
+    # The final frame may not be newline-terminated: flush the residual buffer
+    # after EOF instead of silently dropping its content (pi#8997 bug class).
+    if buffer:
+        payload = _parse_sse_line(buffer)
+        if payload is not None and payload is not _SSE_DONE:
+            yield payload
+
+
+def _tool_call_slot(fc: Dict[str, Any], part: Dict[str, Any], part_index: int, args_str: str,
+                    tool_call_indices: Dict[str, Dict[str, Any]]) -> tuple[str, Optional[Dict[str, Any]]]:
+    """``(key, existing slot or None)`` for a streamed functionCall.
+
+    Gemini 3 ids each tool call, so the id is the slot identity (``part_index`` and the thought
+    signature drift across events of one call). Gemini 2.5 sends no id and ``part_index`` restarts
+    at 0 per event, so two different calls to one tool in separate events would share a slot and
+    have their arguments concatenated into unparseable JSON: Gemini re-sends full arguments, so a
+    payload that is not a prefix-extension (or resend) of the slot's accumulated arguments is a
+    different call and gets its own ``key#N`` slot, kept reachable so its own resend lands on it.
+    """
+    if fc_id := _provider_call_id(fc):
+        key = json.dumps({"provider_call_id": fc_id}, sort_keys=True)
+        return key, tool_call_indices.get(key)
+    thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
+    key = json.dumps({"part_index": part_index, "name": fc["name"], "thought_signature": thought_signature}, sort_keys=True)
+    slot = tool_call_indices.get(key)
+    if slot is None or args_str.startswith(slot["last_arguments"]):
+        return key, slot
+    for other_key, other in tool_call_indices.items():
+        if other_key.startswith(f"{key}#") and args_str.startswith(other["last_arguments"]):
+            return other_key, other
+    return f"{key}#{len(tool_call_indices)}", None
 
 
 def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices: Dict[str, Dict[str, Any]]) -> List[_GeminiStreamChunk]:
@@ -545,12 +742,11 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
         if fc := _part_function_call(part):
             name = str(fc["name"])
             args_str = _dump_call_args(fc, sort_keys=True)
-            thought_signature = part.get("thoughtSignature") if isinstance(part.get("thoughtSignature"), str) else ""
-            call_key = json.dumps({"part_index": part_index, "name": name, "thought_signature": thought_signature}, sort_keys=True)
-            if (slot := tool_call_indices.get(call_key)) is None:
+            call_key, slot = _tool_call_slot(fc, part, part_index, args_str, tool_call_indices)
+            if slot is None:
                 slot = tool_call_indices[call_key] = {"index": len(tool_call_indices), "id": _new_call_id(fc), "last_arguments": ""}
             # Gemini re-sends the full args each event; emit only the new suffix.
-            last_arguments = str(slot.get("last_arguments") or "")
+            last_arguments = slot["last_arguments"]
             slot["last_arguments"] = args_str
             delta = {"index": slot["index"], "id": slot["id"], "name": name, "extra_content": _tool_call_extra_from_part(part),
                      "arguments": args_str[len(last_arguments):] if args_str.startswith(last_arguments) else args_str}
@@ -585,26 +781,28 @@ def _error_object(body_text: str) -> Dict[str, Any]:
     return err_obj if isinstance(err_obj, dict) else {}
 
 
-def gemini_http_error(response: httpx.Response, *, body_text: Optional[str] = None) -> GeminiAPIError:
+def gemini_http_error(
+    response: httpx.Response, *, body_text: Optional[str] = None, api_key: str = "", base_url: str = "",
+) -> GeminiAPIError:
     status = response.status_code
     body_text = (_response_text(response) if body_text is None else body_text) or ""
     err_obj = _error_object(body_text)
     err_status, err_message = (str(err_obj.get(k) or "").strip() for k in ("status", "message"))
     reason, metadata = _error_info(err_obj)
-    try:
-        retry_after: Optional[float] = float(response.headers.get("Retry-After") or response.headers.get("retry-after"))
-    except (TypeError, ValueError):
-        retry_after = None
+    retry_after = parse_retry_after_seconds(response.headers)
     message = (
         f"Gemini HTTP {status} ({err_status or 'error'}): {err_message}" if err_message
         else f"Gemini returned HTTP {status}: {body_text[:500]}"
     )
     # Users who bypassed the setup wizard (raw GOOGLE_API_KEY in .env) still need to learn the free
-    # tier cannot sustain an agent session; a legacy "Standard" key gets the real fix (Google's raw 401 asks for OAuth).
+    # tier cannot sustain an agent session; a legacy "Standard" key gets the real fix (Google's raw
+    # 401 asks for OAuth; after Sept 2026 the same AIza key is often a 400 API_KEY_INVALID).
     if status == 429 and is_free_tier_quota_error(err_message or body_text):
         message += _FREE_TIER_GUIDANCE
-    if is_standard_key_auth_error(status, err_message or body_text, reason):
+    if is_standard_key_auth_error(status, err_message or body_text, reason, api_key=api_key):
         message += _STANDARD_KEY_GUIDANCE
+    if status == 403:
+        message += wrong_gemini_surface_guidance(base_url, api_key, err_status)
     return GeminiAPIError(
         message, code=_HTTP_ERROR_CODES.get(status, f"gemini_http_{status}"), status_code=status, response=response,
         retry_after=retry_after, details={"status": err_status, "reason": reason, "metadata": metadata, "message": err_message},
@@ -625,7 +823,7 @@ class GeminiNativeClient:
         if not (api_key or "").strip():
             raise RuntimeError(_MISSING_KEY_ERROR)
         self.api_key, self.is_closed = api_key, False
-        self.base_url = (base_url or DEFAULT_GEMINI_BASE_URL).rstrip("/").removesuffix("/openai")
+        self.base_url = normalize_gemini_base_url(base_url)
         self._default_headers = dict(default_headers or {})
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create_chat_completion))
         self._http = http_client or httpx.Client(timeout=timeout or httpx.Timeout(connect=15.0, read=600.0, write=30.0, pool=30.0))
@@ -654,12 +852,15 @@ class GeminiNativeClient:
     def _create_chat_completion(
         self, *, model: str = "gemini-3.7-flash", messages: Optional[List[Dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
-        top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None, timeout: Any = None, **_: Any,
+        top_p: Optional[float] = None, stop: Any = None, response_format: Any = None, extra_body: Optional[Dict[str, Any]] = None,
+        timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
-            top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
+            top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"),
+            response_format=response_format or extra.get("response_format"), model=model,
+            tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
@@ -667,7 +868,7 @@ class GeminiNativeClient:
             return self._stream_completion(model, url + "streamGenerateContent?alt=sse", request, timeout)
         response = self._http.post(url + "generateContent", json=request, headers=self._headers(), timeout=timeout)
         if response.status_code != 200:
-            raise gemini_http_error(response)
+            raise gemini_http_error(response, api_key=self.api_key, base_url=self.base_url)
         try:
             payload = response.json()
         except ValueError as exc:
@@ -681,7 +882,9 @@ class GeminiNativeClient:
             headers = {**self._headers(), "Accept": "text/event-stream"}
             with self._http.stream("POST", url, json=request, headers=headers, timeout=timeout) as response:
                 if response.status_code != 200:
-                    raise gemini_http_error(response, body_text=read_streaming_error_body(response))
+                    raise gemini_http_error(
+                        response, body_text=read_streaming_error_body(response), api_key=self.api_key, base_url=self.base_url,
+                    )
                 tool_call_indices: Dict[str, Dict[str, Any]] = {}
                 for event in _iter_sse_events(response):
                     yield from translate_stream_event(event, model, tool_call_indices)

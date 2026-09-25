@@ -10,6 +10,7 @@ mutate ``agent`` / ``messages`` / ``api_messages`` in place. Logger name stays
 from __future__ import annotations
 
 import logging
+import locale
 import math
 import re
 import time
@@ -17,32 +18,48 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 from agent.conversation_compression import COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE
+from agent.fast_mode import fast_mode_unprovisioned, mark_fast_mode_unavailable
 from agent.model_metadata import is_output_cap_error, parse_available_output_tokens_from_error
 from agent.retry_utils import is_zai_coding_overload_error, zai_coding_overload_retry_ceiling
-from agent.error_classifier import FailoverReason
+from agent.error_classifier import FailoverReason, classify_api_error
 from agent.message_sanitization import (
-    _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
+    _looks_like_corrupt_image_rejection, _looks_like_image_content_rejection, _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates, _sanitize_structure_non_ascii, _sanitize_structure_surrogates,
-    _sanitize_tools_non_ascii, _strip_images_from_messages, _strip_non_ascii,
+    _strip_images_from_messages, _strip_non_ascii,
     close_interrupted_tool_sequence,
 )
 from agent.thinking_timeout_guidance import build_thinking_timeout_guidance, is_thinking_timeout
+from agent.vision_message_prep import _provider_model_key
+from agent.turn_failure_copy import (
+    CONTENT_POLICY_NEXT_STEPS, content_policy_copy, exhausted_copy, limit_reset_copy, nonretryable_copy,
+    provider_label_for, site_copy, stamp_failure,
+)
 from agent.turn_retry_state import TurnRetryState
+from hermes_constants import display_hermes_home
 from utils import base_url_host_matches
 
 logger = logging.getLogger("agent.conversation_loop")
 
 
+def _runtime_uses_ascii_encoding() -> bool:
+    """Return whether the process genuinely needs an ASCII-only request fallback."""
+    encoding = locale.getpreferredencoding(False).strip().lower().replace("_", "-")
+    return encoding in {"ascii", "us-ascii", "ansi-x3.4-1968"}
+
+
 def _vlines(agent: Any, *lines: str) -> None:
     """Force-``_vprint`` each line prefixed with ``agent.log_prefix``."""
     for line in lines:
-        agent._vprint(f"{agent.log_prefix}{line}", force=True)
+        agent._vprint(f"{agent.log_prefix}{line}", force=True, diagnostic=True)
 
 
 def _plines(agent: Any, *lines: str) -> None:
     """``print`` each line prefixed with ``agent.log_prefix``."""
-    for line in lines:
-        print(f"{agent.log_prefix}{line}")
+    from gateway.warning_notifications import render_notification
+    render_notification(
+        lambda: [print(f"{agent.log_prefix}{line}") for line in lines],
+        platform=getattr(agent, "_notification_platform", getattr(agent, "platform", "cli")),
+        user_config=getattr(agent, "_notification_config", None))
 
 
 def _blines(agent: Any, *lines: str) -> None:
@@ -96,6 +113,37 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def _repair_transport_credentials(agent: Any) -> bool:
+    """Strip non-ASCII from ``_client_kwargs["default_headers"]`` and the API key.
+
+    Non-ASCII in the key makes httpx fail encoding the Authorization header — the usual
+    persistent cause of UnicodeEncodeError that survives message/tool sanitization (#6843,
+    e.g. ʋ instead of v from a bad copy-paste). Entra ID bearer providers are callables
+    minting ASCII JWTs; skip them (``_strip_non_ascii`` would crash). Returns True when
+    either the headers or the key were repaired.
+    """
+    _client_kwargs = getattr(agent, "_client_kwargs", None)
+    _default_headers = _client_kwargs.get("default_headers") if isinstance(_client_kwargs, dict) else None
+    _repaired = bool(isinstance(_default_headers, dict) and _sanitize_structure_non_ascii(_default_headers))
+    _raw_key = getattr(agent, "api_key", None) or ""
+    if isinstance(_raw_key, str) and _raw_key:
+        _clean_key = _strip_non_ascii(_raw_key)
+        if _clean_key != _raw_key:
+            agent.api_key = _clean_key
+            if isinstance(_client_kwargs, dict):
+                _client_kwargs["api_key"] = _clean_key
+            # The live client reads its own api_key copy on every request.
+            if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
+                agent.client.api_key = _clean_key
+            _repaired = True
+            _vlines(
+                agent,
+                "⚠️  API key contained non-ASCII characters (bad copy-paste?) — stripped them. "
+                "If auth fails, re-copy the key from your provider's dashboard.",
+            )
+    return _repaired
+
+
 def _recover_unicode_encode_error(
     agent: Any, api_error: Exception, messages: List[Dict[str, Any]], api_messages: Any,
     api_kwargs: Any, active_system_prompt: Any,
@@ -107,16 +155,18 @@ def _recover_unicode_encode_error(
     _is_ascii_codec = "'ascii'" in _err_str or "ascii" in _err_str
     # utf-8 refusing U+D800..U+DFFF ("surrogates not allowed").
     _is_surrogate_error = "surrogate" in _err_str or ("'utf-8'" in _err_str and not _is_ascii_codec)
-    # Sanitize `messages` AND `api_messages` (may carry reasoning_content/reasoning_details),
-    # plus `api_kwargs` and `prefill_messages`. Every sanitizer runs (no short-circuit).
-    _prefill = getattr(agent, "prefill_messages", None)
+    # Sanitize canonical messages for surrogate recovery, but keep ASCII recovery
+    # request-local: API copies may carry fields absent from the durable transcript.
     _surrogates_found = _sanitize_messages_surrogates(messages)
     _surrogates_found |= isinstance(api_messages, list) and _sanitize_messages_surrogates(api_messages)
     _surrogates_found |= isinstance(api_kwargs, dict) and _sanitize_structure_surrogates(api_kwargs)
-    _surrogates_found |= isinstance(_prefill, list) and _sanitize_messages_surrogates(_prefill)
     # Gate the retry on the error type, not on whether anything was found — a new
     # transformed field could slip through.
     if _surrogates_found or _is_surrogate_error:
+        if _surrogates_found:
+            # In-place rewrites may have popped _DB_PERSISTED_MARKER off stamped live dicts;
+            # force a full flush scan so the repaired rows are rewritten.
+            agent._db_flush_scan_prefix = None
         agent._unicode_sanitization_passes += 1
         agent._buffer_vprint(
             "⚠️  Stripped invalid surrogate characters from messages. Retrying..."
@@ -127,56 +177,37 @@ def _recover_unicode_encode_error(
     if not _is_ascii_codec:
         return False, active_system_prompt
 
+    # Error text is provider-controlled and can mention ``ascii`` even when the
+    # process sends UTF-8. In that normal case, do not rewrite conversation,
+    # tools, prompts, or prefill; only repair values that can poison an ASCII
+    # transport header. If nothing was repaired, an identical retry cannot
+    # succeed — return False so the error surfaces through the normal path
+    # instead of burning both sanitization passes on unchanged requests.
+    if not _runtime_uses_ascii_encoding():
+        if not _repair_transport_credentials(agent):
+            return False, active_system_prompt
+        agent._unicode_sanitization_passes += 1
+        _vlines(
+            agent,
+            "⚠️  Repaired non-ASCII request credentials/headers without changing conversation content. Retrying...",
+        )
+        return True, active_system_prompt
+
     agent._force_ascii_payload = True
-    # Strip all non-ASCII from messages/tool schemas and retry; api_kwargs too so a
-    # non-ASCII transformed field doesn't survive via _build_api_kwargs cache paths.
-    _messages_sanitized = _sanitize_messages_non_ascii(messages)
-    if isinstance(api_messages, list):
-        _sanitize_messages_non_ascii(api_messages)
-    if isinstance(api_kwargs, dict):
-        _sanitize_structure_non_ascii(api_kwargs)
-    _prefill_sanitized = isinstance(_prefill, list) and _sanitize_messages_non_ascii(_prefill)
-    _tools = getattr(agent, "tools", None)
-    _tools_sanitized = isinstance(_tools, list) and _sanitize_tools_non_ascii(_tools)
+    # Strip all non-ASCII from the request-local api_messages (reused across retries). The
+    # failed attempt's api_kwargs is NOT touched: build_api_request rebuilds it from
+    # ``agent.tools`` on the next iteration and ``sanitize_outbound_kwargs`` strips the whole
+    # payload under ``_force_ascii_payload``. Canonical agent state stays byte-stable.
+    _messages_sanitized = isinstance(api_messages, list) and _sanitize_messages_non_ascii(api_messages)
 
     _system_sanitized = False
     if isinstance(active_system_prompt, str):
         _sanitized_system = _strip_non_ascii(active_system_prompt)
         if _sanitized_system != active_system_prompt:
-            active_system_prompt = agent._cached_system_prompt = _sanitized_system
+            active_system_prompt = _sanitized_system
             _system_sanitized = True
-    _ephemeral = getattr(agent, "ephemeral_system_prompt", None)
-    if isinstance(_ephemeral, str) and _strip_non_ascii(_ephemeral) != _ephemeral:
-        agent.ephemeral_system_prompt = _strip_non_ascii(_ephemeral)
-        _system_sanitized = True
 
-    _client_kwargs = getattr(agent, "_client_kwargs", None)
-    _default_headers = _client_kwargs.get("default_headers") if isinstance(_client_kwargs, dict) else None
-    _headers_sanitized = isinstance(_default_headers, dict) and _sanitize_structure_non_ascii(_default_headers)
-
-    # Non-ASCII in the API key makes httpx fail encoding the Authorization header — the
-    # usual persistent cause after message/tool sanitization. Entra ID bearer providers
-    # are callables minting ASCII JWTs; skip them (``_strip_non_ascii`` would crash).
-    # Sanitize the API key — non-ASCII characters in credentials (e.g. ʋ instead of v from a bad copy-paste)
-    # cause httpx to fail when encoding the Authorization header as ASCII. This is the most common cause of
-    # persistent UnicodeEncodeError that survives message/tool sanitization (#6843).
-    _credential_sanitized = False
-    _raw_key = getattr(agent, "api_key", None) or ""
-    if _raw_key and isinstance(_raw_key, str):
-        _clean_key = _strip_non_ascii(_raw_key)
-        if _clean_key != _raw_key:
-            agent.api_key = _clean_key
-            if isinstance(getattr(agent, "_client_kwargs", None), dict):
-                agent._client_kwargs["api_key"] = _clean_key
-            # The live client reads its own api_key copy on every request.
-            if getattr(agent, "client", None) is not None and hasattr(agent.client, "api_key"):
-                agent.client.api_key = _clean_key
-            _credential_sanitized = True
-            _vlines(
-                agent,
-                "⚠️  API key contained non-ASCII characters (bad copy-paste?) — stripped them. "
-                "If auth fails, re-copy the key from your provider's dashboard.",
-            )
+    _transport_repaired = _repair_transport_credentials(agent)
 
     # Always retry on ASCII codec detection: _force_ascii_payload sanitizes the full
     # api_kwargs next iteration even when the checks above find nothing.
@@ -184,11 +215,21 @@ def _recover_unicode_encode_error(
     _vlines(
         agent,
         "⚠️  System encoding is ASCII — stripped non-ASCII characters from request payload. Retrying..."
-        if (_messages_sanitized or _prefill_sanitized or _tools_sanitized or _system_sanitized
-            or _headers_sanitized or _credential_sanitized) else
+        if (_messages_sanitized or _system_sanitized or _transport_repaired) else
         "⚠️  System encoding is ASCII — enabling full-payload sanitization for retry...",
     )
     return True, active_system_prompt
+
+
+def _strip_request_images_and_retry(agent: Any, api_messages: Any) -> bool:
+    """Strip image parts from the per-call ``api_messages`` copy; True if anything was removed.
+
+    Shared by the corrupt-image recoveries: a bad payload says nothing about the model, so it
+    is stripped for this attempt only and the model is never recorded as image-rejecting."""
+    if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
+        _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
+        return True
+    return False
 
 
 def recover_before_classification(
@@ -196,9 +237,11 @@ def recover_before_classification(
     api_kwargs: Any, active_system_prompt: Any,
 ) -> Tuple[bool, Any]:
     """Recovery branches that run BEFORE ``classify_api_error``: UnicodeEncodeError
-    sanitization, provider image-content rejection (switch session to text-only), and the
-    Bedrock AnthropicBedrock SDK streaming fallback. Returns ``(retry_now,
-    active_system_prompt)``; the prompt may be ASCII-sanitized in place."""
+    sanitization, Anthropic fast mode with no capacity (drop ``speed`` for that model),
+    provider image-content rejection (record the (provider, model);
+    build_api_request strips images from that model's requests only), and the Bedrock
+    AnthropicBedrock SDK streaming fallback. Returns ``(retry_now, active_system_prompt)``;
+    the prompt may be ASCII-sanitized in place."""
     if isinstance(api_error, UnicodeEncodeError) and getattr(agent, '_unicode_sanitization_passes', 0) < 2:
         _recovered, active_system_prompt = _recover_unicode_encode_error(
             agent, api_error, messages, api_messages, api_kwargs, active_system_prompt
@@ -206,8 +249,17 @@ def recover_before_classification(
         if _recovered:
             return True, active_system_prompt
 
-    # Some providers 4xx on image_url content: strip images, mark session
-    # vision-unsupported, retry text-only. English phrase match; extend it.
+    # Anthropic fast mode with no capacity: a 429 whose fast-mode limit header is 0 can never
+    # succeed at fast speed, and it says nothing about the key's standard-speed limits. Stop
+    # sending ``speed`` to this model and retry now, before credential rotation benches the key.
+    if fast_mode_unprovisioned(api_error, api_kwargs) and mark_fast_mode_unavailable(agent):
+        _vlines(agent, f"⚠️  Fast mode isn't available for {agent.model} on this Anthropic organization — using standard speed for this session, retrying...")
+        logger.warning("%sFast mode: %s has a fast-mode limit of 0; standard speed for this session", agent.log_prefix, agent.model)
+        return True, active_system_prompt
+
+    # Some providers 4xx on image_url content: record the (provider, model) and retry;
+    # build_api_request strips images from that model's requests only. English phrase
+    # match; extend it.
     _err_body = ""
     try:
         _err_body = str(getattr(api_error, "body", None) or getattr(api_error, "message", None) or str(api_error))
@@ -216,17 +268,33 @@ def recover_before_classification(
     _err_status = getattr(api_error, "status_code", None)
     # 4xx-only gate: 5xx/timeouts are transient and take the retry path.
     _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
-    if getattr(agent, "_vision_supported", True) and _looks_like_image_content_rejection(_err_body) and _status_ok:
-        agent._vision_supported = False
-        _imgs_removed = _strip_images_from_messages(messages)
-        if isinstance(api_messages, list):
-            _strip_images_from_messages(api_messages)
-        _vlines(
-            agent,
-            "⚠️  Server rejected image content — switching to text-only mode for this session"
-            + (". Stripped images from history and retrying." if _imgs_removed else "."),
-        )
-        return True, active_system_prompt
+    # Guarded PER MODEL, not by a turn-global flag: in a fallback chain the next model can reject
+    # images too, and a turn-wide flag would skip its recovery and fail the turn.
+    _model_key = _provider_model_key(agent)
+    _rejected = agent._image_rejecting_models
+    _corrupt = _looks_like_corrupt_image_rejection(_err_body)
+    if _status_ok and (_corrupt or (_model_key not in _rejected and _looks_like_image_content_rejection(_err_body))):
+        # Send-path only. A rejection says what THIS model accepts, not what the conversation
+        # holds: stripping ``messages`` (canonical history) and forcing a flush deleted every
+        # image — and every image-only message — from state.db for good, so a later switch to a
+        # vision model found them gone. Same failure as the ASCII strip in #117802.
+        if _corrupt:
+            # A bad payload says nothing about the model's capability: strip this attempt only
+            # (like the image_corrupt branch below) and leave the model unmarked so a later good
+            # image still reaches it. Retry only if something was stripped, or a text-only
+            # request would loop on the same error.
+            if _strip_request_images_and_retry(agent, api_messages):
+                return True, active_system_prompt
+        else:
+            # Record the model; the retry re-enters build_api_request with the same
+            # api_messages and strip_images_for_rejecting_model strips them there.
+            _rejected.add(_model_key)
+            _vlines(
+                agent,
+                "⚠️  Server rejected image content — sending text only to this model; "
+                "images stay in the session history.",
+            )
+            return True, active_system_prompt
 
     # AnthropicBedrock SDK raises "Unexpected event order" when Bedrock errors before
     # message_start; fall back to native Converse for this session.
@@ -262,6 +330,16 @@ def _print_nous_401_diagnostics(agent: Any, api_error: Exception) -> None:
     _plines(agent, "🔐 Nous 401 — Portal authentication failed.")
     if _body_text:
         _plines(agent, f"   Response: {_body_text}")
+    try:
+        from hermes_cli.anon_auth import is_anonymous_agent
+        if is_anonymous_agent(agent):
+            # The free tier has no credits, no agent key and no auth.json to inspect: its session
+            # ended and could not be replaced. The two doors are a sign-in or another provider.
+            _plines(agent, "   Your session ended and Hermes couldn't start a new one.",
+                    "   Sign in with a Nous account (it's free), or switch providers with /model.")
+            return
+    except Exception:
+        pass
     if not _print_nous_entitlement_guidance(agent, "Nous model access"):
         _plines(agent, "   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
     _plines(
@@ -303,7 +381,8 @@ def _print_anthropic_401_diagnostics(agent: Any, key: Any) -> None:
         f"     • Check ANTHROPIC_TOKEN in {_dhh}/.env for Hermes-managed OAuth/setup tokens",
         f"     • Check ANTHROPIC_API_KEY in {_dhh}/.env for API keys or legacy token values",
         "     • For API keys: verify at https://platform.claude.com/settings/keys",
-        "     • For Claude Code: run 'claude /login' to refresh, then retry",
+        "     • Hermes login (OAuth): run 'hermes auth add anthropic' to sign in again, then retry",
+        "     • Inspect what Hermes holds: hermes auth list anthropic",
         "     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"",
         "     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"",
     )
@@ -361,6 +440,49 @@ def _refresh_credentials_after_401(
         _print_anthropic_401_diagnostics(agent, agent._anthropic_api_key)
     return False
 
+
+def _is_codex_token_expired(agent: Any, api_error: Exception) -> bool:
+    """401 ``token_expired`` from the Codex backend (#88510). It rejects a stale replayed
+    ``encrypted_content`` blob with this auth signature, so a persisted session loops on "sign
+    in again" while a fresh session on the same bearer works. The caller treats it like
+    ``invalid_encrypted_content`` — but only while cached reasoning items remain to strip."""
+    if getattr(api_error, "status_code", None) != 401:
+        return False
+    reason = agent._extract_api_error_context(api_error).get("reason")
+    return isinstance(reason, str) and reason.strip().lower() == "token_expired"
+
+
+def _recover_stale_codex_reasoning(agent: Any, _retry: TurnRetryState, messages: List[Dict[str, Any]]) -> bool:
+    """Stale ``codex_reasoning_items`` blob rejected by the provider: disable replay for the
+    session, strip cached items (mutates persisted ``messages``), retry once."""
+    if (
+        _retry.invalid_encrypted_content_retry_attempted
+        or agent.api_mode != "codex_responses"
+        or not bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
+        or not any(
+            isinstance(_m, dict)
+            and _m.get("role") == "assistant"
+            and isinstance(_m.get("codex_reasoning_items"), list)
+            and _m.get("codex_reasoning_items")
+            for _m in messages
+        )
+    ):
+        return False
+    _retry.invalid_encrypted_content_retry_attempted = True
+    replay_stats = agent._disable_codex_reasoning_replay(messages)
+    _vlines(
+        agent,
+        f"⚠️  Encrypted reasoning replay was rejected by the provider — "
+        f"disabled replay and stripped {replay_stats['items']} item(s) from "
+        f"{replay_stats['messages']} message(s), retrying...",
+    )
+    logger.warning(
+        "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
+        agent.log_prefix, replay_stats["items"], replay_stats["messages"],
+    )
+    return True
+
+
 def _recover_format_errors(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState,
     messages: List[Dict[str, Any]], api_messages: Any,
@@ -386,33 +508,11 @@ def _recover_format_errors(
         )
         return True
 
-    # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob:
-    # disable replay for the session, strip cached items, retry once.
-    if (
-        classified.reason == FailoverReason.invalid_encrypted_content
-        and not _retry.invalid_encrypted_content_retry_attempted
-        and agent.api_mode == "codex_responses"
-        and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
-        and any(
-            isinstance(_m, dict)
-            and _m.get("role") == "assistant"
-            and isinstance(_m.get("codex_reasoning_items"), list)
-            and _m.get("codex_reasoning_items")
-            for _m in messages
-        )
+    # 400 ``invalid_encrypted_content`` on a stale ``codex_reasoning_items`` blob (the 401
+    # ``token_expired`` twin is taken ahead of the credential pool in the caller).
+    if classified.reason == FailoverReason.invalid_encrypted_content and _recover_stale_codex_reasoning(
+        agent, _retry, messages
     ):
-        _retry.invalid_encrypted_content_retry_attempted = True
-        replay_stats = agent._disable_codex_reasoning_replay(messages)
-        _vlines(
-            agent,
-            f"⚠️  Encrypted reasoning replay was rejected by the provider — "
-            f"disabled replay and stripped {replay_stats['items']} item(s) from "
-            f"{replay_stats['messages']} message(s), retrying...",
-        )
-        logger.warning(
-            "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
-            agent.log_prefix, replay_stats["items"], replay_stats["messages"],
-        )
         return True
 
     # Structured 400 naming ``context_management``: disable native compaction for the
@@ -465,6 +565,54 @@ def _recover_format_errors(
     return False
 
 
+_WELCOME_ROUTE_HEAL_COPY = {
+    "anon_on_paid_host": "Reconnected to the free model's own route.",
+    "named_on_welcome_host": "Reconnected to your Nous account's own route.",
+}
+
+
+def _recover_welcome_tier(agent: Any, classified: Any, _retry: TurnRetryState) -> bool:
+    """Two one-shot repairs for the Nous free tier, both silent on the wire and named once in chat.
+
+    ``model_not_free``: the session asked the welcome host for a model it does not serve; move
+    to the first alternate the gateway named (its own model) and retry, instead of failing the
+    turn. ``anon_on_paid_host`` / ``named_on_welcome_host``: this process is pointed at the other
+    identity's host (a stale route); re-read the credentials, which heals the URL, and retry. The
+    refresh reports False when the store yields the same route, so a user-set
+    ``NOUS_INFERENCE_BASE_URL`` falls straight through to the terminal copy.
+
+    Reads the CLASSIFIER's context (``classified.error_context``): that is where
+    ``_nous_welcome_tier`` parks ``welcome_refusal`` / ``welcome_route``. The turn's other context
+    (``extract_api_error_context``) never carries them."""
+    ctx = getattr(classified, "error_context", None) or {}
+    refusal = ctx.get("welcome_refusal") if isinstance(ctx, dict) else None
+    if isinstance(refusal, dict) and refusal.get("reason") == "model_not_free" and not _retry.welcome_model_switch_attempted:
+        _retry.welcome_model_switch_attempted = True
+        alternates = [a for a in (refusal.get("alternates") or []) if isinstance(a, str) and a]
+        requested = str(getattr(agent, "model", "") or "")
+        target = alternates[0] if alternates else None
+        if target and target != requested:
+            try:
+                agent.model = target
+                agent._nous_model_switch = (requested, target)
+            except Exception:
+                return False
+            _vlines(agent, f"↪️  {requested} isn't available without signing in; using {target} for now. Retrying...")
+            logger.info("%sNous free tier: moved %s -> %s after model_not_free", agent.log_prefix, requested, target)
+            return True
+    route = ctx.get("welcome_route") if isinstance(ctx, dict) else None
+    if route in _WELCOME_ROUTE_HEAL_COPY and not _retry.welcome_route_heal_attempted:
+        _retry.welcome_route_heal_attempted = True
+        try:
+            healed = bool(agent._try_refresh_nous_client_credentials(force=True))
+        except Exception:
+            healed = False
+        if healed:
+            _vlines(agent, f"🔐 {_WELCOME_ROUTE_HEAL_COPY[route]} Retrying request...")
+            return True
+    return False
+
+
 def recover_after_classification(
     agent: Any, api_error: Exception, classified: Any, _retry: TurnRetryState, *,
     status_code: Optional[int], error_context: Any, messages: List[Dict[str, Any]],
@@ -472,11 +620,22 @@ def recover_after_classification(
 ) -> Tuple[bool, bool]:
     """One-shot recovery chain that runs AFTER ``classify_api_error`` and before the
     generic retry path. Order is load-bearing (each branch may ``return`` early):
-    Nous paid-entitlement refresh → credential-pool rotation → image shrink →
-    multimodal-tool-content strip → corrupt-image strip → Anthropic OAuth 1M-beta
-    disable → per-provider 401 credential refresh → format-recovery strips.
+    Nous paid-entitlement refresh → Codex stale-reasoning strip on 401 ``token_expired`` →
+    credential-pool rotation → image shrink → multimodal-tool-content strip → corrupt-image
+    strip → Anthropic OAuth 1M-beta disable → per-provider 401 credential refresh →
+    format-recovery strips.
     Returns ``(retry_now, recovered_with_pool)``; the latter feeds the Nous rate-limit guard."""
     from agent.conversation_loop import _is_nous_inference_route
+
+    if _recover_welcome_tier(agent, classified, _retry):
+        return True, False
+
+    # 401 ``token_expired`` while the transcript still carries ``codex_reasoning_items`` is a
+    # stale replayed blob far more often than a dead bearer (#88510): strip BEFORE the pool
+    # refreshes/benches every healthy entry over a session-state problem. A real expiry pays
+    # one extra round-trip and then takes the credential path below as before.
+    if _is_codex_token_expired(agent, api_error) and _recover_stale_codex_reasoning(agent, _retry, messages):
+        return True, False
 
     if (
         classified.reason == FailoverReason.billing
@@ -526,32 +685,54 @@ def recover_after_classification(
             "messages with image parts found; surfacing original error."
         )
 
-    # Reasoning-mandatory route (Nous Portal / OpenRouter, e.g. GLM-5.3) 400s on
-    # ``reasoning: {enabled: false}``. The catalog guard in the provider profile normally swallows
-    # the disable, but a process that warmed its caps cache before the route flipped keeps sending
-    # it. One-shot: never send a disable again this session (the wire builder omits it → upstream
-    # default thinking), queue a catalog refresh so the guard is right next time, retry.
+    # Route rejecting a reasoning disable: a reasoning-mandatory route (Nous Portal / OpenRouter,
+    # e.g. GLM-5.3) 400s on ``reasoning: {enabled: false}``; a chat-only OpenAI-compatible relay
+    # 400s on the ``reasoning_effort: none`` the title/continuation disable projects (#114460).
+    # The catalog guard in the provider profile normally swallows the first, but a process that
+    # warmed its caps cache before the route flipped keeps sending it. One-shot: never send a
+    # disable again this session (the wire builder omits it → route default), queue a catalog
+    # refresh so the guard is right next time (no-op for providers without a catalog), retry.
     if (
         classified.reason == FailoverReason.reasoning_mandatory
         and not _retry.reasoning_mandatory_retry_attempted
     ):
         _retry.reasoning_mandatory_retry_attempted = True
+        sent = getattr(agent, "_wire_reasoning_config", None)
+        if isinstance(sent, dict) and sent.get("enabled") is not False and sent.get("effort") not in (None, "none"):
+            # The rejected request carried an ENABLED config: the route refuses that reasoning
+            # level (#100536: ``reasoning.effort: max`` on a Responses relay). Dropping a disable
+            # would resend the identical request; omit the reasoning fields instead (route default).
+            agent._reasoning_effort_rejected = True
+            _vlines(agent, f"⚠️  {agent.model} rejects reasoning effort {sent['effort']} — using the route's default for this session, retrying...")
+            logger.warning("%sReasoning-effort recovery: dropping reasoning config for %s", agent.log_prefix, agent.model)
+            return True, recovered_with_pool
         agent._reasoning_disable_rejected = True
+        # "Reasoning is mandatory ... cannot be disabled" understands the field and refuses only the
+        # OFF: step up to the floor effort (the closest the route allows to what the user asked for)
+        # rather than the route default. A relay that does not know the field at all keeps the
+        # drop (a floor would 400 the same way).
+        from agent.error_classifier import is_reasoning_required_rejection
+        agent._reasoning_floor_required = is_reasoning_required_rejection(str(api_error))
         try:
             from hermes_cli.models_reasoning_caps import refresh_reasoning_caps_async
             refresh_reasoning_caps_async(agent.provider)
         except Exception:
             pass
-        _vlines(agent, f"⚠️  {agent.model} requires reasoning — thinking stays on for this session, retrying...")
-        logger.warning("%sReasoning-mandatory recovery: dropping reasoning disable for %s", agent.log_prefix, agent.model)
+        if agent._reasoning_floor_required:
+            from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
+            _vlines(agent, f"⚠️  {agent.model} cannot disable reasoning — using effort={REASONING_FLOOR_EFFORT} for this session, retrying...")
+            logger.warning("%sReasoning-disable recovery: stepping reasoning up to %s for %s",
+                           agent.log_prefix, REASONING_FLOOR_EFFORT, agent.model)
+        else:
+            _vlines(agent, f"⚠️  {agent.model} rejects disabling reasoning — using the route's default for this session, retrying...")
+            logger.warning("%sReasoning-disable recovery: dropping reasoning disable for %s", agent.log_prefix, agent.model)
         return True, recovered_with_pool
 
     # Provider rejected the image bytes; shrinking can't help, so strip image parts.
     # Strip ONLY the per-call copy: replacing msg["content"] on the shallow api_messages
     # rows keeps canonical history's images (transient rejection must not erase history).
     if classified.reason == FailoverReason.image_corrupt:
-        if isinstance(api_messages, list) and _strip_images_from_messages(api_messages):
-            _vlines(agent, "⚠️  Provider rejected a corrupted image — stripped images from the retry payload and retrying...")
+        if _strip_request_images_and_retry(agent, api_messages):
             return True, recovered_with_pool
         logger.info("image-corrupt recovery: no image parts found to strip; surfacing original error.")
 
@@ -592,6 +773,61 @@ def _failed_turn_result(final_response: str, messages: Any, api_call_count: int,
     }
 
 
+def settle_delivered_partial(agent: Any, messages: Any, current_turn_user_idx: Any) -> str:
+    """Visible text already delivered this turn ("" when none), collapsing any continuation
+    trail first so the terminal persist never keeps a dangling synthetic nudge (#119001).
+
+    ``build_api_request`` resets ``_current_streamed_assistant_text`` per attempt, so after a
+    mid-stream death + continuation + pre-stream error the live accumulator is empty and the
+    fragment rows (now collapsed into one assistant row) are the only record.
+    """
+    from agent.turn_truncation import collapse_continuation_trail
+    collapsed = collapse_continuation_trail(
+        agent, messages, current_turn_user_idx, finish_reason="error",
+    )
+    live = getattr(agent, "_current_streamed_assistant_text", "")
+    if isinstance(live, str) and live.strip():
+        from agent.agent_runtime_helpers import strip_think_blocks
+        return strip_think_blocks(agent, live).strip() or collapsed
+    return collapsed
+
+
+def _with_delivered_partial(final_response: str, error_summary: str, delivered: str) -> tuple:
+    """Prepend delivered partial text to a terminal error body ("" unchanged).
+
+    Returns ``(final_response, keep_partial)``; callers set ``result["partial"]``
+    when ``keep_partial`` so the gateway emits ``payload.partial`` and surfaces
+    retain the bubble instead of clearing it. ``final_response`` must stay
+    distinct from ``error`` — that inequality is the retention contract.
+    """
+    _delivered = (delivered or "").strip()
+    if not _delivered or _delivered == (error_summary or "").strip():
+        return final_response, False
+    return f"{_delivered}\n\n{final_response}", True
+
+
+def limit_reset_epoch(agent: Any, api_error: Exception) -> Optional[float]:
+    """Epoch seconds when the provider says its limit lifts (Retry-After header, ``resets_at`` /
+    ``retry_after`` body fields, "try again in N" text) — the same datum the backoff honours."""
+    from agent.credential_pool import _parse_absolute_timestamp
+
+    try:
+        return _parse_absolute_timestamp(agent._extract_api_error_context(api_error).get("reset_at"))
+    except Exception:  # advisory only — never break the error path
+        return None
+
+
+def _stamp_limit_reset(result: Dict[str, Any], agent: Any, api_error: Exception) -> None:
+    """``failure_resets_at`` for structured clients (Desktop card: "Limit resets at HH:mm") and the
+    same sentence appended to the chat text every plain surface (CLI/TUI/gateway) renders (#98852)."""
+    resets_at = limit_reset_epoch(agent, api_error)
+    if resets_at is None:
+        return
+    result["failure_resets_at"] = resets_at
+    if line := limit_reset_copy(resets_at):
+        result["final_response"] = f"{result['final_response']}\n\n{line}"
+
+
 def _print_nonretryable_auth_guidance(
     agent: Any, classified: Any, *, status_code: Optional[int], provider: Any, base_url: Any, model: Any,
 ) -> None:
@@ -607,12 +843,13 @@ def _print_nonretryable_auth_guidance(
         return
     if provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
         if provider == "openai-codex":
+            from agent.turn_failure_copy import oauth_relogin_command
+
             _vlines(
                 agent,
                 "   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been",
-                "      refreshed by another client (Codex CLI, VS Code). To fix:",
-                "      1. Run `codex` in your terminal to generate fresh tokens.",
-                "      2. Then run `hermes auth` to re-authenticate.",
+                "      refreshed by another client (Codex CLI, VS Code) or another Hermes profile.",
+                f"      Sign this profile in again: `{oauth_relogin_command(provider)}`",
             )
         elif provider == "xai-oauth":
             _vlines(
@@ -648,7 +885,7 @@ def _print_nonretryable_auth_guidance(
         _vlines(agent, "      • Check credits: https://openrouter.ai/settings/credits")
 
 
-def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool) -> str:
+def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool, door: bool = True) -> str:
     """Copy for a Nous free-tier refusal the classifier parsed (``welcome_refusal`` /
     ``welcome_route`` in ``error_context``); empty for every other error."""
     ctx = getattr(classified, "error_context", None) or {}
@@ -657,29 +894,92 @@ def _welcome_tier_guidance(classified: Any, *, model: Any, in_chat: bool) -> str
         return ""
     from hermes_cli.anon_auth import welcome_refusal_copy, welcome_route_refusal_copy
     if refusal:
-        return welcome_refusal_copy(refusal, model=str(model or ""), in_chat=in_chat)
-    return welcome_route_refusal_copy(str(route), in_chat=in_chat)
+        return welcome_refusal_copy(refusal, model=str(model or ""), in_chat=in_chat, door=door)
+    return welcome_route_refusal_copy(str(route), in_chat=in_chat, door=door)
+
+
+# Closed table: every card kind the desktop has copy for. An unknown gateway reason lands on
+# "refused" (generic card, sentence kept) rather than a code the desktop cannot key on.
+_WELCOME_SURFACE_KINDS = {
+    "rate_limited": "rate_limited", "at_capacity": "at_capacity", "admission_closed": "at_capacity",
+    "model_not_free": "model_not_free", "feature_not_free": "model_not_free",
+}
+
+
+def _welcome_surface_kind(classified: Any) -> str:
+    """The free-tier failure kind a client renders its card from (``error_surface`` code
+    ``free_tier_<kind>``): the welcome refusal's reason, or the route refusal; "" otherwise."""
+    ctx = getattr(classified, "error_context", None) or {}
+    refusal = ctx.get("welcome_refusal") if isinstance(ctx, dict) else None
+    if isinstance(refusal, dict):
+        return _WELCOME_SURFACE_KINDS.get(str(refusal.get("reason") or ""), "refused")
+    route = ctx.get("welcome_route") if isinstance(ctx, dict) else None
+    if route == "tier_disabled":
+        return "disabled"
+    # A named account on the welcome host has already signed in: no sign-in card, copy only.
+    if route == "named_on_welcome_host":
+        return ""
+    return "route" if route else ""
+
+
+def _stamp_free_tier(result: Dict[str, Any], kind: str, message: str) -> Dict[str, Any]:
+    """Structured free-tier failure block: ``error_surface`` keys its code on ``kind`` and a client
+    shows ``message`` (the chat sentence) as the card body instead of its own generic copy."""
+    result["free_tier"] = {"kind": kind or "refused", "message": message}
+    return result
+
+
+def _welcome_outage_copy(base_url: Any, classified: Any, *, anonymous: bool = False) -> str:
+    """On the Nous free tier, a transport / server failure that outlived every retry reads as one
+    plain sentence (the free model is having trouble) rather than the technical summary. Empty
+    for every other route and for rate limits / billing, which have their own copy."""
+    try:
+        from hermes_cli.anon_auth import FREE_TIER_OUTAGE_COPY, route_is_welcome_host
+        # Both: an anonymous JWT sent to a user-overridden paid host never reached the free model.
+        if not anonymous or not route_is_welcome_host(base_url):
+            return ""
+        # Not ``unknown``: that is the classifier's catch-all for status-less local failures, which
+        # are not the free model's trouble.
+        if classified.reason in (FailoverReason.timeout, FailoverReason.overloaded, FailoverReason.server_error):
+            return FREE_TIER_OUTAGE_COPY
+    except Exception:
+        pass
+    return ""
 
 
 # Terminal status label per non-retryable reason (default names the HTTP status).
 _NONRETRYABLE_LABELS = {
-    FailoverReason.content_policy_blocked: "Provider safety filter blocked this request",
-    FailoverReason.ssl_cert_verification: "TLS certificate verification failed",
+    FailoverReason.content_policy_blocked: "The provider's safety filter refused this request",
+    FailoverReason.upstream_blocked: "A firewall/CDN in front of the provider blocked this request",
+    FailoverReason.ssl_cert_verification: "The provider's security certificate could not be verified",
+    # Only reached after the one-shot image shrink ran (recover_after_classification sets the flag first).
+    FailoverReason.image_too_large: "Request still exceeded the provider's size limit after shrinking images",
 }
+
+
+def _missing_vendor_prefix_suggestion(api_error: Exception, provider: Any, model: Any) -> Optional[str]:
+    """Prefixed catalogue id when a bare 404 most likely means ``vendor/model`` lost its prefix."""
+    if getattr(api_error, "status_code", None) != 404:
+        return None
+    try:
+        from hermes_cli.model_normalize import suggest_prefixed_model_id
+
+        return suggest_prefixed_model_id(str(provider or ""), str(model or ""))
+    except Exception:
+        return None
 
 
 def nonretryable_client_error_result(
     agent: Any, api_error: Exception, classified: Any, *, status_code: Optional[int],
     api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]], conversation_history: Any,
     api_call_count: int, approx_tokens: int, provider: Any, base_url: Any, model: Any,
+    delivered: str = "",
 ) -> Dict[str, Any]:
     """Terminal path for a non-retryable 4xx once fallback is exhausted: debug dump, flush
     the retry trace, print auth / billing / content-policy / TLS guidance, persist (skipped
     for likely context-overflow 400s so the failure does not grow the session), build result."""
     # Result/guidance helpers stay in the loop module (tests import + patch them there).
-    from agent.conversation_loop import (
-        _CONTENT_POLICY_RECOVERY_HINT, _billing_failure_result, _content_policy_blocked_result,
-    )
+    from agent.conversation_loop import _billing_failure_result, _content_policy_blocked_result
 
     if api_kwargs is not None:
         agent._dump_api_request_debug(api_kwargs, reason="non_retryable_client_error", error=api_error)
@@ -688,15 +988,18 @@ def nonretryable_client_error_result(
     # Summarize once: Cloudflare/proxy HTML pages and raw provider bodies must be
     # collapsed here or they leak verbatim via the ``error`` field.
     _nonretryable_summary = agent._summarize_api_error(api_error)
-    _label = _NONRETRYABLE_LABELS.get(classified.reason, f"Non-retryable error (HTTP {status_code})")
-    agent._emit_status(f"❌ {_label}: {_nonretryable_summary}")
-    _vlines(
-        agent,
-        f"❌ Non-retryable client error (HTTP {status_code}). Aborting.",
-        f"   🔌 Provider: {provider}  Model: {model}",
-        f"   🌐 Endpoint: {base_url}",
-    )
+    _plabel = provider_label_for(provider)
+    _label = _NONRETRYABLE_LABELS.get(classified.reason, f"{_plabel} rejected the request and retrying won't help")
+    agent._emit_diagnostic_status(f"❌ {_label}: {_nonretryable_summary}")
+    # The endpoint/status trace is developer detail: verbose only (the log has it always).
+    if getattr(agent, "verbose_logging", False):
+        _vlines(
+            agent,
+            f"   🔌 Provider: {provider}  Model: {model}  (HTTP {status_code})",
+            f"   🌐 Endpoint: {base_url}",
+        )
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
+    _prefix_suggestion = _missing_vendor_prefix_suggestion(api_error, provider, model)
     if _welcome_hint:
         # A free-tier gate or a wrong-host refusal: the way forward is a sign-in or another
         # provider, never the key/credits advice below.
@@ -705,28 +1008,40 @@ def nonretryable_client_error_result(
         _print_nonretryable_auth_guidance(
             agent, classified, status_code=status_code, provider=provider, base_url=base_url, model=model
         )
-    else:
-        _vlines(agent, "   💡 This type of error won't be fixed by retrying.")
+    elif classified.reason == FailoverReason.model_not_found:
+        _vlines(agent, f"   💡 Model '{model}' isn't available on {_plabel}. Pick another with /model.")
+        if _prefix_suggestion:
+            _vlines(agent, f"      Did you mean '{_prefix_suggestion}'? It looks like the vendor prefix is missing.")
+    elif classified.reason not in _NONRETRYABLE_LABELS:
+        _vlines(agent, f"   💡 Fix: pick another model (/model), or check `{display_hermes_home()}/logs/agent.log`.")
+    # A WAF/CDN block (#53099, #70566): the key never reached the provider; the usual cause
+    # is the SDK User-Agent, which the per-provider extra_headers override.
+    if classified.reason == FailoverReason.upstream_blocked:
+        _vlines(
+            agent,
+            "   💡 The endpoint's firewall/CDN blocked the request before it reached the model — your key",
+            "      and model access are probably fine. Relays often reject the SDK's default User-Agent:",
+            "      set `extra_headers: {User-Agent: HermesAgent/1.0}` on the custom_providers entry,",
+            "      or check the proxy/WAF rules and your network.",
+        )
     # Content-policy blocks: the provider refused this prompt, so recovery is a rephrase
     # or another model, not key/retry advice.
     if classified.reason == FailoverReason.content_policy_blocked:
         _vlines(
             agent,
-            "   💡 The provider's safety filter rejected this specific prompt.",
-            "      • Try rephrasing the request, narrowing the context, or splitting into smaller steps.",
-            "      • Configure a fallback provider so future blocks route automatically:",
-            "        hermes fallback add   (interactive picker — same as `hermes model`)",
+            f"   💡 {CONTENT_POLICY_NEXT_STEPS}",
+            "      To route future blocks to another provider automatically: hermes fallback add",
         )
     # TLS certificate failures are environment problems — name the knobs for each cause.
     if classified.reason == FailoverReason.ssl_cert_verification:
         _vlines(
             agent,
-            "   💡 The TLS certificate chain could not be verified. This fails the same",
+            "   💡 Hermes couldn't verify the provider's security certificate. This fails the same",
             "      way on every retry — fix the environment, then try again:",
             "      • Corporate TLS-inspecting proxy? Point Python at its CA bundle:",
             "        export SSL_CERT_FILE=/path/to/corp-ca.pem  (also REQUESTS_CA_BUNDLE)",
-            "      • Missing/stale system CA store? Install/refresh it:",
-            "        pip install --upgrade certifi   (macOS: run 'Install Certificates.command')",
+            "      • Missing/stale system CA store? Refresh it (in Hermes's venv: `uv pip install",
+            "        --upgrade certifi`; macOS: run 'Install Certificates.command').",
             "      • Self-signed local endpoint (llama.cpp, LM Studio, vLLM)? Use http://",
             "        for localhost, or add the server's cert to your trust store.",
         )
@@ -740,14 +1055,10 @@ def nonretryable_client_error_result(
     else:
         agent._persist_session(messages, conversation_history)
     if classified.reason == FailoverReason.content_policy_blocked:
-        _policy_response = (
-            "⚠️  The model provider's safety filter blocked this request "
-            "(not a Hermes/gateway failure).\n\n"
-            f"Provider message: {_nonretryable_summary}\n\n"
-            f"{_CONTENT_POLICY_RECOVERY_HINT}"
-        )
         return _content_policy_blocked_result(
-            messages, api_call_count, final_response=_policy_response, error_detail=_nonretryable_summary,
+            messages, api_call_count,
+            final_response="⚠️ " + content_policy_copy(label=_plabel, summary=_nonretryable_summary),
+            error_detail=_nonretryable_summary,
         )
     # Billing walls get the same structured recovery descriptor as the max-retries path
     # so every surface renders one consistent signal.
@@ -756,17 +1067,34 @@ def nonretryable_client_error_result(
             classified=classified, summary=_nonretryable_summary, messages=messages,
             api_call_count=api_call_count, provider=provider, base_url=base_url, model=model,
         )
-    _final_response = _nonretryable_summary
     if _welcome_hint:
-        _final_response += f"\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
-    result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
+        # A free-tier refusal is fully explained by its own sentence; the raw provider summary
+        # (status codes, JSON) is for the log, not for a first-time user's chat.
+        _final_response = _welcome_tier_guidance(classified, model=model, in_chat=True)
+    else:
+        # Every surface reads final_response; the CLI hint lines above never reach chat.
+        _final_response = nonretryable_copy(
+            classified, provider=provider, model=model, summary=_nonretryable_summary,
+            prefix_suggestion=_prefix_suggestion,
+        )
     # Same verdict fields as the max-retries path: without them the UI descriptor
     # (agent/error_surface.py) reads a rejected OAuth token as a retryable
     # "Provider error" and offers Retry instead of a re-login.
+    _final_response, _keep_partial = _with_delivered_partial(
+        _final_response, _nonretryable_summary, delivered,
+    )
+    result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     result.update({
         "failure_reason": classified.reason.value,
         "failure_retryable": bool(classified.retryable),
     })
+    if _keep_partial:
+        result["partial"] = True
+    _stamp_limit_reset(result, agent, api_error)
+    if _welcome_hint and (_kind := _welcome_surface_kind(classified)):
+        # The card form: the desktop renders the sign-in as a button, so no "To sign in" tail.
+        _stamp_free_tier(result, _kind,
+                         _welcome_tier_guidance(classified, model=model, in_chat=True, door=False))
     return result
 
 
@@ -780,13 +1108,14 @@ def max_retries_exhausted_result(
     agent: Any, api_error: Exception, classified: Any, *, max_retries: int, is_rate_limited: bool,
     error_msg: str, api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, approx_tokens: int, provider: Any,
-    base_url: Any, model: Any,
+    base_url: Any, model: Any, delivered: str = "",
 ) -> Dict[str, Any]:
     """Terminal path once retries, transport recovery and fallback all failed: flush the
     trace, emit the billing / rate-limit / generic status, print stream-drop or thinking-timeout
     guidance (the latter wins), persist, build the result with ``failure_reason`` /
     ``failure_retryable`` / ``billing_block``."""
     # Result/guidance helpers stay in the loop module (tests import + patch them there).
+    from hermes_cli.anon_auth import is_anonymous_agent
     from agent.conversation_loop import (
         _billing_block_dict, _billing_or_entitlement_message, _billing_terminal_label,
         _print_billing_or_entitlement_guidance,
@@ -799,12 +1128,12 @@ def max_retries_exhausted_result(
     if _is_billing:
         if classified.billing_unverified:
             # Ambiguous body — hedge the terminal line.
-            agent._emit_status(
+            agent._emit_diagnostic_status(
                 "❌ Provider reported usage/credit exhaustion "
                 f"(unverified — may be a content-filter rejection) — {_final_summary}"
             )
         else:
-            agent._emit_status(f"❌ Billing or credits exhausted — {_final_summary}")
+            agent._emit_diagnostic_status(f"❌ Billing or credits exhausted — {_final_summary}")
         _billing_kw = dict(
             capability="model access", provider=provider, base_url=str(base_url), model=model,
             unverified=classified.billing_unverified,
@@ -812,9 +1141,13 @@ def max_retries_exhausted_result(
         _billing_guidance = _billing_or_entitlement_message(**_billing_kw)
         _print_billing_or_entitlement_guidance(agent, **_billing_kw)
     elif is_rate_limited:
-        agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
+        _reset = reset_hint(api_error)
+        agent._emit_diagnostic_status(
+            f"❌ Rate limited after {max_retries} retries — {_final_summary}"
+            f"{f' (resets in {_reset})' if _reset else ''}"
+        )
     else:
-        agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
+        agent._emit_diagnostic_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
     _vlines(agent, f"   💀 Final error: {_final_summary}")
     _welcome_hint = _welcome_tier_guidance(classified, model=model, in_chat=False)
     if _welcome_hint:
@@ -839,18 +1172,7 @@ def max_retries_exhausted_result(
     # Distinct from _is_stream_drop; detection lives in agent.thinking_timeout_guidance.
     _is_thinking_timeout = is_thinking_timeout(classified, model, error_msg)
     if _is_thinking_timeout:
-        _vlines(
-            agent,
-            "   💡 The model's thinking phase exceeded the upstream proxy's idle "
-            "timeout before the first content token arrived. This is a known issue with "
-            "reasoning models behind cloud gateways (NVIDIA NIM, OpenAI, Anthropic, DeepSeek).",
-            "      Workarounds in priority order:",
-            f"      1. Set `providers.{provider}.models.{model}.stale_timeout_seconds: 900` "
-            "in `~/.hermes/config.yaml` to extend the per-call timeout. (Hermes's built-in floor is 600s for "
-            "known reasoning models — if you still see this after raising, the upstream cap is even shorter.)",
-            "      2. Lower `reasoning_budget` or set `reasoning_effort: medium` on this model if the provider supports it.",
-            "      3. Use a smaller / faster reasoning model if the task doesn't require deep thinking.",
-        )
+        _vlines(agent, f"   💡 {build_thinking_timeout_guidance(provider=provider, model=model).strip()}")
 
     logger.error(
         "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
@@ -862,6 +1184,7 @@ def max_retries_exhausted_result(
     agent._persist_session(messages, conversation_history)
     _billing_block = None
     _billing_unverified = False
+    _free_tier_kind = ""
     if _is_billing:
         _billing_unverified = classified.billing_unverified
         _final_response = _billing_terminal_label(_final_summary, _billing_unverified)
@@ -872,21 +1195,27 @@ def max_retries_exhausted_result(
             provider, base_url, model, _billing_guidance, unverified=_billing_unverified
         )
     else:
-        _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+        # Every surface reads final_response (the 💡 lines above are CLI-only), so the chat
+        # text carries the plain what-happened + next step itself.
+        _reset_at = classified.error_context.get("reset_at")
+        _final_response = exhausted_copy(
+            classified.reason.value, label=provider_label_for(provider), attempts=max_retries,
+            summary=_final_summary, reset_seconds=_reset_at - time.time() if _reset_at else None,
+        )
         if _welcome_hint:
-            _final_response += f"\n\n{_welcome_tier_guidance(classified, model=model, in_chat=True)}"
+            _final_response = _welcome_tier_guidance(classified, model=model, in_chat=True)
+            _free_tier_kind = _welcome_surface_kind(classified)
+        elif _outage := _welcome_outage_copy(base_url, classified, anonymous=is_anonymous_agent(agent)):
+            _final_response, _free_tier_kind = _outage, "outage"
     if _is_thinking_timeout:
         # Thinking-timeout guidance overrides stream-drop guidance, which would wrongly
         # suggest splitting large file writes.
-        _final_response += build_thinking_timeout_guidance(provider=provider, model=model)
+        _final_response += "\n\n" + build_thinking_timeout_guidance(provider=provider, model=model)
     elif _is_stream_drop:
         _final_response += (
-            "\n\nThe provider's stream connection keeps "
-            "dropping — this often happens when generating "
-            "very large tool call responses (e.g. write_file "
-            "with long content). Try asking me to use "
-            "execute_code with Python's open() for large "
-            "files, or to write in smaller sections."
+            "\n\nThe connection kept dropping while the model was writing — this often "
+            "happens when it writes a very large file in one go. Ask me to write the file in "
+            "smaller sections (or via execute_code with Python's open())."
         )
     result = _failed_turn_result(_final_response, messages, api_call_count, _final_summary)
     result.update({
@@ -900,41 +1229,62 @@ def max_retries_exhausted_result(
         # Present only for billing walls: (provider, billing_url, is_nous, message).
         "billing_block": _billing_block,
     })
+    # Retry-exhaustion after partial delivery (#119001): the text was already
+    # shown, so keep it as the reply (marked failed) instead of an error-only
+    # turn — the gateway flags ``partial`` and surfaces retain the bubble.
+    _final_response, _keep_partial = _with_delivered_partial(
+        _final_response, _final_summary, delivered,
+    )
+    if _keep_partial:
+        result["final_response"] = _final_response
+        result["partial"] = True
+    _stamp_limit_reset(result, agent, api_error)
+    if _free_tier_kind:
+        _stamp_free_tier(result, _free_tier_kind, (
+            _welcome_tier_guidance(classified, model=model, in_chat=True, door=False)
+            if _welcome_hint else _final_response))
     return result
 
 
 def log_api_error_attempt(
     agent: Any, api_error: Exception, *, retry_count: int, max_retries: int,
     status_code: Optional[int], elapsed_time: float, api_messages: Any, approx_tokens: int,
+    retryable: bool = True,
 ) -> Tuple[str, str, Any, Any, Any]:
     """Log one failed API attempt (warning + buffered retry trace, OpenRouter "no tool
     endpoints" hint, bare-404 missing-vendor-prefix hint); the buffer only surfaces if every
-    retry+fallback exhausts. Returns ``(error_type, error_msg, provider, base_url, model)``."""
+    retry+fallback exhausts. Returns ``(error_type, error_msg, provider, base_url, model)``.
+
+    ``retryable=False`` (the classifier's verdict, e.g. a 401 on a static-key route) is
+    named on the line: a bare ``attempt 1/3`` promises a second attempt that never comes
+    and sends readers hunting for a retry bug (#73237)."""
     error_type = type(api_error).__name__
     error_msg = str(api_error).lower()
     _error_summary = agent._summarize_api_error(api_error)
+    _attempt = f"attempt {retry_count}/{max_retries}" + ("" if retryable else ", not retryable")
     logger.warning(
-        "API call failed (attempt %s/%s) error_type=%s %s summary=%s",
-        retry_count, max_retries, error_type, agent._client_log_context(), _error_summary,
+        "API call failed (%s) error_type=%s %s summary=%s",
+        _attempt, error_type, agent._client_log_context(), _error_summary,
     )
 
     _provider = getattr(agent, "provider", "unknown")
     _base = getattr(agent, "base_url", "unknown")
     _model = getattr(agent, "model", "unknown")
-    _status_code_str = f" [HTTP {status_code}]" if status_code else ""
-    _blines(
-        agent,
-        f"⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}{_status_code_str}",
-        f"   🔌 Provider: {_provider}  Model: {_model}",
-        f"   🌐 Endpoint: {_base}",
-        f"   📝 Error: {_error_summary}",
-    )
-    if status_code and status_code < 500:
-        _err_body = getattr(api_error, "body", None)
-        _err_body_str = str(_err_body)[:300] if _err_body else None
-        if _err_body_str:
-            _blines(agent, f"   📋 Details: {_err_body_str}")
-    _blines(agent, f"   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
+    _blines(agent, f"⚠️  {_attempt[0].upper()}{_attempt[1:]} failed: {_error_summary}")
+    # Exception class, endpoint, raw body and token counts are developer detail: verbose only.
+    if getattr(agent, "verbose_logging", False):
+        _status_code_str = f" [HTTP {status_code}]" if status_code else ""
+        _blines(
+            agent,
+            f"   🔌 {error_type}{_status_code_str}  Provider: {_provider}  Model: {_model}",
+            f"   🌐 Endpoint: {_base}",
+        )
+        if status_code and status_code < 500:
+            _err_body = getattr(api_error, "body", None)
+            _err_body_str = str(_err_body)[:300] if _err_body else None
+            if _err_body_str:
+                _blines(agent, f"   📋 Details: {_err_body_str}")
+        _blines(agent, f"   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
 
     if agent._is_openrouter_url() and "support tool use" in error_msg:
         _blines(agent, f"   💡 No OpenRouter providers for {_model} support tool calling with your current settings.")
@@ -949,19 +1299,13 @@ def log_api_error_attempt(
 
     # Bare 404 on a ``vendor/model`` catalogue usually means the id lost its prefix; the
     # provider never names the model, so we do.
-    if getattr(api_error, "status_code", None) == 404:
-        try:
-            from hermes_cli.model_normalize import suggest_prefixed_model_id
-
-            _suggestion = suggest_prefixed_model_id(_provider, _model)
-        except Exception:
-            _suggestion = None
-        if _suggestion:
-            _blines(
-                agent,
-                f"   💡 Model '{_model}' is not a valid id for provider {_provider} — it is missing its vendor prefix.",
-                f"      Did you mean '{_suggestion}'?  Re-pick it with `hermes model`.",
-            )
+    _suggestion = _missing_vendor_prefix_suggestion(api_error, _provider, _model)
+    if _suggestion:
+        _blines(
+            agent,
+            f"   💡 Model '{_model}' is not a valid id for provider {_provider} — it is missing its vendor prefix.",
+            f"      Did you mean '{_suggestion}'?  Re-pick it with /model.",
+        )
     return error_type, error_msg, _provider, _base, _model
 
 
@@ -972,9 +1316,15 @@ def abort_turn_on_interrupt(
     """Announce ``abort_message``, close any open tool sequence with ``interrupt_text``,
     persist, clear the interrupt and return the ``interrupted`` result dict."""
     _vlines(agent, f"⚡ {abort_message}")
+    # Empty-response recovery can leave a synthetic assistant+nudge pair after an
+    # already-executed tool result. Strip only that request-local scaffold before
+    # closing, so this exit owner can persist its specific interrupt reason.
+    agent._drop_trailing_empty_response_scaffolding(messages)
     close_interrupted_tool_sequence(messages, interrupt_text)
     agent._persist_session(messages, conversation_history)
-    agent.clear_interrupt()
+    # The turn was stopped, not rebuilt: a pending steer was aimed at this turn's next
+    # tool iteration, which will no longer happen — drop it (hard-cancel semantics).
+    agent.clear_interrupt(hard_cancel=True)
     return {
         "final_response": interrupt_text, "messages": messages, "api_calls": api_call_count,
         "completed": False, "interrupted": True,
@@ -1014,6 +1364,21 @@ _ZAI_POLICY_NOTES = {
     "zai_coding_overload_long": " (Z.AI Coding overload adaptive long backoff)",
     "zai_coding_overload_short": " (Z.AI Coding overload short retry)",
 }
+
+
+def reset_hint(api_error: Exception) -> str:
+    """``"~13m"`` until the ``reset_at`` parsed from *api_error* (epoch s/ms or ISO-8601), else ``""``.
+
+    A bare "Rate limited. Waiting 60s" hides the one fact that decides whether to wait or switch
+    models (#26889): a per-minute throttle and a 13-minute plan window look identical without it."""
+    from agent.agent_runtime_helpers import extract_api_error_context
+    from agent.credential_pool import _parse_absolute_timestamp
+    from agent.usage_pricing import format_duration_compact
+    reset_at = extract_api_error_context(api_error).get("reset_at")
+    if reset_at is None:
+        return ""
+    remaining = (_parse_absolute_timestamp(reset_at) or 0.0) - time.time()
+    return f"~{format_duration_compact(remaining)}" if remaining >= 1 else ""
 
 
 def compute_error_backoff(
@@ -1061,14 +1426,18 @@ def compute_error_backoff(
         wait_time, _backoff_policy = adaptive_rate_limit_backoff(
             retry_count, base_url=str(base_url), model=model, error=api_error, default_wait=wait_time,
         )
+    _reset = reset_hint(api_error) if _adaptive else ""
+    _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
     if _adaptive:
         _policy_note = _ZAI_POLICY_NOTES.get(_backoff_policy or "", "")
-        _wait_reason = "Provider overloaded" if is_zai_coding_overload and not is_rate_limited else "Rate limited"
-        _rate_limit_status = f"⏱️ {_wait_reason}. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
+        _rate_limit_status = (
+            f"⏱️ {_wait_reason}.{f' Resets in {_reset}.' if _reset else ''} Waiting {wait_time:.1f}s "
+            f"(attempt {retry_count + 1}/{max_retries}){_policy_note}..."
+        )
         if _backoff_policy == "zai_coding_overload_long":
-            agent._emit_status(_rate_limit_status)
+            agent._emit_diagnostic_status(_rate_limit_status)
         else:
-            agent._buffer_status(_rate_limit_status)
+            agent._buffer_diagnostic_status(_rate_limit_status)
     else:
         _retry_status = (
             f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})..."
@@ -1077,16 +1446,19 @@ def compute_error_backoff(
             # A 5xx Retry-After can now reach the 600s cap; buffering that wait
             # would leave the user silent for minutes, so surface long provider
             # cooldowns immediately (mirrors the zai_coding_overload_long path).
-            agent._emit_status(_retry_status)
+            agent._emit_diagnostic_status(_retry_status)
         else:
-            agent._buffer_status(_retry_status)
+            agent._buffer_diagnostic_status(_retry_status)
     # The buffered line only replays if every retry fails; the live status
     # line is the one thing the user sees meanwhile. Name the wait there so a
     # 60s backoff after a 5xx is not an anonymous spinner — this is transient
     # (rewritten by the next frame, cleared on recovery), so it does not add
-    # the transcript chatter the buffer exists to avoid.
-    agent._emit_wait_notice(
-        f"⏳ waiting on provider — retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
+    # the transcript chatter the buffer exists to avoid. The reset window
+    # belongs here too: during the wait this line is the only place the user
+    # can learn whether to sit it out or switch models.
+    _live_reason = f"{_wait_reason.lower()} — resets in {_reset}," if _reset else "waiting on provider —"
+    agent._emit_diagnostic_wait(
+        f"⏳ {_live_reason} retrying in {wait_time:.0f}s (attempt {retry_count}/{max_retries})"
     )
     logger.warning(
         "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
@@ -1094,6 +1466,46 @@ def compute_error_backoff(
         _backoff_policy or "default", api_error,
     )
     return wait_time
+
+
+def _codex_soft_failure_error(response: Any) -> Dict[str, Any]:
+    """``response.error`` of a Codex ``failed``/``cancelled`` Response as ``{"code", "message"}``
+    (the SDK types it as ``ResponseError``; the raw-SSE assembler keeps the dict); ``{}`` when absent."""
+    error_obj = getattr(response, "error", None)
+    if not error_obj:
+        return {}
+    if isinstance(error_obj, dict):
+        fields = error_obj
+    elif hasattr(error_obj, "code") or hasattr(error_obj, "message"):
+        fields = {"code": getattr(error_obj, "code", None), "message": getattr(error_obj, "message", None)}
+    else:
+        fields = {"message": str(error_obj)}
+    return {k: v for k, v in fields.items() if isinstance(v, str) and v.strip()}
+
+
+class _CodexSoftFailure(Exception):
+    """A Codex HTTP-200 ``status=failed`` Response reshaped so ``classify_api_error`` and
+    ``extract_api_error_context`` read ``response.error`` exactly like an SDK error body."""
+
+    def __init__(self, error: Dict[str, Any]) -> None:
+        super().__init__(error.get("message") or "")
+        self.body = {"error": error}
+
+
+def classify_codex_soft_failure(agent: Any, response: Any) -> Tuple[Any, Dict[str, Any]]:
+    """``(classified, error_context)`` for a Codex ``failed``/``cancelled`` Response, or
+    ``(None, {})`` when it is not one. The SDK never raises on these HTTP-200 soft failures,
+    so this is the only place their quota/billing/auth semantics reach the credential pool."""
+    if agent.api_mode != "codex_responses":
+        return None, {}
+    if str(getattr(response, "status", "") or "").strip().lower() not in {"failed", "cancelled"}:
+        return None, {}
+    exc = _CodexSoftFailure(_codex_soft_failure_error(response))
+    classified = classify_api_error(
+        exc, provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
+        base_url=str(getattr(agent, "base_url", "") or ""), api_key=getattr(agent, "api_key", None),
+    )
+    return classified, agent._extract_api_error_context(exc)
 
 
 def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]:
@@ -1108,11 +1520,9 @@ def validate_response_shape(agent: Any, response: Any) -> Tuple[bool, List[str]]
     if agent.api_mode == "codex_responses":
         _codex_resp_status = str(getattr(response, "status", "") or "").strip().lower()
         if _codex_resp_status in {"failed", "cancelled"}:
-            _codex_error_obj = getattr(response, "error", None)
             _codex_error_msg = (
-                _codex_error_obj.get("message") if isinstance(_codex_error_obj, dict)
-                else str(_codex_error_obj) if _codex_error_obj
-                else f"Responses API returned status '{_codex_resp_status}'"
+                _codex_soft_failure_error(response).get("message")
+                or f"Responses API returned status '{_codex_resp_status}'"
             )
             logger.warning(
                 "Codex response status='%s' (error=%s). Routing to fallback. %s",
@@ -1158,7 +1568,8 @@ def describe_invalid_response(agent: Any, response: Any, api_duration: float) ->
     provider_name = "Unknown"
     _has_error = bool(response and hasattr(response, 'error') and response.error)
     if _has_error:
-        error_msg = str(response.error)
+        # A typed ``ResponseError`` stringifies as its repr; show the provider's message.
+        error_msg = _codex_soft_failure_error(response).get("message") or str(response.error)
         if hasattr(response.error, 'metadata') and response.error.metadata:
             provider_name = response.error.metadata.get('provider_name', 'Unknown')
     elif response and hasattr(response, 'message') and response.message:
@@ -1285,17 +1696,49 @@ def _eager_fallback_status(classified: Any, is_upstream: bool, is_transport_fail
     return "⚠️ Rate limited — switching to fallback provider..."
 
 
-def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context: Any) -> bool:
+def activate_codex_app_server_fallback(agent: Any, result: Dict[str, Any]) -> bool:
+    """The codex app-server runtime reports a failed turn as ``result["error"]`` text instead of
+    raising, so the generic classify -> ``fallback_providers`` chain never saw it (#71633).
+    Classify that text; on a billing / rate-limit verdict activate the configured fallback and
+    return True so the caller re-runs the same user turn on the generic loop."""
+    error = result.get("error")
+    if not error or result.get("interrupted") or not agent._has_pending_fallback():
+        return False
+    classified = classify_api_error(
+        RuntimeError(str(error)), provider=getattr(agent, "provider", "") or "", model=getattr(agent, "model", "") or "",
+    )
+    if classified.reason not in _RATE_LIMIT_REASONS:
+        return False
+    agent._buffer_diagnostic_status(
+        _eager_fallback_status(classified, classified.reason == FailoverReason.upstream_rate_limit, False))
+    return bool(agent._try_activate_fallback(reason=classified.reason))
+
+
+def _is_genuine_nous_rate_limit(agent: Any, api_error: Exception, error_context: Any, classified: Any = None) -> bool:
     """Record a genuine account-level Nous 429 to the cross-session breaker; upstream
-    capacity 429s (no exhausted bucket in headers or last-known state) are left alone."""
+    capacity 429s (no exhausted bucket in headers or last-known state) are left alone.
+
+    *error_context* is the turn's (``extract_api_error_context``); *classified* brings the
+    classifier's own context, where a welcome-tier ``rate_limited`` refusal and its ``reset_at``
+    live. A long welcome reset is an exhausted allowance whatever the headers say, and the one
+    place the user is told that signing in lifts it."""
     _genuine = False
     try:
-        from agent.nous_rate_guard import is_genuine_nous_rate_limit, record_nous_rate_limit
+        from agent.nous_rate_guard import (
+            is_genuine_nous_rate_limit, is_long_welcome_rate_limit, record_nous_rate_limit)
         _err_resp = getattr(api_error, "response", None)
         _err_hdrs = getattr(_err_resp, "headers", None) if _err_resp else None
-        _genuine = is_genuine_nous_rate_limit(headers=_err_hdrs, last_known_state=agent._rate_limit_state)
+        from hermes_cli.anon_auth import is_anonymous_agent
+        anonymous = is_anonymous_agent(agent)
+        _classified_ctx = getattr(classified, "error_context", None) or {}
+        # Only an anonymous request's fairshare body is an allowance verdict; named
+        # requests keep the exhausted-bucket rule, whatever their host or body says.
+        _genuine = (
+            (anonymous and is_long_welcome_rate_limit(_classified_ctx))
+            or is_genuine_nous_rate_limit(headers=_err_hdrs, last_known_state=agent._rate_limit_state))
         if _genuine:
-            record_nous_rate_limit(headers=_err_hdrs, error_context=error_context)
+            _merged = {**(error_context if isinstance(error_context, dict) else {}), **_classified_ctx}
+            record_nous_rate_limit(headers=_err_hdrs, error_context=_merged, anonymous=anonymous)
         else:
             logger.info(
                 "Nous 429 looks like upstream capacity "
@@ -1363,25 +1806,21 @@ def route_classified_error(
         agent._flush_status_buffer()
         _vlines(
             agent,
-            "❌ Context overflow, but auto-compaction is disabled (compression.enabled: false).",
-            "   💡 Run /compress to compact manually, /new to start fresh, "
-            "switch to a larger-context model, or reduce attachments.",
+            "❌ The conversation is too long for the model and automatic shrinking is off (compression.enabled: false).",
+            "   💡 Run /compress to shrink it now, /new to start fresh, "
+            "pick a model with a bigger context window, or remove attachments.",
         )
         logger.error(
             f"{agent.log_prefix}Context overflow ({classified.reason.value}) with "
             f"auto-compaction disabled — not compressing."
         )
         agent._persist_session(messages, conversation_history)
-        _final_response = (
-            "Context overflow and auto-compaction is disabled "
-            "(compression.enabled: false). Run /compress to compact manually, "
-            "/new to start fresh, or switch to a larger-context model."
-        )
-        return _verdict("return", {
+        _final_response = site_copy("compression_disabled", model=agent.model)
+        return _verdict("return", stamp_failure({
             "final_response": _final_response, "messages": messages, "completed": False,
             "api_calls": api_call_count, "error": _final_response, "partial": True, "failed": True,
             "compaction_disabled": True,
-        })
+        }, "context_overflow", False))
 
     # Anthropic 429 "Extra usage is required for long context requests" is a
     # subscription-tier limit, not transient: cap at 200k and compress.
@@ -1402,7 +1841,7 @@ def route_classified_error(
             )
             conversation_history = conversation_history_after_compression(agent, messages, conversation_history)
             if len(messages) < original_len or old_ctx > _LONG_CONTEXT_TIER_CAP:
-                agent._buffer_status(
+                agent._buffer_diagnostic_status(
                     COMPRESSION_RETRY_CONTEXT_REDUCED_STATUS_TEMPLATE.format(
                         new_ctx=_LONG_CONTEXT_TIER_CAP, old_ctx=old_ctx
                     )
@@ -1449,8 +1888,9 @@ def route_classified_error(
             False if _is_upstream else _ra()._pool_may_recover_from_rate_limit(agent._credential_pool)
         )
         if not pool_may_recover:
-            agent._buffer_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
-            if agent._try_activate_fallback(reason=classified.reason):
+            agent._buffer_diagnostic_status(_eager_fallback_status(classified, _is_upstream, _is_transport_failure))
+            reset_at = error_context.get("reset_at") if isinstance(error_context, dict) else None
+            if agent._try_activate_fallback(reason=classified.reason, reset_at=reset_at):
                 return _fallback_break()
 
     # A 401/403 surviving credential refresh means a broken credential or endpoint:
@@ -1461,7 +1901,7 @@ def route_classified_error(
         and agent._fallback_index < len(agent._fallback_chain)
     ):
         _retry.auth_failover_attempted = True
-        agent._buffer_status(
+        agent._buffer_diagnostic_status(
             "🔐 Authentication failed and could not be refreshed — "
             "switching to fallback provider..."
         )
@@ -1475,7 +1915,7 @@ def route_classified_error(
         and agent.provider == "nous"
         and classified.reason == FailoverReason.rate_limit
         and not recovered_with_pool
-        and _is_genuine_nous_rate_limit(agent, api_error, error_context)
+        and _is_genuine_nous_rate_limit(agent, api_error, error_context, classified)
     ):
         # Re-enter the loop exactly once so the top-of-loop Nous guard runs
         # (retry_count = max_retries would skip it entirely).

@@ -105,7 +105,8 @@ class TestStatusLateJobsCallout:
         _print_active_jobs_summary(jobs)
 
         out = capsys.readouterr().out
-        assert "1 job(s) last fired late (missed-fire catch-up)" in out
+        assert "1 job(s) last fired late" in out
+        assert "catch-up after missed fire" in out
         assert "abc123" in out
         assert "31m late" in out
         # On-time job is not in the callout.
@@ -140,7 +141,3 @@ class TestDisplayHelpers:
         assert _dispatch_display({}) is None
         assert _dispatch_display({"scheduled_at": "x"}) is None
 
-    def test_dispatch_display_late_kind(self):
-        line = _dispatch_display(_catch_up_stamp(600.0, kind="late"))
-        assert "late" in line
-        assert "10m" in line

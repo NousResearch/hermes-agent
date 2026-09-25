@@ -8,6 +8,7 @@ development before the first push).
 from __future__ import annotations
 
 import operator
+import os
 import re
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
+from utils import rmtree_readonly
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -52,6 +54,22 @@ USER_OWNED_EXCLUDE: frozenset = frozenset({
     # User customization namespace
     "local",
 })
+
+# Profile distributions own cron definitions, not scheduler state. The runtime has
+# one canonical multi-record store; every sibling under cron/ is runtime data.
+_CRON_STORE_REL = ("cron", "jobs.json")
+
+
+def _is_distribution_runtime_path(parts: Tuple[str, ...]) -> bool:
+    """Runtime-owned entries nested under otherwise distribution-owned roots."""
+    if len(parts) < 2:
+        return False
+    if parts[0] == "cron":
+        return parts[:2] != _CRON_STORE_REL
+    # Root-level dot entries under skills are Hermes bookkeeping (.hub,
+    # .usage.json, curator state, bundled manifest, locks, archives, ...).
+    return parts[0] == "skills" and len(parts) == 2 and parts[1].startswith(".")
+
 
 
 class DistributionError(Exception):
@@ -230,17 +248,16 @@ def _looks_like_git_url(s: str) -> bool:
 def _git_clone(url: str, dest: Path) -> None:
     if _GITHUB_SHORTHAND_RE.match(url):
         url = f"https://{url.rstrip('/')}"
-    from hermes_cli.git_credentials import with_git_auth
+    from hermes_cli.git_credentials import run_git_with_credential_fallback
     try:
-        subprocess.run(
-            ["git", "clone", "--depth", "1", url, str(dest)], check=True, capture_output=True,
-            stdin=subprocess.DEVNULL, env=with_git_auth(noninteractive_git_env(), url),
+        result = run_git_with_credential_fallback(
+            ["git", "clone", "--depth", "1", url, str(dest)], url, env=noninteractive_git_env(),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
     except FileNotFoundError as exc:
         raise DistributionError("git is required for git-URL installs") from exc
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""
-        raise DistributionError(f"git clone failed: {stderr.strip()}") from exc
+    if result.returncode != 0:
+        raise DistributionError(f"git clone failed: {(result.stderr or '').strip()}")
 
 
 def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
@@ -250,7 +267,9 @@ def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
     if _looks_like_git_url(src_str):
         staged, provenance = workdir / "clone", src_str
         _git_clone(src_str, staged)
-        shutil.rmtree(staged / ".git", ignore_errors=True)
+        # Not ``ignore_errors``: a half-deleted ``.git`` (read-only objects on Windows) would
+        # otherwise be copied into the profile as distribution content (#117184).
+        rmtree_readonly(staged / ".git")
         missing = (
             f"No {MANIFEST_FILENAME} at the root of {src_str!r}. "
             "This repository is not a Hermes profile distribution."
@@ -299,8 +318,7 @@ class InstallPlan:
 
 
 def _has_cron_jobs(staged: Path) -> bool:
-    cron_dir = staged / "cron"
-    return cron_dir.is_dir() and (any(cron_dir.rglob("*.json")) or any(cron_dir.rglob("*.yaml")))
+    return staged.joinpath(*_CRON_STORE_REL).is_file()
 
 
 def plan_install(source: str, workdir: Path, override_name: Optional[str] = None) -> InstallPlan:
@@ -347,7 +365,7 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
     # Path-aware allowlist: copy exactly the declared paths.
     for rel in explicit_owned:
         rel_parts = PurePosixPath(rel).parts
-        if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE:
+        if not rel_parts or rel_parts[0] in USER_OWNED_EXCLUDE or _is_distribution_runtime_path(rel_parts):
             continue
         if ".." in rel_parts or PurePosixPath(rel).is_absolute():
             continue
@@ -356,35 +374,170 @@ def _owned_entries(staged: Path, manifest: DistributionManifest):
             yield src, rel_parts
 
 
+def _remove_existing(path: Path) -> None:
+    """Remove one destination entry without following a destination symlink."""
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    elif os.path.lexists(path):
+        # Covers files, dangling/any symlinks, fifos and sockets alike.
+        path.unlink()
+
+
+def _replace_entry(src: Path, dest: Path) -> None:
+    """Replace *dest* with *src* wholesale so files retired upstream disappear and
+    file<->directory transitions cannot raise or leave stale content behind."""
+    _remove_existing(dest)
+    if src.is_dir():
+        shutil.copytree(src, dest)
+    else:
+        shutil.copy2(src, dest)
+
+
+def _shipped_cron_store(entries: List[Tuple[Path, Tuple[str, ...]]]) -> Optional[Path]:
+    """Return the staged ``cron/jobs.json`` when the distribution owns it (via ``cron/`` or exactly)."""
+    for src, rel_parts in entries:
+        if rel_parts == _CRON_STORE_REL:
+            return src
+        if rel_parts == _CRON_STORE_REL[:1] and (src / _CRON_STORE_REL[1]).is_file():
+            return src / _CRON_STORE_REL[1]
+    return None
+
+
+def _merge_cron_store(src: Path, home: Path) -> None:
+    """Merge a distribution's cron store into profile *home* by job id; new jobs arrive paused.
+
+    Nothing is written when a shipped job cannot be scheduled (unparseable schedule, past
+    one-shot for a job the installer resumed); the error names the job."""
+    from cron import jobs as cron_jobs
+    from cron.job_definition import import_job_definitions
+
+    dest = home.joinpath(*_CRON_STORE_REL)
+    try:
+        with tempfile.TemporaryDirectory(prefix="hermes_dist_cron_") as tmp:
+            staged_store = Path(tmp) / "cron"
+            staged_store.mkdir()
+            shutil.copy2(src, staged_store / "jobs.json")
+            with cron_jobs.use_cron_store(tmp):
+                shipped = {
+                    job["id"]: job for job in cron_jobs.load_jobs()
+                    if isinstance(job, dict) and job.get("id")
+                }
+        with cron_jobs.use_cron_store(home):
+            import_job_definitions(
+                shipped, paused_reason="Installed from a profile distribution; review it, then resume.")
+    except (RuntimeError, ValueError) as exc:
+        # RuntimeError: load_jobs on a corrupt/unreadable store; ValueError: a job-labelled
+        # unschedulable definition. OSError propagates as-is like every other copy step.
+        raise DistributionError(f"Could not merge cron jobs into {dest}: {exc}") from exc
+
+
+def _real_dir(base: Path, parts: Tuple[str, ...]) -> Path:
+    """Return ``base/parts`` as a chain of real directories.
+
+    A user could have swapped an ancestor for a file; writing through it is impossible,
+    so a file is replaced by a real directory. A symlinked ancestor is refused rather
+    than silently unlinked: it is deliberate user configuration (a shared skills dir,
+    say) and writing through it would land the payload outside the profile."""
+    path = base
+    for part in parts:
+        path = path / part
+        _refuse_symlink(path)
+        if path.exists() and not path.is_dir():
+            _remove_existing(path)
+        path.mkdir(exist_ok=True)
+    return path
+
+
+def _refuse_symlink(path: Path) -> None:
+    if path.is_symlink():
+        raise DistributionError(
+            f"{path} is a symlink; refusing to replace it — remove the link "
+            "(or replace it with a real directory) and re-run"
+        )
+
+
+def _is_container(path: Path) -> bool:
+    """A shipped directory holding no files (a skills category) is a container of roots,
+    not a root itself; a skill dir always holds at least SKILL.md."""
+    return path.is_dir() and not any(p.is_file() for p in path.iterdir())
+
+
+def _merge_dir(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
+    """Merge authored roots while leaving runtime-owned nested state untouched."""
+    for child in src.iterdir():
+        parts = (*rel, child.name)
+        if _is_distribution_runtime_path(parts):
+            continue
+        if parts == _CRON_STORE_REL:
+            continue  # merged up front by _copy_dist_payload
+        if _is_container(child):
+            _merge_dir(child, _real_dir(dest, (child.name,)), parts)
+        else:
+            _replace_entry(child, dest / child.name)
+
+
+def _refuse_symlinked_containers(src: Path, dest: Path, rel: Tuple[str, ...]) -> None:
+    for child in src.iterdir():
+        parts = (*rel, child.name)
+        if _is_distribution_runtime_path(parts):
+            continue
+        if _is_container(child):
+            _refuse_symlink(dest / child.name)
+            _refuse_symlinked_containers(child, dest / child.name, parts)
+
+
+def _refuse_symlinked_targets(target: Path, entries) -> None:
+    """Refuse before the first write. The per-entry check in ``_real_dir`` fires mid-loop,
+    after earlier entries were already replaced and before the manifest is rewritten,
+    leaving a half-updated profile that fails identically on every retry."""
+    for src, rel_parts in entries:
+        # Directories are walked as containers, so the whole chain must be real;
+        # a file only needs a real parent chain (a symlinked file is unlinked, not followed).
+        depth = len(rel_parts) if src.is_dir() else len(rel_parts) - 1
+        path = target
+        for part in rel_parts[:depth]:
+            path = path / part
+            _refuse_symlink(path)
+        if src.is_dir() and len(rel_parts) == 1:
+            _refuse_symlinked_containers(src, path, rel_parts)
+
+
 def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifest, preserve_config: bool) -> None:
     """Copy distribution-owned files (see ``_owned_entries``) from *staged* into *target*.
 
     User-owned paths are never touched. ``config.yaml`` is replaced only when
     ``preserve_config`` is False (fresh install / ``--force-config``). ``.env.template`` lands
-    as ``.env.EXAMPLE`` so it never shadows a real ``.env``."""
+    as ``.env.EXAMPLE`` so it never shadows a real ``.env``.
+
+    A top-level owned directory is merged per authored root. ``cron/jobs.json`` is
+    special: it is one multi-record runtime store, so shipped definitions merge by job id
+    instead of replacing the file."""
     target.mkdir(parents=True, exist_ok=True)
-    staged_resolved = staged.resolve()
+    entries = list(_owned_entries(staged, manifest))
+    _refuse_symlinked_targets(target, entries)
 
-    def _ignore_user_owned(d, names):
-        # Only the staged root's direct children are filtered.
-        return [n for n in names if n in USER_OWNED_EXCLUDE] if Path(d).resolve() == staged_resolved else []
+    # The cron merge runs first: it is the one step that can reject shipped content
+    # (an unschedulable job), and rejecting before any file is replaced keeps the profile whole.
+    cron_store = _shipped_cron_store(entries)
+    if cron_store is not None:
+        _real_dir(target, _CRON_STORE_REL[:-1])
+        _merge_cron_store(cron_store, target)
 
-    for src, rel_parts in _owned_entries(staged, manifest):
+    for src, rel_parts in entries:
+        if rel_parts == _CRON_STORE_REL:
+            continue
         if len(rel_parts) == 1:
             name = rel_parts[0]
             if name == ENV_TEMPLATE_FILENAME:
-                shutil.copy2(src, target / ENV_EXAMPLE_FILENAME)
+                # _replace_entry unlinks first so copy2 cannot write through a symlinked .env.EXAMPLE.
+                _replace_entry(src, target / ENV_EXAMPLE_FILENAME)
                 continue
             if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
                 continue
-        dest = target.joinpath(*rel_parts)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if src.is_dir():
-            if dest.exists():
-                shutil.rmtree(dest)
-            shutil.copytree(src, dest, ignore=_ignore_user_owned)
-        else:
-            shutil.copy2(src, dest)
+            if src.is_dir():
+                _merge_dir(src, _real_dir(target, rel_parts), rel_parts)
+                continue
+        _replace_entry(src, _real_dir(target, rel_parts[:-1]) / rel_parts[-1])
 
     # Emit .env.EXAMPLE from manifest if the staged tree didn't ship one
     if manifest.env_requires and not (target / ENV_EXAMPLE_FILENAME).exists():
@@ -392,6 +545,10 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
 
     # Make sure the manifest on disk reflects resolved name + source
     write_manifest(target, manifest)
+    # A shipped profile.yaml must not carry a backend-assigned role.
+    if any(rel_parts == ("profile.yaml",) for _, rel_parts in entries):
+        from hermes_cli.profiles import drop_profile_role
+        drop_profile_role(target)
 
 
 def _bootstrap_user_dirs(target: Path) -> None:
@@ -415,7 +572,8 @@ def install_distribution(
                 "Use `hermes profile update` to upgrade in place, or pass --force to overwrite."
             )
 
-        # Fresh install: config.yaml comes from the distribution.
+        # Fresh install (or --force): config.yaml comes from the distribution. Roots the
+        # payload does not ship are left alone either way, so --force keeps user skills.
         _bootstrap_user_dirs(plan.target_dir)
         _copy_dist_payload(plan.staged_dir, plan.target_dir, plan.manifest, preserve_config=False)
         if create_alias and check_alias_collision(plan.manifest.name) is None:

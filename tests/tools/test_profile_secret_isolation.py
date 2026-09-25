@@ -41,7 +41,9 @@ def _write_profile(home: Path, values: dict[str, str]) -> None:
 
 
 @pytest.fixture
-def multiplex_mode():
+def multiplex_mode(tmp_path, monkeypatch):
+    # Multiplex activation pins the launch home; establish it before activation.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "source"))
     set_multiplex_active(True)
     try:
         yield
@@ -151,7 +153,7 @@ def test_profile_config_passthrough_cache_cannot_authorize_a_sibling(
         encoding="utf-8",
     )
     (profile_b / "config.yaml").write_text("{}\n", encoding="utf-8")
-    monkeypatch.setattr(passthrough, "_config_passthrough", None)
+    monkeypatch.setattr(passthrough, "_config_passthrough", {})
 
     token_a = set_hermes_home_override(profile_a)
     try:
@@ -494,7 +496,7 @@ def test_make_run_env_materializes_target_only_passthrough(
         "terminal:\n  env_passthrough:\n    - ACME_LOGIN\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(passthrough, "_config_passthrough", None)
+    monkeypatch.setattr(passthrough, "_config_passthrough", {})
     monkeypatch.setenv("HERMES_HOME", str(source))
     monkeypatch.delenv("ACME_LOGIN", raising=False)
 
@@ -677,7 +679,7 @@ def test_external_secret_source_failure_preserves_normal_scope_fail_open(
 ):
     import hermes_cli.env_loader as env_loader
 
-    def _raise(_home):
+    def _raise(_home, **kwargs):
         raise RuntimeError("secret backend unavailable")
 
     monkeypatch.setattr(env_loader, "get_secret_source_values", _raise)
@@ -687,7 +689,7 @@ def test_external_secret_source_failure_preserves_normal_scope_fail_open(
 def test_external_secret_source_failure_refuses_boundary(monkeypatch, tmp_path):
     import hermes_cli.env_loader as env_loader
 
-    def _raise(_home):
+    def _raise(_home, **kwargs):
         raise RuntimeError("secret backend unavailable")
 
     monkeypatch.setattr(env_loader, "get_external_secret_snapshot", _raise)
@@ -734,7 +736,9 @@ def test_multiplex_target_home_resolution_failure_refuses_run(
         raise RuntimeError("profile context unavailable")
 
     monkeypatch.setattr("hermes_constants.get_hermes_home_override", _raise)
-    with pytest.raises(RuntimeError, match="boundary could not be constructed"):
+    # The current launch-residue owner resolves the target before the boundary
+    # builder; failure must still refuse the run rather than use ambient values.
+    with pytest.raises(RuntimeError, match="profile context unavailable"):
         _make_run_env({})
 
 

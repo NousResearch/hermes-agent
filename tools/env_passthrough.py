@@ -33,7 +33,7 @@ def _get_allowed() -> set[str]:
 # Last observed config projection. Kept for test/debug compatibility only; it
 # is never an authorization cache because the active profile may change on
 # every multiplexed turn.
-_config_passthrough: frozenset[str] | None = None
+_config_passthrough: dict[str, frozenset[str]] = {}
 
 
 def _is_hermes_provider_credential(name: str) -> bool:
@@ -46,13 +46,23 @@ def _is_hermes_provider_credential(name: str) -> bool:
     registerable. Fails closed when the blocklist cannot be imported."""
     try:
         from tools.environments.local_env_policy import (
-            _is_blocked_provider_env, _is_hermes_internal_secret)
+            _is_blocked_provider_env,
+            _is_hermes_internal_secret,
+            _is_provider_env_blocklisted,
+        )
     except Exception as e:
         logger.warning(
             "env passthrough: provider credential blocklist import failed; "
             "failing closed and refusing passthrough registration for %r: %s", name, e)
         return True
-    return _is_hermes_internal_secret(name) or _is_blocked_provider_env(name)
+    # Case-folded membership too: the remote-exec env builder resolves each
+    # registered name via os.getenv(), which is case-insensitive on Windows, so
+    # ``openai_api_key`` would tunnel the real OPENAI_API_KEY into children.
+    return (
+        _is_hermes_internal_secret(name)
+        or _is_blocked_provider_env(name)
+        or _is_provider_env_blocklisted(name)
+    )
 
 
 def register_env_passthrough(var_names: Iterable[str]) -> None:
@@ -86,7 +96,8 @@ def _load_config_passthrough(
     profile_home: str | os.PathLike[str] | None = None,
 ) -> frozenset[str]:
     """Load the selected profile's terminal.env_passthrough projection now."""
-    global _config_passthrough
+    from hermes_constants import hermes_home_key
+    home_key = hermes_home_key(Path(profile_home) if profile_home is not None else None)
     result: set[str] = set()
     try:
         from hermes_cli.config import read_raw_config, read_user_config_raw
@@ -108,8 +119,8 @@ def _load_config_passthrough(
         )))
     except Exception as e:
         logger.debug("Could not read tools.env_passthrough from config: %s", e)
-    _config_passthrough = frozenset(result)
-    return _config_passthrough
+    _config_passthrough[home_key] = frozenset(result)
+    return _config_passthrough[home_key]
 
 
 def is_env_passthrough(
@@ -137,15 +148,40 @@ def resolve_passthrough_value(name: str, fallback: str | None = None) -> str | N
     raises the fail-closed ``UnscopedSecretError``. Outside multiplexing an installed
     scope keeps overlay semantics and an unscoped caller keeps its fallback."""
     from agent.secret_scope import (
-        _is_global_env, current_secret_scope, get_secret, is_multiplex_active)
+        _is_global_env, current_secret_scope, get_secret, is_multiplex_active,
+        serves_routed_profile,
+    )
     # Global terminal/runtime settings are not profile secrets; ``fallback`` is
     # already the caller's effective value (incl. an explicit per-call override).
     if _is_global_env(name) and fallback is not None:
         return fallback
-    multiplex_active = is_multiplex_active()
+    profile_scoped = is_multiplex_active() or serves_routed_profile()
     if current_secret_scope() is None:
-        return get_secret(name) if multiplex_active else fallback
-    return get_secret(name, None if multiplex_active else fallback)
+        return get_secret(name) if profile_scoped else fallback
+    return get_secret(name, None if profile_scoped else fallback)
+
+
+def scoped_passthrough_additions(present: Iterable[str]) -> dict[str, str]:
+    """Declared passthrough names the bound profile secret scope supplies but the env being
+    filtered (*present*) lacks. A routed profile's ``.env`` and hydrated sources never enter
+    ``os.environ`` (``load_hermes_dotenv`` skips the process-global load for a routed home), so a
+    name-by-name filter over the process env can only forward a declared name the LAUNCH profile
+    also happens to define — the served profile's own value has no way in (#114209). Reads the
+    bound scope alone: never ``os.environ``, never another profile. Empty without a scope, so
+    single-profile spawns are byte-identical."""
+    from agent.secret_scope import _is_global_env, current_secret_scope
+    scope = current_secret_scope()
+    if not scope:
+        return {}
+    present = set(present)
+    additions: dict[str, str] = {}
+    for name in get_all_passthrough():
+        if name in present or _is_global_env(name):
+            continue
+        value = scope.get(name)
+        if value is not None:
+            additions[name] = value
+    return additions
 
 
 def clear_env_passthrough() -> None:

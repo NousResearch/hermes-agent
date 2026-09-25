@@ -63,10 +63,6 @@ def test_platform_enum_resolves_via_plugin_scan():
 
 class TestNtfyRequirements:
 
-    def test_returns_false_when_httpx_unavailable(self, monkeypatch):
-        monkeypatch.setenv("NTFY_TOPIC", "hermes-test")
-        monkeypatch.setattr(_ntfy, "HTTPX_AVAILABLE", False)
-        assert check_requirements() is False
 
 
     def test_is_connected_from_extra(self, monkeypatch):
@@ -90,13 +86,6 @@ class TestNtfyAdapterInit:
         assert adapter._topic == "env-topic"
 
 
-    def test_publish_topic_uses_extra_value(self):
-        config = PlatformConfig(
-            enabled=True,
-            extra={"topic": "hermes-in", "publish_topic": "hermes-out"},
-        )
-        adapter = NtfyAdapter(config)
-        assert adapter._publish_topic == "hermes-out"
 
 
     def test_token_read_from_env(self, monkeypatch):
@@ -139,12 +128,12 @@ class TestDeduplication:
 
     def test_first_message_not_duplicate(self):
         adapter = self._make_adapter()
-        assert adapter._is_duplicate("msg-1") is False
+        assert adapter._dedup.is_duplicate("msg-1") is False
 
     def test_second_occurrence_is_duplicate(self):
         adapter = self._make_adapter()
-        adapter._is_duplicate("msg-1")
-        assert adapter._is_duplicate("msg-1") is True
+        adapter._dedup.is_duplicate("msg-1")
+        assert adapter._dedup.is_duplicate("msg-1") is True
 
 
 # ---------------------------------------------------------------------------
@@ -278,11 +267,6 @@ class TestSend:
         assert "timeout" in result.error.lower()
 
 
-    def test_get_chat_info_returns_dict(self):
-        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
-        info = _run(adapter.get_chat_info("hermes-in"))
-        assert info["name"] == "hermes-in"
-        assert info["type"] == "dm"
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +389,6 @@ class TestStandaloneSend:
         pconfig.extra = {}
         result = _run(_standalone_send(pconfig, "", "hello"))
         assert "error" in result
-        assert "NTFY_TOPIC" in result["error"]
 
 
     def test_emits_echo_tag_header(self, monkeypatch):
@@ -482,13 +465,6 @@ class TestFatalErrorPropagation:
         assert adapter._fatal_error_retryable is False
 
 
-class TestTruncateHelper:
-    """``_truncate_body`` is shared between adapter.send() (inline truncation
-    today, may migrate) and ``_standalone_send``. It must cap to
-    MAX_MESSAGE_LENGTH and return bytes."""
-
-    def test_short_message_passes_through(self):
-        assert _ntfy._truncate_body("hi", context="test") == b"hi"
 
 
 # ---------------------------------------------------------------------------

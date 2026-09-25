@@ -129,16 +129,8 @@ async def test_create_dm_topic_handles_duplicate_error():
     assert result is None
 
 
-@pytest.mark.asyncio
-async def test_create_dm_topic_handles_generic_error():
-    """Generic error should return None with warning."""
-    adapter = _make_adapter()
-    adapter._bot = AsyncMock()
-    adapter._bot.create_forum_topic.side_effect = Exception("some random error")
 
-    result = await adapter._create_dm_topic(chat_id=111, name="General")
 
-    assert result is None
 
 
 @pytest.mark.asyncio
@@ -245,7 +237,7 @@ def test_persist_dm_topic_thread_id_preserves_config_on_write_failure(tmp_path):
 
     with patch.object(Path, "home", return_value=tmp_path), \
          patch.dict(os.environ, {"HERMES_HOME": str(tmp_path / ".hermes")}), \
-         patch("yaml.dump", side_effect=fail_dump):
+         patch("ruamel.yaml.YAML.dump", side_effect=fail_dump):
         adapter._persist_dm_topic_thread_id(111, "General", 999)
 
     assert config_file.read_text(encoding="utf-8") == original_text

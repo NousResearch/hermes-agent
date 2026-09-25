@@ -43,15 +43,34 @@ def test_installed_tags_newest_first(hermes_home):
     assert installed_tags() == ["b10412", "b10290"]
 
 
-def test_default_tag_flows_from_default_config(hermes_home):
-    """Unpinned users inherit the Hermes-release default (deep-merge);
-    the shipped default must be a plausible rolling tag."""
+
+
+@pytest.mark.parametrize("pin", [None, "b10679", "b10412"])
+def test_default_tag_update_offer_respects_explicit_pins(hermes_home, pin):
+    """Existing unpinned installs get the shipped upgrade; user pins win."""
+    from fastapi.testclient import TestClient
+
+    from hermes_cli import web_server
     from hermes_cli.config import load_config
     from hermes_cli.config_defaults import DEFAULT_CONFIG
 
-    default_tag = DEFAULT_CONFIG["local_runtime"]["tag"]
-    assert default_tag.startswith("b") and default_tag.lstrip("b").isdigit()
-    assert load_config()["local_runtime"]["tag"] == default_tag
+    runtime = {"enabled": True}
+    if pin is not None:
+        runtime["tag"] = pin
+    (hermes_home / "config.yaml").write_text(
+        json.dumps({"local_runtime": runtime}), encoding="utf-8")
+    _install_fake_tag(hermes_home, "b10679")
+
+    client = TestClient(web_server.app)
+    client.headers[web_server._SESSION_HEADER_NAME] = web_server._SESSION_TOKEN
+    response = client.get("/api/local-models/status")
+    assert response.status_code == 200, response.text
+    status = response.json()
+    expected_tag = pin or DEFAULT_CONFIG["local_runtime"]["tag"]
+    assert load_config()["local_runtime"]["tag"] == expected_tag
+    assert status["configured_tag"] == expected_tag
+    assert status["tag"] == "b10679"  # An offer must not replace the installed engine.
+    assert status["update_available"] is (expected_tag != "b10679")
 
 
 def test_update_available_requires_enabled_and_installed(hermes_home, monkeypatch):

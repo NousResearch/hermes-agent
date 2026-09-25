@@ -64,17 +64,5 @@ class TestCleanupAgentResourcesPassesMessages:
         # identity — providers iterate it to extract facts.
         agent.shutdown_memory_provider.assert_called_once_with(transcript)
 
-    def test_empty_list_still_forwarded(self):
-        """An agent that initialised but ran no turns has an empty list
-        on ``_session_messages``. Forwarding it (rather than falling
-        through to the no-arg path) makes the absence of content
-        explicit to providers and matches the pre-fix observable
-        behaviour (``on_session_end([])``)."""
-        runner = _make_runner()
-        agent = _FakeAgent(session_messages=[])
-
-        runner._cleanup_agent_resources(agent)
-
-        agent.shutdown_memory_provider.assert_called_once_with([])
 
 

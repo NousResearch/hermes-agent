@@ -6,7 +6,6 @@ import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
 import { $clarifyRequests } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { clearQueuedPrompts, getQueuedPrompts } from '@/store/composer-queue'
-import { $gateway } from '@/store/gateway'
 import {
   clearAllPrompts,
   hasBlockingPromptRequest,
@@ -14,6 +13,7 @@ import {
   setSecretRequest,
   setSudoRequest
 } from '@/store/prompts'
+import { hasOpenServerRequest, rememberServerRequest, resetServerRequestsForTests } from '@/store/server-requests'
 
 import { type ComposerTarget, requestComposerSubmit } from '../focus'
 import { ComposerScopeProvider, ComposerSurfaceProvider, MAIN_COMPOSER_SCOPE } from '../scope'
@@ -357,6 +357,32 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 
+  it('puts a refused steer back in the composer when there is no queue to hold it', async () => {
+    // A brand-new chat is busy while its first session.create is in flight but
+    // has no queue key yet. The steer clears the draft first, so a refusal must
+    // restore the words rather than drop the only copy (#68927).
+    const { hook, loadIntoComposer, onSteer } = renderSubmitHook({ busy: true, sessionKey: null, text: 'keep me' })
+    onSteer.mockResolvedValueOnce(false)
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(loadIntoComposer).toHaveBeenCalledWith('keep me', []))
+  })
+
+  it('queues a steer whose redirect RPC fails instead of losing it', async () => {
+    const { hook, onSteer } = renderSubmitHook({ busy: true, text: 'still here' })
+    onSteer.mockRejectedValueOnce(new Error('request timed out: session.redirect'))
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    await waitFor(() => expect(getQueuedPrompts('stored-session').map(({ text }) => text)).toEqual(['still here']))
+    clearQueuedPrompts('stored-session')
+  })
+
   it('queues a plain-text follow-up while the active turn is compacting', () => {
     const { hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
       busy: true,
@@ -442,41 +468,33 @@ describe('useComposerSubmit busy-turn routing', () => {
     expect(queueCurrentDraft).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()
   })
-
-  it('threads the loaded composer scope through onSubmit for the #59305 submit-time guard', async () => {
-    const { hook, onSubmit } = renderSubmitHook({ text: 'hello' })
-
-    act(() => {
-      hook.result.current.submitDraft()
-    })
-
-    await waitFor(() =>
-      expect(onSubmit).toHaveBeenCalledWith('hello', expect.objectContaining({ composerScope: 'stored-session' }))
-    )
-  })
 })
 
 describe('useComposerSubmit with a clarify parked on the session', () => {
-  const gatewayRequest = vi.fn(async () => ({ ok: true }))
+  // The clarify is a live server→client request: skipping it answers that
+  // request frame (`{ answer: '' }`), not a `clarify.respond` RPC.
+  const respond = vi.fn()
 
   const parkClarify = (sessionId: string) => {
+    const requestId = `req-${sessionId}`
+
+    rememberServerRequest({ fail: vi.fn(), id: requestId, method: 'clarify', params: {}, respond })
     $clarifyRequests.set({
       [sessionId]: {
-        requestId: `req-${sessionId}`,
+        requestId,
         question: 'which one?',
         choices: ['a', 'b'],
         multiSelect: false,
         sessionId
       }
     })
-    $gateway.set({ request: gatewayRequest } as unknown as ReturnType<typeof $gateway.get>)
   }
 
   afterEach(() => {
     cleanup()
-    gatewayRequest.mockClear()
+    respond.mockClear()
+    resetServerRequestsForTests()
     $clarifyRequests.set({})
-    $gateway.set(null)
     vi.restoreAllMocks()
   })
 
@@ -488,16 +506,12 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    await waitFor(() =>
-      expect(gatewayRequest).toHaveBeenCalledWith('clarify.respond', {
-        request_id: 'req-runtime-session',
-        answer: ''
-      })
-    )
+    await waitFor(() => expect(respond).toHaveBeenCalledWith({ answer: '' }))
     await waitFor(() =>
       expect(onSubmit).toHaveBeenCalledWith('actually do this instead', expect.objectContaining({ attachments: [] }))
     )
     expect($clarifyRequests.get()['runtime-session']).toBeUndefined()
+    expect(hasOpenServerRequest('req-runtime-session')).toBe(false)
   })
 
   it('skips the question before steering a busy turn', async () => {
@@ -509,7 +523,7 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
 
     await waitFor(() => expect(onSteer).toHaveBeenCalledWith('change course'))
-    expect(gatewayRequest).toHaveBeenCalledWith('clarify.respond', { request_id: 'req-runtime-session', answer: '' })
+    expect(respond).toHaveBeenCalledWith({ answer: '' })
   })
 
   it('leaves the question alone for an empty Enter (Stop, not an answer)', () => {
@@ -520,7 +534,8 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
       hook.result.current.submitDraft()
     })
 
-    expect(gatewayRequest).not.toHaveBeenCalled()
+    expect(respond).not.toHaveBeenCalled()
+    expect(hasOpenServerRequest('req-runtime-session')).toBe(true)
     expect($clarifyRequests.get()['runtime-session']).toBeDefined()
     expect(onCancel).toHaveBeenCalledTimes(1)
   })
@@ -534,7 +549,8 @@ describe('useComposerSubmit with a clarify parked on the session', () => {
     })
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalled())
-    expect(gatewayRequest).not.toHaveBeenCalled()
+    expect(respond).not.toHaveBeenCalled()
+    expect(hasOpenServerRequest('req-other-session')).toBe(true)
     expect($clarifyRequests.get()['other-session']).toBeDefined()
   })
 })

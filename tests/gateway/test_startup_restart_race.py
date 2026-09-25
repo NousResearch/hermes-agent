@@ -88,7 +88,6 @@ def make_startup_runner(tmp_path):
     runner.hooks.discover_and_load = MagicMock()
     runner.hooks.emit = AsyncMock()
     runner.session_store = MagicMock()
-    runner.session_store.suspend_recently_active.return_value = 0
     runner.delivery_router = MagicMock()
     runner.delivery_router.adapters = {}
 
@@ -339,7 +338,7 @@ async def test_failure_exit_still_stops_cron_housekeeping_and_mcp(monkeypatch):
     watcher = threading.Thread(target=watcher_stop.wait, daemon=True)
     watcher.start()
 
-    async def fake_mcp_shutdown():
+    async def fake_mcp_shutdown(*_args, **_kwargs):
         stopped.append("mcp")
 
     monkeypatch.setattr(gateway_run, "_shutdown_mcp_servers_nonblocking", fake_mcp_shutdown)

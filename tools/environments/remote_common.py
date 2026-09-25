@@ -8,7 +8,10 @@ import subprocess
 from typing import Callable, Iterable
 
 from tools.environments.base_session_env import _SHELL_ENV_NAME_RE
-from tools.environments.local_env_policy import _is_blocked_provider_env, _is_hermes_internal_secret
+from tools.environments.local_env_policy import (
+    _is_blocked_provider_env,
+    _is_hermes_internal_secret,
+)
 
 
 def load_hermes_env_vars() -> dict[str, str]:

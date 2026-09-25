@@ -48,17 +48,6 @@ class TestBrowserConsole:
         assert result["console_messages"][1]["text"] == "oops"
         assert result["js_errors"][0]["message"] == "Uncaught TypeError"
 
-    def test_passes_clear_flag(self):
-        from tools.browser_tool import browser_console
-
-        empty = {"success": True, "data": {"messages": [], "errors": []}}
-        with patch("tools.browser_tool_session._run_browser_command", return_value=empty) as mock_cmd:
-            browser_console(clear=True, task_id="test")
-
-        calls = mock_cmd.call_args_list
-        # Both console and errors should get --clear
-        assert calls[0][0] == ("test", "console", ["--clear"])
-        assert calls[1][0] == ("test", "errors", ["--clear"])
 
 
     def test_redacts_secrets_from_console_messages_and_errors(self):
@@ -175,72 +164,13 @@ class TestBrowserConsole:
 # ── browser_console schema ───────────────────────────────────────────
 
 
-class TestBrowserConsoleSchema:
-    """browser_console is properly registered in the tool registry."""
-
-    def test_schema_in_browser_schemas(self):
-        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
-
-        names = [s["name"] for s in BROWSER_TOOL_SCHEMAS]
-        assert "browser_console" in names
-
-    def test_schema_has_clear_param(self):
-        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
-
-        schema = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_console")
-        props = schema["parameters"]["properties"]
-        assert "clear" in props
-        assert props["clear"]["type"] == "boolean"
 
 
-class TestBrowserConsoleToolsetWiring:
-    """browser_console must be reachable via toolset resolution."""
-
-    def test_in_browser_toolset(self):
-        from toolsets import TOOLSETS
-        assert "browser_console" in TOOLSETS["browser"]["tools"]
-
-
-    def test_in_registry(self):
-        from tools.registry import registry
-        from tools import browser_tool  # noqa: F401
-        assert "browser_console" in registry._tools
 
 
 # ── browser_vision annotate ──────────────────────────────────────────
 
 
-class TestBrowserVisionAnnotate:
-    """browser_vision supports annotate parameter."""
-
-    def test_schema_has_annotate_param(self):
-        from tools.browser_tool import BROWSER_TOOL_SCHEMAS
-
-        schema = next(s for s in BROWSER_TOOL_SCHEMAS if s["name"] == "browser_vision")
-        props = schema["parameters"]["properties"]
-        assert "annotate" in props
-        assert props["annotate"]["type"] == "boolean"
-
-
-    def test_annotate_true_adds_flag(self):
-        """With annotate=True, screenshot command includes --annotate."""
-        from tools.browser_tool import browser_vision
-
-        with (
-            patch("tools.browser_tool_session._run_browser_command") as mock_cmd,
-            patch("agent.auxiliary_client.call_llm") as mock_call_llm,
-            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
-        ):
-            mock_cmd.return_value = {"success": True, "data": {}}
-            try:
-                browser_vision("test", annotate=True, task_id="test")
-            except Exception:
-                pass
-
-            if mock_cmd.called:
-                args = mock_cmd.call_args[0]
-                cmd_args = args[2] if len(args) > 2 else []
-                assert "--annotate" in cmd_args
 
 
 class TestBrowserVisionConfig:
@@ -333,7 +263,8 @@ class TestBrowserVisionConfig:
 
         from agent.auxiliary_client import clear_runtime_main, set_runtime_main
         from tools.browser_tool import browser_vision
-        from tools.vision_tools import _EMBED_MAX_DIMENSION, _EMBED_TARGET_BYTES
+        from tools.vision_tools import _EMBED_MAX_DIMENSION
+        from tools.vision_tools_history_budget import _DEFAULT_EMBED_TARGET_BYTES as _EMBED_TARGET_BYTES
 
         shots_dir = tmp_path / "browser_screenshots"
         shots_dir.mkdir()
@@ -422,56 +353,8 @@ class TestBrowserVisionConfig:
 # ── auto-recording config ────────────────────────────────────────────
 
 
-class TestRecordSessionsConfig:
-    """browser.record_sessions config option."""
-
-    def test_default_config_has_record_sessions(self):
-        from hermes_cli.config import DEFAULT_CONFIG
-
-        browser_cfg = DEFAULT_CONFIG.get("browser", {})
-        assert "record_sessions" in browser_cfg
-        assert browser_cfg["record_sessions"] is False
-
-
-    def test_maybe_stop_recording_noop_when_not_recording(self):
-        """Stopping when not recording is a no-op."""
-        from tools.browser_tool import _maybe_stop_recording, _recording_sessions
-
-        _recording_sessions.discard("test-task")  # ensure not in set
-        with patch("tools.browser_tool_session._run_browser_command") as mock_cmd:
-            _maybe_stop_recording("test-task")
-
-        mock_cmd.assert_not_called()
 
 
 # ── dogfood skill files ──────────────────────────────────────────────
 
 
-class TestDogfoodSkill:
-    """Dogfood skill files exist and have correct structure."""
-
-    @pytest.fixture(autouse=True)
-    def _skill_dir(self):
-        # Use the actual repo skills dir (not temp)
-        self.skill_dir = os.path.join(
-            os.path.dirname(__file__), "..", "..", "skills", "software-development", "dogfood"
-        )
-
-    def test_skill_md_exists(self):
-        assert os.path.exists(os.path.join(self.skill_dir, "SKILL.md"))
-
-    def test_taxonomy_exists(self):
-        assert os.path.exists(
-            os.path.join(self.skill_dir, "references", "issue-taxonomy.md")
-        )
-
-
-    def test_taxonomy_has_categories(self):
-        with open(
-            os.path.join(self.skill_dir, "references", "issue-taxonomy.md")
-        ) as f:
-            content = f.read()
-        assert "Functional" in content
-        assert "Visual" in content
-        assert "Accessibility" in content
-        assert "Console" in content

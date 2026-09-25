@@ -6,8 +6,12 @@ Drives the real ``hermes`` argparse entrypoint; only the network fetch is replac
 
 import json
 import sys
+import time
 from datetime import datetime, timezone
+from threading import Event
 from unittest.mock import patch
+
+import httpx
 
 from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from hermes_cli import main as hermes_main
@@ -81,8 +85,9 @@ def test_all_credentials_fetches_each_persisted_row_without_selecting_or_leaking
     doc = json.loads(out)
     assert err == ""
     assert calls == [
-        ("openai-codex", {"api_key": "secret-alpha", "base_url": "https://chatgpt.com/backend-api/codex"}),
-        ("openai-codex", {"api_key": "secret-beta", "base_url": None}),
+        ("openai-codex", {"api_key": "secret-alpha", "base_url": "https://chatgpt.com/backend-api/codex",
+                          "allow_recovery": False}),
+        ("openai-codex", {"api_key": "secret-beta", "base_url": None, "allow_recovery": False}),
     ]
     assert doc == {"provider": "openai-codex", "credentials": [
         {"id": "alpha", "usage": usage_snapshot_document(_SNAPSHOT)},
@@ -126,6 +131,67 @@ def test_codex_all_credentials_probes_distinct_tokens_through_actual_fetcher(cap
     assert err == "" and seen == ["Bearer token-one", "Bearer token-two"]
     assert [c["usage"]["windows"][0]["used_percent"] for c in doc["credentials"]] == [11, 72]
     assert "token-one" not in out and "token-two" not in out
+
+
+def test_codex_all_credentials_401_does_not_change_auth_state(tmp_path, monkeypatch, capsys):
+    from agent import account_usage, credential_pool
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    original = {"version": 1, "providers": {"openai-codex": {"tokens": {
+        "access_token": "rejected", "refresh_token": "revoked",
+    }}}, "credential_pool": {"openai-codex": [
+        {"id": "a", "source": "device_code", "auth_type": "oauth",
+         "access_token": "rejected", "refresh_token": "revoked"},
+    ]}}
+    store = home / "auth.json"
+    store.write_text(json.dumps(original))
+    request = httpx.Request("GET", "https://chatgpt.com/backend-api/wham/usage")
+
+    def unauthorized(*args, **kwargs):
+        response = httpx.Response(401, request=request)
+        raise httpx.HTTPStatusError("unauthorized", request=request, response=response)
+
+    with patch.object(account_usage, "_get_json", side_effect=unauthorized), \
+         patch("hermes_cli.auth._import_codex_cli_tokens", return_value=None), \
+         patch.object(credential_pool.CredentialPool, "_post_tokens_refresh",
+                      side_effect=RuntimeError("revoked")), \
+         patch.object(credential_pool.auth_mod, "_is_terminal_codex_oauth_refresh_error", return_value=True):
+        assert _run(["usage", "--json", "--all-credentials", "--provider", "openai-codex"],
+                    account_usage.fetch_account_usage) == 1
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert json.loads(out)["credentials"] == [{"id": "a", "usage": None}]
+    assert json.loads(store.read_text()) == original
+
+
+def test_all_credentials_has_one_deadline_and_returns_complete_json(monkeypatch, capsys):
+    from hermes_cli.subcommands import usage
+
+    monkeypatch.setattr(usage, "ALL_CREDENTIALS_DEADLINE_S", 0.05, raising=False)
+    release = Event()
+    calls = []
+
+    def slow_fetch(provider, **kwargs):
+        calls.append(kwargs["api_key"])
+        release.wait(3)
+        return _SNAPSHOT
+
+    rows = [{"id": str(i), "access_token": f"secret-{i}"} for i in range(3)]
+    try:
+        with patch("agent.credential_pool.read_credential_pool", return_value=rows):
+            started = time.monotonic()
+            assert _run(["usage", "--json", "--all-credentials", "--provider", "openai-codex"], slow_fetch) == 1
+            assert time.monotonic() - started < 2
+    finally:
+        release.set()
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert calls == ["secret-0"]
+    assert json.loads(out) == {"provider": "openai-codex", "credentials": [
+        {"id": str(i), "usage": None} for i in range(3)
+    ]}
 
 
 def test_all_credentials_all_probes_unavailable_returns_json_and_nonzero(capsys):

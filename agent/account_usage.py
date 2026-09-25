@@ -428,7 +428,7 @@ def _plural(count: int) -> str:
 
 
 def _fetch_codex_account_usage(
-    base_url: Optional[str] = None, api_key: Optional[str] = None,
+    base_url: Optional[str] = None, api_key: Optional[str] = None, *, allow_recovery: bool = True,
 ) -> Optional[AccountUsageSnapshot]:
     token, resolved_base_url, account_id = _resolve_codex_usage_credentials(base_url, api_key)
     try:
@@ -436,7 +436,7 @@ def _fetch_codex_account_usage(
             _codex_backend_urls(resolved_base_url)[0], _codex_headers(token, account_id), timeout=15.0,
         )
     except httpx.HTTPStatusError as exc:
-        if exc.response.status_code != 401:
+        if exc.response.status_code != 401 or not allow_recovery:
             raise
         token, resolved_base_url, account_id = _resolve_codex_usage_credentials(
             base_url, api_key, force_refresh=True,
@@ -674,9 +674,12 @@ def _call_plugin_usage_hook(profile, base_url: Optional[str], api_key: Optional[
 
 def fetch_account_usage(
     provider: Optional[str], *, base_url: Optional[str] = None, api_key: Optional[str] = None,
+    allow_recovery: bool = True,
 ) -> Optional[AccountUsageSnapshot]:
     fetcher = _USAGE_FETCHERS.get(str(provider or "").strip().lower())
     try:
+        if fetcher is _fetch_codex_account_usage:
+            return _fetch_codex_account_usage(base_url, api_key, allow_recovery=allow_recovery)
         if fetcher:
             return fetcher(base_url, api_key)
         from providers import get_provider_profile

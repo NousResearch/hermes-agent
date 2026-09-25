@@ -709,7 +709,7 @@ hermes usage --provider openai-codex --json --all-credentials  # each stored poo
 |--------|-------------|
 | `--provider NAME` | Provider to query (default: the configured `model.provider`). Supported: `openai-codex`, `anthropic`, `openrouter`. |
 | `--json` | Print one JSON document instead of the human-readable block. |
-| `--all-credentials` | With `--json`, probe every persisted credential-pool row for `openai-codex` or `openrouter`, including exhausted rows. Does not select or rotate the pool. |
+| `--all-credentials` | With `--json`, probe every persisted credential-pool row for `openai-codex` or `openrouter`, including exhausted rows. Does not select, rotate, or refresh the pool. |
 
 Credentials resolve exactly as they do for `/usage` in a session with no live agent (the auth store, then
 the credential pool); the command never adds or refreshes a credential it would not use for chat. Exit code
@@ -743,8 +743,10 @@ has no usage endpoint, or the fetch fails (stdout stays empty).
 normalized usage document is emitted (never the raw provider response). A `null` usage means that
 row has no token or its probe failed; other rows still return. Exit `1` when the pool is empty or
 no probe succeeds, otherwise `0`. `--all-credentials` without `--json`, or on an unsupported
-provider, exits `2`. This reads persisted pool rows only, not singleton/env-only credentials;
-Codex's existing 401-recovery path may refresh the exact rejected pool token (never select another row).
+provider, exits `2`. This reads persisted pool rows only, not singleton/env-only credentials.
+Codex 401 responses return `null` for that row without refreshing or quarantining the credential;
+ordinary single-account usage retains its existing recovery behavior. The command has a 30-second
+overall probe deadline; rows not reached before it expires also return `null`.
 Anthropic is excluded because its current usage fetcher does not bind the supplied pool key
 (see [#20995](https://github.com/NousResearch/hermes-agent/pull/20995)).
 

@@ -10,6 +10,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+
+
+ALL_CREDENTIALS_DEADLINE_S = 30.0
 
 
 def usage_snapshot_document(snapshot) -> dict:
@@ -46,6 +50,7 @@ def cmd_usage(args: argparse.Namespace) -> int:
             print("--all-credentials requires --json and a provider with per-credential usage (openai-codex, openrouter).", file=sys.stderr)
             return 2
         from agent.credential_pool import PooledCredential, read_credential_pool
+        from agent.deadline import run_bounded_sync
 
         # Read persisted rows directly: pool.select() excludes exhausted accounts and load_pool()
         # may seed/prune auth state. This command must probe each stored credential independently.
@@ -54,13 +59,24 @@ def cmd_usage(args: argparse.Namespace) -> int:
             print(f"No pooled credentials for provider '{provider}'.", file=sys.stderr)
             return 1
         credentials = []
+        # One abandoned worker at most: a timed-out probe exhausts the budget,
+        # and the no-recovery path cannot mutate auth state after CLI return.
+        deadline = time.monotonic() + ALL_CREDENTIALS_DEADLINE_S
         for row in rows:
             if not isinstance(row, dict):
                 continue
             entry = PooledCredential.from_dict(provider, row)
-            snapshot = fetch_account_usage(
-                provider, api_key=entry.runtime_api_key, base_url=entry.runtime_base_url,
-            ) if entry.runtime_api_key else None
+            remaining = deadline - time.monotonic()
+            snapshot = None
+            if entry.runtime_api_key and remaining > 0:
+                result = run_bounded_sync(
+                    lambda entry=entry: fetch_account_usage(
+                        provider, api_key=entry.runtime_api_key, base_url=entry.runtime_base_url,
+                        allow_recovery=False,
+                    ),
+                    remaining, label="all-credentials-usage",
+                )
+                snapshot = None if result.timed_out else result.value
             credentials.append({"id": entry.id, "usage": usage_snapshot_document(snapshot) if snapshot else None})
         print(json.dumps({"provider": provider, "credentials": credentials}, indent=2))
         return 0 if any(item["usage"] is not None for item in credentials) else 1

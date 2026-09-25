@@ -3137,6 +3137,17 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
 
 def _rebuild_system_prompt_at_boundary(agent: Any, system_message: str) -> str:
     """Refresh tool schemas and rebuild the system prompt at the commit boundary."""
+    if getattr(agent, "_retain_seeded_system_prompt", False) is True:
+        # Gateway hygiene / gateway /compress run a detached agent with a reduced toolset and no live
+        # surface: its builder output drops the skills index, external provider blocks and tool guidance,
+        # and the commit below would persist that over the live session's snapshot (restored verbatim by
+        # the next fresh agent). Keep the seeded bytes; the live agent's own compaction propagates updates.
+        seeded_system_prompt = agent._cached_system_prompt or ""
+        agent._cached_system_prompt = seeded_system_prompt
+        if seeded_system_prompt:
+            from agent.system_prompt import reconstruct_static_prefix
+            reconstruct_static_prefix(agent, system_message=system_message, log_label="compression seeded-prompt")
+        return seeded_system_prompt
     cached_system_prompt = agent._cached_system_prompt
     agent._invalidate_system_prompt()
 

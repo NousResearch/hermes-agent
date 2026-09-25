@@ -72,6 +72,34 @@ function replacementLineForMobileInput(
   return null;
 }
 
+// Mobile soft keyboards (Gboard, Samsung Keyboard, SwiftKey) do not emit a
+// real Backspace keydown the way a hardware keyboard does. They fire a
+// `beforeinput` event with one of the `delete*` inputTypes on xterm's hidden
+// textarea, and xterm's key handler never translates that into a terminal
+// byte — so on Android the Backspace key visibly does nothing in the
+// dashboard chat. Map the soft-delete inputTypes onto the control bytes the
+// server-side line editor (readline / prompt_toolkit) already understands:
+// DEL for char-backward, ^W for word-backward, ESC-d for word-forward
+// (mirrors the Ctrl+Backspace / Ctrl+Delete shortcuts in ChatPage).
+export function resolveMobileSoftDelete(
+  inputType: string | undefined,
+): string | null {
+  switch (inputType) {
+    case "deleteContentBackward":
+    case "deleteHardTextBackward":
+    case "deleteSoftTextBackward":
+      return DELETE;
+    case "deleteWordBackward":
+      return "\x17";
+    case "deleteContentForward":
+      return "\x1b[3~";
+    case "deleteWordForward":
+      return "\x1bd";
+    default:
+      return null;
+  }
+}
+
 export function shouldTreatInputAsMobileReplacement(
   inputType: string | undefined,
   data: string | null | undefined,
@@ -104,6 +132,12 @@ export function updatePtyInputLine(currentLine: string, data: string): string {
     } else if (ch === DELETE || ch === "\b") {
       next = removeLastChar(next);
     } else if (ch === "\x15") {
+      next = "";
+    } else if (ch === "\x17") {
+      // ^W (delete-word-backward) removes a word whose boundary the flat
+      // tracker cannot model reliably (readline/prompt_toolkit word rules
+      // differ from a regex). Disarm like an escape sequence instead of
+      // keeping a stale length a later replacement would size DELETEs to.
       next = "";
     } else if (isPlainText(ch)) {
       next += ch;

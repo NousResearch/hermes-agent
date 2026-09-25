@@ -65,6 +65,9 @@ def _post(text: str, task_id: str = "", event: str = "") -> None:
     headers = {"Content-Type": "application/json", "X-Request-ID": str(uuid.uuid4())}
     sec = _secret()
     if sec:
+        # The gateway verifier (gateway/platforms/webhook.py, `v2_sig`) compares
+        # this header against a BARE lower-case hex digest of "<timestamp>.<body>".
+        # A "sha256=" prefix (GitHub's scheme, not this one) 401s every request.
         sig = hmac.new(sec.encode(), f"{ts}.".encode() + body, hashlib.sha256).hexdigest()
         headers.update({"X-Webhook-Timestamp": ts, "X-Webhook-Signature-V2": sig})
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")

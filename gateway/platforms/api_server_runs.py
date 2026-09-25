@@ -1152,7 +1152,14 @@ async def _handle_run_events(self, request: "web.Request", *, _api_server) -> "w
 
 def _mark_run_event(self, run_id: str, name: str, **fields: Any) -> None:
     """Record a control-plane event on the run status and (best effort) its SSE stream."""
-    self._set_run_status(run_id, "running", last_event=name)
+    # A control event must never resurrect a terminal status: a steer/approval racing
+    # the executor's terminal write would flip a settled run back to "running" and
+    # nothing re-issues the terminal status, so it would stick forever. Non-terminal
+    # statuses (e.g. waiting_for_approval) still resolve to "running" — that is the
+    # documented resume path after approval.responded pops the approval payload.
+    current_status = str(self._run_statuses.get(run_id, {}).get("status") or "")
+    status = current_status if current_status in TERMINAL_STATUSES else "running"
+    self._set_run_status(run_id, status, last_event=name)
     q = self._run_streams.get(run_id)
     if q is not None:
         with suppress(Exception):
@@ -1229,6 +1236,13 @@ async def _handle_steer_run(self, request: "web.Request", *, _api_server) -> "we
     body, err = await self._read_json_body(request)
     if err:
         return err
+    # The body read yields to the event loop, so the executor thread may have settled
+    # the run (terminal status write) between the gate above and here. A late steer
+    # would buffer into an agent nobody will read again, so re-check before accepting.
+    if self._run_statuses.get(run_id, {}).get("status") in TERMINAL_STATUSES:
+        return _json_error(
+            _openai_error, f"Run is not currently accepting steer input: {run_id}",
+            code="run_not_accepting_steer", status=409)
     raw_text = body.get("input") or body.get("message") or body.get("text") or ""
     steer_text = _api_server._normalize_chat_content(raw_text).strip()
     if not steer_text:

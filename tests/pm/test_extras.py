@@ -141,6 +141,21 @@ def test_google_readiness_requires_its_oauth_imports(monkeypatch):
     assert extras.available("google")
 
 
+def test_messaging_readiness_requires_every_bundled_sdk(monkeypatch):
+    """The messaging umbrella bundles telegram + discord + slack-bolt + aiohttp.
+
+    Anchoring it on telegram alone marked the extra "installed" in an env where
+    only telegram was present, so PM never installed the rest of the bundle and
+    WhatsApp document delivery failed with `aiohttp not installed` (the adapter
+    does its own `import aiohttp`).
+    """
+    present = {"telegram"}
+    monkeypatch.setattr(extras, "_importable", lambda name: name in present)
+    assert not extras.available("messaging")
+    present.update({"discord", "slack_bolt", "aiohttp"})
+    assert extras.available("messaging")
+
+
 def test_available_unknown_extra_uses_underscore_guess(monkeypatch):
     monkeypatch.setitem(sys.modules, "some_new_thing", SimpleNamespace())
     assert extras.available("some-new-thing") is True

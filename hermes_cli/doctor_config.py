@@ -278,6 +278,11 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
     ok = []
     for task, block in sorted(routed.items()):
         provider, model, base_url, api_key = (str(block.get(k) or "").strip() or None for k in ("provider", "model", "base_url", "api_key"))
+        if not api_key:
+            key_env = str(block.get("key_env") or "").strip() or str(block.get("api_key_env") or "").strip()
+            if key_env:
+                from hermes_cli.config import get_env_value_prefer_dotenv
+                api_key = (get_env_value_prefer_dotenv(key_env) or "").strip() or None
         try:
             runtime = resolve_runtime_provider(requested=provider, target_model=model, explicit_api_key=api_key, explicit_base_url=base_url)
         except Exception as exc:  # noqa: BLE001 — every resolver error is a finding here

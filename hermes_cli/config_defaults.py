@@ -2174,7 +2174,8 @@ DEFAULT_CONFIG = {
         # Max bytes of inbound image/audio/video the gateway buffers into RAM and caches to disk.
         # Media is read fully into memory first, so unbounded uploads (Discord Nitro: 500 MB) or
         # huge remote URLs can OOM-kill constrained deployments. Enforced in
-        # gateway/platforms/base.py for every adapter. 0 = no cap. Default 128 MiB.
+        # gateway/platforms/base.py for every adapter; also bounds image URLs in agent replies,
+        # which adapters download before uploading. 0 = no cap. Default 128 MiB.
         "max_inbound_media_bytes": 134217728,
         # Let adapters read HTTP_PROXY/HTTPS_PROXY/NO_PROXY/SSL_CERT_FILE from the environment and
         # auto-detect generic/macOS system proxies. False when the gateway inherits a proxy it must

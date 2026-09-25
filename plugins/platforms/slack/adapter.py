@@ -3017,6 +3017,7 @@ class SlackAdapter(BasePlatformAdapter):
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """``files_upload_v2`` entries for one batch: ``file://`` by path, remote via the SSRF-safe
         client (unsafe/failed skipped). Returns ``(file_uploads, alt_texts)``."""
+        from gateway.platforms.base import _read_httpx_body_with_limit
         file_uploads: List[Dict[str, Any]] = []
         initial_comment_parts: List[str] = []
         async with client_factory(
@@ -3037,12 +3038,13 @@ class SlackAdapter(BasePlatformAdapter):
                     logger.warning("[Slack] Blocked unsafe image URL in batch")
                     continue
                 try:
-                    response = await http_client.get(image_url)
-                    response.raise_for_status()
-                    ct = response.headers.get("content-type", "")
+                    async with http_client.stream("GET", image_url) as response:
+                        response.raise_for_status()
+                        ct = response.headers.get("content-type", "")
+                        content = await _read_httpx_body_with_limit(response, media_type="image")
                     ext = next((e for k, e in _IMAGE_CT_EXTS if k in ct), "png")
                     file_uploads.append({
-                        "content": response.content, "filename": f"image_{len(file_uploads)}.{ext}"
+                        "content": content, "filename": f"image_{len(file_uploads)}.{ext}"
                     })
                 except Exception as dl_err:
                     logger.warning(
@@ -3478,16 +3480,18 @@ class SlackAdapter(BasePlatformAdapter):
                 if redirect_url and not is_safe_url(redirect_url):
                     raise ValueError("Blocked redirect to private/internal address")
 
+            from gateway.platforms.base import _read_httpx_body_with_limit
             # Download the image first
             async with create_ssrf_safe_async_client(
                 timeout=30.0, follow_redirects=True,
                 event_hooks={"response": [_ssrf_redirect_guard]}) as client:
-                response = await client.get(image_url)
-                response.raise_for_status()
+                async with client.stream("GET", image_url) as response:
+                    response.raise_for_status()
+                    content = await _read_httpx_body_with_limit(response, media_type="image")
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             chat_id = await self._dm_target(chat_id, metadata)
             return await self._upload_with_retry(
-                chat_id, None, "image.png", caption, thread_ts, metadata, content=response.content,
+                chat_id, None, "image.png", caption, thread_ts, metadata, content=content,
                 attempts=1)
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning(

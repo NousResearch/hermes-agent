@@ -344,10 +344,13 @@ async def _upload_ciphertext(session: "aiohttp.ClientSession", *, ciphertext: by
 
 
 async def _download_bytes(session: "aiohttp.ClientSession", *, url: str, timeout_seconds: float = 60.0) -> bytes:
+    from gateway.platforms.base import _read_httpx_body_with_limit
+
     async def _do() -> bytes:
         async with session.get(url) as response:
             response.raise_for_status()
-            return await response.read()
+            return await _read_httpx_body_with_limit(
+                response, media_type="media", body=response.content.iter_chunked(65536))
     return await asyncio.wait_for(_do(), timeout=timeout_seconds)
 
 

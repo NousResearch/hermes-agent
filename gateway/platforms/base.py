@@ -554,9 +554,10 @@ def validate_inbound_media_size(
         raise ValueError(f"Inbound {media_type} payload is too large ({size} bytes > {limit} bytes)")
 
 
-async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
+async def _read_httpx_body_with_limit(response, *, media_type: str, body=None) -> bytes:
     """Read an httpx streaming body under the media cap: reject an oversized ``Content-Length``
-    early, then re-check the running total per chunk (a lying/absent header can't smuggle more)."""
+    early, then re-check the running total per chunk (a lying/absent header can't smuggle more).
+    aiohttp callers pass ``body=resp.content.iter_chunked(n)`` (same header lookup)."""
     max_bytes = get_inbound_media_max_bytes()
     content_length = response.headers.get("content-length")
     if content_length:
@@ -568,7 +569,7 @@ async def _read_httpx_body_with_limit(response, *, media_type: str) -> bytes:
             validate_inbound_media_size(declared_size, media_type=media_type, max_bytes=max_bytes)
     chunks: list[bytes] = []
     total = 0
-    async for chunk in response.aiter_bytes():
+    async for chunk in (response.aiter_bytes() if body is None else body):
         total += len(chunk)
         validate_inbound_media_size(total, media_type=media_type, max_bytes=max_bytes)
         chunks.append(chunk)

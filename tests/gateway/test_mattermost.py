@@ -410,7 +410,12 @@ class TestMattermostFileUpload:
         # Mock the download (GET)
         mock_dl_resp = AsyncMock()
         mock_dl_resp.status = 200
-        mock_dl_resp.read = AsyncMock(return_value=b"\x89PNG\x00fake-image-data")
+        mock_dl_resp.headers = {}
+
+        async def _body(_size):
+            yield b"\x89PNG\x00fake-image-data"
+
+        mock_dl_resp.content = MagicMock(iter_chunked=_body)
         mock_dl_resp.content_type = "image/png"
         mock_dl_resp.__aenter__ = AsyncMock(return_value=mock_dl_resp)
         mock_dl_resp.__aexit__ = AsyncMock(return_value=False)

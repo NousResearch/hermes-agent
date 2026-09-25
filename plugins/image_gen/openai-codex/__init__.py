@@ -33,7 +33,6 @@ from plugins.image_gen._common import (
 
 logger = logging.getLogger(__name__)
 
-_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _MAX_ERROR_BODY_CHARS = 500
 
 _MAX_REFERENCE_IMAGES = 16
@@ -43,7 +42,7 @@ _ACCEPTED_INPUT_MIME = frozenset({"image/png", "image/jpeg", "image/gif", "image
 
 _NO_AUTH = (
     "No Codex/ChatGPT OAuth credentials available. Run "
-    "`hermes auth codex` (or `hermes setup` → Codex) to sign in.")
+    "`hermes auth add openai-codex` (or `hermes setup` → Codex) to sign in.")
 
 
 def _summarize_error_body(body: str) -> str:
@@ -65,16 +64,21 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
         GPT_IMAGE_2_TIERS, DEFAULT_MODEL, env_var="OPENAI_IMAGE_MODEL", config_key="openai-codex")
 
 
-def _read_codex_access_token() -> Optional[str]:
-    """Usable Codex OAuth token or None (``agent.auxiliary_client`` owns expiry/pool/JWT)."""
+def _read_codex_credential() -> Tuple[Optional[str], Optional[str]]:
+    """``(token, base_url)`` from one resolution (``agent.auxiliary_client`` owns expiry/pool/JWT):
+    the image request goes to the host the token's credential routes to (pool row /
+    ``model.base_url`` / profile override), never a default it does not belong to (#121486).
+    ``(None, None)`` without a usable token."""
     try:
-        from agent.auxiliary_client import _read_codex_access_token as _reader
+        from agent.auxiliary_client import _resolve_codex_credential_and_base
 
-        token = _reader()
-        return token.strip() if isinstance(token, str) and token.strip() else None
+        token, base_url = _resolve_codex_credential_and_base()
+        if isinstance(token, str) and token.strip():
+            return token.strip(), base_url
+        return None, None
     except Exception as exc:
-        logger.debug("Could not resolve Codex access token: %s", exc)
-        return None
+        logger.debug("Could not resolve Codex credential: %s", exc)
+        return None, None
 
 
 def _httpx_available() -> bool:
@@ -117,9 +121,12 @@ def _data_url_to_input_image_url(value: str) -> str:
 
 def _remote_image_to_data_url(value: str) -> str:
     """The edit endpoint takes inline data URLs only (as the official client sends), so fetch."""
-    import httpx
+    from tools.url_safety import create_ssrf_safe_client, is_safe_url
 
-    response = httpx.get(value, timeout=60.0, follow_redirects=True)
+    if not is_safe_url(value):
+        raise ValueError(f"Image URL failed the SSRF safety check: {value}")
+    with create_ssrf_safe_client(timeout=60.0, follow_redirects=True) as client:
+        response = client.get(value)
     response.raise_for_status()
     return _encode_input_image(
         response.content,
@@ -183,14 +190,18 @@ def _build_image_request(
 
 
 def _post_image_request(
-    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None
+    token: str, *, prompt: str, size: str, quality: str, input_images: Optional[List[Dict[str, str]]] = None,
+    base_url: str,
 ) -> Dict[str, Any]:
     """POST to the native Codex images endpoint; return the decoded JSON body plus
-    ``imagegen_request_id`` (backend correlation id, for support tickets)."""
+    ``imagegen_request_id`` (backend correlation id, for support tickets).
+
+    ``base_url`` must come from the same resolution as ``token`` (``_read_codex_credential``)."""
     import httpx
     from agent.codex_headers import codex_cloudflare_headers
 
-    headers = codex_cloudflare_headers(token)
+    base_url = base_url.strip().rstrip("/")
+    headers = codex_cloudflare_headers(token, base_url=base_url)
     headers.update({
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
@@ -199,7 +210,7 @@ def _post_image_request(
     path, body = _build_image_request(prompt=prompt, size=size, quality=quality, input_images=input_images)
     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=60.0, pool=30.0)
     with httpx.Client(timeout=timeout, headers=headers) as http:
-        response = http.post(f"{_CODEX_BASE_URL}/{path}", json=body)
+        response = http.post(f"{base_url}/{path}", json=body)
     if response.status_code >= 400:
         raise RuntimeError(
             f"Codex images API returned HTTP {response.status_code}: "
@@ -231,7 +242,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
     price = "varies"
 
     def is_available(self) -> bool:
-        return bool(_read_codex_access_token()) and _httpx_available()
+        return bool(_read_codex_credential()[0]) and _httpx_available()
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
@@ -239,8 +250,11 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
             "badge": "free",
             "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required; supports text and image inputs",
             "env_vars": [],
+            # Empty env_vars means the picker writes the selection without a credential prompt; the shared
+            # Codex OAuth bootstrap hook (hermes_cli/tools_config_post_setup.py) starts the sign-in (#102144).
+            "post_setup": "openai_codex",
             "post_setup_hint": (
-                "Sign in with `hermes auth codex` (or `hermes setup` → Codex) "
+                "Sign in with `hermes auth add openai-codex` (or `hermes setup` → Codex) "
                 "if you haven't already. No API key needed."),
         }
 
@@ -256,7 +270,7 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         if not prompt:
             return prompt_required_error("openai-codex", aspect)
-        token = _read_codex_access_token()
+        token, base_url = _read_codex_credential()
         if not token:
             return error_factory("openai-codex", aspect)(_NO_AUTH, "auth_required")
         if not _httpx_available():
@@ -273,7 +287,8 @@ class OpenAICodexImageGenProvider(StaticImageGenProvider):
 
         try:
             payload = _post_image_request(
-                token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None)
+                token, prompt=prompt, size=size, quality=meta["quality"], input_images=input_images or None,
+                base_url=base_url)
         except Exception as exc:
             logger.debug("Codex image generation failed", exc_info=True)
             return fail(f"OpenAI image generation via Codex auth failed: {exc}", "api_error")

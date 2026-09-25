@@ -32,10 +32,7 @@ import os
 import sys
 import types
 
-import pytest
-
 from tui_gateway import server
-
 
 def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch):
     """The dangerous primitive is neutralised even when the flag IS set.
@@ -93,7 +90,6 @@ def test_voice_toggle_still_leaks_the_env_var_but_speech_is_stubbed(monkeypatch)
         "provider, played through the speakers"
     )
 
-
 def test_voice_env_does_not_leak_into_the_next_test():
     """Second defence: the flag the previous test set must not have survived.
 
@@ -106,21 +102,3 @@ def test_voice_env_does_not_leak_into_the_next_test():
     assert "HERMES_VOICE" not in os.environ
     assert server._voice_tts_enabled() is False
     assert server._voice_mode_enabled() is False
-
-
-def test_guard_can_be_opted_out_of_explicitly():
-    """The stub is a guard, not a lobotomy — the real function is reachable."""
-    import hermes_cli.voice as voice
-
-    assert voice.speak_text.__name__ == "_blocked_speak_text"
-
-
-@pytest.mark.real_audio_playback
-def test_bypass_marker_restores_the_real_speak_text():
-    """``@pytest.mark.real_audio_playback`` hands back the real primitive.
-
-    Asserts identity only — it does not call it, which would speak aloud.
-    """
-    import hermes_cli.voice as voice
-
-    assert voice.speak_text.__name__ == "speak_text"

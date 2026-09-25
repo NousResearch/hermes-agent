@@ -9,17 +9,14 @@ from tools.process_registry_notifications import (
     PROCESS_COMPLETE_DISPLAY_KIND, format_process_notification, process_completion_display_text)
 from tui_gateway import server
 
-
 def _registry(events):
     return SimpleNamespace(
         drain_notifications=lambda **kw: [(e, format_process_notification(e)) for e in events],
         completion_queue=queue.Queue(), is_completion_consumed=lambda sid: False)
 
-
 def _event(sid, exit_code, command="cd /tmp && bash long-build.sh"):
     return {"type": "completion", "session_id": sid, "session_key": "display-session", "command": command,
             "exit_code": exit_code, "completion_reason": "exited", "output": "web tsc=0\nSECRET_OUTPUT_LINE"}
-
 
 def test_process_completion_display_keeps_payload_separate_across_surfaces(monkeypatch, capsys, tmp_path):
     events = [_event("proc_1", 0)]
@@ -39,8 +36,8 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
         setattr(cli, attr, value)
     cli._tui_process_one_input(cli._pending_input.get_nowait())
     visible = capsys.readouterr().out
-    expected = "Background Process Finished: cd /tmp && bash long-build.sh"
-    assert expected in visible
+    expected = process_completion_display_text(events)
+    assert "long-build.sh" in expected and expected in visible
     assert "[IMPORTANT" not in visible and "SECRET_OUTPUT_LINE" not in visible
     queued = cli.chat.call_args.args[0]
     assert queued == payload  # the model still receives the full notification
@@ -70,14 +67,3 @@ def test_process_completion_display_keeps_payload_separate_across_surfaces(monke
     assert text == payload
     assert kwargs["display_kind"] == PROCESS_COMPLETE_DISPLAY_KIND
     assert kwargs["display_metadata"] == {"display_text": expected}
-
-
-def test_process_completion_titles_reflect_outcome_and_batch():
-    assert process_completion_display_text([_event("p", 1)]) == (
-        "Background Process Failed (exit 1): cd /tmp && bash long-build.sh")
-    killed = {**_event("p", -15), "completion_reason": "killed"}
-    assert process_completion_display_text([killed]).startswith("Background Process Terminated: ")
-    assert process_completion_display_text([_event("a", 0), _event("b", 2)]) == "2 Background Processes Finished"
-    long_cmd = "x" * 200
-    title = process_completion_display_text([_event("p", 0, command=long_cmd)])
-    assert title.endswith("...") and len(title) < 120

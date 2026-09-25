@@ -3,7 +3,8 @@
 ~/.hermes/skills/, tracking each synced skill's origin hash in .bundled_manifest (v2 "name:hash"
 lines; v1 plain names auto-migrate). NEW skills are copied and recorded; EXISTING skills update
 only when bundled changed AND the user copy still matches the origin hash (else user-customized
--> SKIP); user-DELETED skills are not re-added; upstream-REMOVED ones leave the manifest."""
+-> SKIP); user-DELETED skills are not re-added; upstream-REMOVED ones leave the manifest once no active or
+archived copy remains (the entry is that copy's only built-in provenance record)."""
 
 import hashlib
 import logging
@@ -24,7 +25,7 @@ for _stream in (sys.stdout, sys.stderr):
             _stream.reconfigure(encoding="utf-8", errors="replace")
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import ESSENTIAL_SKILLS, is_excluded_skill_path
-from tools.skill_usage import _read_skill_name, read_suppressed_names
+from tools.skill_usage import _read_skill_name
 from tools.skills_sync_optional import (
     _backfill_optional_provenance, _ignore_runtime_cache, _is_runtime_cache, _read_hub_install_paths,
 )
@@ -112,21 +113,53 @@ def _build_external_skill_index() -> Set[str]:
 def _read_manifest() -> Dict[str, str]:
     """``{skill_name: origin_hash}``; v1 plain-name lines get an empty hash (migrates next sync)."""
     try:
-        lines = _manifest_file().read_text(encoding="utf-8").splitlines() if _manifest_file().exists() else []
-    except OSError:
+        result = {}
+        for line in _manifest_file().read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            if ":" in line:
+                # v2 format: name:hash
+                name, _, hash_val = line.partition(":")
+                result[name.strip()] = hash_val.strip()
+            else:
+                # v1 format: plain name — empty hash triggers migration
+                result[line] = ""
+        return result
+    except (OSError, IOError):
         return {}
-    pairs = (line.partition(":") for line in map(str.strip, lines) if line)
-    return {name.strip(): hash_val.strip() for name, _, hash_val in pairs}
 
 
 def _read_suppressed_names() -> set:
-    """Built-in skills the curator pruned — must NOT be re-seeded (tests patch this name)."""
-    return read_suppressed_names()
+    """Built-in skills the curator pruned — must NOT be re-seeded on sync.
+
+    Delegates to ``tools.skill_usage`` (single source of truth) and falls back
+    to reading ``~/.hermes/skills/.curator_suppressed`` directly if that import
+    is unavailable in a packaged/update context.
+    """
+    try:
+        from tools.skill_usage import read_suppressed_names
+
+        return read_suppressed_names()
+    except Exception:
+        path = _skills_dir() / ".curator_suppressed"
+        if not path.exists():
+            return set()
+        names = set()
+        try:
+            for line in path.read_text(encoding="utf-8-sig").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    names.add(line)
+        except OSError:
+            pass
+        return names
 
 
 def _write_manifest(entries: Dict[str, str]):
     """Atomic v2 write, preserving an existing file's mode/owner (not mkstemp's 0600)."""
-    _manifest_file().parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(_manifest_file().parent)
     try:
         data = "".join(f"{n}:{h}\n" for n, h in sorted(entries.items()))
         atomic_write_text(_manifest_file(), data, tmp_prefix=".bundled_manifest_", preserve_mode=True)
@@ -398,9 +431,17 @@ def sync_skills(quiet: bool = False) -> dict:
             _update_existing_skill(st, skill_name, skill_src, dest, bundled_hash)
         else:
             st.skipped += 1  # in manifest but not on disk — user deleted it
-    # Clean manifest entries for skills removed upstream. Skipped when opted out: bundled_skills
+    # Clean manifest entries for skills removed upstream once no copy is left. A dropped built-in still
+    # on disk (active or archived) keeps its entry: it is the only provenance record, and without it the
+    # copy reads as agent-authored ("Learned", editable) (#95415). Skipped when opted out: bundled_skills
     # is only the essential set there, so cleaning would drop tracking for everything else.
-    cleaned = [] if essential_only else sorted(set(st.manifest) - {name for name, _ in bundled_skills})
+    removed = [] if essential_only else sorted(set(st.manifest) - {name for name, _ in bundled_skills})
+    present = set()
+    if removed:  # curator archive is flat: directory name == skill name
+        archive = _skills_dir() / ".archive"
+        present = {_read_skill_name(md, md.parent.name) for md in _iter_active_skill_mds()} | (
+            {p.name for p in archive.iterdir() if p.is_dir()} if archive.is_dir() else set())
+    cleaned = [name for name in removed if name not in present]
     for name in cleaned:
         del st.manifest[name]
     _seed_category_descriptions(

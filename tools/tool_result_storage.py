@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import shlex
+import tempfile
 import threading
 import time
 
@@ -18,7 +19,7 @@ from tools.budget_config import DEFAULT_PREVIEW_SIZE_CHARS, BudgetConfig, DEFAUL
 logger = logging.getLogger(__name__)
 PERSISTED_OUTPUT_TAG = "<persisted-output>"
 PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
-STORAGE_DIR = "/tmp/hermes-results"
+STORAGE_DIR = os.path.join(tempfile.gettempdir(), "hermes-results")
 SPILLOVER_SUBDIR = "cache/spillover"
 SPILLOVER_MAX_AGE_HOURS = 24
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
@@ -180,9 +181,7 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
     The write is round-trip verified with ``wc -c`` (one extra exec RTT per oversized result):
     a zero exit from ``cat`` does not prove the bytes landed (quota/ENOSPC races, API-body
     truncation on payload backends). A measured mismatch removes the archive and fails closed;
-    an unprobeable backend (no ``wc``, exec error, unparseable output) stays best-effort success.
-    Heredoc-mode backends append exactly one trailing newline by construction
-    (``BaseEnvironment._embed_stdin_heredoc``), so one extra byte is accepted there."""
+    an unprobeable backend (no ``wc``, exec error, unparseable output) stays best-effort success."""
     storage_dir = os.path.dirname(remote_path)
     cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
     if env.execute(cmd, timeout=30, stdin_data=content).get("returncode", 1) != 0:
@@ -201,10 +200,6 @@ def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
         return True
     persisted_size = int(raw[-1])
     if persisted_size == expected:
-        return True
-    # Only heredoc mode may be +1; the payload backend (managed_modal) delivers stdin verbatim, so
-    # it is expected byte-exact and any drift there is a real loss.
-    if persisted_size == expected + 1 and getattr(env, "_stdin_mode", None) == "heredoc":
         return True
     logger.warning("Sandbox spill for %s is not lossless (%d bytes in sandbox, expected %d) — discarding archive",
                    remote_path, persisted_size, expected)

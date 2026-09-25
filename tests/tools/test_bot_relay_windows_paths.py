@@ -2,15 +2,12 @@ r"""Windows-path viability and venv CLI resolution for bot relay (#93590).
 
 Two failures on a Windows desktop install talking to a remote gateway:
 
-1. ``waiter_command`` embeds the reply path into generated ``python -c``
-   source with ``!r``. repr escapes each backslash, but the Windows
-   execution layer the waiter runs under folds ``\\`` back to ``\`` —
-   ``\\U`` in ``C:\\Users\\...`` then parses as a unicode escape and
-   SyntaxErrors the whole script. The raw-string prefix keeps the folded
-   single backslash a literal; POSIX paths contain no backslashes, so it
-   is a no-op there, and ``\\'`` inside a raw literal still cannot
-   terminate the string, so the injection defense from #93091's
-   python -c hardening is unchanged.
+1. ``waiter_command`` used to embed the reply path into generated ``python -c``
+   source, where the Windows execution layer's backslash folding turned
+   ``C:\\Users`` into a unicode escape and SyntaxErrored the script. The waiter
+   is now a runner entrypoint (``bot_mode_dm.py --wait-reply``) that takes the
+   path as argv, rewritten to forward slashes the way the delivery runner's
+   argv is — the tracked local backend runs commands through Git Bash there.
 
 2. ``local_delivery_command`` hardcoded ``"hermes"``, relying on PATH —
    which service contexts (systemd units, desktop launchers, non-login
@@ -22,72 +19,31 @@ Two failures on a Windows desktop install talking to a remote gateway:
    the per-profile lock.
 """
 
-import ast
 import shlex
 from pathlib import Path
 
+import pytest
+
 import tools.bot_mode_dm as bot_mode_dm
 import tools.bot_relay as bot_relay
+import pytest
 
 
 ENV = {"id": "d" * 32, "target_handle": "researcher", "target_connection": "ssh-vps"}
 
 
-def _waiter_code(root, env=None) -> str:
-    cmd = bot_relay.waiter_command(root, env or ENV)
-    parts = shlex.split(cmd)
-    return parts[parts.index("-c") + 1]
+@pytest.mark.platforms("windows")
+def test_waiter_argv_uses_forward_slashes_on_windows():
+    """On native Windows the reply path rides as a forward-slash argv element, like the delivery
+    runner's paths: Git Bash runs those, and parses a backslash path as a command name."""
+    parts = shlex.split(bot_relay.waiter_command("C:\\Users\\joshu\\.hermes", ENV))
+
+    assert "-c" not in parts and "--wait-reply" in parts
+    assert parts[parts.index("--wait-reply") + 1] == f"C:/Users/joshu/.hermes/bot_relay/replies/{ENV['id']}.json"
+    assert not any("\\" in part for part in parts)
 
 
-def test_waiter_windows_path_compiles_after_backslash_folding():
-    """A Windows reply path must survive the execution layer folding the
-    repr-escaped double backslash back to a single one — the exact shape
-    that SyntaxErrored with ``\\U`` on #93590's reporter setup."""
-    code = _waiter_code("C:\\Users\\joshu\\.hermes")
-    assert "C:" in code  # sanity: the Windows path made it into the payload
-    folded = code.replace("\\\\", "\\")
-    # Raw literals: `p = r'C:\Users\joshu\...'` — no unicode-escape crash.
-    compile(folded, "<waiter>", "exec")
-
-
-def test_waiter_posix_path_and_label_values_roundtrip():
-    """On POSIX (backslash-free paths) the raw prefix changes nothing."""
-    root = Path("/tmp/hermes-home")
-    code = _waiter_code(root)
-    assigns = {
-        t.targets[0].id: t.value
-        for t in ast.parse(code).body
-        if isinstance(t, ast.Assign) and isinstance(t.targets[0], ast.Name)
-    }
-    expected = str(root / "bot_relay" / "replies" / f"{ENV['id']}.json")
-    assert assigns["p"].value == expected
-    assert assigns["label"].value == "@researcher on ssh-vps"
-    # The literals are raw-prefixed in the generated source.
-    assert "\np = r'" in code
-    assert "\nlabel = r'" in code
-
-
-def test_waiter_raw_prefix_keeps_injection_defense():
-    """Hostile roster fields must stay data under the raw prefix too."""
-    inj = {
-        "id": "e" * 32,
-        "target_handle": "researcher",
-        "target_connection": "x'); __import__('sys').exit(2); print('x",
-    }
-    code = _waiter_code(Path("/tmp/hermes-home"), inj)
-    compile(code, "<waiter>", "exec")
-    calls = [
-        n.func.id
-        for n in ast.walk(ast.parse(code))
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-    ]
-    # The generated waiter only calls str/print/compile-free builtins by
-    # name; the payload's __import__ must remain a string literal, not a
-    # live call — parse it back and confirm it stayed data.
-    assert "__import__" not in calls
-    assert "x'); __import__('sys').exit(2); print('x" in code
-
-
+@pytest.mark.platforms("linux")
 def test_local_delivery_resolves_sibling_hermes(tmp_path, monkeypatch):
     bin_dir = tmp_path / "venv" / "bin"
     bin_dir.mkdir(parents=True)

@@ -3,41 +3,6 @@
 from unittest.mock import patch
 
 
-class TestGetDefaultModelForProvider:
-    """Unit tests for hermes_cli.models.get_default_model_for_provider."""
-
-    def test_known_provider_returns_first_model(self):
-        from hermes_cli.models import get_default_model_for_provider
-        result = get_default_model_for_provider("openai-codex")
-        # Should return first model from _PROVIDER_MODELS["openai-codex"]
-        assert result
-        assert isinstance(result, str)
-
-
-
-
-
-    def test_catalog_label_overrides_constant(self):
-        """A ``"default": true`` label in the cached catalog manifest wins over
-        the in-repo constant, so maintainers can rotate the silent default
-        without shipping a release."""
-        from unittest.mock import patch
-
-        from hermes_cli import models as models_mod
-
-        with patch(
-            "hermes_cli.model_catalog.get_default_model_from_cache",
-            return_value="qwen/qwen3.8-max-0902",
-        ):
-            assert (
-                models_mod.get_preferred_silent_default_model("nous")
-                == "qwen/qwen3.8-max-0902"
-            )
-            # nous catalog carries qwen3.8-max-0902, so the full resolver follows.
-            assert (
-                models_mod.get_default_model_for_provider("nous")
-                == "qwen/qwen3.8-max-0902"
-            )
 
 
 

@@ -16,17 +16,17 @@ const bootstrapBackend = {
   platform: 'linux'
 }
 
-function startupOptions(overrides: Record<string, unknown> = {}) {
-  return {
+function startupOptions<T extends Record<string, unknown> = Record<string, never>>(overrides: T = {} as T) {
+  const base = {
     assertCurrentAttempt: () => {},
     connectRemote: vi.fn(async remote => ({ baseUrl: remote.baseUrl, mode: 'remote' as const })),
     ensureLocalRuntime: vi.fn(async backend => ({ ...backend, command: 'hermes' })),
     prepareLocalBackend: vi.fn(async () => bootstrapBackend),
     resolveRemote: vi.fn(async () => null),
     waitForDecision: vi.fn(async () => 'continue-local' as const),
-    waitForLocalStart: vi.fn(async () => {}),
-    ...overrides
+    waitForLocalStart: vi.fn(async () => {})
   }
+  return { ...base, ...overrides } as typeof base & T
 }
 
 test('primary remote descriptor preserves a resolved registry connection id', () => {
@@ -48,6 +48,30 @@ test('primary remote descriptor preserves a resolved registry connection id', ()
   assert.equal(connection.mode, 'remote')
   assert.deepEqual(connection.logs, ['ready'])
   assert.equal(connection.isFullscreen, false)
+})
+
+test('primary remote descriptor preserves the gateway extra headers for REST calls', () => {
+  // Chat and the Test button carry the headers via the exact-URL WS store, but
+  // fetchJsonForBackend reads descriptor.headers — dropping them here made every
+  // Settings/session-history call hit an access proxy unauthenticated (#112072).
+  const headers = { 'CF-Access-Client-Id': 'client-id', 'CF-Access-Client-Secret': 'client-secret' }
+
+  const connection = createPrimaryRemoteConnection(
+    {
+      authMode: 'token',
+      baseUrl: 'https://gateway.example.com',
+      connectionId: 'gateway',
+      headers,
+      remoteKind: 'url',
+      source: 'settings',
+      token: 'secret',
+      wsUrl: 'wss://gateway.example.com/api/ws?token=secret'
+    },
+    [],
+    {}
+  )
+
+  assert.deepEqual(connection.headers, headers)
 })
 
 test('primary remote descriptor preserves the effective SSH dialing identity', () => {
@@ -140,6 +164,43 @@ test('remote apply fails clearly when no saved remote can be resolved', async ()
   await assert.rejects(pending, /without a saved remote backend/)
   assert.equal(options.connectRemote.mock.calls.length, 0)
   assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+})
+
+test('after update clearance, a registry primary is selected before any local spawn', async () => {
+  const sshPrimary = { baseUrl: 'http://127.0.0.1:54414', connectionId: '100-106-105-2' }
+  let updateCleared = false
+
+  const options = startupOptions({
+    resolveRemote: vi.fn(async () => null),
+    selectRegistryPrimary: vi.fn(async () => {
+      assert.equal(updateCleared, true)
+
+      return sshPrimary
+    }),
+    waitForLocalStart: vi.fn(async () => {
+      updateCleared = true
+    }),
+    attachHostBackend: vi.fn(async () => ({ baseUrl: 'http://127.0.0.1:49900', mode: 'local' as const }))
+  })
+
+  assert.deepEqual(await runPrimaryBackendStartup(options), {
+    kind: 'remote',
+    connection: { baseUrl: sshPrimary.baseUrl, mode: 'remote' }
+  })
+  assert.equal(options.prepareLocalBackend.mock.calls.length, 0)
+  assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+  assert.equal(options.attachHostBackend.mock.calls.length, 0)
+})
+
+test('a null post-update primary still spawns local exactly once', async () => {
+  const options = startupOptions({
+    resolveRemote: vi.fn(async () => null),
+    selectRegistryPrimary: vi.fn(async () => null)
+  })
+
+  assert.equal((await runPrimaryBackendStartup(options)).kind, 'local')
+  assert.equal(options.selectRegistryPrimary.mock.calls.length, 1)
+  assert.equal(options.ensureLocalRuntime.mock.calls.length, 1)
 })
 
 test('continue local waits for update exclusion and ensures the prepared runtime exactly once', async () => {

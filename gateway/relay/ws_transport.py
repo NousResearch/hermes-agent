@@ -326,7 +326,7 @@ class WebSocketRelayTransport:
         if not WEBSOCKETS_AVAILABLE:
             raise RuntimeError(
                 "WebSocketRelayTransport requires the 'websockets' package "
-                "(install the messaging extra)."
+                "(a hermes-agent core dependency)."
             )
         self._url = _ws_dial_url(url)
         self._platform = platform
@@ -425,7 +425,10 @@ class WebSocketRelayTransport:
         # WAN-friendly keepalive: the library default (20s pong deadline) produces
         # spurious `1011 keepalive ping timeout` closes under transient latency /
         # event-loop stalls; 60s tolerates them while detecting a dead link ~90s.
-        kwargs: Dict[str, Any] = {"ping_interval": 30, "ping_timeout": 60}
+        # happy_eyeballs_delay reaches loop.create_connection (default None = serial
+        # walk over AAAA then A): race IPv6/IPv4 so a blackholed IPv6 route costs
+        # 250 ms, not the connect timeout (#114265).
+        kwargs: Dict[str, Any] = {"ping_interval": 30, "ping_timeout": 60, "happy_eyeballs_delay": 0.25}
         headers = self._upgrade_headers()
         if headers:
             kwargs["additional_headers"] = headers

@@ -72,6 +72,17 @@ class TestDetectToolFailureTerminal:
         assert "hermes setup terminal" in suffix
         assert "Terminal backend degraded:" not in suffix
 
+    def test_nonzero_dict_result_is_a_failure(self):
+        """An already-parsed terminal result (a plugin tool_execution middleware may hand back the
+        dict instead of the JSON string) must classify like its JSON form (#111815)."""
+        is_failure, suffix = _detect_tool_failure("terminal", {"exit_code": 2})
+        assert is_failure is True
+        assert suffix == " [exit 2]"
+
+    def test_multimodal_envelope_dict_is_still_a_success(self):
+        envelope = {"_multimodal": True, "content": [{"type": "text", "text": "screenshot taken"}]}
+        assert _detect_tool_failure("browser_exec", envelope) == (False, "")
+
     def test_degraded_backend_without_hint_shows_reason_alone(self):
         result = json.dumps({"output": "", "exit_code": -1, "status": "degraded",
                              "reason": "SSH connection to bob@host timed out", "retry_hint": "",
@@ -138,4 +149,3 @@ class TestGetCuteToolMessageFailureSuffix:
         ok = json.dumps({"success": True, "data": "hi"})
         line = get_cute_tool_message("web_search", {"query": "hi"}, 0.2, result=ok)
         assert "[" not in line.split("0.2s", 1)[1]
-

@@ -64,6 +64,45 @@ describe('confirm()', () => {
     expect(read()).toBe(false)
   })
 
+  it('keeps async actions open through progress, inline failure, retry and completion', async () => {
+    render(<ConfirmHost />)
+    let fail!: (error: Error) => void
+    let finish!: () => void
+    let attempts = 0
+    let answer: boolean | undefined
+
+    const pending = confirm({
+      title: 'Install “pdf”?',
+      confirmLabel: 'Install',
+      busyLabel: 'Installing…',
+      doneLabel: 'Installed',
+      details: [{ label: 'Source', value: 'official/productivity/pdf' }],
+      onConfirm: () =>
+        new Promise<void>((resolve, reject) => {
+          attempts += 1
+          finish = resolve
+          fail = reject
+        })
+    }).then(value => {
+      answer = value
+    })
+
+    expect(await screen.findByText('official/productivity/pdf')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    expect(await screen.findByRole('button', { name: 'Installing…' })).toBeTruthy()
+    expect(answer).toBeUndefined()
+    expect(await confirm({ title: 'Must not interrupt' })).toBe(false)
+    await act(async () => fail(new Error('Network unavailable')))
+    expect(await screen.findByText('Network unavailable')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    await act(async () => finish())
+    expect(await screen.findByRole('button', { name: 'Installed' })).toBeTruthy()
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await pending
+    expect(answer).toBe(true)
+    expect(attempts).toBe(2)
+  })
+
   it('supersedes an open request, answering the one it replaces no', async () => {
     render(<ConfirmHost />)
 

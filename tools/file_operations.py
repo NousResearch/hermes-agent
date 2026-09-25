@@ -22,7 +22,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict
 from pathlib import Path
 
-from tools.binary_extensions import BINARY_EXTENSIONS
+from tools.binary_extensions import has_binary_extension
 from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
@@ -149,6 +149,7 @@ MISSING_SENTINEL = "__hermes_missing__"
 
 _READ_SENTINEL_PREFIX = "__HERMES_RF_"
 _WRITE_SENTINEL_PREFIX = "__HERMES_WF_"
+_BYTES_SENTINEL_PREFIX = "__HERMES_RB_"
 
 
 def _new_sentinel(prefix: str) -> str:
@@ -201,11 +202,25 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
         result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         exit_code = result.get("returncode", 0)
+        output = result.get("output", "")
+        # The command wrapper's own ``builtin cd -- <cwd> || exit 126`` failed: the
+        # working directory does not exist on this backend (typically ``terminal.cwd``
+        # is a host path and the backend is a container). Name that, or the raw
+        # ``cd:`` line reads like a sandbox/mount fault at the requested path.
+        cwd_error = ""
+        if exit_code == 126 and "cd: " in output:
+            from tools.terminal_tool_config import _is_container_backend
+            env_type = getattr(self.env, "env_type", None)
+            hint = ("; for container backends use a path inside the container, e.g. /workspace"
+                    if env_type and _is_container_backend(env_type) else "")
+            cwd_error = output = (
+                f"working directory {effective_cwd!r} does not exist on the active terminal "
+                f"backend (check terminal.cwd or the session cwd{hint}). {output.strip()}")
         # A stdin write failure with a clean child exit is still a failure: the
         # child never received the input.
         if result.get("stdin_error") and exit_code == 0:
             exit_code = 1
-        return ExecuteResult(stdout=result.get("output", ""), exit_code=exit_code)
+        return ExecuteResult(stdout=output, exit_code=exit_code, cwd_error=cwd_error)
 
     def _has_command(self, cmd: str) -> bool:
         """Check if a command exists in the environment (cached); rg goes through
@@ -214,6 +229,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._resolve_command(cmd) is not None
         if cmd not in self._command_cache:
             result = self._exec(f"command -v {cmd} >/dev/null 2>&1 && echo 'yes'")
+            if result.cwd_error:  # the probe never ran: no verdict to cache
+                return False
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
 
@@ -232,6 +249,40 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
         return result
 
+    def _fenced_read(self, body: str, *more: str) -> "tuple[Optional[list[str]], Optional[int], ExecuteResult]":
+        """Run BODY, then each of MORE, each in its own sentinel-delimited segment; return (those
+        segments, BODY's exit status, reply).
+
+        The transport merges the backend's own stdout with the command's, and every caller here
+        decodes a segment into file bytes, so the payload has to be delimited rather than taken to
+        be the whole reply: a remote shell announcing ``TERM`` is four base64 characters that would
+        otherwise join the payload and decode to ``b"LDL"`` at the head of it. The fence drops noise
+        OUTSIDE it only; output emitted while BODY runs (a ``BASH_ENV`` DEBUG hook) lands inside the
+        payload, so a caller that writes the bytes back must verify them independently (MORE). The
+        status rides in its own trailing segment so a failed BODY is still told apart from an empty
+        file. ``(None, None, reply)`` when no fenced reply came back — the command never ran as
+        written.
+        """
+        sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
+        mark = f"echo {sentinel}"
+        rest = "".join(f"{mark}; {cmd}; " for cmd in more)
+        result = self._exec(f"{mark}; {body}; __hb=$?; {rest}{mark}; echo $__hb")
+        segments = _split_segments(result.stdout or "", sentinel)
+        if len(segments) != len(more) + 3:
+            return None, None, result
+        try:
+            return segments[1:-1], int(_strip_terminal_fence_leaks(segments[-1]).split()[0]), result
+        except (IndexError, ValueError):
+            return segments[1:-1], None, result
+
+    @staticmethod
+    def _matches_size(data: bytes, size_segment: str) -> bool:
+        """Whether DATA is exactly as long as the file's own ``wc -c``. Noise inside the payload
+        only ever ADDS text, and any addition that still decodes adds bytes, so equal length is
+        the check; noise in the size segment breaks its single-integer shape instead."""
+        tokens = _strip_terminal_fence_leaks(size_segment).split()
+        return len(tokens) == 1 and tokens[0].isdigit() and int(tokens[0]) == len(data)
+
     def _sample_file_bytes(self, path: str, length: int = 1000):
         """First ``length`` raw bytes, base64-wrapped so they survive the terminal
         transport (which decodes stdout with ``errors="replace"`` and manufactures
@@ -240,18 +291,108 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         callers then fall back to the text heuristic.
 
         Wrapping the sample in base64 lets the original bytes survive the transport, so binary detection can
-        happen at the byte layer where it is well-defined (#80308 and friends).
+        happen at the byte layer where it is well-defined (#80308 and friends). Fenced like the
+        byte-exact read below: this sample is the binary-admission gate in FRONT of that read, so
+        backend noise decoded into it decides whether a file is editable at all.
         """
-        result = self._exec(f"head -c {length} {self._escape_shell_arg(path)} 2>/dev/null | base64")
-        if result.exit_code != 0:
+        segments, read_rc, _ = self._fenced_read(
+            f"head -c {length} {self._escape_shell_arg(path)} 2>/dev/null | base64")
+        if segments is None or read_rc != 0:
             return None
-        return self._decode_base64_sample(result.stdout)
+        return self._decode_base64_sample(segments[0])
+
+    def _read_exact_bytes(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
+        """The file's bytes exactly, for the edit paths that write back every line they did not touch.
+
+        The text transport cannot carry them: it decodes with errors="replace", so a byte UTF-8 cannot
+        decode comes back as U+FFFD and the edit then persists it. A native read on the local POSIX host,
+        else base64 over the transport; ``(None, result)`` hands back the failed shell read for the
+        caller's message. Only a regular file gets a native open (a FIFO would block this thread); the
+        rest take the shell path and its timeout, as before."""
+        if self._native_read_enabled():
+            import stat as _stat
+            full = path if os.path.isabs(path) else os.path.join(
+                getattr(self.env, "cwd", None) or self.cwd, path)
+            try:
+                # One lookup, not two: a stat-then-open pair can have the path swapped for a FIFO in
+                # between, and that open blocks this thread forever (no backend timeout covers it).
+                # O_NONBLOCK returns a descriptor for a FIFO instead of waiting, and fstat judges THAT
+                # descriptor, so a non-regular file is rejected rather than read.
+                fd = os.open(full, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+                try:
+                    if _stat.S_ISREG(os.fstat(fd).st_mode):
+                        with open(fd, "rb", closefd=False) as fh:
+                            return fh.read(), None
+                finally:
+                    os.close(fd)
+            except OSError:
+                pass  # missing/unreadable/would-block: the shell read below reports it the usual way
+        # Fenced like the compound read probe, and for the same reason: a backend whose merged
+        # stdout carries login-shell noise (a remote shell announcing TERM, a banner) would
+        # otherwise have it whitespace-joined onto the payload and decoded INTO the file's bytes,
+        # which the edit paths then write back. The file's own byte count travels beside it: output
+        # INSIDE the fence decodes too, so only a read that matches it is ever handed to a writer.
+        arg = self._escape_shell_arg(path)
+        segments, read_rc, result = self._fenced_read(f"base64 < {arg}", f"wc -c < {arg}")
+        garbled = ExecuteResult(stdout=f"{path}: the backend returned a garbled byte-exact read", exit_code=1)
+        if segments is None:
+            # No fenced reply: the command never ran as written (a wrapper ``cd`` failed, the backend
+            # refused it). Hand the backend's own text back so the caller reports what it said.
+            return None, result if result.exit_code != 0 else garbled
+        if read_rc is None:
+            return None, garbled
+        if read_rc == 127:  # no base64 on this backend (busybox, distroless): try the hex transport
+            return self._read_exact_bytes_hex(path)
+        payload, size = segments
+        if read_rc != 0:
+            # stderr is merged into the fenced segment, so that segment holds base64's own diagnostic
+            # ("No such file or directory", "Permission denied"): keep it for the caller's message.
+            return None, self._failed_read(path, payload, read_rc)
+        data = self._decode_base64_sample(payload)
+        if data is None or not self._matches_size(data, size):  # stray output: refuse, never echo it back
+            return None, garbled
+        return data, None
+
+    @staticmethod
+    def _failed_read(path: str, payload: str, read_rc: int) -> ExecuteResult:
+        """The backend's own diagnostic for a read that ran and failed, else a bare exit status."""
+        return ExecuteResult(stdout=_strip_terminal_fence_leaks(payload).strip() or f"{path}: exit {read_rc}",
+                             exit_code=read_rc)
+
+    def _read_exact_bytes_hex(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
+        """``od`` fallback for a backend without ``base64``, fenced the same way.
+
+        ``read_file_raw`` is the edit paths' source read AND, through ``_apply_add``, their
+        existence check, so a transport that simply is not installed must not read as "no such
+        file" — that clobbers the file the Add was refusing to overwrite. ``od`` is POSIX and
+        present in busybox; when it is missing too the caller gets a transport error, never a
+        not-found."""
+        arg = self._escape_shell_arg(path)
+        segments, read_rc, result = self._fenced_read(f"od -An -v -tx1 < {arg}", f"wc -c < {arg}")
+        unavailable = ExecuteResult(
+            stdout=f"{path}: this backend has neither base64 nor od, so a byte-exact read is unavailable",
+            exit_code=1)
+        if segments is None:
+            return None, result if result.exit_code != 0 else unavailable
+        if read_rc is None or read_rc == 127:
+            return None, unavailable
+        payload, size = segments
+        if read_rc != 0:
+            return None, self._failed_read(path, payload, read_rc)
+        try:
+            data = bytes.fromhex("".join(_strip_terminal_fence_leaks(payload).split()))
+        except ValueError:
+            data = None
+        if data is None or not self._matches_size(data, size):
+            return None, ExecuteResult(stdout=f"{path}: the backend returned a garbled byte-exact read",
+                                       exit_code=1)
+        return data, None
 
     @staticmethod
     def _decode_base64_sample(text: str) -> Optional[bytes]:
-        """Decode one ``head -c N | base64`` sample. Whitespace-joins the whole text
-        first (``base64`` wraps at 76 columns), so callers hand over exactly one
-        segment; anything else fails validation → None (legacy text heuristic)."""
+        """Decode one ``base64`` transport reply (a ``head -c N`` sample or a whole file). Whitespace-joins
+        the whole text first (``base64`` wraps at 76 columns), so callers hand over exactly one
+        segment; anything else fails validation → None."""
         encoded = "".join(_strip_terminal_fence_leaks(text).split())
         if not encoded:
             return b""
@@ -292,7 +433,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """Legacy text-layer binary check: extension, else >30% non-printable chars."""
-        if os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS:
+        if has_binary_extension(path):
             return True
         if content_sample:
             # Undecodable bytes arrive as U+FFFD ("printable", so the ratio misses
@@ -346,13 +487,29 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     return expand_result.stdout.strip() + path[1 + len(username):]
         return path
 
-    def _escape_shell_arg(self, arg: str) -> str:
-        """Single-quote ``arg`` for the shell. On Windows, native drive paths and
-        mixed MSYS leftovers are first rewritten to the Git Bash ``/c/Users/x``
-        form via the env-layer ``_bash_safe_path`` (bash eats backslashes; MSYS
-        mangles drive paths), so shell file ops and the terminal ``cd`` agree."""
-        from tools.environments.local import _bash_safe_path
-        return "'" + _bash_safe_path(arg).replace("'", "'\"'\"'") + "'"
+    def _escape_shell_arg(self, arg: str, translate_path: bool = True) -> str:
+        """Escape a string for safe use in shell commands.
+
+        On Windows native drive paths (``C:\\Users\\x`` / ``C:/Users/x``)
+        and mixed MSYS leftovers (``/c/Users\\x``) are rewritten to the
+        Git Bash ``/c/Users/x`` form via ``_bash_safe_path``: bash eats
+        backslashes and MSYS otherwise mangles drive paths into the
+        ``Directory \\drivers\\etc does not exist`` failure class. Reuses
+        the env-layer translator so shell file ops and the terminal ``cd``
+        agree on the path form. No-op off Windows and for plain POSIX paths.
+
+        ``translate_path=False`` skips that translation for non-path values
+        such as regex patterns. Backslash compensation applies only to the
+        local Windows argv transport. Serialized shell text stays literal.
+        """
+        from tools.environments.local import _IS_WINDOWS, _bash_safe_path
+
+        if translate_path:
+            arg = _bash_safe_path(arg)
+        elif _IS_WINDOWS and getattr(self.env, "is_local", False):
+            arg = arg.replace("\\", "\\\\")
+        # Use single quotes and escape any single quotes in the string
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
 
     def _escape_native_tool_arg(self, arg: str) -> str:
         """Quote a path for a NATIVE Windows binary (rg, node, git ...): those don't
@@ -438,22 +595,26 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def _not_regular_error(path: str) -> ReadResult:
         """Error for a path that exists but would block if read."""
         return ReadResult(error=(
-            f"Cannot read '{path}': not a regular file (directory, FIFO, "
-            "socket, or device). Reading it could block indefinitely."))
+            f"Cannot read '{path}': not a regular file (directory, dangling symlink, "
+            "FIFO, socket, or device). Reading it could block indefinitely."))
 
     def _probe_regular_file(self, path: str) -> tuple[int, str]:
         """Byte size of a REGULAR file: ``(file_size, status)`` with status ``"ok"``,
-        ``"missing"``, ``"not_regular"`` or ``"bad_size"`` (unparseable ``wc``).
+        ``"missing"``, ``"not_regular"``, ``"bad_size"`` (unparseable ``wc``),
+        ``"env_unavailable"``, or the named working-directory error when the exec
+        wrapper itself failed (``_env_unavailable_error`` surfaces it verbatim).
         ``wc -c <`` on a writer-less FIFO/socket//dev/zero blocks forever and a
         name-based blocklist can't cover a FIFO (a file TYPE at any path); ``[ -f ]``
-        is a stat (symlinks followed) so it answers without touching content."""
+        is a stat (symlinks followed) so it answers without touching content. A dangling
+        symlink is ``not_regular``, never ``missing``: the entry exists, and a writer
+        told the path is free would follow the link and create its target."""
         arg = self._escape_shell_arg(path)
         # A missing path ECHOES its sentinel: a non-zero exit with no sentinel means the shell itself did
         # not run (container still starting, removed out-of-band, transport down) — not a missing file.
         # Reporting that as "File not found" made the model trust a false negative for the whole session.
         stat_result = self._exec(
             f"if [ -f {arg} ]; then wc -c < {arg} 2>/dev/null; "
-            f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
+            f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
             f"else echo {MISSING_SENTINEL}; fi")
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout).strip()
         if stat_output == MISSING_SENTINEL:
@@ -461,13 +622,15 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         if stat_output == NOT_REGULAR_SENTINEL:
             return 0, "not_regular"
         if stat_result.exit_code != 0:
-            return 0, "env_unavailable"
+            return 0, stat_result.cwd_error or "env_unavailable"
         try:
             return int(stat_output), "ok"
         except ValueError:
             return 0, "bad_size"
 
-    def _env_unavailable_error(self, path: str) -> ReadResult:
+    def _env_unavailable_error(self, path: str, status: str = "env_unavailable") -> ReadResult:
+        if status != "env_unavailable":
+            return ReadResult(error=status)
         return ReadResult(error=(f"Terminal environment unavailable: could not stat {path} "
                                  "(the sandbox may still be starting or was removed). Retry shortly."))
 
@@ -476,7 +639,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         allows (base64 sample), else the legacy text heuristic (sample is None)."""
         sample_bytes = self._sample_file_bytes(path)
         if sample_bytes is not None:
-            ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+            ext_binary = has_binary_extension(path)
             return ext_binary or self._is_likely_binary_bytes(sample_bytes), sample_bytes
         sample_output = _strip_terminal_fence_leaks(self._head(path, 1000).stdout)
         return self._is_likely_binary(path, sample_output), None
@@ -492,16 +655,48 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     _UTF16_MAX_BYTES = 10 * 1024 * 1024
     _UTF16_SAMPLE_BYTES = 512
 
+    def _python_interpreter_cmd(self) -> str:
+        """Return a shell-safe Python interpreter for the terminal backend.
+
+        On the local backend ``sys.executable`` is always a working
+        interpreter — and on Windows it dodges the Microsoft Store
+        ``python``/``python3`` alias stub (exit 49, "Python was not
+        found") that otherwise breaks inline ``-c`` snippets. Remote
+        backends (docker/ssh/...) don't have the agent's interpreter, so
+        they fall back to ``python3`` on their own PATH (the ``python``
+        fallback is handled at the call site).
+        """
+        if self._lsp_local_only():
+            return self._escape_shell_arg(sys.executable)
+        return "python3"
+
+    def _exec_python_snippet(self, snippet: str, py: str = None) -> ExecuteResult:
+        """Run a Python ``snippet`` in the terminal backend's interpreter.
+
+        Base64-encodes the snippet so it survives every shell/quoting layer
+        as pure ASCII: Windows ``subprocess`` list-arg quoting and ``bash``
+        double-quote processing both eat backslashes, which otherwise
+        corrupts Windows paths (``C:\\Users\\x``) and byte literals
+        (``b'\\xfe\\xff'``) embedded in a ``-c`` program. ``exec`` decodes
+        and runs it unchanged.
+        """
+        encoded = base64.b64encode(snippet.encode("utf-8")).decode("ascii")
+        if py is None:
+            py = self._python_interpreter_cmd()
+        return self._exec(
+            f"{py} -c \"import base64; exec(base64.b64decode('{encoded}').decode())\""
+        )
+
     def _try_read_utf16(self, path: str, offset: int, limit: int,
                         file_size: int) -> "Optional[ReadResult]":
         """Read ``path`` as UTF-16 transcoded to UTF-8, or None (caller falls back
         to the binary-file error). Skips known-binary extensions and files over
         10 MiB. ``path`` must already be expanded."""
-        if os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS or file_size > self._UTF16_MAX_BYTES:
+        if has_binary_extension(path) or file_size > self._UTF16_MAX_BYTES:
             return None
         snippet = (
             "import sys, json, os\n"
-            f"p = {path!r}\n"
+            f"p = {json.dumps(path)}\n"
             f"offset = {int(offset)}\n"
             f"limit = {int(limit)}\n"
             f"MAX = {self._UTF16_MAX_BYTES}\n"
@@ -539,8 +734,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             "    print('HERMES_UTF16:OK')\n"
             "    print(json.dumps(out, ensure_ascii=True))\n"
             "except Exception:\n"
-            "    print('HERMES_UTF16:NO'); sys.exit(0)\n")
-        result = self._run_python_snippet(snippet)
+            "    print('HERMES_UTF16:NO'); sys.exit(0)\n"
+        )
+
+        result = self._exec_python_snippet(snippet)
+        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+            result = self._exec_python_snippet(snippet, py="python")
+
         stdout = _strip_terminal_fence_leaks(result.stdout or "")
         marker = stdout.find("HERMES_UTF16:OK")
         if result.exit_code != 0 or marker < 0:
@@ -561,9 +761,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             hint_parts.append(
                 f"Use offset={end_line + 1} to continue reading "
                 f"(showing {offset}-{end_line} of {total_lines} lines)")
+        from tools.tool_output_limits import get_max_line_length
+        max_line_length = get_max_line_length()
+        truncated_lines = any(len(line) > max_line_length for line in content.split('\n'))
         return ReadResult(
             content=self._add_line_numbers(content, offset), total_lines=total_lines,
-            file_size=file_size, truncated=truncated, hint=" ".join(hint_parts))
+            file_size=file_size, truncated=truncated, hint=" ".join(hint_parts),
+            truncated_lines=True if truncated_lines else None)
 
     def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """Read a file with pagination, binary detection, and line numbers.
@@ -583,7 +787,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
 
         # Images / known-binary extensions never inline content; the sequential
         # path stops at the probes for them, so don't stream their bytes.
-        if self._is_image(path) or os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS:
+        if self._is_image(path) or has_binary_extension(path):
             return self._read_file_sequential(path, offset, limit)
 
         from tools.tool_output_limits import get_max_line_length
@@ -685,6 +889,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         try:
             st = os.stat(full)
         except (FileNotFoundError, NotADirectoryError):
+            if os.path.islink(full):  # dangling: an entry, not an absent path (``_probe_regular_file``)
+                return self._not_regular_error(path)
             return self._read_file_missing(path, offset, limit)
         except OSError:
             return self._read_file_sequential(path, offset, limit)
@@ -704,10 +910,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         kept = bytearray()      # first ``clamp`` bytes of that line
         have_partial = False    # that line has bytes but no newline yet
         last_byte = b""
+        digest = hashlib.sha256()
         try:
             with open(full, "rb") as fh:
                 sample = fh.read(1000)
-                ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+                ext_binary = has_binary_extension(path)
                 if ext_binary or self._is_likely_binary_bytes(sample):
                     return self._read_binary_file(path, offset, limit, file_size, sample)
                 fh.seek(0)
@@ -715,6 +922,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     chunk = fh.read(1 << 20)
                     if not chunk:
                         break
+                    digest.update(chunk)
                     last_byte = chunk[-1:]
                     if lineno > end_line:
                         # Past the window: only the line count and trailing byte
@@ -747,10 +955,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             page.append(bytes(kept) + b"\n")
 
         read_output = _strip_terminal_fence_leaks(b"".join(page).decode("utf-8", errors="replace"))
-        return self._assemble_read_result(
+        result = self._assemble_read_result(
             read_output, offset=offset, end_line=end_line, total_lines=total_lines,
             file_size=file_size,
             file_ends_with_newline=(last_byte == b"\n") if file_size else None)
+        result._snapshot = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, digest.digest())
+        return result
 
     @staticmethod
     def _image_redirect_result(file_size: int) -> ReadResult:
@@ -782,7 +992,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             f"wc -l < {arg} 2>/dev/null; {mark}; "
             f"tail -c 1 {arg} 2>/dev/null | wc -l; {mark}; "
             f'echo "$__hs $__hr"; '
-            f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
+            f"elif [ -e {arg} ] || [ -L {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
             f"else echo {MISSING_SENTINEL}; fi")
 
     def _read_file_missing(self, path: str, offset: int, limit: int) -> ReadResult:
@@ -828,8 +1038,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._read_file_missing(path, offset, limit)
         if status == "not_regular":
             return self._not_regular_error(path)
-        if status == "env_unavailable":
-            return self._env_unavailable_error(path)
+        if status not in ("ok", "bad_size"):
+            return self._env_unavailable_error(path, status)
         if self._is_image(path):  # never inlined — redirect to the vision tool
             return self._image_redirect_result(file_size)
         is_binary, sample_bytes = self._detect_binary(path)
@@ -904,9 +1114,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     f"Note: offset {offset} is beyond the end of the file "
                     f"({total_lines} lines total). Retry with offset <= "
                     f"{total_lines}."))
+        from tools.tool_output_limits import get_max_line_length
+        max_line_length = get_max_line_length()
+        truncated_lines = any(len(line) > max_line_length for line in read_output.split('\n'))
         return ReadResult(
             content=self._add_line_numbers(read_output, offset), total_lines=total_lines,
-            file_size=file_size, truncated=truncated, hint=hint)
+            file_size=file_size, truncated=truncated, hint=hint,
+            truncated_lines=True if truncated_lines else None)
 
     # Confusable characters seen in real filenames, collapsed after NFC.
     _CONFUSABLES = (
@@ -978,7 +1192,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 if score > 0:
                     scored.append((score, os.path.join(dir_path, f)))
         scored.sort(key=lambda x: -x[0])
-        return ReadResult(error=f"File not found: {path}", similar_files=[fp for _, fp in scored[:5]])
+        return ReadResult(error=f"File not found: {path}", not_found=True,
+                          similar_files=[fp for _, fp in scored[:5]])
 
     def read_file_raw(self, path: str) -> ReadResult:
         """Whole file as a plain string (no pagination/line numbers/clamping)."""
@@ -988,19 +1203,22 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return self._suggest_similar_files(path)
         if status == "not_regular":
             return self._not_regular_error(path)
-        if status == "env_unavailable":
-            return self._env_unavailable_error(path)
+        if status not in ("ok", "bad_size"):
+            return self._env_unavailable_error(path, status)
         if self._is_image(path):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
         is_binary, sample_bytes = self._detect_binary(path)
         if is_binary:
             return ReadResult(is_binary=True, file_size=file_size, error=describe_binary_file(sample_bytes, file_size))
-        cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
-        if cat_result.exit_code != 0:
-            return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
+        data, failed = self._read_exact_bytes(path)
+        if data is None:
+            return ReadResult(error=f"Failed to read file: {failed.stdout}")
+        # V4A writes this back, so no display cleanup (nothing has emitted the __HERMES_FENCE_ wrapper it
+        # targets since d684d7ee7e; it can only eat the file's own escape bytes), and surrogateescape
+        # so write_file's encode restores any byte past the sample that UTF-8 cannot decode (#79178).
         # Strip a leading BOM (a phantom U+FEFF defeats an exact first-line match);
         # write_file re-probes disk and restores it.
-        raw_content, _ = _strip_bom(_strip_terminal_fence_leaks(cat_result.stdout))
+        raw_content, _ = _strip_bom(data.decode("utf-8", "surrogateescape"))
         return ReadResult(content=raw_content, file_size=file_size)
 
     def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
@@ -1008,11 +1226,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         path = self._expand_path(path)
         file_size, status = self._probe_regular_file(path)
         if status == "missing":
-            return ReadResult(error=f"File not found: {path}")
+            return ReadResult(error=f"File not found: {path}", not_found=True)
         if status == "not_regular":
             return self._not_regular_error(path)
-        if status == "env_unavailable":
-            return self._env_unavailable_error(path)
+        if status not in ("ok", "bad_size"):
+            return self._env_unavailable_error(path, status)
         if status == "bad_size":
             return ReadResult(error=f"Could not determine file size: {path}")
         if max_bytes is not None and file_size > max_bytes:
@@ -1040,7 +1258,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # ``unlink(missing_ok=True)`` (a 3.7 remote interpreter lacks it).
         snippet = (
             "import shutil, pathlib, sys\n"
-            f"p = pathlib.Path({path!r})\n"
+            f"p = pathlib.Path({json.dumps(path)})\n"
             "recursive = False\n"
             "try:\n"
             "    if p.is_dir() and not p.is_symlink():\n"
@@ -1053,8 +1271,16 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             "except FileNotFoundError:\n"
             "    pass\n"
             "except Exception as exc:\n"
-            "    print(str(exc), file=sys.stderr); sys.exit(1)\n")
-        result = self._run_python_snippet(snippet)
+            "    print(str(exc), file=sys.stderr); sys.exit(1)\n"
+        )
+
+        result = self._exec_python_snippet(snippet)
+
+        # Fall back to ``python`` (remote backends / older systems where there's no
+        # ``python3`` symlink but a ``python`` binary is on PATH).
+        if result.exit_code != 0 and "python3" in (result.stdout or ""):
+            result = self._exec_python_snippet(snippet, py="python")
+
         if result.exit_code != 0:
             return WriteResult(error=f"Failed to delete {path}: {(result.stdout or '').strip() or 'unknown error'}")
         return WriteResult()
@@ -1275,6 +1501,7 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             lsp_diagnostics = self._maybe_lsp_diagnostics(path, pre_content=pre_content, post_content=content) or None
         return WriteResult(
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
+            _content_sha256=hashlib.sha256(content_bytes).hexdigest(),
             lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics)
 
     # --- PATCH (replace mode) -----------------------------------------------
@@ -1306,10 +1533,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         Line endings are normalized first (Windows text-mode ``open()`` writes LF as
         CRLF) and the re-read's BOM stripped (``new_content`` is the BOM-less
         string we matched against)."""
-        verify_result = self._cat(path)
-        if verify_result.exit_code != 0:
+        data, _failed = self._read_exact_bytes(path)
+        if data is None:
             return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
-        bomless, _ = _strip_bom(verify_result.stdout)
+        bomless, _ = _strip_bom(data.decode("utf-8", "surrogateescape"))
         on_disk = bomless.replace("\r\n", "\n").replace("\r", "\n")
         intended = new_content.replace("\r\n", "\n").replace("\r", "\n")
         if on_disk != intended:
@@ -1329,12 +1556,14 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         denied = get_write_denied_error(path)
         if denied:
             return PatchResult(error=denied)
-        read_result = self._cat(path)
-        if read_result.exit_code != 0:
-            return PatchResult(error=f"Failed to read file: {path}")
+        data, failed = self._read_exact_bytes(path)
+        if data is None:
+            return PatchResult(error=failed.cwd_error or f"Failed to read file: {path}")
+        # Every line the replacement does not touch is written back, so read the exact bytes;
+        # surrogateescape lets write_file restore any byte UTF-8 cannot decode (#79178).
         # Match and diff on BOM-stripped content (a phantom U+FEFF defeats an exact
         # first-line match); the raw read becomes write_file's pre_content.
-        raw_content = read_result.stdout
+        raw_content = data.decode("utf-8", "surrogateescape")
         content, _ = _strip_bom(raw_content)
 
         from tools.fuzzy_match import fuzzy_find_and_replace
@@ -1385,7 +1614,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                 error=(f"Invalid file search order {order!r}; expected "
                        "'discovery' or 'modified'."))
         path = self._expand_path(path)
-        exists_probe = self._path_exists_probe(path)
+        probe = self._path_exists_probe(path)
+        exists_probe = probe.stdout
+        if probe.cwd_error:
+            return SearchResult(error=probe.cwd_error)
         if "exists" not in exists_probe and "not_found" not in exists_probe:
             return SearchResult(error=(f"Terminal environment unavailable: could not stat {path} "
                                        "(the sandbox may still be starting or was removed). Retry shortly."))

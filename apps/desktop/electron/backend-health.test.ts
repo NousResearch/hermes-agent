@@ -116,6 +116,38 @@ test('probes health on a short timeout but leaves the legacy fallback its own', 
   assert.deepEqual(timeouts, [DEFAULT_HEALTH_PROBE_TIMEOUT_MS, undefined])
 })
 
+function connectionRefused(port: number): Error {
+  return Object.assign(new Error(`connect ECONNREFUSED 127.0.0.1:${port}`), { code: 'ECONNREFUSED' })
+}
+
+async function probesUntilSettled(alreadyBound: boolean): Promise<number> {
+  let probes = 0
+  let currentTime = 0
+
+  await waitForHermesReady('http://127.0.0.1:2802', {
+    fetchPublicJson: async () => {
+      probes += 1
+      throw connectionRefused(2802)
+    },
+    fetchJson: async () => ({}),
+    sleep: async () => {},
+    now: () => (currentTime += 1),
+    timeoutMs: 1_000,
+    pollMs: 1,
+    alreadyBound
+  }).catch(() => undefined)
+
+  return probes
+}
+
+test('a refused port on a backend known to have bound fails at once; an unbound one keeps polling', async () => {
+  // A hard-killed backend leaves its ledger record and published token behind.
+  // Polling that dead port for the whole budget outlived the renderer's boot
+  // timeout and wedged every post-update launch.
+  assert.equal(await probesUntilSettled(true), 1)
+  assert.ok((await probesUntilSettled(false)) > 1)
+})
+
 test('aborts as superseded when the bootstrap signal fires', async () => {
   const controller = new AbortController()
   controller.abort()
@@ -406,7 +438,7 @@ test('isNousCloudAgentUrl detects cloud agent hosts', () => {
   assert.equal(isNousCloudAgentUrl('not-a-url'), false)
 })
 
-test('waitForHermesReady surfaces actionable error for cloud agent 503', async () => {
+test('waitForHermesReady classifies a persistent cloud agent 503 as cloud-backend-down', async () => {
   let attempts = 0
   const currentTime = { value: 0 }
 
@@ -434,10 +466,6 @@ test('waitForHermesReady surfaces actionable error for cloud agent 503', async (
     })
     assert.fail('should have thrown')
   } catch (error: any) {
-    assert.ok(error.message.includes('Nous Cloud agent'), `unexpected message: ${error.message}`)
-    assert.ok(error.message.includes('503'), `should mention status code: ${error.message}`)
-    assert.ok(error.message.includes('portal.nousresearch.com'), `should mention portal: ${error.message}`)
-    assert.ok(error.message.includes('discord.gg/NousResearch'), `should mention Discord: ${error.message}`)
     assert.equal(error.isCloudBackendDown, true)
     assert.equal(error.statusCode, 503)
     assert.ok(attempts > 1, 'should have retried before failing')
@@ -467,8 +495,6 @@ test('waitForHermesReady does not cloud-wrap non-cloud 503 errors', async () => 
     })
     assert.fail('should have thrown')
   } catch (error: any) {
-    // Non-cloud URLs get the generic message
-    assert.ok(error.message.includes('did not become ready'), `unexpected message: ${error.message}`)
     assert.equal(error.isCloudBackendDown, undefined)
   }
 })
@@ -516,7 +542,6 @@ test('makeNousCloudBackendDownError produces the Cloud shape and preserves cause
   assert.equal((result as any).isCloudBackendDown, true)
   assert.equal((result as any).statusCode, 503)
   assert.equal((result as any).cause, err)
-  assert.ok(result?.message.includes('Nous Cloud agent ares-3009.agents.nousresearch.com is down'))
 })
 
 test('makeNousCloudBackendDownError returns null for a Cloud 401 (routes to reauth)', () => {

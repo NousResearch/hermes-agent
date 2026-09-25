@@ -469,7 +469,7 @@ def _env_temp_dir(env: Any) -> str:
     for candidate in (temp_dir, tempfile.gettempdir()):
         if isinstance(candidate, str) and candidate.startswith("/"):
             return candidate.rstrip("/") or "/"
-    return "/tmp"
+    return tempfile.gettempdir()
 
 
 def _format_interrupted_output(stdout_text: str) -> str:
@@ -694,10 +694,29 @@ def execute_code(
     # execute_code is a straight bypass — the terminal() path refuses `launchctl bootout ai.hermes.gateway`,
     # but the identical command inside `os.system(...)` / `subprocess.run([...])` here sailed through and
     # SIGTERM'd the gateway mid-task.
+    # The identity probe ends in a kernel process query that has wedged on macOS
+    # (#111922); share the cell's own deadline and fail CLOSED when it renders no verdict.
+    from agent.deadline import run_bounded_sync
     from tools.process_registry import _is_supervised_gateway_process
-    if _is_supervised_gateway_process():
-        from cron.lifecycle_guard import contains_gateway_lifecycle_command
+    from tools.terminal_tool import _PRE_EXEC_GUARD_MIN_TIMEOUT_S
+    _probe_timeout = max(_load_config().get("timeout", DEFAULT_TIMEOUT), _PRE_EXEC_GUARD_MIN_TIMEOUT_S)
+    _probe = run_bounded_sync(
+        _is_supervised_gateway_process, _probe_timeout, label="execute_code.lifecycle-guard",
+    )
+    if _probe.timed_out:
+        return tool_error(
+            f"execute_code lifecycle guard did not finish within {_probe_timeout}s "
+            "(process-identity probe wedged); the code was not run. Retry the call."
+        )
+    if _probe.value:
+        from cron.lifecycle_guard import (
+            HOST_INTERPRETER_KILL_REJECTION,
+            contains_gateway_lifecycle_command,
+            contains_host_interpreter_kill,
+        )
         if contains_gateway_lifecycle_command(code):
+            if contains_host_interpreter_kill(code):
+                return tool_error(HOST_INTERPRETER_KILL_REJECTION)
             return tool_error(
                 "Blocked: cannot restart or stop the gateway from inside the "
                 "gateway process. The gateway would kill this script before "
@@ -829,8 +848,9 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
     import_str = ", ".join(import_examples) + ", ..." if import_examples else "..."
     if mode == "strict":
         cwd_note = (
-            "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
-            "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
+            "Scripts run in their own temp dir, not the session's CWD — pass "
+            "absolute paths for any file that lives outside the session's "
+            "working directory, or use terminal()/read_file() to reach it."
         )
     else:
         cwd_note = (
@@ -931,7 +951,5 @@ def __getattr__(name):  # PEP 562 — lazy so no import cycles
     if target is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
-    from hermes_cli.plugin_compat import warn_once
-    warn_once(__name__, name, *target)
     return getattr(importlib.import_module(target[0]), target[1])
 # ---- END PLUGIN-COMPAT ----

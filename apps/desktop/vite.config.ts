@@ -17,8 +17,12 @@ function compilerPreset() {
 import fs from 'fs'
 import { createRequire } from 'module'
 import path from 'path'
+import { fileURLToPath } from 'url'
 
 import tailwindcss from '@tailwindcss/vite'
+
+// The runner loads this as ESM without the default bundler's CJS globals.
+const __dirname: string = path.dirname(fileURLToPath(import.meta.url))
 
 // `hgui` symlinks a worktree's node_modules to the main checkout. Vite realpaths
 // those before enforcing server.fs.allow, so codicon/font assets resolve outside
@@ -129,6 +133,9 @@ export default defineConfig(({ command }) => ({
     postcss: { plugins: [] }
   },
   build: {
+    // Validate the packaged generation with metadata checks at launch, without
+    // reading every lazy vendor chunk (and triggering on-access AV scans).
+    manifest: 'renderer-manifest.json',
     // The renderer intentionally ships FEW chunks (not one, not thousands):
     //   · `codeSplitting: false` (the old setup) inlines every `lazy()` /
     //     dynamic import into the entry, so heavyweight lazy-only deps

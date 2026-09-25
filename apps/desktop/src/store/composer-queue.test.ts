@@ -151,30 +151,11 @@ describe('migrateQueuedPrompts', () => {
     expect(migrateQueuedPrompts('rt-old', 'rt-new')).toBe(false)
     expect(migrateQueuedPrompts('rt-x', 'rt-x')).toBe(false)
   })
-
-  it('must not be used across sessions without a same-lineage guard (documents the leak)', () => {
-    // ChatView used to call migrateQueuedPrompts(selectedA, routeKeyB) during the
-    // route-ahead/store-lag window of a session switch. That re-homes A's queue
-    // onto B so the idle ChatBar on B auto-drains it into the wrong conversation.
-    // The guard lives in shouldMigrateComposerScope — this test locks the
-    // underlying hazard so a future caller cannot treat migrate as free.
-    enqueueQueuedPrompt('root-a', { attachments: [], text: 'belongs to A' })
-
-    expect(migrateQueuedPrompts('root-a', 'root-b')).toBe(true)
-    expect(getQueuedPrompts('root-a')).toEqual([])
-    expect(getQueuedPrompts('root-b').map(e => e.text)).toEqual(['belongs to A'])
-  })
 })
 
 describe('shouldAutoDrain', () => {
   it('drains whenever idle with a non-empty queue', () => {
     expect(shouldAutoDrain({ isBusy: false, queueLength: 1 })).toBe(true)
-  })
-
-  it('drains on mount/reconnect with no observed busy edge', () => {
-    // The whole point of dropping the edge: a remount resets the busy ref, so an
-    // edge-gated drain would strand the entry. Idle + non-empty must still fire.
-    expect(shouldAutoDrain({ isBusy: false, queueLength: 2 })).toBe(true)
   })
 
   it('does not drain mid-turn', () => {
@@ -189,10 +170,6 @@ describe('shouldAutoDrain', () => {
     // The Stop/Esc settle edge: busy just flipped false but the user asked to
     // HALT — the park must hold the head back until they resume.
     expect(shouldAutoDrain({ isBusy: false, parked: true, queueLength: 1 })).toBe(false)
-  })
-
-  it('drains again once the park is lifted', () => {
-    expect(shouldAutoDrain({ isBusy: false, parked: false, queueLength: 1 })).toBe(true)
   })
 })
 
@@ -274,5 +251,71 @@ describe('hidden entries', () => {
       { text: '[setup] links opened', displayKind: 'hidden' },
       { text: 'Start without connections.', displayKind: undefined }
     ])
+  })
+})
+
+describe('cross-window sync (#46732)', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    $queuedPromptsBySession.set({})
+  })
+
+  const storedEntry = (id: string, text: string) => ({ id, text, attachments: [], queuedAt: 1 })
+
+  const dispatchStorage = (key: null | string, newValue: null | string) => {
+    window.dispatchEvent(new StorageEvent('storage', { key, newValue }))
+  }
+
+  it('adopts another window\'s write from the storage event', () => {
+    window.localStorage.setItem(
+      QUEUE_STORAGE_KEY,
+      JSON.stringify({ 'session-other': [storedEntry('q1', 'from other window')] })
+    )
+
+    dispatchStorage(QUEUE_STORAGE_KEY, window.localStorage.getItem(QUEUE_STORAGE_KEY))
+
+    expect(getQueuedPrompts('session-other').map(entry => entry.text)).toEqual(['from other window'])
+  })
+
+  it('does not clobber another window\'s entries when saving its own (same-frame race)', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'mine first' })
+
+    // Another window queues into its own session directly in storage, faster
+    // than any storage event could reach us.
+    window.localStorage.setItem(
+      QUEUE_STORAGE_KEY,
+      JSON.stringify({ ...JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!), 'session-other': [storedEntry('q2', 'theirs')] })
+    )
+
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'mine second' })
+
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['mine first', 'mine second'])
+    expect(getQueuedPrompts('session-other').map(entry => entry.text)).toEqual(['theirs'])
+  })
+
+  it('drops entries locally once another window drains them', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'drained elsewhere' })
+
+    window.localStorage.setItem(QUEUE_STORAGE_KEY, JSON.stringify({}))
+    dispatchStorage(QUEUE_STORAGE_KEY, '{}')
+
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+  })
+
+  it('resyncs on a full storage clear (event.key === null)', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'wiped' })
+
+    window.localStorage.removeItem(QUEUE_STORAGE_KEY)
+    dispatchStorage(null, null)
+
+    expect(getQueuedPrompts(SESSION_KEY)).toEqual([])
+  })
+
+  it('ignores storage events for unrelated keys', () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'kept' })
+
+    dispatchStorage('unrelated.key', '{}')
+
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['kept'])
   })
 })

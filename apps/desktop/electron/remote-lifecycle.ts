@@ -389,6 +389,37 @@ async function listRemoteHermesProfiles(ssh) {
   return parseRemoteProfileListing(listing)
 }
 
+async function readRemoteInstallId(ssh) {
+  // The stable backend identity the roster collapses on (`hermes_cli/install_identity.py`:
+  // `<install root>/install_id`, opaque hex). Read from the INSTALL root, so an ssh connection
+  // pinned to `<root>/profiles/<name>` reports the same id as one pointed at the root — they are
+  // one backend. Read-only: a missing file is left missing (minting identity is the install's job,
+  // never a visiting client's) and simply means "no id", exactly as an older backend reports.
+  const root = remoteInstallRoot(assertSafeRemoteHome(await probeRemoteHermesHome(ssh)))
+  const file = expandRemotePath(`${root}/install_id`)
+  let out = ''
+
+  try {
+    out = await ssh.exec(`if [ -f ${file} ]; then cat ${file}; fi`)
+  } catch (cause) {
+    const error: any = new Error('Could not read the remote Hermes install id.')
+    error.kind = 'transient-transport-error'
+    error.cause = cause
+    throw error
+  }
+
+  const id =
+    String(out || '')
+      .trim()
+      .split('\n')
+      .pop()
+      ?.trim()
+      .toLowerCase() ?? ''
+
+  // Same shape check the minting side guarantees; anything else is not an identity.
+  return /^[0-9a-f]{32}$/.test(id) ? id : undefined
+}
+
 function assertSafeRemoteHome(home) {
   const value = String(home || '').trim()
 
@@ -516,21 +547,58 @@ async function removeLockfile(ssh, ownershipId) {
   }
 }
 
+const PROBE_VERDICT_ATTEMPTS = 3
+const PROBE_VERDICT_RETRY_MS = 500
+
+// Liveness and ownership probes print exactly one of two sentinels. An exec
+// that resolves with neither — the channel died before the remote shell ran,
+// which is exactly the state of an SSH session mid-teardown right after the
+// served token was resolved — is indeterminate, not the negative verdict:
+// reading it as DEAD tore down a live backend as "exited while its served
+// token was being resolved", and reading it as FOREIGN skipped the reap while
+// still removing the lockfile, leaving one orphaned `serve --isolated` per
+// attempt (#111810). Retry over a short window; with no definite answer fail
+// closed with a transient error so callers keep the ownership record.
+async function execProbeVerdict(ssh, command, sentinels, failureMessage) {
+  for (let attempt = 0; attempt < PROBE_VERDICT_ATTEMPTS; attempt++) {
+    if (attempt > 0) {
+      await new Promise(resolve => setTimeout(resolve, PROBE_VERDICT_RETRY_MS))
+    }
+
+    let out
+
+    try {
+      out = String((await ssh.exec(command)) || '').trim()
+    } catch (cause) {
+      const error: any = new Error(failureMessage)
+      error.kind = 'transient-transport-error'
+      error.cause = cause
+      throw error
+    }
+
+    if (sentinels.includes(out)) {
+      return out
+    }
+  }
+
+  const error: any = new Error(failureMessage)
+  error.kind = 'transient-transport-error'
+  throw error
+}
+
 async function remotePidAlive(ssh, pid) {
   if (!pid || !Number.isInteger(Number(pid))) {
     return false
   }
 
-  try {
-    const out = (await ssh.exec(`kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`)).trim()
+  const verdict = await execProbeVerdict(
+    ssh,
+    `kill -0 ${Number(pid)} 2>/dev/null && echo ALIVE || echo DEAD`,
+    ['ALIVE', 'DEAD'],
+    'Could not verify the SSH backend process.'
+  )
 
-    return out === 'ALIVE'
-  } catch (cause) {
-    const error: any = new Error('Could not verify the SSH backend process.')
-    error.kind = 'transient-transport-error'
-    error.cause = cause
-    throw error
-  }
+  return verdict === 'ALIVE'
 }
 
 // Stable kernel process-start identity used to fence a later managed-update
@@ -587,63 +655,61 @@ async function pidIsOurDashboard(
     return false
   }
 
-  try {
-    const script =
-      'import os,shlex,subprocess,sys\n' +
-      `pid=${Number(pid)}\n` +
-      `expected=os.path.expanduser(${shq(hermesPath)})\n` +
-      // The installer-facing launcher is intentionally preserved for invocation
-      // (#74411), but it may `exec python <install-dir>/hermes`, leaving neither
-      // launcher nor HERMES_HOME-derived entrypoint in argv. The ownership-scoped
-      // token path + random nonce + exact profile below are the alternative proof.
-      `hermes_home=os.path.expanduser(${shq(hermesHome)}) if ${shq(hermesHome)} else ""\n` +
-      'expected_entries={expected}\n' +
-      'if hermes_home:\n' +
-      ' expected_entries.add(os.path.join(hermes_home,"hermes-agent","venv","bin","hermes"))\n' +
-      `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
-      `expected_profile=${shq(profile)}\n` +
-      `nonce=${shq(spawnNonce)}\n` +
-      'try:\n' +
-      ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
-      ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
-      'except OSError:\n' +
-      ' try:\n' +
-      '  line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
-      ' except subprocess.CalledProcessError:\n' +
-      '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
-      '  print("FOREIGN");sys.exit(0)\n' +
-      ' args=shlex.split(line)\n' +
-      'ok=False\n' +
-      'try:\n' +
-      ' serve=args.index("serve")\n' +
-      ' owner=args.index("--ssh-owner-nonce",serve+1)\n' +
-      ' token=args.index("--ssh-session-token-file",serve+1) if expected_token else -1\n' +
-      ' isolated=args.index("--isolated",serve+1)\n' +
-      ' profile_arg=args.index("--profile") if expected_profile else -1\n' +
-      ' serve_count=args.count("serve")\n' +
-      ' owner_count=args.count("--ssh-owner-nonce")\n' +
-      ' token_count=args.count("--ssh-session-token-file")\n' +
-      ' isolated_count=args.count("--isolated")\n' +
-      ' profile_count=args.count("--profile")\n' +
-      ' direct=args[0] in expected_entries\n' +
-      ' python_entry=len(args)>1 and args[1] in expected_entries and os.path.basename(args[0]).startswith("python")\n' +
-      ' token_ok=not expected_token or args[token+1]==expected_token\n' +
-      ' isolated_ok=isolated_count==1 and isolated>serve\n' +
-      ' profile_ok=(profile_count==1 and profile_arg<serve and args[profile_arg+1]==expected_profile) if expected_profile else profile_count==0\n' +
-      ' spawn_proof=bool(expected_token) and owner_count==1 and token_count==1 and token_ok and profile_ok\n' +
-      ' ok=(direct or python_entry or spawn_proof) and serve_count==1 and isolated_ok and owner_count==1 and args[owner+1]==nonce and token_ok and profile_ok\n' +
-      'except (ValueError,IndexError):pass\n' +
-      'print("OWNED" if ok else "FOREIGN")'
+  const script =
+    'import os,shlex,subprocess,sys\n' +
+    `pid=${Number(pid)}\n` +
+    `expected=os.path.expanduser(${shq(hermesPath)})\n` +
+    // The installer-facing launcher is intentionally preserved for invocation
+    // (#74411), but it may `exec python <install-dir>/hermes`, leaving neither
+    // launcher nor HERMES_HOME-derived entrypoint in argv. The ownership-scoped
+    // token path + random nonce + exact profile below are the alternative proof.
+    `hermes_home=os.path.expanduser(${shq(hermesHome)}) if ${shq(hermesHome)} else ""\n` +
+    'expected_entries={expected}\n' +
+    'if hermes_home:\n' +
+    ' expected_entries.add(os.path.join(hermes_home,"hermes-agent","venv","bin","hermes"))\n' +
+    `expected_token=os.path.expanduser(${shq(ownershipId ? spawnTokenPath(ownershipId, spawnNonce) : '')})\n` +
+    `expected_profile=${shq(profile)}\n` +
+    `nonce=${shq(spawnNonce)}\n` +
+    'try:\n' +
+    ' raw=open(f"/proc/{pid}/cmdline","rb").read()\n' +
+    ' args=[x.decode("utf-8","surrogateescape") for x in raw.split(b"\\0") if x]\n' +
+    'except OSError:\n' +
+    ' try:\n' +
+    '  line=subprocess.check_output(["ps","-ww","-o","command=","-p",str(pid)],text=True).strip()\n' +
+    ' except subprocess.CalledProcessError:\n' +
+    '  # pid already gone — a dead process is FOREIGN, not a transport error\n' +
+    '  print("FOREIGN");sys.exit(0)\n' +
+    ' args=shlex.split(line)\n' +
+    'ok=False\n' +
+    'try:\n' +
+    ' serve=args.index("serve")\n' +
+    ' owner=args.index("--ssh-owner-nonce",serve+1)\n' +
+    ' token=args.index("--ssh-session-token-file",serve+1) if expected_token else -1\n' +
+    ' isolated=args.index("--isolated",serve+1)\n' +
+    ' profile_arg=args.index("--profile") if expected_profile else -1\n' +
+    ' serve_count=args.count("serve")\n' +
+    ' owner_count=args.count("--ssh-owner-nonce")\n' +
+    ' token_count=args.count("--ssh-session-token-file")\n' +
+    ' isolated_count=args.count("--isolated")\n' +
+    ' profile_count=args.count("--profile")\n' +
+    ' direct=args[0] in expected_entries\n' +
+    ' python_entry=len(args)>1 and args[1] in expected_entries and os.path.basename(args[0]).startswith("python")\n' +
+    ' token_ok=not expected_token or args[token+1]==expected_token\n' +
+    ' isolated_ok=isolated_count==1 and isolated>serve\n' +
+    ' profile_ok=(profile_count==1 and profile_arg<serve and args[profile_arg+1]==expected_profile) if expected_profile else profile_count==0\n' +
+    ' spawn_proof=bool(expected_token) and owner_count==1 and token_count==1 and token_ok and profile_ok\n' +
+    ' ok=(direct or python_entry or spawn_proof) and serve_count==1 and isolated_ok and owner_count==1 and args[owner+1]==nonce and token_ok and profile_ok\n' +
+    'except (ValueError,IndexError):pass\n' +
+    'print("OWNED" if ok else "FOREIGN")'
 
-    const out = await ssh.exec(`python3 -c ${shq(script)}`)
+  const verdict = await execProbeVerdict(
+    ssh,
+    `python3 -c ${shq(script)}`,
+    ['OWNED', 'FOREIGN'],
+    'Could not verify SSH backend process ownership.'
+  )
 
-    return String(out || '').trim() === 'OWNED'
-  } catch (cause) {
-    const error: any = new Error('Could not verify SSH backend process ownership.')
-    error.kind = 'transient-transport-error'
-    error.cause = cause
-    throw error
-  }
+  return verdict === 'OWNED'
 }
 
 // Kill the stale dashboard ONLY if provably ours, then drop the lockfile.
@@ -1069,8 +1135,10 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
     `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
     `exec env HERMES_DESKTOP=1${opts.guestOnboarding === true ? ' HERMES_GUEST_ONBOARDING=1' : ''} ${hermes} ${profileArgs}${subCmd}`
 
-  const detachedShell = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
-  const detachedSpawn = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1" & echo $!)`
+  const detachedShell: string = `eval "exec $1>&-"; ${dashCmd} </dev/null >> ${logPath} 2>&1 & echo $!`
+  // The inner shell backgrounds Hermes and reports its PID; backgrounding the
+  // launcher too adds its unrelated PID to the value published in the lock.
+  const detachedSpawn: string = `child=$("$(command -v setsid || echo nohup)" sh -c ${shq(detachedShell)} hermes-update-child "$1")`
 
   if (!opts.ownershipId || !opts.lockMetadata) {
     return withRemoteUpdateMutex(
@@ -1090,7 +1158,7 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const reservationNonce = validateSpawnNonce(opts.reservationNonce || crypto.randomBytes(8).toString('hex'))
 
   return withRemoteUpdateMutex(
-    `umask 077 && mkdir -p "$(dirname ${reservation})"; ` +
+    `(umask 077 && mkdir -p "$(dirname ${reservation})"); ` +
       // reservation/lockPath/ownerPath are expandRemotePath() output — already
       // shell-quoted fragments ("$HOME"'/…'). Embed raw so the assignment
       // expands $HOME; shq() here would store the quote characters literally
@@ -1113,8 +1181,9 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
       // ${var//pat/rep} is a bashism — this payload runs under plain sh (dash
       // on Ubuntu), which aborts the whole script on it with "Bad
       // substitution" AFTER the child was spawned, orphaning the backend and
-      // skipping the lockfile publication. Substitute with sed instead.
-      `lock_json=$(printf '%s' ${shq(metadata)} | sed "s/__PID__/\${child}/"); ` +
+      // skipping the lockfile publication. Replace the quoted PID field with
+      // a JSON number so readLockfile and concurrent spawns accept the record.
+      `lock_json=$(printf '%s' ${shq(metadata)} | sed "s/\\"pid\\":\\"__PID__\\"/\\"pid\\":\${child}/"); ` +
       `temporary_lock="\${lock}.${reservationNonce}.tmp"; ` +
       `printf '%s' "$lock_json" > "$temporary_lock" && mv -f "$temporary_lock" "$lock" || { kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; exit 76; }; ` +
       `echo "$child"`,
@@ -1660,7 +1729,20 @@ async function connect(deps) {
       void 0
     }
 
-    await cleanupStale(ssh, ownershipId, ownedSpawn)
+    // This record IS the child this attempt spawned. A liveness probe that
+    // cannot be settled must not become "leave it running": assume alive so
+    // cleanupStale re-runs the ownership proof, which keeps the record when
+    // nothing can be proven and lets the next connect reap by exact ownership.
+    const pidAlive = await remotePidAlive(ssh, pid).catch(() => true)
+
+    try {
+      await cleanupStale(ssh, ownershipId, ownedSpawn, pidAlive)
+    } catch (cleanupError) {
+      // An unsettled ownership proof must not replace the boot failure the
+      // user needs to see; keep it reachable for diagnostics instead.
+      error.cleanupCause = cleanupError
+    }
+
     throw error
   }
 }
@@ -1692,6 +1774,7 @@ export {
   probeRemotePlatform,
   PROTOCOL_VERSION,
   readLockfile,
+  readRemoteInstallId,
   READY_RE,
   REMOTE_LOCK_DIR,
   remotePidAlive,

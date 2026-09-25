@@ -150,15 +150,46 @@ def _codex_cancelled(sess: Dict[str, Any], session_id: str, stage: str = "") -> 
     return True
 
 
+def _codex_client(httpx) -> Any:
+    """15s ``httpx.Client`` for the device-login flow with the CLI flow's 1 MiB auth-body cap (#55253).
+
+    The helpers take the ``httpx`` module as a parameter (tests inject a scripted one), so the
+    dashboard builds its own client here and only shares the response hook, not the client factory.
+    """
+    from hermes_cli.auth_codex import _cap_codex_response_body
+
+    return httpx.Client(timeout=httpx.Timeout(15.0), event_hooks={"response": [_cap_codex_response_body]})
+
+
+def _codex_post(httpx, url: str, **kwargs: Any) -> Any:
+    """One 15s POST for the device-login flow, mirroring ``auth_codex._codex_login_post``.
+
+    A transient transport blip (a dropped connection mid-flow) is retried twice with a small
+    linear backoff before propagating: losing the token exchange to a single SSL EOF wastes a
+    device-code approval the user already completed in the browser (#114610).
+    """
+    from hermes_cli.auth_codex import _is_transient_transport_error
+
+    attempt, attempts = 1, 3
+    while True:
+        try:
+            with _codex_client(httpx) as client:
+                return client.post(url, **kwargs)
+        except Exception as exc:
+            if attempt == attempts or not _is_transient_transport_error(exc):
+                raise
+            time.sleep(attempt)
+            attempt += 1
+
+
 def _codex_request_user_code(httpx) -> Dict[str, Any]:
     """Step 1: request device code; returns device_data with ``interval`` clamped (>= 3s)."""
     from hermes_cli.auth import CODEX_OAUTH_CLIENT_ID
 
-    with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-        resp = client.post(
-            f"{_CODEX_ISSUER}/api/accounts/deviceauth/usercode", json={"client_id": CODEX_OAUTH_CLIENT_ID},
-            headers=_JSON_HEADERS,
-        )
+    resp = _codex_post(
+        httpx, f"{_CODEX_ISSUER}/api/accounts/deviceauth/usercode", json={"client_id": CODEX_OAUTH_CLIENT_ID},
+        headers=_JSON_HEADERS,
+    )
     if resp.status_code != 200:
         raise RuntimeError(_codex_device_code_start_error(resp))
     device_data = resp.json()
@@ -170,16 +201,33 @@ def _codex_request_user_code(httpx) -> Dict[str, Any]:
 
 def _codex_poll_authorization(httpx, sess: Dict[str, Any], session_id: str) -> Any:
     """Step 2: poll until authorized. ``None`` = expired; ``_CANCELLED`` = user cancelled."""
+    from hermes_cli.auth_codex import _is_transient_transport_error
+
     deadline = time.monotonic() + sess["expires_in"]
     payload = {"device_auth_id": sess["device_auth_id"], "user_code": sess["user_code"]}
-    with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
+    max_consecutive_blips = 6  # same cap as the CLI poll loop: survives drops, fails fast on a dead network
+    consecutive_blips = 0
+    with _codex_client(httpx) as client:
         while time.monotonic() < deadline:
             if _codex_cancelled(sess, session_id):
                 return _CANCELLED
             time.sleep(sess["interval"])
             if _codex_cancelled(sess, session_id):
                 return _CANCELLED
-            poll = client.post(f"{_CODEX_ISSUER}/api/accounts/deviceauth/token", json=payload, headers=_JSON_HEADERS)
+            try:
+                poll = client.post(
+                    f"{_CODEX_ISSUER}/api/accounts/deviceauth/token", json=payload, headers=_JSON_HEADERS)
+            except Exception as exc:
+                if not _is_transient_transport_error(exc):
+                    raise
+                consecutive_blips += 1
+                if consecutive_blips >= max_consecutive_blips:
+                    raise RuntimeError(
+                        f"deviceauth/token poll failed after {consecutive_blips} consecutive"
+                        f" transport errors: {exc}") from exc
+                _log.info("oauth/device: openai-codex poll transport blip, retrying (session=%s)", session_id)
+                continue
+            consecutive_blips = 0
             if poll.status_code == 200:
                 return poll.json()
             if poll.status_code in {403, 404}:
@@ -196,16 +244,15 @@ def _codex_exchange_tokens(httpx, code_resp: Dict[str, Any]) -> Dict[str, str]:
     code_verifier = code_resp.get("code_verifier", "")
     if not authorization_code or not code_verifier:
         raise RuntimeError("device-auth response missing authorization_code/code_verifier")
-    with httpx.Client(timeout=httpx.Timeout(15.0)) as client:
-        token_resp = client.post(
-            CODEX_OAUTH_TOKEN_URL,
-            data={
-                "grant_type": "authorization_code", "code": authorization_code,
-                "redirect_uri": f"{_CODEX_ISSUER}/deviceauth/callback",
-                "client_id": CODEX_OAUTH_CLIENT_ID, "code_verifier": code_verifier,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
+    token_resp = _codex_post(
+        httpx, CODEX_OAUTH_TOKEN_URL,
+        data={
+            "grant_type": "authorization_code", "code": authorization_code,
+            "redirect_uri": f"{_CODEX_ISSUER}/deviceauth/callback",
+            "client_id": CODEX_OAUTH_CLIENT_ID, "code_verifier": code_verifier,
+        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
     if token_resp.status_code != 200:
         raise RuntimeError(f"token exchange returned {token_resp.status_code}")
     tokens = token_resp.json()
@@ -512,20 +559,39 @@ async def _start_device_code_flow(provider_id: str, profile: Optional[str] = Non
     return await starter(profile)
 
 
-def _oauth_provider_disconnect_command(provider: Dict[str, Any]) -> Optional[str]:
+def _claude_code_disconnect_command(platform: str) -> str:
+    """Host-native command that removes Claude Code's borrowed credential file.
+
+    Windows must not emit ``rm -f``. PowerShell aliases ``rm`` to ``Remove-Item``,
+    and ``-f`` binds both ``-Force`` and ``-Filter`` (AmbiguousParameter).
+    """
+    if platform == "win32":
+        literal = '"$HOME/.claude/.credentials.json"'
+        return (
+            f"if (Test-Path -LiteralPath {literal}) {{ "
+            f"Remove-Item -LiteralPath {literal} -Force -ErrorAction Stop }}"
+        )
+    rm_file = "rm -f ~/.claude/.credentials.json"
+    if platform == "darwin":
+        return f'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; {rm_file}'
+    return rm_file
+
+
+def _oauth_provider_disconnect_command(
+    provider: Dict[str, Any], platform: Optional[str] = None
+) -> Optional[str]:
     """Shell command that clears an external provider's credentials, or None.
 
     The disconnect API never silently deletes files another CLI owns; the GUI runs
     this in its embedded terminal so the user sees exactly what executes. Claude Code
     has no scriptable logout, so remove what logout would: the macOS Keychain entry
     and/or ``~/.claude/.credentials.json`` (the two ``read_claude_code_credentials()`` sources).
+    ``platform`` is the host the command will run on (default: this process). Pass it
+    explicitly in tests; do not fake ``sys.platform``.
     """
     if provider.get("flow") != "external" or provider.get("id") != "claude-code":
         return None
-    rm_file = "rm -f ~/.claude/.credentials.json"
-    if sys.platform == "darwin":
-        return f'security delete-generic-password -s "Claude Code-credentials" 2>/dev/null; {rm_file}'
-    return rm_file
+    return _claude_code_disconnect_command(platform or sys.platform)
 
 
 def _oauth_provider_disconnect_hint(provider: Dict[str, Any], status: Dict[str, Any]) -> Optional[str]:
@@ -606,13 +672,23 @@ def _clear_anthropic_auth() -> bool:
             oauth_file.unlink()
             cleared = True
     except Exception:
-        pass
+        _log.exception("disconnect anthropic OAuth file failed")
+        raise
     try:
         from hermes_cli.auth import clear_provider_auth
         cleared = clear_provider_auth("anthropic") or cleared
     except Exception:
-        pass
+        _log.exception("disconnect anthropic auth store failed")
+        raise
     return cleared
+
+
+def _disconnect_http_error(status_code: int, provider_name: str) -> HTTPException:
+    if status_code == 409:
+        detail = f"No stored credentials were removed for {provider_name}."
+    else:
+        detail = f"Failed to remove stored credentials for {provider_name}."
+    return HTTPException(status_code=status_code, detail=detail)
 
 
 @router.delete("/api/providers/oauth/{provider_id}")
@@ -630,19 +706,31 @@ async def disconnect_oauth_provider(provider_id: str, request: Request, profile:
         _reject_if_not_disconnectable(provider, _resolve_provider_status(provider_id, provider.get("status_fn")))
 
         if provider_id == "anthropic":
-            cleared = _clear_anthropic_auth()
+            try:
+                cleared = _clear_anthropic_auth()
+            except HTTPException:
+                raise
+            except Exception:
+                _log.exception("disconnect %s failed", provider_id)
+                raise _disconnect_http_error(500, provider["name"])
+            if not cleared:
+                raise _disconnect_http_error(409, provider["name"])
             _log.info("oauth/disconnect: %s", provider_id)
-            return {"ok": bool(cleared), "provider": provider_id}
+            return {"ok": True, "provider": provider_id}
         try:
             from hermes_cli.auth import clear_provider_auth, invalidate_nous_auth_status_cache
             cleared = clear_provider_auth(provider_id)
             if provider_id == "nous":
                 invalidate_nous_auth_status_cache()
+            if not cleared:
+                raise _disconnect_http_error(409, provider["name"])
             _log.info("oauth/disconnect: %s (cleared=%s)", provider_id, cleared)
-            return {"ok": bool(cleared), "provider": provider_id}
-        except Exception as e:
+            return {"ok": True, "provider": provider_id}
+        except HTTPException:
+            raise
+        except Exception:
             _log.exception("disconnect %s failed", provider_id)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise _disconnect_http_error(500, provider["name"])
 
     return await scoped_to_thread(profile, _run)
 

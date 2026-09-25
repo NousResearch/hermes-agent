@@ -150,9 +150,9 @@ async def get_dashboard_plugins(profile: Optional[str] = None):
 @router.get("/api/dashboard/plugins/rescan")
 async def rescan_dashboard_plugins():
     """Discover plugins and reconcile their backend routes without disconnecting clients."""
-    plugins = await asyncio.to_thread(_mount_plugin_api_routes, force_rescan=True)
+    report = await asyncio.to_thread(_mount_plugin_api_routes, force_rescan=True)
     _invalidate_plugins_hub_cache()
-    return {"ok": True, "count": len(plugins)}
+    return report
 
 
 @router.get("/api/dashboard/plugins/hub")
@@ -174,9 +174,9 @@ def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
         return result
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or fallback_error)
-    _mount_plugin_api_routes(force_rescan=rescan)
+    report = _mount_plugin_api_routes(force_rescan=rescan)
     _invalidate_plugins_hub_cache()
-    return result
+    return {**result, "api_routes": report}
 
 
 @router.get("/api/dashboard/plugins/catalog")

@@ -791,7 +791,7 @@ def _plugin_api_mount_skip_reason(plugin: Dict[str, Any], enabled_set: set, disa
 _plugin_api_mount_lock = threading.RLock()
 
 
-def _mount_plugin_api_routes(*, force_rescan: bool = False) -> list:
+def _mount_plugin_api_routes(*, force_rescan: bool = False) -> dict:
     """Reconcile launch-owned plugin APIs without restarting serve or its clients.
 
     Discovery is deliberately launch-owned (like dashboard themes), even when a
@@ -804,14 +804,31 @@ def _mount_plugin_api_routes(*, force_rescan: bool = False) -> list:
 
     with _plugin_api_mount_lock, _hermes_home_scope(get_process_hermes_home()), _config_profile_scope(None):
         plugins = _get_dashboard_plugins(force_rescan=force_rescan)
-        _sync_plugin_api_routes(app, plugins)
-        return plugins
+        report = _sync_plugin_api_routes(app, plugins)
+        return {"ok": not report["policy_error"], "count": len(plugins), **report}
 
 
-def _sync_plugin_api_routes(app: FastAPI, plugins: list) -> None:
+def _plugin_api_has_lifecycle(router: APIRouter) -> bool:
+    # FastAPI versions differ on whether the default lives in FastAPI or
+    # Starlette. Custom/composed lifespans may own resources without handlers.
+    default_lifespan_type = type(APIRouter().lifespan_context)
+    return bool(router.on_startup or router.on_shutdown) or not isinstance(
+        router.lifespan_context, default_lifespan_type
+    )
+
+
+def _sync_plugin_api_routes(app: FastAPI, plugins: list) -> dict:
     from hermes_cli.plugins_cmd import _get_enabled_set, _get_disabled_set
 
-    enabled_set, disabled_set = _get_enabled_set(), _get_disabled_set()
+    report = {"restart_required": [], "policy_error": False}
+    try:
+        enabled_set, disabled_set = _get_enabled_set(), _get_disabled_set()
+    except Exception:
+        # Unknown consent must never publish code, even for bundled plugins whose
+        # disabled status cannot be read. Retire existing routes, not the server.
+        _log.warning("Cannot read plugin activation policy; disabling plugin API routes", exc_info=True)
+        report["policy_error"] = True
+        plugins = []
     initial_mount = not hasattr(app.state, "plugin_api_mounts")
     mounted = getattr(app.state, "plugin_api_mounts", {})
     next_mounts = {}
@@ -837,6 +854,12 @@ def _sync_plugin_api_routes(app: FastAPI, plugins: list) -> None:
             if previous is not None and previous[0] == signature:
                 next_mounts[name] = previous
                 continue
+            if previous is not None and _plugin_api_has_lifecycle(previous[2].router):
+                # Its initialized globals belong to the boot generation. Even a
+                # handler-only edit must not execute/publish a fresh module.
+                next_mounts[name] = previous
+                report["restart_required"].append(name)
+                continue
             spec = importlib.util.spec_from_file_location(module_name, api_path)
             if spec is None or spec.loader is None:
                 raise ImportError(f"Cannot load plugin API file: {api_path}")
@@ -845,29 +868,39 @@ def _sync_plugin_api_routes(app: FastAPI, plugins: list) -> None:
             # the bytes we read: timestamp-based .pyc caches miss same-size saves.
             sys.modules[module_name] = mod
             exec(compile(source, str(api_path), "exec"), mod.__dict__)
+            if not initial_mount and _plugin_api_has_lifecycle(mod.router):
+                # A newly installed router (or one adding lifecycle hooks) has
+                # missed application startup. Do not run its services mid-flight.
+                report["restart_required"].append(name)
+                continue
             staged = APIRouter(dependency_overrides_provider=app)
             staged.include_router(mod.router, prefix=f"/api/plugins/{name}")
             if initial_mount:
                 # Preserve startup/shutdown/lifespan registration at server boot.
                 # A live rescan replaces handlers, not running plugin services.
-                app.include_router(APIRouter(
-                    on_startup=mod.router.on_startup, on_shutdown=mod.router.on_shutdown,
-                    lifespan=mod.router.lifespan_context,
-                ))
+                # The router's lifespan owns its event callbacks as well. Copying
+                # them to the app too would run startup/shutdown twice.
+                app.include_router(APIRouter(lifespan=mod.router.lifespan_context))
             next_mounts[name] = (signature, staged.routes, mod)
             _log.info("Mounted plugin API routes: /api/plugins/%s/", name)
         except Exception as exc:
-            if previous_module is None:
-                sys.modules.pop(module_name, None)
-            else:
-                sys.modules[module_name] = previous_module
-            if name in mounted:
-                next_mounts[name] = mounted[name]
             _log.warning("Failed to load plugin %s API routes: %s", name, exc)
+        finally:
+            if name not in next_mounts:
+                # Retain route/module references, not arbitrary import side
+                # effects. A rejected import may already have changed the process.
+                if previous_module is None:
+                    sys.modules.pop(module_name, None)
+                else:
+                    sys.modules[module_name] = previous_module
+                if name in mounted:
+                    next_mounts[name] = mounted[name]
 
+    for name in report["restart_required"]:
+        _log.warning("Plugin %s API routes require a backend restart (router lifecycle)", name)
     # Publish a new list, never edit one another request may be iterating. Old
-    # in-flight handlers finish normally. Plugin routes must precede the SPA's
-    # catch-all, including plugins first installed after the app started.
+    # in-flight requests retain their selected route/module references. Plugin
+    # routes must precede the SPA, including plugins installed after app startup.
     old_routes = {id(route) for _, routes, _ in mounted.values() for route in routes}
     new_routes = [route for _, routes, _ in next_mounts.values() for route in routes]
     app.router.routes = new_routes + [route for route in app.router.routes if id(route) not in old_routes]
@@ -876,3 +909,4 @@ def _sync_plugin_api_routes(app: FastAPI, plugins: list) -> None:
     for name, (_, _, mod) in mounted.items():
         if name not in next_mounts and sys.modules.get(mod.__name__) is mod:
             sys.modules.pop(mod.__name__, None)
+    return report

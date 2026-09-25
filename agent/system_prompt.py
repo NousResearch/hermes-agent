@@ -724,6 +724,28 @@ def _join_tier(parts: List[Optional[str]]) -> str:
     return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
 
+def _constitution_part(agent: Any) -> Optional[str]:
+    """Testable soul constitution: a project SOUL.md with the constitution
+    structure compiles into the ``<soul>`` section AFTER project instructions.
+    A soul that fails the entry lint is rejected (logged, nothing injected),
+    so untested axioms never reach the model. Free-form identity SOUL.md files
+    are not constitutions and are left to the identity slot. A failure here
+    must never block prompt construction."""
+    try:
+        from agent.soul_constitution import load_constitution_section
+    except Exception:
+        return None
+    try:
+        cwd = resolve_context_cwd()
+        home = _agent_home(agent)
+        return load_constitution_section(
+            str(cwd) if cwd is not None else None,
+            str(home) if home is not None else None,
+        )
+    except Exception:
+        return None
+
+
 def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) -> Dict[str, str]:
     """Assemble the system prompt as three ordered cache tiers: ``stable`` (identity,
     guidance and the coding brief), ``context`` (caller ``system_message``, project
@@ -764,6 +786,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if system_message is not None:
         context_parts.append(system_message)
     context_parts.extend(_context_files_part(agent, _ctx_len, _soul_loaded))
+    # Testable soul constitution, when the project declares one: compiled
+    # axioms go right after project instructions (never before them).
+    _constitution = _constitution_part(agent)
+    if _constitution:
+        context_parts.append(_constitution)
     if coding_workspace_parts:
         context_parts.extend([*coding_workspace_parts, *coding_trailing_parts, *post_workspace_parts])
     else:

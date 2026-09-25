@@ -127,6 +127,64 @@ def test_normalize_parses_string_envelope_batch():
     assert entries == calls
 
 
+# ---------------------------------------------------------------------------
+# String-envelope repair (#122711): a gateway emitting the envelope with dropped
+# separators (the reported class: "Expecting ',' delimiter" whose column tracks the
+# payload length) must execute instead of being rejected with an opaque offset.
+# ---------------------------------------------------------------------------
+
+
+def test_string_envelope_dropped_comma_in_arguments_executes():
+    """#122711: the issue's exact shape — colon + non-ASCII values, one separator
+    missing INSIDE the inner arguments string."""
+    inner = json.dumps(
+        {"date": "2026-09-25", "slug": "sistema/gbrain",
+         "summary": "Check giornaliero in cron alle 10:30 su N5095 con backup crontab"},
+        ensure_ascii=False)
+    broken = inner.replace(', "summary"', ' "summary"')
+    envelope = json.dumps([{"name": "cron", "arguments": broken}], ensure_ascii=False)
+    entries, err = normalize_tool_call_entries({"calls": envelope})
+    assert err is None
+    assert entries[0]["name"] == "cron"
+    assert entries[0]["arguments"]["slug"] == "sistema/gbrain"
+    assert entries[0]["arguments"]["summary"].startswith("Check giornaliero")
+
+
+def test_string_envelope_dropped_comma_between_members_executes():
+    """#122711: separator missing in the OUTER envelope (between "name" and
+    "arguments"), with literal control chars also present."""
+    envelope = '[{"name": "cron"\n "arguments": {"date": "2026-09-25", "at": "10:30"}}]'
+    entries, err = normalize_tool_call_entries({"calls": envelope})
+    assert err is None
+    assert entries[0]["arguments"] == {"date": "2026-09-25", "at": "10:30"}
+
+
+def test_string_envelope_trailing_comma_executes():
+    envelope = '[{"name": "cron", "arguments": {"a": 1,}}]'
+    entries, err = normalize_tool_call_entries({"calls": envelope})
+    assert err is None
+    assert entries[0]["arguments"] == {"a": 1}
+
+
+def test_truncated_arguments_fail_closed_with_payload_echo():
+    """Content-complete malformations are repaired; truncation is NOT — executing a
+    call cut off mid-stream would run it with half the intended payload (same policy
+    as the native path). The rejection must echo the payload so the failure is
+    debuggable instead of an opaque JSON offset (#122711)."""
+    envelope = json.dumps([{"name": "todo_list", "arguments": '{"todos": ['}])
+    entries, err = normalize_tool_call_entries({"calls": envelope})
+    assert entries == []
+    assert "unrepairable" in err
+    assert '{"todos": [' in err
+
+
+def test_unparseable_envelope_error_echoes_payload():
+    entries, err = normalize_tool_call_entries({"calls": "nope{"})
+    assert entries == []
+    assert "unrepairable" in (err or "")
+    assert "nope{" in err
+
+
 def test_normalize_parses_string_envelope_single_dict():
     """#114484: a stringified single dict normalizes to a batch of one."""
     entries, err = normalize_tool_call_entries(

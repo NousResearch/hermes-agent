@@ -3671,6 +3671,8 @@ export const zh = defineLocale({
     queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
     queueStuckTitle: '排队消息未发送',
     queueStuckBody: '排队的对话多次发送失败。它仍在队列中，请重试发送。',
+    queueDroppedTitle: '已丢弃排队内容',
+    queueDroppedBody: '该后台队列条目因会话多次尝试后仍无法恢复而被丢弃。队列中的其他内容不受影响。',
     previewUnavailable: '预览不可用',
     previewLabel: label => `预览 ${label}`,
     couldNotPreview: label => `无法预览 ${label}`,

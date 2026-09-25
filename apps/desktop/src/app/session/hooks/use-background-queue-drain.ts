@@ -8,12 +8,19 @@ import {
   $queuedPromptsBySession,
   getQueuedPrompts,
   MAX_AUTO_DRAIN_ATTEMPTS,
+  noteQueuedPromptDrainFailure,
   type QueuedPromptEntry,
   removeQueuedPrompt,
   shouldAutoDrain
 } from '@/store/composer-queue'
 import { notify } from '@/store/notifications'
-import { $sessions, $sessionsLoading, idsShareLineage } from '@/store/session'
+import {
+  $sessions,
+  $sessionsLoading,
+  getSessionOwnerHint,
+  idsShareLineage,
+  sessionMatchesStoredId
+} from '@/store/session'
 import { $workingSessionIds } from '@/store/session-states'
 
 import type { SubmitTextOptions } from './use-prompt-actions/utils'
@@ -92,13 +99,48 @@ export function useBackgroundQueueDrain({
       drainingSessionIdsRef.current.add(sessionKey)
 
       const onFail = () => {
-        const failures = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
+        const failures = (drainFailuresRef.current.get(entry.id) ?? entry.drainFailures ?? 0) + 1
         drainFailuresRef.current.set(entry.id, failures)
+        // Persist the budget with the queue: a restart must not replay four
+        // more rejections (and the exhaustion notice) against a session that
+        // is exactly as dead as it was when the process exited (#98015).
+        noteQueuedPromptDrainFailure(sessionKey, entry.id)
 
         if (failures >= MAX_AUTO_DRAIN_ATTEMPTS) {
+          // The session rejected every drain attempt. Discovery has settled
+          // (the effect gates on it), so the loaded list plus owner hints are
+          // authoritative: a session no row or hint answers to — by id or
+          // lineage — is gone from this backend (deleted from another
+          // surface, or its stored resume refuses permanently). Owner hints
+          // count: a hidden bot chat never occupies the recents list, yet
+          // its queue is exactly the one worth preserving. Its queued prompt
+          // can never send; keep it and every future boot replays this
+          // cycle for nothing. Drop it and say so quietly.
+          const sessionKnown =
+            $sessions.get().some(session => sessionMatchesStoredId(session, sessionKey)) ||
+            getSessionOwnerHint(sessionKey) !== undefined
+
+          if (!sessionKnown) {
+            removeQueuedPrompt(sessionKey, entry.id)
+            notify({
+              id: `composer-background-queue-stuck-${sessionKey}`,
+              kind: 'info',
+              title: t.composer.queueDroppedTitle,
+              message: t.composer.queueDroppedBody
+            })
+
+            return
+          }
+
+          // The conversation still exists — the runtime just would not come
+          // back (backend restarting, resume refusing). Keep the entry: it
+          // is real data the user can still send from the queue panel, and a
+          // manual send clears the retry budget. Downgrade the notice from
+          // the old error banner: "not sent, still queued, try again" is
+          // accurate, "message not sent" as an ERROR read as data loss.
           notify({
             id: `composer-background-queue-stuck-${sessionKey}`,
-            kind: 'error',
+            kind: 'info',
             title: t.composer.queueStuckTitle,
             message: t.composer.queueStuckBody
           })
@@ -186,7 +228,7 @@ export function useBackgroundQueueDrain({
 
       const entry = entries[0]
 
-      if (!entry || (drainFailuresRef.current.get(entry.id) ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
+      if (!entry || (drainFailuresRef.current.get(entry.id) ?? entry.drainFailures ?? 0) >= MAX_AUTO_DRAIN_ATTEMPTS) {
         continue
       }
 

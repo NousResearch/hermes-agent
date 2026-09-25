@@ -4272,6 +4272,9 @@ export const deOverrides = {
     queueStuckTitle: 'Eingereihte Nachricht nicht gesendet',
     queueStuckBody:
       'Ein eingereihter Turn konnte nicht gesendet werden. Er ist noch in der Warteschlange — versuchen Sie, ihn erneut zu senden.',
+    queueDroppedTitle: 'Eingereihte Eingabe verworfen',
+    queueDroppedBody:
+      'Dieser Hintergrund-Eintrag wurde verworfen, da seine Sitzung nach wiederholten Versuchen nicht fortgesetzt werden konnte. Die übrige Warteschlange ist unverändert.',
     previewUnavailable: 'Vorschau nicht verfügbar',
     previewLabel: label => `Vorschau ${label}`,
     couldNotPreview: label => `Vorschau von ${label} fehlgeschlagen`,

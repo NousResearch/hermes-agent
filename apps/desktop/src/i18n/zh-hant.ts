@@ -3011,6 +3011,8 @@ export const zhHant = defineLocale({
     queueResumeTip: '已被停止操作暫停 — 繼續傳送排隊的回合',
     queueStuckTitle: '佇列訊息未送出',
     queueStuckBody: '佇列中的對話多次傳送失敗。它仍在佇列中，請重試傳送。',
+    queueDroppedTitle: '已捨棄佇列內容',
+    queueDroppedBody: '該背景佇列項目因工作階段多次嘗試後仍無法恢復而遭捨棄。佇列中的其他內容不受影響。',
     previewUnavailable: '預覽不可用',
     previewLabel: label => `預覽 ${label}`,
     couldNotPreview: label => `無法預覽 ${label}`,

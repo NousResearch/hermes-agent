@@ -2381,6 +2381,9 @@ export const ar = defineLocale({
     queueDelete: 'حذف من الطابور',
     queueStuckTitle: 'لم تُرسل الرسالة في قائمة الانتظار',
     queueStuckBody: 'ظل دور في قائمة الانتظار يفشل في الإرسال. ما زال في قائمة الانتظار — حاول إرساله مرة أخرى.',
+    queueDroppedTitle: 'تم إسقاط عنصر قائمة الانتظار',
+    queueDroppedBody:
+      'أُسقط هذا العنصر في الخلفية لأن جلسته تعذّر استئنافها بعد محاولات متكررة. بقية قائمة الانتظار لم تتأثر.',
     previewUnavailable: 'المعاينة غير متاحة',
     previewLabel: label => `معاينة ${label}`,
     couldNotPreview: label => `تعذرت معاينة ${label}`,

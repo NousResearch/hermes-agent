@@ -73,6 +73,68 @@ async def test_suppress_runs_handler_without_typing_or_final_delivery():
 
 
 @pytest.mark.asyncio
+async def test_adapter_gate_runs_before_typing_and_background_delivery(monkeypatch):
+    adapter = _adapter()
+    runner = _runner_for_surfaces(adapter)
+    event = _event()
+    key = build_session_key(event.source)
+
+    import hermes_cli.plugins as plugin_mod
+
+    monkeypatch.setattr(
+        plugin_mod,
+        "invoke_hook",
+        lambda *_args, **_kwargs: [
+            {
+                "action": "rewrite",
+                "text": "private model input",
+                "delivery_mode": "suppress",
+                "persist_user_message": "[private inbound event]",
+            }
+        ],
+    )
+
+    async def slow_handler(_event):
+        await asyncio.sleep(0.05)
+        return "public response"
+
+    adapter.set_pre_gateway_dispatch_handler(runner._apply_pre_gateway_dispatch)
+    adapter._message_handler = AsyncMock(side_effect=slow_handler)
+
+    await adapter.handle_message(event)
+    await adapter._session_tasks[key]
+
+    assert event.text == "private model input"
+    assert event.delivery_mode == "suppress"
+    assert event.persist_user_message == "[private inbound event]"
+    assert event.gateway_dispatch_applied is True
+    adapter._message_handler.assert_awaited_once_with(event)
+    adapter.send_typing.assert_not_awaited()
+    adapter.stop_typing.assert_not_awaited()
+    adapter._send_with_retry.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handler_tightening_delivery_contract_blocks_final_response():
+    adapter = _adapter()
+    key = _session_key()
+    event = _event()
+    adapter._active_sessions[key] = asyncio.Event()
+
+    async def gated_handler(gated_event):
+        gated_event.delivery_mode = "suppress"
+        return "public response"
+
+    adapter._message_handler = AsyncMock(side_effect=gated_handler)
+
+    await adapter._process_message_background(event, key)
+
+    adapter._send_with_retry.assert_not_awaited()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_normal_event_after_suppressed_event_delivers_normally():
     adapter = _adapter()
     key = _session_key()

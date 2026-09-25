@@ -2190,6 +2190,7 @@ _RETRYABLE_ERROR_PATTERNS = (
 # reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
 # ``None`` when the response was already delivered (e.g. via streaming).
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+PreGatewayDispatchHandler = Callable[[MessageEvent], Optional[MessageEvent]]
 
 
 def resolve_channel_prompt(
@@ -2369,6 +2370,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._pre_gateway_dispatch_handler: Optional[PreGatewayDispatchHandler] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -2816,6 +2818,13 @@ class BasePlatformAdapter(ABC):
         an optional response string.
         """
         self._message_handler = handler
+
+    def set_pre_gateway_dispatch_handler(
+        self,
+        handler: Optional[PreGatewayDispatchHandler],
+    ) -> None:
+        """Install the synchronous gate that runs before any public activity."""
+        self._pre_gateway_dispatch_handler = handler
 
     def set_topic_recovery_fn(
         self,
@@ -4644,6 +4653,24 @@ class BasePlatformAdapter(ABC):
         # Offloaded: the sync hook must not block the loop.
         await asyncio.to_thread(self._apply_topic_recovery, event)
 
+        # Apply the generic inbound gate before session keying, busy routing,
+        # typing indicators, acknowledgments, or any other public activity.
+        # The runner marks the event so its defensive call is a no-op.
+        if not getattr(event, "internal", False):
+            pre_dispatch = getattr(self, "_pre_gateway_dispatch_handler", None)
+            if pre_dispatch is not None:
+                try:
+                    gated_event = pre_dispatch(event)
+                except Exception:
+                    logger.exception(
+                        "[%s] pre_gateway_dispatch handler failed; blocking inbound event",
+                        self.name,
+                    )
+                    return
+                if gated_event is None:
+                    return
+                event = gated_event
+
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
@@ -4891,7 +4918,7 @@ class BasePlatformAdapter(ABC):
             )
 
         async def _stop_typing_task() -> None:
-            if delivery_suppressed:
+            if typing_task is None:
                 return
             await self._stop_typing_refresh(
                 event.source.chat_id,
@@ -4904,6 +4931,13 @@ class BasePlatformAdapter(ABC):
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             is_ephemeral_response = isinstance(response, EphemeralReply)
+
+            # Defense in depth for custom handlers that tighten the delivery
+            # contract while processing. Production runner events are gated
+            # before this task starts, so typing never begins for them.
+            delivery_suppressed = (
+                delivery_suppressed or event.delivery_mode == "suppress"
+            )
 
             # The handler and agent still run in suppress mode, but this adapter
             # must not expose their response, attachments, or fallback text.

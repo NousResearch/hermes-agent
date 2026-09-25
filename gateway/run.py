@@ -7232,6 +7232,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
+            adapter.set_pre_gateway_dispatch_handler(self._apply_pre_gateway_dispatch)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -8068,6 +8069,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         continue
 
                     adapter.set_message_handler(self._handle_message)
+                    adapter.set_pre_gateway_dispatch_handler(self._apply_pre_gateway_dispatch)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -8781,6 +8783,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_message_handler(
                 self._make_profile_message_handler(profile_name)
             )
+            adapter.set_pre_gateway_dispatch_handler(
+                self._make_profile_pre_gateway_dispatch_handler(profile_name)
+            )
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
@@ -8812,6 +8817,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
             return await self._handle_message(event)
+        return _handler
+
+    def _make_profile_pre_gateway_dispatch_handler(self, profile_name: str):
+        """Stamp the routed profile before applying the adapter-level gate."""
+        def _handler(event):
+            try:
+                if getattr(event, "source", None) is not None and not event.source.profile:
+                    event.source.profile = profile_name
+            except Exception:
+                pass
+            return self._apply_pre_gateway_dispatch(event)
         return _handler
 
     @staticmethod

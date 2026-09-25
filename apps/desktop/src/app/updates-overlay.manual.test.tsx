@@ -20,7 +20,6 @@ afterEach((): void => {
   $updateOverlayOpen.set(false)
   $updateStatus.set(null)
   resetUpdateApplyState()
-  $backendUpdateApply.set({ ...$backendUpdateApply.get(), stage: 'idle', message: '', command: null, error: null })
   Reflect.deleteProperty(window, 'hermesDesktop')
   vi.restoreAllMocks()
 })
@@ -83,7 +82,7 @@ it('names the backend, not a local install, when a remote refusal carries a bare
     stage: 'manual',
     message: '',
     percent: null,
-    error: 'update_not_in_place',
+    error: null,
     command: 'docker pull nousresearch/hermes-agent:latest',
     log: []
   })
@@ -98,4 +97,27 @@ it('names the backend, not a local install, when a remote refusal carries a bare
   expect(screen.getByText(en.updates.manualBodyBackend)).toBeTruthy()
   expect(screen.getByText(en.updates.manualPickedUpBackend)).toBeTruthy()
   expect(screen.queryByText(en.updates.manualBody)).toBeNull()
+})
+
+it('keeps the client title for a command-less client manual stage', async (): Promise<void> => {
+  $updateOverlayTarget.set('client')
+  $updateOverlayOpen.set(true)
+  $updateApply.set({
+    applying: false,
+    stage: 'manual',
+    message: 'Hermes will pick up the new version next time you launch it.',
+    percent: null,
+    error: null,
+    command: null,
+    log: []
+  })
+  await act(async (): Promise<void> => {
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <UpdatesOverlay />
+      </I18nProvider>
+    )
+  })
+  expect(screen.getByText(en.updates.manualTitle)).toBeTruthy()
+  expect(screen.queryByText(en.updates.manualUnavailableTitle)).toBeNull()
 })

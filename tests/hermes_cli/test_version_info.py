@@ -1,6 +1,9 @@
 import json
+import os
 from pathlib import Path
 import subprocess
+
+import pytest
 
 from hermes_cli.version_info import (
     VersionInfo,
@@ -188,6 +191,156 @@ def test_get_version_info_takes_the_version_a_calver_only_release_shipped(tmp_pa
     assert info.base_version == "0.21.4"
     assert info.distance == 1
     assert info.derived_version == f"0.21.4+1.g{git('rev-parse', '--short=7', 'HEAD')}"
+
+
+def test_stale_unknown_stamp_defers_to_live_checkout(tmp_path, monkeypatch):
+    """A stamp naming the live commit but no resolvable version must not win.
+
+    ``write_source_stamp`` published this checkout when its only merged tags
+    were CalVer (``v2026.9.24``) and a canary, so the semver walk both sides
+    share recorded ``baseVersion: unknown``. The tree can resolve a version as
+    soon as a semver release tag becomes reachable (or a CalVer tag's
+    pyproject carries one) — a placeholder that pins "unknown" forever while
+    the git walk right behind it would return 0.21.5 is a lost fact, not a
+    provenance decision. The stamp is skipped; git answers.
+    """
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        result = subprocess.run(
+            ["git", *args], cwd=repo, text=True, capture_output=True, check=True,
+            env={"HOME": str(tmp_path), "PATH": __import__("os").environ["PATH"]},
+        )
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Hermes Test")
+    git("config", "user.email", "hermes@example.invalid")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "0.21.5"\n', encoding="utf-8"
+    )
+    git("add", "pyproject.toml")
+    git("commit", "-qm", "release")
+    git("tag", "v2026.9.24")
+
+    # The stamp this checkout was left with: written while the pyproject at
+    # the CalVer tag still read 0.0.0, so the version walk could not answer.
+    (repo / "install-stamp.json").write_text(
+        json.dumps(
+            {
+                "commit": git("rev-parse", "HEAD"),
+                "source": "git",
+                "updateMechanism": "self",
+                "baseVersion": "unknown",
+                "displayVersion": f"git.{git('rev-parse', '--short=7', 'HEAD')}",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: repo / "install-stamp.json")
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: repo)
+
+    info = get_version_info()
+
+    assert info.base_version == "0.21.5"
+    assert info.distance == 0
+    assert info.derived_version == "0.21.5"
+    assert info.commit == git("rev-parse", "HEAD")
+
+
+def test_stamped_unknown_version_still_wins_without_git(tmp_path, monkeypatch):
+    """A sealed install's stamp is authoritative even when it says unknown.
+
+    The fallback through to git exists only for a stamp that sits beside the
+    ``.git`` it describes. A Docker/Nix stamp in a stamp-only tree has no live
+    checkout to defer to, so the placeholder it carries is the truth.
+    """
+    stamp = {
+        "commit": "a" * 40,
+        "source": "git",
+        "updateMechanism": "self",
+        "baseVersion": "unknown",
+        "displayVersion": "unknown",
+    }
+    stamp_file = tmp_path / "install-stamp.json"
+    stamp_file.write_text(json.dumps(stamp))
+    monkeypatch.setattr("hermes_cli.version_info._resolve_stamp_file", lambda: stamp_file)
+    monkeypatch.setattr("hermes_cli.version_info._resolve_repo_dir", lambda: None)
+
+    info = get_version_info()
+
+    assert info.base_version == "unknown"
+    assert info.derived_version == "unknown"
+    assert info.commit == "a" * 40
+
+
+def test_run_git_reads_git_output_as_utf8_not_the_locale_codec(tmp_path, monkeypatch):
+    """Git speaks bytes; a release tag's blob may be undecodable in the locale.
+
+    ``git show <tag>:pyproject.toml`` returns UTF-8, and real tags carry an
+    em-dash (``\\x80\\x94``) that GBK cannot decode. Reading it with
+    ``subprocess.run(text=True)`` hands the bytes to the console codec: on a
+    cp936 install the reader thread raises ``UnicodeDecodeError``,
+    ``result.stdout`` comes back None, and the CalVer fallback reports no
+    version at all — so ``GET /api/health`` answers ``unknown`` even though
+    ``git describe`` worked one line earlier. The interpreter the desktop app
+    spawns (``-I``, which ignores ``PYTHONUTF8``) is exactly that install, on
+    a default Windows console.
+
+    Assert the decoding contract directly, so this fails on any host where
+    ``_run_git`` would fall back to the locale codec.
+    """
+    from hermes_cli import version_info
+    from hermes_cli.version_info import _run_git
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"]}
+        result = subprocess.run(
+            ["git", *args], cwd=repo, check=True, text=True, capture_output=True, env=env
+        )
+        return result.stdout.strip()
+
+    git("init", "-q")
+    git("config", "user.name", "Hermes Test")
+    git("config", "user.email", "hermes@example.invalid")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "hermes-agent"\nversion = "0.21.5"\ndescription = "agent — with an em-dash"\n',
+        encoding="utf-8",
+    )
+    git("add", "pyproject.toml")
+    git("commit", "-qm", "release")
+    git("tag", "v2026.9.24")
+
+    # No text= wrapper: whatever _run_git passes to subprocess.run must leave
+    # decoding to it. A wrapper that asks for locale text is the regression.
+    captured = {}
+    real_run = subprocess.run
+
+    def spy_run(*args, **kwargs):
+        captured.update(kwargs)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(version_info.subprocess, "run", spy_run)
+    _run_git(repo, "show", "v2026.9.24:pyproject.toml")
+
+    assert "text" not in captured or captured["text"] is not True, (
+        "_run_git asks subprocess for locale-decoded text; a cp936 console then "
+        "loses any non-ASCII byte a release tag's pyproject carries"
+    )
+    assert "encoding" not in captured or captured["encoding"] in (None, "utf-8"), (
+        "_run_git must not push a non-UTF-8 encoding onto git's output"
+    )
+
+    shown = _run_git(repo, "show", "v2026.9.24:pyproject.toml")
+    assert shown is not None
+    assert 'version = "0.21.5"' in shown
+    assert "—" in shown
 
 
 def test_resolve_stamp_file_honors_install_root(tmp_path, monkeypatch):

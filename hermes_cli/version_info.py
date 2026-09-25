@@ -56,14 +56,27 @@ def _derived_version(
 
 
 def _run_git(repo_dir: Path, *args: str) -> str | None:
+    # Bytes out, UTF-8 in. `text=True` decodes with the locale codec, and the
+    # Windows console default (cp936 here) cannot read the em-dash a release
+    # tag's pyproject carries — `git show <tag>:pyproject.toml` then raises
+    # UnicodeDecodeError inside a subprocess reader thread, `result.stdout`
+    # comes back None, and every version derived from that tag silently
+    # degrades to "unknown" (a `-I` launcher ignores PYTHONUTF8, so this bites
+    # exactly the interpreter the desktop app spawns). Hermes's own files are
+    # UTF-8 and git's output is bytes: decode explicitly.
     try:
         result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, timeout=3, cwd=str(repo_dir)
+            ["git", *args], capture_output=True, timeout=3, cwd=str(repo_dir)
         )
     except (OSError, subprocess.SubprocessError):
         return None
-    value = (result.stdout or "").strip()
-    return value if result.returncode == 0 and value else None
+    if result.returncode != 0:
+        return None
+    try:
+        value = result.stdout.decode("utf-8", "replace").strip()
+    except (OSError, ValueError):
+        return None
+    return value or None
 
 
 def _resolve_repo_dir() -> Path | None:
@@ -162,6 +175,14 @@ def _stamp_version_info() -> VersionInfo | None:
     if stamp_source == "git" and (stamp_file.parent / ".git").exists():
         live_commit = _run_git(stamp_file.parent, "rev-parse", "HEAD")
         if live_commit and live_commit != commit:
+            return None
+        # A stamp written before the tree could resolve a release version
+        # (a checkout whose only merged tags were CalVer or canary) records
+        # ``baseVersion: unknown`` while naming the live commit. That gap is
+        # not a fact about this install — the same git walk that wrote it
+        # resolves the version the moment a semver tag becomes reachable — so
+        # defer to git rather than pin the placeholder forever.
+        if live_commit == commit and data.get("baseVersion") in (None, "", "unknown"):
             return None
 
     base_version = data.get("baseVersion") or "unknown"

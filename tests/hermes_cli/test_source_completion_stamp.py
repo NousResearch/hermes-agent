@@ -146,3 +146,29 @@ def test_full_checkout_refreshes_release_tags_before_publishing_identity(tmp_pat
     assert stamp is not None
     assert (stamp["baseVersion"], stamp["distance"]) == (versions[1][1], 1)
     assert stamp["commit"] == commit == git(checkout, "rev-parse", "HEAD")
+    # A release-tag refresh must not turn an explicitly full clone back into a
+    # promisor clone, including after a previous partial-clone repair.
+    assert subprocess.run(["git", "config", "--get", "remote.origin.promisor"],
+                          cwd=checkout, env=env, capture_output=True).returncode == 1
+    assert subprocess.run(["git", "config", "--get", "remote.origin.partialclonefilter"],
+                          cwd=checkout, env=env, capture_output=True).returncode == 1
+
+
+def test_release_tag_refresh_preserves_existing_partial_clone_filter(tmp_path):
+    from hermes_cli.gitlock import fetch_full_commit_graph
+
+    server = _repo(tmp_path)
+    env = {"HOME": str(tmp_path), "PATH": os.environ["PATH"]}
+
+    def git(root: Path, *args: str) -> str:
+        return subprocess.run(["git", *args], cwd=root, env=env, check=True,
+                              capture_output=True, text=True).stdout.strip()
+
+    git(server, "config", "uploadpack.allowFilter", "true")
+    checkout = tmp_path / "partial"
+    git(server, "clone", "-q", "--no-tags", "--filter=blob:none", server.as_uri(), str(checkout))
+    assert git(checkout, "config", "--get", "remote.origin.partialclonefilter") == "blob:none"
+    fetch_full_commit_graph(checkout)
+    assert git(checkout, "config", "--get", "remote.origin.partialclonefilter") == "blob:none"
+    assert git(checkout, "config", "--bool", "--get", "remote.origin.promisor") == "true"
+    assert git(checkout, "rev-parse", "refs/tags/v0.21.4") == git(server, "rev-parse", "refs/tags/v0.21.4")

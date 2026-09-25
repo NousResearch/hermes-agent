@@ -455,10 +455,10 @@ def _profile_declared_efforts(provider: Any, model: Optional[str], base_url: Any
             if inferred and inferred != name:
                 inferred_profile = get_provider_profile(inferred)
                 if inferred_profile is not None:
-                    declared = inferred_profile.supported_reasoning_efforts(model)
+                    declared = inferred_profile.supported_reasoning_efforts(model, base_url=base_url)
         if declared is None:
             profile = get_provider_profile(name) if name else None
-            declared = profile.supported_reasoning_efforts(model) if profile is not None else None
+            declared = profile.supported_reasoning_efforts(model, base_url=base_url) if profile is not None else None
     except Exception as exc:
         logger.debug("profile-declared efforts lookup failed: %s", exc)
         return None

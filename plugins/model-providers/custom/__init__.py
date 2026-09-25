@@ -35,7 +35,9 @@ def _looks_like_ollama_endpoint(base_url: str | None) -> bool:
 class CustomProfile(ProviderProfile):
     """Custom/Ollama local provider — think=false and num_ctx support."""
 
-    def supported_reasoning_efforts(self, model: str | None) -> tuple[str, ...]:
+    def supported_reasoning_efforts(
+        self, model: str | None, base_url: str | None = None
+    ) -> tuple[str, ...]:
         """The OpenAI-compat wire set, mirroring this profile's own chat-completions clamp.
 
         Without this declaration the Responses transport clamps onto the OpenAI
@@ -48,9 +50,13 @@ class CustomProfile(ProviderProfile):
 
         Groq's two GPT-OSS models are the one undiscoverable-endpoint exception with a
         known, narrower, model-specific vocabulary (low/medium/high) — declare it here
-        too so this path and ``build_api_kwargs_extras`` agree (#119xxx).
+        too so this path and ``build_api_kwargs_extras`` agree (#121995). Scoped to the
+        Groq host as well as the model name: this profile is the single shared instance
+        behind every ``custom:<name>`` alias, so a same-named model on an unrelated
+        relay (``custom:my-relay``) must not inherit Groq's narrower vocabulary just
+        because the model string matches (#121995 review).
         """
-        if is_groq_gpt_oss_model(model):
+        if is_groq_gpt_oss_model(model) and base_url_host_matches(str(base_url or ""), "api.groq.com"):
             return GROQ_GPT_OSS_EFFORTS
         return OPENAI_COMPAT_WIRE_EFFORTS
 

@@ -14,10 +14,10 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # auditable); bump the pin via PR after validating a new release.
 #
 # How this pin was validated (catalog policy: "version validated on macOS").
-# On macOS, `npx -y apple-notes-mcp@2.8.49`:
+# On macOS, `npx -y apple-notes-mcp@2.9.12`:
 #   - completes an MCP `initialize` handshake reporting serverInfo.version
-#     2.8.49 — i.e. the bytes npx resolved are the bytes pinned here;
-#   - returns a full `tools/list` of 66 tools, every one carrying a description;
+#     2.9.12 — i.e. the bytes npx resolved are the bytes pinned here;
+#   - returns a full `tools/list` of 77 tools, every one carrying a description;
 #   - resolves all 20 `tools.default_enabled` entries below against that
 #     list, so no allow-listed name went stale across the bump.
 # Tools added since the previous pin are deliberately left OUT of
@@ -88,16 +88,36 @@ source: https://github.com/sweetrb/apple-notes-mcp
 # 15 tools added since 2.8.13, none removed: 66 tools, all 20
 # default_enabled entries resolve.
 #
-# The 30 tools added since 2.8.3 (native objects and tags, attachments,
+# 2.9.12 (2026-09-24) is re-pinned on the same footing — a defect in a
+# default_enabled tool: `get-note-content` on a note with a large embedded
+# image failed outright rather than returning the body (#237/#242). 2.9.10
+# first improved the failure's error message/cause/remedy, but the read
+# itself still failed; 2.9.12 fixes the actual cause — the AppleScript
+# output cap was 64 MB against a ~110 MB body from the embedded image — by
+# raising the accepted size to 512 MB, so the read now succeeds. Nothing
+# else in 2.9.1-2.9.30 touches a default_enabled tool as a defect fix:
+# 2.9.14 (`search-notes` gains `matchedIn`/`includeWordCount`), 2.9.18
+# (`list-folders` gains a `smartFolder` flag) and 2.9.27 (`list-attachments`
+# gains `stale`/`fallbackStale` flags) are all capability additions, not
+# fixes, so none clears the defect-only carve-out on their own — though all
+# three are additive JSON fields, so nothing here is a compatibility break.
+# 2.9.0 added the opt-in private native-writer foundation
+# (`native-helper-status`, `native-note-state`) and the many #181-roadmap
+# tools since are none of them default-enabled.
+# 11 tools added since 2.8.49, none removed: 77 tools, all 20
+# default_enabled entries resolve.
+#
+# The 41 tools added since 2.8.3 (native objects and tags, attachments,
 # folder rename and delete-by-id, Shortcut-bridge setup, the read-only
 # database query / block / table / transcript readers, HTML and Markdown
-# export) all stay out of default_enabled.
+# export, the opt-in native-writer foundation) all stay out of
+# default_enabled.
 transport:
   type: stdio
   command: "npx"
   args:
     - "-y"
-    - "apple-notes-mcp@2.8.49"
+    - "apple-notes-mcp@2.9.12"
 
 # Drives Apple Notes locally via AppleScript; no credentials.
 auth:

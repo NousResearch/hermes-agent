@@ -64,7 +64,7 @@ export interface Translations {
     message: string
     copyUrl: string
     close: string
-  };
+  }
   intro: {
     stock: Record<string, string[]>
     custom: (label: string) => string[]

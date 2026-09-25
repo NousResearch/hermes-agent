@@ -70,6 +70,13 @@ class StreamConsumerConfig:
     # long-running responses (e.g. reasoning models that stream slowly). Ported from
     # openclaw/openclaw#72038. The gateway enables this selectively per-platform.
     fresh_final_after_seconds: float = 0.0
+    # When True, once the turn-final answer is confirmed delivered, best-effort
+    # delete every earlier segment message from this turn (tool-call /
+    # commentary bubbles sent as their own messages) so only the clean final
+    # answer remains visible on screen. Never re-sends the final answer, so
+    # unlike fresh_final_after_seconds above it cannot flash a duplicate.
+    # Gateway enables this selectively per-platform (currently Telegram only).
+    cleanup_interim_segments: bool = False
     # "auto"/"draft": native drafts when adapter+chat support it, else "edit"
     # (progressive editMessageText).  "off" is handled by the gateway.
     transport: str = "edit"
@@ -869,6 +876,11 @@ class GatewayStreamConsumer(StreamTransportMixin, StreamFallbackMixin, StreamThi
                 self._mark_final_delivered()
         elif self._accumulated:
             await self._finalize_edit_path(tick)
+        # Only tidy up interim segment bubbles once the turn-final answer is
+        # actually confirmed on screen — never on a failed/partial turn,
+        # where those bubbles may be the only record of what was delivered.
+        if self._final_content_delivered:
+            await self._cleanup_interim_segment_messages()
 
     async def _finalize_edit_path(self, tick: "_Tick") -> None:
         """Edit-transport finalize (the non-native got_done branches, in priority order)."""

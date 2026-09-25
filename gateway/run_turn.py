@@ -2693,10 +2693,19 @@ class GatewayTurnMixin:
             float(getattr(scfg, "fresh_final_after_seconds", 0.0) or 0.0)
             if source.platform == Platform.TELEGRAM else 0.0
         )
+        # Interim tool-call/commentary bubble cleanup: same Telegram-only
+        # gating as fresh_final_after_seconds above (see StreamingConfig /
+        # StreamConsumerConfig docstrings for why this is a distinct,
+        # duplicate-safe mechanism).
+        _cleanup_interim = bool(
+            getattr(scfg, "cleanup_interim_segments", False)
+            and source.platform == Platform.TELEGRAM
+        )
         _consumer_cfg = StreamConsumerConfig(
             edit_interval=scfg.edit_interval, buffer_threshold=scfg.buffer_threshold,
             cursor=_effective_cursor, buffer_only=_buffer_only,
             fresh_final_after_seconds=_fresh_final_secs, transport=scfg.transport or "edit",
+            cleanup_interim_segments=_cleanup_interim,
             chat_type=getattr(source, "chat_type", "") or "",
         )
         return _consumer_cfg, _pause_typing_before_finalize

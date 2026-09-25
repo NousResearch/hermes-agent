@@ -1683,6 +1683,15 @@ try {
         }
     }
 
+    # G3 guard rail: verify config parity / gateway liveness / MCP fingerprints
+    # against the pre-update snapshot BEFORE declaring success. The verifier
+    # rolls back (git reset + config restore) and exits non-zero on failure;
+    # the receipt's verification section carries the per-check detail.
+    $verifyStep = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.update_verification") "post-update-verify"
+    if ($verifyStep.Code -ne 0) {
+        $manualMsg = "Update verification failed and the update was rolled back. See logs/update_receipts/ for the per-check detail, then run 'hermes update' again."
+    }
+
     if ($res.Code -eq 0 -and -not $desktopBuildFailed) {
         $finalCode = 0
         $finalMsg = "Update complete."

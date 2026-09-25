@@ -296,7 +296,7 @@ Three things to check:
 
 ### I picked a model but Hermes switched providers on me
 
-On OpenRouter (or any aggregator), bare model names resolve *within* the aggregator first. So `claude-sonnet-4` on OpenRouter becomes `anthropic/claude-sonnet-4.6`, staying on your OpenRouter auth. But if you typed `claude-sonnet-4` on a native Anthropic auth, it would stay as `claude-sonnet-4-6`. If you see an unexpected provider switch, check that your current provider is what you expect — the picker always shows the current main at the top of the dialog.
+On OpenRouter (or any aggregator), bare model names resolve *within* the aggregator first. So `claude-sonnet-4` on OpenRouter becomes `anthropic/claude-sonnet-4.6`, staying on your OpenRouter auth. But if you typed `claude-sonnet-4` on a native Anthropic auth, it would stay as `claude-sonnet-4-6`. If you see an unexpected provider switch, check that your current provider is what you expect — the picker always shows the current main at the top of the dialog. Note that saving an inferred provider is refused: if you change only the model in the Settings model field and the provider would have to be *inferred* from the model name (even from an ambient API key) and isn't already your selected provider, the save is rejected with an error naming the provider — pick the provider together with the model on the **Models** page (or in the chat model picker), or set `model.provider` explicitly first, then save. (This is deliberate: possessing a credential is a capability, not a provider selection. A brand-new profile with no model configured yet still takes its first pick.)
 
 ## Alternative methods
 
@@ -310,7 +310,7 @@ Inside any `hermes chat` session:
 /model claude-opus-4.6 --once                    # next turn only, then auto-restores
 ```
 
-`--global` does the same thing the dashboard's **Change** button does, plus it switches the running session in-place.
+`--global` does the same thing the dashboard's **Change** button does, plus it switches the running session in-place — with one exception: a provider is only saved when you named it (`--provider <slug>`, `provider:model` syntax, or the picker). A bare `/model <name>` that would silently move you to a different provider *infers* the provider from the model name, and an inferred provider is not persisted — even with `--global` or `model.persist_switch_by_default: true` — unless it's already your selected provider or the profile's first pick, because possessing a credential for a provider is a capability, not a selection. The session switch still applies, a warning names the inferred provider, and config.yaml is left untouched. To save the route, name the provider: `/model <model> --provider <slug> --global`, or pick provider and model together in `hermes model`.
 
 `--once` switches for a single turn and restores the previous model afterward — on success, error, or interrupt alike. Nothing is persisted: a gateway restart mid-turn comes back on the original model. Useful for escalating one hard question to an expensive model ("ask Opus just this once") or dropping to a cheap model for a throwaway query.
 

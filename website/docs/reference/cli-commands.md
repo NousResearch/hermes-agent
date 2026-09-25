@@ -310,6 +310,8 @@ By default, `/model` changes apply **to the current session only**. Add `--globa
 /model claude-sonnet-4 --global     # Switch and save as new default
 ```
 
+A provider is only saved when you named it. A bare `/model <name>` infers the provider from the model name, and an inferred provider change is not written to `config.yaml` — even with `--global` — unless that provider is already your selected one or this is the profile's first model pick; the switch stays session-only and a warning names the provider. To save a cross-provider route, name the provider: `/model <model> --provider <slug> --global`, or pick provider and model together in `hermes model`.
+
 :::info What if I only see OpenRouter models?
 If you've only configured OpenRouter, `/model` will only show OpenRouter models. To add another provider (Anthropic, DeepSeek, Copilot, etc.), exit your session and run `hermes model` from the terminal.
 :::

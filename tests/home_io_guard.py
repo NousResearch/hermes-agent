@@ -11,20 +11,41 @@ import sqlite3
 import sys
 import threading
 
-_INTERPRETER_PREFIXES = tuple({
-    Path(p).resolve() for p in (sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix)
-} | {
-    # A PM-activated developer shell runs sys.prefix's python against a dependency generation
-    # whose site-packages sits under the (real) Hermes home; third-party imports from it are the
-    # interpreter's installation, not Hermes state.
-    Path(p).resolve() for p in sys.path if p and Path(p).name in ("site-packages", "dist-packages")
-} | {
-    # The default install checks the repo out INSIDE the home (install.sh:
-    # INSTALL_DIR=$HERMES_HOME/hermes-agent). Reading test data, sources for tracebacks, or the
-    # checkout's own .venv is not Hermes state; without this every run from a default install
-    # trips on its first traceback.
-    Path(__file__).resolve().parent.parent,
-})
+def _prefix_forms(path: str) -> tuple[Path, ...]:
+    # Register BOTH the raw and the resolved form of every interpreter path.
+    # A PM-managed install keeps the interpreter under the guarded root
+    # (~/.hermes/hermes-agent/.hermes-runtime/python/<generation>/cpython-3.11-…-none →
+    # cpython-3.11.15-…-none), and CPython imports stdlib modules through the
+    # UNRESOLVED symlink (zoneinfo.__file__, and sysconfig's is_python_build
+    # probe of <runtime>/bin/Modules/Setup). check() refuses on the lexical
+    # root match BEFORE its resolve()-based escape runs, so a resolve()-only
+    # allowlist misses those files and trips the wire on the interpreter's own
+    # imports — reproduced on plain origin/main from any worktree outside the
+    # home (the main checkout escapes only because the checkout-root prefix
+    # happens to cover .hermes-runtime lexically).
+    raw = Path(path)
+    resolved = raw.resolve()
+    return (raw,) if resolved == raw else (raw, resolved)
+
+
+_INTERPRETER_PREFIXES = tuple(
+    form
+    for p in (
+        # The interpreter's own installation (a PM-managed python under ~/.hermes):
+        # stdlib source reads (linecache, traceback) are not Hermes state either.
+        sys.prefix, sys.base_prefix, sys.exec_prefix, sys.base_exec_prefix,
+        # A PM-activated developer shell runs sys.prefix's python against a dependency
+        # generation whose site-packages sits under the (real) Hermes home; third-party
+        # imports from it are the interpreter's installation, not Hermes state.
+        *(e for e in sys.path if e and Path(e).name in ("site-packages", "dist-packages")),
+        # The default install checks the repo out INSIDE the home (install.sh:
+        # INSTALL_DIR=$HERMES_HOME/hermes-agent). Reading test data, sources for
+        # tracebacks, or the checkout's own .venv is not Hermes state; without this
+        # every run from a default install trips on its first traceback.
+        str(Path(__file__).resolve().parent.parent),
+    )
+    for form in _prefix_forms(p)
+)
 
 
 class HomeIOGuard:

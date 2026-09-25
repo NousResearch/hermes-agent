@@ -250,8 +250,15 @@ def _commit_model_switch(
         _apply_reasoning_after_switch(cli, reasoning_effort, persist_global=persist_global and not one_turn)
     if persist_global:
         from hermes_cli.model_switch import persist_model_selection
-        persist_model_selection(result)
-        _cprint("    Saved to config.yaml (--global)" if picker else "    Saved to config.yaml")
+        refusal = persist_model_selection(result)
+        if refusal:
+            # Inferred provider route — nothing was written. Carry it on the shared warning
+            # channel (result.warning_message) and print it here, after the summary has
+            # already run: a refused --global must never print the "Saved" line.
+            result.warning_message = f"{result.warning_message} | {refusal}" if result.warning_message else refusal
+            _cprint(f"    ⚠ {refusal}")
+        else:
+            _cprint("    Saved to config.yaml (--global)" if picker else "    Saved to config.yaml")
     elif one_turn:
         _cprint("    (next turn only — restores after one response)")
     else:

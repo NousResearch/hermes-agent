@@ -54,11 +54,12 @@ def _model_switch_skew_guard() -> Optional[str]:
     )
 
 
-async def _persist_model_switch_to_config(result, config_path) -> None:
+async def _persist_model_switch_to_config(result, config_path) -> Optional[str]:
     """Write-through a resolved /model switch to the profile config at ``config_path``, off the
-    event loop (the route comparison can do cold-start disk I/O)."""
+    event loop (the route comparison can do cold-start disk I/O). Returns the refusal message
+    when an inferred provider route is not authorized to persist (#115079), else ``None``."""
     from hermes_cli.model_switch import persist_model_selection
-    await asyncio.to_thread(persist_model_selection, result, config_path)
+    return await asyncio.to_thread(persist_model_selection, result, config_path)
 
 
 @dataclasses.dataclass
@@ -199,7 +200,8 @@ class GatewayModelCommandsMixin:
         """Persist a committed switch: session DB, next-turn note, config write-through, override map.
 
         Returns the warning for a ``--global`` switch whose ``config.yaml`` write or stale-override
-        cleanup failed (the switch then stays a session override), else ``None``.
+        cleanup failed (the switch then stays a session override), the refusal when an inferred
+        provider route was not authorized to persist (#115079), else ``None``.
         """
         from hermes_cli.model_switch import format_model_for_display
 
@@ -249,7 +251,10 @@ class GatewayModelCommandsMixin:
         global_error: Optional[str] = None
         if ctx.persist_global:
             try:
-                await _persist_model_switch_to_config(result, ctx.config_path)
+                # An inferred provider route returns a refusal instead of writing (#115079);
+                # it rides the same channel as a failed write — the switch truthfully stays
+                # session-only and the override below is kept.
+                global_error = await _persist_model_switch_to_config(result, ctx.config_path)
             except Exception as e:
                 logger.warning("Failed to persist model switch: %s", e)
                 global_error = f"config.yaml not updated ({str(e) or type(e).__name__})"

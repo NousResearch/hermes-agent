@@ -903,7 +903,46 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
             prev_provider = str(disk_model.get("provider") or "").strip()
             if model_val != prev_default and prev_provider:
                 new_provider, resolved_model = _infer_provider_on_model_change(model_val, prev_provider)
-                if new_provider and new_provider.strip().lower() != prev_provider.lower():
+                # Compare CANONICAL ids: disk may hold an alias form of the same provider
+                # (``provider: qwen`` ≡ ``alibaba``); a raw compare would read the ladder
+                # handing back the canonical spelling as a provider CHANGE and fire the gate
+                # below on an edit that moves no provider (a false 400).
+                from hermes_cli.models import normalize_provider
+                if new_provider and normalize_provider(new_provider) != normalize_provider(prev_provider):
+                    # Credential possession is a CAPABILITY, not a selection (standing ruling,
+                    # PR #107366): the inference ladder above fires on any ambient *_API_KEY,
+                    # and saving the inferred provider here would durably record a route the
+                    # user never named — the incident write class of issue #115079. Refuse
+                    # with 400 unless the shared gate authorizes it (target is the auth-store
+                    # active provider, or the config is fresh); this propagates like the other
+                    # validation rejections in this function (see the HTTPException note above).
+                    # The gate is called with no config_path because this handler runs inside
+                    # the profile scope whose contextvar-resolved get_config_path() is the same
+                    # path the caller's save_config resolves through the same profile-scope
+                    # contextvar — a future caller OUTSIDE a profile scope must thread
+                    # config_path through explicitly.
+                    # Same input-naming semantics as the CLI's step-e provenance: the flat
+                    # Model field accepts the documented ``provider/model`` / bare-provider
+                    # forms, and an input that NAMES the detected provider is a selection —
+                    # gating it answered ``alibaba/qwen3.6-plus`` with the factually false
+                    # "never selected by you" 400 (round-1 review). A ``vendor/model`` slug
+                    # the ladder answers with the openrouter SENTINEL names the vendor, not
+                    # the aggregator — still gated, exactly like the CLI.
+                    from hermes_cli.model_switch import (
+                        inferred_provider_persist_refusal, raw_input_names_detected_provider)
+                    # ``has_model`` above guarantees ``model_val`` is a non-empty str.
+                    named = raw_input_names_detected_provider(
+                        str(model_val), new_provider,
+                        user_providers=disk_cfg.get("providers"),
+                        custom_providers=disk_cfg.get("custom_providers"))
+                    if not named:
+                        refusal = inferred_provider_persist_refusal(
+                            new_provider,
+                            "Pick the provider together with the model on the Models page "
+                            "(or in the chat model picker), or set model.provider explicitly "
+                            "first, then save.")
+                        if refusal:
+                            raise HTTPException(status_code=400, detail=refusal)
                     norm_provider, norm_model = _normalize_main_model_assignment(new_provider, resolved_model)
                     result = _validated_main_model_selection(disk_cfg, norm_provider, norm_model)
                     disk_model = _apply_main_model_assignment(disk_model, result)

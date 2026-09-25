@@ -113,6 +113,30 @@ def test_newest_good_backup_contains_complete_committed_generation(store):
     assert backup.stat().st_mode & 0o077 == 0
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode contract")
+def test_existing_world_readable_store_is_tightened_before_publish(store):
+    jobs.save_jobs([{"id": "prior", "prompt": "sensitive"}])
+    os.chmod(store, 0o644)
+
+    jobs.save_jobs([{"id": "prior", "prompt": "sensitive"}, {"id": "new"}])
+
+    assert stat.S_IMODE(store.stat().st_mode) == 0o600
+    assert stat.S_IMODE(store.with_name("jobs.json.last-good").stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode contract")
+@pytest.mark.parametrize("policy,mode", [("HERMES_MANAGED", 0o640), ("HERMES_CONTAINER", 0o644)])
+def test_managed_and_container_store_mode_stays_operator_owned(store, monkeypatch, policy, mode):
+    jobs.save_jobs([{"id": "prior"}])
+    os.chmod(store, mode)
+    monkeypatch.setenv(policy, "nixos" if policy == "HERMES_MANAGED" else "1")
+
+    jobs.save_jobs([{"id": "prior"}, {"id": "new"}])
+
+    assert stat.S_IMODE(store.stat().st_mode) == mode
+    assert stat.S_IMODE(store.with_name("jobs.json.last-good").stat().st_mode) == mode
+
+
 def test_lock_timeout_refuses_mutation(store, monkeypatch):
     jobs.save_jobs([{"id": "prior"}])
     before = store.read_bytes()

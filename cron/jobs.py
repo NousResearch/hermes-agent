@@ -1479,11 +1479,16 @@ def _unlink_quiet(path: Optional[str]) -> None:
 
 
 def _set_staged_metadata(fd: int, before: Optional[os.stat_result]) -> None:
-    """Apply the previous store's owner/mode before the staged file is synced and published."""
+    """Set owner/mode before fsync; retain managed/container mode, tighten ordinary files."""
+    from hermes_cli.config import is_managed, _container_or_chmod_skipped
+
     if before is not None and hasattr(os, "fchown") and getattr(os, "geteuid", lambda: 1)() == 0:
         os.fchown(fd, before.st_uid, before.st_gid)
     if hasattr(os, "fchmod"):
-        os.fchmod(fd, stat.S_IMODE(before.st_mode) if before is not None else 0o600)
+        mode = (stat.S_IMODE(before.st_mode)
+                if before is not None and (is_managed() or _container_or_chmod_skipped())
+                else 0o600)
+        os.fchmod(fd, mode)
 
 
 def _stage_jobs_payload(jobs_file: Path, jobs: List[Dict[str, Any]],

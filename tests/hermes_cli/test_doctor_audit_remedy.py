@@ -53,3 +53,28 @@ def test_clean_tree_reports_no_known_vulnerabilities(capsys):
     out, issues = _run_audit_one(capsys, ["--workspaces=false"], _audit_json())
     assert "no known vulnerabilities" in out
     assert issues == []
+
+
+def test_root_audit_row_is_not_mislabeled_as_agent_browser(monkeypatch, tmp_path, capsys):
+    """agent-browser is a pm-managed precompiled binary (pm/packages.py::AgentBrowser,
+    staged via BinaryPackage.stage()) with no node_modules/lockfile of its own left after
+    staging, so there is nothing under it for npm to audit. The root package.json row
+    (js-yaml, semver, eslint tooling) must not claim to be auditing agent-browser (#122223).
+    """
+    import hermes_cli.doctor as doctor_mod
+    from gateway.platforms import whatsapp_common
+
+    project = tmp_path / "project"
+    (project / "node_modules").mkdir(parents=True)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_tools, "_safe_which", lambda cmd: "/usr/bin/npm" if cmd == "npm" else None)
+    monkeypatch.setattr(whatsapp_common, "resolve_whatsapp_bridge_dir", lambda: tmp_path / "no-whatsapp-bridge")
+
+    completed = subprocess.CompletedProcess([], 0, stdout=_audit_json(), stderr="")
+    monkeypatch.setattr(doctor_tools.subprocess, "run", lambda *a, **kw: completed)
+
+    doctor_tools._check_npm_audit(False)
+
+    out = capsys.readouterr().out
+    assert "agent-browser" not in out.lower()
+    assert "Root npm package deps" in out

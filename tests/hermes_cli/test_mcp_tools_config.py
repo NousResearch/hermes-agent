@@ -89,3 +89,39 @@ def test_empty_include_reopens_with_nothing_preselected():
     assert checklist.call_args.args[2] == set()
     mock_save.assert_not_called()
     assert config["mcp_servers"]["github"]["tools"] == {"include": []}
+
+
+def test_shorthand_filter_checklist_rewrites_canonical():
+    """``tools: "a,b"`` shorthand is an include whitelist the checklist must accept (PR #122381):
+    it preselects the whitelist like registration, and saving rewrites the canonical dict form
+    instead of crashing on item assignment into the string."""
+    config = {"mcp_servers": {"github": {"command": "npx", "tools": "create_issue,search_repos"}}}
+    tools = [
+        ("create_issue", "Create an issue"),
+        ("delete_repo", "Delete a repo"),
+        ("search_repos", "Search repos"),
+    ]
+
+    # User unchecks search_repos (index 2) from the shorthand-preselected {0, 2}
+    with patch(_PROBE, return_value={"github": tools}), \
+         patch(_CHECKLIST, return_value={0}) as checklist, \
+         patch(_SAVE) as mock_save:
+        _configure_mcp_tools_interactive(config)
+
+    assert checklist.call_args.args[2] == {0, 2}
+    mock_save.assert_called_once()
+    assert config["mcp_servers"]["github"]["tools"] == {"include": ["create_issue"]}
+
+
+def test_apply_mcp_change_accepts_shorthand_filter():
+    """``hermes tools enable|disable server:tool`` must accept a shorthand ``tools`` filter
+    (same TypeError/AttributeError class as the interactive writers, PR #122381): the exclude
+    entry lands beside the canonical include whitelist."""
+    from hermes_cli.tools_config_mcp import _apply_mcp_change
+
+    config = {"mcp_servers": {"github": {"command": "npx", "tools": "a,b"}}}
+
+    failed = _apply_mcp_change(config, ["github:c"], "disable")
+
+    assert not failed
+    assert config["mcp_servers"]["github"]["tools"] == {"include": ["a", "b"], "exclude": ["c"]}

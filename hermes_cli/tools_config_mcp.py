@@ -10,6 +10,7 @@ from hermes_cli.cli_output import (
 from hermes_cli.colors import Colors, color
 from hermes_cli.toolset_scope import (
     _TOOLSET_PLATFORM_RESTRICTIONS, toolset_allowed_for_platform as _toolset_allowed_for_platform)
+from tools.mcp_tool_common import mutable_tools_filter, normalize_tools_filter
 
 
 def _mcp_match_filter():
@@ -119,7 +120,10 @@ def _configure_mcp_tools_interactive(config: dict):
             _print_info(f"  {server_name}: no tools found")
             continue
 
-        tools_cfg = mcp_servers.get(server_name, {}).get("tools") or {}
+        # A shorthand filter (`tools: "a,b"` / list) is an include whitelist; read it in
+        # canonical form so the checklist sees the same selection registration honors.
+        tools_cfg = normalize_tools_filter(
+            mcp_servers.get(server_name, {}).get("tools"), f"mcp_servers.{server_name}.tools")
         # ``include: []`` is an explicit block-all whitelist, not "unfiltered" (#12865).
         include_raw, exclude_raw = tools_cfg.get("include"), tools_cfg.get("exclude")
         include_set = {str(p) for p in include_raw} if isinstance(include_raw, list) else None
@@ -140,7 +144,7 @@ def _configure_mcp_tools_interactive(config: dict):
             _print_info(f"  {server_name}: no changes")
             continue
 
-        tools_cfg = mcp_servers.setdefault(server_name, {}).setdefault("tools", {})
+        tools_cfg = mutable_tools_filter(mcp_servers.setdefault(server_name, {}), f"mcp_servers.{server_name}.tools")
         _apply_mcp_checklist(server_name, tools_cfg, tool_names, chosen, include_set, exclude_set, match)
 
         _print_success(f"  {server_name}: {len(chosen)} enabled, {len(tools) - len(chosen)} disabled")
@@ -173,7 +177,7 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
         if server_name not in mcp_servers:
             failed_servers.add(server_name)
             continue
-        tools_cfg = mcp_servers[server_name].setdefault("tools", {})
+        tools_cfg = mutable_tools_filter(mcp_servers[server_name], f"mcp_servers.{server_name}.tools")
         exclude = list(tools_cfg.get("exclude") or [])
         if action != "disable":
             exclude = [t for t in exclude if t != tool_name]

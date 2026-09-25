@@ -945,3 +945,47 @@ def test_mcp_list_reports_shorthand_tools_selection(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "x_docs" in out
     assert "2 selected" in out
+
+
+def _saved_servers(tmp_path) -> dict:
+    import hermes_yaml as yaml
+
+    with open(tmp_path / "config.yaml", encoding="utf-8") as f:
+        return yaml.safe_load(f)["mcp_servers"]
+
+
+def _run_configure_with_shorthand_pick(monkeypatch, chosen):
+    """Drive ``cmd_mcp_configure`` non-interactively over a ``tools: "a,b"`` shorthand config."""
+    from unittest.mock import MagicMock
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+    monkeypatch.setattr("sys.stdin", mock_stdin)
+    monkeypatch.setattr(
+        "hermes_cli.mcp_config._probe_single_server",
+        lambda name, cfg: [("a", ""), ("b", ""), ("c", "")],
+    )
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", lambda *args, **kwargs: chosen)
+    from hermes_cli.mcp_config import cmd_mcp_configure
+
+    cmd_mcp_configure(_make_args(name="x"))
+
+
+def test_configure_shorthand_tools_saves_canonical_include(tmp_path, monkeypatch):
+    """``tools: "a,b"`` shorthand must not crash the configure save path (PR #122381 review):
+    ``setdefault("tools", {})`` hands back the string and item assignment raised TypeError.
+    The picker rewrites the filter in canonical dict form."""
+    _seed_config(tmp_path, {"x": {"url": "https://x.example.com/mcp", "tools": "a,b"}})
+
+    _run_configure_with_shorthand_pick(monkeypatch, {0, 2})
+
+    assert _saved_servers(tmp_path)["x"]["tools"] == {"include": ["a", "c"]}
+
+
+def test_configure_shorthand_tools_select_all_clears_filter(tmp_path, monkeypatch):
+    """Selecting every tool of a shorthand-filtered server drops the filter entirely."""
+    _seed_config(tmp_path, {"x": {"url": "https://x.example.com/mcp", "tools": "a,b"}})
+
+    _run_configure_with_shorthand_pick(monkeypatch, {0, 1, 2})
+
+    assert "tools" not in _saved_servers(tmp_path)["x"]

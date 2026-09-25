@@ -19,7 +19,7 @@ from hermes_cli.colors import Colors, color
 from hermes_constants import display_hermes_home
 from hermes_cli.mcp_security import validate_mcp_server_entry
 from tools.mcp_tool_config import _ENV_VAR_PATTERN
-from tools.mcp_tool_common import _env_ref_name, mcp_server_enabled, normalize_tools_filter
+from tools.mcp_tool_common import _env_ref_name, mcp_server_enabled, mutable_tools_filter, normalize_tools_filter
 
 logger = logging.getLogger(__name__)
 
@@ -1068,13 +1068,13 @@ def cmd_mcp_configure(args):
         if not new_exclude:
             server_entry.pop("tools", None)
         else:
-            server_entry.setdefault("tools", {})
-            server_entry["tools"]["exclude"] = new_exclude
-            server_entry["tools"].pop("include", None)
+            tools_cfg = mutable_tools_filter(server_entry, f"mcp_servers.{name}.tools")
+            tools_cfg["exclude"] = new_exclude
+            tools_cfg.pop("include", None)
     else:
-        server_entry.setdefault("tools", {})
-        server_entry["tools"]["include"] = [tool_names[i] for i in sorted(chosen)]
-        server_entry["tools"].pop("exclude", None)
+        tools_cfg = mutable_tools_filter(server_entry, f"mcp_servers.{name}.tools")
+        tools_cfg["include"] = [tool_names[i] for i in sorted(chosen)]
+        tools_cfg.pop("exclude", None)
 
     config.setdefault("mcp_servers", {})[name] = server_entry
     save_config(config)

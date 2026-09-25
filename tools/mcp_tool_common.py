@@ -56,6 +56,19 @@ def normalize_tools_filter(value: Any, label: str) -> dict:
     return {}
 
 
+def mutable_tools_filter(entry: dict, label: str) -> dict:
+    """Return the entry's ``tools`` filter as a mutable canonical dict, stored back into *entry*.
+
+    Config writers (``hermes mcp configure``, the ``hermes tools`` MCP checklists) mutate the
+    filter in place. A shorthand value (``"a,b"`` / list — see normalize_tools_filter) must be
+    rewritten as its canonical dict first: ``dict.setdefault("tools", {})`` hands back the
+    existing string and the next item assignment raises TypeError (#122381).
+    """
+    tools_cfg = dict(normalize_tools_filter(entry.get("tools"), label))
+    entry["tools"] = tools_cfg
+    return tools_cfg
+
+
 def mcp_field(obj, snake: str, camel: str, default=None):
     """Read an MCP model field across the 1.x -> 2.x rename to snake_case. Pydantic aliases
     don't apply to attribute access, so ``getattr(result, "isError", False)`` silently returns

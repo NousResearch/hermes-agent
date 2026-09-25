@@ -419,6 +419,31 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+def _venv_abi_matches(venv_dir: Path) -> bool:
+    """True when the venv was built for the running interpreter's ABI.
+
+    A venv from another Python (e.g. the pre-PM 3.11 tree under a PM-managed
+    3.14 runtime) imports pure-Python packages fine but fails every binary
+    extension (pydantic_core, ...). Unmarked/unparseable trees keep the
+    legacy try-it behavior.
+    """
+    try:
+        cfg = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return True
+    marker = next(
+        (line for line in cfg.splitlines() if line.strip().startswith("version_info")),
+        None,
+    )
+    if marker is None or "=" not in marker:
+        return True
+    try:
+        major, minor = marker.split("=", 1)[1].strip().split(".")[:2]
+        return (int(major), int(minor)) == tuple(sys.version_info[:2])
+    except (ValueError, IndexError):
+        return True
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -428,9 +453,21 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
     project_root = Path(__file__).resolve().parent.parent
     candidates: list[Path] = []
+    # PM-managed installs: the committed venv matches the running interpreter.
+    try:
+        from pm.environments import committed_venv
+
+        committed = committed_venv(project_root)
+    except Exception:
+        committed = None
+    if committed is not None:
+        candidates.append(Path(committed))
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))
     candidates.append(project_root / "venv")
+    # An ABI-mismatched venv shadows the right one and breaks binary
+    # extensions, so matching candidates go first; the rest stay as fallback.
+    candidates.sort(key=lambda v: not _venv_abi_matches(v))
 
     seen: set[str] = set()
     for venv_dir in candidates:

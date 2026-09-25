@@ -134,3 +134,35 @@ def test_unentitled_managed_search_names_the_gateway(monkeypatch, tmp_path, loca
     assert "Nous Tool Gateway" in error and "hermes tools" in error
     assert "PERPLEXITY_API_KEY" not in error
     assert local_gateway == []
+
+
+@pytest.mark.parametrize("tier,logged_in,error,allowed", [
+    (None, True, None, True),
+    ("anonymous", True, None, False),
+    (None, False, None, False),
+    (None, True, "account unavailable", False),
+])
+def test_fast_search_entitlement_is_independent_of_paid_gateway(
+    monkeypatch, tmp_path, local_gateway, tier, logged_in, error, allowed,
+):
+    from hermes_cli.config import atomic_config_write
+    from hermes_cli.nous_account import NousPortalAccountInfo
+    from tools import managed_tool_gateway, web_tools
+    from tests.tools.conftest import register_all_web_providers
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    atomic_config_write(tmp_path / "config.yaml", {"web": {"backend": "nous", "keyless_rescue": False}})
+    monkeypatch.delenv("PERPLEXITY_API_KEY", raising=False)
+    account = NousPortalAccountInfo(
+        logged_in=logged_in, source="account_api", fresh=True,
+        account_tier=tier, paid_service_access=False, error=error,
+    )
+    monkeypatch.setattr("hermes_cli.nous_account.get_nous_portal_account_info", lambda **kw: account)
+    monkeypatch.setattr(managed_tool_gateway, "managed_nous_tools_enabled", lambda **kw: False)
+    register_all_web_providers()
+
+    result = json.loads(web_tools.web_search_tool("local fixture", limit=3))
+    paths = [path for path, _, _ in local_gateway]
+    assert ("/perplexity/search" in paths) is allowed
+    assert "/v2/search" not in paths  # a free search must not spend on managed Firecrawl
+    assert not result["success"]

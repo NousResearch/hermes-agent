@@ -166,7 +166,14 @@ def resolve_managed_tool_gateway(
     vendor: str, gateway_builder: Optional[Callable[[str], str]] = None,
     token_reader: Optional[Callable[[], Optional[str]]] = None) -> Optional[ManagedToolGatewayConfig]:
     """Resolve shared managed-tool gateway config for a vendor."""
-    if not managed_nous_tools_enabled():
+    if vendor == "perplexity":
+        # Fast Search is free for registered Portal accounts; the paid tool pool does not
+        # describe its entitlement. Anonymous guests and unverifiable accounts fail closed.
+        from hermes_cli.nous_account import get_nous_portal_account_info
+        account = get_nous_portal_account_info()
+        if not (account.logged_in and account.error is None and not account.is_anonymous_tier):
+            return None
+    elif not managed_nous_tools_enabled():
         return None
     gateway_origin = (gateway_builder or build_vendor_gateway_url)(vendor)
     nous_user_token = (token_reader or read_nous_access_token)()

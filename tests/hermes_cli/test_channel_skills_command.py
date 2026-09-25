@@ -238,3 +238,34 @@ def test_regenerate_rejects_path_unsafe_channel_id(tmp_path):
         pass
     else:
         raise AssertionError("unsafe channel id was accepted")
+
+
+def test_effective_does_not_fall_back_to_generated_for_invalid_static_binding(tmp_path):
+    registry = ChannelSkillRegistry(tmp_path / "channel-skills.yaml")
+    registry.put("456", {
+        "platform": "discord", "channel_id": "456", "skill": "discord-channel-456",
+        "resolved_skills": ["discord-channel-456"], "status": "ready", "generated": True,
+    })
+    admin = ChannelSkillAdmin(registry, config_extra={
+        "channel_skill_profiles": {},
+        "channel_skill_bindings": [{"id": "456", "profile": "missing-profile"}],
+    })
+
+    result = admin.effective("456")
+
+    assert result["source"] == "static"
+    assert result["effective_skills"] == []
+    assert result["status"] == "invalid"
+
+
+def test_cli_parent_json_flag_is_preserved(tmp_path, monkeypatch, capsys):
+    registry = ChannelSkillRegistry(tmp_path / "channel-skills.yaml")
+    monkeypatch.setattr("hermes_cli.channel_skills_command._registry", lambda: registry)
+    monkeypatch.setattr("hermes_cli.channel_skills_command._config_extra", lambda: {})
+    args = SimpleNamespace(action="list", root_json=True, json=False)
+
+    rc = channel_skills_command(args)
+    output = capsys.readouterr().out
+
+    assert rc == 0
+    assert output.strip() == "[]"

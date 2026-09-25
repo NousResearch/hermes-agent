@@ -21,6 +21,8 @@ def _config_extra() -> dict[str, Any]:
 
 def channel_skills_command(args: Any) -> int:
     action = getattr(args, "action", None) or "list"
+    if getattr(args, "root_json", False):
+        args.json = True
     try:
         admin = ChannelSkillAdmin(_registry(), config_extra=_config_extra())
         if action == "list":

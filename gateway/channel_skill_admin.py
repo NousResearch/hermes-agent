@@ -106,6 +106,19 @@ class ChannelSkillAdmin:
                 "inherited_from_parent": resolved.inherited_from_parent,
                 "source": "static",
             }
+        static_match = any(
+            binding.channel_id == str(channel_id)
+            or (parent_id and binding.channel_id == str(parent_id))
+            for binding in resolver.bindings
+        )
+        if static_match:
+            direct_match = any(binding.channel_id == str(channel_id) for binding in resolver.bindings)
+            return {
+                "channel_id": str(channel_id), "effective_skills": [], "profile_chain": [],
+                "matched_channel_id": str(channel_id) if direct_match else str(parent_id),
+                "inherited_from_parent": bool(parent_id and not direct_match),
+                "source": "static", "status": "invalid",
+            }
         record = self.registry.get(channel_id)
         if record:
             return {

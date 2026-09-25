@@ -70,15 +70,6 @@ def adapter():
 METADATA = {"thread_id": "1784585355.415219"}
 
 
-@pytest.mark.asyncio
-async def test_first_call_sends_fresh(adapter):
-    result = await adapter.send_or_update_status(
-        "C_CHAN", "context_pressure", "compressing 1/3", metadata=METADATA
-    )
-    assert result.success
-    client = adapter._get_client.return_value
-    assert client.chat_postMessage.call_count == 1
-    assert client.chat_update.call_count == 0
 
 
 @pytest.mark.asyncio

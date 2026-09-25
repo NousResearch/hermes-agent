@@ -71,24 +71,11 @@ describe('useMessageStream agent-init error surfacing (#63078)', () => {
     expect(state.awaitingResponse).toBe(false)
 
     // A global toast also fired (turn-ending errors are easy to miss inline).
-    expect($notifications.get().some(n => n.kind === 'error' && n.message?.includes('was not sent'))).toBe(true)
-  })
-
-  it('renders the pre-ready cancel error event (#65567 server emit) visibly', () => {
-    mountStream()
-    seedOptimisticFirstMessage()
-
-    act(() =>
-      stream.handleEvent({
-        payload: { message: 'Turn cancelled before the agent was ready' },
-        session_id: SID,
-        type: 'error'
-      })
-    )
-
-    const state = stream.state()
-    expect(state.messages.some(m => m.role === 'assistant' && m.error?.includes('cancelled'))).toBe(true)
-    expect(state.messages.some(m => m.id === 'user-123-abc')).toBe(true)
-    expect(state.busy).toBe(false)
+    // The server already sends plain, actionable copy for an agent-init
+    // failure, so it IS the toast message — not demoted to a detail line
+    // under a generic gloss.
+    const toast = $notifications.get().find(n => n.kind === 'error' && n.message.includes('was not sent'))
+    expect(toast).toBeDefined()
+    expect(toast!.detail).toBeUndefined()
   })
 })

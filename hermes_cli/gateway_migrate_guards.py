@@ -91,20 +91,34 @@ def _service_label(profile: ProfileGateway) -> str:
 
 
 def _guard_service_domain(plan: MigrationPlan, profile: ProfileGateway) -> Optional[str]:
-    """Different manager or scope than the default gateway (system vs user systemd, launchd vs systemd,
-    or any service when the default is detached: the auto path never elects a secondary's manager).
-    Two units on one profile is an ambiguous topology the unattended path does not resolve either."""
+    """Different manager or scope than the one the fleet converges on (system vs user systemd, launchd vs
+    systemd). The reference is the default's own unit when it has one, else the manager
+    ``target_service_kind()`` elects from the secondaries: a default that never had a gateway unit is not a
+    service domain of its own, and refusing every secondary against it left the common upgrade fleet (N
+    launchd profiles, unit-less default, #118097) printing blockers instead of folding. Two managers
+    among the secondaries still refuse — the ones not elected differ from the target. Two units on one
+    profile is an ambiguous topology the unattended path does not resolve either."""
     if len(profile.services) > 1:
         return (f"Profile '{profile.name}' has more than one installed service ({profile.service_label()}): "
                 f"an ambiguous service topology is not folded automatically.")
-    if set(profile.services) == set(plan.default.services):
+    target = plan.target_service_kind()
+    reference = plan.default.services or ([target] if target is not None else [])
+    if set(profile.services) == set(reference):
         return None
-    return (f"Profile '{profile.name}' runs under {_service_label(profile)} while the default gateway "
-            f"runs under {_service_label(plan.default)}: a different service domain is not folded automatically.")
+    from hermes_cli.gateway_migrate import _service_label as _kind_label
+    against = (f"the default gateway runs under {_service_label(plan.default)}" if plan.default.services
+               else f"the fleet converges on {_kind_label(target)}")
+    return (f"Profile '{profile.name}' runs under {_service_label(profile)} while {against}: "
+            f"a different service domain is not folded automatically.")
 
 
 def _guard_unix_user(plan: MigrationPlan, profile: ProfileGateway) -> Optional[str]:
     default_uid = plan.default.uid
+    if default_uid is None and plan.default.has_system_unit:
+        # Consolidating INTO a principal this host cannot identify is the same unknown boundary
+        # from the other side: the default's system unit names an account NSS does not resolve.
+        return ("The default gateway runs a system unit whose User= cannot be resolved on this host: "
+                "an unknown service principal is not folded into automatically.")
     if profile.uid is None and profile.has_system_unit:
         # Unknown principal is not "same user": the unit names an account this host cannot resolve.
         return (f"Profile '{profile.name}' runs a system unit whose User= cannot be resolved on this host: "
@@ -134,12 +148,13 @@ _AUTO_MIGRATION_GUARDS: tuple[Callable[[MigrationPlan, ProfileGateway], Optional
 def auto_migration_blockers(plan: MigrationPlan) -> list[str]:
     """Every boundary a standalone secondary sits behind; empty when the fleet is one user, one service
     domain, one profiles/ tree — the only shape ``hermes update`` may fold on its own."""
-    return [
+    findings = [
         finding
         for profile in plan.standalone_secondaries
         for guard in _AUTO_MIGRATION_GUARDS
         if (finding := guard(plan, profile)) is not None
     ]
+    return list(dict.fromkeys(findings))  # a default-side finding repeats per secondary
 
 
 # --------------------------------------------------------------------------- opt-out

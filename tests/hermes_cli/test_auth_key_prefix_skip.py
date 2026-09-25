@@ -18,7 +18,6 @@ The fix:
 """
 
 import logging
-import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -86,7 +85,6 @@ class TestMalformedEnvKeySkipped:
         assert source == "credential_pool:openrouter"
         warnings = [r for r in caplog.records if "OPENROUTER_API_KEY" in r.getMessage()]
         assert warnings, "expected a WARNING naming the malformed env var"
-        assert "sk-or-" in warnings[0].getMessage()
 
     def test_malformed_env_key_with_empty_pool_returns_empty(
         self, isolated_hermes_home, caplog

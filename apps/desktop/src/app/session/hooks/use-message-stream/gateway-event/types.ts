@@ -1,8 +1,9 @@
-import type { GatewayEvent } from '@hermes/shared'
+import type { GatewayEvent, PersistedTurn } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import type { MutableRefObject } from 'react'
 
 import type { GatewayEventPayload } from '@/lib/chat-messages'
+import type { ErrorSurface } from '@/lib/error-surface'
 
 import type { ClientSessionState } from '../../../../types'
 
@@ -19,10 +20,18 @@ export interface GatewayEventDeps {
     text: string,
     responsePreviewed?: boolean,
     failure?: { error: string; partial: boolean },
-    occurredAt?: number
+    occurredAt?: number,
+    persistedTurn?: PersistedTurn | null,
+    responseTransformed?: boolean
   ) => void
-  failAssistantMessage: (sessionId: string, errorMessage: string, occurredAt?: number) => void
+  failAssistantMessage: (
+    sessionId: string,
+    errorMessage: string,
+    occurredAt?: number,
+    surface?: ErrorSurface | null
+  ) => void
   flushQueuedDeltas: (sessionId?: string) => void
+  dropQueuedDeltas: (sessionId?: string) => void
   finalizeInterimAssistantMessage: (sessionId: string, text: string, occurredAt?: number) => void
   hydrateFromStoredSession: (
     attempts?: number,

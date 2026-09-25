@@ -10,6 +10,7 @@ call time, so tests that monkeypatch ``hermes_state.<name>`` keep intercepting.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import logging
@@ -23,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from hermes_state_holders import canonical_sqlite_path
+from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
 from hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
 )
@@ -135,9 +136,24 @@ def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
 def _watched_sqlite_sidecar_paths(db_path) -> Dict[str, str]:
     """Map each sidecar's canonical (/proc-comparable) form to its literal, still-named path,
     so a canonical match can be re-``stat``'d for identity rather than trusted as text."""
-    base = os.path.abspath(os.fspath(db_path))
-    literal = (base + "-wal", base + "-shm")
-    return {canonical_sqlite_path(path): path for path in literal}
+    literal_base = os.path.abspath(os.fspath(db_path))
+    literal = (literal_base + "-wal", literal_base + "-shm")
+    watched = {canonical_sqlite_path(path): path for path in literal}
+    # /proc reports the kernel-resolved dentry, so the watched canonicals must also resolve
+    # symlinks -- with abspath alone a symlinked HERMES_HOME makes every deleted sidecar
+    # invisible to the scan. Both spellings are watched: the fully resolved path, which is
+    # where current SQLite places -wal/-shm when the database file itself is a symlink, and
+    # the realpath'd parent with the literal basename, which is where they land when SQLite
+    # names the sidecars after the path it was opened through.
+    resolved_bases = (
+        os.path.join(os.path.realpath(os.path.dirname(literal_base)),
+                     os.path.basename(literal_base)),
+        os.path.realpath(literal_base),
+    )
+    for base in resolved_bases:
+        for suffix in ("-wal", "-shm"):
+            watched.setdefault(canonical_sqlite_path(base + suffix), base + suffix)
+    return watched
 
 
 def _identity_is_truly_unlinked(identity: "Tuple[int, int]", watched_path: str) -> bool:
@@ -165,7 +181,12 @@ def _fd_is_truly_unlinked(fd_path: str, watched_path: str) -> bool:
     names — the guard keeps failing closed."""
     try:
         fd_stat = os.stat(fd_path)
-    except OSError:
+    except OSError as exc:
+        # ENOENT: the descriptor was closed after /proc was read. ESRCH: the whole
+        # process exited mid-scan. Neither can keep a retired generation alive, so
+        # do not turn this scan race into a refusal (mirrors hermes_state_holders).
+        if exc.errno in (errno.ENOENT, errno.ESRCH):
+            return False
         return True
     return _identity_is_truly_unlinked((fd_stat.st_dev, fd_stat.st_ino), watched_path)
 
@@ -684,8 +705,9 @@ def quarantine_invalid_state_db(path: Path, *, already_locked: bool = False) -> 
         if not acquired:
             logger.error("quarantine lock for %s not acquired within 5s — refusing to "
                          "quarantine without the cross-process lock. The invalid file "
-                         "is left in place. If sessions fail to load, restore from "
-                         "state-snapshots via `hermes snapshot list` / `hermes snapshot restore <id>`.",
+                         "is left in place. If sessions fail to load, run `hermes sessions recover "
+                         "--source <state.db> --inspect-only`, or restore a snapshot with "
+                         "`/snapshot list` / `/snapshot restore <id>` (terminal `hermes` chat only).",
                          path)
             return None
         return _do_quarantine()
@@ -710,7 +732,7 @@ def collect_state_db_stats(db_path: Path) -> Dict[str, Any]:
     try:
         # A short timeout keeps doctor snappy when a writer holds the lock.  The tracked connect
         # lets byte-probe helpers see this connection and refuse raw opens that would cancel locks.
-        conn = _connect_tracked_db(f"file:{Path(db_path)}?mode=ro", tracking_path=Path(db_path),
+        conn = _connect_tracked_db(read_only_db_uri(db_path), tracking_path=Path(db_path),
                                    uri=True, timeout=2.0)
     except Exception as exc:
         logger.debug("collect_state_db_stats: cannot open %s read-only: %s", db_path, exc)

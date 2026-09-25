@@ -180,7 +180,7 @@ def _managed_server_idle() -> bool:
         from hermes_cli.local_runtime.supervisor import state_path
         from urllib.parse import quote
 
-        state = json.loads(state_path().read_text(encoding="utf-8"))
+        state = json.loads(state_path().read_text(encoding="utf-8-sig"))
         base = str(state.get("base_url", "")).rsplit("/v1", 1)[0]
         headers = {"Authorization": f"Bearer {state.get('api_key', '')}"}
         if not base:

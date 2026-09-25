@@ -3,7 +3,6 @@
 Run with: python -m pytest tests/test_interrupt.py -v
 """
 
-import queue
 import threading
 import time
 import pytest
@@ -227,49 +226,6 @@ class TestPreToolCheck:
 # Unit tests: message combining
 # ---------------------------------------------------------------------------
 
-class TestMessageCombining:
-    """Verify multiple interrupt messages are joined."""
-
-    def test_cli_interrupt_queue_drain(self):
-        """Simulate draining multiple messages from the interrupt queue."""
-        q = queue.Queue()
-        q.put("Stop!")
-        q.put("Don't delete anything")
-        q.put("Show me what you were going to delete instead")
-
-        parts = []
-        while not q.empty():
-            try:
-                msg = q.get_nowait()
-                if msg:
-                    parts.append(msg)
-            except queue.Empty:
-                break
-
-        combined = "\n".join(parts)
-        assert "Stop!" in combined
-        assert "Don't delete anything" in combined
-        assert "Show me what you were going to delete instead" in combined
-        assert combined.count("\n") == 2
-
-    def test_gateway_pending_messages_append(self):
-        """Simulate gateway _pending_messages append logic."""
-        pending = {}
-        key = "agent:main:telegram:dm"
-
-        # First message
-        if key in pending:
-            pending[key] += "\n" + "Stop!"
-        else:
-            pending[key] = "Stop!"
-
-        # Second message
-        if key in pending:
-            pending[key] += "\n" + "Do something else instead"
-        else:
-            pending[key] = "Do something else instead"
-
-        assert pending[key] == "Stop!\nDo something else instead"
 
 
 # ---------------------------------------------------------------------------
@@ -283,13 +239,14 @@ class TestSIGKILLEscalation:
         not __import__("shutil").which("bash"),
         reason="Requires bash"
     )
-    def test_sigterm_trap_killed_within_2s(self):
+    @pytest.mark.platforms("posix")
+    def test_sigterm_trap_killed_within_2s(self, tmp_path):
         """A process that traps SIGTERM should be SIGKILL'd after 1s grace."""
         from tools.interrupt import set_interrupt
         from tools.environments.local import LocalEnvironment
 
         set_interrupt(False)
-        env = LocalEnvironment(cwd="/tmp", timeout=30)
+        env = LocalEnvironment(cwd=str(tmp_path), timeout=30)
 
         # Start execution in a thread, interrupt after 0.5s
         result_holder = {"value": None}
@@ -329,9 +286,9 @@ class TestRunToolCleanupOnBaseException:
     """
 
     def test_cleanup_on_base_exception(self):
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
         import types
-        from tools.interrupt import set_interrupt, is_interrupted, _interrupted_threads, _lock
+        from tools.interrupt import set_interrupt, _interrupted_threads, _lock
 
         # Clear global state
         with _lock:
@@ -389,28 +346,3 @@ class TestRunToolCleanupOnBaseException:
         with _lock:
             leaked = set(_interrupted_threads)
         assert leaked == set(), f"leaked tids in _interrupted_threads: {leaked}"
-
-
-# ---------------------------------------------------------------------------
-# Manual smoke test checklist (not automated)
-# ---------------------------------------------------------------------------
-
-SMOKE_TESTS = """
-Manual Smoke Test Checklist:
-
-1. CLI: Run `hermes`, ask it to `sleep 30` in terminal, type "stop" + Enter.
-   Expected: command dies within 2s, agent responds to "stop".
-
-2. CLI: Ask it to extract content from 5 URLs, type interrupt mid-way.
-   Expected: remaining URLs are skipped, partial results returned.
-
-3. Gateway (Telegram): Send a long task, then send "Stop".
-   Expected: agent stops and responds acknowledging the stop.
-
-4. Gateway (Telegram): Send "Stop" then "Do X instead" rapidly.
-   Expected: both messages appear as the next prompt (joined by newline).
-
-5. CLI: Start a task that generates 3+ tool calls in one batch.
-   Type interrupt during the first tool call.
-   Expected: only 1 tool executes, remaining are skipped.
-"""

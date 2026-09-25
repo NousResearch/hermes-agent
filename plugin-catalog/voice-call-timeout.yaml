@@ -1,0 +1,13 @@
+name: voice-call-timeout
+repo: https://github.com/RenoMG/hermes-voice-call-timeout-plugin
+sha: 80ea52e64a4bae042b8e31d938de78a3d3f25669
+description: Configurable Discord voice-call inactivity timeout for Hermes Agent.
+maintainer: RenoMG
+tier: community
+category: voice
+docs_url: https://github.com/RenoMG/hermes-voice-call-timeout-plugin#readme
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

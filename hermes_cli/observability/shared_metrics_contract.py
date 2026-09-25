@@ -61,7 +61,7 @@ TOOL_CATEGORIES = frozenset({
     "skill", "terminal", "unknown", "web",
 })
 TOOL_OUTCOMES = frozenset({"blocked", "cancelled", "failed", "success", "timed_out", "unknown"})
-TOOL_APPROVAL_OUTCOMES = frozenset({"approved", "denied", "not_required", "timed_out", "unknown"})
+TOOL_APPROVAL_OUTCOMES = frozenset({"approved", "cancelled", "denied", "not_required", "timed_out", "unknown"})
 TOOL_APPROVAL_ATTRIBUTIONS = frozenset({"tool_call", "unattributed"})
 TOOL_LATENCY_BUCKETS = frozenset({
     "100ms_to_250ms", "10s_to_30s", "1s_to_2s", "250ms_to_500ms", "2s_to_5s", "500ms_to_1s",
@@ -548,6 +548,7 @@ _APPROVAL_CHOICES = {
     ),
     **dict.fromkeys(("deny", "denied", "smart_deny"), "denied"),
     **dict.fromkeys(("timed_out", "timeout"), "timed_out"),
+    "cancelled": "cancelled",  # prompt withdrawn / undeliverable / unanswered — not a user decision
 }
 
 

@@ -799,7 +799,7 @@ class LineAdapter(BasePlatformAdapter):
         except Exception:
             hermes_home = Path.home().joinpath(".hermes").resolve()
         resolved = path.resolve()
-        if not any(resolved.is_relative_to(r) for r in (Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve(), hermes_home)):
+        if not any(resolved.is_relative_to(r) for r in (Path(tempfile.gettempdir()).resolve(), Path("/tmp").resolve(), hermes_home)):  # no-tmp: ok — macOS /private/tmp alias in the allowed-roots check, not a write target
             logger.warning("LINE: refusing to serve outside allowed roots: %s", resolved)
             return web.Response(status=403, text="forbidden")
         content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
@@ -818,7 +818,8 @@ class LineAdapter(BasePlatformAdapter):
         return await self._send_messages(chat_id, msgs + ([_text_message(caption)] if caption else []))
 
     async def send_voice(
-        self, chat_id: str, audio_path: str, duration_ms: int = 1000, metadata: Optional[Dict[str, Any]] = None
+        self, chat_id: str, audio_path: str, duration_ms: int = 1000, metadata: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
     ) -> SendResult:
         path, err = self._check_media_file("audio", audio_path)
         if err:

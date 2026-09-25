@@ -14,9 +14,10 @@ import { isSubmitEnter } from '@/lib/ime'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { cn } from '@/lib/utils'
 import { $desktopBoot, type DesktopBootState } from '@/store/boot'
-import { FREE_TIER_MODEL } from '@/store/free-tier'
+import { $freeTierStatus, FREE_TIER_MODEL, freeTierSetupFailure } from '@/store/free-tier'
 import { openFreeTierSignIn } from '@/store/free-tier-sign-in'
 import { $introReveal, shouldPlayFirstRunIntro } from '@/store/intro-reveal'
+import { $setupReadyTick } from '@/store/live-sync'
 import { $localModelsEnabled } from '@/store/local-models-flag'
 import {
   $desktopOnboarding,
@@ -40,6 +41,7 @@ import { $onboardingSurfaces, onboardingSurfaceActive } from '@/store/onboarding
 import type { OAuthProvider } from '@/types/hermes'
 
 import { DocsLink, FlowPanel, Status } from './flow'
+import { FreeTierSetupNotice } from './free-tier-setup-notice'
 import { DecodedLabel } from './glyph'
 import {
   FeaturedProviderRow,
@@ -61,7 +63,8 @@ export {
   sortProviders
 } from './providers'
 
-import { requestGatewayForProfile } from '@/store/gateway'
+import { $gateway, activeGatewayConnectionId } from '@/store/gateway'
+import { captureOnboardingScope, requestOnboardingGateway } from '@/store/onboarding-scope'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -129,7 +132,7 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
 // other api_key provider is appended with a generic "paste {KEY}" affordance.
 // OAuth / external providers are intentionally excluded here — they go through
 // the OAuth picker / sign-in flow, not a pasted key.
-function useApiKeyCatalog(): ApiKeyOption[] {
+function useApiKeyCatalog(scope: OnboardingContext['scope']): ApiKeyOption[] {
   const [rows, setRows] = useState<ModelOptionProvider[]>([])
 
   useEffect(() => {
@@ -139,7 +142,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     // Promise.resolve().then so a synchronous throw (e.g. no desktop bridge in
     // tests) is funneled into the same .catch instead of escaping.
     void Promise.resolve()
-      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }))
+      .then(() => getGlobalModelOptions({ includeUnconfigured: true, explicitOnly: false }, scope))
       .then(res => {
         if (!cancelled) {
           setRows(res.providers ?? [])
@@ -152,7 +155,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [scope])
 
   return useMemo(() => {
     const curatedByEnv = new Map(API_KEY_OPTIONS.map(o => [o.envKey, o]))
@@ -208,18 +211,26 @@ export function DesktopOnboardingOverlay({
   useStore($onboardingSurfaces)
   const onCompletedRef = useRef(onCompleted)
   onCompletedRef.current = onCompleted
-  const targetProfile = onboarding.targetProfile ?? profile
+  useStore($gateway)
+  const connectionId = activeGatewayConnectionId()
+
+  const scope = useMemo(
+    () => onboarding.targetScope ?? captureOnboardingScope({ connectionId, profile }),
+    [onboarding.targetScope, profile, connectionId]
+  )
 
   // Async flows retain the initiating route even after the overlay closes.
   const ctx = useMemo<OnboardingContext>(
     () => ({
-      profile: targetProfile,
-      requestGateway: onboarding.targetProfile
-        ? (method, params) => requestGatewayForProfile(targetProfile, method, params)
-        : requestGateway,
+      scope,
+      profile: scope.profile ?? undefined,
+      requestGateway:
+        scope.connectionId || (scope.profile && onboarding.targetScope)
+          ? (method, params) => requestOnboardingGateway(scope, method, params)
+          : requestGateway,
       onCompleted: () => onCompletedRef.current?.()
     }),
-    [onboarding.targetProfile, targetProfile, requestGateway]
+    [onboarding.targetScope, scope, requestGateway]
   )
 
   // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat
@@ -282,6 +293,37 @@ export function DesktopOnboardingOverlay({
     }
   }, [ctx, enabled, onboarding.requested])
 
+  // The boot bootstrap re-announces `setup.ready` when a background retry of
+  // the free-tier set-up succeeds after a failed first attempt. A picker that
+  // is up only because that set-up failed re-checks readiness and gives way
+  // on its own. An untouched picker only: a manual open, a provider flow in
+  // progress, or the API-key form (which leaves the flow idle while the user
+  // types) is left alone, and the check is repeated after the readiness
+  // round so a key form opened in the meantime survives too.
+  useEffect(
+    () =>
+      $setupReadyTick.listen(() => {
+        const untouched = () => {
+          const current = $desktopOnboarding.get()
+
+          return (
+            !current.manual &&
+            current.configured === false &&
+            current.flow.status === 'idle' &&
+            current.mode === 'oauth' &&
+            !current.localEndpoint
+          )
+        }
+
+        if (untouched()) {
+          void refreshOnboarding(ctx, untouched)
+        }
+      }),
+    [ctx]
+  )
+  const freeTierStatus = useStore($freeTierStatus)
+  const setupFailure = !onboarding.manual ? freeTierSetupFailure(freeTierStatus) : null
+
   // When the Providers settings page asked to connect a specific provider, the
   // store stashed its id. Once the provider list has loaded and we're back at
   // an idle picker, launch that exact OAuth flow so the user lands directly in
@@ -341,8 +383,12 @@ export function DesktopOnboardingOverlay({
   // (those are surfaced by FlowPanel, not as a banner).
   const rawReason = onboarding.reason?.trim() || null
 
+  // When the free tier itself failed to set up, its own notice explains the
+  // picker; the runtime check's technical reason ("No usable credentials
+  // found for nous.") would only restate it in the wrong words.
   const reason =
     rawReason &&
+    !setupFailure &&
     !isProviderSetupErrorMessage(rawReason) &&
     rawReason !== DEFAULT_ONBOARDING_REASON &&
     rawReason !== DEFAULT_MANUAL_ONBOARDING_REASON
@@ -403,6 +449,7 @@ export function DesktopOnboardingOverlay({
         ) : null}
         <div className="grid gap-3 p-5">
           {reason ? <ReasonNotice reason={reason} /> : null}
+          {ready && showPicker && !freeTierIntro && !onboarding.manual ? <FreeTierSetupNotice ctx={ctx} /> : null}
           {ready ? (
             freeTierIntro ? (
               <FreeTierReadyPanel leaving={leaving} onDismiss={dismissFreeTierIntro} />
@@ -568,7 +615,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
 
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
-  const apiKeyOptions = useApiKeyCatalog()
+  const apiKeyOptions = useApiKeyCatalog(ctx.scope)
 
   // localEndpoint forces the key form regardless of `mode` (which a manual
   // provider refresh may flip back to 'oauth'); it preselects the local option

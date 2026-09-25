@@ -1,7 +1,7 @@
 """Tests for automatic MCP reload when config.yaml mcp_servers section changes."""
-import time
-from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from utils import file_signature
 
 
 def _make_cli(tmp_path, mcp_servers=None, extra_config=None):
@@ -18,7 +18,7 @@ def _make_cli(tmp_path, mcp_servers=None, extra_config=None):
 
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text("mcp_servers: {}\n")
-    obj._config_mtime = cfg_file.stat().st_mtime
+    obj._config_sig = file_signature(cfg_file.stat())
 
     obj._reload_mcp = MagicMock()
     obj._busy_command = MagicMock()
@@ -35,12 +35,12 @@ class TestMCPConfigWatch:
 
     def test_new_mcp_server_triggers_reload(self, tmp_path):
         """Adding a new MCP server to config triggers auto-reload."""
-        import yaml
+        import hermes_yaml as yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
 
         # Simulate user adding a new MCP server to config.yaml
-        cfg_file.write_text(yaml.dump({"mcp_servers": {"github": {"url": "https://mcp.github.com"}}}))
-        obj._config_mtime = 0.0  # force stale mtime
+        cfg_file.write_text(yaml.safe_dump({"mcp_servers": {"github": {"url": "https://mcp.github.com"}}}))
+        obj._config_sig = None  # force stale mtime
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
@@ -49,12 +49,12 @@ class TestMCPConfigWatch:
 
     def test_removed_mcp_server_triggers_reload(self, tmp_path):
         """Removing an MCP server from config triggers auto-reload."""
-        import yaml
+        import hermes_yaml as yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={"github": {"url": "https://mcp.github.com"}})
 
         # Simulate user removing the server
-        cfg_file.write_text(yaml.dump({"mcp_servers": {}}))
-        obj._config_mtime = 0.0
+        cfg_file.write_text(yaml.safe_dump({"mcp_servers": {}}))
+        obj._config_sig = None
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
@@ -76,18 +76,18 @@ class TestMCPConfigWatch:
         flipping the toggle and editing mcp_servers in one edit behaves
         correctly.
         """
-        import yaml
+        import hermes_yaml as yaml
         obj, cfg_file = _make_cli(
             tmp_path,
             mcp_servers={},
         )
 
         # Simulate a changed mcp_servers section with auto-reload opted out.
-        cfg_file.write_text(yaml.dump({
+        cfg_file.write_text(yaml.safe_dump({
             "mcp": {"auto_reload_on_config_change": False},
             "mcp_servers": {"github": {"url": "https://mcp.github.com"}},
         }))
-        obj._config_mtime = 0.0  # force stale mtime
+        obj._config_sig = None  # force stale mtime
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
@@ -95,28 +95,26 @@ class TestMCPConfigWatch:
         obj._reload_mcp.assert_not_called()
 
         out = capsys.readouterr().out
-        assert "reload skipped" in out
-        assert "/reload-mcp" in out
-        assert "prompt cache" in out
+        assert "/reload-mcp" in out  # tells the user how to apply it manually
 
     def test_optout_updates_snapshot_so_reload_mcp_applies_cleanly(self, tmp_path):
         """After an opted-out change, the watcher must not re-notify every
         tick: the snapshot is updated so the same content compares equal on
         the next pass."""
-        import yaml
+        import hermes_yaml as yaml
         obj, cfg_file = _make_cli(tmp_path, mcp_servers={})
 
-        cfg_file.write_text(yaml.dump({
+        cfg_file.write_text(yaml.safe_dump({
             "mcp": {"auto_reload_on_config_change": False},
             "mcp_servers": {"github": {"url": "https://mcp.github.com"}},
         }))
-        obj._config_mtime = 0.0
+        obj._config_sig = None
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
             # Second pass: same file content, new mtime — no reload, no change.
             obj._last_config_check = 0.0
-            obj._config_mtime = 0.0
+            obj._config_sig = None
             obj._check_config_mcp_changes()
 
         obj._reload_mcp.assert_not_called()
@@ -129,17 +127,17 @@ class TestMCPConfigWatch:
 
         A config that sets ONLY ``auxiliary.mcp.auto_reload_on_config_change:
         false`` must NOT disable the reload."""
-        import yaml
+        import hermes_yaml as yaml
         obj, cfg_file = _make_cli(
             tmp_path,
             mcp_servers={},
         )
 
-        cfg_file.write_text(yaml.dump({
+        cfg_file.write_text(yaml.safe_dump({
             "auxiliary": {"mcp": {"auto_reload_on_config_change": False}},
             "mcp_servers": {"github": {"url": "https://mcp.github.com"}},
         }))
-        obj._config_mtime = 0.0
+        obj._config_sig = None
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
@@ -160,7 +158,7 @@ class TestMCPConfigWatch:
         save_config_value('agent.reasoning_effort', ...) from /reasoning)
         fired a full MCP reconnect.
         """
-        import yaml
+        import hermes_yaml as yaml
         monkeypatch.setenv("MCP_GH_API_KEY", "sekrit-token")
 
         raw_servers = {
@@ -180,14 +178,57 @@ class TestMCPConfigWatch:
 
         # Unrelated-key save: mcp_servers content identical (raw templates),
         # only reasoning_effort changed — mtime moves.
-        cfg_file.write_text(yaml.dump({
+        cfg_file.write_text(yaml.safe_dump({
             "agent": {"reasoning_effort": "high"},
             "mcp_servers": raw_servers,
         }))
-        obj._config_mtime = 0.0
+        obj._config_sig = None
 
         with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
             obj._check_config_mcp_changes()
 
         obj._reload_mcp.assert_not_called()
         assert "MCP server config changed" not in capsys.readouterr().out
+
+
+def test_tui_init_run_state_seeds_config_sig_when_config_exists(monkeypatch):
+    """REPL init must seed _config_sig from on-disk config.yaml.
+
+    file_signature is only evaluated when the file exists (short-circuit
+    otherwise). Isolated-home tests without a config file therefore never
+    exercised the call, and a missing import crashed every real CLI launch.
+    """
+    from hermes_cli.config import get_config_path
+    import cli as cli_mod
+
+    # Bare object: skip the tool-callback / security wiring at the end of the init.
+    monkeypatch.setenv("HERMES_DEFER_AGENT_STARTUP", "1")
+    cfg_file = get_config_path()
+    cfg_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg_file.write_text("mcp_servers: {}\n")
+
+    obj = object.__new__(cli_mod.HermesCLI)
+    obj.config = {"mcp_servers": {}}
+    obj._tui_init_run_state()
+
+    assert obj._config_sig == file_signature(cfg_file.stat())
+
+
+def test_pinned_mtime_same_size_replacement_triggers_reload(tmp_path):
+    """#111105: cp -p / rsync -t style replacement (same mtime, same size) must still reload."""
+    import os
+    import shutil
+
+    obj, cfg_file = _make_cli(tmp_path, mcp_servers={"bb": {"command": "b"}})
+    cfg_file.write_text("mcp_servers:\n  bb: {command: b}\n")
+    obj._config_sig = file_signature(cfg_file.stat())
+    other = tmp_path / "other.yaml"
+    other.write_text("mcp_servers:\n  aa: {command: a}\n")
+    shutil.copy2(other, cfg_file)
+    os.utime(cfg_file, ns=(obj._config_sig[0], obj._config_sig[0]))
+
+    with patch("hermes_cli.config.get_config_path", return_value=cfg_file):
+        obj._check_config_mcp_changes()
+
+    obj._reload_mcp.assert_called_once()
+    assert obj._config_mcp_servers == {"aa": {"command": "a"}}

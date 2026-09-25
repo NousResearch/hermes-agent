@@ -3,6 +3,11 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 const sidebars: SidebarsConfig = {
   docs: [
     'user-stories',
+    // The Skills/Plugins hubs live in the navbar. On mobile Docusaurus opens the drawer on the doc
+    // sidebar, with the navbar a "Back to main menu" tap away, so without these links the hubs are
+    // undiscoverable on a phone.
+    {type: 'link', label: 'Browse Skills', href: '/skills'},
+    {type: 'link', label: 'Browse Plugins', href: '/plugins'},
     {
       type: 'category',
       label: 'Getting Started',
@@ -28,6 +33,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/bot-mode',
         'user-guide/windows-native',
         'user-guide/windows-wsl-quickstart',
+        'user-guide/switching-to-source',
         'user-guide/configuration',
         'user-guide/managed-scope',
         'user-guide/configuring-models',
@@ -52,6 +58,7 @@ const sidebars: SidebarsConfig = {
           ],
         },
         'user-guide/sessions',
+        'user-guide/session-storage-recovery',
         'user-guide/profiles',
         'user-guide/profile-distributions',
         'user-guide/multi-profile-gateways',
@@ -123,6 +130,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/browser',
             'user-guide/features/credential-vault',
             'user-guide/features/computer-use',
+            'user-guide/features/bot-screen',
             'user-guide/features/vision',
             'user-guide/features/image-generation',
             'user-guide/features/spotify',
@@ -175,7 +183,6 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-computer-use',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent',
-                    'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-merge-reconciler',
                     'user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode',
                   ],
                 },
@@ -321,6 +328,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-autonomous-ai-agents',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-agent-merge-conflict-arbiter',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-antigravity-cli',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-blackbox',
                     'user-guide/skills/optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow',
@@ -356,9 +364,10 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/optional/creative/creative-ai-presenter-video',
-                    'user-guide/skills/optional/creative/creative-ascii-art',
                     'user-guide/skills/optional/creative/creative-archify',
+                    'user-guide/skills/optional/creative/creative-ascii-art',
                     'user-guide/skills/optional/creative/creative-audiocraft-audio-generation',
+                    'user-guide/skills/optional/creative/creative-auteur',
                     'user-guide/skills/optional/creative/creative-baoyu-article-illustrator',
                     'user-guide/skills/optional/creative/creative-baoyu-comic',
                     'user-guide/skills/optional/creative/creative-comfyui',
@@ -370,6 +379,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/creative/creative-heartmula',
                     'user-guide/skills/optional/creative/creative-hyperframes',
                     'user-guide/skills/optional/creative/creative-impeccable',
+                    'user-guide/skills/optional/creative/creative-ip-as-logo',
                     'user-guide/skills/optional/creative/creative-kanban-video-orchestrator',
                     'user-guide/skills/optional/creative/creative-meme-generation',
                     'user-guide/skills/optional/creative/creative-mono-color',
@@ -546,6 +556,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/productivity/productivity-canvas',
                     'user-guide/skills/optional/productivity/productivity-decision-questionnaire',
                     'user-guide/skills/optional/productivity/productivity-here-now',
+                    'user-guide/skills/optional/productivity/productivity-live-dashboard',
                     'user-guide/skills/optional/productivity/productivity-memento-flashcards',
                     'user-guide/skills/optional/productivity/productivity-memory-extension',
                     'user-guide/skills/optional/productivity/productivity-property-listings',
@@ -821,6 +832,7 @@ const sidebars: SidebarsConfig = {
                 'developer-guide/web-search-provider-plugin',
                 'developer-guide/browser-provider-plugin',
                 'developer-guide/terminal-environment-plugin',
+                'developer-guide/plugins/application-declarations',
               ],
             },
             'developer-guide/creating-skills',
@@ -845,6 +857,17 @@ const sidebars: SidebarsConfig = {
             'developer-guide/trajectory-format',
           ],
         },
+        {
+          type: 'category',
+          label: 'Packaging & Releases',
+          items: [
+            'developer-guide/source-update-completion',
+            'developer-guide/shared-bundle-builds',
+            'developer-guide/stable-releases',
+            'developer-guide/macos-bundle-updates',
+            'developer-guide/pm-audit-status',
+          ],
+        },
       ],
     },
     {
@@ -856,6 +879,7 @@ const sidebars: SidebarsConfig = {
           label: 'Command Reference',
           items: [
             'reference/cli-commands',
+            'reference/package-management',
             'reference/slash-commands',
             'reference/profile-commands',
           ],

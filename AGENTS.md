@@ -64,7 +64,8 @@ grow: expansive at the edges, conservative at the waist.
   freeze a current value (see Testing).
 - **E2E validation, not just green unit mocks.** Anything touching resolution chains, config
   propagation, security boundaries, remote backends, or file/network I/O must exercise the
-  real path with real imports against a temp `HERMES_HOME`. Mocks hide integration bugs.
+  real path with real imports against a temp `HERMES_HOME` — two of them (A→B→A) when the
+  change touches profile scope. Mocks hide integration bugs.
 - **Cache-, alternation-, and invariant-safe.** Preserve prompt caching, strict role
   alternation (never two same-role messages in a row; never a synthetic user message injected
   mid-loop), and a system prompt byte-stable for the life of a conversation.
@@ -176,8 +177,13 @@ session-scoped. Assert the GUI session gets the tool **with the env var absent**
 ## Development Environment
 
 ```bash
-source .venv/bin/activate   # or: source venv/bin/activate
+source ./activate   # provisions/syncs PM tools + dependencies, then activates
 ```
+Select an isolated development `HERMES_HOME` and `HERMES_RUNTIME_DIR` first;
+see `website/docs/reference/package-management.md#developer-workflow`.
+PowerShell: `. .\activate.ps1`. `deactivate` restores the prior environment.
+For tests, use the independent test environment in `CONTRIBUTING.md` (or Nix);
+PM activation's `PYTHONPATH` does not survive the test runner's environment scrub.
 `scripts/run_tests.sh` probes `.venv`, then `venv`, then `$HOME/.hermes/hermes-agent/venv`
 (worktrees sharing the main checkout's venv).
 
@@ -269,10 +275,32 @@ families: `hermes_state.py` (21), `gateway/run.py` (15), `tools/mcp_tool.py` (15
   display. Details: `hermes_cli/AGENTS.md`.
 - **Never hardcode `~/.hermes`.** `get_hermes_home()` for code paths, `display_hermes_home()`
   for user-facing text (both from `hermes_constants`). Hardcoding breaks profiles (5 bugs in
-  PR #3575). Module-level constants are fine — they cache after `_apply_profile_override()`
-  sets `HERMES_HOME`. Profile operations themselves are HOME-anchored
+  PR #3575). Profile operations themselves are HOME-anchored
   (`_get_profiles_root()` = `Path.home()/.hermes/profiles`) so `hermes -p x profile list`
   sees all profiles — intentional, not a bug.
+- **One process may serve many profiles; code that runs outside a turn binds the owning
+  profile scope explicitly.** A profile = home + secret scope + terminal scope, bound by
+  `gateway/run.py::_profile_runtime_scope` (turn), `tui_gateway/server.py::@_profile_scoped` +
+  `model_switch.py::_session_profile_runtime_scope` (RPC, teardown), `cron/scheduler_provider.py::
+  _profile_cron_scope` (ticker), `gateway/run_agent_cache.py::_run_release_in_profile_scope`
+  (eviction). `os.environ`, module globals and import-time values hold the *launch* profile's, so
+  an unbound read is a silent default-profile leak, never an error: home/config/`.env`-derived
+  module constants are a bug class — key slots by `hermes_home_key()` or resolve at call time.
+  Needs a binding: boot probes (`check_fn`, MCP discovery, hooks), session end/eviction, tickers,
+  deferred callbacks, RPC methods, config readers, thread hops (`spawn_context_thread`), child
+  spawns (`served_profile_child_env`, never `os.environ.copy()`). Fail-closed reads exist only after
+  `set_multiplex_active(True)`. Prove live with two homes (A→B→A) under multiplex, not one temp
+  `HERMES_HOME`. Advisory lint: `scripts/check_profile_scope_patterns.py`.
+- **Machine facts and resource lookup go through `hermes_platform`.** `hermes_platform.host` is the
+  one answer for OS family, native architecture (`IsWow64Process2` → `platform.machine()`; never
+  `PROCESSOR_ARCHITECTURE` alone, it reads AMD64 under x64-on-ARM64 emulation), CPU identity, and
+  WSL/container/Termux. Facts are cached per process and take **no environment-variable input**, so
+  a hardware recognizer (`host/products.py`) cannot be set from a shell. Distinguish the control
+  host (where this Python runs) from the terminal execution target (SSH/container) and the Desktop
+  client (another machine): `host.*` answers only the first. A new bare `shutil.which` or a
+  hand-written known-path table outside `hermes_platform/` fails
+  `tests/test_managed_runtime_resolution.py` unless allowlisted with a reason; resolvers land in
+  `hermes_platform/resolver/`. Lookup never installs, downloads, or starts anything.
 - **Argparse alias dispatch:** `add_parser("list", aliases=["ls"])` sets `dest` to the literal
   the user typed (`"ls"`). Dispatch must accept both (caught PTY-testing `hermes webhook ls`).
 - **Don't wire in dead code without E2E validation.** Unshipped code was dead for a reason;
@@ -297,8 +325,25 @@ Table-driven beats condition ladders for ids/routes/views. `src/app` owns routes
 All dependencies carry upper bounds (litellm compromise #2796/#2810; Mini Shai-Hulud worm,
 May 2026). PyPI: `>=floor,<next_major` (`"httpx>=0.28.1,<1"`); pre-1.0: `<0.(minor+2)`
 (`>=0.29,<0.32`). Git URLs: 40-char commit SHA. GitHub Actions: SHA + `# vN` comment. CI-only
-pip: `==exact`. A bare `>=X.Y.Z` is rejected by CI and reviewers. Run `uv lock` after
-changing `pyproject.toml`. Reference: #2810 (bounds), #9801 (SHA pinning + audit CI).
+Python requirements: `==exact`. A bare `>=X.Y.Z` is rejected by CI and reviewers.
+After changing `pyproject.toml`, run `hermes pm lock`, re-source `./activate`, and commit
+`pyproject.toml` with `uv.lock`. Reference: #2810 (bounds), #9801 (SHA pinning + audit CI).
+
+PM owns Hermes Python dependency changes. Use `pm.sync_venv(['extra'], explicit=True)`
+for declared runtime extras, `hermes pm install` for setup/sync, and `hermes pm repair`
+for damaged dependencies. Do not mutate Hermes environments with raw pip or uv.
+Use `pm.build_environment` for fresh build outputs and `pm.ensure_environment` for
+isolated tool environments. Callers receive an interpreter or tool path, not uv.
+Nix's declarative uv2nix builds and unrelated user projects remain independently owned.
+
+The `[tool.uv] exclude-newer = "14 days"` quarantine covers **Hermes's own dependencies only**
+(every registry package in core's `uv.lock`). Plugin `python_dependencies` follow the plugin's own
+policy: when PM generates the plugin workspace (`pm/workspace.py::_core_release_quarantine`) the
+global cutoff moves onto each core-locked package, so plugin-only packages are not filtered and a
+plugin still cannot drag a core package past the window. Teknium's ruling: "plugins dont have to
+abide by our 14 day rule … Only hermes' dependencies themselves have to." We recommend (not require)
+plugin authors adopt their own quarantine — the developer guide and `plugin-catalog/README.md` carry
+that guidance.
 
 ## Commits, Merges, PRs
 
@@ -319,6 +364,17 @@ isolation via `scripts/run_tests_parallel.py` (no xdist; workers scale with CPU 
 module-level dicts/ContextVars cannot leak between files. Direct `pytest` on a big machine
 with API keys set has caused repeated "works locally, fails in CI" incidents (and the reverse).
 
+Prepare a test interpreter with the checkout's bootstrapped Python:
+
+```bash
+python -m pm.build_env --source . --out .venv --group dev --group test
+```
+
+This is a fresh build, not an in-place sync. If the disposable output exists,
+stop its processes and intentionally remove it before regeneration. The runner
+clears `PYTHONPATH`, so PM shell activation alone does not supply pytest. For a
+fresh output outside the checkout, set `HERMES_PYTHON` to its interpreter.
+
 ```bash
 scripts/run_tests.sh                                    # full suite
 scripts/run_tests.sh tests/gateway/                     # one directory
@@ -327,7 +383,8 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
 ```
 
 - **Flake policy:** a failing FILE is retried once in a fresh subprocess (`--file-retries`;
-  `HERMES_TEST_FILE_RETRIES=0` disables). Pass-on-retry is green but printed under `⚠ FLAKY`
+  `HERMES_TEST_FILE_RETRIES=0` disables); a worker killed by signal or the file timeout is never
+  retried (relaunching a runaway doubles the damage). Pass-on-retry is green but printed under `⚠ FLAKY`
   with both outputs — a bug to fix, not noise. Timing tests must not assume a quiet runner:
   wall-clock bounds ≥ 2s, event-based sync, no `assert not _wait_until(...)` races.
 - **Placement mirrors the source tree.** A test lives in `tests/<top-level source dir>/` (`tests/hermes_cli/`,
@@ -356,8 +413,8 @@ scripts/run_tests.sh -v --tb=long                       # pytest flags pass thro
 
 ### Don't fake the host OS
 
-Behaviour that genuinely differs per host is tested ON that host with `@pytest.mark.linux_only`
-/ `macos_only` / `windows_only`, never by patching `sys.platform`. Host-independent things stay
+Behaviour that genuinely differs per host is tested ON that host with `@pytest.mark.platforms("linux")`
+/ `platforms("macos")` / `platforms("windows")`, never by patching `sys.platform`. Host-independent things stay
 unmarked: pure functions that take the platform as data (`hidden_windows_child_options(opts,
 is_windows=True)`) and declaration/packaging invariants ("pyproject declares `tzdata` with a
 `sys_platform == 'win32'` marker"). Setting a module-level `IS_WINDOWS` flag and calling
@@ -365,20 +422,58 @@ is_windows=True)`) and declaration/packaging invariants ("pyproject declares `tz
 is on another OS to pass, it belongs on that OS.** A test that walks several platforms in
 sequence is split — host-native arm on Linux, other arms as their own marked tests.
 
-**Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py` finds files for
-the macOS/Windows lanes by grepping the marker *name*, then filters with `-m <marker>`. A
-`skipif(sys.platform != "win32")` test skips on Linux AND is never imported on Windows — it runs
-nowhere, silently. A file-local alias (`windows_only = pytest.mark.skipif(...)`) is listed but
-`-m windows_only` deselects everything: green over zero coverage. Don't `pytest.skip()` non-host
-rows of a platform `@parametrize` — split into one marked test per OS.
+One marker per test, with any number of spec strings (any-of semantics) plus
+optional arch filters. To gate on several OSes, pass several specs to ONE
+marker — never stack several `platforms()` decorators on one test (the
+conftest rejects that at collection):
 
-**Live Windows process-topology E2E (`wine2e` lane):** `windows-venv-e2e.yml` runs
-`tests/hermes_cli/test_venv_holder_windows_live.py` on a real `windows-latest` runner (real
-processes, no mocked psutil) ONLY on pushes to `wine2e/**` branches. Workflow: write probes
-pinning CORRECT behavior, push to `wine2e/` to reproduce live on unfixed code, fix, iterate to
-green, then open the PR with the live receipt. Extend it when touching that subsystem; assert
-against the gateway ANCESTOR found by argv, not the direct parent (the venv shim makes every
-spawn a launcher/worker chain).
+```python
+@pytest.mark.platforms("linux", "macos")  # ONE marker, two specs: runs on either
+def test_posix_signal_path(): ...
+```
+
+Other single-marker forms (each is a complete marker on its own):
+`platforms("windows")` (native Windows only), `platforms("not macos")`
+(anywhere except macOS), `platforms("windows", arch="arm64")` (native Windows
+on arm64), `platforms("posix")` (Linux or macOS).
+
+Specs: `linux`, `macos`, `windows`, `posix`, `any`, and `not <spec>`.
+The historic `linux_only` / `macos_only` / `windows_only` markers have been
+fully replaced — `platforms` is the only host-gating marker in the tree.
+
+**Live Windows process-topology E2E: the `wine2e` lane.** For claims about
+real Windows process behavior that mocks cannot reproduce (venv-holder
+scans, process-tree parentage, launcher/worker chains, detach semantics),
+there is an on-demand workflow `windows-venv-e2e.yml` that runs
+`tests/hermes_cli/test_venv_holder_windows_live.py` on a real
+`windows-latest` runner — spawning actual processes and driving the real
+detection code, no mocked psutil. It fires ONLY on pushes to `wine2e/**`
+branches (inert on PRs and main; costs nothing on normal work). The proven
+workflow: write probes that pin CORRECT behavior, push to a `wine2e/`
+branch to reproduce the bugs live on unfixed code, build the fix, iterate
+until the lane is green, then open the PR — the live receipt on the exact
+head is the Windows proof reviewers ask for. Extend the live suite when
+touching that subsystem; assert against the gateway ANCESTOR found by
+argv, not the direct parent (the venv shim makes every spawn a
+launcher/worker chain).
+
+**Use the marker, never a bare `skipif`.** `scripts/ci/list_os_marked_tests.py`
+decides which files an OS lane imports by resolving the quoted specs inside
+`platforms(...)` (`"posix"` reaches the macOS lane, `"not linux"` reaches
+both others), and the lane then selects with `-m platforms` while the
+conftest's per-test host skips do the actual gating. A test gated with
+`@pytest.mark.skipif(sys.platform != "win32")` therefore runs on no host at
+all, silently — it is never imported by the lane that would run it, and the
+full-suite lanes skip it. `skipif(sys.platform == "win32")` becomes
+`platforms("posix")`; a non-host condition (`os.geteuid() == 0`) stays a
+separate `skipif` beside the marker. A misspelt spec is a collection error,
+not a skip. Don't stack a module-level `pytestmark =
+platforms(...)` on a file whose tests carry their own host marker — the
+conftest hard-rejects tests carrying two `platforms()` markers (a test
+skipped on every host, reported green everywhere).
+Equally, don't `pytest.skip()` the non-host rows of a `@parametrize` over
+platforms — split it into one marked test per OS, or only the host's row ever
+executes.
 
 ### Don't write change-detector tests
 
@@ -425,6 +520,7 @@ extract, not to regex around it.
 | `skills/`, `optional-skills/`, `agent/curator*.py` | `skills/AGENTS.md` | Frontmatter, HARDLINE authoring standards, curator |
 | `cron/`, kanban (`hermes_cli/kanban*.py`, `tools/kanban_tools.py`, `plugins/kanban/`) | `cron/AGENTS.md` | Scheduler invariants, job fields, kanban board/dispatcher |
 | `gateway/platforms/` new adapter | `gateway/platforms/ADDING_A_PLATFORM.md` | Step-by-step adapter guide |
+| profiles / multiplex / secret scope (any area) | `gateway/AGENTS.md` § Profile scope, `website/docs/user-guide/multi-profile-gateways.md` § What is isolated per profile | which execution points bind scope, what is isolated per profile |
 
 Long-form background lives in `website/docs/developer-guide/` (agent-loop, prompt-assembly,
 context-compression-and-caching, gateway-internals, tools-runtime, plugins/, cron-internals,

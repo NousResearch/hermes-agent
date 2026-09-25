@@ -106,6 +106,12 @@ VALID_INITIAL_STATUSES = {"running", "blocked"}
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 
+# Automatic triage decomposition is an off-turn supervisor action rather than a
+# worker run.  Keep its retry budget durable in task_events so a gateway restart
+# cannot reset a failing card to one LLM call per dispatcher tick.
+AUTO_DECOMPOSE_FAILURE_LIMIT = 3
+AUTO_DECOMPOSE_BACKOFF_SECONDS = 300
+
 # Same-reason block -> unblock -> re-block cycles before routing to ``triage``.
 # Counts unblock recurrences, NOT dispatcher failures (``DEFAULT_FAILURE_LIMIT``).
 BLOCK_RECURRENCE_LIMIT = 2
@@ -1928,6 +1934,95 @@ def delete_attachment(conn: sqlite3.Connection, attachment_id: int) -> Optional[
 
 def list_events(conn: sqlite3.Connection, task_id: str) -> list[Event]:
     return [Event.from_row(r) for r in _task_rows(conn, "task_events", task_id, "created_at ASC, id ASC")]
+
+
+def auto_decompose_retry_due(
+    conn: sqlite3.Connection, task_id: str, *, now: Optional[int] = None,
+) -> bool:
+    """Whether a triage card's durable auto-decompose backoff has elapsed."""
+    row = conn.execute(
+        "SELECT payload FROM task_events "
+        "WHERE task_id = ? AND kind = 'auto_decompose_failed' "
+        "ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return True
+    retry_at = _json_dict(row["payload"]).get("retry_at")
+    return retry_at is None or int(now if now is not None else time.time()) >= int(retry_at)
+
+
+def record_auto_decompose_failure(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str],
+    now: Optional[int] = None,
+    failure_limit: int = AUTO_DECOMPOSE_FAILURE_LIMIT,
+    backoff_seconds: int = AUTO_DECOMPOSE_BACKOFF_SECONDS,
+) -> Optional[dict]:
+    """Persist one failed automatic decomposition and eventually park the card.
+
+    Returns the recorded payload, or ``None`` when the card already left
+    ``triage``.  The exponential delay and attempt count survive gateway
+    restarts because both live in the event stream.
+    """
+    if failure_limit < 1:
+        raise ValueError("failure_limit must be at least 1")
+    if backoff_seconds < 1:
+        raise ValueError("backoff_seconds must be at least 1")
+    timestamp = int(now if now is not None else time.time())
+    from agent.redact import redact_sensitive_text
+
+    safe_reason = _first_line(redact_sensitive_text(reason or "unknown failure", force=True), 500)
+    changed = False
+    blocked_task = None
+    block_reason = None
+    with write_txn(conn):
+        if _task_status(conn, task_id) != "triage":
+            return None
+        previous = conn.execute(
+            "SELECT payload FROM task_events "
+            "WHERE task_id = ? AND kind = 'auto_decompose_failed' "
+            "ORDER BY id DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        previous_payload = _json_dict(previous["payload"]) if previous else {}
+        attempt = int(previous_payload.get("attempt") or 0) + 1
+        blocked = attempt >= failure_limit
+        payload = {
+            "attempt": attempt,
+            "limit": failure_limit,
+            "reason": safe_reason,
+            "blocked": blocked,
+        }
+        if not blocked:
+            payload["retry_at"] = timestamp + backoff_seconds * (2 ** (attempt - 1))
+        _append_event(conn, task_id, "auto_decompose_failed", payload)
+        if blocked:
+            block_reason = (
+                f"Automatic decomposition failed {attempt} times; fix the auxiliary "
+                "kanban_decomposer route, then unblock or specify this card manually. "
+                f"Last failure: {safe_reason}"
+            )
+            changed = conn.execute(
+                "UPDATE tasks SET status = 'blocked', block_kind = 'needs_input', "
+                "block_recurrences = 1 WHERE id = ? AND status = 'triage'",
+                (task_id,),
+            ).rowcount == 1
+            if changed:
+                _append_event(
+                    conn,
+                    task_id,
+                    "blocked",
+                    {"kind": "needs_input", "reason": block_reason, "source_status": "triage"},
+                )
+                blocked_task = get_task(conn, task_id)
+    if changed:
+        _fire_task_hook(
+            "kanban_task_blocked", blocked_task, task_id, None, reason=block_reason,
+        )
+    return payload
 
 
 def _insert_comment(

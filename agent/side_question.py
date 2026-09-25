@@ -117,8 +117,15 @@ def _answer_via_fork(parent_agent: Any, question: str, history: Optional[List[Di
             "Side question (/btw) denied tool call: {tool_name}. "
             "Tools are disabled here — answer directly from the conversation context."))
         snapshot = trim_snapshot_for_fork(history)
-        result = fork.run_conversation(user_message=f"{_FORK_PROMPT}\n\nSide question: {question}",
-                                       conversation_history=_digest_history(snapshot) if routed else snapshot)
+        from agent.turn_context import bind_volatile_user_context
+
+        # /btw never receives a fresh ambient snapshot. A same-runtime fork may
+        # replay only snapshots already sent in historical rows for cache parity.
+        with bind_volatile_user_context(fork, None, None):
+            result = fork.run_conversation(
+                user_message=f"{_FORK_PROMPT}\n\nSide question: {question}",
+                conversation_history=_digest_history(snapshot) if routed else snapshot,
+            )
         answer = (result or {}).get("final_response", "") or ""
         if not answer and result and result.get("error"):
             raise RuntimeError(str(result["error"]))

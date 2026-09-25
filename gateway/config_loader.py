@@ -223,6 +223,15 @@ _SHARED_KEYS: tuple = (
     *_plain("gateway_restart_notification", "typing_indicator", "typing_status_text"),
 )
 
+def shared_platform_config_keys(platform: Platform) -> frozenset[str]:
+    """Shared keys whose explicit platform-section value outranks plugin extras."""
+    return frozenset(
+        key
+        for key, only, _transform in _SHARED_KEYS
+        if only is None or platform in only
+    )
+
+
 def _bridged_keys(plat: Platform, platform_cfg: dict, gw_data: dict, *, root_block: bool = False) -> dict:
     """Shared-key bridge; a ROOT-level ``<platform>:`` block (which ``merge_platform_sections``
     never copies into ``platforms_data``) also gets its adapter keys promoted into ``extra``, with

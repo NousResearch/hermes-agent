@@ -119,7 +119,7 @@ def _shim_safe_args(argv0: str, command: str, args: List[str]) -> "tuple[str, Li
     inside quotes, so a multi-line ``eval`` script arrives as its first line only (``SyntaxError:
     Unexpected end of input``) and multi-line ``fill`` text is truncated the same way. ``eval``
     scripts are sent base64-encoded (``agent-browser eval -b``); any other command whose argv carries
-    a newline or ``%`` is wrapped as ``batch`` with the command as a JSON array on stdin — cmd.exe
+    a newline, ``%``, or shell metacharacter is wrapped as ``batch`` with the command as a JSON array on stdin — cmd.exe
     never sees the text (both forms present since the 0.26 floor). Every other spawn gets the raw
     argv and no stdin."""
     if not args or not argv0.lower().endswith((".cmd", ".bat")):
@@ -127,7 +127,7 @@ def _shim_safe_args(argv0: str, command: str, args: List[str]) -> "tuple[str, Li
     if command == "eval":
         script, *rest = args
         return command, ["--base64", base64.b64encode(script.encode("utf-8")).decode("ascii"), *rest], None
-    if command == "batch" or not any(ch in arg for arg in args for ch in "\r\n%"):
+    if command == "batch" or not any(ch in arg for arg in args for ch in '\r\n%&|<>^()"'):
         return command, args, None
     return "batch", [], json.dumps([[command, *args]]).encode("utf-8")
 

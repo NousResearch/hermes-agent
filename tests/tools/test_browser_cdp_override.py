@@ -96,6 +96,54 @@ class TestResolveCdpOverride:
         )
 
 
+class TestResolveStaleLoopbackUuid:
+    """A persisted loopback ``/devtools/browser/<uuid>`` URL embeds a per-process browser
+    UUID that goes stale on every Chromium restart (#123170): it must be re-resolved from
+    ``/json/version`` at connect time, while remote/cloud endpoints (routed, possibly
+    signed) pass through untouched."""
+
+    STALE = "ws://127.0.0.1:9222/devtools/browser/00000000-stale-uuid"
+    LIVE = "ws://127.0.0.1:9222/devtools/browser/11111111-live-uuid"
+
+    def test_loopback_uuid_re_resolved_from_json_version(self):
+        from tools.browser_tool_cdp import _resolve_cdp_override
+
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"webSocketDebuggerUrl": self.LIVE}
+
+        with patch("requests.get", return_value=response) as mock_get:
+            resolved = _resolve_cdp_override(self.STALE)
+
+        assert resolved == self.LIVE
+        mock_get.assert_called_once_with(
+            "http://127.0.0.1:9222/json/version",
+            timeout=10,
+            proxies={"http": None, "https": None},
+        )
+
+    def test_remote_uuid_url_passes_through_without_discovery(self):
+        from tools.browser_tool_cdp import _resolve_cdp_override
+
+        raw = "wss://cdp.browserbase.example/devtools/browser/abc?token=super-secret-token-1"
+        with patch("requests.get") as mock_get:
+            resolved = _resolve_cdp_override(raw)
+
+        assert resolved == raw
+        mock_get.assert_not_called()
+
+    def test_loopback_uuid_falls_back_to_raw_when_discovery_fails(self):
+        from tools.browser_tool_cdp import _resolve_cdp_override
+
+        with (
+            patch("requests.get", side_effect=RuntimeError("connection refused")),
+            patch("tools.browser_tool.logger.warning"),
+        ):
+            resolved = _resolve_cdp_override(self.STALE)
+
+        assert resolved == self.STALE
+
+
 class TestGetCdpOverride:
     def test_prefers_env_var_over_config(self, monkeypatch):
         import tools.browser_tool as browser_tool

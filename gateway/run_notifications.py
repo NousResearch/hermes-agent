@@ -1331,9 +1331,23 @@ class GatewayNotificationsMixin:
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            # The queued event's ``message_id`` is the message that STARTED the process, and the
+            # persisted origin carries the same stale id. A synthetic completion is not a reply to
+            # it: by delivery time the user has often continued elsewhere, and an event anchored
+            # there makes the finished job's reply quote that old message on every reply-anchoring
+            # platform (#52694: a background completion visibly replying to a stale Discord DM
+            # message). Routing is unaffected — topic lanes carry thread_id and the anchor-less
+            # synthetic-send branches are covered (#87051); the original id rides metadata for
+            # debugging only.
+            trigger_message_id = str(evt.get("message_id") or "").strip() or None
+            if trigger_message_id:
+                metadata["original_trigger_message_id"] = trigger_message_id
+            if getattr(source, "message_id", None):
+                from gateway.session_identity import replace_source
+                source = replace_source(source, message_id=None)
             synth_event = MessageEvent(
                 text=synth_text, message_type=MessageType.TEXT, source=source, internal=True,
-                message_id=str(evt.get("message_id") or "").strip() or None, metadata=metadata,
+                metadata=metadata,
             )
             logger.info(
                 "Watch pattern notification — injecting for %s chat=%s thread=%s",

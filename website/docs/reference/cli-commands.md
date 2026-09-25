@@ -817,7 +817,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `request-changes <id> <reason>` | Reviewer verdict for an active review run: close the review attempt and route the task back to its original implementer. |
 | `reopen-review <id>...` | Send review task(s) back for changes (`review` → ready/todo). Flag: `--reason` (appended as a comment). |
 | `reopen-done <id> [reason...]` | Operator recovery: retract a verified-bad `done`/`archived` task back to `ready` (or `todo` while parents are open) and retract its descendants. Flags: `--ids` (bulk), `--json`. Denied to delegated children. |
-| `schedule <id> "<reason>"` | Park time-delay/follow-up work in `scheduled` so it is not shown as a human blocker. |
+| `schedule <id> "<reason>"` | Park time-delay/follow-up work in `scheduled` so it is not shown as a human blocker. Parks from todo/ready/running/blocked/review and resumes into the parked phase. Flag: `--wake-at <ISO8601|epoch>` (dispatcher auto-resumes when due; omit to wait for `unblock`). |
 | `unblock <id>` | Restore a blocked task to its source phase (`review` or `ready`), or `todo` while dependencies remain open. |
 | `archive <id>` | Hide from default list. `gc` will remove scratch workspaces. |
 | `tail <id>` | Follow a task's event stream. |

@@ -282,6 +282,9 @@ class DispatchResult:
 
     reclaimed: int = 0
     promoted: int = 0
+    woken_scheduled: int = 0
+    """``scheduled`` tasks whose ``scheduled_wake_at`` came due this tick and
+    were resumed by :func:`kanban_db.promote_due_scheduled`."""
     reconciled_orphans: list[str] = field(default_factory=list)
     """``running`` cards requeued by :func:`reconcile_orphaned_running` (broken
     claim bookkeeping, dead/gone worker)."""
@@ -2837,6 +2840,8 @@ def _run_reclaim_phase(
     result.auto_blocked.extend(getattr(detect_crashed_workers, "_last_auto_blocked", []))
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
+    # Timed waits wake before ready-promotion so a woken card is dispatchable this tick.
+    result.woken_scheduled = len(_kb.promote_due_scheduled(conn))
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
 
 

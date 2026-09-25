@@ -112,23 +112,46 @@ def bystander():
 
 
 class _JobControlTree:
-    """The REAL worker topology: a job-control shell whose ``gtimeout``-
-    wrapped grandchild sits in a SEPARATE process group, same session.
+    """The REAL worker topology: a worker whose ``gtimeout``-wrapped
+    grandchild sits in a SEPARATE process group, same session.
 
     Measured live (production chain shell -> gtimeout -> pi):
 
         worker 80761 pgid 80761 sid 80761
           desc 80762 ppid 80761 pgid 80762 sid 80761
           desc 80763 ppid 80762 pgid 80762 sid 80761
+
+    The separate process group is established EXPLICITLY, by calling
+    ``os.setpgrp()`` in the grandchild's ``preexec_fn``. It used to be
+    established by a shell's ``set -m`` job control, which is not portable:
+    a POSIX sh is entitled to refuse job control when stdin is not a tty,
+    and dash -- which IS ``/bin/sh`` on the hosted ubuntu runner -- does
+    exactly that ("set: can't access tty; job control turned off"). The
+    grandchild then stayed in the worker's own group and the precondition
+    below could not be met. ``os.setpgrp()`` gives the same topology (new
+    group, SAME session) on every POSIX host, tty or not.
     """
+
+    # The job leader's own child, inside the job leader's new group: the
+    # second half of the measured ``gtimeout -> pi`` pair.
+    _JOB_SCRIPT = (
+        "import subprocess,sys,time;"
+        "subprocess.Popen([sys.executable,'-c','import time; time.sleep(300)']);"
+        "time.sleep(300)"
+    )
+    # The worker itself: leads its own session (start_new_session) and spawns
+    # the job leader into a brand new process group within that session.
+    _WORKER_SCRIPT = (
+        "import os,subprocess,sys,time;"
+        "job=subprocess.Popen([sys.executable,'-c',"
+        f"{_JOB_SCRIPT!r}],preexec_fn=os.setpgrp);"
+        "print(job.pid,flush=True);"
+        "time.sleep(300)"
+    )
 
     def __init__(self) -> None:
         self.proc = subprocess.Popen(
-            [
-                "/bin/sh",
-                "-c",
-                "set -m; sh -c 'sleep 300' & echo $! ; wait",
-            ],
+            [sys.executable, "-c", self._WORKER_SCRIPT],
             stdout=subprocess.PIPE,
             text=True,
             start_new_session=True,

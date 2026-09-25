@@ -60,22 +60,25 @@ def normalize_choices(raw: object) -> Optional[List[tuple]]:
 
     Entries are scalars (``str(entry)`` is both value and label — the historical behaviour) or
     ``{value: str, label?: str}`` mappings. ``[]`` for an empty list; ``None`` when *raw* is not a list or
-    any entry is malformed.
+    any entry is malformed. A repeated value keeps its first entry (clients key options by value).
     """
     if not isinstance(raw, list):
         return None
     out: List[tuple] = []
+    seen: set = set()
     for item in raw:
         if isinstance(item, Mapping):
             value = item.get("value")
             label = item.get("label", value)
             if not isinstance(value, str) or not isinstance(label, str):
                 return None
-            out.append((value, label))
         elif isinstance(item, (str, int, float)):  # bool is an int: YAML ``yes`` keeps rendering "True"
-            out.append((str(item), str(item)))
+            value = label = str(item)
         else:
             return None
+        if value not in seen:
+            seen.add(value)
+            out.append((value, label))
     return out
 
 

@@ -1562,7 +1562,12 @@ def _plugin_rows() -> list[dict]:
     ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
     active = pc._category_active_names()
-    for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
+    discovered = sorted(pc._discover_all_plugins())
+    # Manifest ``config_schema`` + current values, rendered by the Plugins hub as a form. Built for the
+    # whole list in one call so every plugin's ``choices_from`` shares one resolution budget.
+    settings = _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields_many(
+        [(key, Path(str(_dir)) if _dir else None) for _n, _v, _d, _s, _dir, key in discovered])
+    for (name, version, desc, source, _dir, key), settings_schema in zip(discovered, settings):
         # Bundled backends/platforms/providers and the live memory provider run without an explicit
         # enable: _plugin_status reports the truthful default instead of "not enabled" (reads as OFF).
         status = pc._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active)
@@ -1576,8 +1581,7 @@ def _plugin_rows() -> list[dict]:
             "source": source, "status": status, "portable": portable,
             "install_dir": str(_dir_path) if _dir_path else "",
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
-            # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
-            "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
+            "settings_schema": settings_schema,
             "servers": _plugin_server_rows(_dir_path, key, portable=portable),
             **cat.catalog_row_fields(_dir, pins, versions),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})

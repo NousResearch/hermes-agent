@@ -5945,6 +5945,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         raw_content = message.content.strip()
         normalized_content = raw_content
         mention_prefix = False
+        try:
+            _raw_mentioned_user_ids = set(self._raw_mentioned_user_ids(message))
+            _resolved_mentioned_user_ids = {
+                str(getattr(m, "id", ""))
+                for m in (getattr(message, "mentions", []) or [])
+                if getattr(m, "id", None) is not None
+            }
+            _mentioned_user_ids = sorted(_raw_mentioned_user_ids | _resolved_mentioned_user_ids)
+            _mentioned_bot_ids = sorted(
+                str(getattr(m, "id", ""))
+                for m in (getattr(message, "mentions", []) or [])
+                if getattr(m, "bot", False) and getattr(m, "id", None) is not None
+            )
+        except Exception:
+            _mentioned_user_ids = []
+            _mentioned_bot_ids = []
         snapshot_attachments = []
         if hasattr(message, "message_snapshots") and message.message_snapshots:
             snapshot_text_parts = []
@@ -6134,6 +6150,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             reply_to_message_id=reply_to_id, reply_to_text=reply_to_text,
             timestamp=message.created_at, auto_skill=_skills, channel_prompt=_channel_prompt,
             channel_context=_channel_context,
+            metadata={
+                "explicit_self_mention": bool(mention_prefix),
+                "raw_content": raw_content,
+                "discord_mentioned_user_ids": _mentioned_user_ids,
+                "discord_mentioned_bot_ids": _mentioned_bot_ids,
+            },
         )
         if (
             getattr(getattr(message, "author", None), "bot", False)

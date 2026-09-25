@@ -1688,6 +1688,7 @@ try {
         # the receipt's verification section carries the per-check detail.
         $verifyStep = Invoke-HermesStep $pythonExe @("-m", "hermes_cli.update_verification") "post-update-verify"
         if ($verifyStep.Code -ne 0) {
+            $manualAction = $true
             $manualMsg = "Update verification failed and the update was rolled back. See logs/update_receipts/ for the per-check detail, then run 'hermes update' again."
         }
     }

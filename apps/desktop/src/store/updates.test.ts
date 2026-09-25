@@ -1547,6 +1547,45 @@ describe('startUpdatePoller', () => {
     expect(checkHermesUpdateSpy).toHaveBeenCalled()
   })
 
+  it('re-checks backend updates when switching between two profiles on the same remote backend', async () => {
+    // Pooled profiles share a baseUrl; only the profile field differs. The
+    // update check is profile-scoped (per-profile overrides can pin a
+    // different channel/branch), so a baseUrl-only key would treat this as
+    // "no change" and keep the first profile's status on screen.
+    checkHermesUpdateSpy.mockReset()
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 1,
+      update_available: true,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
+
+    const pooled = (profile: string) => ({
+      baseUrl: 'http://shared-box:9119',
+      isFullscreen: false,
+      mode: 'remote' as const,
+      nativeOverlayWidth: 0,
+      profile,
+      token: 't',
+      wsUrl: 'ws://shared-box:9119',
+      logs: [],
+      windowButtonPosition: null
+    })
+
+    setConnection(pooled('alpha'))
+    startUpdatePoller()
+    await vi.advanceTimersByTimeAsync(0)
+    checkHermesUpdateSpy.mockClear()
+
+    setConnection(pooled('beta'))
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(checkHermesUpdateSpy).toHaveBeenCalled()
+  })
+
   it('discards a stale in-flight response and re-checks after switching to B before A resolves', async () => {
     // A's check is still in flight when the switch to B happens — B's
     // trigger is locked out by $backendUpdateChecking. Once A's (now stale)

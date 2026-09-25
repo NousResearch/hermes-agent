@@ -3817,6 +3817,21 @@ export interface Translations {
     windowControls: string
     paneControls: string
     appControls: string
+    routeTitles: {
+      chat: string
+      settings: string
+      'command-center': string
+      capabilities: string
+      messaging: string
+      webhooks: string
+      artifacts: string
+      cron: string
+      profiles: string
+      agents: string
+      starmap: string
+      extension: string
+      'session-import': string
+    }
     modelMenu: {
       search: string
       noModels: string

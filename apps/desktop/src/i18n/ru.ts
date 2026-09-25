@@ -3533,6 +3533,21 @@ export const ru = defineLocale({
     windowControls: 'Управление окном',
     paneControls: 'Управление панелями',
     appControls: 'Управление приложением',
+    routeTitles: {
+      chat: 'Чат',
+      settings: 'Настройки',
+      'command-center': 'Командный центр',
+      capabilities: 'Возможности',
+      messaging: 'Сообщения',
+      webhooks: 'Вебхуки',
+      artifacts: 'Артефакты',
+      cron: 'Запланированные задачи',
+      profiles: 'Профили',
+      agents: 'Агенты',
+      starmap: 'Граф памяти',
+      extension: 'Расширение',
+      'session-import': 'Продолжить из другого приложения'
+    },
     modelMenu: {
       search: 'Поиск моделей',
       noModels: 'Модели не найдены',

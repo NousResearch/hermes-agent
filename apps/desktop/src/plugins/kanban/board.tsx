@@ -1331,7 +1331,7 @@ export function KanbanBoardPage() {
       </Contribute>
 
       <header className="flex shrink-0 flex-wrap items-center gap-2 px-4 py-2">
-        <h1 className="text-sm font-semibold text-foreground">{k.title}</h1>
+        <h2 className="text-sm font-semibold text-foreground">{k.title}</h2>
         <span className="rounded-full bg-(--ui-bg-quaternary) px-1.5 py-px text-[0.625rem] tabular-nums text-(--ui-text-tertiary)">
           {total}
         </span>

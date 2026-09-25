@@ -4271,6 +4271,21 @@ export const zh = defineLocale({
     windowControls: '窗口控件',
     paneControls: '面板控件',
     appControls: '应用控件',
+    routeTitles: {
+      chat: '聊天',
+      settings: '设置',
+      'command-center': '命令中心',
+      capabilities: '技能',
+      messaging: '消息',
+      webhooks: '网络钩子',
+      artifacts: '工件',
+      cron: '计划任务',
+      profiles: '配置文件',
+      agents: '智能体',
+      starmap: '星图',
+      extension: '扩展',
+      'session-import': '从其他应用继续'
+    },
     modelMenu: {
       search: '搜索模型',
       noModels: '未找到模型',

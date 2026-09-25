@@ -134,7 +134,7 @@ export function SessionImportView({ owner, onClose, onOpenSession }: SessionImpo
     >
       <section aria-label={copy.title} className="session-import flex h-full min-h-0 flex-col">
         <header className="px-8 pb-6 pt-12">
-          <h1 className="text-3xl font-semibold tracking-tight text-(--ui-text-primary)">{copy.title}</h1>
+          <h2 className="text-3xl font-semibold tracking-tight text-(--ui-text-primary)">{copy.title}</h2>
           <p className="mt-2 text-sm text-(--ui-text-secondary)">{copy.subtitle}</p>
           <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-(--ui-text-secondary)">
             <span className="inline-flex items-center gap-2">

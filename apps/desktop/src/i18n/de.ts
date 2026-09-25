@@ -4942,6 +4942,21 @@ export const deOverrides = {
     windowControls: 'Fenster-Bedienelemente',
     paneControls: 'Panele-Bedienelemente',
     appControls: 'App-Bedienelemente',
+    routeTitles: {
+      chat: 'Chat',
+      settings: 'Einstellungen',
+      'command-center': 'Command Center',
+      capabilities: 'Fähigkeiten',
+      messaging: 'Messaging',
+      webhooks: 'Webhooks',
+      artifacts: 'Artefakte',
+      cron: 'Geplante Jobs',
+      profiles: 'Profile',
+      agents: 'Agents',
+      starmap: 'Memory-Graph',
+      extension: 'Erweiterung',
+      'session-import': 'Von einer anderen App fortfahren'
+    },
     modelMenu: {
       search: 'Modelle durchsuchen',
       noModels: 'Keine Modelle gefunden',

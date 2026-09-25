@@ -94,8 +94,24 @@ def test_tag_fetch_keeps_partial_clone_semantics_and_tags(tmp_path):
 
     fetch_full_commit_graph(checkout)
 
-    # Still a partial clone, and the tags still arrived.
+    # Still a partial clone with the *same* filter, and the tags still arrived.
     assert _has_promisor_config(checkout)
+    assert _git(checkout, "config", "--get", "remote.origin.partialclonefilter") == "tree:0"
+    assert "v0.21.6" in _git(checkout, "tag", "--list")
+
+
+def test_tag_fetch_preserves_a_non_default_partial_clone_filter(tmp_path):
+    # A partial clone whose filter the user set themselves (blob:none) must not
+    # be silently tightened to tree:0 by the tag fetch — repeat the clone's own
+    # filter instead.
+    server = _server_repo(tmp_path)
+    _git(server, "config", "uploadpack.allowFilter", "true")
+    checkout = _clone(tmp_path, server, "blobless", "--no-tags", "--filter=blob:none")
+    assert _has_promisor_config(checkout)
+
+    fetch_full_commit_graph(checkout)
+
+    assert _git(checkout, "config", "--get", "remote.origin.partialclonefilter") == "blob:none"
     assert "v0.21.6" in _git(checkout, "tag", "--list")
 
 

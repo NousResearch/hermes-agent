@@ -725,3 +725,74 @@ class TestScriptTimeoutTreeKill:
                     psutil.Process(gpid).kill()
                 except psutil.NoSuchProcess:
                     pass
+
+
+class TestPosixCronPythonInvocation:
+    """A `.py` job script keeps Hermes's dependency environment on POSIX.
+
+    Regression (#123044): the PM runtime launches the gateway on the bare store Python, whose
+    own site-packages holds only pip, and injects the tree's dependency environment into that
+    process instead. Job scripts inherited an interpreter with neither the repo nor the
+    dependencies, so a script importing a project dependency (``yaml``, ``mcp``,
+    ``googleapiclient``, ...) died with ModuleNotFoundError after the interpreter switch.
+    """
+
+    @pytest.fixture
+    def store_python_process(self, tmp_path, monkeypatch):
+        """Make this process look like the PM-launched gateway: a non-venv interpreter whose
+        dependency environment reached ``sys.path`` via hermes_bootstrap."""
+        dependency_site = tmp_path / "dependency-env" / "lib" / "python3.11" / "site-packages"
+        dependency_site.mkdir(parents=True)
+        monkeypatch.setattr(sys, "prefix", sys.base_prefix)
+        # The host's own site-packages is irrelevant here: swap in the fake dependency env.
+        monkeypatch.setattr(sys, "path", [entry for entry in sys.path
+                                          if Path(entry).name != "site-packages"] + [str(dependency_site)])
+        monkeypatch.delenv("PYTHONPATH", raising=False)
+        return dependency_site
+
+    @pytest.mark.platforms("posix")
+    def test_overlay_hands_over_the_repo_and_the_running_dependency_env(
+        self, store_python_process, monkeypatch,
+    ):
+        """The child gets the repo, the dependency env this process runs with, then whatever
+        PYTHONPATH it already had. An interpreter that owns its packages is left alone."""
+        from cron import scheduler_script
+
+        monkeypatch.setenv("PYTHONPATH", "/preexisting")
+
+        python_exe, overlay = scheduler_script._posix_cron_python_invocation("/store/python3")
+
+        repo = Path(scheduler_script.__file__).resolve().parents[1]
+        assert python_exe == "/store/python3"
+        assert overlay["PYTHONPATH"].split(os.pathsep) == [
+            str(repo), str(store_python_process), "/preexisting",
+        ]
+
+        monkeypatch.setattr(sys, "base_prefix", "/usr/base")
+        monkeypatch.setattr(sys, "prefix", "/usr/base/env")
+        assert scheduler_script._posix_cron_python_invocation("/env/bin/python")[1] == {}
+
+    @pytest.mark.platforms("posix")
+    def test_script_reaches_a_dependency_of_the_running_environment(
+        self, cron_env, tmp_path, monkeypatch,
+    ):
+        """End to end: the argv ``_script_argv`` builds must import the dependency."""
+        from cron import scheduler_script
+
+        dependency_site = tmp_path / "dependency-env" / "lib" / "python3.11" / "site-packages"
+        dependency_site.mkdir(parents=True)
+        (dependency_site / "fakedep.py").write_text(
+            'VALUE = "from-dependency-env"\n', encoding="utf-8")
+        monkeypatch.setattr(sys, "prefix", sys.base_prefix)
+        monkeypatch.setattr(sys, "path", [*sys.path, str(dependency_site)])
+        script = cron_env / "scripts" / "probe.py"
+        script.write_text("import fakedep; print(fakedep.VALUE)\n", encoding="utf-8")
+
+        argv, overlay, error = scheduler_script._script_argv(script)
+
+        assert error is None
+        assert argv is not None
+        result = subprocess.run(argv, capture_output=True, text=True,
+                                env={**os.environ, **overlay})
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "from-dependency-env"

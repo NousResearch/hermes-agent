@@ -119,7 +119,7 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
     captured output; uv venv launchers can re-exec the base console python and flash a window
     even with CREATE_NO_WINDOW, so run the base python directly with venv paths overlaid in env."""
     if sys.platform != "win32":
-        return python_exe, {}
+        return _posix_cron_python_invocation(python_exe)
 
     interpreter = _sched.Path(python_exe)
     venv_dir = interpreter.parent.parent
@@ -158,6 +158,30 @@ def _windows_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str
             env_overlay["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
 
     return str(interpreter), env_overlay
+
+
+def _posix_cron_python_invocation(python_exe: str) -> tuple[str, dict[str, str]]:
+    """POSIX sibling of the Windows overlay. ``sys.executable`` used to be the in-tree venv
+    interpreter, which carried every project dependency; the PM runtime launches the gateway on
+    the bare store Python instead, whose own ``site-packages`` holds only pip, and injects the
+    tree's dependency environment into *that* process via ``hermes_bootstrap``. A job script
+    then starts with neither the repo nor the dependencies on its path, so ``import yaml`` /
+    ``mcp`` / ``googleapiclient`` dies with ``ModuleNotFoundError`` while the same script ran
+    fine before the switch. Hand the script the environment this process already runs with,
+    derived from ``sys.path`` — the same signal ``pm.environments.running_from_selected_environment``
+    reads, so this neither reads HERMES_HOME nor depends on the install record. A venv
+    interpreter keeps its own packages untouched.
+    """
+    if sys.prefix != sys.base_prefix:
+        return python_exe, {}
+    dependency_dirs = [entry for entry in sys.path if entry and Path(entry).name == "site-packages"]
+    if not dependency_dirs:
+        return python_exe, {}
+    pythonpath_entries = [str(Path(__file__).resolve().parents[1]), *dependency_dirs]
+    existing_pythonpath = os.environ.get("PYTHONPATH", "")
+    if existing_pythonpath:
+        pythonpath_entries.append(existing_pythonpath)
+    return python_exe, {"PYTHONPATH": os.pathsep.join(pythonpath_entries)}
 
 
 def _terminate_cron_script_process(proc: subprocess.Popen) -> None:

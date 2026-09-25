@@ -413,6 +413,40 @@ class TestPersistence:
         assert mc == {"cwd": "/work", "provider": "anthropic",
                       "base_url": "https://anthropic.example/v1", "api_mode": "anthropic_messages"}
 
+    def test_model_switch_persist_archives_foreign_writer_row(self, tmp_path):
+        """#122699: after an ACP model switch, ``_persist`` takes the non-owning-agent replace branch
+        (the fresh agent has ``_session_db_created=False``). A second writer's active row that the
+        switching agent's in-memory ``state.history`` doesn't hold must be SOFT-archived — recoverable
+        and searchable — not hard-DELETEd out of the transcript and the FTS index."""
+        agent = SimpleNamespace(model="test-model")  # no _session_db => non-owning => replace branch
+        db = SessionDB(tmp_path / "state.db")
+        manager = SessionManager(agent_factory=lambda: agent, db=db)
+        state = manager.create_session(cwd="/work")
+        state.history.append({"role": "user", "content": "ask 1"})
+        state.history.append({"role": "assistant", "content": "answer 1"})
+        manager.save_session(state.session_id)
+
+        # A second writer appends a turn to the same ACP session, outside this agent's in-memory view.
+        foreign = "[from Telegram] the vault code is 7741"
+        db.append_message(state.session_id, "user", content=foreign)
+
+        # The switching editor adds its own turn and saves again -> the _persist replace branch runs.
+        state.history.append({"role": "user", "content": "ask 2 (from the editor)"})
+        manager.save_session(state.session_id)
+
+        # Live transcript is the switching agent's view; the foreign row is not active (expected).
+        live = [m["content"] for m in db.get_messages(state.session_id)]
+        assert live == ["ask 1", "answer 1", "ask 2 (from the editor)"]
+        assert foreign not in live
+
+        # ...but the foreign row survives: soft-archived rewind-style (active=0), still readable and
+        # kept in the FTS index (a plain DELETE would evict it, leaving nothing to recover — #82756).
+        recoverable = [m["content"] for m in db.get_messages(state.session_id, include_inactive=True)]
+        assert foreign in recoverable
+        assert state.session_id in {
+            r["session_id"] for r in db.search_messages("vault", include_inactive=True)
+        }
+
 
 
 

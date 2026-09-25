@@ -224,25 +224,25 @@ Session IDs follow the format `YYYYMMDD_HHMMSS_<hex>` — CLI/TUI sessions use a
 
 ## Cross-Platform Handoff
 
-Use `/handoff <platform>` from a CLI session to transfer the live conversation to a messaging platform's home channel. The agent picks up exactly where the CLI left off — same session id, full role-aware transcript, tool calls and all.
+Use `/handoff <platform>` from a CLI or Hermes Desktop chat to transfer the current conversation to a messaging platform's home channel. The agent picks up where you left off — same session id, full role-aware transcript, tool calls and all. This command is not available in the messaging chat itself.
 
 ```bash
-# Inside a CLI session
+# In a CLI session or the Desktop chat composer
 /handoff telegram
 ```
 
 What happens:
 
-1. The CLI validates that `<platform>` is enabled and has a home channel set (run `/sethome` from the destination chat once to configure it).
-2. The CLI marks the session pending and **block-polls the gateway**. It refuses if the agent is mid-turn — wait for the current response to finish first.
+1. The CLI or Desktop validates that `<platform>` is enabled and has a home channel set (run `/sethome` from the destination chat once to configure it).
+2. The session is marked pending while the client waits for the gateway. A handoff is refused if the agent is mid-turn — wait for the current response to finish first.
 3. The gateway watcher claims the handoff and asks the destination adapter for a fresh thread:
    - **Telegram** — opens a new forum topic (DM topics if the bot owner has enabled Threaded Mode via BotFather, or a forum supergroup topic).
    - **Discord** — creates a 1440-min auto-archive thread under the home text channel.
    - **Slack** — posts a seed message and uses its `ts` as the thread anchor.
    - **Matrix** — posts a seed message and uses its event id as the thread root (`m.thread` relation).
    - **WhatsApp / Signal / SMS** — no native threads, falls back to the home channel directly.
-4. The gateway re-binds the destination key to your existing CLI session id, then forges a synthetic user turn asking the agent to confirm and summarize. The reply lands in the new thread.
-5. When the gateway acknowledges success, the CLI prints a `/resume` hint and exits cleanly:
+4. The gateway re-binds the destination key to your existing session id, then sends an internal turn asking the agent to confirm and summarize. The reply lands in the new thread.
+5. On success, Desktop shows a confirmation and keeps the chat available in its session list. The CLI prints a `/resume` hint and exits cleanly:
 
    ```
    ↻ Handoff complete. The session is now active on telegram.
@@ -251,12 +251,12 @@ What happens:
 
 6. From that point, the conversation lives on the platform. Reply in the new thread — anyone authorized in that channel shares the same session, and any later real user message in the thread joins seamlessly because thread sessions key without `user_id`.
 
-**Resume back to CLI:** when you want to come back to a desktop, just run `/resume <title>` (or `hermes -r "<title>"` from the shell) and pick up where the platform left off.
+**Resume back:** in Hermes Desktop, open the same session from the session list (search by its id if needed). In the CLI, run `/resume <title>` (or `hermes -r "<title>"` from the shell). Both read the stored conversation after the platform's latest messages; opening it in Desktop does not detach the messaging thread.
 
 **Failure modes:**
-- No home channel configured → CLI refuses with a `/sethome` hint.
-- Gateway not running (nothing ever claims the request) → CLI times out at 60s with a clear message and your CLI session stays intact.
-- Slow transfer: once the gateway claims the handoff it replays your full session through a real agent turn, which can take a few minutes on long sessions. The CLI shows "Still transferring..." heartbeats and waits up to 15 minutes — it never misreports a slow transfer as "gateway not running".
+- No home channel configured → the client refuses with a `/sethome` hint.
+- Gateway not running (nothing ever claims the request) → Desktop times out after 60 seconds and offers to start messaging; the CLI reports a timeout and keeps its session intact.
+- Slow transfer: once the gateway claims the handoff it runs a real agent turn, which can take a few minutes on long sessions. The CLI shows "Still transferring..." heartbeats and waits up to 15 minutes. Desktop waits up to 60 seconds and may report a timeout while the gateway is still processing; check the destination before retrying.
 - Thread creation fails (permissions, topics-mode off) → falls back to the home channel directly and still completes; no thread isolation but the handoff itself works.
 - `adapter.send` fails (rate limit, transient API error) → handoff marked failed with the reason; the row clears so you can retry.
 

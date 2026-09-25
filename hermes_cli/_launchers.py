@@ -255,14 +255,18 @@ def mint_launcher(
     except (OSError, BadZipFile, KeyError):
         pass
 
-    # The script is data to Python, not interpolated shell source.
-    import base64
-    encoded = base64.b64encode(script.encode("utf-8")).decode("ascii")
-    code = f"import base64; exec(base64.b64decode('{encoded}'))"
+    # The script is a sibling file, never interpolated shell source: cmd.exe
+    # cannot carry a multiline -c program on one line, and the old
+    # 'exec(base64.b64decode(...))' one-liner matches the commodity-malware
+    # shape (Metasploit) that EDR flags. A sibling .py keeps stdin, argv
+    # (%*), and quoting behavior identical to the old one-liner.
+    script_path = out_dir / f"{name}.py"
     body = (
         "@echo off\r\n"
-        f'"{python_exe}" -I -c "{code}" %*\r\n'
+        f'"{python_exe}" -I "%~dp0{name}.py" %*\r\n'
     )
+    if _write_atomic(script_path, lambda p: p.write_text(script, encoding="utf-8")) is None:
+        return None
     return _write_atomic(out_dir / f"{name}.cmd", lambda p: p.write_text(body, encoding="utf-8"))
 
 

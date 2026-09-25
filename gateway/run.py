@@ -427,6 +427,12 @@ def _ensure_windows_gateway_venv_imports() -> None:
         return
 
     project_root = Path(__file__).resolve().parent.parent
+    # PM activates this install's dependency generation at boot (hermes_bootstrap).
+    # The legacy in-tree venv below carries wheels built for a different interpreter
+    # and must not shadow that generation on sys.path.
+    from pm.environments import running_from_selected_environment
+    if running_from_selected_environment(project_root):
+        return
     candidates: list[Path] = []
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))

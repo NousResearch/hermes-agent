@@ -219,8 +219,12 @@ def _ephemeral_child_sql(alias: str = "s") -> str:
 def _sql_freshest_of(activity: str, session_id_expr: str, started: str) -> str:
     """Freshest of *activity* and the latest message timestamp for *session_id_expr*, else *started*.
     Heartbeats are rate-limited (~60s) so ``last_activity_at`` can lag a newer message; never use it alone."""
-    msg_max = f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr})"
-    return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v), "
+    # REAL affinity preserves legacy TEXT/BLOB cells; SQLite ranks those above numbers.
+    # Filter before MAX, not in consumers after ordering/LIMIT has already picked a stale row.
+    msg_max = (f"(SELECT MAX(_act_m.timestamp) FROM messages _act_m WHERE _act_m.session_id = {session_id_expr}"
+        " AND typeof(_act_m.timestamp) IN ('integer', 'real'))")
+    return (f"COALESCE((SELECT MAX(_act_v.v) FROM (SELECT {activity} AS v UNION ALL SELECT {msg_max}) _act_v"
+        " WHERE typeof(_act_v.v) IN ('integer', 'real')), "
         f"{started})")
 
 

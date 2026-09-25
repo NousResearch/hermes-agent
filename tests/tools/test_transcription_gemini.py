@@ -134,6 +134,33 @@ class TestGeminiSTT:
         assert res["success"] is False
         assert "Gemini STT API error (HTTP 400): Invalid audio encoding" in res["error"]
 
+    def test_interactions_api_steps_content_structure(self, fake_wav, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
+        mock_response = MagicMock(status_code=200)
+        mock_response.json.return_value = {
+            "id": "v1_test_interaction",
+            "status": "completed",
+            "steps": [
+                {
+                    "content": [
+                        {
+                            "text": "Parsed transcript from steps content.",
+                            "type": "text",
+                        }
+                    ],
+                    "type": "model_output",
+                }
+            ],
+            "model": "gemini-3.5-transcribe",
+        }
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            res = _transcribe_gemini(fake_wav, "gemini-3.5-transcribe")
+
+        assert res["success"] is True
+        assert res["transcript"] == "Parsed transcript from steps content."
+
     def test_transcribe_audio_dispatcher_integration(self, fake_wav, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "test-api-key")
         mock_response = MagicMock(status_code=200)

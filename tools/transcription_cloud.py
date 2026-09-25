@@ -554,8 +554,18 @@ def _transcribe_gemini(
                     err_detail = resp.text[:300]
                 return _error_result(f"Gemini STT API error (HTTP {resp.status_code}): {err_detail}")
             body = resp.json()
-            transcript = (body.get("output_text") or body.get("text") or
-                          body.get("interaction", {}).get("output_text") or "").strip()
+            transcript = (
+                body.get("output_text") or body.get("text") or
+                body.get("interaction", {}).get("output_text") or ""
+            ).strip()
+            if not transcript:
+                for step in body.get("steps", []):
+                    for item in step.get("content", []):
+                        if isinstance(item, dict) and item.get("text"):
+                            transcript = item["text"].strip()
+                            break
+                    if transcript:
+                        break
             if not transcript:
                 return _error_result("Gemini STT returned empty transcript", no_speech=True)
             logger.info("Transcribed %s via Gemini Transcribe (%s, %d chars)",
@@ -606,7 +616,9 @@ def _transcribe_gemini(
         body = resp.json()
         candidates = body.get("candidates", [])
         parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
-        transcript = "".join(p.get("text", "") for p in parts).strip()
+        transcript = "".join(
+            p.get("audioTranscription", {}).get("text", "") or p.get("text", "") for p in parts
+        ).strip()
         if not transcript:
             return _error_result("Gemini STT returned empty transcript", no_speech=True)
         logger.info("Transcribed %s via Gemini multimodal (%s, %d chars)",

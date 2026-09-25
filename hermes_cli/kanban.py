@@ -1028,7 +1028,7 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     with kbc.connect_closing() as conn:
         op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
         return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
-                           lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
+                           lambda tid: f"cannot unblock {tid} (not blocked/scheduled/triaged?)")
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:

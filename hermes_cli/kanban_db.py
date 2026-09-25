@@ -3648,17 +3648,19 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
-    when that is where it left off), closing any leaked run first."""
+    """``blocked``/``scheduled``/``triage`` -> its resumable phase (parent re-gated;
+    ``review`` when that is where it left off), closing any leaked run first.
+    ``triage`` is the loop-breaker's human bucket: once the operator has resolved
+    the underlying cause, this is the supported way to requeue the card."""
     now = int(time.time())
     with write_txn(conn):
         resume_status = (
             _resume_status_from_events(conn, task_id)
-            if _task_status(conn, task_id) == "blocked"
+            if _task_status(conn, task_id) in ("blocked", "triage")
             else "ready"
         )
         _reclaim_dangling_run(
-            conn, task_id, statuses=("blocked", "scheduled"), now=now,
+            conn, task_id, statuses=("blocked", "scheduled", "triage"), now=now,
             note="invariant recovery on unblock",
         )
         # Re-gate on parent completion before restoring the source phase.
@@ -3670,13 +3672,15 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         # ``block_kind``/``block_recurrences`` deliberately survive the unblock:
         # resetting them is the amnesia that let cron-unblock <-> re-block loop
-        # unbounded; only complete_task clears them. ``consecutive_failures``
+        # unbounded; only complete_task clears them. For a ``triage`` card that
+        # means one more same-kind block after an operator unblock goes straight
+        # back to ``triage`` — the loop breaker keeps its memory. ``consecutive_failures``
         # (the dispatcher's spawn/crash counter) IS reset — a deliberate unblock
         # is a fresh start for the retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')", (new_status, task_id),
+            "WHERE id = ? AND status IN ('blocked', 'scheduled', 'triage')", (new_status, task_id),
         )
         if cur.rowcount != 1:
             return False

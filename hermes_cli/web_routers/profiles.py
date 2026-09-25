@@ -16,6 +16,7 @@ from hermes_cli.web_read_coalescing import coalesced_read
 import inspect
 import json
 import logging
+import os
 import re
 import subprocess
 import sys
@@ -809,7 +810,7 @@ async def get_profile_setup_command(name: str):
     return {"command": _profile_setup_command(name)}
 
 
-# (executable, flag): None = takes one quoted `sh -lc '…'` string after -e; "" = argv follows
+# (executable, flag): None = takes one `sh -lc '…'` string after -e; "" = argv follows
 # the executable directly (kitty).
 _LINUX_TERMINALS = (
     ("x-terminal-emulator", "-e"), ("gnome-terminal", "--"), ("konsole", "-e"),
@@ -817,9 +818,14 @@ _LINUX_TERMINALS = (
     ("tilix", "-e"), ("alacritty", "-e"), ("kitty", ""), ("xterm", "-e"))
 
 
-def _linux_terminal_commands(command: str) -> list:
-    sh = ["sh", "-lc", command]
-    quoted = f"sh -lc '{command}'"
+def _linux_terminal_commands(name: str) -> list:
+    # Some emulators require a single command string. Keep that string fixed and pass the
+    # validated profile name through the child's environment; shell expansion inside double
+    # quotes cannot turn its contents into shell syntax.
+    script = ("exec hermes setup" if name == "default"
+              else 'exec hermes -p "$HERMES_SETUP_PROFILE_NAME" setup')
+    sh = ["sh", "-lc", script]
+    quoted = f"sh -lc '{script}'"
     return [
         (exe, [exe, "-e", quoted] if flag is None else [exe, *([flag] if flag else []), *sh])
         for exe, flag in _LINUX_TERMINALS]
@@ -831,16 +837,24 @@ async def open_profile_terminal_endpoint(name: str):
         command = _profile_setup_command(name)
 
         if sys.platform.startswith("win"):
-            subprocess.Popen(["cmd.exe", "/c", "start", "", command])
+            argv = ["hermes", "setup"] if name == "default" else ["hermes", "-p", name, "setup"]
+            subprocess.Popen(argv, creationflags=subprocess.CREATE_NEW_CONSOLE)
         elif sys.platform == "darwin":
-            escaped = command.replace("\\", "\\\\").replace('"', '\\"')
-            subprocess.Popen(["osascript", "-e",
-                              f'tell application "Terminal"\nactivate\ndo script "{escaped}"\nend tell'])
+            # osascript receives the name as data. AppleScript's `quoted form of` makes the
+            # resulting Terminal command one shell argument even for metacharacters.
+            script = ('on run argv\n'
+                      'tell application "Terminal"\nactivate\n'
+                      + ('do script "exec hermes setup"\n' if name == "default" else
+                         'do script "exec hermes -p " & quoted form of (item 1 of argv) & " setup"\n')
+                      + 'end tell\nend run')
+            subprocess.Popen(["osascript", "-e", script, "--", *([] if name == "default" else [name])])
         else:
-            for executable, popen_args in _linux_terminal_commands(command):
+            env = os.environ.copy()
+            env["HERMES_SETUP_PROFILE_NAME"] = name
+            for executable, popen_args in _linux_terminal_commands(name):
                 if subprocess.call(["which", executable], stdout=subprocess.DEVNULL,
                                    stderr=subprocess.DEVNULL) == 0:
-                    subprocess.Popen(popen_args)
+                    subprocess.Popen(popen_args, env=env)
                     break
             else:
                 raise HTTPException(status_code=400, detail="No supported terminal emulator found")

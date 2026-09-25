@@ -18,6 +18,7 @@ import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape
 import { cn } from '@/lib/utils'
 
 import { PANE_TOGGLE_REVEAL_EVENT } from '../..'
+import { useWindowControlsOverlap } from '../../geometry'
 import { NO_PANE_GROUP } from '../../pane-visibility'
 import { allPaneIds, findGroupOfPane } from '../model'
 import { $hiddenTreePanes, $layoutTree, $narrowViewport } from '../store'
@@ -33,6 +34,14 @@ export function NarrowOverlays() {
   const stableHosts = useStablePaneHosts()
   const hiddenPanes = useStore($hiddenTreePanes)
   const [reveal, setReveal] = useState<{ id: string; pinned: boolean } | null>(null)
+
+  // The revealed overlay spans the full viewport height (inset-y-0 below), so
+  // its tab strip starts at the top edge — under the native window controls
+  // (macOS traffic lights) when the sidebar is on the left. Reserve their rect
+  // the same way a docked zone does (TreeGroup's wcOverlap -> paddingTop plus
+  // an absolute drag-region spacer so the band stays a window-drag target).
+  const overlayRef = useRef<HTMLDivElement>(null)
+  const wcOverlap = useWindowControlsOverlap(overlayRef, reveal !== null)
 
   const onMouseLeave = useCallback<MouseEventHandler<HTMLDivElement>>(event => {
     // The overlay's chrome and its stable guest are DOM siblings, but one
@@ -173,12 +182,26 @@ export function NarrowOverlays() {
           // panes beneath it — a see-through overlay reads as text bleeding
           // through text. Contract: `[data-glass-opaque]` in styles.css.
           data-glass-opaque=""
-          data-narrow-overlay=""
+          data-narrow-overlay={revealed.id}
           onMouseLeave={onMouseLeave}
+          ref={overlayRef}
           // Match the pane's docked width (sessions ~237px, files its rail
           // width) instead of a fat fixed 20rem — capped for tiny screens.
-          style={{ width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)` }}
+          // paddingTop keeps the tab strip below the native window controls
+          // (macOS traffic lights); the spacer above keeps that band
+          // draggable, mirroring TreeGroup's reservation.
+          style={{
+            paddingTop: wcOverlap ? wcOverlap.y + wcOverlap.height : undefined,
+            width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)`
+          }}
         >
+          {wcOverlap && (
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute z-10 [-webkit-app-region:drag]"
+              style={{ height: wcOverlap.height, left: wcOverlap.x, top: wcOverlap.y, width: wcOverlap.width }}
+            />
+          )}
           {/* Zone-mates share the overlay through the zone's own tab strip
               (SESSIONS | BOTS) — a lone pane keeps the stripless form. */}
           {zonePanes.length > 1 && (

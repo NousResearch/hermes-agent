@@ -165,6 +165,54 @@ def resolve_launcher_python(repo_root: Path) -> Path | None:
     return store_python
 
 
+def published_runtime_python(launcher: Path) -> Path | None:
+    """The interpreter a launcher FILE embeds, or ``None`` when it cannot say.
+
+    ``resolve_launcher_python`` answers what a publish *would* embed from the
+    selection record; this answers what the bytes on disk actually hold, which is
+    what a supervisor's ``sys.executable`` descends from. The two differ exactly
+    when a publish embedded a stale runtime, so a post-publish probe must read the
+    file, not ask the record again.
+
+    POSIX shell launchers only: the guarded body assigns ``hermes_python`` once
+    for the runtime and once for the fallback, and the plain body leads with
+    ``exec``. A Windows trampoline's shebang lives inside a zip payload, so there
+    is nothing to read back there — callers fall back to the record.
+    """
+    target = Path(launcher)
+    if target.suffix.lower() in (".exe", ".cmd"):
+        return None
+    try:
+        text = target.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeError):
+        return None
+
+    # One shlex pass over the whole body, not per line: the embedded script is a
+    # single-quoted argument that contains newlines, so line splitting fights it.
+    # comments=True drops the shebang and the header comment; shell variables are
+    # skipped (the guarded body's ``exec`` runs ``"$hermes_python"``, not a path).
+    try:
+        tokens = shlex.split(text, comments=True)
+    except ValueError:
+        return None
+
+    candidates: list[Path] = []
+    for index, token in enumerate(tokens):
+        if token.startswith("hermes_python="):
+            value = token.partition("=")[2]
+            if value:
+                candidates.append(Path(value))
+        elif token == "exec" and index + 1 < len(tokens):
+            candidate = tokens[index + 1]
+            if candidate and not candidate.startswith("$"):
+                candidates.append(Path(candidate))
+
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return candidates[0] if candidates else None
+
+
 def _load_script_maker():
     """distlib's ScriptMaker — standalone first, then pip's vendored copy."""
     try:

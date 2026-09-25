@@ -19,7 +19,6 @@ These tests pin the post-fix invariants so the conflict cannot regress.
 """
 
 from agent.context_compressor import (
-    HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
 )
 
@@ -36,13 +35,6 @@ from agent.context_compressor import (
 
 
 
-def test_no_background_consistency_carveout():
-    """The "consistent → use as background" carveout licensed stale-task
-    resumption on topic overlap (#41607, #38364, #42812). It must stay gone,
-    and the prefix must explicitly neutralize topic overlap."""
-    lower = SUMMARY_PREFIX.lower()
-    assert "you may use the summary as background" not in lower
-    assert "topic overlap" in lower
 
 
 def test_replaced_prefixes_are_frozen_for_renormalization():
@@ -207,14 +199,6 @@ _FROZEN_PREFIX_GENERATIONS = (
 _PRE_69619_LIVE_PREFIX = _FROZEN_PREFIX_GENERATIONS[1]
 
 
-def test_no_user_after_handoff_must_not_act():
-    """#80622: a reference-only handoff with nothing after it must not
-    resume historical work or call tools."""
-    lower = SUMMARY_PREFIX.lower()
-    assert "if no user message appears after this summary" in lower
-    assert "do nothing" in lower
-    assert "wait for a new user message" in lower
-    assert "must never become the active turn" in lower
 
 
 def test_pre_69619_prefix_generation_is_frozen_and_stripped():

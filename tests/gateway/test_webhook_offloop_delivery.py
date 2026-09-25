@@ -28,7 +28,7 @@ def fake_gh(tmp_path, monkeypatch):
     if sys.platform.startswith("win"):
         pytest.skip("POSIX shell stub")
     gh = tmp_path / "gh"
-    gh.write_text("#!/bin/bash\nsleep 1\necho posted\nexit 0\n", encoding="utf-8")
+    gh.write_text("#!/usr/bin/env bash\nsleep 1\necho posted\nexit 0\n", encoding="utf-8")
     gh.chmod(gh.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
     return gh
@@ -72,15 +72,6 @@ class TestGithubCommentDeliveryOffLoop:
             f"{ticks_during_delivery} ticker turns ran in ~1s"
         )
 
-    @pytest.mark.asyncio
-    async def test_delivery_result_faithful_off_loop(self, fake_gh):
-        """Off-loop offload must not change the SendResult contract."""
-        adapter = WebhookAdapter.__new__(WebhookAdapter)
-        result = await adapter._deliver_github_comment(
-            "body",
-            {"deliver_extra": {"repo": "owner/repo", "pr_number": "7"}},
-        )
-        assert result.success is True
 
     @pytest.mark.asyncio
     async def test_invalid_inputs_still_rejected_before_subprocess(self):

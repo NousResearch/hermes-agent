@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 # choices (#52492). If OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them
 # up automatically.
 DEFAULT_CODEX_MODELS: List[str] = [
+    "gpt-6-sol",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -38,6 +40,8 @@ DEFAULT_CODEX_MODELS: List[str] = [
 # unsupported — that was wrong; restored here. Keep it in the curated fallback so Pro users still see Spark
 # in `/model` when live discovery is unavailable (offline first run, transient API failure).
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
+    ("gpt-6-sol", ("gpt-5.6-sol", "gpt-5.5")),
+    ("gpt-6-luna", ("gpt-5.6-luna", "gpt-5.5")),
     ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),
@@ -98,6 +102,31 @@ def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
     return [model for model in model_ids if not is_astra_model(model)]
 
 
+def codex_catalog_credential_identity() -> str:
+    """Identity of the credential live discovery would use right now, for the catalog cache key.
+
+    Access/refresh tokens rotate in place while the account-scoped catalog stays authoritative for
+    the same ChatGPT principal, so the key is ``(chatgpt_account_id, sub)``, not the token. An
+    expired token is its own state: ``_codex_catalog`` serves the static fallback for it, and that
+    fallback must not outlive the refresh under the healthy principal's key. Opaque non-JWT tokens
+    fall back to the token itself (the caller hashes every part before anything is persisted).
+    """
+    from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
+
+    try:
+        token = str(resolve_codex_runtime_credentials(read_only=True).get("api_key") or "")
+    except Exception:  # AuthError (no/exhausted creds) or the pytest seat belt: no live catalog either way
+        token = ""
+    if not token:
+        return "missing"
+    if _codex_access_token_is_expiring(token, 0):
+        return "expired"
+    from agent.credential_pool import _codex_principal_identity
+
+    principal = _codex_principal_identity(token)
+    return "/".join(principal) if principal else token
+
+
 def _ranked_slugs(entries: object) -> List[str]:
     """Visible slugs from a Codex catalog ``models`` list, sorted by (priority, slug), deduped.
 
@@ -130,12 +159,8 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         # masquerades as "no models") and, for residency-enforced workspaces, the residency header.
         from agent.codex_headers import codex_account_headers
         headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
-        from agent.model_metadata import CODEX_MODELS_CATALOG_URL
-        resp = httpx.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=10)
-        if resp.status_code != 200:
-            return []
-        data = resp.json()
-        entries = data.get("models", []) if isinstance(data, dict) else []
+        from agent.model_metadata import fetch_codex_catalog_entries
+        entries, _status = fetch_codex_catalog_entries(lambda url: httpx.get(url, headers=headers, timeout=10))
     except Exception as exc:
         logger.debug("Failed to fetch Codex models from API: %s", exc)
         return []
@@ -149,7 +174,8 @@ def _read_default_model(codex_home: Path) -> Optional[str]:
         return None
     try:
         import tomllib
-        payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        import tomllib
+        payload = tomllib.loads(config_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return None
     model = payload.get("model") if isinstance(payload, dict) else None
@@ -161,7 +187,7 @@ def _read_cache_models(codex_home: Path) -> List[str]:
     if not cache_path.exists():
         return []
     try:
-        raw = json.loads(cache_path.read_text(encoding="utf-8"))
+        raw = json.loads(cache_path.read_text(encoding="utf-8-sig"))
     except Exception:
         return []
 

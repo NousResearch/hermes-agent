@@ -2,7 +2,6 @@
 
 import json
 import os
-import sys
 import threading
 import time
 from pathlib import Path
@@ -572,7 +571,6 @@ class TestGetProcessStartTime:
 
     def test_live_process_is_stable_int(self):
         import subprocess
-        import time
         p = subprocess.Popen(["sleep", "20"])
         try:
             a = status._get_process_start_time(p.pid)
@@ -586,7 +584,7 @@ class TestGetProcessStartTime:
 
 
 class TestTerminatePid:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_force_uses_taskkill_on_windows(self, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the real
         # CREATE_NO_WINDOW creationflags value that windows_hide_flags()
@@ -611,8 +609,8 @@ class TestTerminatePid:
             (["taskkill", "/PID", "123", "/T", "/F"], True, True, 10, windows_hide_flags())
         ]
 
+    @pytest.mark.platforms("windows")
     def test_windows_force_refuses_pid_without_start_time_guard(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
         calls = []
         monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
 
@@ -621,8 +619,8 @@ class TestTerminatePid:
 
         assert calls == []
 
+    @pytest.mark.platforms("windows")
     def test_windows_force_refuses_reused_pid(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", True)
         monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 999)
         calls = []
         monkeypatch.setattr(status.subprocess, "run", lambda *args, **kwargs: calls.append(args))
@@ -651,7 +649,7 @@ class TestPidExistsZombieProbe:
         monkeypatch.setattr(psutil.Process, "status", spy)
         return calls
 
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_skips_zombie_status_probe(self, monkeypatch):
         # Faking os.name on POSIX proves nothing about the cost on the real host; the wine2e
         # runner receipt (red on main, green on the fix) is the live repro for this test.
@@ -659,7 +657,7 @@ class TestPidExistsZombieProbe:
         assert status._pid_exists(os.getpid()) is True
         assert calls == []
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_posix_still_probes_zombie_status(self, monkeypatch):
         # Control: on POSIX a zombie still answers pid_exists(), so the probe must survive.
         calls = self._spy_status(monkeypatch)
@@ -668,7 +666,7 @@ class TestPidExistsZombieProbe:
 
 
 class TestScopedLocks:
-    @pytest.mark.windows_only
+    @pytest.mark.platforms("windows")
     def test_windows_file_lock_uses_high_offset(self, tmp_path, monkeypatch):
         # Faking _IS_WINDOWS on POSIX could not reproduce the msvcrt
         # byte-range locking path at all: msvcrt does not exist off Windows,
@@ -1607,12 +1605,15 @@ class TestResolveGatewayLiveness:
         assert calls == {"health": 0, "runtime_pid": 0}
 
 
-    def test_probe_exception_degrades_instead_of_raising(self):
+    def test_probe_exception_degrades_instead_of_raising(self, tmp_path, monkeypatch):
         """A raising rung must fall through, never propagate.
 
         Status endpoints poll this constantly; an exotic /proc or a
         permissions error must not turn into a 500.
         """
+        # Empty rendezvous dir: no host gateway owns the role, so the multiplexer rung stays quiet.
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path))
+
         def _boom(*a, **k):
             raise RuntimeError("probe exploded")
 

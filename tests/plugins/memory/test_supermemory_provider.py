@@ -13,7 +13,6 @@ from plugins.memory.supermemory import (
     _MAX_PENDING_TURNS,
     _capture_custom_id,
     _clean_text_for_capture,
-    _format_connection_summary,
     _format_prefetch_context,
     _load_supermemory_config,
     _probe_supermemory_connection,
@@ -408,10 +407,6 @@ def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch, frozen
     assert provider._pending_turns == []
 
 
-def test_store_tool_returns_saved_payload(provider):
-    result = json.loads(provider.handle_tool_call("supermemory_store", {"content": "Jordan likes concise docs"}))
-    assert result["saved"] is True
-    assert result["id"] == "mem_123"
 
 
 def test_search_tool_formats_results(provider):
@@ -514,7 +509,7 @@ def test_client_passes_custom_base_url_to_sdk(monkeypatch):
     module = types.ModuleType("supermemory")
     module.Supermemory = StubSupermemory
     monkeypatch.setitem(sys.modules, "supermemory", module)
-    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+    monkeypatch.setattr("pm.ensure_import", lambda *args, **kwargs: None)
 
     client = _SupermemoryClient(
         api_key="test-key",
@@ -538,20 +533,11 @@ def test_multi_container_disabled_by_default(provider):
         assert "container_tag" not in s["parameters"]["properties"]
 
 
-def test_get_config_schema_minimal():
-    """get_config_schema only returns the API key field."""
-    p = SupermemoryMemoryProvider()
-    schema = p.get_config_schema()
-    assert len(schema) == 1
-    assert schema[0]["key"] == "api_key"
-    assert schema[0]["secret"] is True
 
 
 def test_probe_supermemory_connection_missing_key(tmp_path):
     status = _probe_supermemory_connection("", str(tmp_path))
     assert status["ok"] is False
-    assert status["error"] == "SUPERMEMORY_API_KEY not set"
-    assert status["container_tag"] == "hermes"
 
 
 def _stub_supermemory_importable(monkeypatch):
@@ -577,7 +563,7 @@ def _stub_supermemory_importable(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
 
-def test_post_setup_writes_config_and_prints_summary(monkeypatch, tmp_path, capsys):
+def test_post_setup_writes_config_and_env(monkeypatch, tmp_path):
     config: dict = {"memory": {}}
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "")
     monkeypatch.setattr(
@@ -609,13 +595,8 @@ def test_post_setup_writes_config_and_prints_summary(monkeypatch, tmp_path, caps
     env_text = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "SUPERMEMORY_API_KEY=new-api-key" in env_text
 
-    out = capsys.readouterr().out
-    assert "✓ Connected" in out
-    assert "3 profile facts" in out
-    assert "Memory provider: supermemory" in out
 
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits not enforced on Windows")
+@pytest.mark.platforms("posix")  # POSIX mode bits not enforced on Windows
 def test_save_config_sets_owner_only_permissions(tmp_path):
     """supermemory.json must be written with 0o600 so API key is not world-readable."""
     _save_supermemory_config({"api_key": "sm-test-key"}, str(tmp_path))

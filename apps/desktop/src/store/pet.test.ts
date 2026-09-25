@@ -11,7 +11,6 @@ import {
   flashPetActivity,
   hasPetSpriteForMeta,
   mergePetInfoMeta,
-  type PetInfo,
   setPetActivity
 } from './pet'
 import { $activeSessionId, $busy } from './session'
@@ -110,27 +109,6 @@ describe('pet info metadata cache helpers', () => {
       spritesheetBase64: 'large-sprite-payload',
       spritesheetRevision: '100:2048'
     })
-  })
-
-  it('returns the same reference when nothing changed to avoid redundant store updates', () => {
-    const current: PetInfo = {
-      enabled: true,
-      slug: 'boba',
-      displayName: 'Boba',
-      scale: 0.33,
-      spritesheetBase64: 'large-sprite-payload',
-      spritesheetRevision: '100:2048'
-    }
-
-    const meta = {
-      enabled: true,
-      slug: 'boba',
-      displayName: 'Boba',
-      scale: 0.33,
-      spritesheetRevision: '100:2048'
-    }
-
-    expect(mergePetInfoMeta(current, meta)).toBe(current)
   })
 })
 

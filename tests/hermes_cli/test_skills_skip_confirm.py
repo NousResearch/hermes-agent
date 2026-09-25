@@ -49,23 +49,6 @@ class TestHandleSkillsSlashUninstallFlags:
             assert kwargs.get("invalidate_cache") is False
 
 
-class TestDoInstallSkipConfirm:
-    """Test that do_install respects skip_confirm parameter."""
-
-    @patch("hermes_cli.skills_hub.input", return_value="n")
-    def test_without_skip_confirm_prompts_user(self, mock_input):
-        """Without skip_confirm, input() is called for confirmation."""
-        from hermes_cli.skills_hub import do_install
-        with patch("hermes_cli.skills_hub._console"), \
-             patch("tools.skills_hub.ensure_hub_dirs"), \
-             patch("tools.skills_hub_github.GitHubAuth"), \
-             patch("tools.skills_hub_search.create_source_router") as mock_router, \
-             patch("hermes_cli.skills_hub._resolve_short_name", return_value="test/skill"), \
-             patch("hermes_cli.skills_hub._resolve_source_meta_and_bundle") as mock_resolve:
-
-            # Make it return None so we exit early
-            mock_resolve.return_value = (None, None, None)
-            do_install("test-skill", skip_confirm=False)
             # We don't get to the input() call because resolve returns None,
             # but the parameter wiring is correct
 

@@ -25,9 +25,7 @@ const OPEN_REASONING_BLOCK_RE = new RegExp(`(^|\\n)[ \\t]*<(${REASONING_TAGS})>[
 // agent/think_scrubber.py `_hold_partial`/`_max_partial_suffix` does, but only
 // for prefixes of the known tag names so `<div` at a line start still renders.
 const REASONING_TAG_PREFIXES = Array.from(
-  new Set(
-    REASONING_TAGS.split('|').flatMap((tag) => Array.from({ length: tag.length }, (_, i) => tag.slice(0, i + 1))),
-  ),
+  new Set(REASONING_TAGS.split('|').flatMap(tag => Array.from({ length: tag.length }, (_, i) => tag.slice(0, i + 1))))
 ).join('|')
 
 const PARTIAL_OPEN_REASONING_TAG_RE = new RegExp(`(^|\\n)[ \\t]*<(?:${REASONING_TAG_PREFIXES})?$`, 'i')
@@ -68,6 +66,29 @@ const HUGGING_DISPLAY_MATH_CLOSE_RE = /^([ \t]*(?:>[ \t]*)*[ \t]*)(\S[^\n]*?)\$\
 // and keeps the emphasis run intact. Other trailing punctuation is still peeled
 // off by the final `[^\s<>"'`*.,;:!?]` class.
 const RAW_URL_RE = /https?:\/\/[^\s<>"'`*]+[^\s<>"'`*.,;:!?]/g
+const URL_TRAILING_PUNCTUATION = '.,;:!?'
+// Markdown that already owns the URLs inside it, which the bare-URL autolinker
+// steps over whole (#49822): inline links and images `[label](dest "title")`,
+// full and collapsed references `[label][ref]`, and the label + destination of
+// a definition `[ref]: url`. Labels may nest one bracket pair (an IPv6 host,
+// `[see [docs]]`) and destinations one paren pair (`…/wiki/Foo_(bar)`). A label
+// or inline target still streaming in (`[https://exa`, `[x](https://exa`) owns
+// the rest of its line, so the tail repair sees the link it is building instead
+// of a wrapped fragment. Only the outer group captures, so split() leaves the
+// owned spans at odd indices.
+const LINK_LABEL_BODY = String.raw`(?:[^[\]\\\n]|\\.|\[(?:[^[\]\\\n]|\\.)*\])*`
+const LINK_LABEL = String.raw`\[${LINK_LABEL_BODY}\]`
+
+const MARKDOWN_LINK_SPLIT_RE = new RegExp(
+  `(${[
+    String.raw`!?${LINK_LABEL}\((?:[^()\n]|\([^()\n]*\))*(?:\)|$)`,
+    String.raw`${LINK_LABEL}\[(?:[^[\]\\\n]|\\.)*\]`,
+    String.raw`^[ \t]{0,3}${LINK_LABEL}:[ \t]*\S*`,
+    String.raw`\[${LINK_LABEL_BODY}$`
+  ].join('|')})`,
+  'gm'
+)
+
 const LOCAL_PREVIEW_URL_RE = /(^|\s)https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?[^\s<>"'`]*/gi
 const LOCAL_PREVIEW_ONLY_RE = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?\/?$/i
 const URL_ONLY_LINE_RE = /^\s*https?:\/\/\S+\s*$/i
@@ -210,17 +231,60 @@ function isUrlOnlyBlock(lines: string[]): boolean {
   return nonEmpty.length > 0 && nonEmpty.every(line => URL_ONLY_LINE_RE.test(line))
 }
 
-function autoLinkRawUrls(text: string): string {
-  return text.replace(RAW_URL_RE, (url: string, index: number) => {
-    const previous = text[index - 1] || ''
-    const beforePrevious = text[index - 2] || ''
+// Where a bare URL match really ends. Peels what the prose wrapped around it:
+// the `)` of `(see https://x)`, the `]` of `[https://x]`, and punctuation that
+// peel exposes (`(https://x.)`). A closer stays when an opener inside the URL
+// pairs with it, so `…/wiki/Foo_(bar)` and `http://[::1]/` keep theirs.
+function isPairedCloser(url: string, index: number): boolean {
+  const close = url[index]
+  const open = close === ')' ? '(' : '['
+  let depth = 0
 
-    if (previous === '<' || (beforePrevious === ']' && previous === '(')) {
-      return url
+  for (let cursor = 0; cursor < index; cursor += 1) {
+    if (url[cursor] === open) {
+      depth += 1
+    } else if (url[cursor] === close && depth > 0) {
+      depth -= 1
+    }
+  }
+
+  return depth > 0
+}
+
+function bareUrlEnd(url: string): number {
+  let end = url.length
+
+  while (end > 0) {
+    const last = url[end - 1]
+    const strayCloser = (last === ')' || last === ']') && !isPairedCloser(url, end - 1)
+
+    if (!strayCloser && !URL_TRAILING_PUNCTUATION.includes(last)) {
+      break
     }
 
-    return `<${url}>`
+    end -= 1
+  }
+
+  return end
+}
+
+function linkBareUrls(text: string): string {
+  return text.replace(RAW_URL_RE, (match: string, index: number) => {
+    if (text[index - 1] === '<') {
+      return match
+    }
+
+    const end = bareUrlEnd(match)
+
+    return `<${match.slice(0, end)}>${match.slice(end)}`
   })
+}
+
+function autoLinkRawUrls(text: string): string {
+  return text
+    .split(MARKDOWN_LINK_SPLIT_RE)
+    .map((part, index) => (index % 2 === 1 ? part : linkBareUrls(part)))
+    .join('')
 }
 
 // Rewrite filesystem-path links to the renderer's hash-href door (#82140).

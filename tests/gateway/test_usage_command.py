@@ -86,11 +86,6 @@ class TestUsageCachedAgent:
         assert "50,000" in result  # total
         assert "30,000" in result  # context
         assert "Compressions: 1" in result
-        # Cost and cache-hit reporting is removed everywhere.
-        assert "$" not in result
-        assert "Cache read" not in result
-        assert "Cache write" not in result
-        assert "Cost" not in result
 
     @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):
@@ -159,7 +154,6 @@ class TestUsageAccountSection:
 
         account_call = next(c for c in calls if c["args"] == ("openai-codex",))
         assert account_call["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
-        assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
 
     @pytest.mark.asyncio

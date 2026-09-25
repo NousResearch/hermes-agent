@@ -1,9 +1,9 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S bash -c 'exec "$BASH" "$(dirname "$0")/_hermes-python" "$0" "$@"'
 """Standalone structural validator for plugin-catalog entry files.
 
 Validates ``plugin-catalog/*.yaml`` catalog entries and
 ``plugin-catalog/removed.yaml`` against the catalog contract schema, using
-only stdlib + PyYAML so the admission CI (and third-party repos) can run it
+only stdlib + ruamel.yaml so the admission CI (and third-party repos) can run it
 WITHOUT installing hermes-agent.
 
 NOTE: this script intentionally duplicates the schema rules instead of
@@ -32,10 +32,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    import yaml
+    from ruamel.yaml import YAML, YAMLError
 except ImportError:  # pragma: no cover - dependency guidance only
     print(
-        "ERROR: PyYAML is required (pip install pyyaml)",
+        "ERROR: ruamel.yaml is required (pip install ruamel.yaml==0.18.17)",
         file=sys.stderr,
     )
     sys.exit(2)
@@ -70,6 +70,8 @@ KNOWN_KEYS = {
     "readme",
     "platforms",
     "capabilities",
+    "title",
+    "onboarding",
 }
 # Cosmetic labels attached to the pin. ``version`` is never parsed; ``image`` and ``screenshots``
 # may only point at GitHub so the Desktop catalog browser and the docs site never fetch from
@@ -249,11 +251,13 @@ def validate_removed(data: object) -> tuple[list[str], list[str]]:
 def validate_file(path: Path) -> tuple[list[str], list[str]]:
     """Validate one YAML file (dispatching on filename). Returns (errors, warnings)."""
     try:
-        with open(path, encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
+        reader = YAML(typ="safe")
+        reader.version = (1, 1)
+        with open(path, encoding="utf-8-sig") as fh:
+            data = reader.load(fh)
     except OSError as exc:
         return [f"cannot read file: {exc}"], []
-    except yaml.YAMLError as exc:
+    except YAMLError as exc:
         return [f"invalid YAML: {exc}"], []
 
     if path.name == "removed.yaml":

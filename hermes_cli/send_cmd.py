@@ -33,7 +33,7 @@ def _read_message_body(positional: Optional[str], file_path: Optional[str]) -> O
         if file_path == "-":
             return sys.stdin.read()
         try:
-            return Path(file_path).read_text(encoding="utf-8")
+            return Path(file_path).read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
             _fail(
                 f"hermes send: {file_path} is not a text file. --file reads the "

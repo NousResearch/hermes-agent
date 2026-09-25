@@ -3,6 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo } from 'react'
 
 import type { HermesGateway } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
@@ -70,6 +71,7 @@ export function useSlashCompletions(options: {
   loading: boolean
 } {
   const { gateway, sessionId, skinThemes, activeSkin } = options
+  const { locale } = useI18n()
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
   const sessionParams = useMemo(() => (sessionId ? { session_id: sessionId } : {}), [sessionId])
@@ -311,5 +313,5 @@ export function useSlashCompletions(options: {
     [skinThemes, sessionId, catalogKey]
   )
 
-  return useLiveCompletionAdapter({ enabled, epoch, fetcher, isCached, toItem })
+  return useLiveCompletionAdapter({ enabled, epoch: `${epoch}:${locale}`, fetcher, isCached, toItem })
 }

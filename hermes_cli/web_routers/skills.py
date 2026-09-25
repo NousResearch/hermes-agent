@@ -402,7 +402,7 @@ async def get_skill_content(name: str, profile: Optional[str] = None):
         if not skill_md.exists():
             raise HTTPException(status_code=404, detail=f"Skill '{name}' has no SKILL.md.")
         try:
-            content = skill_md.read_text(encoding="utf-8")
+            content = skill_md.read_text(encoding="utf-8-sig")
         except OSError as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
         return {"name": name, "content": content, "path": str(skill_md)}

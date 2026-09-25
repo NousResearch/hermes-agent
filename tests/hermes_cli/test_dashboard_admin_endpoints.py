@@ -819,6 +819,33 @@ class TestUpdateCheckEndpoint:
         # git/pip installs can apply the update in place from the dashboard.
         assert body["can_apply"] is True
 
+    def test_passive_check_honors_updates_check_disabled(self, monkeypatch):
+        """`updates.check: false` silences the passive route; "Check now" (force) still checks.
+
+        The policy lives in source_check (passive=True reads the gate); the route
+        only translates the `reason: disabled` verdict into user-facing copy.
+        """
+        monkeypatch.setattr(_cfg_mod, "detect_install_method", lambda *a, **k: "git")
+        seen = {}
+
+        def fake_check(**kw):
+            seen.update(kw)
+            if kw.get("passive"):
+                return {"supported": False, "behind": None, "commits": [], "reason": "disabled"}
+            return {"behind": 5, "commits": []}
+
+        monkeypatch.setattr("hermes_cli.source_check.check_for_updates", fake_check)
+
+        body = self.client.get("/api/hermes/update/check").json()
+        assert seen["passive"] is True and seen["force"] is False
+        assert body["behind"] is None
+        assert body["update_available"] is False
+        assert "disabled" in (body["message"] or "")
+
+        forced = self.client.get("/api/hermes/update/check?force=true").json()
+        assert seen["passive"] is False and seen["force"] is True
+        assert forced["behind"] == 5
+        assert forced["update_available"] is True
 
     def test_managed_runtime_dashboard_is_not_applyable(self, monkeypatch):
 

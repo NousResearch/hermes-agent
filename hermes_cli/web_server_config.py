@@ -153,6 +153,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "Terminal updates always ask, regardless of this setting.",
         "stash", "discard",
     ),
+    "updates.check": {
+        "type": "boolean",
+        "description": (
+            "Passive update checks (CLI banner, dashboard/desktop update card). "
+            "Off: Hermes stops looking for updates on its own — explicit checks "
+            "(`hermes update --check`, the app's Check now button) still work."
+        ),
+    },
     "updates.refresh_cua_driver": {
         "type": "boolean",
         "description": (

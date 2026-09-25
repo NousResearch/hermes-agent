@@ -302,11 +302,19 @@ async def check_hermes_update(force: bool = False, profile: Optional[str] = None
 
     # source_check.check_for_updates() handles git / nix-revision paths through the GitHub API and
     # caches the result for 24h. ``force`` busts the cache so "Check now" reflects reality.
+    # Passive (non-forced) calls honor ``updates.check: false`` — the same gate the CLI banner
+    # obeys — so the app never nags about updates the operator opted out of.
     try:
         from hermes_cli.source_check import check_for_updates
 
         with _config_profile_scope(profile):
-            status = await asyncio.to_thread(check_for_updates, force=force)
+            status = await asyncio.to_thread(check_for_updates, force=force, passive=not force)
+        if not force and status.get("reason") == "disabled":
+            payload["message"] = (
+                "Passive update checks are disabled (updates.check: false). "
+                "Use Check now for a manual check."
+            )
+            return payload
         behind = status.get("behind")
     except Exception:
         _log.exception("Update check failed")

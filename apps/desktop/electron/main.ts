@@ -383,6 +383,7 @@ import { poolTouchKeys } from './pool-touch-scope'
 import { createPortalSession } from './portal-session'
 import { createKeepAwake } from './power-save'
 import { readPreUpdateBackupEnabled } from './pre-update-backup-config'
+import { readUpdatesCheckEnabled } from './update-check-config'
 import { capturePreviewContents } from './preview-capture'
 import { PreviewReachRegistry } from './preview-reach'
 import {
@@ -17401,14 +17402,36 @@ const disposeTerminalSession = terminalIpc.disposeTerminalSession
 
 ipcMain.handle(
   'hermes:updates:check',
-  async (_event: Electron.IpcMainInvokeEvent, opts?: { force?: boolean }): Promise<UpdaterStatusWire> =>
-    checkUpdates({ force: Boolean(opts?.force) }).catch((error: Error & { kind?: string }): UpdaterStatusWire => ({
+  async (_event: Electron.IpcMainInvokeEvent, opts?: { force?: boolean }): Promise<UpdaterStatusWire> => {
+    // Passive checks honor config.yaml's `updates.check` (the same gate the CLI
+    // banner obeys); "Check now" (force) always runs. The probe fails open, and
+    // a disabled passive check returns a neutral error status — the renderer
+    // never toasts on `status.error`, so no "update available" nag fires.
+    if (
+      !opts?.force &&
+      !(await readUpdatesCheckEnabled(
+        resolveHermesBackend(['-p', 'default', 'config', 'get', 'updates.check', '--json'])
+      ))
+    ) {
+      rememberLog('[updates] passive update check skipped (updates.check: false)')
+
+      return {
+        supported: true,
+        branch: readDesktopUpdateConfig().branch,
+        error: 'check-disabled',
+        message: 'Passive update checks are disabled (updates.check: false). Use "Check now" for a manual check.',
+        fetchedAt: Date.now()
+      }
+    }
+
+    return checkUpdates({ force: Boolean(opts?.force) }).catch((error: Error & { kind?: string }): UpdaterStatusWire => ({
       supported: true,
       branch: readDesktopUpdateConfig().branch,
       error: error?.kind === GIT_UNUSABLE ? GIT_UNUSABLE : 'check-failed',
       message: error?.message || String(error),
       fetchedAt: Date.now()
     }))
+  }
 )
 
 ipcMain.handle('hermes:updates:apply', async (_event, payload) =>

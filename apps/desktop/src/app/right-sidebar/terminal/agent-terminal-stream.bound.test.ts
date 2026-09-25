@@ -10,6 +10,15 @@ import {
 // unique procIds.
 const CHUNK = 'x'.repeat(64_000)
 
+function replay(proc: string): string {
+  let out = ''
+  const stop = registerAgentTerminalWriter(proc, chunk => (out += chunk))
+
+  stop()
+
+  return out
+}
+
 function runFinishedProc(id: string, chunks = 6): void {
   for (let i = 0; i < chunks; i++) {
     writeAgentTerminalChunk(id, CHUNK)
@@ -81,19 +90,47 @@ describe('agent terminal retention is bounded', () => {
       writeAgentTerminalChunk(`age-${i}`, `age-${i}-MARK ${line}\n`)
     }
 
-    const replay = (proc: string) => {
-      let out = ''
-      const stop = registerAgentTerminalWriter(proc, chunk => (out += chunk))
-
-      stop()
-
-      return out
-    }
-
     // The touched process kept its ORIGINAL content (it was never dropped and
     // re-created); its untouched neighbour from the same era is gone.
     expect(replay('age-0')).toContain('age-0-MARK')
     expect(replay('age-1')).toBe('')
+  })
+
+  it('a full-tail reset is a write: it refreshes recency', () => {
+    // A snapshot whose rolling tail slid resets the backlog wholesale. That process
+    // was just synced, so it must move to the LRU tail like a chunk write does.
+    const line = 'x'.repeat(64)
+
+    // Seeding through the snapshot sets each process's delta fence, so a later
+    // snapshot that shares no prefix with it takes the reset path.
+    for (let i = 0; i < 20; i++) {
+      syncAgentTerminalSnapshot(`slide-${i}`, `slide-${i}-MARK ${line}\n`)
+    }
+
+    syncAgentTerminalSnapshot('slide-0', 'SLID TAIL')
+
+    for (let i = 20; i < 32; i++) {
+      writeAgentTerminalChunk(`slide-${i}`, `slide-${i}-MARK ${line}\n`)
+    }
+
+    expect(replay('slide-0')).toContain('SLID TAIL')
+    expect(replay('slide-1')).toBe('')
+  })
+
+  it('full-tail resets alone stay under the character ceiling', () => {
+    // Nothing but resets: no chunk write follows to run eviction on their behalf.
+    const tail = 'y'.repeat(300_000)
+
+    for (let i = 0; i < 12; i++) {
+      syncAgentTerminalSnapshot(`reset-${i}`, `reset-${i}\n`)
+    }
+
+    for (let i = 0; i < 12; i++) {
+      syncAgentTerminalSnapshot(`reset-${i}`, `${i}${tail}`)
+    }
+
+    expect(replay('reset-0')).toBe('')
+    expect(replay('reset-11')).toContain(tail.slice(0, 1000))
   })
 
   it('an evicted process does not diff against a tail it no longer has', () => {

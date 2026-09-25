@@ -72,6 +72,112 @@ const VARIANT_TAGS: ReadonlyArray<readonly [RegExp, string]> = [
 
 const titleCase = (text: string): string => text.replace(/\b\w/g, char => char.toUpperCase()).trim()
 
+// Vendor families whose human name is not a plain capitalisation of the id
+// token. Anything else capitalises (`qwen` → "Qwen", `kimi` → "Kimi").
+const BRAND_CASING: Readonly<Record<string, string>> = {
+  deepseek: 'DeepSeek',
+  glm: 'GLM',
+  gpt: 'GPT',
+  minimax: 'MiniMax'
+}
+
+// Families that glue the version to the brand with a hyphen ("GPT-5.5",
+// "GLM-5.1") instead of a space ("Gemini 3", "Llama 3.3").
+const HYPHENATED_BRANDS = new Set(['gpt', 'glm'])
+
+const isVersionToken = (tok: string): boolean => /^\d+(?:\.\d+)*$/.test(tok)
+// `v4`, `k2`, `r1` — a single letter fronting a version.
+const isLetterVersionToken = (tok: string): boolean => /^[a-z]\d+(?:\.\d+)*$/.test(tok)
+// Parameter counts: `27b`, `a22b` (active params), `8x22b` (MoE experts).
+const isSizeToken = (tok: string): boolean => /^(?:[a-z]?\d+(?:\.\d+)?|\d+x\d+)b$/.test(tok)
+// Precision / quant shorthands with no dedicated tag: `fp8`, `int4`, `nvfp4`.
+const isShortCodeToken = (tok: string): boolean => /^[a-z]{2,5}\d{1,2}$/.test(tok)
+
+/** A token the id's author already cased by hand (`MoE`, `QwQ`, `DeepSeek`)
+ *  keeps that casing; everything else is derived from the lower-cased token. */
+const authorCased = (raw: string): boolean => /[A-Z]/.test(raw.slice(1))
+
+/** Token-class label grammar for non-Anthropic ids (adapted from
+ *  block/buzz#7844). Each `-` separated token is classified once — version,
+ *  letter-version, parameter size, short code, or word — and rendered from its
+ *  own text, so `qwen3-235b-a22b` reads "Qwen3 235B A22B", `glm-5-1` reads
+ *  "GLM-5.1" and `gpt-oss-120b` reads "GPT OSS 120B" instead of the title-cased
+ *  soup ("Qwen3 235b A22b", "Glm 5 1", "GPT-oss-120b") a blanket
+ *  hyphen→space + capitalise pass produced. Versions are never reinterpreted:
+ *  only consecutive bare numbers merge into a dotted version, and a brand that
+ *  already carries digits (`qwen3-5-…`) keeps the following number separate
+ *  rather than guessing "Qwen3.5". */
+function labelFromTokens(base: string): string {
+  const rawTokens = base.split('-').filter(Boolean)
+
+  if (rawTokens.length === 0) {
+    return ''
+  }
+
+  const [rawBrand, ...rawRest] = rawTokens
+
+  // A trailing 4-digit snapshot pin (`deepseek-r1-0528`) is release noise, not
+  // a version; the 8-digit form was already dropped upstream.
+  if (rawRest.length > 0 && /^\d{4}$/.test(rawRest[rawRest.length - 1])) {
+    rawRest.pop()
+  }
+
+  const brandLower = rawBrand.toLowerCase()
+  const family = /^[a-z]+/.exec(brandLower)?.[0] ?? ''
+
+  const brand = authorCased(rawBrand)
+    ? rawBrand
+    : (BRAND_CASING[family] ?? (family ? family[0].toUpperCase() + family.slice(1) : '')) +
+      brandLower.slice(family.length)
+
+  const parts: string[] = []
+  let sawVersion = false
+
+  for (let i = 0; i < rawRest.length; i += 1) {
+    const raw = rawRest[i]
+    const tok = raw.toLowerCase()
+    // Consecutive bare numbers (`5-1`, `k2-5`) are one dotted version.
+    let minor = ''
+
+    while (
+      (isVersionToken(tok) || isLetterVersionToken(tok)) &&
+      i + 1 < rawRest.length &&
+      isVersionToken(rawRest[i + 1].toLowerCase())
+    ) {
+      minor += `.${rawRest[i + 1]}`
+      i += 1
+    }
+
+    if (isVersionToken(tok)) {
+      parts.push(tok + minor)
+      sawVersion = true
+    } else if (isLetterVersionToken(tok)) {
+      parts.push(tok[0].toUpperCase() + tok.slice(1) + minor)
+      sawVersion = true
+    } else if (isSizeToken(tok)) {
+      // `8x22b` keeps its lower-case multiplier; the count suffix is always B.
+      parts.push(tok.includes('x') ? `${tok.slice(0, -1)}B` : tok.toUpperCase())
+    } else if (isShortCodeToken(tok)) {
+      parts.push(tok.toUpperCase())
+    } else if (authorCased(raw)) {
+      parts.push(raw)
+    } else if (tok === 'oss') {
+      parts.push('OSS')
+    } else if (family === 'gpt' && sawVersion && (tok === 'mini' || tok === 'nano')) {
+      // OpenAI's own spelling: "GPT-5.4 mini", not "GPT-5.4 Mini".
+      parts.push(tok)
+    } else {
+      parts.push(titleCase(tok))
+    }
+  }
+
+  return parts.reduce((label, part, index) => {
+    const glue = index === 0 && HYPHENATED_BRANDS.has(family) && isVersionToken(part) ? '-' : ' '
+
+    return label + glue + part
+  }, brand)
+}
+
 function prettifyBase(base: string): string {
   if (/^deepseek-flash$/i.test(base)) {
     return 'DeepSeek V4.1 Flash'
@@ -88,15 +194,7 @@ function prettifyBase(base: string): string {
     )
   }
 
-  if (/^gpt-/i.test(base)) {
-    return base.replace(/^gpt-/i, 'GPT-')
-  }
-
-  if (/^gemini-/i.test(base)) {
-    return base.replace(/^gemini-/i, 'Gemini ').replace(/-/g, ' ')
-  }
-
-  return titleCase(base.replace(/-/g, ' '))
+  return labelFromTokens(base)
 }
 
 /** Split a model id into a clean display name plus an optional grayed variant

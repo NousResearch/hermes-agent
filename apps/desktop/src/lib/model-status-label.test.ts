@@ -34,6 +34,34 @@ describe('model-status-label', () => {
     expect(formatModelPillLabel('')).toBe('No model')
   })
 
+  it('renders each id token by class: sizes upper-case, versions dotted, brands cased', () => {
+    // Parameter counts and active-param markers are always upper-case B.
+    expect(displayModelName('qwen/qwen3-235b-a22b')).toBe('Qwen3 235B A22B')
+    expect(displayModelName('meta-llama/llama-3.3-70b-instruct')).toBe('Llama 3.3 70B Instruct')
+    expect(displayModelName('mistralai/mixtral-8x22b')).toBe('Mixtral 8x22B')
+    // Consecutive bare numbers are one dotted version; hyphenated brands keep
+    // the hyphen before it.
+    expect(displayModelName('zai/glm-5-1')).toBe('GLM-5.1')
+    expect(displayModelName('openai/gpt-6-terra')).toBe('GPT-6 Terra')
+    expect(displayModelName('openai/gpt-oss-120b')).toBe('GPT OSS 120B')
+    expect(displayModelName('openai/gpt-5.4-mini')).toBe('GPT-5.4 mini')
+    // Brand casing and letter-versions.
+    expect(displayModelName('deepseek/deepseek-v4-pro')).toBe('DeepSeek V4 Pro')
+    expect(displayModelName('moonshotai/kimi-k2.5')).toBe('Kimi K2.5')
+    expect(displayModelName('google/gemini-3-pro')).toBe('Gemini 3 Pro')
+    expect(displayModelName('nvidia/llama-3.1-nemotron-70b-fp8')).toBe('Llama 3.1 Nemotron 70B FP8')
+  })
+
+  it('never reinterprets a version and keeps author casing', () => {
+    // A brand that already carries digits does not absorb the next number.
+    expect(displayModelName('qwen3-5-122b-a10b')).toBe('Qwen3 5 122B A10B')
+    // A trailing 4-digit snapshot pin is dropped, not merged into the version.
+    expect(displayModelName('deepseek/deepseek-r1-0528')).toBe('DeepSeek R1')
+    // Hand-cased tokens survive untouched.
+    expect(displayModelName('Qwen3-30B-A3B-MoE')).toBe('Qwen3 30B A3B MoE')
+    expect(displayModelName('NousResearch/Hermes-4-405B')).toBe('Hermes 4 405B')
+  })
+
   describe('currentPickerSelection', () => {
     const store = { model: 'opus', provider: 'anthropic' }
     const options = { model: 'hermes-4', provider: 'nous' }

@@ -264,12 +264,16 @@ Xvnc "$DISPLAY" -geometry "$GEOM" -depth "$DEPTH" -dpi 96 \
   -Log '*:stderr:30' 2> >(grep -v --line-buffered 'Could not resolve keysym' >&2) &
 XVNC_PID=$!
 trap 'kill "$XVNC_PID" 2>/dev/null || true' EXIT
+# Probe the unix socket only ("unix:N"): Xvnc runs -nolisten tcp, so a bare ":N" lets libxcb fall
+# back to TCP 127.0.0.1:60NN — a dead port that is merely refused fast on normal kernels but hangs
+# ~2 minutes where loopback SYNs to closed ports are dropped (WSL2 mirrored networking), outliving
+# start()'s 15 s window. Later X clients keep ":N": by then the socket exists, so they never fall back.
 for _ in $(seq 1 100); do
-  xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break
+  xdpyinfo -display "unix$DISPLAY" >/dev/null 2>&1 && break
   kill -0 "$XVNC_PID" 2>/dev/null || { echo "Xvnc exited during startup" >&2; exit 1; }
   sleep 0.1
 done
-xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 || { echo "Xvnc did not become ready" >&2; exit 1; }
+xdpyinfo -display "unix$DISPLAY" >/dev/null 2>&1 || { echo "Xvnc did not become ready" >&2; exit 1; }
 
 setxkbmap -display "$DISPLAY" us 2>/dev/null || true   # RFB keysyms + xdotool assume a known layout
 xsetroot -display "$DISPLAY" -solid '#1c1f29' 2>/dev/null || true

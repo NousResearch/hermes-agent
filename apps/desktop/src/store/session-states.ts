@@ -558,7 +558,11 @@ function lightUnreadCompletion(storedId: string, runtimeId?: string) {
     const owner = runtimeId ? runtimeSessionOwner(runtimeId) : undefined
 
     const profileHint =
-      typeof owner === 'string' ? owner : typeof owner?.profile === 'string' && owner.profile.trim() ? owner.profile : undefined
+      typeof owner === 'string'
+        ? owner
+        : typeof owner?.profile === 'string' && owner.profile.trim()
+          ? owner.profile
+          : undefined
 
     markSessionUnreadFinished(storedId, profileHint)
   }

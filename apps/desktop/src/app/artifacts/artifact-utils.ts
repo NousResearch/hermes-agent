@@ -404,9 +404,8 @@ function collectArtifactsFromMessage(message: SessionMessage, pushValue: PushVal
       // their non-index segments, and with no index the shell-output/explicit
       // key tests match the last real segment. Do NOT switch this to
       // exact-key matching — it would silently stop indexing those shapes.
-      const segments = keyPath
-        .split('.')
-        .filter(segment => segment && !/^\d+$/.test(segment))
+      const segments = keyPath.split('.').filter(segment => segment && !/^\d+$/.test(segment))
+
       const shellOutput = terminalTool && segments.some(segment => SHELL_OUTPUT_KEY_RE.test(segment))
 
       if (!shellOutput && !explicitToolArtifactKey(keyPath, producerTool)) {

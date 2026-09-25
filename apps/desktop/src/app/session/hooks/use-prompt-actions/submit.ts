@@ -431,7 +431,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
       }
 
-
       // Idempotent optimistic insert — re-running with the resolved sessionId
       // after createBackendSessionForSend just overwrites with the same id.
       const seedOptimistic = (sid: string) => {

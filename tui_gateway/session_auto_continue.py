@@ -461,13 +461,14 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
             session["_submit_user_row"] = dispatch_row
         else:
             session.pop("_submit_user_row", None)
-    # The compute-host frame has no author field, so only the inline runner receives it.
+    # The author rides the compute-host frame too, so an isolated drained turn stays attributed.
     author_kwargs = {"turn_author": queued["turn_author"]} if queued.get("turn_author") else {}
     dispatch_failed = False
     try:
         if not use_compute_host:
             _run_prompt_submit(rid, sid, session, queued["text"], **kwargs, **author_kwargs)
-        elif (resp := _submit_prompt_to_compute_host(rid, sid, session, queued["text"], **kwargs)).get("error"):
+        elif (resp := _submit_prompt_to_compute_host(
+                rid, sid, session, queued["text"], **kwargs, **author_kwargs)).get("error"):
             with session["history_lock"]:
                 session["running"] = False
                 _clear_inflight_turn(session)

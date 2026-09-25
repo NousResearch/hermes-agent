@@ -3999,6 +3999,12 @@ class BasePlatformAdapter(ABC):
         # races with the running task (split-brain, see PR #4926).
         # Certain commands must bypass the active-session guard and be dispatched directly to the gateway
         # runner. Without this, they are queued as pending messages and either: See #4926.
+        # Trusted adapters may synthesize a skill command that must reach the
+        # runner before generic busy routing, where it is expanded into the
+        # configured skill prompt. User text cannot set this event flag.
+        if event.preprocess_skill_command_before_busy:
+            await self._dispatch_inline_reply(event)
+            return
         self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)

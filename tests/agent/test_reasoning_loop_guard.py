@@ -63,3 +63,42 @@ def test_healthy_reasoning_never_trips():
     guard = ReasoningLoopGuard()
     assert guard.feed(normal) is False
     assert sanitize_degenerate_reasoning(normal) is normal
+
+
+# ---- shape 2: quote litter -----------------------------------------------------------------
+
+# Sample of the litter shape: openers between tokens, almost never closed, no run anywhere
+# (so only the litter rule can fire). Mirrors the corpus statistics of chronic sessions.
+_LITTER_SEGMENT = "**「ワード「の「処理「確認!!!「= 「null「時「の「挙動!!!（「テスト」）**\n"
+
+
+def _litter_text(segments: int) -> str:
+    return _LITTER_SEGMENT * segments
+
+
+def test_quote_litter_is_cut_near_where_openers_piled_up():
+    text = _litter_text(24)
+    guard = ReasoningLoopGuard()
+    assert guard.feed(text) is True
+    # Cut back to where the unmatched openers started piling up, not the littered tail.
+    assert 0 < guard.trip_index < 200
+
+    cleaned = sanitize_degenerate_reasoning(text)
+    assert cleaned.endswith(THINKING_LOOP_TRUNCATED)
+    assert len(cleaned) < len(text) // 2
+
+
+def test_litter_needs_runway_before_firing():
+    guard = ReasoningLoopGuard()
+    assert guard.feed(_litter_text(10)) is False  # 450 chars: under the 600-char floor
+    guard_2 = ReasoningLoopGuard()
+    assert guard_2.feed(_litter_text(10) + _litter_text(6)) is True  # 720 chars
+
+
+def test_litter_rule_ignores_analysis_quoting():
+    # Healthy prose that QUOTES a litter excerpt: low overall unmatched-opener rate and
+    # sparse dense bins must keep the guard quiet.
+    prose = "観察結果を整理し、原因候補を列挙して切り分けを進める。" * 40
+    text = prose + _litter_text(5) + prose
+    guard = ReasoningLoopGuard()
+    assert guard.feed(text) is False

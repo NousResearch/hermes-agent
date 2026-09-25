@@ -47,6 +47,10 @@ _OAUTH_SCOPES = "org:create_api_key user:profile user:inference"
 # (_read_claude_code_credentials_from_keychain) and, since #98334, mirrors the
 # refresh write into it so the two stores stop diverging on a single-use rotation.
 _CLAUDE_CODE_KEYCHAIN_SERVICE = "Claude Code-credentials"
+# ``security -i`` reads interactive commands line-by-line and truncates each line at
+# 4095 characters, running the truncated first half as-is; for ``add-generic-password -U``
+# that overwrites the item with a partial, unparsable payload (#123184).
+_SECURITY_I_LINE_LIMIT = 4095
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -595,6 +599,19 @@ def _mirror_claude_code_credentials_to_keychain(
             return
         argv, line = _keychain_mirror_command(
             account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
+        if len(line) > _SECURITY_I_LINE_LIMIT:
+            # The secret must stay off argv and ``security -i`` has no line-continuation
+            # syntax, so a payload this large has no safe write — refuse rather than let the
+            # truncated first half clobber the item.
+            logger.warning(
+                "Keychain mirror skipped: merged payload needs a %d-character `security -i`"
+                " line (limit %d; typically too many mcpOAuth entries to mirror). The Keychain"
+                " item is left untouched but still holds the already-spent refresh token, so"
+                " Claude Code may log itself out",
+                len(line),
+                _SECURITY_I_LINE_LIMIT,
+            )
+            return
         result = subprocess.run(
             argv, input=line, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
@@ -602,7 +619,11 @@ def _mirror_claude_code_credentials_to_keychain(
         logger.debug("Keychain mirror skipped (%s)", e)
         return
     if result.returncode != 0:
-        logger.debug("Keychain mirror failed (rc=%s): %s", result.returncode, (result.stderr or "").strip()[:200])
+        logger.warning(
+            "Keychain mirror failed (rc=%s): %s",
+            result.returncode,
+            (result.stderr or "").strip()[:200],
+        )
 
 
 # ── Resolution ──

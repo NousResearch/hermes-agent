@@ -1,4 +1,6 @@
 import asyncio
+import json
+
 import pytest
 
 from pathlib import Path
@@ -1216,22 +1218,24 @@ def _clear_session_env(monkeypatch):
 
 
 def _subs_for_newest_task():
-    with kb.connect_closing() as conn:
+    conn = kbc.connect()
+    try:
         tid = kb.list_tasks(conn)[0].id
-        return tid, kb.list_notify_subs(conn, tid)
+        return tid, kbn.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
 
 
 def test_cli_create_auto_subscribes_gateway_session(kanban_home, monkeypatch, capsys):
     """`hermes kanban create` from a gateway session writes exactly one
     notify sub for the new task, with the session's delivery target."""
-    from hermes_cli import kanban as kc
     _clear_session_env(monkeypatch)
     _telegram_session_env(monkeypatch)
 
     assert kc._cmd_create(_create_ns()) == 0
     out = capsys.readouterr().out
 
-    _tid, subs = _subs_for_newest_task()
+    tid, subs = _subs_for_newest_task()
     assert len(subs) == 1, subs
     assert subs[0]["platform"] == "telegram"
     assert subs[0]["chat_id"] == "chat1"
@@ -1243,7 +1247,6 @@ def test_cli_create_auto_subscribes_gateway_session(kanban_home, monkeypatch, ca
 def test_cli_create_without_session_env_does_not_subscribe(kanban_home, monkeypatch, capsys):
     """A plain CLI/cron run has no persistent delivery channel: no row, and the
     human line says so rather than silently implying a subscription."""
-    from hermes_cli import kanban as kc
     _clear_session_env(monkeypatch)
 
     assert kc._cmd_create(_create_ns(title="cli no sub")) == 0
@@ -1257,7 +1260,6 @@ def test_cli_create_without_session_env_does_not_subscribe(kanban_home, monkeypa
 def test_cli_create_respects_auto_subscribe_on_create_gate(kanban_home, monkeypatch, capsys):
     """``kanban.auto_subscribe_on_create: false`` suppresses the CLI auto-subscribe
     even when the session does have a delivery channel."""
-    from hermes_cli import kanban as kc
     _clear_session_env(monkeypatch)
     _telegram_session_env(monkeypatch)
     (kanban_home / "config.yaml").write_text(
@@ -1273,13 +1275,11 @@ def test_cli_create_respects_auto_subscribe_on_create_gate(kanban_home, monkeypa
 
 def test_cli_create_json_reports_subscribed(kanban_home, monkeypatch, capsys):
     """``--json`` stays machine-parseable and carries the subscribe outcome."""
-    import json as _json
-    from hermes_cli import kanban as kc
     _clear_session_env(monkeypatch)
     _telegram_session_env(monkeypatch)
 
     assert kc._cmd_create(_create_ns(title="cli json sub", json=True)) == 0
-    payload = _json.loads(capsys.readouterr().out)
+    payload = json.loads(capsys.readouterr().out)
 
     assert payload["subscribed"] is True, payload
     _tid, subs = _subs_for_newest_task()

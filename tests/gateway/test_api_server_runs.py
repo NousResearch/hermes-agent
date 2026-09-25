@@ -165,14 +165,18 @@ def _make_scripted_agent():
 
 
 async def _read_sse_frame(response):
+    """Read the next event frame; comment-only frames (``: open``) dispatch nothing in SSE."""
     lines = []
     while True:
         line = await response.content.readline()
         if not line:
             break
-        lines.append(line.decode())
         if line == b"\n":
-            break
+            if any(not entry.startswith(":") for entry in lines):
+                break
+            lines = []
+            continue
+        lines.append(line.decode())
     sequence = next(
         (int(line.removeprefix("id: ")) for line in lines if line.startswith("id: ")),
         None,

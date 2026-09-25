@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
+import { TRANSLATIONS } from '@/i18n/catalog'
 import { en } from '@/i18n/en'
 
-import { defaultBindings, KEYBIND_ACTIONS, keybindAction } from './actions'
+import { defaultBindings, KEYBIND_ACTIONS, KEYBIND_READONLY, keybindAction } from './actions'
+import { canonicalizeCombo } from './combo'
 
 // Relationship checks between the action table and its consumers, not the
 // specific chord or wording any one action ships with.
@@ -36,5 +38,51 @@ describe('KEYBIND_ACTIONS', () => {
     expect(defaultBindings()['composer.dictate']).toEqual([])
     expect(en.keybinds.actions['composer.dictate']).toBe('Start / stop dictation')
     expect(KEYBIND_ACTIONS.filter(candidate => candidate.id === 'composer.dictate')).toHaveLength(1)
+  })
+
+  // jsdom never reports a Mac platform, so this is the Windows/Linux default.
+  // Don't fake the host OS — assert the chord this runtime actually ships.
+  it('ships a voice chord that does not claim the sidebar chord or any other shipped combo', () => {
+    const voice = defaultBindings()['composer.voice'].map(canonicalizeCombo)
+
+    expect(voice.length).toBeGreaterThan(0)
+
+    const taken = new Set<string>()
+
+    for (const action of KEYBIND_ACTIONS) {
+      if (action.id === 'composer.voice') {
+        continue
+      }
+
+      for (const combo of action.defaults) {
+        taken.add(canonicalizeCombo(combo))
+      }
+    }
+
+    for (const shortcut of KEYBIND_READONLY) {
+      for (const combo of shortcut.keys) {
+        taken.add(canonicalizeCombo(combo))
+      }
+    }
+
+    expect(voice.filter(combo => taken.has(combo))).toEqual([])
+    expect(voice).not.toContain(canonicalizeCombo('mod+b'))
+  })
+
+  it('points Voice settings hints at the voice conversation action, not dictation', () => {
+    const englishVoice = en.keybinds.actions['composer.voice']
+
+    for (const [locale, messages] of Object.entries(TRANSLATIONS)) {
+      const voice = messages.keybinds.actions['composer.voice']
+      const dictate = messages.keybinds.actions['composer.dictate']
+      const hint = messages.settings.config.voiceShortcutHintDesc
+      const namesVoice = hint.includes(voice) || hint.includes(englishVoice)
+
+      expect(namesVoice, locale).toBe(true)
+
+      if (dictate !== voice) {
+        expect(hint.includes(dictate), locale).toBe(false)
+      }
+    }
   })
 })

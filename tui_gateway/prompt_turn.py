@@ -830,6 +830,10 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
         payload["warning"] = status_note
     if result.get("response_previewed"):
         payload["response_previewed"] = True
+    # transform_llm_output may rewrite the final after streaming: the renderer must treat
+    # this payload as the authoritative replacement even without a prefix relationship.
+    if result.get("response_transformed"):
+        payload["response_transformed"] = True
     # Structured billing-wall descriptor: the client renders recovery without re-parsing text.
     if _billing_block := result.get("billing_block"):
         payload["billing"] = _billing_block

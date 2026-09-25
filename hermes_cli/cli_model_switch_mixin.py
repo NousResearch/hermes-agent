@@ -723,6 +723,9 @@ class CLIModelSwitchMixin:
                     model_list = cached_provider_model_ids(provider_data["slug"]) or model_list
                 except Exception:
                     pass
+            from hermes_cli.models_validate import offered_model_ids
+            model_list = offered_model_ids(
+                model_list, provider_data.get("slug"), provider_data.get("api_url"))
             state.update(
                 stage="model", provider_data=provider_data, model_list=model_list,
                 selected=0, filter="", _filtered_pairs=None)

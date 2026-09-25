@@ -29,6 +29,7 @@ import { comboTokens } from '@/lib/keybinds/combo'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
+import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $activeConnectionId } from '@/store/connections'
 import { $cronJobs } from '@/store/cron'
 import { $interfaceMode, $showsAdvancedChrome, shownInMode } from '@/store/interface-mode'
@@ -76,6 +77,7 @@ import {
 import { notifyError } from '@/store/notifications'
 import {
   $newChatProfile,
+  $profileColors,
   $profiles,
   $profileScope,
   ALL_PROFILES,
@@ -84,18 +86,16 @@ import {
   sidebarProfileForScope
 } from '@/store/profile'
 import { $profileRailVisible } from '@/store/profile-rail-prefs'
+import { $projectScope, ALL_PROJECTS, exitProjectScope } from '@/store/project-scope'
 import {
   $activeProjectId,
   $newProjectDropPlacement,
   $projectOwnerBySessionId,
   $projects,
-  $projectScope,
   $projectTree,
   $projectTreeLoading,
   $reposScanning,
-  ALL_PROJECTS,
   enterProject,
-  exitProjectScope,
   followEnteredProjectCwd,
   openProjectCreate,
   refreshProjects,
@@ -120,6 +120,7 @@ import {
   $messagingTruncated,
   $sessionProfilesTruncated,
   $sessions,
+  $sessionsLoadError,
   $sessionsLoading,
   $unreadFinishedSessionIds,
   markAllSessionsRead,
@@ -132,6 +133,7 @@ import { $focusedSessionIsTile, $focusedStoredSessionId, $workingSessionIds } fr
 import { ackAllSessionsRead } from '@/store/session-unread'
 import { markSessionUnread } from '@/store/session-unread-remote'
 import { $archivedSessions, loadArchivedSessions } from '@/store/sidebar-archive'
+import { applySidebarNavPrefs, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 import { $sidebarSessionRankIds } from '@/store/sidebar-sort'
 
 import {
@@ -149,7 +151,7 @@ import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session
 import { SidebarSectionAddButton } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarFilterMenu } from './filter-menu'
-import { useGatewaySessionGroups } from './gateway-group-model'
+import { buildGatewaySessionGroups, scopeGatewaySessionGroups, useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { filterSessionsByProfileScope } from './profile-scope'
@@ -364,6 +366,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   currentView: AppView
   onNavigate: (item: SidebarNavItem) => void
   onLoadMoreSessions: () => Promise<void> | void
+  onRetrySessions: () => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string, session?: SessionInfo) => void
   onDeleteSession: (sessionId: string) => void
@@ -385,6 +388,7 @@ export function ChatSidebar({
   currentView: routeView,
   onNavigate,
   onLoadMoreSessions,
+  onRetrySessions,
   onLoadMoreMessaging,
   onResumeSession,
   onDeleteSession,
@@ -429,9 +433,15 @@ export function ChatSidebar({
   const interfaceMode = useStore($interfaceMode)
   const showsAdvancedChrome = useStore($showsAdvancedChrome)
 
+  // Nav preferences (`sidebarNav.prefs` contributions): a plugin may hide rows
+  // or re-order them. Merged here, at render, from the registry — so the
+  // preference never mutates the default list, and a plugin's disable/reload
+  // disposes its contribution and the rows come straight back.
+  const navPrefs = useContributions(SIDEBAR_NAV_PREFS_AREA)
+
   const navItems = useMemo(
-    () => [...SIDEBAR_NAV, ...contributedNav].filter(shownInMode(interfaceMode)),
-    [contributedNav, interfaceMode]
+    () => applySidebarNavPrefs([...SIDEBAR_NAV, ...contributedNav].filter(shownInMode(interfaceMode)), navPrefs),
+    [contributedNav, interfaceMode, navPrefs]
   )
 
   const panesFlipped = useStore($panesFlipped)
@@ -471,6 +481,7 @@ export function ChatSidebar({
   const messagingPlatformTotals = useStore($messagingPlatformTotals)
   const messagingTruncated = useStore($messagingTruncated)
   const sessionsLoading = useStore($sessionsLoading)
+  const sessionsLoadError = useStore($sessionsLoadError)
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const unreadCount = useStore($unreadFinishedSessionIds).length
   const profiles = useStore($profiles)
@@ -1359,7 +1370,12 @@ export function ChatSidebar({
       .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
   }, [visibleMessagingSessions, messagingPlatformTotals, messagingTruncated, isPinnedSession, messagingProfile])
 
-  const profileGroups = useGatewaySessionGroups(agentSessions, profileScope === ALL_PROFILES && grouping === 'profile')
+  // Recents and every messaging platform resolve owner groups the same way
+  // ([connectionId, profile]), so a platform's groups line up with recents.
+  const ownerGrouped = profileScope === ALL_PROFILES && grouping === 'profile'
+  const profileGroups = useGatewaySessionGroups(agentSessions, ownerGrouped)
+  const connectionsRegistry = useStore($connectionsRegistry)
+  const profileColors = useStore($profileColors)
 
   // The flat Sessions list always shows ALL recent sessions; Projects is a
   // parallel grouped view, not a filter on this one — nothing is hidden here.
@@ -1499,7 +1515,7 @@ export function ChatSidebar({
   // Filtered down to nothing still renders the section: the empty state is what
   // tells you the filter — not an empty account — is why the list is bare.
   const showSessionSections =
-    showSessionSkeletons || filtersActive || sortedSessions.length > 0 || projectModel.length > 0
+    showSessionSkeletons || sessionsLoadError || filtersActive || sortedSessions.length > 0 || projectModel.length > 0
 
   // The sidebar's session-area mode — exposed as data-attributes so custom
   // skins can target project mode (overview vs. entered), archived, or search
@@ -1789,6 +1805,8 @@ export function ChatSidebar({
                 emptyState={
                   inProject && projectLoadFailed ? null : showSessionSkeletons || (inProject && projectLoading) ? (
                     <SidebarSessionSkeletons />
+                  ) : !inProject && sessionsLoadError ? (
+                    <SidebarLoadErrorState onRetry={() => void onRetrySessions()} />
                   ) : (
                     <div className="grid min-h-16 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
                       {inProject
@@ -1966,10 +1984,20 @@ export function ChatSidebar({
                 // still has older threads on disk.
                 const canRevealMore = visible < group.sessions.length || group.hasMore
 
+                // Group only what the cap lets through, so the footer's count
+                // and load-more stay about the platform, not one of its groups.
+                const ownerGroups = ownerGrouped
+                  ? scopeGatewaySessionGroups(
+                      buildGatewaySessionGroups(shownSessions, connectionsRegistry, profileColors),
+                      `messaging:${group.sourceId}`
+                    )
+                  : undefined
+
                 return (
                   <SidebarSessionsSection
                     activeSessionId={activeSidebarSessionId}
                     contentClassName={cn('flex max-h-56 flex-col gap-px pb-1.75', GROUP_BODY)}
+                    embeddedGroups
                     emptyState={null}
                     footer={
                       canRevealMore ? (
@@ -1980,6 +2008,7 @@ export function ChatSidebar({
                         />
                       ) : null
                     }
+                    groups={ownerGroups}
                     key={group.sourceId}
                     label={group.label}
                     labelIcon={
@@ -1999,6 +2028,7 @@ export function ChatSidebar({
                     pinned={false}
                     rootClassName="shrink-0 p-0"
                     sessions={shownSessions}
+                    showProfileTags={showAllProfiles && !ownerGrouped}
                   />
                 )
               })}

@@ -28,6 +28,7 @@ import {
   reconcileAppliedGlobalConnection,
   reconcileRegistryDrift,
   REGISTRY_VERSION,
+  registryDialConnectionId,
   registrySourceOwnsPrimaryBackend,
   rememberSshEnumeration,
   removeConnection,
@@ -744,6 +745,52 @@ test('registry local route: per-profile override wins when global remote is also
   assert.deepEqual(route, { delegate: true, poolKey: 'research' })
 })
 
+test('registry local route: a concrete remote-only profile is refused on the forced-local branch', () => {
+  // globalRemote still force-locals a profile that exists on this machine
+  // (This device must not dial the remote). A named profile that exists only
+  // on the remote must not spawn a local child.
+  const named = resolveRegistryLocalRoute('inbox', { globalRemote: true, localProfileExists: false })
+
+  assert.match(String(named.refuse ?? ''), /Profile "inbox" no longer exists/)
+  assert.equal(named.delegate, false)
+
+  // default is $HERMES_HOME, not profiles/default: a profiles/default probe
+  // reports absent, but This device -> default must still open locally.
+  assert.deepEqual(resolveRegistryLocalRoute('default', { globalRemote: true, localProfileExists: false }), {
+    delegate: false,
+    poolKey: 'conn:local::default'
+  })
+
+  const present = resolveRegistryLocalRoute('research', { globalRemote: true, localProfileExists: true })
+
+  assert.equal(present.refuse, undefined)
+  assert.equal(present.delegate, false)
+  assert.equal(present.poolKey, 'conn:local::research')
+
+  // The override remains the authoritative route even when the profile is
+  // absent locally. Unprofiled enumeration is not a concrete dial.
+  assert.deepEqual(
+    resolveRegistryLocalRoute('research', {
+      globalRemote: true,
+      localProfileExists: false,
+      profileRemoteOverride: true
+    }),
+    { delegate: true, poolKey: 'research' }
+  )
+  assert.equal(resolveRegistryLocalRoute(null, { globalRemote: true, localProfileExists: false }).refuse, undefined)
+  assert.equal(resolveRegistryLocalRoute('', { globalRemote: true, localProfileExists: false }).refuse, undefined)
+})
+
+test('registry dial: an empty connection id is not registry.primary', () => {
+  assert.throws(() => registryDialConnectionId('', 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId('   ', 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId(null, 'ssh-other-host'), /No connection with id/)
+  assert.throws(() => registryDialConnectionId(undefined, 'homelab'), /No connection with id/)
+  assert.equal(registryDialConnectionId('local', 'ssh-other-host'), 'local')
+  assert.equal(registryDialConnectionId('homelab', 'ssh-other-host'), 'homelab')
+  assert.equal(registryDialConnectionId('ssh-other-host', 'ssh-other-host'), 'ssh-other-host')
+})
+
 // --- shouldDeferLocalEnumeration (roster's connect-on-demand for 'local') ---
 
 test('local enumeration: delegate route (local-primary desktop) always enumerates', () => {
@@ -1080,6 +1127,53 @@ test('token only persists on token-auth remotes; oauth/cloud drop it', () => {
   )
 
   assert.equal(cloud.token, undefined)
+})
+
+test('a cloud entry is saved as oauth even when the payload says token (#89529)', () => {
+  // Cloud never keeps a pasted token (above), so token auth would leave the
+  // entry with no credential and Test failing with "no saved session token".
+  for (const authMode of [undefined, 'token'] as const) {
+    const cloud = normalizeConnectionInput(
+      { kind: 'cloud', label: 'C', url: 'https://c.hermes.cloud', authMode, token: { enc: 'x' } },
+      emptyRegistry()
+    )
+
+    assert.equal(cloud.authMode, 'oauth')
+    assert.equal(cloud.token, undefined)
+  }
+
+  // Remote keeps its explicit choice and its token default.
+  const remote = normalizeConnectionInput({ kind: 'remote', label: 'R', url: 'http://r:1' }, emptyRegistry())
+
+  assert.equal(remote.authMode, 'token')
+})
+
+test('a stored cloud entry left on token auth with no token reads back as oauth (#89529)', () => {
+  const registry = normalizeRegistry({
+    version: REGISTRY_VERSION,
+    primary: 'local',
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      { id: 'cloud-bare', kind: 'cloud', label: 'Bare cloud', url: 'https://a.hermes.cloud', authMode: 'token' },
+      {
+        id: 'cloud-keyed',
+        kind: 'cloud',
+        label: 'Keyed cloud',
+        url: 'https://b.hermes.cloud',
+        authMode: 'token',
+        token: { v: 1 }
+      },
+      { id: 'homelab', kind: 'remote', label: 'Homelab', url: 'http://10.0.0.5:9119', authMode: 'token' }
+    ]
+  })
+
+  const byId = Object.fromEntries(registry.connections.map(c => [c.id, c]))
+
+  assert.equal(byId['cloud-bare'].authMode, 'oauth')
+  // A real saved credential is never discarded, and remotes are untouched.
+  assert.equal(byId['cloud-keyed'].authMode, 'token')
+  assert.deepEqual(byId['cloud-keyed'].token, { v: 1 })
+  assert.equal(byId.homelab.authMode, 'token')
 })
 
 test('an ssh entry keeps its session token through a label rename', () => {

@@ -411,6 +411,24 @@ export function setPrimaryGatewayConnectionId(
   }
 }
 
+/**
+ * Mode of the socket this window already dialed for `(connectionId, profile)`,
+ * following gatewayForProfile's precedence: the primary socket when it serves
+ * that profile, else a secondary's own descriptor. Null until one is dialed.
+ */
+export function dialedGatewayModeFor(connectionId: null | string, profile: string): 'local' | 'remote' | null {
+  const id = String(connectionId ?? '').trim() || null
+  const key = normKey(profile)
+
+  if (key === g.primaryProfile && (!id || id === g.primaryConnectionId) && g.primaryConnectionMode) {
+    return g.primaryConnectionMode
+  }
+
+  const mode = g.secondaries.get(registryBackendScopeKey(id, key))?.connection?.mode
+
+  return mode === 'local' || mode === 'remote' ? mode : null
+}
+
 /** Publish the registry source owned by the window primary socket. */
 export function setPrimaryGatewayConnection(connection: Pick<HermesConnection, 'connectionId' | 'mode'> | null): void {
   setPrimaryGatewayConnectionId(connection?.connectionId, connection?.mode)

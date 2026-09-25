@@ -125,10 +125,7 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     { settings: Settings2, tools: Wrench }
   )
 
-  const pageLabels: Record<string, string> = {
-    ...t.settings.nav,
-    sessions: t.settings.nav.archivedChats
-  }
+  const pageLabels: Record<string, string> = t.settings.nav
 
   // The pages that own rows: config sections and the standalone views.
   const parents = [

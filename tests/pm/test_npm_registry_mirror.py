@@ -7,10 +7,15 @@ from pm.store import Store
 from tests.pm._range_server import RangeHandler, dl_server, url  # noqa: F401
 
 
-def test_pinned_fetch_uses_user_npm_registry_without_changing_lock(tmp_path, monkeypatch):
+@pytest.mark.parametrize('registry_value', [
+    'https://mirror.example/npm/',
+    'https://mirror.example/npm/ # corporate mirror',
+    'https://mirror.example/npm/; corporate mirror',
+])
+def test_pinned_fetch_uses_user_npm_registry_without_changing_lock(tmp_path, monkeypatch, registry_value):
     from pm import downloader
 
-    (tmp_path / '.npmrc').write_text('registry=https://mirror.example/npm/\n', encoding='utf-8')
+    (tmp_path / '.npmrc').write_text(f'registry={registry_value}\n', encoding='utf-8')
     monkeypatch.chdir(tmp_path)
     original = 'https://registry.npmjs.org/npm/-/npm-1.2.3.tgz'
     artifact = {'url': original, 'sha256': 'a' * 64}
@@ -36,7 +41,8 @@ def test_real_mirror_download_keeps_hash_and_progress_identity(tmp_path, monkeyp
 
     payload = b'locked npm archive fixture' * 100
     RangeHandler.payloads['/mirror/npm/-/npm-1.2.3.tgz'] = payload
-    monkeypatch.setenv('NPM_CONFIG_REGISTRY', url(dl_server, '/mirror/'))
+    (tmp_path / '.npmrc').write_text(
+        f'registry={url(dl_server, "/mirror/")} ; corporate mirror\n', encoding='utf-8')
     original = 'https://registry.npmjs.org/npm/-/npm-1.2.3.tgz'
     digest = hashlib.sha256(b'wrong' if bad_hash else payload).hexdigest()
     store = Store(tmp_path / 'store')
@@ -89,6 +95,28 @@ def test_metadata_uses_same_registry_and_empty_result(monkeypatch):
     monkeypatch.setattr(update, '_get_json', get_json)
     assert update.npm_dist_tags('@scope%2Fpkg') == {}
     assert seen == ['https://mirror.example/npm/-/package/@scope%2Fpkg/dist-tags']
+
+
+@pytest.mark.parametrize(('candidate', 'expected'), [
+    ('https://mirror.example/npm/ # mirror', 'https://mirror.example/npm/'),
+    ('https://mirror.example/npm/; mirror', 'https://mirror.example/npm/'),
+    ('"https://mirror.example/a;b/"', 'https://mirror.example/a;b/'),
+    ("'https://mirror.example/a;b/'", 'https://mirror.example/a;b/'),
+    (r'https://mirror.example/a\;b/', 'https://mirror.example/a;b/'),
+])
+def test_metadata_respects_npmrc_comments_and_literal_delimiters(tmp_path, monkeypatch, candidate, expected):
+    from pm import update
+
+    config = tmp_path / '.npmrc'
+    config.write_text(f'registry={candidate}\n', encoding='utf-8')
+    seen = []
+    monkeypatch.setattr(update, '_get_json', lambda address, **kwargs: seen.append(address) or {})
+    assert update.npm_dist_tags('npm') == {}
+    assert seen == [expected + '-/package/npm/dist-tags']
+    # Environment values are URLs, not ini text: a literal semicolon is retained.
+    monkeypatch.setenv('NPM_CONFIG_REGISTRY', 'https://env.example/a;b/')
+    assert update.npm_dist_tags('npm') == {}
+    assert seen[-1] == 'https://env.example/a;b/-/package/npm/dist-tags'
 
 
 def test_default_registry_preserves_public_fallback(tmp_path):

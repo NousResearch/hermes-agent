@@ -5,12 +5,40 @@ The URL templates stay canonical so a local mirror never gets written into the l
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import re
 from urllib.parse import urlsplit
 
 DEFAULT_REGISTRY = "https://registry.npmjs.org/"
+
+
+def _npmrc_value(value: str) -> str:
+    """Match npm's ini quoting and escaped inline-comment delimiters."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        if value[0] == "'":
+            return value[1:-1]
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
+    result = []
+    escaped = False
+    for char in value:
+        if escaped:
+            result.append(char if char in "\\;#" else "\\" + char)
+            escaped = False
+        elif char in ";#":
+            break
+        elif char == "\\":
+            escaped = True
+        else:
+            result.append(char)
+    if escaped:
+        result.append("\\")
+    return "".join(result).strip()
 
 
 def registry_url() -> str:
@@ -26,7 +54,7 @@ def registry_url() -> str:
         for line in lines:
             key, sep, candidate = line.strip().partition("=")
             if sep and key.strip().lower() == "registry":
-                value = candidate.strip().strip('"\'')
+                value = _npmrc_value(candidate)
         value = re.sub(r"\$\{([^}]+)\}", lambda match: os.environ.get(match[1], match[0]), value)
     if not value:
         return DEFAULT_REGISTRY

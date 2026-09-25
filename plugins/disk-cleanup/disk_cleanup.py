@@ -112,7 +112,12 @@ _NEVER_TRACK_TOP_LEVEL = frozenset({
     "profiles", "backups", "optional-skills", "workspace", "plans", "home",
     # Kanban task attachments/workspaces have their own lifecycle; test_* staging files there are
     # not disposable (#114552).
-    "kanban"})
+    "kanban",
+    # ``scripts/`` holds user-authored cron/guard scripts; a ``tmp_*`` file there (e.g.
+    # tmp_guard.py) must never be auto-deleted as category "test". Real incident: tmp_guard.py
+    # plus its cron wrapper were silently removed twice by the session-end AUTO_QUICK sweep,
+    # leaving the cron job failing "Script not found" for 27h+ before the root cause surfaced.
+    "scripts"})
 
 
 def _is_protected_dir(p: Path) -> bool:

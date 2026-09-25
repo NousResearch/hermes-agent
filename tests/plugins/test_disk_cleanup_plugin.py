@@ -239,6 +239,40 @@ class TestProtectedDirsNeverRmtreed:
         assert dg.load_tracked() == []
 
 
+class TestUserScriptsNeverCleaned:
+    """Regression tests — user-authored cron/guard scripts under top-level ``scripts/``
+    must never be classified as disposable or auto-deleted, even when named ``tmp_*``
+    (real incident: tmp_guard.py + tmp_guard_cron.sh were swept twice by the session-end
+    AUTO_QUICK pass, leaving the cron job failing "Script not found" for 27h+)."""
+
+    def test_scripts_tmp_files_are_never_tracked_or_deleted(self, _isolate_env):
+        pi = _load_plugin_init()
+        dg = _load_lib()
+        guard = _isolate_env / "scripts" / "tmp_guard.py"
+        guard.parent.mkdir(parents=True)
+        guard.write_text("x")
+        wrapper = _isolate_env / "scripts" / "tmp_guard_cron.sh"
+        wrapper.write_text("x")
+        assert dg.guess_category(guard) is None
+        assert dg.guess_category(wrapper) is None
+        # A stale pre-fix entry must be dropped by re-validation instead of deleted.
+        dg.save_tracked([{"path": str(guard), "category": "test",
+                          "timestamp": datetime.now(timezone.utc).isoformat(), "size": 1}])
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(guard), "content": "x"},
+                              result="OK", task_id="t1", session_id="s_sc")
+        scratch = _isolate_env / "test_scratch.py"
+        scratch.write_text("x")
+        pi._on_post_tool_call(tool_name="write_file", args={"path": str(scratch), "content": "x"},
+                              result="OK", task_id="t1", session_id="s_sc")
+
+        pi._on_session_end(session_id="s_sc", completed=True, interrupted=False)
+
+        assert guard.exists(), "user cron/guard scripts are never auto-deleted"
+        assert wrapper.exists(), "user cron wrapper scripts are never auto-deleted"
+        assert not scratch.exists(), "root-level scratch files are still cleaned up (control)"
+        assert dg.load_tracked() == []
+
+
 class TestGitWorktreeFilesNeverCleaned:
     """Regression tests for #115295 — git-owned test_* files (committed regression tests
     inside worktrees/checkouts) are never tracked or auto-deleted; scratch files outside

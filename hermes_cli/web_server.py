@@ -1353,11 +1353,18 @@ def _on_server_started(
     _best_effort("host rendezvous publish", lambda: _publish_host_rendezvous(host, actual_port))
 
     _write_dashboard_ready_file(actual_port)
-    # Port-discovery sentinel parsed by the Desktop spawn (matches either
-    # token). Written to fd 1: tui_gateway.server redirects sys.stdout to
-    # stderr at import, and the Desktop watches child.stdout (#96282).
-    ready_token = "HERMES_BACKEND_READY" if headless else "HERMES_DASHBOARD_READY"
-    _write_machine_sentinel_line(f"{ready_token} port={actual_port}")
+    # Port-discovery sentinel parsed by the Desktop spawn. Written to fd 1:
+    # tui_gateway.server redirects sys.stdout to stderr at import, and the
+    # Desktop watches child.stdout (#96282). A headless `serve` announces the
+    # neutral token FIRST and the legacy HERMES_DASHBOARD_READY one after it:
+    # a packaged Desktop artifact whose parser predates the neutral token
+    # (#60772) still matches the legacy sentinel, while current parsers match
+    # either. The legacy `dashboard` backend keeps its own single token.
+    if headless:
+        _write_machine_sentinel_line(f"HERMES_BACKEND_READY port={actual_port}")
+        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
+    else:
+        _write_machine_sentinel_line(f"HERMES_DASHBOARD_READY port={actual_port}")
     if headless:
         # Auth-gated JSON-RPC/WS only — announce the bind, not a URL. flush:
         # a piped stdout otherwise surfaces this minutes after the sentinel.

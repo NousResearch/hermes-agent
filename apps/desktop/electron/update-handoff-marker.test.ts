@@ -17,6 +17,12 @@ function sandbox(tag: string) {
   return { home, installRoot }
 }
 
+// Each sandbox is a real mkdtemp() under the OS temp directory; leaving it
+// behind pollutes $TMPDIR/%TEMP% by one directory per test run (#122130).
+function cleanupSandbox(home: string) {
+  fs.rmSync(home, { recursive: true, force: true })
+}
+
 function markerStartedAt(home: string): number {
   const [, startedAt] = fs.readFileSync(path.join(home, '.hermes-update-in-progress'), 'utf8').split('\n')
 
@@ -49,6 +55,8 @@ function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => R
 
   assert.equal(preservedResult.status, 0, String(preservedResult.stderr || preservedResult.stdout))
   assert.equal(markerStartedAt(preserved.home), acquiredAt, 'the script must preserve the Desktop acquisition time')
+  cleanupSandbox(preserved.home)
+  assert.equal(fs.existsSync(preserved.home), false, 'the self-test sandbox must not leak into the OS temp directory')
 
   const refreshed = sandbox('refreshed')
   fs.writeFileSync(path.join(refreshed.home, '.hermes-update-in-progress'), '999999\n1\n')
@@ -61,6 +69,8 @@ function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => R
     markerStartedAt(refreshed.home) >= before && markerStartedAt(refreshed.home) <= after,
     'an invalid hand-off timestamp must start a fresh claim'
   )
+  cleanupSandbox(refreshed.home)
+  assert.equal(fs.existsSync(refreshed.home), false, 'the self-test sandbox must not leak into the OS temp directory')
 
   const oversized = sandbox('oversized')
   const oversizedBefore = Math.floor(Date.now() / 1000)
@@ -72,6 +82,8 @@ function assertScriptHandoff(run: (installRoot: string, startedAt?: string) => R
     markerStartedAt(oversized.home) >= oversizedBefore && markerStartedAt(oversized.home) <= oversizedAfter,
     'an oversized hand-off timestamp must start a fresh claim'
   )
+  cleanupSandbox(oversized.home)
+  assert.equal(fs.existsSync(oversized.home), false, 'the self-test sandbox must not leak into the OS temp directory')
 }
 
 test.skipIf(process.platform === 'win32')('POSIX hand-off preserves the Desktop marker acquisition time', () => {

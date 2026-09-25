@@ -74,3 +74,28 @@ it('titles a command-less backend refusal honestly and offers nothing to copy', 
   expect(screen.getByText(message)).toBeTruthy()
   expect(screen.queryByText(en.updates.copy)).toBeNull()
 })
+
+it('names the backend, not a local install, when a remote refusal carries a bare command', async (): Promise<void> => {
+  $updateOverlayTarget.set('backend')
+  $updateOverlayOpen.set(true)
+  $backendUpdateApply.set({
+    applying: false,
+    stage: 'manual',
+    message: '',
+    percent: null,
+    error: 'update_not_in_place',
+    command: 'docker pull nousresearch/hermes-agent:latest',
+    log: []
+  })
+  await act(async (): Promise<void> => {
+    render(
+      <I18nProvider configClient={null} initialLocale="en">
+        <UpdatesOverlay />
+      </I18nProvider>
+    )
+  })
+  expect(screen.getByText('docker pull nousresearch/hermes-agent:latest')).toBeTruthy()
+  expect(screen.getByText(en.updates.manualBodyBackend)).toBeTruthy()
+  expect(screen.getByText(en.updates.manualPickedUpBackend)).toBeTruthy()
+  expect(screen.queryByText(en.updates.manualBody)).toBeNull()
+})

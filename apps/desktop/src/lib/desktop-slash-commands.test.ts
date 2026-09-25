@@ -11,6 +11,7 @@ import {
   isDesktopSlashCommand,
   isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
+  isDesktopSlashSuggestionWithOptions,
   isModelPickerCommand,
   isPickerCommand,
   rankSkillCommands,
@@ -147,6 +148,22 @@ describe('desktop slash command curation', () => {
   it('allows aliases to execute without cluttering the popover', () => {
     expect(isDesktopSlashSuggestion('/reset')).toBe(false)
     expect(isDesktopSlashCommand('/reset')).toBe(true)
+  })
+
+  it('surfaces an alias the user typed exactly, gated on desktop availability (#57641)', () => {
+    // Browsing (no exact query): aliases stay hidden — popover stays lean.
+    expect(isDesktopSlashSuggestionWithOptions('/reset')).toBe(false)
+    // Exact typed query: the alias must appear, not "no matches".
+    expect(isDesktopSlashSuggestionWithOptions('/reset', { exactAlias: '/reset' })).toBe(true)
+    expect(isDesktopSlashSuggestionWithOptions('/reset', { exactAlias: 'reset' })).toBe(true)
+    // Partial prefixes and other queries keep aliases hidden.
+    expect(isDesktopSlashSuggestionWithOptions('/reset', { exactAlias: 're' })).toBe(false)
+    expect(isDesktopSlashSuggestionWithOptions('/reset', { exactAlias: '/new' })).toBe(false)
+    // A different alias never rides along with this query.
+    expect(isDesktopSlashSuggestionWithOptions('/fork', { exactAlias: '/reset' })).toBe(false)
+    // Aliases whose canonical has no desktop surface stay hidden even on an
+    // exact match (isDesktopSlashCommand gate).
+    expect(isDesktopSlashSuggestionWithOptions('/reload_mcp', { exactAlias: '/reload_mcp' })).toBe(false)
   })
 
   it('filters built-in catalog noise but keeps skill / quick-command extensions', () => {

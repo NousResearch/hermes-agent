@@ -61,6 +61,36 @@ def _cfg_usable(cfg) -> bool:
     return bool(cfg.enabled and (cfg.api_key or cfg.base_url))
 
 
+def _dialectic_failure_category(exc: BaseException) -> str:
+    """Map a dialectic exception to a safe, stable operator-facing category."""
+    name = type(exc).__name__.lower()
+    text = str(exc).lower()
+    if "auth" in name or "401" in text or "403" in text or "unauthorized" in text:
+        return "upstream_provider_authentication_or_quota"
+    if "unsupported" in name or "not implemented" in text or "405" in text or "501" in text:
+        return "upstream_provider_unsupported_dialectic_operation"
+    if "timeout" in name or "timed out" in text or "timeout" in text:
+        return "upstream_provider_model_stall_or_timeout"
+    return "unknown_dialectic_backend_failure"
+
+
+def _dialectic_failure(exc: BaseException) -> str:
+    """Return a structured, non-retryable failure without exposing request data."""
+    from datetime import datetime, timezone, timedelta
+
+    wib = timezone(timedelta(hours=7))
+    payload = {
+        "error": {
+            "type": "dialectic_unavailable",
+            "category": _dialectic_failure_category(exc),
+            "timestamp": datetime.now(wib).isoformat(timespec="seconds"),
+            "retry_count": 0,
+            "message": "Honcho dialectic is unavailable; ordinary retrieval remains available.",
+        }
+    }
+    return json.dumps(payload, sort_keys=True)
+
+
 # Static per-mode system prompt text (prompt-cache friendly: never changes between turns).
 _TOOL_GUIDE = (
     "Use honcho_profile for a quick factual snapshot, "
@@ -222,6 +252,13 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         self._recall_generation = object()
         try:
             agent_context, platform = kwargs.get("agent_context", ""), kwargs.get("platform", "cli")
+            # A single-query session (hermes chat -Q/-q, oneshot) ends after this one turn — the
+            # dialectic prewarm is a speculative cache-warm for a NEXT turn that never comes, and
+            # it's an untracked background thread interpreter shutdown must wait on (upstream
+            # #37632/#33485/#72385). Real message sync is unaffected. NOT keyed on quiet_mode:
+            # that's "not verbose", true for ordinary multi-turn interactive CLI chat too, which
+            # legitimately benefits from the prewarm.
+            self._skip_prewarm = bool(kwargs.get("single_query_mode"))
             if agent_context in {"cron", "flush"} or platform == "cron":
                 logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
@@ -383,7 +420,9 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
         # Generic dialectic prewarm is incompatible with latest-message query rewriting,
         # which needs the first substantive user message.
         if self._recall_mode in {"context", "hybrid"} and not self._recall_sync:
-            if self._query_rewriter is None or not self._query_rewrite_enabled:
+            if self._skip_prewarm:
+                logger.debug("Honcho dialectic prewarm skipped: single-query session (%s)", self._session_key)
+            elif self._query_rewriter is None or not self._query_rewrite_enabled:
                 self._spawn_dialectic(_PREWARM_QUERY, thread_name="honcho-prewarm-dialectic", fired_at=0,
                                       log_label="dialectic prewarm", use_query_rewrite=False)
                 logger.debug("Honcho dialectic prewarm started for session: %s", self._session_key)
@@ -946,16 +985,13 @@ class HonchoMemoryProvider(DialecticMixin, MemoryProvider):
                 self._session_key, query, reasoning_level=args.get("reasoning_level"),
                 peer=args.get("peer", "user"), apply_injection_cap=False, raise_errors=True,
             )
-        except HonchoAuthError:
-            raise  # rendered by handle_tool_call's auth-specific handler
+        except HonchoAuthError as e:
+            logger.warning("Honcho dialectic unavailable category=%s retry_count=0", _dialectic_failure_category(e))
+            return _dialectic_failure(e)
         except Exception as e:
-            logger.warning("honcho_reasoning failed: %s", e)
-            return tool_error(
-                f"Honcho reasoning query failed ({e}). This is a backend error, not an empty result — "
-                "the peer may still have relevant context. Slow dialectic calls at higher reasoning levels "
-                "can exceed the configured timeout; consider a lower reasoning_level or raising the "
-                "'timeout' value in honcho.json."
-            )
+            category = _dialectic_failure_category(e)
+            logger.warning("Honcho dialectic unavailable category=%s retry_count=0", category)
+            return _dialectic_failure(e)
         # Auto-injection respects the cadence gap after an explicit call.
         self._last_dialectic_turn = self._turn_count
         return json.dumps({"result": result or "No result from Honcho."})

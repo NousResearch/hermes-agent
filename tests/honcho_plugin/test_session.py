@@ -856,7 +856,7 @@ class TestSessionStartDialecticPrewarm:
     consumed by turn 1 — no duplicate .chat() and no dead-cache orphaning."""
 
     @staticmethod
-    def _make_provider(cfg_extra=None, dialectic_result="prewarm synthesis"):
+    def _make_provider(cfg_extra=None, dialectic_result="prewarm synthesis", **init_kwargs):
         from unittest.mock import patch, MagicMock
         from plugins.memory.honcho.client import HonchoClientConfig
 
@@ -875,7 +875,7 @@ class TestSessionStartDialecticPrewarm:
              patch("plugins.memory.honcho.client.get_honcho_client", return_value=MagicMock()), \
              patch("plugins.memory.honcho.session.HonchoSessionManager", return_value=mock_manager), \
              patch("hermes_constants.get_hermes_home", return_value=MagicMock()):
-            provider.initialize(session_id="test-prewarm")
+            provider.initialize(session_id="test-prewarm", **init_kwargs)
         return provider
 
     def test_prewarm_populates_prefetch_result(self):
@@ -886,6 +886,11 @@ class TestSessionStartDialecticPrewarm:
         with p._prefetch_lock:
             assert p._prefetch_result == "prewarm synthesis"
         assert p._last_dialectic_turn == 0
+
+    def test_single_query_mode_skips_speculative_prewarm(self):
+        p = self._make_provider(single_query_mode=True)
+        assert p._prefetch_thread is None
+        p._manager.dialectic_query.assert_not_called()
 
 
     def test_turn1_consumes_prewarm_without_duplicate_dialectic(self):

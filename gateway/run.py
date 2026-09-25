@@ -4002,6 +4002,28 @@ class GatewayRunner(
         would clobber it). Best-effort: a failed write must never disrupt a turn."""
         _write_runtime_status_quiet(active_agents=self._active_work_count())
 
+    def _register_cron_persist_hook(self) -> None:
+        """Refresh ``active_agents`` whenever the cron in-flight count changes (#122813).
+
+        Cron work is counted by ``_active_work_count`` but never reached a persist: counts only
+        refreshed at inbound-turn boundaries, so a cron job read as 0 for its whole run and a
+        count written mid-job stayed stuck until the next inbound message. The scheduler fires
+        its lifecycle callbacks outside its dispatch lock and swallows observer errors, so this
+        can never affect job dispatch. Best-effort like every other persist path.
+        """
+        try:
+            from cron import scheduler as cron_scheduler
+            cron_scheduler.register_job_lifecycle_callback(self._persist_active_agents)
+        except Exception:
+            logger.debug("cron persist-hook registration failed", exc_info=True)
+
+    def _unregister_cron_persist_hook(self) -> None:
+        try:
+            from cron import scheduler as cron_scheduler
+            cron_scheduler.unregister_job_lifecycle_callback(self._persist_active_agents)
+        except Exception:
+            logger.debug("cron persist-hook deregistration failed", exc_info=True)
+
     def _running_agent_ids(self) -> set:
         """``id()`` of every agent mid-turn — identity-keyed so the lookup is O(1) and independent of
         ``AIAgent.__eq__`` (MagicMock overrides it in tests)."""
@@ -5710,6 +5732,11 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     cron_thread = SupervisedTickerThread(
         cron_provider.start, args=(cron_stop,), kwargs=cron_start_kwargs, stop_event=cron_stop)
     cron_thread.start()
+    # Every scheduler mode funnels job register/release through cron.scheduler's shared
+    # in-flight registry, so ONE lifecycle hook here covers in-process, multiplex, and
+    # external providers: gateway_state.json's active_agents now tracks cron work at
+    # every count change (#122813).
+    runner._register_cron_persist_hook()
 
     # External providers fire over loopback HTTP to THIS process's api_server; if it never came up (usually
     # API_SERVER_KEY missing) every fire fails while manual runs work — misread as a job bug. Say it ONCE.
@@ -5767,6 +5794,7 @@ async def _start_gateway_shutdown_tail(
     # message was silently dropped (#58818). Awaiting keeps the loop alive so the in-flight delivery
     # finishes before we tear down.
     cron_stop.set()
+    runner._unregister_cron_persist_hook()  # stop persisting counts for a dying gateway
     _stop_cron_provider(cron_provider)
     if not await _await_thread_exit(cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT):
         logger.warning("Cron ticker did not exit within %.0fs of shutdown — an in-flight "

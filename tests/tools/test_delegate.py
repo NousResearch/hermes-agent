@@ -321,8 +321,12 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
+                # Same FILE, not same string: hermes_state_registry.acquire() resolves the
+                # registry key (Path.resolve()), so on hosts where TMPDIR sits under a
+                # symlink (macOS /var -> /private/var) the child's spelling differs from
+                # the caller's. The contract is "targets the parent's database file".
                 self.assertEqual(
-                    str(child_db.db_path), str(parent_db.db_path)
+                    Path(child_db.db_path).resolve(), Path(parent_db.db_path).resolve()
                 )
             finally:
                 if child_db is not None:

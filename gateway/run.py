@@ -420,17 +420,23 @@ _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
 def _ensure_windows_gateway_venv_imports() -> None:
-    """Make detached Windows gateway runs see the Hermes venv packages.
+    """Make detached Windows gateway runs see the selected Hermes packages.
 
-    Patched before MCP discovery so tool injection does not depend on launchers preserving PYTHONPATH."""
+    Patched before MCP discovery so tool injection does not depend on launchers preserving PYTHONPATH.
+    A committed PM generation must win over a leftover pre-PM venv: mixing their Python ABIs
+    makes native extensions such as pydantic_core disappear at import time."""
     if sys.platform != "win32":
         return
 
     project_root = Path(__file__).resolve().parent.parent
-    candidates: list[Path] = []
-    if os.environ.get("VIRTUAL_ENV"):
-        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
-    candidates.append(project_root / "venv")
+    from pm.environments import committed_venv
+
+    committed = committed_venv(project_root)
+    candidates: list[Path] = [committed] if committed is not None else []
+    if committed is None:
+        if os.environ.get("VIRTUAL_ENV"):
+            candidates.append(Path(os.environ["VIRTUAL_ENV"]))
+        candidates.append(project_root / "venv")
 
     seen: set[str] = set()
     for venv_dir in candidates:

@@ -34,8 +34,9 @@ function defaultFileExists(candidate: string): boolean {
  * wrong answer instead of a refusal. PM deletes the in-tree `venv`/`.venv` once
  * a generation is committed, which makes null the ordinary answer for a managed
  * install: its callers resolve the installation launcher instead
- * (`resolveSourceInstallationBackend`, `readSourceUpdate`) or refuse
- * (`preflightStateDb`), and the backend ladder moves on to its next rung.
+ * (`resolveSourceInstallationBackend`, `readSourceUpdate`); the database
+ * preflight asks that launcher for its store interpreter before snapshotting.
+ * The backend ladder moves on to its next rung when no launcher exists.
  */
 export function resolveSourcePython(
   root: string,

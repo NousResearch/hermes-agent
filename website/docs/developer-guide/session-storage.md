@@ -249,7 +249,9 @@ later.
 
 ### Messages Table
 
-Abridged — the full schema also includes `effect_disposition`,
+Abridged — the full schema also includes `effect_disposition` (executor-set
+outcome of the call: `success`, `error`, `blocked`, `timeout`, or `cancelled`;
+legacy rows and replay-repaired dangling calls may carry `unknown`/`none`),
 `platform_message_id`, `observed`, `active`, `compacted`, `api_content`,
 `display_kind`, `display_metadata`, `message_uid`, `absorbed_message_uids`,
 `tool_call_uids`, and `tool_call_uid`:

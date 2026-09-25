@@ -208,7 +208,7 @@ def _profile_author() -> str:
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "set-workspace", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
+    "schedule", "unblock", "promote", "reopen-done", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
     "gc",
@@ -1123,6 +1123,32 @@ def _cmd_reopen_review(args: argparse.Namespace) -> int:
                            lambda tid: f"cannot reopen {tid} (not in review?)")
 
 
+def _cmd_reopen_done(args: argparse.Namespace) -> int:
+    """Operator-only (not a model tool; denied to delegated children): all
+    semantics live in :func:`kanban_db.reopen_done_task`."""
+    reason = " ".join(args.reason).strip() if args.reason else None
+    if reason:
+        reason = str(kb.redact_review_value(reason)).strip() or None
+    author = _profile_author()
+    ids = list(dict.fromkeys([args.task_id, *(getattr(args, "ids", None) or [])]))
+    results: list[dict] = []
+    with kbc.connect_closing() as conn:
+        for tid in ids:
+            ok, detail = kb.reopen_done_task(conn, tid, actor=author, reason=reason)
+            results.append({"task_id": tid, "reopened": bool(ok), "status": detail if ok else None,
+                            "reason": reason, "error": None if ok else detail})
+    failed = any(not r["reopened"] for r in results)
+    if getattr(args, "json", False):
+        print(json.dumps(results[0] if len(results) == 1 else results, indent=2, ensure_ascii=False))
+        return 1 if failed else 0
+    for r in results:
+        if r["reopened"]:
+            print(f"Reopened {r['task_id']} -> {r['status']}" + (f": {reason}" if reason else ""))
+        else:
+            print(f"cannot reopen {r['task_id']}: {r['error']}", file=sys.stderr)
+    return 1 if failed else 0
+
+
 def _cmd_promote(args: argparse.Namespace) -> int:
     reason = _joined_words(args.reason)
     author = _profile_author()
@@ -1365,7 +1391,7 @@ _HANDLERS = {
     "block": _cmd_block,
     "schedule": _cmd_schedule, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
-    "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
+    "reopen-review": _cmd_reopen_review, "reopen-done": _cmd_reopen_done, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,
     "daemon": _cmd_daemon, "watch": _cmd_watch, "stats": _cmd_stats,
     "log": _cmd_log, "runs": _cmd_runs, "heartbeat": _cmd_heartbeat,

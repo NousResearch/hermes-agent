@@ -3727,6 +3727,63 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         return True
 
 
+def reopen_done_task(
+    conn: sqlite3.Connection, task_id: str, *, actor: str, reason: Optional[str] = None,
+) -> tuple[bool, Optional[str]]:
+    """Operator recovery: ``done``/``archived`` -> ``ready`` (or ``todo`` while
+    parents are open) for rework of a verified-bad completion.
+
+    :func:`reopen_review_task` only handles ``review`` and :func:`promote_task`
+    only ``todo``/``blocked``, so outside the dashboard a done card had no
+    supported way back. Descendant retraction is delegated to
+    :func:`invalidate_descendants_for_parent_reopen` inside the same txn; its
+    worker terminations are drained post-commit. A worker that outlived the
+    done transition is ended by ``reap_terminal_workers`` (keyed on the closed
+    run). ``consecutive_failures`` resets (explicit operator action).
+
+    Returns ``(True, new_status)`` or ``(False, reason)``.
+    """
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            return False, f"task {task_id} not found"
+        prior = row["status"]
+        if prior not in ("done", "archived"):
+            return False, (
+                f"task {task_id} is {prior!r}; reopen-done only applies to 'done' or 'archived'"
+            )
+        _reclaim_dangling_run(
+            conn, task_id, statuses=("done", "archived"), now=now,
+            note="invariant recovery on done reopen",
+        )
+        new_status = _landing_status_after_parents(conn, task_id)
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, completed_at = NULL, current_run_id = NULL, "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
+            "worker_started_at = NULL, consecutive_failures = 0 "
+            "WHERE id = ? AND status = ?",
+            (new_status, task_id, prior),
+        )
+        if cur.rowcount != 1:
+            return False, "task changed during reopen"
+        descendants = invalidate_descendants_for_parent_reopen(conn, task_id, author=actor)
+        _append_event(conn, task_id, "done_reopened", {
+            "prior_status": prior, "status": new_status, "actor": actor, "reason": reason,
+            "invalidated_descendants": [d["id"] for d in descendants["invalidated"]],
+        })
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) VALUES (?, ?, ?, ?)",
+            (task_id, actor,
+             f"Reopened from '{prior}' to '{new_status}' for rework" + (f": {reason}" if reason else "."),
+             now),
+        )
+    for pid, claim_lock, started_at in descendants["terminations"]:
+        _terminate_reclaimed_worker(pid, claim_lock, started_at=started_at)
+    recompute_ready(conn)
+    return True, new_status
+
+
 def invalidate_descendants_for_parent_reopen(
     conn: sqlite3.Connection, task_id: str, *, author: str,
 ) -> dict[str, Any]:

@@ -206,6 +206,7 @@ def _profile_create(args):
             name=name, clone_from=clone_from, clone_all=clone_all, clone_config=clone_config,
             no_alias=no_alias, no_skills=no_skills, description=getattr(args, "description", None),
             clone_channels=clone_channels, sync_imports=sync_imports,
+            no_root_auth=getattr(args, "no_root_auth", False),
         )
     except (ValueError, FileExistsError, FileNotFoundError) as e:
         _die(f"Error: {e}")
@@ -282,7 +283,11 @@ def _profile_create(args):
         print(f"  Edit {profile_dir_display}/SOUL.md for different personality")
     else:
         print(f"\n  ⚠ This profile has no API keys yet. Run '{name} setup' first,")
-        print("    or it will inherit keys from your shell environment.")
+        if getattr(args, "no_root_auth", False):
+            print("    Root auth.json is isolated; shell environment keys can still be inherited.")
+        else:
+            print("    It resolves the default profile's OAuth grants and credential pool,")
+            print("    and may also inherit keys from your shell environment.")
         print(f"  Edit {profile_dir_display}/SOUL.md to customize personality")
     print()
 

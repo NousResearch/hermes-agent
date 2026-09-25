@@ -90,6 +90,7 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # seed_profile_skills() callers (fresh-create, `hermes update` all-profile sync, the
 # dashboard) skip bundled-skill seeding. Delete the file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
+NO_ROOT_AUTH_MARKER = ".no-root-auth"
 
 # ``profile.yaml`` ``role`` values. A role grants backend capabilities (the setup toolset), so
 # only the backend writes one, and a copy of a profile (clone-all, import) never inherits it.
@@ -1284,7 +1285,7 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
-    clone_channels: bool = False, sync_imports: bool = False,
+    clone_channels: bool = False, sync_imports: bool = False, no_root_auth: bool = False,
 ) -> Path:
     """Create a new profile directory and return its path.
 
@@ -1307,6 +1308,8 @@ def create_profile(
         raise ValueError("--sync-imports requires --clone or --clone-from (there is no import "
                          "manifest to carry over without a source profile).")
     cloning = clone_from is not None or clone_all or clone_config
+    if no_root_auth and cloning:
+        raise ValueError("--no-root-auth applies only to a fresh profile (not a clone).")
     if clone_channels and not cloning:
         raise ValueError("--clone-channels only applies to a clone (--clone, --clone-from or --clone-all).")
     canon = _canon_valid(name)
@@ -1349,6 +1352,9 @@ def create_profile(
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
         _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
+        if no_root_auth:
+            (staging / NO_ROOT_AUTH_MARKER).write_text(
+                "This profile does not resolve the default profile's auth.json.\n", encoding="utf-8")
         os.rename(staging, profile_dir)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)

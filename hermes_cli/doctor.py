@@ -121,6 +121,14 @@ DOCTOR_CHECKS = (
     ('Memory Provider', _check_memory_provider), (None, _check_profiles),
 )
 
+# Allowlist, not a blacklist: a new doctor check must not silently gain network access
+# in the offline preflight. These checks inspect local configuration/state only.
+OFFLINE_CHECKS = frozenset({
+    _check_security_advisories, _check_mcp_security, _check_env_file, _check_config_file,
+    _check_config_drift, _check_xai_retirement, _check_plugin_compat,
+    _check_directory_structure, _check_state_db, _check_checkpoint_store, _check_profiles,
+})
+
 
 def _ack_advisory(ack_target: str) -> None:
     """`hermes doctor --ack <id>`: persist the ack and return without running diagnostics."""
@@ -165,6 +173,10 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
+    offline = getattr(args, 'offline', False)
+    if offline and (should_fix or getattr(args, 'live', False) or getattr(args, 'ack', None)):
+        print("--offline cannot be combined with --fix, --live or --ack.", file=sys.stderr)
+        return 2
     # Doctor runs from the interactive CLI, so CLI-gated tool checks (e.g. cronjob) see the same context.
     os.environ.setdefault("HERMES_INTERACTIVE", "1")
     if getattr(args, 'ack', None):
@@ -176,13 +188,16 @@ def run_doctor(args):
         print(color(line, Colors.CYAN))
     total = Finding()
     for title, check in DOCTOR_CHECKS:
+        if offline and check not in OFFLINE_CHECKS:
+            continue
         if title:
             _section(title)
         total.merge(check(should_fix))
     # Opt-in live probes run AFTER all static checks (`--live`: real network calls; bounded + read-only).
-    with warn_on_error(""):
-        from hermes_cli.doctor_live import maybe_run_live_checks
-        maybe_run_live_checks(args, total.manual_issues)
+    if not offline:
+        with warn_on_error(""):
+            from hermes_cli.doctor_live import maybe_run_live_checks
+            maybe_run_live_checks(args, total.manual_issues)
     _print_summary(should_fix, total)
     return int(bool(total.issues or total.manual_issues))
 

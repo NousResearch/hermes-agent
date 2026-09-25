@@ -501,6 +501,10 @@ def _global_auth_file_path() -> Optional[Path]:
         global_root = get_default_hermes_root()
     except Exception:
         return None
+    # Check the active home at read time: a multiplexed process serves several profiles.
+    # All root-store readers and refresh write-throughs use this same gate.
+    if (get_hermes_home() / ".no-root-auth").exists():
+        return None
     return None if _same_path(get_hermes_home(), global_root) else global_root / "auth.json"
 
 

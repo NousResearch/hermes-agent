@@ -180,3 +180,30 @@ export function shouldHoldBootProgressForReauth(
 
   return update.error !== latchedMessage
 }
+
+export interface SshAuthFailureContext {
+  /** True when the boot that just failed was dialing a REMOTE (or cloud) backend. */
+  attemptedRemote: boolean
+  /**
+   * True when the failure was an SSH authentication error (`kind === 'auth-failed'`).
+   * SSH auth failures cannot self-heal — the key/user/pass is wrong and nothing
+   * will change until the user edits the connection config. Without latching, the
+   * renderer's retry loop re-runs `startHermes` on every `getConnection` call,
+   * re-emitting `running: true` which hides the boot-failure overlay mid-click.
+   */
+  isSshAuthFailed: boolean
+}
+
+/**
+ * Whether a failed SSH auth attempt should latch.
+ *
+ * SSH `auth-failed` is a confirmed credential rejection (wrong key, wrong user,
+ * no key loaded in agent). It is the SSH-layer analogue of a gateway reauth
+ * rejection — transient network glitches get `unreachable`/`timeout`; `auth-failed`
+ * means the server actively refused the credentials. Without latching, the
+ * non-latching remote path causes the overlay to flicker in and out of existence,
+ * making the Settings button unreachable (the exact symptom of #72698).
+ */
+export function shouldLatchSshAuthFailure(context: SshAuthFailureContext): boolean {
+  return context.attemptedRemote && context.isSshAuthFailed
+}

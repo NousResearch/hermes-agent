@@ -86,7 +86,8 @@ import {
   shouldHoldBootProgressForReauth,
   shouldLatchBackendStartFailure,
   shouldLatchHostKeyChangedFailure,
-  shouldLatchRemoteReauthFailure
+  shouldLatchRemoteReauthFailure,
+  shouldLatchSshAuthFailure
 } from './backend-start-failure'
 import { describeBootstrapFailure } from './bootstrap-failure-copy'
 import {
@@ -1713,6 +1714,13 @@ let backendStartFailure = null
 // the boot-failure overlay, so the "Sign in" button flickers away before it
 // can be clicked. Cleared on every recovery path and on a confirmed sign-in.
 let remoteReauthFailure = null
+// Latched SSH auth-failed errors. SSH `auth-failed` (wrong key/user, key not
+// loaded in agent) is a confirmed credential rejection that cannot self-heal.
+// Without latching, every subsequent getConnection re-runs startHermes,
+// re-emits running:true, and the boot-failure overlay hides itself — so the
+// Settings button flickers away before it can be clicked (#72698). Cleared on
+// reset, repair, or apply-connection-config.
+let sshAuthFailure = null
 // Active first-launch install, so the renderer's Cancel button (and app quit)
 // can abort the in-flight install.sh/ps1 instead of leaving it running.
 let bootstrapAbortController = null
@@ -10307,6 +10315,7 @@ function resetBootProgressForReconnect() {
 function resetHermesConnectionState({ soft = false }: { soft?: boolean } = {}): void {
   backendStartFailure = null
   remoteReauthFailure = null
+  sshAuthFailure = null
   remoteLiveness.clear()
   // The next startHermes() re-reads active-profile.json for its launch profile.
   primaryProfilePin.clear()
@@ -12312,7 +12321,7 @@ function scheduleUnexpectedPrimaryRecovery({
  * supervisor's respawn refusal must consult the same trio in the same order.
  */
 function latchedBootFailure(): Error | null {
-  return bootstrapFailure ?? backendStartFailure ?? remoteReauthFailure ?? null
+  return bootstrapFailure ?? backendStartFailure ?? remoteReauthFailure ?? sshAuthFailure ?? null
 }
 
 async function runHermesStart({ supervisorRecovery = false }: { supervisorRecovery?: boolean } = {}): Promise<Awaited<ReturnType<typeof backendConnectionState.getPromise>>> {
@@ -12824,6 +12833,14 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // leaving it unlatched hides the overlay's "Sign in" button on every retry.
     if (shouldLatchRemoteReauthFailure({ attemptedRemote, isReauth: isReauthRequiredError(error) })) {
       remoteReauthFailure = error instanceof Error ? error : new Error(message)
+    }
+
+    // SSH auth-failed (wrong key, wrong user, key not in agent) latches for the
+    // same reason as remote reauth — it's a confirmed credential rejection that
+    // can't self-heal. Without this the retry loop toggles boot.running and hides
+    // the boot-failure overlay, locking the user out of Settings (#72698).
+    if (shouldLatchSshAuthFailure({ attemptedRemote, isSshAuthFailed: error?.sshError === 'auth-failed' })) {
+      sshAuthFailure = error instanceof Error ? error : new Error(message)
     }
 
     updateBootProgress(
@@ -14930,6 +14947,7 @@ ipcMain.handle('hermes:bootstrap:reset', async () => {
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null
+  sshAuthFailure = null
   getFirstRunSetupGate().resetForRetry()
   resetBootstrapSnapshot()
 
@@ -14993,6 +15011,7 @@ ipcMain.handle('hermes:bootstrap:repair', async (): Promise<{ ok: boolean; bundl
   bootstrapFailure = null
   backendStartFailure = null
   remoteReauthFailure = null
+  sshAuthFailure = null
   getFirstRunSetupGate().resetForRepair()
   await teardownPrimaryBackendAndWait()
 
@@ -15841,6 +15860,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
       // Confirmed sign-in — release the reauth latch so the next
       // startHermes() re-dials instead of replaying the stale rejection.
       remoteReauthFailure = null
+      sshAuthFailure = null
 
       return { ok: true, baseUrl, connected: true }
     } catch (error) {
@@ -15866,6 +15886,7 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
     // A confirmed cookie login supersedes any older native identity.
     nativeAccessTokenCoordinator.clearTokens(baseUrl)
     remoteReauthFailure = null
+    sshAuthFailure = null
   }
 
   return { ok: true, baseUrl, connected }

@@ -848,6 +848,68 @@ class TestReapUnsupervisedGatewayOrphansWindows:
 
 
 
+class TestReaperStartupGrace:
+    """``min_age_s`` spares a gateway that is still claiming its identity (#122533).
+
+    A gateway claims ``gateway.pid``/``gateway.lock`` only after imports and runner
+    setup, so for the first seconds of its life it is visible to the argv sweep but
+    not to the record-based exclusions. Reaping it writes a planned-stop marker the
+    booting gateway consumes as soon as it finishes starting — a clean exit 0 with no
+    supervisor to revive it, so a Desktop-launched bot goes silent until a manual
+    start. The grace applies only at the Desktop boot sweep; stop/restart keep the
+    immediate reap (#75936).
+    """
+
+    @staticmethod
+    def _isolate_reaper(monkeypatch, candidates, ages):
+        killed = []
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda cleanup_stale=True: None)
+        monkeypatch.setattr(
+            gateway,
+            "find_gateway_pids",
+            lambda exclude_pids=None: [p for p in candidates if p not in (exclude_pids or set())],
+        )
+        monkeypatch.setattr(gateway, "_gateway_process_age_s", lambda pid: ages[pid])
+        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed.append(pid))
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr("time.monotonic", lambda: 1.0)
+        return killed
+
+    def test_grace_spares_a_booting_gateway_but_still_reaps_a_stale_orphan(self, monkeypatch):
+        booting_pid, stale_orphan_pid = 55501, 99998
+        self._isolate_reaper(
+            monkeypatch,
+            [booting_pid, stale_orphan_pid],
+            {booting_pid: 2.0, stale_orphan_pid: 900.0},
+        )
+        marked_pids = []
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked_pids.append)
+
+        assert gateway._reap_unsupervised_gateway_orphans(min_age_s=180.0) is True
+        assert marked_pids == [stale_orphan_pid]
+
+    def test_no_grace_keeps_reaping_a_booting_gateway(self, monkeypatch):
+        booting_pid = 55501
+        self._isolate_reaper(monkeypatch, [booting_pid], {booting_pid: 0.0})
+        marked_pids = []
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked_pids.append)
+
+        assert gateway._reap_unsupervised_gateway_orphans() is True
+        assert marked_pids == [booting_pid]
+
+    def test_undeterminable_age_is_spared_under_a_grace(self, monkeypatch):
+        """A failed age probe must never widen a reap: unknown reads as too young."""
+        booting_pid = 55501
+        self._isolate_reaper(monkeypatch, [booting_pid], {booting_pid: 0.0})
+        marked_pids = []
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", marked_pids.append)
+
+        assert gateway._reap_unsupervised_gateway_orphans(min_age_s=180.0) is False
+        assert marked_pids == []
+
+
 class TestReaperCandidateIsSupervisorOwned:
     """Regression for the Windows pidfile-less supervisor-owned case (#83683).
 

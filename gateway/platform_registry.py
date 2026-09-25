@@ -8,6 +8,7 @@ registry first, then the legacy built-in path. Plugin side: ``platform_registry
 """
 
 import logging
+import os
 import sys
 import threading
 from dataclasses import dataclass, field
@@ -375,8 +376,17 @@ class PlatformRegistry:
             logger.info("Platform '%s' dependencies missing — attempting install...", entry.label)
             deps_ok = _probe(entry.ensure_deps_fn, "Platform '%s' dependency install raised: %s")
         if not deps_ok:
-            hint = f" ({entry.install_hint})" if entry.install_hint else ""
-            logger.warning("Platform '%s' requirements not met%s", entry.label, hint)
+            # check_fn mostly gates on required env, so name the unset variables instead of a
+            # dependency-flavoured install_hint that answers a different question (#122877).
+            missing_env = [name for name in entry.required_env if not os.environ.get(name, "").strip()]
+            if missing_env:
+                logger.warning(
+                    "Platform '%s' requirements not met (required env not set: %s)",
+                    entry.label, ", ".join(missing_env),
+                )
+            else:
+                hint = f" ({entry.install_hint})" if entry.install_hint else ""
+                logger.warning("Platform '%s' requirements not met%s", entry.label, hint)
             return None
         if entry.validate_config is not None:
             try:

@@ -1211,5 +1211,24 @@ class TestSenderAuthentication(unittest.TestCase):
         self.assertFalse(ok, reason)
 
 
+class TestRegistrationMetadata(unittest.TestCase):
+    """register()'s required_env must match what check_email_requirements() gates on (#122877)."""
+
+    def test_required_env_matches_check_gate(self):
+        captured = {}
+
+        class _Ctx:
+            @staticmethod
+            def register_platform(**kwargs):
+                captured.update(kwargs)
+
+        from plugins.platforms.email.adapter import register
+        register(_Ctx)
+        self.assertEqual(
+            sorted(captured["required_env"]),
+            ["EMAIL_ADDRESS", "EMAIL_IMAP_HOST", "EMAIL_PASSWORD", "EMAIL_SMTP_HOST"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

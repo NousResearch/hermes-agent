@@ -151,6 +151,38 @@ def test_pre_persist_returns_reach_durable_row_on_early_persist(tmp_path, monkey
     ]
 
 
+def test_original_user_message_stays_raw_when_hook_injects(tmp_path, monkeypatch):
+    """The ingress hook rewrites the durable/API-facing body, but the turn's
+    reported original input — what ``pre_llm_call`` and later observers see —
+    stays the user's raw text. Without a persist override the original is
+    derived from ``user_message``, which the hook reassigns, so the capture
+    must happen before the hook runs."""
+
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    session_id = "pre-persist-raw"
+    db.create_session(session_id=session_id, source="cli")
+    agent = _real_agent(db, session_id, [])
+    _configure_for_turn(agent)
+    seen = {}
+
+    def _hooks(hook_name, **kwargs):
+        if hook_name == "pre_persist_user_message":
+            return [{"context": "[Mem] recall"}]
+        if hook_name == "pre_llm_call":
+            seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _hooks)
+
+    worker = _build_turn(agent, [], "new prompt", None)
+
+    assert worker.messages[-1]["content"] == "new prompt\n\n[Mem] recall"
+    assert worker.original_user_message == "new prompt"
+    assert seen.get("user_message") == "new prompt"
+
+
 def test_pre_persist_corrects_close_marked_staged_row_in_place(tmp_path, monkeypatch):
     """Close-persisted staged user row is corrected in place, not duplicated.
 

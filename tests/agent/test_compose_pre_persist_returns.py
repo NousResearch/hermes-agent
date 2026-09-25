@@ -72,3 +72,11 @@ def test_none_and_empty_and_non_dict_ignored():
 
 def test_no_returns_is_identity():
     assert compose("unchanged", []) == "unchanged"
+
+
+def test_pre_persist_user_message_is_a_registered_hook():
+    """Registration outside VALID_HOOKS still stores the callback but warns, and
+    VALID_HOOKS doubles as the shell-hook allow-list — pin the entry."""
+    from hermes_cli.plugins import VALID_HOOKS
+
+    assert "pre_persist_user_message" in VALID_HOOKS

@@ -4456,7 +4456,7 @@ export const frOverrides = {
       copyFailure: 'Impossible de copier le critère dans le presse-papiers',
       continuationFailed: "Impossible de soumettre la poursuite de l'objectif",
       continuationQueued: 'Objectif repris — poursuite en attente de la fin du tour actuel',
-      continuationBusy: 'Objectif repris — session occupée, utilisez /interrupt pour poursuivre',
+      continuationBusy: "Objectif repris — session occupée, arrêtez d'abord la réponse en cours (bouton Stop ou Échap) pour poursuivre",
       controlUnavailable: msg => `Commandes de session indisponibles : ${msg}`,
       dismissError: "Masquer l'erreur",
       add: 'Ajouter'
@@ -4957,6 +4957,7 @@ export const frOverrides = {
       search: 'Rechercher des modèles',
       noModels: 'Aucun modèle trouvé',
       editModels: 'Modifier les modèles…',
+      followDefault: 'Utiliser le modèle par défaut des Réglages',
       refreshModels: 'Actualiser les modèles',
       fast: 'Rapide'
     },

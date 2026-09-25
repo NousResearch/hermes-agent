@@ -266,7 +266,7 @@ describe('cross-window sync (#46732)', () => {
     window.dispatchEvent(new StorageEvent('storage', { key, newValue }))
   }
 
-  it('adopts another window\'s write from the storage event', () => {
+  it("adopts another window's write from the storage event", () => {
     window.localStorage.setItem(
       QUEUE_STORAGE_KEY,
       JSON.stringify({ 'session-other': [storedEntry('q1', 'from other window')] })
@@ -277,14 +277,17 @@ describe('cross-window sync (#46732)', () => {
     expect(getQueuedPrompts('session-other').map(entry => entry.text)).toEqual(['from other window'])
   })
 
-  it('does not clobber another window\'s entries when saving its own (same-frame race)', () => {
+  it("does not clobber another window's entries when saving its own (same-frame race)", () => {
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'mine first' })
 
     // Another window queues into its own session directly in storage, faster
     // than any storage event could reach us.
     window.localStorage.setItem(
       QUEUE_STORAGE_KEY,
-      JSON.stringify({ ...JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!), 'session-other': [storedEntry('q2', 'theirs')] })
+      JSON.stringify({
+        ...JSON.parse(window.localStorage.getItem(QUEUE_STORAGE_KEY)!),
+        'session-other': [storedEntry('q2', 'theirs')]
+      })
     )
 
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'mine second' })

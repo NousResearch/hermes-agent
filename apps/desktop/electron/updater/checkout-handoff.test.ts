@@ -65,7 +65,11 @@ it.each([true, false])(
     const spawned: string[][] = []
     const spawnOptions: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2][] = []
     vi.spyOn(updaterProcess, 'spawnUpdaterProcess').mockImplementation(
-      (_command: string, args: string[], options: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2]): updaterProcess.UpdaterChild => {
+      (
+        _command: string,
+        args: string[],
+        options: Parameters<typeof updaterProcess.spawnUpdaterProcess>[2]
+      ): updaterProcess.UpdaterChild => {
         spawned.push(args)
         spawnOptions.push(options)
 

@@ -130,6 +130,7 @@ describe('list session-scroll restore', () => {
     // so streamed growth paints at the stale scrollTop and the viewport drifts
     // up before the re-pin. The transcript ResizeObserver closes that frame.
     const previousObserver = globalThis.ResizeObserver
+
     const observers = new Set<{
       callback: ResizeObserverCallback
       targets: Set<Element>
@@ -252,6 +253,7 @@ describe('list session-scroll restore', () => {
     const { container, unmount } = render(
       <ScrollHarness clampToComposer isRunning messages={sessionMessages('clr')} sessionKey="clr" />
     )
+
     const vp = viewportEl(container)
     const clearance = vp.querySelector('[data-slot="aui_composer-clearance"]')
 

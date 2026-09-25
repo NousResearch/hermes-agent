@@ -6267,6 +6267,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if status in ("failed", "unreadable"):
             event.text = self._append_observed_note(
                 event.text, "[Replied-to Telegram attachment could not be read, not cached.]")
+            logger.info("[Telegram] Replied-to attachment not cached (status=%s)", status)
             return
         if status == "ok":
             self._attach_cached(

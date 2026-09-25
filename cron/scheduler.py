@@ -3087,6 +3087,11 @@ def _finish_completed_run(d: _RunDelivery, fire_owner: Optional[str], execution_
     )
     if delivery_outcome in ("delivered", "not_configured") and not d.success:
         # Failure ping left the process (or had a configured target): mark the incident alerted.
+        # The recurring origin-null error joins them: no channel exists to alert on, so the
+        # incident must not sit open recomposing notices that can never leave the process
+        # (25/9 review r1 — otherwise the new delivery_failed outcome un-marked incidents).
+        _mark_incident_alerted(d.failure_incident_id)
+    elif not d.success and (d.delivery_error or "").startswith(ORIGIN_NULL_DELIVERY_ERROR_PREFIX):
         _mark_incident_alerted(d.failure_incident_id)
     finish_execution(
         execution_id, success=d.success, error=d.error, delivery_outcome=delivery_outcome)
@@ -3126,7 +3131,10 @@ def _deliver_crash_failure(
         normalized_deliver=normalized_deliver, incident_acked=False, success=False,
         delivery_queued=job.get("last_delivery_queued"),
         notification_suppressed=bool(job.get("_notification_all_targets_suppressed")))
-    if delivery_outcome in ("delivered", "not_configured"):
+    if delivery_outcome in ("delivered", "not_configured") or (
+        (delivery_error or "").startswith(ORIGIN_NULL_DELIVERY_ERROR_PREFIX)
+    ):
+        # Same origin-null rule as the normal failure gate: no channel exists to alert on.
         _mark_incident_alerted(failure_incident_id)
     return delivery_error, delivery_outcome
 
@@ -4155,7 +4163,8 @@ from cron.scheduler_tick import tick  # noqa: E402
 # ``_sched``). Only names this module itself calls; everything else lives in the split module.
 # ---------------------------------------------------------------------------
 from cron.scheduler_delivery import (  # noqa: E402
-    _deliver_result, _delivery_lane_value, _normalize_deliver_value, _resolve_delivery_target,
+    ORIGIN_NULL_DELIVERY_ERROR_PREFIX, _deliver_result, _delivery_lane_value,
+    _normalize_deliver_value, _resolve_delivery_target,
     _resolve_delivery_targets,
 )
 from cron.scheduler_script import (  # noqa: E402

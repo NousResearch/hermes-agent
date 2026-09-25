@@ -1880,24 +1880,65 @@ def _prepare_target_delivery(
         opened_thread_id=opened_thread_id, live_adapter_ready=live_adapter_ready)
 
 
+# Prefix identifying the recurring origin-null "delivers nowhere" error returned by
+# _unresolved_delivery_outcome. scheduler.py matches it to treat this outcome like
+# `not_configured` at the incident-alerted gates (no channel exists to alert on, so
+# the incident must not sit open recomposing notices that can never leave).
+ORIGIN_NULL_DELIVERY_ERROR_PREFIX = "no delivery target (origin null"
+
+
+def _job_has_no_future_fires(job: dict) -> bool:
+    """True when the job will not fire again after this run: a one-shot or a finite
+    repeat budget already exhausted. Store shapes (jobs.py create_job/update): repeat
+    is a dict ``{"times": N, "completed": M}`` (times None = forever); a bare int is
+    accepted for robustness against legacy rows. Absent repeat = unbounded recurring.
+    For such jobs the invoker consumes last_output directly, so a missing delivery
+    target is not a defect (review r1, 25/9: ``repeat == 1`` never matches the stored
+    dict shape and mislabeled healthy one-shots as delivery_failed)."""
+    rep = job.get("repeat")
+    if isinstance(rep, dict):
+        times, completed = rep.get("times"), rep.get("completed") or 0
+        return times == 1 or (times is not None and completed >= times)
+    return rep == 1
+
+
 def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
-    """``_deliver_result`` outcome when no target resolved: None (not a failure) for ``local`` and
-    origin-less ``origin`` (CLI jobs never capture an origin — a spurious error every run), else
-    an error string."""
+    """``_deliver_result`` outcome when no target resolved: None (not a failure) for ``local``,
+    captured-but-unresolvable ``origin`` (#43014), one-shots and exhausted finite repeats,
+    else an error string.
+
+    The origin-null case is split by job lifetime (25/9 blindspot hardening): a desktop/agent-created
+    RECURRING job with ``deliver=origin`` has no {platform, chat_id} origin and no configured home
+    channel, so every run burns its output into last_output silently — the support-portal
+    draft-queue poller ran blind for days while looking healthy in ``hermes cron list``. A recurring
+    origin-null burn therefore returns an error string so ``mark_job_run`` stamps
+    ``last_delivery_error`` and cron list shows the job as delivery-broken with the fix hint.
+    ``scheduler.py`` matches ORIGIN_NULL_DELIVERY_ERROR_PREFIX at its incident gates: the error
+    is an expected "no channel exists" state, so the incident is marked alerted (undeliverable),
+    never left open to recompose notices that cannot leave the process.
+    """
     deliver_value = _normalize_deliver_value(_delivery_lane_value(job, for_failure=for_failure))
     if deliver_value == "local":
         return None
     if deliver_value == "origin":
-        logger.info(
-            # deliver=origin with no resolvable origin and no configured home channels: treat as local
-            # rather than reporting an error. CLI-created jobs never capture a {platform, chat_id} origin,
-            # so failing here would make every CLI `deliver=origin` (or auto-detect) job emit a spurious "no
-            # delivery target resolved" error on every run (#43014). The output is still persisted in
-            # last_output for `cron list`/resume.
-            "Job '%s': deliver=origin but no origin or home channels — "
-            "skipping delivery (output saved in last_output)",
-            job.get("name", job.get("id", "?")))
-        return None
+        if job.get("origin") or _job_has_no_future_fires(job):
+            logger.info(
+                # deliver=origin with no resolvable origin and no configured home channels: treat as
+                # local rather than reporting an error. CLI jobs never capture a {platform, chat_id}
+                # origin, so failing here would make every CLI `deliver=origin` (or auto-detect) job
+                # emit a spurious "no delivery target resolved" error on every run (#43014). A
+                # captured-but-unresolvable origin joins them (the CLI-provenance class), as do
+                # one-shots and exhausted finite repeats: the invoker consumes last_output
+                # directly. The output is still persisted in last_output for `cron list`/resume.
+                "Job '%s': deliver=origin but no resolvable origin or home channels — "
+                "skipping delivery (output saved in last_output)",
+                job.get("name", job.get("id", "?")))
+            return None
+        msg = (ORIGIN_NULL_DELIVERY_ERROR_PREFIX + ", no home channel) — recurring job delivers "
+               "nowhere; output only in last_output. Fix: hermes cron edit <job-id> "
+               "--deliver bot-chat|<platform:chat_id>|local")
+        logger.warning("Job '%s': %s", job.get("name", job.get("id", "?")), msg)
+        return msg
     msg = f"no delivery target resolved for deliver={deliver_value}"
     logger.warning("Job '%s': %s", job["id"], msg)
     return msg

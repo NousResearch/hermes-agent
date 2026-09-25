@@ -32,6 +32,7 @@ import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
 import { $todosBySession, setSessionTodos } from '@/store/todos'
+import { broadcastTranscriptChanged } from '@/store/transcript-sync'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -256,6 +257,21 @@ export function useMessageStream({
     },
     [mutateStream]
   )
+
+  // Turn-boundary orphan drop (#119543): discard queued bytes without
+  // painting them. Used when a new turn starts while no turn is live — the
+  // queue can only hold stragglers of the superseded attempt then.
+  const dropQueuedDeltas = useCallback((sessionId?: string) => {
+    const queue = queuedDeltasRef.current
+
+    if (sessionId) {
+      queue.delete(sessionId)
+
+      return
+    }
+
+    queue.clear()
+  }, [])
 
   const scheduleDeltaFlush = useCallback(() => {
     if (flushHandleRef.current !== null) {
@@ -608,7 +624,8 @@ export function useMessageStream({
       responsePreviewed?: boolean,
       failure?: { error: string; partial: boolean; surface?: ErrorSurface | null },
       occurredAt = Date.now() / 1000,
-      persistedTurn?: PersistedTurn | null
+      persistedTurn?: PersistedTurn | null,
+      responseTransformed?: boolean
     ) => {
       let shouldHydrate = false
 
@@ -630,7 +647,7 @@ export function useMessageStream({
           }
         }
 
-        const streamId = state.streamId
+        const streamId = state.streamId ?? state.heartbeatSettledStreamId ?? null
         const finalText = renderMediaTags(text).trim()
         // Structured failure from the terminal frame wins over the legacy text
         // heuristic ("Error: <provider detail>" texts don't match the regexes).
@@ -787,7 +804,10 @@ export function useMessageStream({
 
             if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
               nextMessages = settleAt(index)
-            } else if ((interimBoundaryPending && responsePreviewed) || finalContinuesInterim) {
+            } else if (
+              (interimBoundaryPending && (responsePreviewed || responseTransformed)) ||
+              finalContinuesInterim
+            ) {
               // Settle the interim in place instead of creating a duplicate —
               // the DB has one row, so the live UI must agree. Two distinct
               // settle paths with different boundary requirements:
@@ -802,6 +822,10 @@ export function useMessageStream({
               //   (otherwise interim('old') → message.start →
               //   complete({response_previewed: true, text: 'new'}) would
               //   silently destroy 'old').
+              //
+              // • responseTransformed (a transform_llm_output hook rewrote the
+              //   final after streaming, e.g. pseudonym restore) shares the
+              //   same no-continuity shape, so it takes the same boundary gate.
               //
               // • finalContinuesInterim (prefix-either-way continuity, same
               //   text or one a prefix of the other) is safe to settle
@@ -877,12 +901,13 @@ export function useMessageStream({
           // locally, so the user-tail guard keeps applying there.
           (!unresolvedUserTail || !finalText) &&
           !(localVisibleText && !finalText) &&
-          (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
+          (state.adoptedRunningTurn || !state.sawAssistantPayload)
 
         return {
           ...state,
           messages: nextMessages,
           adoptedRunningTurn: false,
+          heartbeatSettledStreamId: null,
           streamId: null,
           pendingBranchGroup: null,
           awaitingResponse: false,
@@ -906,6 +931,13 @@ export function useMessageStream({
       }
 
       scheduleSessionsRefresh()
+
+      if (completedState.storedSessionId) {
+        broadcastTranscriptChanged({
+          messageCount: completedState.messages.length,
+          sessionId: completedState.storedSessionId
+        })
+      }
 
       if (compactedTurnRef.current.delete(sessionId)) {
         shouldHydrate = false
@@ -1000,6 +1032,7 @@ export function useMessageStream({
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,
+    dropQueuedDeltas,
     finalizeInterimAssistantMessage,
     hydrateFromStoredSession,
     queryClient,

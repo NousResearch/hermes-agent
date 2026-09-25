@@ -136,7 +136,7 @@ class TestMaintainPackHealth:
 
         cli._maintain_pack_health(str(repo))
 
-        assert self._pack_count(repo) == made, "below threshold must be a no-op"  # noqa: same-count contract
+        assert self._pack_count(repo) == made, "below threshold must be a no-op"
 
     def test_fail_soft_on_missing_pack_dir(self, tmp_path):
         from cli import _maintain_pack_health
@@ -164,7 +164,7 @@ class TestRepackStampede:
         worktree_ops._maintain_pack_health(str(repo))
         assert len(runs) == 2
 
-    @pytest.mark.linux_only
+    @pytest.mark.platforms("linux")
     def test_timeout_kills_the_whole_repack_tree(self, tmp_path, monkeypatch):
         import os
         import time

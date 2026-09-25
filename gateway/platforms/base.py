@@ -355,7 +355,7 @@ def _aiohttp_socks_connector(proxy_url: str):
     except ImportError:
         if proxy_url.lower().startswith("socks"):
             logger.warning("aiohttp_socks not installed — SOCKS proxy %s ignored. "
-                           "Run: pip install aiohttp-socks", proxy_url)
+                           "Use an HTTP proxy instead.", proxy_url)
         return None
 
 
@@ -2927,7 +2927,6 @@ class BasePlatformAdapter(ABC):
         (Signal). Returns success when at least one image was delivered — the outcome
         the turn-level delivery tracker records; every override must return the same
         aggregate, or a media-only turn on that platform reports FAILURE (#106153)."""
-        from urllib.parse import unquote as _unquote
         delivered = False
         for image_url, alt_text in images:
             if human_delay > 0:
@@ -2936,7 +2935,8 @@ class BasePlatformAdapter(ABC):
                 logger.info("[%s] Sending image: %s (alt=%s)", self.name,
                             safe_url_for_log(image_url), alt_text[:30] if alt_text else "")
                 if image_url.startswith("file://"):
-                    sender, url_kw = self.send_image_file, {"image_path": _unquote(image_url[7:])}
+                    from urllib.request import url2pathname
+                    sender, url_kw = self.send_image_file, {"image_path": url2pathname(image_url[7:])}
                 elif self._is_animation_url(image_url):
                     sender, url_kw = self.send_animation, {"animation_url": image_url}
                 else:
@@ -4042,10 +4042,26 @@ class BasePlatformAdapter(ABC):
                 return
         if self._busy_session_handler is not None:
             try:
-                if await self._busy_session_handler(event, session_key):
-                    return
+                handled = await self._busy_session_handler(event, session_key)
             except Exception as e:
                 logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
+                # It may have stored the event before raising: queuing or starting it again below
+                # would run it twice.
+                handled = event._gateway_accepted is True
+            # The handler awaits (profile scope load, compression-lock read). If the owner task
+            # finished meanwhile, it found the slot empty and released the guard, so nothing would
+            # drain what the handler queued: start that now. If the handler left this event to the
+            # base path instead (returned False, or raised before storing it) and nothing is
+            # queued, start this event.
+            if session_key not in self._active_sessions:
+                orphan = self._pending_messages.pop(session_key, None)
+                if orphan is not None:
+                    self._start_session_processing(orphan, session_key)
+                elif not handled:
+                    event._gateway_accepted = self._start_session_processing(event, session_key)
+                    return
+            if handled:
+                return
         # Without a runner FIFO, do not merge a wake into an occupied human slot
         # (or collapse distinct wakes into one turn). Its caller can retry admission.
         if event.internal and session_key in self._pending_messages:
@@ -4272,11 +4288,20 @@ class BasePlatformAdapter(ABC):
                     len(text_content), event.source.chat_id)
         obligation_id = await self._record_delivery_obligation(
             event, session_key, text_content, delivery_adapter, is_ephemeral_response)
+        if obligation_id is not None:
+            await self._release_turn_marker(event)  # the ledger now owns the crash recovery
         result = await delivery_adapter._send_with_retry(
             chat_id=event.source.chat_id, content=text_content, reply_to=reply_to, metadata=metadata)
         if obligation_id is not None:
             await self._finalize_delivery_obligation(obligation_id, result, event, delivery_adapter)
         return result, delivery_adapter
+
+    async def _release_turn_marker(self, event: MessageEvent) -> None:
+        """Clear the crash-recovery marker the runner handed to this delivery lifecycle
+        (``_turn_marker_handoff``): only once the final reply is ledgered or nothing more is owed,
+        so no kill leaves a persisted reply with neither marker nor ledger row. Idempotent."""
+        if getattr(event, "_turn_marker_handoff", False) and getattr(event, "_gateway_active_turn_token", None):
+            await self.gateway_runner._clear_durable_active_turn(event)
 
     async def _send_final_text(
         self, event: MessageEvent, session_key: str, text_content: str, metadata: Dict[str, Any],
@@ -4447,6 +4472,7 @@ class BasePlatformAdapter(ABC):
         typing_task = self._start_typing_refresh(event, interrupt_event, _thread_metadata)
         try:
             await self._run_processing_hook("on_processing_start", event)
+            event._turn_marker_handoff = self.gateway_runner is not None  # it can release the marker
             response = await self._message_handler(event)
             # A muted diagnostic wake ran for the session; its reply is not presented. The
             # policy read binds the routed profile; delivery itself stays in the launch scope.
@@ -4506,6 +4532,7 @@ class BasePlatformAdapter(ABC):
                     event, extracted, _final_thread_metadata,
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
+            await self._release_turn_marker(event)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
@@ -4538,6 +4565,8 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            await self._release_turn_marker(event)
+            event._turn_marker_handoff = False  # a later run of this object clears its own marker
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)

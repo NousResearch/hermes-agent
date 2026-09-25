@@ -38,12 +38,12 @@ def test_manual_deferral_survives_receipt_rotation(monkeypatch, capsys, kind, co
         restart.incomplete = True
     if condition != "alive":
         with pytest.raises(SystemExit) as exc:
-            fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, node_failures=[], update_complete=True)
+            fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
         assert exc.value.code == 1
         assert fleet._fleet_restart_obligation_armed()
         assert update_receipt.read_latest_receipt()["outcome"] == "partial"
         return
-    fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, node_failures=[], update_complete=True)
+    fleet._verify_fleet_after_update(restart, _pre_update_plan=plan, _windows_gateway_resume=None, update_complete=True)
     receipt = update_receipt.read_latest_receipt()
     assert receipt["runtime_outcomes"][0]["outcome"] == "deferred"
     assert not fleet._fleet_restart_obligation_armed()
@@ -84,16 +84,17 @@ def test_historical_manual_obligation_does_not_block_healthy_gateway(monkeypatch
     monkeypatch.setattr("hermes_cli.update_cmd._current_checkout_sha", lambda: "new")
     monkeypatch.setattr(process_identity, "_pid_alive_matches", lambda *a: alive)
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **k: [{"profile": "default", "state": "current", "code_sha": "new"}] if gateway_present else [])
+    monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", lambda: UpdatePlan(runtimes=[runtime] if alive is not False else []))
     if marker:
         fleet._write_fleet_restart_pending_marker(expected_sha="new")
-    # An inventory-less marker never inherits inventory from a historical receipt, but it
-    # discharges when the live fleet provably serves its expected SHA (#115638).
-    pending = marker and not gateway_present
-    assert fleet._pending_fleet_restart_needed() is pending
+    # An inventory-less marker never inherits inventory from a historical receipt. It discharges
+    # when the live fleet provably serves its expected SHA (#115638), or when the host runs no
+    # gateway and the manual serve has its own reminder (#118742).
+    assert not fleet._pending_fleet_restart_needed()
     fleet._warn_pending_fleet_restart_on_startup()
     warning = capsys.readouterr().err
     assert ("serve [work] pid 900" in warning) is (alive is not False)
-    assert ("hermes gateway restart" in warning) is pending
+    assert "hermes gateway restart" not in warning
     assert json.loads((root / "latest.json").read_text()) == receipt
 
 
@@ -108,13 +109,16 @@ def test_stamped_manual_only_history_has_no_gateway_obligation(monkeypatch, caps
     monkeypatch.setattr("hermes_cli.update_cmd._current_checkout_sha", lambda: "new")
     monkeypatch.setattr(fleet, "_current_checkout_sha", lambda: "new")
     monkeypatch.setattr(update_receipt, "collect_fleet_versions", lambda **k: [])
+    monkeypatch.setattr("hermes_cli.update_inventory.collect_runtime_inventory", lambda: UpdatePlan(runtimes=[RuntimeRecord(**runtime)]))
     if marker:
         fleet._write_fleet_restart_pending_marker(expected_sha="new")
-    assert fleet._pending_fleet_restart_needed() is marker
+    # With no gateway on the host, the live manual serve carries its own reminder and an
+    # inventory-less marker has nothing left to hold (#118742).
+    assert not fleet._pending_fleet_restart_needed()
     fleet._warn_pending_fleet_restart_on_startup()
     warning = capsys.readouterr().err
     assert "serve [work] pid 900" in warning
-    assert ("hermes gateway restart" in warning) is marker
+    assert "hermes gateway restart" not in warning
 
 
 @pytest.mark.parametrize("manual_first", [True, False])
@@ -168,7 +172,14 @@ def test_historical_retention_failure_warns_and_survives_rotation(monkeypatch, c
         elif failure == "write":
             broken.setattr(obligations.json, "dump", fail)
         else:
-            broken.setattr(obligations.os, "replace", fail)
+            # Only the obligations file: the receipt itself is written atomically through the
+            # same os.replace and must keep succeeding.
+            original_replace = obligations.os.replace
+            def replace(src, dst, *args, **kwargs):
+                if Path(dst).parent == directory:
+                    fail()
+                return original_replace(src, dst, *args, **kwargs)
+            broken.setattr(obligations.os, "replace", replace)
         fleet._warn_pending_fleet_restart_on_startup()
         warning = capsys.readouterr().err
         assert "serve [work] pid 900" in warning

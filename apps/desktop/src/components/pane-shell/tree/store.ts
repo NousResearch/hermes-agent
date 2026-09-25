@@ -242,6 +242,38 @@ export function undismissTreePanes(paneIds: Iterable<string>): void {
 const validShare = (share: unknown): share is number =>
   typeof share === 'number' && Number.isFinite(share) && share > 0 && share < 1
 
+// The seam partner each recorded share was measured against. A share is only
+// meaningful against THAT pane: a reload re-docks tiles in anchor order
+// against a differently shaped row, and replaying an even-row 0.5 there is
+// how tiles later in the re-dock chain came back at half width (#108679).
+const $paneSharePartners = modeLayout.atom<Record<string, string>>(
+  LAYOUT_KEYS.sharePartners,
+  () => ({}),
+  Codecs.json(value =>
+    value && typeof value === 'object'
+      ? Object.fromEntries(
+          Object.entries(value).filter(([, partner]) => typeof partner === 'string' && partner)
+        )
+      : {}
+  )
+)
+
+// True while the persisted tree is being reconciled at boot (the reload
+// prune→re-register cycle). Share recording is suspended for its duration: a
+// hydration prune is not a user resize, and remembering its geometry is what
+// seeded the stale 0.5 shares #108679 replays.
+let layoutHydrating = false
+
+/** Suspend share recording while hydration reconciles the persisted tree. */
+export function beginLayoutHydration(): void {
+  layoutHydrating = true
+}
+
+/** Resume share recording after hydration settles. */
+export function endLayoutHydration(): void {
+  layoutHydrating = false
+}
+
 const $paneShares = modeLayout.atom<Record<string, number>>(
   LAYOUT_KEYS.shares,
   () => ({}),
@@ -253,6 +285,14 @@ const $paneShares = modeLayout.atom<Record<string, number>>(
 )
 
 function rememberPaneShare(tree: LayoutNode, paneId: string) {
+  // A hydration prune must never write remembered geometry (#108679): the
+  // reload cycle removes every persisted tile and re-docks it moments later,
+  // and the share it "held" at removal belongs to a row shape that no longer
+  // exists by the time it returns.
+  if (layoutHydrating) {
+    return
+  }
+
   const zone = findGroupOfPane(tree, paneId)
 
   // Only a pane ALONE in its zone owns the zone's track — a stacked tab's
@@ -276,17 +316,47 @@ function rememberPaneShare(tree: LayoutNode, paneId: string) {
   const share = pair > 0 ? (parent.weights[at] ?? 1) / pair : null
 
   if (validShare(share)) {
+    // The seam partner as a PANE id, for partner-validated recall. A zone
+    // holding several panes has no single seam pane — its share can never be
+    // partner-validated, so it records without a partner and falls back to
+    // even on any mismatched recall.
+    const partnerGroup = parent.children[partner] as LayoutNode
+    const partnerPane =
+      partnerGroup.type === 'group' && partnerGroup.panes.length === 1 ? partnerGroup.panes[0] : null
+
     $paneShares.set({ ...$paneShares.get(), [paneId]: share })
+
+    // Remember the seam partner only when it is a REAL pane id — a share
+    // against a nameless or multi-pane zone can never be partner-validated.
+    if (partnerPane) {
+      $paneSharePartners.set({ ...$paneSharePartners.get(), [paneId]: partnerPane })
+    }
   }
 }
 
 /** The [target, added] weight pair a re-inserted pane's edge split should get,
  *  or undefined for the even default. Persisted state is untrusted. */
-function recalledEdgeWeights(paneId: string): [number, number] | undefined {
+function recalledEdgeWeights(paneId: string, anchorPaneId?: string): [number, number] | undefined {
   const share = $paneShares.get()[paneId]
 
-  return validShare(share) ? [1 - share, share] : undefined
+  if (!validShare(share)) {
+    return undefined
+  }
+
+  // Partner validation (#108679): the share was recorded against a specific
+  // seam neighbor. Replaying it against a different partner docks the pane at
+  // a share that belonged to another row shape — fall back to even instead.
+  const partner = $paneSharePartners.get()[paneId]
+
+  if (partner && anchorPaneId && partner !== anchorPaneId) {
+    return undefined
+  }
+
+  return [1 - share, share]
 }
+
+/** The recorded seam shares, for tests and diagnostics. */
+export const $paneShareRecords = $paneShares
 
 // HIDE-ONLY STRIP TABS (`hideOnly` chrome: sessions / Bots) — standing chrome
 // whose tab must never grow a ✕. Show/hide replaces Close for them: the zone
@@ -596,8 +666,18 @@ export function closeFocusedSessionTab(): boolean {
  *  A tool panel's closer is its visibility STORE, so routing Close through
  *  `closeTreePane` only collapsed the zone to a rail — the tab stayed put and
  *  Close read as a no-op. Dismiss first so the store listener's collapse lands
- *  on an absent pane instead of minimizing a shared zone's surviving sibling. */
+ *  on an absent pane instead of minimizing a shared zone's surviving sibling.
+ *  That listener is then a no-op, so an ACTIVE tab sharing the chat's zone
+ *  hands its slot over here, by the same rule the toggle uses — otherwise
+ *  removePane fronts whichever neighbour filled the gap (#79002). */
 export function closeToolPane(paneId: string) {
+  const group = paneGroup(paneId)
+  const handoff = group?.active === paneId ? chatZoneHandoff(group, paneId) : null
+
+  if (group && handoff) {
+    activateTreePane(group.id, handoff)
+  }
+
   dismissTreePane(paneId)
   paneClosers[paneId]?.()
 }
@@ -1517,7 +1597,8 @@ export function adoptContributedPanes(): void {
 
     if (target) {
       // Silent adoption: don't front over the zone's active tab — a reveal
-      // does. An edge dock re-takes the share the pane held when it closed.
+      // does. An edge dock re-takes the share the pane held when it closed —
+      // but only against the seam partner it was recorded with (#108679).
       //
       // Nothing writes the strip choice afterwards. This used to read the
       // host's hidden flag before the insert and stamp it back on after, purely
@@ -1532,7 +1613,7 @@ export function adoptContributedPanes(): void {
           dock?.pos ?? 'center',
           dock?.before,
           false,
-          recalledEdgeWeights(pane.id)
+          recalledEdgeWeights(pane.id, anchor)
         ) ?? next
     }
   }
@@ -1558,6 +1639,24 @@ export function watchContributedPanes(): void {
   adoptContributedPanes()
   modeLayout.onRestore(adoptContributedPanes)
   registry.subscribe(adoptContributedPanes)
+}
+
+/** Reconcile the persisted tree with the registry as part of BOOT hydration:
+ *  the reload prune→re-register cycle runs with share recording suspended
+ *  (#108679 — a hydration prune is not a user resize, and its recorded
+ *  shares were what re-docked tiles replayed at half width). Call once from
+ *  the app root, after declareDefaultTree, in place of a bare
+ *  watchContributedPanes() when the surface persists tiles. */
+export function hydrateContributedPanes(): void {
+  beginLayoutHydration()
+
+  try {
+    adoptContributedPanes()
+  } finally {
+    endLayoutHydration()
+  }
+
+  watchContributedPanes()
 }
 
 function commit(next: LayoutNode | null) {
@@ -1635,7 +1734,15 @@ export function dockPaneBeside(paneId: string, anchorPaneId: string) {
 
   const next = findGroupOfPane(tree, paneId)
     ? movePaneOp(tree, paneId, { groupId: anchor.id, pos })
-    : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledEdgeWeights(paneId))
+    : insertAtGroup(
+        tree,
+        anchor.id,
+        paneId,
+        pos,
+        undefined,
+        true,
+        recalledEdgeWeights(paneId, anchorPaneId)
+      )
 
   if (next && next !== tree) {
     commit(next)
@@ -1808,6 +1915,31 @@ function paneGroup(paneId: string) {
   return tree ? findGroupOfPane(tree, paneId) : null
 }
 
+/** Who takes the active slot when `paneId` steps out of the front of a SHARED
+ *  zone that also hosts the uncloseable (workspace) pane: the workspace —
+ *  New Session semantics — never an arbitrary adjacent sibling.
+ *  [workspace, files, review, terminal] with the terminal active must land on
+ *  workspace, not on review via `panes[at - 1]`, which stranded the user on a
+ *  tool pane. Null when the zone has no uncloseable pane (a pure tool
+ *  zone keeps its own rule). Shared by collapse (toggle) and Close (tab ✕). */
+function chatZoneHandoff(group: { panes: string[] }, paneId: string): null | string {
+  const anchor = group.panes.find(isUncloseablePane)
+
+  if (!anchor) {
+    return null
+  }
+
+  if (anchor !== paneId) {
+    return anchor
+  }
+
+  // Defensive: the uncloseable pane itself (never bound to a tool toggle
+  // store) — fall back to the sibling.
+  const at = group.panes.indexOf(paneId)
+
+  return group.panes[at - 1] ?? group.panes[at + 1] ?? null
+}
+
 /** Collapse/restore a pane's ZONE to a minimized rail — its tab stays visible.
  *  Store-driven (one-way): a tool panel's $open store mirrors here via
  *  bindPaneCollapse, so a toggle collapses rather than hides. */
@@ -1825,23 +1957,11 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
   // on every boot (broke collapse persistence).
   if (group.panes.length > 1) {
     if (collapsed && group.active === paneId) {
-      if (group.panes.some(isUncloseablePane)) {
-        // Workspace can't minimize (strands the app) → hand the active slot to
-        // the uncloseable (workspace) pane rather than an arbitrary adjacent
-        // sibling. [workspace, files, review, terminal] with the terminal
-        // active must land on workspace (New Session semantics), not on review
-        // via `panes[at - 1]` — which left the user stranded on a tool pane
-        // and (before the overlay fix) the terminal visually foreground.
-        const anchor = group.panes.find(isUncloseablePane)
-        const at = group.panes.indexOf(paneId)
+      // Workspace can't minimize (strands the app) → hand it the active slot.
+      const handoff = chatZoneHandoff(group, paneId)
 
-        if (anchor && anchor !== paneId) {
-          activateTreePane(group.id, anchor)
-        } else {
-          // Defensive: collapsing the uncloseable pane itself (never bound to
-          // a tool toggle store) — fall back to the sibling.
-          activateTreePane(group.id, group.panes[at - 1] ?? group.panes[at + 1])
-        }
+      if (handoff) {
+        activateTreePane(group.id, handoff)
       } else {
         setTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
       }

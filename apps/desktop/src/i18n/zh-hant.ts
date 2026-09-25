@@ -1,8 +1,16 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
 import { defineLocale } from './define-locale'
+import { introZhHant } from './intro-zh-hant'
 
 export const zhHant = defineLocale({
+  externalOpenFailed: {
+    title: '無法開啟此連結',
+    message: '沒有註冊用於開啟此位址的瀏覽器。請複製連結並手動開啟。',
+    copyUrl: '複製連結',
+    close: '關閉'
+  },
+  intro: introZhHant,
   sessionImport: {
     title: '從其他應用程式繼續',
     subtitle: '將對話匯入 Hermes，接著上次的進度繼續。',
@@ -157,6 +165,8 @@ export const zhHant = defineLocale({
   },
 
   notifications: {
+    sharedProfileWarning:
+      '另一個 Hermes 安裝實例正在使用此設定檔。兩個實例共用此設定檔的設定和資料，因此變更可能發生衝突。你可以繼續使用，也可以在變更前關閉另一個實例。',
     region: '通知',
     hide: '隱藏',
     show: '顯示',
@@ -350,6 +360,7 @@ export const zhHant = defineLocale({
     plugins: {
       openFolder: '開啟桌面外掛資料夾',
       installModal: {
+        installUncertain: 'Hermes 已停止等待安裝結果，但外掛可能仍在安裝中。請關閉此視窗，重新掃描外掛清單後再嘗試安裝。',
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
         repoPlaceholder: 'https://github.com/owner/repo',
@@ -379,6 +390,7 @@ export const zhHant = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: '已封存聊天',
+      sessions: '工作階段',
       about: '關於',
       billing: '帳單',
       notifications: '通知',
@@ -589,6 +601,10 @@ export const zhHant = defineLocale({
       backdropDesc: '對話後方那張淡淡的雕像圖片。',
       userBubbleTitle: '訊息氣泡',
       userBubbleDesc: '你自己的訊息有多透明。0 為不透明，100 時只保留邊框。',
+      textDirectionTitle: '文字方向',
+      textDirectionDesc:
+        '設定聊天訊息和輸入框的文字方向。「自動」依每段的第一個字母判斷；混合文字排列不對時，可手動選擇方向。程式碼一律從左到右顯示。',
+      textDirection: { auto: '自動', rtl: '從右到左', ltr: '從左到右' },
       introSplashTitle: '開場標識',
       introSplashDesc: '空白對話中顯示的字標和提示語。',
       reactionsTitle: '訊息回應',
@@ -637,8 +653,6 @@ export const zhHant = defineLocale({
         scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
         roamTitle: '漫遊',
         roamDesc: '閒置時讓寵物自己在視窗內四處走動。',
-        on: '開啟',
-        off: '關閉',
         chooseTitle: '選擇寵物',
         chooseDesc: '選擇後會自動安裝（如需）並設為目前寵物。',
         searchPlaceholder: '搜尋寵物…',
@@ -730,7 +744,6 @@ export const zhHant = defineLocale({
         maxSnapshots: '檢查點上限'
       },
       voice: {
-        recordKey: '語音快捷鍵',
         maxRecordingSeconds: '最長錄音時間',
         autoTts: '朗讀回覆',
         voiceChatMode: '語音聊天模式',
@@ -945,8 +958,32 @@ export const zhHant = defineLocale({
     }),
     uninstallSection: {
       dangerZone: '危險操作',
+      checkingInstalled: '正在檢查已安裝內容…',
+      uninstallHermes: '解除安裝 Hermes',
+      chooseHowMuch: '選擇要移除的內容。應用程式會關閉以完成作業；隨時重新開啟安裝程式即可返回。',
       confirmUninstall: '確認解除安裝',
-      uninstallHermes: '解除安裝 Hermes'
+      confirmBody: what => `這將移除${what}。此操作無法復原。`,
+      appLabel: '應用程式：',
+      couldNotStart: '無法開始解除安裝。',
+      uninstalling: '正在解除安裝…',
+      yesUninstall: '是，解除安裝',
+      options: {
+        gui: {
+          title: '僅解除安裝聊天 GUI',
+          description: '移除此桌面應用程式。Hermes 代理、你的設定和聊天記錄都會保留。',
+          consequence: '桌面聊天 GUI（此應用程式及其資料）'
+        },
+        lite: {
+          title: '解除安裝 GUI 與代理，保留資料',
+          description: '移除應用程式和 Hermes 代理，但保留設定、聊天記錄和機密，以便日後重新安裝。',
+          consequence: '聊天 GUI 和 Hermes 代理（設定、聊天記錄和機密會保留）'
+        },
+        full: {
+          title: '解除安裝全部',
+          description: '移除應用程式、代理和所有使用者資料——設定、聊天記錄、排程工作、機密和日誌。',
+          consequence: '全部內容——聊天 GUI、Hermes 代理，以及你的所有設定、聊天記錄、機密和日誌'
+        }
+      }
     },
     poolLimits: {
       warmBotBackendsAria: '預熱機器人後端',
@@ -955,6 +992,39 @@ export const zhHant = defineLocale({
       backendIdleTimeoutTitle: '後端閒置逾時（毫秒）'
     },
     customEndpoints: {
+      active: '已啟用',
+      apiKeySet: '已設定 API 金鑰',
+      use: '使用',
+      editTitle: '編輯端點',
+      addTitle: '新增端點',
+      fields: {
+        name: '名稱',
+        providerId: '供應商 ID',
+        endpointUrl: '端點 URL',
+        defaultModel: '預設模型',
+        context: '上下文',
+        apiKey: 'API 金鑰',
+        apiKeyNewPlaceholder: '留空以保留目前金鑰',
+        apiKeyPlaceholder: '選填',
+        useNewChats: '用於新對話',
+        discoverModels: '探索模型'
+      },
+      test: '測試',
+      save: '儲存',
+      newEndpoint: '新增端點',
+      apiMode: 'API 模式',
+      autoDetect: '自動偵測',
+      couldNotLoad: '無法載入自訂端點',
+      endpointSaved: '自訂端點已儲存。',
+      saveFailed: '儲存失敗',
+      endpointReachable: '端點可連線。',
+      endpointReachableTransport: transport => `端點可連線（${transport} 路由已回應）。`,
+      endpointReachableModels: (reachable, count) => `${reachable} 找到 ${count} 個模型。`,
+      endpointValidationFailed: '端點驗證失敗。',
+      validationFailed: '驗證失敗',
+      activationFailed: '啟用失敗',
+      deleteConfirm: name => `刪除 ${name}？`,
+      deleteFailed: '刪除失敗',
       title: '自訂端點',
       deleteEndpoint: '刪除端點',
       emptyDescription: '在下方新增 OpenAI 相容端點。',
@@ -968,40 +1038,7 @@ export const zhHant = defineLocale({
       driverHealth: '驅動程式健康狀態'
     },
     about: {
-      heading: 'Hermes Desktop',
-      version: value => `版本 ${value}`,
-      versionUnavailable: '版本不可用',
-      bundleOutOfSync: '應用程式建置版本過舊',
-      bundleOutOfSyncDesc:
-        'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
-      bundleOutOfSyncAction: '取得安裝程式',
-      bundleSwapPending: '重新啟動以完成更新',
-      bundleSwapPendingDesc:
-        '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
-      bundleSwapPendingAction: '重新啟動 Hermes',
-      updates: '更新',
-      checkNow: '立即檢查',
-      checking: '檢查中…',
-      seeWhatsNew: '查看新增內容',
-      updateNow: '立即更新',
-      releaseNotes: '發行說明',
-      onLatest: '你已是最新版本。',
-      installing: '正在安裝更新。',
-      cantUpdate: '此版本無法從應用程式內自行更新。',
-      cantReach: '無法連線到更新伺服器。',
-      tapCheck: '點選「立即檢查」以尋找更新。',
-      updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
-      updateReadyUnknown: '新更新已就緒。',
-      lastChecked: age => `上次檢查：${age}`,
-      justNowSuffix: ' · 剛剛',
-      automaticUpdates: '自動更新',
-      automaticUpdatesDesc: 'Hermes 會在背景自動檢查更新，並在有可用更新時通知你。',
-      branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
-      never: '從未',
-      justNow: '剛剛',
-      minAgo: count => `${count} 分鐘前`,
-      hoursAgo: count => `${count} 小時前`,
-      daysAgo: count => `${count} 天前`
+      updates: '更新'
     },
     config: {
       minimizeToTrayTitle: '最小化至系統匣',
@@ -1025,6 +1062,9 @@ export const zhHant = defineLocale({
       invalidJson: '設定 JSON 無效',
       keepAwakeTitle: '保持電腦喚醒',
       keepAwakeDesc: '阻止本機睡眠，讓長時間或整夜執行持續進行。螢幕仍可變暗。',
+      voiceShortcutHintTitle: '語音錄製快捷鍵',
+      voiceShortcutHintDesc:
+        '請在「設定 → 鍵盤快捷鍵」中設定語音錄製快捷鍵（「Start / stop voice conversation」）。voice.record_key 設定僅適用於 CLI 和 TUI。',
       showOptions: '顯示選項'
     },
     hudModifier: {
@@ -1246,6 +1286,22 @@ export const zhHant = defineLocale({
       deepLinkErrorTooLarge: '設定內容超過 32KB 上限。'
     },
     model: {
+      setupProviderFallback: '提供方',
+      setUpProvider: name => `設定 ${name}`,
+      staleAuxBefore: (count, names) => `${count} 個輔助任務（${names}）仍由 `,
+      staleAuxAfter: ' 執行，而非主要模型。',
+      staleAuxOtherProviders: '其他提供方',
+      moaEnabled: '啟用',
+      moaSetDefault: '設為預設',
+      moaNewPresetPlaceholder: '新預設',
+      moaAddPreset: '新增預設',
+      customModel: '自訂模型…',
+      customModelPlaceholder: '模型 ID',
+      chooseFromList: '從清單中選擇',
+      moaDefault: '預設：',
+      moaReferenceToggle: (enabled, index) => `${enabled ? '停用' : '啟用'}參考 ${index}`,
+      moaReferenceTitle: index => `參考 ${index}`,
+      moaAddReference: '新增參考模型',
       loading: '正在載入模型設定...',
       appliesDesc: '套用至新工作階段。可在輸入框的模型選擇器中臨時切換目前對話。',
       provider: '提供方',
@@ -1286,6 +1342,7 @@ export const zhHant = defineLocale({
       }
     },
     localModels: {
+      connectionChanged: '本地模型連線已變更',
       title: '本地模型',
       runtimeTitle: '本地執行環境',
       runtimeReady: backend => `就緒 · ${backend}`,
@@ -1317,7 +1374,13 @@ export const zhHant = defineLocale({
       quickstartConfigure: '讓我選擇',
       downloaded: '已下載',
       downloadAction: size => `下載 · ${size}`,
-      downloadProgress: (done, total) => `正在下載 ${done} / ${total}`,
+      downloadProgress: (done, total) => `${done} / ${total}`,
+      downloadStatusRunning: '下載中',
+      downloadSpeed: rate => `${rate}`,
+      downloadEta: time => `剩餘約 ${time}`,
+      downloadPausedLabel: '已暫停',
+      downloadPauseAction: '暫停',
+      downloadResumeAction: '繼續',
       downloadDoneToast: model => `${model} 已就緒。`,
       installDoneToast: '本地執行環境已安裝就緒。',
       useAction: '使用',
@@ -1328,7 +1391,7 @@ export const zhHant = defineLocale({
       updateAction: '更新引擎',
       updating: '正在更新引擎…',
       upToDateTitle: '引擎已是最新',
-      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend}）——已設定的組建。`,
+      upToDateDetail: (tag, backend) => `正在執行 llama.cpp ${tag}（${backend})。`,
       activeDetail: '新對話使用此模型——傳送首條訊息時載入',
       activeNotLoaded: '首條訊息時載入',
       loadedPill: '已載入',
@@ -1384,6 +1447,230 @@ export const zhHant = defineLocale({
       deleteConfirm: model => `從磁碟刪除 ${model}？`,
       deleted: model => `已刪除 ${model}。`,
       deleteFailed: '刪除失敗'
+    },
+    billing: {
+      perMonth: amount => `${amount}/月`,
+      creditsPerMonth: amount => `${amount} 額度/月`,
+      usageLabel: label => `${label}用量`,
+      freeTier: {
+        signIn: '登入',
+        title: '你正在使用 Nous 免費服務',
+        message: '登入 Nous 帳戶以解鎖更多模型和工具。',
+        caption: '使用 nous/welcome，包含連接器。登入後會保留連接器，並增加需要帳戶的工具和其他所有模型。',
+        name: 'Nous · 免費服務',
+        footnote: '免費服務沒有餘額，無需付款。登入 Nous 帳戶後才會顯示支付與用量。',
+        plan: '免費服務',
+        model: '模型',
+        connectors: '連接器',
+        included: '已包含'
+      },
+      amountValidation: {
+        reloadTo: '儲值金額',
+        greaterThanThreshold: '儲值金額必須大於門檻。',
+        decimal: label => `${label}：請輸入最多含兩位小數的美元金額。`,
+        positive: label => `${label}：金額必須大於 $0。`,
+        minimum: (label, amount) => `${label}：最低金額為 ${amount}。`,
+        maximum: (label, amount) => `${label}：最高金額為 ${amount}。`
+      },
+      stepUp: {
+        openVerification: '開啟驗證頁面',
+        dismiss: '關閉',
+        waiting: '正在等待驗證連結…',
+        verify: '驗證以繼續',
+        deniedTitle: '驗證未獲核准',
+        deniedBody: '驗證已結束，但未允許此終端進行遠端支出。',
+        successTitle: '驗證完成',
+        successBody: '此終端已獲准進行遠端支出。'
+      },
+      charge: {
+        added: amount => (amount ? `已加入 $${amount}。` : '已加入額度。'),
+        failedTitle: '扣款失敗',
+        unconfirmedTitle: '扣款結果尚未確認',
+        unconfirmedBody: message => `${message} 上次扣款結果尚未確認，請在重試前檢查餘額和歷史記錄。`,
+        checkTitle: '無法檢查扣款',
+        checkBody: '無法檢查扣款。',
+        untrackedTitle: '無法追蹤扣款',
+        untrackedBody: '帳單服務已接受請求，但未傳回扣款識別碼。',
+        timeoutTitle: '5 分鐘後仍在處理',
+        timeoutBody: '扣款仍可能結算，請在重試前檢查入口網站。',
+        authenticationRequired: '銀行要求驗證（3DS）。請在入口網站完成驗證以完成本次購買。',
+        expired: '銀行卡已到期。請在入口網站中更新。',
+        declined: '銀行卡遭拒。請在入口網站中嘗試另一張卡。',
+        failedBody: reason => `扣款未成功（${reason}）。`
+      },
+      title: '帳單',
+      preview: '預覽',
+      summary: { balance: '餘額', plan: '方案', autoRefill: '自動儲值' },
+      sections: {
+        invoices: '發票',
+        plan: '方案',
+        paymentAndCredits: '支付與額度',
+        usage: '用量'
+      },
+      usage: { title: '用量' },
+      buyCredits: {
+        customAmount: '自訂儲值金額',
+        title: '立即購買額度',
+        buyButton: '購買',
+        processing: '處理中…正在確認結算',
+        added: amount => `已加入 ${amount}，正在重新整理餘額。`,
+        retry: '重試',
+        openPortal: '開啟入口網站'
+      },
+      plan: {
+        title: '方案',
+        changePlan: '變更方案',
+        viewPlans: '查看方案',
+        backAria: '返回帳單',
+        current: '目前方案',
+        scheduled: '已排定',
+        empty: '目前沒有可切換的方案。',
+        undo: '復原',
+        undoing: '正在復原…',
+        downgrade: '降級',
+        confirmDowngrade: '確認降級',
+        tryAgain: '重試',
+        checkingChange: '正在檢查此變更…',
+        cannotChange: '無法在此進行該變更。',
+        alreadyOn: name => `你已使用 ${name}，無需變更。`,
+        notScheduleable: '無法在此排定該變更。',
+        scheduling: '正在排定…',
+        cancel: '取消',
+        effectScheduled: (targetName, effectiveAt, creditsDelta) =>
+          `變更為 ${targetName}，於 ${effectiveAt} 生效。現在不扣款；在此之前保留目前方案。${creditsDelta ? `每月額度變化：${creditsDelta}。` : ''}`
+      },
+      autoReload: {
+        threshold: '門檻',
+        thresholdAria: '自動儲值門檻',
+        reloadTo: '儲值金額',
+        reloadToAria: '自動儲值金額',
+        turnOffConfirm: '關閉自動儲值？',
+        turnOff: '關閉',
+        disable: '停用',
+        updated: '自動儲值已更新。',
+        turnedOff: '自動儲值已關閉。',
+        manage: '管理',
+        save: '儲存',
+        saving: '正在儲存…',
+        cancel: '取消'
+      },
+      state: {
+        notice: {
+          loggedOut: {
+            title: '連接你的 Nous 帳戶',
+            message: '登入你的 Nous 帳戶，即可在此查看餘額、方案和用量。',
+            action: '登入'
+          },
+          openPortal: '開啟入口網站 ↗',
+          noCard: {
+            title: '尚未新增付款方式',
+            message: '新增銀行卡後才能購買額度和使用自動儲值。請在入口網站中新增。',
+            action: '新增銀行卡 ↗'
+          }
+        },
+        paymentMethod: {
+          title: '付款方式',
+          description: '管理用於儲值和訂閱續費的銀行卡。',
+          addAction: '新增付款方式',
+          updateAction: '更新',
+          provenance: {
+            autoRefill: '自動儲值卡',
+            customerDefault: '帳戶預設卡',
+            subPin: '訂閱卡',
+            suffix: label => ` - ${label}`
+          }
+        },
+        buyCredits: { description: '從銀行卡一次性扣款，今天即可計入餘額。' },
+        autoRefill: {
+          title: '餘額不足時儲值',
+          genericDescription: '餘額低於門檻時自動補充額度。',
+          offPill: '已關閉',
+          enabledPill: '已啟用',
+          notAvailablePill: '—',
+          manageCaption: '在入口網站中管理自動儲值。',
+          turnOnCaption: '在入口網站中開啟自動儲值',
+          chargesDescription: (reloadTo, threshold) => `餘額低於 ${threshold} 時自動扣款 ${reloadTo}。`,
+          distinctCardCaption: cardLabel => `自動儲值使用 ${cardLabel} 扣款，請在入口網站中核對`,
+          distinctCardFallback: '另一張銀行卡',
+          reconcileAction: '核對 ↗'
+        },
+        usage: {
+          subscriptionCredits: {
+            title: '訂閱額度',
+            barLabel: '剩餘訂閱額度',
+            captionResets: date => `於 ${date} 重設`,
+            valueOf: (remaining, monthly) => `${monthly} 中剩餘 ${remaining}`,
+            valueOver: (remaining, monthly, over) => `${monthly} 中剩餘 ${remaining} · 超出 ${over}`
+          },
+          topupCredits: { title: '儲值額度', caption: '不會到期' },
+          monthlyCap: {
+            title: '每月支出上限',
+            barLabel: '已用每月支出限額',
+            captionDefault: '預設上限',
+            captionSpending: '每月遠端支出',
+            valueUsed: (spent, limit) => `${limit} 中已用 ${spent}`
+          }
+        },
+        planCard: {
+          freeTier: '免費',
+          chooseAction: '選擇 ↗',
+          adjustPlanAction: '調整方案 ↗',
+          unavailableCaption: '訂閱詳細資料暫不可用，仍可開啟入口網站。',
+          downgradeCaption: (tierName, when) => `於 ${when} 變更為 ${tierName}。`,
+          cancellationCaption: when => `於 ${when} 取消。`,
+          renewsCaption: date => `於 ${date} 續費`,
+          noSubscriptionCaption: '沒有有效訂閱，付費模型會扣除儲值額度。'
+        }
+      },
+      errors: {
+        consentRequired: { title: '需要確認銀行卡', message: '請在入口網站中確認此卡可用於終端扣款' },
+        insufficientScope: {
+          title: '需要核准遠端支出',
+          message: '此操作需要遠端支出權限。請發起一次儲值以授權，然後重試。'
+        },
+        remoteSpendingRevoked: {
+          title: '遠端支出已停止',
+          messageByAdmin: '管理員已停止此終端的遠端支出。',
+          messageBySelf: '你已停止此終端的遠端支出。'
+        },
+        remoteSpendingReconnect: who => `${who} 請從「設定 → 閘道」重新連線以重新授權此裝置。`,
+        sessionRevoked: { title: '工作階段已登出', message: '你的工作階段已登出。請從「設定 → 閘道」重新登入。' },
+        cliBillingDisabled: {
+          title: '遠端支出已關閉',
+          message: '此帳戶的遠端支出已關閉，帳單管理員可在入口網站的 Hermes Agent 頁面開啟。'
+        },
+        roleRequired: {
+          title: '需要管理員權限',
+          message: '新增資金需要組織管理員或擁有者權限。請聯絡管理員，或在入口網站中管理。'
+        },
+        idempotencyConflict: { title: '請發起新的儲值', message: '🔴 此扣款識別碼已用於另一金額。請發起新的儲值。' },
+        noPaymentMethod: {
+          title: '沒有已儲存的銀行卡',
+          message: '💳 尚未儲存用於終端扣款的銀行卡。請在入口網站中設定（一次性購買額度不會儲存可重複使用的卡）。'
+        },
+        orgAccessDenied: { title: '組織存取遭拒', message: '此權杖未綁定到你可管理的組織' },
+        monthlyCapExceeded: {
+          title: '已達每月支出上限',
+          messageReached: '🔴 已達每月支出上限。',
+          messageHeadroom: remaining => `🔴 已達每月支出上限，剩餘額度為 $${remaining}。`
+        },
+        rateLimited: {
+          title: '目前扣款請求過多',
+          message: mins => `🟡 目前扣款請求過多${mins > 0 ? `（請約 ${mins} 分鐘後重試）` : ''}。這不是付款失敗。`
+        },
+        stripeUnavailable: {
+          title: 'Stripe 遇到問題',
+          message: mins => (mins > 0 ? `Stripe 遇到問題，請約 ${mins} 分鐘後重試` : 'Stripe 遇到問題，請稍後重試')
+        },
+        upgradeCapExceeded: { title: '已達每日方案變更次數上限', message: '已達每日方案變更次數上限，請明天重試' },
+        endpointUnavailable: {
+          title: '帳單端點不可用',
+          message: '帳單端點傳回了非 JSON 回應（此部署可能不支援該端點）。'
+        },
+        timeout: { title: '帳單請求逾時', message: '帳單請求逾時。' },
+        transport: { title: '帳單連線失敗', message: '帳單請求在到達閘道前失敗。' },
+        default: { title: '帳單請求失敗', message: '帳單請求失敗。' }
+      }
     },
     providers: {
       connectAccount: '連結帳號',
@@ -1537,6 +1824,16 @@ export const zhHant = defineLocale({
   skills: {
     plugins: {
       pageBlurb: '外掛可以擴充本應用程式、代理，或兩者 — 每一部分都有自己的開關。'
+    },
+    hub: {
+      search: '搜尋',
+      searching: '搜尋中…',
+      noResults: '技能中心沒有符合的技能。',
+      installed: '已安裝',
+      installStarted: name => `正在安裝「${name}」…`,
+      pickerBrowse: '瀏覽完整技能中心',
+      pickerHide: '隱藏技能中心瀏覽器',
+      pickerHint: '按下任一技能的「+ Add to this Agent」，即可安裝並顯示在上方清單中。'
     },
     tabSkills: '技能',
     tabToolsets: '工具集',
@@ -1971,6 +2268,16 @@ export const zhHant = defineLocale({
     switchToConnection: name => `切換至 ${name}`,
     switchConnectionFailed: name => `無法連線至 ${name}`,
     manageProfiles: '管理設定檔…',
+    fleet: {
+      localDevice: '此裝置（本機後端——若未安裝 Hermes 則會安裝，否則開啟新的工作階段）',
+      switchDeviceTitle: '切換到此裝置？',
+      switchDeviceDesc: '這會在這台電腦上開啟新的工作階段。目前的對話仍留在另一個閘道。',
+      switchDeviceConfirm: '切換',
+      installDeviceTitle: '切換到此裝置？',
+      installDeviceDesc: '這會在本機安裝 Hermes，然後在這台電腦上開啟新的工作階段。確認之前不會開始安裝。',
+      installDeviceConfirm: '本機安裝',
+      connectExistingInstead: '改為連線現有環境'
+    },
     remoteOverride: {
       menuItem: '連線至遠端主機…',
       badge: (host: string) => `執行於 ${host}`,
@@ -2273,6 +2580,39 @@ export const zhHant = defineLocale({
   },
 
   sidebar: {
+    profileRail: '設定檔列',
+    markAllRead: '全部標示為已讀',
+    filter: {
+      grouping: '分組',
+      ordering: '排序',
+      show: '顯示',
+      filters: '篩選',
+      status: '狀態',
+      pullRequest: '提取請求',
+      profile: '設定檔',
+      project: '專案',
+      archived: '已封存',
+      resetToDefaults: '重設為預設值',
+      expandAll: '全部展開',
+      collapseAll: '全部收合',
+      inboxStyle: '收件匣樣式',
+      updated: '已更新',
+      created: '已建立',
+      tokens: '詞元數',
+      cost: '費用',
+      manual: '手動',
+      preview: '預覽',
+      pr: 'PR',
+      needsInput: '需要輸入',
+      working: '運作中',
+      unread: '未讀',
+      draft: '草稿',
+      idle: '閒置',
+      open: '開啟',
+      merged: '已合併',
+      closed: '已關閉',
+      noPR: '無 PR'
+    },
     gatewayGroups: {
       grouping: '閘道與設定檔',
       rename: '重新命名群組',
@@ -2401,6 +2741,7 @@ export const zhHant = defineLocale({
       branchFrom: '分支',
       rename: '重新命名…',
       archive: '封存',
+      unarchive: '取消封存',
       newWindow: '新視窗',
       openInTerminal: '在終端機中開啟',
       copyIdFailed: '無法複製工作階段 ID',
@@ -2802,6 +3143,13 @@ export const zhHant = defineLocale({
   },
 
   updates: {
+    discontinuedTitle: '此版本的 Hermes 已停止支援',
+    discontinuedBody: '此版本的 Hermes 已停止支援，可能無法正常運作——請解除安裝。您的資料仍保留在磁碟上。',
+    channels: { stable: '穩定版', canary: '預覽版' },
+    bundleSwapPending: '重新啟動以完成更新',
+    bundleSwapPendingDesc:
+      '更新後的應用程式已安裝完成，只需重新啟動 Hermes 即可載入新版本。聊天記錄和設定不會受到影響。',
+    bundleSwapPendingAction: '重新啟動 Hermes',
     stages: {
       idle: '準備中…',
       prepare: '準備中…',
@@ -2824,6 +3172,7 @@ export const zhHant = defineLocale({
     connectionRetry: '請檢查網路連線後重試。',
     gitUnusable: 'Hermes 無法在這台電腦上執行 Git，因此無法檢查更新。',
     latestBody: '您正在執行最新版本。',
+    versionDetailsDistributionStore: 'Microsoft Store',
     latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',
@@ -2883,7 +3232,31 @@ export const zhHant = defineLocale({
       notAvailable: '此後端無法更新。',
       failed: '後端更新失敗。',
       noReturn: '後端未恢復連線。更新可能未完成——請檢查後端主機。'
-    }
+    },
+    // Restored About-card strings (moved from `settings.about.*` to `updates.*`).
+    version: value => `版本 ${value}`,
+    versionUnavailable: '版本不可用',
+    checkNow: '立即檢查',
+    seeWhatsNew: '查看新增內容',
+    releaseNotes: '發行說明',
+    onLatest: '你已是最新版本。',
+    installing: '正在安裝更新。',
+    cantReach: '無法連線到更新伺服器。',
+    tapCheck: '點選「立即檢查」以尋找更新。',
+    updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
+    updateReadyUnknown: '新更新已就緒。',
+    lastChecked: age => `上次檢查：${age}`,
+    never: '從未',
+    justNow: '剛剛',
+    minAgo: count => `${count} 分鐘前`,
+    hoursAgo: count => `${count} 小時前`,
+    daysAgo: count => `${count} 天前`,
+    justNowSuffix: ' · 剛剛',
+    bundleOutOfSync: '應用程式建置版本過舊',
+    bundleOutOfSyncDesc:
+      'Hermes 執行環境已更新,但桌面應用程式本身仍是舊建置——在應用程式更新之前,新的介面功能(如 Bot Mode)不會顯示。請執行下方的更新以重新建置應用程式。如果此警告仍未消除,請從最新的桌面安裝程式重新安裝。',
+    bundleOutOfSyncAction: '取得安裝程式',
+    checkingShort: '檢查中…'
   },
 
   guidedGreeting: {
@@ -3049,14 +3422,19 @@ export const zhHant = defineLocale({
     free: '免費',
     freeTier: '免費層',
     priceTitle: '每百萬 Token 的輸入/輸出價格',
-    wasPrice: '原價'
+    wasPrice: '原價',
+    customModel: '自訂模型',
+    addCustomModelAction: '新增自訂模型…',
+    customModelPlaceholder: '輸入模型 ID，例如 openai/gpt-5'
   },
 
   modelVisibility: {
     title: '模型',
     search: '搜尋模型',
     noAuthenticatedProviders: '沒有已驗證的提供方。',
-    addProvider: '新增提供方…'
+    addProvider: '新增提供方…',
+    addCustomModel: '新增自訂模型',
+    removeCustomModel: '移除自訂模型'
   },
 
   shell: {
@@ -3182,7 +3560,8 @@ export const zhHant = defineLocale({
         title: '上下文使用量',
         tokenSummary: (used, max) => `${used} / ${max} Tokens`
       },
-      session: '工作階段',
+      focusedSince: '聚焦以來',
+      focusedSinceTitle: '自本次聚焦此對話以來的時間，不是回合執行時長',
       yoloOn: 'YOLO 已開啟 — 自動核准危險指令。Shift+點擊可全域切換。',
       yoloOff: 'YOLO 已關閉。Shift+點擊可全域切換。',
       modelNone: '無',
@@ -3205,6 +3584,11 @@ export const zhHant = defineLocale({
     remotePickerTitle: '選擇遠端資料夾',
     remotePickerDescription: '瀏覽已連線後端上的資料夾。',
     remotePickerSelect: '選擇資料夾',
+    remotePickerNewFolder: '新增資料夾',
+    remotePickerFolderName: '資料夾名稱',
+    remotePickerCreateFolder: '建立資料夾',
+    remotePickerInvalidFolderName: '請輸入單一資料夾名稱，不要包含斜線。',
+    remotePickerCreateFolderFailed: error => `無法建立資料夾 (${error})。`,
     folderTip: cwd => cwd,
     openFolder: '開啟資料夾',
     refreshTree: '重新整理檔案樹',
@@ -3459,6 +3843,59 @@ export const zhHant = defineLocale({
       branchNewChat: '在新聊天中分支',
       react: '回應',
       dismissError: '关闭错误',
+      errorGenericProvider: 'AI 服務',
+      errorLayerBodies: {
+        generic: 'Hermes 回覆時發生問題。請重試；若問題持續，請複製錯誤詳細資訊。',
+        provider: 'AI 服務無法完成此請求。請稍後重試或切換服務商。',
+        endpoint: 'Hermes 無法連線至你的自訂模型伺服器。請確認它正在執行，然後重新傳送訊息。',
+        streaming: '回覆完成前連線已中斷。請重試以重新傳送。'
+      },
+      errorCodes: {
+        provider_policy_blocked: {
+          title: '帳戶設定封鎖了此模型',
+          body: provider => `${provider} 無法依你帳戶的資料或隱私設定路由此請求。請選擇其他模型或切換服務商。`
+        },
+        content_policy_blocked: {
+          title: 'AI 服務拒絕回答此請求',
+          body: provider => `${provider} 拒絕回答這則訊息。請修改後重新傳送。`
+        },
+        format_error: {
+          title: 'AI 服務拒絕了請求格式',
+          body: provider => `${provider} 不接受此請求的建構方式。請切換服務商，或傳送診斷資訊以便我們排查。`
+        },
+        invalid_response: {
+          title: 'AI 服務傳回了無法讀取的回覆',
+          body: provider => `${provider} 傳回了 Hermes 無法讀取的內容。請稍後重試。`
+        },
+        empty_response: {
+          title: 'AI 服務傳回了空回覆',
+          body: provider => `${provider} 沒有為此訊息傳回內容。請稍後重試。`
+        },
+        rate_limit: {
+          title: 'AI 服務忙碌中',
+          body: provider => `${provider} 正在限制請求數量。請稍等片刻後重試。`
+        },
+        upstream_rate_limit: {
+          title: 'AI 服務忙碌中',
+          body: provider => `${provider} 正在限制請求數量。請稍等片刻後重試。`
+        },
+        overloaded: {
+          title: 'AI 服務負載過高',
+          body: provider => `${provider} 目前遇到問題。請稍後重試或切換服務商。`
+        },
+        server_error: {
+          title: 'AI 服務發生錯誤',
+          body: provider => `${provider} 傳回了伺服器錯誤。請稍後重試或切換服務商。`
+        },
+        timeout: {
+          title: '回覆逾時',
+          body: provider => `${provider} 未及時回應。請重試以重新傳送。`
+        },
+        ssl_cert_verification: {
+          title: '安全連線失敗',
+          body: provider => `Hermes 無法驗證與 ${provider} 的安全連線。請檢查網路或代理設定，或切換服務商後重新傳送。`
+        }
+      },
       errorLayers: {
         auth: '認證錯誤',
         billing: '額度不足',
@@ -3675,6 +4112,8 @@ export const zhHant = defineLocale({
     sessionUnavailable: '工作階段不可用',
     createSessionFailed: '無法建立新工作階段',
     promptFailed: '提示詞傳送失敗',
+    staleSessionTitle: '對話已過期',
+    staleSessionBody: '此視窗落後於同一對話的其他視窗。已載入最新訊息。若仍要傳送請再試一次。',
     providerCredentialRequired: '傳送第一則訊息前請先新增提供方憑證。',
     emptySlashCommand: '空的斜線指令',
     desktopCommands: '桌面端指令',
@@ -3716,6 +4155,8 @@ export const zhHant = defineLocale({
     deleteFailed: '刪除失敗',
     archived: '已封存',
     archiveFailed: '封存失敗',
+    restored: '已還原',
+    unarchiveFailed: '取消封存失敗',
     cwdChangeFailed: '工作目錄變更失敗',
     cwdStagedTitle: '工作目錄已暫存',
     cwdStagedMessage: '重新啟動桌面後端後，工作目錄變更才會套用至此作用中工作階段。',

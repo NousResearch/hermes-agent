@@ -20,6 +20,10 @@ vi.mock('@hermes/plugin-sdk', async () => {
   return pluginSdkMock(host)
 })
 
+// agent/turn_failure_copy.py::PARTIAL_FAILED_TURN_NOTICE
+const PARTIAL_NOTICE =
+  'This turn did not complete. Some actions may already have run; verify their effects before resending.'
+
 interface Room {
   chat: typeof groupChat
   gateway: ScriptedGateway
@@ -328,6 +332,120 @@ describe('session-gone classification', () => {
       expect(room.turns.groupSessionBusy({ inflight: { status: 'error' }, running: false })).toBe(false)
       expect(room.turns.groupSessionBusy({ inflight: { status: 'streaming' }, running: false })).toBe(true)
       expect(room.turns.groupSessionBusy({ inflight: true })).toBe(true)
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  // The core loop closes a failed turn with a Hermes-authored assistant row
+  // typed `display_kind: failed_turn` (agent/turn_failure_copy.py). That row is
+  // a transcript boundary, not the member speaking: read as the reply, the
+  // room posted it as the bot's answer, re-drove the member and hid the error.
+  it('reports a failed turn whose transcript Hermes closed with the failed-turn notice', async () => {
+    let now = 1_000_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 60_000))
+
+    const room = await loadRoom({
+      turn: () => [{ content: 'Your request was not processed.', display_kind: 'failed_turn', role: 'assistant' }]
+    })
+
+    const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
+    let submitted = false
+
+    // The real gateway keeps the tombstone AND the closed transcript.
+    host.request = async (method: string, params: Record<string, unknown> = {}) => {
+      const result = (await request(method, params)) as Record<string, unknown>
+
+      submitted = submitted || method === 'prompt.submit'
+
+      return method === 'session.resume' && submitted
+        ? { ...result, inflight: { error: 'HTTP 401: invalid_api_key', status: 'error', streaming: false } }
+        : result
+    }
+
+    try {
+      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])).rejects.toThrow(
+        'HTTP 401: invalid_api_key'
+      )
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  // The member spoke, called a tool, then the provider failed. The core closer
+  // writes no boundary behind a tool row, so the retained error is the only
+  // evidence; with a boundary but the retained error gone (backend restarted)
+  // the turn still failed. Either way the pre-tool text is not the reply.
+  it.each([
+    ['the retained provider error', [], 'HTTP 401: invalid_api_key'],
+    [
+      'the failed-turn notice once the retained error is gone',
+      [{ content: PARTIAL_NOTICE, display_kind: 'failed_turn', role: 'assistant' }],
+      null
+    ]
+  ])('reports a turn that failed after pre-tool text with %s', async (_label, boundary, retained) => {
+    let now = 1_000_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 60_000))
+
+    const room = await loadRoom({
+      turn: () => [
+        { content: 'Let me check the repo first.', role: 'assistant' },
+        { content: 'ok', role: 'tool' },
+        ...boundary
+      ]
+    })
+
+    const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
+    let submitted = false
+
+    host.request = async (method: string, params: Record<string, unknown> = {}) => {
+      const result = (await request(method, params)) as Record<string, unknown>
+
+      submitted = submitted || method === 'prompt.submit'
+
+      return method === 'session.resume' && submitted && retained
+        ? { ...result, inflight: { error: retained, status: 'error', streaming: false } }
+        : result
+    }
+
+    try {
+      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])).rejects.toThrow(
+        retained ?? PARTIAL_NOTICE
+      )
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
+  // The previous turn failed with the same error: only `turn_started_at` tells
+  // this turn's retained failure from the leftover one.
+  it('reports a failure identical to the previous turn’s instead of posting pre-tool text', async () => {
+    let now = 1_000_000
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 60_000))
+
+    const room = await loadRoom({
+      turn: () => [
+        { content: 'Let me check the repo first.', role: 'assistant' },
+        { content: 'ok', role: 'tool' }
+      ]
+    })
+
+    const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
+    const inflight = { error: 'HTTP 401: invalid_api_key', status: 'error', streaming: false }
+    let submitted = false
+
+    host.request = async (method: string, params: Record<string, unknown> = {}) => {
+      const result = (await request(method, params)) as Record<string, unknown>
+
+      submitted = submitted || method === 'prompt.submit'
+
+      return method === 'session.resume' ? { ...result, inflight, turn_started_at: submitted ? 200 : 100 } : result
+    }
+
+    try {
+      await expect(room.turns.runGroupChatMemberTurn('Room', LOCAL_MEMBER, 'hi', 't1', [])).rejects.toThrow(
+        inflight.error
+      )
     } finally {
       clock.mockRestore()
     }
@@ -1259,6 +1377,98 @@ describe('stranded harvest', () => {
     expect(activity.$groupActivity.get().Dead?.events.map(event => [event.kind, event.member])).toEqual([
       ['failed', key]
     ])
+  })
+
+  // A late turn that spoke, called a tool and then hit a provider failure: the
+  // pre-tool text is not a late reply, whether the retained error or only the
+  // failed-turn row (retained error gone) says the turn failed.
+  it.each([
+    ['the retained provider error', [], 'HTTP 401: invalid_api_key'],
+    [
+      'the failed-turn notice alone',
+      [{ content: PARTIAL_NOTICE, display_kind: 'failed_turn', role: 'assistant' }],
+      null
+    ]
+  ])('reports a late turn that failed after pre-tool text with %s', async (_label, boundary, retained) => {
+    const room = await loadRoom()
+    const activity = await import('./group-activity')
+
+    room.chat.updateGroupChat('Broke', current => {
+      current.sessions = { research: 'sid-research' }
+      current.stranded = { research: 0 }
+
+      return current
+    })
+    room.gateway.sessions.set('sid-research', {
+      messages: [
+        { content: roomPrompt('Broke'), role: 'user' },
+        { content: 'Let me check the repo first.', role: 'assistant' },
+        { content: 'ok', role: 'tool' },
+        ...boundary
+      ],
+      profile: 'research',
+      runtime: 'rt-research',
+      stored: 'sid-research',
+      title: 'Group: Broke'
+    })
+
+    if (retained) {
+      const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
+
+      host.request = async (method: string, params: Record<string, unknown> = {}) => {
+        const result = (await request(method, params)) as Record<string, unknown>
+
+        return method === 'session.resume'
+          ? { ...result, inflight: { error: retained, status: 'error', streaming: false } }
+          : result
+      }
+    }
+
+    await room.turns.harvestStrandedGroupReply('Broke', { name: 'research', title: '' })
+
+    expect(log(room, 'Broke')).toHaveLength(0)
+    expect(room.chat.$groupChats.get().Broke.stranded?.research).toBeUndefined()
+    expect(activity.$groupActivity.get().Broke?.events.map(event => event.kind)).toEqual(['failed'])
+  })
+
+  // A later gateway turn in the same session failed: its retained error is not
+  // the stranded turn's, so the stranded turn's real late reply still posts.
+  it('posts the late reply when a later turn in the session failed', async () => {
+    const room = await loadRoom()
+    const activity = await import('./group-activity')
+
+    room.chat.updateGroupChat('Late', current => {
+      current.sessions = { research: 'sid-research' }
+      current.stranded = { research: 0 }
+
+      return current
+    })
+    room.gateway.sessions.set('sid-research', {
+      messages: [
+        { content: roomPrompt('Late'), role: 'user' },
+        { content: 'Here is the late answer.', role: 'assistant' },
+        { content: 'and the deploy?', role: 'user' }
+      ],
+      profile: 'research',
+      runtime: 'rt-research',
+      stored: 'sid-research',
+      title: 'Group: Late'
+    })
+
+    const request = host.request as (method: string, params?: Record<string, unknown>) => Promise<unknown>
+
+    host.request = async (method: string, params: Record<string, unknown> = {}) => {
+      const result = (await request(method, params)) as Record<string, unknown>
+
+      return method === 'session.resume'
+        ? { ...result, inflight: { error: 'HTTP 401: invalid_api_key', status: 'error', streaming: false } }
+        : result
+    }
+
+    await room.turns.harvestStrandedGroupReply('Late', { name: 'research', title: '' })
+
+    expect(log(room, 'Late').map(entry => entry.text)).toContain('Here is the late answer.')
+    expect(activity.$groupActivity.get().Late?.events.map(event => event.kind)).not.toContain('failed')
   })
 
   it('never re-submits into a member the harvest just confirmed is still running', async () => {

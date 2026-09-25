@@ -21,6 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from agent.conversation_loop import _join_truncated_parts
 
 
 # ── Helpers (mirrors test_streaming.py) ────────────────────────────────────
@@ -357,6 +358,27 @@ class TestMixedToolCallsOneDroppedOneComplete:
 
 # ── Length-continuation prompt branching ──────────────────────────────────
 
+class TestLengthContinuationAssembly:
+    def test_distinct_continuation_is_preserved(self):
+        assert _join_truncated_parts([
+            ("The first half ends here", True),
+            ("and the second half adds new information.", False),
+        ]) == (
+            "The first half ends here\n"
+            "and the second half adds new information."
+        )
+
+    def test_repeated_tail_is_trimmed_without_losing_new_text(self):
+        repeated = "A sufficiently long repeated transition sentence ends here."
+
+        assert _join_truncated_parts([
+            (f"Existing answer. {repeated}", True),
+            (f"{repeated} New inbound details remain visible.", False),
+        ]) == (
+            f"Existing answer. {repeated} New inbound details remain visible."
+        )
+
+
 
 # ── Integration: live conversation loop ───────────────────────────────────
 
@@ -398,19 +420,26 @@ class TestConversationLoopPartialStreamContinuation:
         from tests.agent.test_run_agent import _mock_response, _mock_assistant_msg
 
         # First API call: the partial-stream stub (length on partial-stream-stub id).
+        repeated_tail = (
+            "**Conclusion**: the project remains on standby until the stable "
+            "release. Nothing changes."
+        )
         partial_stub = SimpleNamespace(
             id=PARTIAL_STREAM_STUB_ID,
             model="test/model",
             choices=[SimpleNamespace(
                 index=0,
-                message=_mock_assistant_msg(content="The first half of "),
+                message=_mock_assistant_msg(
+                    content=f"The first half of the answer is forty-two.\n\n{repeated_tail}"
+                ),
                 finish_reason=FINISH_REASON_LENGTH,
             )],
             usage=None,
         )
-        # Second API call: model continues with the rest, clean stop.
+        # Second API call: the model restarts from the complete-looking tail
+        # even though the nudge said not to repeat it, then stops cleanly.
         continuation = _mock_response(
-            content="the answer is forty-two.", finish_reason="stop",
+            content=repeated_tail, finish_reason="stop",
         )
 
         loop_agent.client.chat.completions.create.side_effect = [
@@ -447,6 +476,27 @@ class TestConversationLoopPartialStreamContinuation:
         # And the final response stitches both halves together.
         assert "first half of" in result["final_response"]
         assert "forty-two" in result["final_response"]
+        assert result["final_response"].count(repeated_tail) == 1
+
+    def test_output_limit_continuation_preserves_intentional_repetition(self, loop_agent):
+        from tests.agent.test_run_agent import _mock_response
+
+        repeated = "This intentionally repeated sentence is longer than thirty-two characters."
+        first = _mock_response(
+            content=f"First copy: {repeated}", finish_reason=FINISH_REASON_LENGTH,
+        )
+        continuation = _mock_response(content=repeated, finish_reason="stop")
+        loop_agent.client.chat.completions.create.side_effect = [first, continuation]
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+        ):
+            result = loop_agent.run_conversation("repeat this sentence twice")
+
+        assert loop_agent.client.chat.completions.create.call_count == 2
+        assert result["final_response"].count(repeated) == 2
 
 
 class TestContentFilterStallActivatesFallback:

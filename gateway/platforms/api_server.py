@@ -109,6 +109,22 @@ def _approval_event_choices(*, smart_denied: bool, allow_session: bool, allow_pe
     return ["once", "session", "always", "deny"] if allow_permanent else ["once", "session", "deny"]
 
 
+def _approval_request_event(run_id: str, approval_data: Optional[Dict[str, Any]], **fields: Any) -> Dict[str, Any]:
+    """The ``approval.request`` payload every approval surface emits (runs bridge, session stream,
+    chat completions): the flagged command redacted before egress (#48456), the ``_run_event``
+    envelope, and the ``choices`` the client may send back to ``POST /v1/runs/{id}/approval``."""
+    from gateway.platforms.api_server_runs import _run_event
+    event = dict(approval_data or {})
+    if "command" in event:
+        from gateway.run import _redact_approval_command
+        event["command"] = _redact_approval_command(event.get("command"))
+    event.update(_run_event(run_id, "approval.request", **fields, choices=_approval_event_choices(
+        smart_denied=bool(event.get("smart_denied")),
+        allow_session=event.get("allow_session") is not False,
+        allow_permanent=event.get("allow_permanent") is not False)))
+    return event
+
+
 try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
@@ -188,16 +204,9 @@ async def _call_verifier(verifier, *args, **kwargs):
 
 
 def _hermes_version() -> str:
-    """Canonical Hermes version: ``hermes_cli.__version__`` (dist-info can be stale on
-    source checkouts), then distribution metadata, then "dev". Never raises."""
-    with suppress(Exception):
-        from hermes_cli import __version__
-        return __version__
-    try:
-        from importlib.metadata import version
-        return version("hermes-agent")
-    except Exception:
-        return "dev"
+    """Canonical base version for API protocol and compatibility payloads."""
+    from hermes_cli.version_info import get_version_info
+    return get_version_info().base_version
 
 
 # Default settings
@@ -241,10 +250,12 @@ class ThreadSafeAsyncQueue(asyncio.Queue):
         self._loop_ref = asyncio.get_running_loop()
 
 
-def _sse_frame(data: Any, *, event: str = None, ensure_ascii: bool = True) -> bytes:
-    """Encode one SSE frame (``event:`` line if given, then ``data: <json>\n\n``) for every
-    SSE writer. ``ensure_ascii=False`` keeps raw non-ASCII on the wire."""
-    prefix = f"event: {event}\n" if event else ""
+def _sse_frame(
+    data: Any, *, event: str = None, ensure_ascii: bool = True, id: Optional[int] = None
+) -> bytes:
+    """Encode one SSE frame (``id:``/``event:`` lines if given, then ``data: <json>\n\n``) for
+    every SSE writer. ``ensure_ascii=False`` keeps raw non-ASCII on the wire."""
+    prefix = (f"id: {id}\n" if id is not None else "") + (f"event: {event}\n" if event else "")
     return f"{prefix}data: {json.dumps(data, ensure_ascii=ensure_ascii)}\n\n".encode()
 
 
@@ -1190,6 +1201,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         # @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False)
+        # ``platforms.api_server.tool_progress_events: false`` drops the custom
+        # ``hermes.tool.progress`` SSE frames from Chat Completions streams for strict OpenAI
+        # clients that choke on named events (#12020). Default on.
+        self._tool_progress_events: bool = _coerce_request_bool(
+            extra.get("tool_progress_events"), default=True)
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -3458,6 +3474,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 events.enqueue("assistant.commentary", {
                     "message_id": message_id, "text": text, "already_streamed": bool(already_streamed)})
 
+        approval_notify = self._register_session_stream_approval(run_id, events, message_id)
+
         async def _run_and_signal() -> None:
             try:
                 await queue.put(_event_payload("run.started", {
@@ -3469,7 +3487,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
-                    active_run_id=run_id, **ctx["run_kwargs"])
+                    active_run_id=run_id, approval_notify_callback=approval_notify,
+                    approval_session_key=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")
                 effective_session_id = result.get("session_id", session_id) if is_dict else session_id
@@ -3500,6 +3519,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
             finally:
                 self._active_run_agents.pop(run_id, None)
+                self._run_approval_sessions.pop(run_id, None)
                 self._release_run_owner_if_forgotten(run_id)
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
@@ -3535,6 +3555,18 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception as exc:
             logger.debug("[api_server] session SSE stream error: %s", exc)
         return response
+
+    def _register_session_stream_approval(self, run_id: str, events: "_SessionEventQueue", message_id: str):
+        """Route a session-stream turn's dangerous-command approvals to its SSE queue and to
+        ``POST /v1/runs/{run_id}/approval`` (#58856). Keyed by the run id (never the shared
+        session key) so concurrent turns on one session can't cross-resolve."""
+        self._run_approval_sessions[run_id] = run_id
+
+        def _approval_notify(approval_data: Dict[str, Any]) -> None:
+            event = _approval_request_event(run_id, approval_data, message_id=message_id)
+            self._set_run_status(run_id, "waiting_for_approval", last_event="approval.request", approval=event)
+            events.enqueue("approval.request", event)  # executor thread -> loop hop inside
+        return _approval_notify
 
     async def _drain_session_stream_task_on_disconnect(
         self, run_id: str, task: "asyncio.Task", *, interrupt_message: str, shield_wait: bool
@@ -3982,8 +4014,11 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         confirmed_runtime_lock: bool = False, bind_declared_conversation: bool = False,
         session_history_delivery: str = "", turn_author: Optional[Dict[str, Any]] = None,
         relay_metadata: Optional[Dict[str, Any]] = None, notification_category: str = "result",
-        resume_unanswered_turn: bool = False) -> tuple:
+        resume_unanswered_turn: bool = False, approval_notify_callback=None,
+        approval_session_key: Optional[str] = None) -> tuple:
         """Create an agent and run one turn in a thread executor -> ``(result, usage)``.
+        ``approval_notify_callback`` (with ``approval_session_key``) routes dangerous-command
+        approval requests to the caller's stream, keyed like ``/v1/runs`` approvals (#51871).
         ``agent_ref[0]`` receives the agent so SSE writers can interrupt it; ``active_run_id``
         registers it in ``_active_run_agents``. Under a confirmed model lock the actual
         provider/model must match or the turn fails; ``runtime`` metadata is attached.
@@ -4060,8 +4095,23 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     )
                     if relay_metadata:
                         conversation_kwargs["relay_metadata"] = relay_metadata
-                    with notification_turn(agent, muted=muted, session_id=session_id or ""):
-                        result = agent.run_conversation(**conversation_kwargs)
+                    approval_token = None
+                    if approval_notify_callback is not None and approval_session_key:
+                        # Same machinery as /v1/runs (_run_agent_sync): the contextvar scopes
+                        # this turn's approvals to the key the resolve endpoint looks up.
+                        from tools.approval import register_gateway_notify
+                        from tools.approval_context import set_current_session_key
+                        approval_token = set_current_session_key(approval_session_key)
+                        register_gateway_notify(approval_session_key, approval_notify_callback)
+                    try:
+                        with notification_turn(agent, muted=muted, session_id=session_id or ""):
+                            result = agent.run_conversation(**conversation_kwargs)
+                    finally:
+                        if approval_token is not None:
+                            from tools.approval_context import reset_current_session_key
+                            _api_runs._unregister_approval_notify(approval_session_key)
+                            with suppress(Exception):
+                                reset_current_session_key(approval_token)
                     result, usage = self._finish_turn_result(
                         agent, result, session_id, route=route, requested_runtime=requested_runtime,
                         route_source=route_source, confirmed_runtime_lock=confirmed_runtime_lock)

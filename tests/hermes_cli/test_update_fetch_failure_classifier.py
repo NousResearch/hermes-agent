@@ -67,6 +67,25 @@ class TestClassifyFetchFailure:
         )
         assert "Authentication failed" in msg
 
+    def test_ssh_publickey_denial_reports_ssh_auth_not_generic(self):
+        # git wraps OpenSSH's own rejection as "Could not read from remote
+        # repository" — never "Authentication failed" — so this needs its
+        # own rule ahead of the generic fallback (#82169).
+        msg = update_cmd._classify_fetch_failure(
+            "git@github.com: Permission denied (publickey).\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert "SSH authentication failed" in msg
+        assert "https://github.com/NousResearch/hermes-agent.git" in msg
+
+    def test_ssh_host_key_failure_reports_ssh_auth(self):
+        msg = update_cmd._classify_fetch_failure(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n"
+            "Host key verification failed.\n"
+            "fatal: Could not read from remote repository."
+        )
+        assert "SSH authentication failed" in msg
+
     def test_unknown_falls_back_to_generic(self):
         msg = update_cmd._classify_fetch_failure("fatal: something novel")
         assert msg == "✗ Failed to fetch updates from origin."
@@ -102,3 +121,37 @@ def test_update_network_git_calls_never_prompt_for_credentials():
     # Only the prompt is disabled — credential helpers / askpass stay
     # configured so a private-fork origin still authenticates.
     assert "GIT_CONFIG_COUNT" not in kw["env"] or kw["env"]["GIT_CONFIG_COUNT"] == os.environ.get("GIT_CONFIG_COUNT")
+
+
+def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch, tmp_path):
+    """Exercise origin fetch and fork fetch/pull/push, not their source spelling."""
+    import subprocess
+    from hermes_cli import update_cmd_git
+
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "1")
+    monkeypatch.setenv("GCM_INTERACTIVE", "Always")
+    monkeypatch.setenv("GIT_ASKPASS", "fixture-askpass")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "credential.helper")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "fixture-helper")
+    monkeypatch.setattr(update_cmd, "_has_upstream_remote", lambda *a: True)
+    monkeypatch.setattr(update_cmd, "_count_commits_between",
+                        lambda git, cwd, base, head: 2 if head == "upstream/main" else 0)
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append((cmd[1:], kwargs))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    update_cmd._git_run(["git"], ["fetch", "origin", "main"], cwd=tmp_path, network=True, check=True)
+    assert update_cmd_git._sync_with_upstream_if_needed(["git"], tmp_path, assume_yes=True)
+    assert [args[0] for args, _ in calls] == ["fetch", "fetch", "pull", "push"]
+    for args, kwargs in calls:
+        assert kwargs["stdin"] is subprocess.DEVNULL, args
+        env = kwargs["env"]
+        assert env["GIT_TERMINAL_PROMPT"] == "0", args
+        assert env["GCM_INTERACTIVE"] == "Never", args
+        assert env["GIT_ASKPASS"] == "fixture-askpass", args
+        assert env["GIT_CONFIG_COUNT"] == "1", args
+        assert env["GIT_CONFIG_VALUE_0"] == "fixture-helper", args

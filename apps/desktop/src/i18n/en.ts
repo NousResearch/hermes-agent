@@ -2266,6 +2266,9 @@ export const en: Translations = {
       autoArchiveDaysLabel: 'Archive after',
       autoArchiveDaysUnit: 'days of inactivity',
       autoArchiveFailed: 'Could not update auto-archive',
+      messagingInRecentsTitle: 'Show messaging chats in Recents',
+      messagingInRecentsDesc:
+        'List API, WhatsApp, Slack and other platform chats with your local chats, badged by platform, instead of in their own sidebar sections.',
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
@@ -3675,6 +3678,7 @@ export const en: Translations = {
       backgroundRunning: 'Background task running',
       draftSession: 'Draft — nothing sent yet',
       handoffOrigin: platform => `Handed off from ${platform}`,
+      liveOrigin: platform => `From ${platform}`,
       ownedByProfile: profile => `Profile: ${profile}`,
       renamed: 'Renamed',
       renameFailed: 'Rename failed',

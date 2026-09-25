@@ -2140,6 +2140,9 @@ export const zh = defineLocale({
       autoArchiveDaysLabel: '归档前',
       autoArchiveDaysUnit: '天无活动',
       autoArchiveFailed: '无法更新自动归档设置',
+      messagingInRecentsTitle: '在最近中显示消息平台会话',
+      messagingInRecentsDesc:
+        '将 API、WhatsApp、Slack 等平台会话与本地会话一起列出并标注平台，而不是放在单独的侧栏分区。',
       defaultDirTitle: '默认项目目录',
       defaultDirDesc: '新会话默认从此文件夹开始，除非你选择其他目录。留空则使用你的 home 目录。',
       defaultDirUpdated: '默认项目目录已更新',
@@ -3466,6 +3469,7 @@ export const zh = defineLocale({
       backgroundRunning: '后台任务运行中',
       draftSession: '草稿 — 尚未发送',
       handoffOrigin: platform => `从 ${platform} 转接`,
+      liveOrigin: platform => `来自 ${platform}`,
       ownedByProfile: profile => `配置档：${profile}`,
       renamed: '已重命名',
       renameFailed: '重命名失败',

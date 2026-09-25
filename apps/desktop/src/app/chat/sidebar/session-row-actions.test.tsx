@@ -81,7 +81,7 @@ vi.mock('@/hermes', async importOriginal => ({
 }))
 vi.mock('@/lib/haptics', () => ({ triggerHaptic: vi.fn() }))
 vi.mock('@/lib/session-source', () => ({
-  handoffOriginSource: () => null,
+  sessionOriginBadge: () => null,
   sessionSourceLabel: () => ''
 }))
 vi.mock('@/lib/session-export', () => ({ exportSession: vi.fn() }))

@@ -2574,6 +2574,9 @@ export const frOverrides = {
       autoArchiveDaysLabel: 'Archiver après',
       autoArchiveDaysUnit: "jours d'inactivité",
       autoArchiveFailed: "Impossible de mettre à jour l'auto-archivage",
+      messagingInRecentsTitle: 'Afficher les discussions de messagerie dans Récents',
+      messagingInRecentsDesc:
+        'Affiche les discussions API, WhatsApp, Slack et autres plateformes avec vos discussions locales, avec l’icône de la plateforme, plutôt que dans leurs propres sections.',
       defaultDirTitle: 'Répertoire de projet par défaut',
       defaultDirDesc:
         'Les nouvelles sessions commencent dans ce dossier sauf si vous en choisissez un autre. Laissez-le non défini pour utiliser votre répertoire personnel.',
@@ -4069,6 +4072,7 @@ export const frOverrides = {
       backgroundRunning: 'Tâche en arrière-plan en cours',
       draftSession: 'Brouillon — aucun message envoyé',
       handoffOrigin: platform => `Transférée depuis ${platform}`,
+      liveOrigin: platform => `Depuis ${platform}`,
       ownedByProfile: profile => `Profil : ${profile}`,
       renamed: 'Renommée',
       renameFailed: 'Échec du renommage',

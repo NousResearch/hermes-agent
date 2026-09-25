@@ -74,6 +74,19 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
 ]
 const MESSAGING_SOURCE_IDS = new Set(MESSAGING_SESSION_SOURCE_IDS)
 
+// Background sources that never belong in recents: cron has its own section,
+// kanban workers are read on the board, oneshot/subagent/tool rows are plumbing.
+const RECENTS_ALWAYS_EXCLUDED_SOURCE_IDS = ['cron', 'kanban', 'oneshot', 'subagent', 'tool']
+
+/** Sources the recents fetch excludes. By default each messaging platform is
+ *  fetched into its own sidebar section, so recents drop them; with
+ *  `messagingInRecents` they interleave with local chats instead. */
+export function recentsExcludedSources(messagingInRecents: boolean): string[] {
+  return messagingInRecents
+    ? [...RECENTS_ALWAYS_EXCLUDED_SOURCE_IDS]
+    : [...RECENTS_ALWAYS_EXCLUDED_SOURCE_IDS, ...MESSAGING_SESSION_SOURCE_IDS]
+}
+
 /** True when a source id is an external messaging platform (gets its own
  *  sidebar section) rather than a local/CLI/desktop session. */
 export function isMessagingSource(source: null | string | undefined): boolean {
@@ -107,6 +120,28 @@ export function handoffOriginSource(
   }
 
   return id
+}
+
+/**
+ * The platform a session row should badge, and why: a live messaging session
+ * (shown in recents when the user opts in) badges its own source; a local
+ * session handed off from a platform badges that origin. Null for plain local
+ * chats. One resolver so recents rows and handoff rows cannot disagree.
+ */
+export function sessionOriginBadge(session: {
+  handoff_platform?: null | string
+  handoff_state?: null | string
+  source?: null | string
+}): { kind: 'handoff' | 'live'; source: string } | null {
+  const live = normalizeSessionSource(session.source)
+
+  if (live && MESSAGING_SOURCE_IDS.has(live)) {
+    return { kind: 'live', source: live }
+  }
+
+  const handoff = handoffOriginSource(session.handoff_state, session.handoff_platform)
+
+  return handoff ? { kind: 'handoff', source: handoff } : null
 }
 
 export function sessionSourceLabel(source: null | string | undefined): string | null {

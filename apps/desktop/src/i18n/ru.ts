@@ -1575,6 +1575,9 @@ export const ru = defineLocale({
       autoArchiveDaysLabel: 'Архивировать через',
       autoArchiveDaysUnit: 'дн. бездействия',
       autoArchiveFailed: 'Не удалось обновить авто-архивацию',
+      messagingInRecentsTitle: 'Показывать чаты мессенджеров в недавних',
+      messagingInRecentsDesc:
+        'Показывать чаты API, WhatsApp, Slack и других платформ вместе с локальными, с значком платформы, а не в отдельных разделах.',
       defaultDirTitle: 'Папка проекта по умолчанию',
       defaultDirDesc:
         'Новые сеансы начинаются в этой папке, если вы не выбрали другую. Оставьте пустым, чтобы использовать домашнюю директорию.',
@@ -2802,6 +2805,7 @@ export const ru = defineLocale({
       backgroundRunning: 'Фоновая задача выполняется',
       draftSession: 'Черновик — ещё ничего не отправлено',
       handoffOrigin: platform => `Передано из ${platform}`,
+      liveOrigin: platform => `Из ${platform}`,
       ownedByProfile: profile => `Профиль: ${profile}`,
       renamed: 'Переименовано',
       renameFailed: 'Переименование не удалось',

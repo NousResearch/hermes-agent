@@ -1523,6 +1523,9 @@ export const ja = defineLocale({
       autoArchiveDaysLabel: 'アーカイブまでの日数',
       autoArchiveDaysUnit: '日間操作なし',
       autoArchiveFailed: '自動アーカイブを更新できませんでした',
+      messagingInRecentsTitle: 'メッセージングのチャットを最近に表示',
+      messagingInRecentsDesc:
+        'API、WhatsApp、Slack などのチャットを、専用セクションではなくローカルのチャットと一緒にプラットフォームのバッジ付きで表示します。',
       defaultDirTitle: 'デフォルトのプロジェクトディレクトリ',
       defaultDirDesc:
         '別のフォルダーを選択しない限り、新しいセッションはこのフォルダーで開始します。未設定の場合はホームディレクトリが使用されます。',
@@ -2602,6 +2605,7 @@ export const ja = defineLocale({
       backgroundRunning: 'バックグラウンドタスク実行中',
       draftSession: '下書き — 未送信',
       handoffOrigin: platform => `${platform} から引き継ぎ`,
+      liveOrigin: platform => `${platform} から`,
       ownedByProfile: profile => `プロファイル: ${profile}`,
       renamed: '名前を変更しました',
       renameFailed: '名前の変更に失敗しました',

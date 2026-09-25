@@ -21,7 +21,7 @@ import { middleClickHandlers } from '@/lib/middle-click'
 import { displayModelName } from '@/lib/model-status-label'
 import { sessionProjectLabel } from '@/lib/session-project-label'
 import { SESSION_ROW_AREAS } from '@/lib/session-row-slots'
-import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
+import { sessionOriginBadge, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
@@ -251,10 +251,12 @@ function SidebarSessionRowImpl({
 
   // A chip that ends the slot hides whole; the figures handle their own tail.
   const chipEndsSlot = trailing.length > 0 && !figures.length && !pinnedAge
-  // A handed-off session's live source is local, but it originated on a
-  // messaging platform — surface that origin as a small badge so e.g. a
-  // Telegram thread continued here still reads as Telegram.
-  const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
+  // A row badges the platform it belongs to: a live messaging session (shown
+  // in recents when the user opts in) badges its own source, and a handed-off
+  // session, whose live source is local, badges the platform it came from so
+  // e.g. a Telegram thread continued here still reads as Telegram.
+  const originBadge = sessionOriginBadge(session)
+  const handoffSource = originBadge?.source ?? null
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
   // The same resolved state the row's dot paints, so the arc and the dot cannot
   // contradict each other. A selector, not a plain useStore: the map is rebuilt
@@ -505,7 +507,7 @@ function SidebarSessionRowImpl({
 
             const handoffBadge =
               handoffSource && handoffLabel ? (
-                <Tip label={r.handoffOrigin(handoffLabel)}>
+                <Tip label={originBadge?.kind === 'live' ? r.liveOrigin(handoffLabel) : r.handoffOrigin(handoffLabel)}>
                   <PlatformAvatar
                     className="-mt-px size-4 shrink-0 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
                     platformId={handoffSource}

@@ -1908,6 +1908,8 @@ export interface Translations {
       autoArchiveDaysLabel: string
       autoArchiveDaysUnit: string
       autoArchiveFailed: string
+      messagingInRecentsTitle: string
+      messagingInRecentsDesc: string
       defaultDirTitle: string
       defaultDirDesc: string
       defaultDirUpdated: string
@@ -3109,6 +3111,7 @@ export interface Translations {
       backgroundRunning: string
       draftSession: string
       handoffOrigin: (platform: string) => string
+      liveOrigin: (platform: string) => string
       ownedByProfile: (profile: string) => string
       renamed: string
       renameFailed: string

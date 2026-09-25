@@ -487,6 +487,29 @@ class TestMirrorClaudeCodeCredentialsToKeychain:
         assert len(run.call_args[1]["input"]) <= 4095
 
     @pytest.mark.platforms("macos")
+    def test_a_line_at_exactly_the_limit_is_still_mirrored(self, monkeypatch):
+        """The 4095 limit is on the line's *content*: a line of exactly 4095 chars (the reporter's
+        own arithmetic — 65-char prefix + 4,030 hex digits) is accepted by ``security -i``, so the
+        newline ``_keychain_mirror_command`` appends must not tip the guard into refusing it."""
+        item = ("bob", {"claudeAiOauth": {"accessToken": "A0", "refreshToken": "R0"}})
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._find_claude_code_keychain_item", lambda: item
+        )
+        run = MagicMock(return_value=MagicMock(returncode=0))
+        monkeypatch.setattr(subprocess, "run", run)
+        merged = _merge_keychain_credential_payload(item[1], "A1", "R1", 1)
+        _, line = _keychain_mirror_command("bob", merged)
+        monkeypatch.setattr(
+            "agent.anthropic_credentials._SECURITY_I_LINE_LIMIT", len(line.rstrip("\n"))
+        )
+
+        _mirror_claude_code_credentials_to_keychain(
+            "A1", "R1", 1, spent_refresh_token="R0"
+        )
+
+        assert run.call_count == 1
+
+    @pytest.mark.platforms("macos")
     def test_mirror_failure_is_visible_at_warning_level(self, monkeypatch, caplog):
         """#123184: a failed mirror logged only at DEBUG, hiding the damage — the split second
         half of an oversized line fails while the truncated first half already ran."""

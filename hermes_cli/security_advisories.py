@@ -138,8 +138,17 @@ def _installed_node_version() -> Optional[str]:
 
 def _semver_tuple(version: str) -> tuple[int, int, int]:
     """``(major, minor, patch)``, ignoring any pre-release/build suffix (so e.g. ``"24.0.0-rc.1"``
-    compares as ``24.0.0`` — never treated as LOWER than a fixed version by virtue of the suffix)."""
-    core = version.split("-", 1)[0].split("+", 1)[0]
+    compares as ``24.0.0`` — never treated as LOWER than a fixed version by virtue of the suffix).
+
+    Strips one leading ``v``/``V`` first: Node release notes and ``node --version`` output both
+    write versions that way, and a catalog-authored ``floor_version``/``fixed_version`` copy-pasted
+    with it left on would otherwise fail to parse at all and silently collapse to ``(0, 0, 0)`` —
+    widening a scoped advisory into "vulnerable since the beginning of time."
+    """
+    core = version.strip()
+    if core[:1] in ("v", "V"):
+        core = core[1:]
+    core = core.split("-", 1)[0].split("+", 1)[0]
     parts: list[int] = []
     for piece in core.split("."):
         try:

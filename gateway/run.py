@@ -427,6 +427,13 @@ def _ensure_windows_gateway_venv_imports() -> None:
         return
 
     project_root = Path(__file__).resolve().parent.parent
+    # PM's bootstrap selected the committed dependency generation before importing
+    # the gateway. Re-adding the pre-PM venv here can shadow its compiled wheels.
+    from hermes_cli._launchers import resolve_store_python
+    from pm.environments import committed_venv
+    if committed_venv(project_root) is not None or resolve_store_python(project_root) is not None:
+        return
+
     candidates: list[Path] = []
     if os.environ.get("VIRTUAL_ENV"):
         candidates.append(Path(os.environ["VIRTUAL_ENV"]))

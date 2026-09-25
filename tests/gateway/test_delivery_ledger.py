@@ -383,8 +383,10 @@ class TestPrune:
 
 
 class TestRecordDeliveredObligation:
-    """Outbound-first senders (hermes send CLI, cron in-channel sends, the kanban notifier,
-    MCP) book their already-delivered sends here — accounting only, born terminal."""
+    """Outbound-first senders (the ``hermes send`` CLI and the opt-in MCP server) book
+    their already-delivered sends here — accounting only, born terminal. Cron standalone
+    sends and the kanban notifier dial ``_send_to_platform``/``adapter.send`` directly
+    and stay out of scope."""
 
     def test_books_terminal_delivered_row(self):
         dl.record_delivered_obligation(

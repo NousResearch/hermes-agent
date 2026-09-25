@@ -1,11 +1,13 @@
 """Outbound-first sends are booked in the delivery ledger.
 
-``hermes send``, cron in-channel sends, the kanban notifier and the MCP server all
-funnel through ``send_message_tool._handle_send``; until now none of them left a
+The two callers of the ``send_message_tool`` entrypoint - the ``hermes send`` CLI
+and the opt-in MCP server - route through ``_handle_send``; until now they left no
 trace in ``delivery_obligations``, so delivery accounting saw only the
 gateway-response half of outbound traffic (production receipt: a
 ``hermes send -t weixin`` approval push invisible in the ledger, gateway.log AND
-the session mirror on the same day). These tests drive the real
+the session mirror on the same day). Cron standalone sends and the kanban notifier
+dial ``_send_to_platform``/``adapter.send`` directly and stay out of scope here,
+matching ``_ledger_outbound_send``'s docstring. These tests drive the real
 ``send_message_tool`` entrypoint against a temp-HERMES_HOME ledger.
 """
 

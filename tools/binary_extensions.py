@@ -29,11 +29,13 @@ OPAQUE_DOCUMENT_EXTENSIONS = frozenset({
     ".odt", ".ods", ".odp", ".rtf", ".epub",
 })
 
-# Extensions shared by a container document and a plain-text format. ``.pot``
+# Extensions shared by a container document and a plain-text format. Rule: a
+# suffix goes here, not in OPAQUE_DOCUMENT_EXTENSIONS, when a plain-text format
+# and a container format share it, so only the file's bytes can decide. ``.pot``
 # is a legacy PowerPoint template (OLE compound file) but far more often the
-# gettext PO template every i18n workflow writes as text (#92131). The suffix
-# alone cannot tell them apart, so the write guard sniffs the existing file's
-# leading bytes; a new or text ``.pot`` is a translation template.
+# gettext PO template every i18n workflow writes as text (#92131). The write
+# guard sniffs the existing file's leading bytes; a new or text ``.pot`` is a
+# translation template.
 AMBIGUOUS_DOCUMENT_EXTENSIONS = frozenset({".pot"})
 
 # Signature every OLE compound document (legacy .doc/.xls/.ppt/.pot) starts with.

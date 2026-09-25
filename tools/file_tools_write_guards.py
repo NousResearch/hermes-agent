@@ -427,7 +427,7 @@ def _is_ole_compound_file(filepath: str, task_id: str) -> bool:
     signature. A missing, text or unreadable file is not a container."""
     try:
         resolved = Path(_resolve_path_for_task(filepath, task_id))
-    except Exception:
+    except (OSError, ValueError):
         resolved = Path(_expand_tilde(filepath))
     try:
         with resolved.open("rb") as fh:

@@ -47,6 +47,8 @@ from hermes_constants import (
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home
 from utils import atomic_replace, fast_safe_load, file_signature, mkstemp_beside
+from hermes_cli.config_backend import (
+    config_exists, config_version, read_config_doc, supports_file_tooling, write_config_document)
 from hermes_cli.config_read_errors import (
     _CONFIG_PARSE_FAILURES, _FIX_PERMS, _FIX_YAML, FailedConfigRead, _backups_dir_display,
     _refuse_failed_read, _refuse_overwrite, _warn_config_parse_failure, _yaml_error_details,
@@ -444,8 +446,7 @@ def require_parseable_user_config(*, ignore_user_config: bool = False) -> None:
 
     config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8-sig") as f:
-            data = fast_safe_load(f)
+        data = read_config_doc(config_path)
     except FileNotFoundError:
         return
     except Exception as exc:
@@ -1260,9 +1261,12 @@ def _persist_migration(config: dict[str, Any]) -> None:
     persist values that DIFFER from the schema default, plus explicit removals/renames of user
     data. Every migration step MUST write through here (``save_config`` with default-stripping
     ON, no ``merge_existing``) so the invariant cannot regress one migration at a time. A migration
-    is Hermes' own write, never a user turning a feature off."""
+    is Hermes' own write, never a user turning a feature off. A backend without file tooling
+    migrates in memory on read and never writes back (D12)."""
     from hermes_cli.observability.shared_metrics_disabled import hermes_applied_write
 
+    if not supports_file_tooling():
+        return
     with hermes_applied_write():
         save_config(config)
 
@@ -1884,6 +1888,12 @@ def _raw_config_cache_hit(path_key: str, cache_key: tuple[Any, ...]) -> Optional
     return None
 
 
+def _raw_config_cache_store(path_key: str, cache_key: tuple[Any, ...], data: dict[str, Any]) -> None:
+    """Publish ``data`` (caller-owned copy) as the raw config for ``path_key`` at ``cache_key``.
+    One whole-tuple replace, so the lock-free readers see either the old or the new entry."""
+    _RAW_CONFIG_CACHE[path_key] = (*cache_key, data)
+
+
 def _worker_config_snapshot() -> Optional[dict[str, Any]]:
     """A safe worker's frozen config, or None. Install-time loads run from ``hermes_cli`` alone
     (the installer's completion step ships no ``agent`` package), and without ``agent`` there
@@ -1909,7 +1919,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
     # every cached read for the duration). A lost race just falls through to the locked re-check.
     try:
         config_path = get_config_path()
-        cache_key = file_signature(config_path.stat())
+        cache_key = config_version(config_path)
         hit = _raw_config_cache_hit(str(config_path), cache_key)
         if hit is not None:
             return copy.deepcopy(hit) if want_deepcopy else hit
@@ -1919,7 +1929,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
     with _CONFIG_LOCK:
         config_path = get_config_path()
         try:
-            cache_key = file_signature(config_path.stat())
+            cache_key = config_version(config_path)
         except FileNotFoundError:
             return {}
         except OSError as e:
@@ -1931,8 +1941,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
             return copy.deepcopy(hit) if want_deepcopy else hit
 
         try:
-            with open(config_path, encoding="utf-8-sig") as f:
-                data = fast_safe_load(f) or {}
+            data = read_config_doc(config_path) or {}
         except Exception as e:
             _warn_config_parse_failure(config_path, e)
             return FailedConfigRead(error=e)
@@ -1943,7 +1952,7 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
         # The cache stores its own deepcopy. The readonly path returns THAT object (identity
         # invariant: later cache hits return the same dict); the mutable path returns the parse.
         cached_copy = copy.deepcopy(data)
-        _RAW_CONFIG_CACHE[path_key] = (*cache_key, cached_copy)
+        _raw_config_cache_store(path_key, cache_key, cached_copy)
         return data if want_deepcopy else cached_copy
 
 
@@ -1960,8 +1969,7 @@ def read_user_config_raw(config_path: Optional[Path] = None) -> dict[str, Any]:
     if config_path is None:
         config_path = get_config_path()
     try:
-        with open(config_path, encoding="utf-8-sig") as f:
-            data = fast_safe_load(f) or {}
+        data = read_config_doc(config_path) or {}
     except FileNotFoundError:
         return {}
     return data if isinstance(data, dict) else {}
@@ -1987,15 +1995,14 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
             return copy.deepcopy(snapshot)
         config_path = get_config_path()
     try:
-        config_path.stat()
+        config_version(config_path)
     except FileNotFoundError:
         return {}
     except OSError as exc:
         raise _refuse_overwrite(config_path, "cannot be accessed", exc, _FIX_PERMS) from exc
 
     try:
-        with open(config_path, encoding="utf-8-sig") as f:
-            loaded = fast_safe_load(f)
+        loaded = read_config_doc(config_path)
     except OSError as exc:
         raise _refuse_overwrite(config_path, "cannot be read", exc, _FIX_PERMS) from exc
     except Exception as exc:
@@ -2043,8 +2050,6 @@ def _write_config_state(
     extra_content_on_create: Optional[str] = None,
 ) -> None:
     """Shared comment-preserving config writer; omission policy is selected by the public wrapper."""
-    from utils import atomic_roundtrip_yaml_save
-
     _refuse_failed_read(config_path, data)
     if not allow_omissions:
         existing = require_readable_config_before_write(config_path)
@@ -2061,7 +2066,7 @@ def _write_config_state(
                 "Pass the complete current config, or use atomic_config_replace() only when "
                 "deletion by omission is deliberate.",
             ) from exc
-    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
+    write_config_document(config_path, data, extra_content_on_create=extra_content_on_create)
 
 
 def atomic_config_write(
@@ -2223,13 +2228,12 @@ def _load_config_cache_sig(config_path: Path) -> tuple[Optional[tuple[int, int, 
     The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
     the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
     try:
-        st = config_path.stat()
-        user_sig: Optional[tuple[int, int, int, int]] = file_signature(st)
+        user_sig: Optional[tuple[Any, ...]] = config_version(config_path)
     except FileNotFoundError:
         user_sig = None
     managed_dir = managed_scope.get_managed_dir()
     try:
-        mst = (managed_dir / "config.yaml").stat() if managed_dir else None
+        mst = (managed_dir / "config.yaml").stat() if managed_dir else None  # config-reader: ok — managed overlay, not a user layer
         managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
     except OSError:
         managed_sig = (0, 0, 0, 0)
@@ -2304,19 +2308,23 @@ def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[dict[str, 
     pin unexpanded literals (e.g. auxiliary.<task>.api_key) for the process lifetime (#58514).
     Shared by the lock-free fast path and the locked re-check of ``_load_config_impl``."""
     cached = _LOAD_CONFIG_CACHE.get(path_key)
-    if cached is None or cache_sig is None or cached[:8] != cache_sig:
+    if cached is None or cache_sig is None:
         return None
-    hit = cached[8]
+    n = len(cache_sig)  # the backend's version tuple + the managed file's signature
+    if cached[:n] != cache_sig:
+        return None
+    hit = cached[n]
     if isinstance(hit, FailedConfigRead) and isinstance(hit.read_error, OSError):
         # A read error (EMFILE/EIO/sharing violation) can clear without touching the file's
         # signature: serve the fallback only while the file still cannot be read.
         try:
-            with open(path_key, "rb") as f:
-                f.read()
-            return None
+            read_config_doc(path_key)
         except OSError:
             return hit
-    env_snapshot = cached[9] if len(cached) > 9 else {}
+        except Exception:
+            pass  # readable again; the reload reports the parse error
+        return None
+    env_snapshot = cached[n + 1] if len(cached) > n + 1 else {}
     if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
         return hit
     return None
@@ -2359,8 +2367,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> dict[str, Any]:
 
         if user_sig is not None:
             try:
-                with open(config_path, encoding="utf-8-sig") as f:
-                    user_config = fast_safe_load(f) or {}
+                user_config = read_config_doc(config_path) or {}
                 _CONFIG_PARSE_FAILURES.pop(path_key, None)  # the file reads now (a transient error left the record)
 
                 if "max_turns" in user_config:
@@ -2995,8 +3002,12 @@ def edit_config():
     if is_managed():
         managed_error("edit configuration")
         return
+    if not supports_file_tooling():
+        print("`hermes config edit` opens the local config file, and this config backend has none. "
+              "Use `hermes config set <key> <value>` instead.", file=sys.stderr)
+        return
     config_path = get_config_path()
-    if not config_path.exists():
+    if not config_path.exists():  # config-reader: ok — file tooling, gated on supports_file_tooling()
         seed_config_file(config_path)
         print(f"Created {config_path}")
 

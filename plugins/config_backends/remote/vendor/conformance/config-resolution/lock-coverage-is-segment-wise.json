@@ -1,0 +1,100 @@
+{
+  "fixtureVersion": 1,
+  "name": "lock-coverage-is-segment-wise",
+  "description": "Proves rule-3, path-grammar: A lock on terminal covers terminal.backend but not terminal_extra: coverage compares segments, never string prefixes.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "terminal": {
+          "backend": "local"
+        },
+        "terminal_extra": {
+          "a": 1
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {},
+      "locks": [
+        "terminal"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {},
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "terminal_extra": {
+          "a": 2
+        },
+        "terminal": {
+          "backend": "docker"
+        }
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "terminal": {
+        "backend": "local"
+      },
+      "terminal_extra": {
+        "a": 2
+      }
+    },
+    "provenance": {
+      "terminal.backend": "global",
+      "terminal_extra.a": "profile"
+    },
+    "locks": [
+      {
+        "path": "terminal",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal_extra.a",
+      "value": 3,
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal.backend",
+      "value": "ssh",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal_extra",
+      "value": 5,
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

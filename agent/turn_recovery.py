@@ -701,10 +701,13 @@ def recover_after_classification(
         if isinstance(sent, dict) and sent.get("enabled") is not False and sent.get("effort") not in (None, "none"):
             # The rejected request carried an ENABLED config: the route refuses that reasoning
             # level (#100536: ``reasoning.effort: max`` on a Responses relay). Dropping a disable
-            # would resend the identical request; omit the reasoning fields instead (route default).
-            agent._reasoning_effort_rejected = True
-            _vlines(agent, f"⚠️  {agent.model} rejects reasoning effort {sent['effort']} — using the route's default for this session, retrying...")
-            logger.warning("%sReasoning-effort recovery: dropping reasoning config for %s", agent.log_prefix, agent.model)
+            # would resend the identical request; omit the reasoning fields instead (route
+            # default) — for THIS call only (one-shot, consumed by the retry's wire build), so
+            # a route that really refuses the configured level costs one 400 per turn instead
+            # of silencing thinking for the rest of the session.
+            agent._ephemeral_reasoning_omit = True
+            _vlines(agent, f"⚠️  {agent.model} rejects reasoning effort {sent['effort']} — omitting the reasoning fields for this retry, thinking stays configured afterwards...")
+            logger.warning("%sReasoning-effort recovery: omitting reasoning config for one call to %s", agent.log_prefix, agent.model)
             return True, recovered_with_pool
         agent._reasoning_disable_rejected = True
         # "Reasoning is mandatory ... cannot be disabled" understands the field and refuses only the

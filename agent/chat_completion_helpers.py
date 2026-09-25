@@ -1303,38 +1303,34 @@ def interruptible_api_call(agent, api_kwargs: dict):
     return _NonStreamRequest(agent, api_kwargs).run()
 
 
-def _consume_ephemeral_reasoning_off(agent) -> bool:
-    """Consume the one-shot "answer without thinking" continuation flag.
+def _consume_ephemeral_reasoning_omit(agent) -> bool:
+    """Consume the one-shot "omit the reasoning fields" retry flag.
 
-    Set by the length-continuation path when a request returned reasoning but NO
-    visible content (thinking ate the output cap); continuation turns never replay
-    prior reasoning, so thinking ON would re-burn the budget. When True the caller
-    overrides the wire reasoning_config with ``{"enabled": False, "effort": "none"}``
-    for exactly the next call. Prompt-cache cost is bounded to ONE cold prefix write
-    on config-sensitive providers (Anthropic, OpenAI) — far cheaper than four futile
-    full-budget continuations.
+    Set by the reasoning-effort recovery rung after a 400 on an ENABLED reasoning
+    config (#100536): the retry goes out without the reasoning fields (route
+    default) for exactly this call, and the configured level returns on the next
+    one — a route that really refuses the level costs one 400 per turn instead of
+    silencing thinking for the rest of the session.
     """
-    consumed = bool(getattr(agent, "_ephemeral_reasoning_off", False))
+    consumed = bool(getattr(agent, "_ephemeral_reasoning_omit", False))
     if consumed:
-        agent._ephemeral_reasoning_off = False
+        agent._ephemeral_reasoning_omit = False
     return consumed
 
 
 def _reasoning_config_for_wire(agent):
-    """``agent.reasoning_config`` with the one-shot reasoning-off override applied.
+    """``agent.reasoning_config`` with the one-shot reasoning-omit retry override applied.
 
     Once the route has answered a disable with "reasoning is mandatory"
-    (``agent._reasoning_disable_rejected``), every disable — configured or
-    the one-shot continuation override — is dropped for the rest of the
-    session: the request goes out without a reasoning config and the route
-    applies its own default.
+    (``agent._reasoning_disable_rejected``), every configured disable is
+    dropped for the rest of the session: the request goes out without a
+    reasoning config and the route applies its own default.
     """
     cfg = agent.reasoning_config
-    ephemeral_off = _consume_ephemeral_reasoning_off(agent)
-    if getattr(agent, "_reasoning_effort_rejected", False):
+    if _consume_ephemeral_reasoning_omit(agent):
         # The route rejected the configured reasoning LEVEL itself (#100536: ``reasoning.effort:
-        # max`` on an enabled config). Omit the reasoning fields for the rest of the session —
-        # the route default — as the auxiliary ladder does; resending would 400 identically.
+        # max`` on an enabled config). Omit the reasoning fields for exactly this retry —
+        # the route default, as the auxiliary ladder does; resending would 400 identically.
         agent._wire_reasoning_config = None
         return None
     if cfg is None:
@@ -1363,8 +1359,6 @@ def _reasoning_config_for_wire(agent):
             return None
         agent._wire_reasoning_config = cfg
         return cfg
-    if ephemeral_off:
-        cfg = {**(cfg or {}), "enabled": False, "effort": "none"}
     # What actually went out: the reasoning-rejection rung reads it to tell a rejected
     # disable (drop the disable) from a rejected level (drop the reasoning fields).
     agent._wire_reasoning_config = cfg

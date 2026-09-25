@@ -12060,6 +12060,13 @@ function stopAttachedBackendMonitor() {
  * into a new process on the same port passes the readiness probe (it's a
  * public route) while serving a brand-new session token, so also re-read the
  * served token on every tick and treat drift the same as "gone" (#121988).
+ *
+ * This teardown is unexpected, not intentional (nobody asked for a re-home),
+ * so it must clear the slot via `backendConnectionState.invalidate()` directly
+ * rather than `invalidatePrimaryConnection()`: the latter also sets
+ * `primaryRecoverySuppressed`, which `scheduleUnexpectedPrimaryRecovery()`
+ * below would then read back as `intentionalTeardown` and refuse to claim,
+ * leaving the app with no backend and no respawn scheduled.
  */
 function startAttachedBackendMonitor(attached: AttachedBackend) {
   stopAttachedBackendMonitor()
@@ -12075,7 +12082,7 @@ function startAttachedBackendMonitor(attached: AttachedBackend) {
       .catch(() => {
         stopAttachedBackendMonitor()
         rememberLog(`[attach] attached backend on ${attached.baseUrl} (pid ${attached.pid}) is gone; recovering`)
-        invalidatePrimaryConnection()
+        backendConnectionState.invalidate()
         scheduleUnexpectedPrimaryRecovery({ error: 'The Hermes backend this app attached to exited.', ready: true })
       })
   }, ATTACHED_LIVENESS_POLL_MS)

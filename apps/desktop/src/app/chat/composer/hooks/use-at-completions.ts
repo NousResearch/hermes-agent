@@ -39,7 +39,11 @@ function starterEntries(query: string): CompletionEntry[] {
   }))
 }
 
-function mergeCompletionEntries(preferred: CompletionEntry[], fallback: CompletionEntry[]): CompletionEntry[] {
+function mergeCompletionEntries(
+  preferred: CompletionEntry[],
+  fallback: CompletionEntry[],
+  claimedHandles?: Set<string>
+): CompletionEntry[] {
   const seenHandles = new Set<string>()
 
   return [...preferred, ...fallback].filter(entry => {
@@ -47,6 +51,14 @@ function mergeCompletionEntries(preferred: CompletionEntry[], fallback: Completi
 
     if (!/^@[^:\s]+$/.test(key) || SIMPLE_CONTEXT_REFS.has(key)) {
       return true
+    }
+
+    // A contributed row claimed this handle as another label for a target it
+    // already lists (a bot's raw profile name under its title slug). The
+    // gateway's own row for that name is the same routable identity offered
+    // a second time — keep the contributed row, drop this one.
+    if (claimedHandles?.has(key)) {
+      return false
     }
 
     if (seenHandles.has(key)) {
@@ -125,8 +137,9 @@ export function useAtCompletions(options: {
   // one classify/toItem path renders every row. Provider errors are isolated:
   // a throwing source drops ITS rows, never the popover.
   const contributedEntries = useCallback(
-    (query: string): CompletionEntry[] => {
+    (query: string): { entries: CompletionEntry[]; claimedHandles: Set<string> } => {
       const out: CompletionEntry[] = []
+      const claimedHandles = new Set<string>()
 
       for (const contribution of contributed) {
         const source = contribution.data as ComposerAtCompletionSource | undefined
@@ -141,6 +154,18 @@ export function useAtCompletions(options: {
               continue
             }
 
+            // Handles a source declares as aliases of its own row are the
+            // identity it owns: the gateway lists the same target under one
+            // of them (the raw profile name), and that twin gets dropped in
+            // the merge below.
+            for (const handle of item.handles || []) {
+              const claimed = normalize(handle)
+
+              if (claimed) {
+                claimedHandles.add(claimed)
+              }
+            }
+
             out.push({
               text: item.insert,
               display: item.display || item.insert,
@@ -153,7 +178,7 @@ export function useAtCompletions(options: {
         }
       }
 
-      return out
+      return { entries: out, claimedHandles }
     },
     [contributed]
   )
@@ -166,10 +191,10 @@ export function useAtCompletions(options: {
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
       const starters = starterEntries(query)
-      const extras = contributedEntries(query)
+      const { entries: extras, claimedHandles } = contributedEntries(query)
 
       if (!gateway) {
-        return { items: mergeCompletionEntries(extras, starters), query }
+        return { items: mergeCompletionEntries(extras, starters, claimedHandles), query }
       }
 
       const word = REF_STARTERS.has(query) ? `@${query}:` : `@${query}`
@@ -196,9 +221,9 @@ export function useAtCompletions(options: {
         const items = result.items ?? []
         const base = items.length > 0 ? items : starters
 
-        return { items: mergeCompletionEntries(extras, base), query }
+        return { items: mergeCompletionEntries(extras, base, claimedHandles), query }
       } catch {
-        return { items: mergeCompletionEntries(extras, starters), query }
+        return { items: mergeCompletionEntries(extras, starters, claimedHandles), query }
       }
     },
     [cacheKey, contributedEntries, gateway, sessionId, cwd]

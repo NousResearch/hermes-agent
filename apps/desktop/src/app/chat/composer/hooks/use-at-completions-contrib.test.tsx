@@ -91,6 +91,44 @@ describe('contributed @ completion sources', () => {
     expect(rows.some(label => label.includes('researcher.md'))).toBe(true)
   })
 
+  it('drops the gateway twin of a row the source claims under another handle', async () => {
+    vi.useFakeTimers()
+    // A bot tagged by its title slug (`@john`) is the same routable identity
+    // the gateway lists by raw profile name (`@john-2`) — one row must
+    // survive, and it must be the contributed one (title + connection meta).
+    addSource('bots', q => ('john'.startsWith(q) ? [{ insert: '@john', meta: 'Bot · John ♥', handles: ['@john-2'] }] : []))
+
+    const gateway = gatewayStub([
+      { text: '@default', display: '@default', meta: 'Windows troubleshooting' },
+      { text: '@john-2', display: '@john-2', meta: 'Compañero de noche' },
+      { text: '@file:src/john.md', display: 'john.md', meta: 'file' }
+    ])
+
+    const { result } = renderHook(() => useAtCompletions({ gateway: gateway as never, sessionId: 's1', cwd: '/repo' }))
+
+    const rows = await searchAndRead(result, 'joh')
+    expect(rows).toContain('@john')
+    expect(rows.some(label => label.toLowerCase() === '@john-2')).toBe(false)
+    expect(rows.some(label => label.toLowerCase() === '@default')).toBe(true)
+  })
+
+  it('keeps a same-named gateway row that no source claims', async () => {
+    vi.useFakeTimers()
+    // The claim is per-identity: a remote bot listed under its title slug
+    // must not swallow the LOCAL gateway's same-named profile.
+    addSource('bots', q => ('cos'.startsWith(q) ? [{ insert: '@cos-bot', meta: 'Bot · CoS Bot · VPS' }] : []))
+
+    const gateway = gatewayStub([
+      { text: '@default', display: '@default', meta: 'agent profile' },
+      { text: '@file:src/a.md', display: 'a.md', meta: 'file' }
+    ])
+
+    const { result } = renderHook(() => useAtCompletions({ gateway: gateway as never, sessionId: 's1', cwd: '/repo' }))
+
+    const rows = await searchAndRead(result, 'def')
+    expect(rows.some(label => label.toLowerCase() === '@default')).toBe(true)
+  })
+
   it('drops rows when the query does not match the source filter', async () => {
     vi.useFakeTimers()
     addSource('bots', q => ('researcher'.startsWith(q) ? [{ insert: '@researcher', meta: 'Bot' }] : []))

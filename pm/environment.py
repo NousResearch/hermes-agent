@@ -45,20 +45,31 @@ _RESOLVER_MARKERS = (
 )
 
 
+# A package's own build ran and failed; a fetch/download failure never prints this.
+_BUILD_MARKERS = ("the build backend returned an error",)
+
+
 class ResolutionConflict(InstallError):
     """uv's resolver proved the union has no valid solution."""
+
+
+class BuildFailure(InstallError):
+    """A package's build backend ran and failed."""
 
 
 def classify_uv_failure(stage: str, returncode: int, output: str) -> InstallError:
     """Turn a failed `uv <stage>` into the right classified error.
 
-    Resolver-conflict output → ResolutionConflict; anything else (fetch,
-    build, tooling) → plain InstallError with the tail of the output.
+    Resolver-conflict output → ResolutionConflict; a build backend that ran and
+    failed → BuildFailure; anything else (fetch, tooling) → plain InstallError
+    with the tail of the output.
     """
     cause = f"uv {stage} exited {returncode}: {output.strip()[-600:]}"
     lowered = output.lower()
     if any(marker in lowered for marker in _RESOLVER_MARKERS):
         return ResolutionConflict("venv", cause)
+    if any(marker in lowered for marker in _BUILD_MARKERS):
+        return BuildFailure("venv", cause)
     return InstallError("venv", cause)
 
 

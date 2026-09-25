@@ -31,7 +31,7 @@ def _with_controlling_terminal(tty_path: str):
 
 
 @pytest.mark.platforms('posix')
-@pytest.mark.parametrize('stage, expected', [('setup', ['setup']), ('gateway', ['gateway', 'install'])])
+@pytest.mark.parametrize('stage, expected', [('setup', ['setup']), ('gateway', ['gateway', 'install', '--if-missing'])])
 def test_installer_post_pm_stages(tmp_path: Path, stage: str, expected: list[str]) -> None:
     install = tmp_path / 'source tree'
     calls = tmp_path / 'calls.json'

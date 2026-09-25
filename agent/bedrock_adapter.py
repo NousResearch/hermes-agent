@@ -87,6 +87,7 @@ _MIN_BOTO3_VERSION = (1, 34, 59)
 
 def _require_boto3():
     """Import boto3; converse_stream() needs >= 1.34.59 (a system boto3 can shadow the venv pin)."""
+    install_error = None
     try:
         # boto3 left [all] (PRs #24220, #24515); PM installs the [bedrock] extra on first use. This
         # runs at the first client build, never at import: an import-time sync would rebuild the
@@ -94,14 +95,14 @@ def _require_boto3():
         try:
             from pm import ensure_import
             ensure_import("bedrock")
-        except Exception as exc:  # the import below reports the real failure
+        except Exception as exc:  # the import below decides; exc explains a miss
             logger.warning("boto3 lazy install did not complete: %s", exc)
+            install_error = exc
         import boto3
     except ImportError:
-        raise ImportError(
-            "The 'boto3' package is required for the AWS Bedrock provider. "
-            f"Run: {install_hint('bedrock')}"
-        )
+        # A completed install that needs a restart must not be reported as "install it".
+        reason = f": {install_error}" if install_error else f". Run: {install_hint('bedrock')}"
+        raise ImportError(f"The 'boto3' package is required for the AWS Bedrock provider{reason}") from install_error
     try:
         version = tuple(int(x) for x in boto3.__version__.split(".")[:3])
     except (AttributeError, ValueError):

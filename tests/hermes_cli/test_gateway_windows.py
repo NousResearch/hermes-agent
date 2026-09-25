@@ -616,6 +616,7 @@ def _arrange_uninstalled_start(monkeypatch):
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda: spawns.append(1) or 4242)
     monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: None)
     monkeypatch.setattr(gateway_windows, "_stdin_console_mode_ok", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_stdout_isatty", lambda: True)
     return installs, spawns
 
 
@@ -634,6 +635,20 @@ def test_start_with_nul_stdin_starts_the_gateway_but_never_installs_login_persis
     monkeypatch.setattr(setup, "is_interactive_stdin", lambda: True)
     monkeypatch.setattr(gateway_windows, "_stdin_console_mode_ok", lambda: False)
     monkeypatch.setattr(setup, "prompt_yes_no", lambda *a, **k: pytest.fail("no prompt on a NUL stdin"))
+
+    gateway_windows.start()
+
+    assert installs == [] and spawns == [1]
+    assert "hermes gateway install" in capsys.readouterr().out
+
+
+def test_start_with_captured_stdout_never_asks_even_on_a_console_stdin(monkeypatch, capsys):
+    """Pre-#122234 Desktop update hand-offs run the NEW `gateway start --all` with the hand-off
+    console as stdin and stdout captured until exit. A question there is invisible and never answered."""
+    installs, spawns = _arrange_uninstalled_start(monkeypatch)
+    monkeypatch.setattr(setup, "is_interactive_stdin", lambda: True)
+    monkeypatch.setattr(gateway_windows, "_stdout_isatty", lambda: False)
+    monkeypatch.setattr(setup, "prompt_yes_no", lambda *a, **k: pytest.fail("no prompt into captured stdout"))
 
     gateway_windows.start()
 

@@ -220,17 +220,22 @@ def ensure_import(extra: str) -> None:
     from pm.client import sync_venv
 
     sync_venv([extra])
-    # Activation is a process-boot operation. Never mix a newly resolved
-    # dependency tree with libraries already imported by this process.
+    # The sync published a new generation. Swap this process onto it when nothing
+    # already imported would change underneath it (adopt_selected); otherwise only
+    # a restart can load it.
     from pm.environments import selected_venv, site_packages
+    from pm.environments_adopt import adopt_selected, restart_needed
     from pm.paths import repo_root, runtime_facts_path
     import sys
     from pathlib import Path
 
     if runtime_facts_path().is_file():
-        selected = site_packages(selected_venv(repo_root())).resolve()
+        root = repo_root()
+        adopt_selected(root)
+        selected = site_packages(selected_venv(root)).resolve()
         if selected not in {Path(entry).resolve() for entry in sys.path}:
-            raise InstallError("venv", f"{extra} installed; restart Hermes to activate the new dependency environment")
+            reason = restart_needed(root) or "this process does not run from the install's dependency environment"
+            raise InstallError("venv", f"{extra} installed; restart Hermes to activate it ({reason})")
 
 
 def ensure_and_bind(extra, importer, target_globals) -> bool:

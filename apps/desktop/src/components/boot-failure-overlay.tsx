@@ -12,7 +12,17 @@ import { useI18n } from '@/i18n'
 import { reestablishCloudAgentSession } from '@/lib/cloud-agent-session'
 import { DESKTOP_DOCS_URL } from '@/lib/docs'
 import { openExternalLink } from '@/lib/external-link'
-import { ChevronLeft, ExternalLink, FileText, Loader2, LogIn, RefreshCw, SlidersHorizontal, Wrench } from '@/lib/icons'
+import {
+  ChevronLeft,
+  ExternalLink,
+  FileText,
+  Loader2,
+  LogIn,
+  RefreshCw,
+  SlidersHorizontal,
+  Wrench,
+  X
+} from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
@@ -44,15 +54,49 @@ type RecoveryView = 'connect' | 'recovery'
 // re-establish the remote session. The detection + copy helpers live in
 // ./boot-failure-reauth so they're unit-testable without a React render.
 
+// Radix Close routes through the modal's onOpenChange, same path as Escape.
+function DismissControl() {
+  const { t } = useI18n()
+
+  return (
+    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
+      <Button
+        aria-label={t.common.close}
+        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+        size="icon-xs"
+        variant="ghost"
+      >
+        <X className="size-4" />
+        <span className="sr-only">{t.common.close}</span>
+      </Button>
+    </DialogPrimitive.Close>
+  )
+}
+
 // Recovery surface for a hard boot failure (gateway never came up, backend
 // exited during startup, bootstrap latched, …). Without this the app shell
 // renders dead — "gateway offline", no composer, only a toast — with no way
 // to retry, repair the install, switch the gateway, or find the logs.
-function BootFailureModal({ children, title }: { children: ReactNode; title?: string }) {
+function BootFailureModal({
+  children,
+  onDismiss,
+  title
+}: {
+  children: ReactNode
+  onDismiss: () => void
+  title?: string
+}) {
   const [contentNode, setContentNode] = useState<HTMLDivElement | null>(null)
 
   return (
-    <DialogPrimitive.Root open>
+    <DialogPrimitive.Root
+      onOpenChange={open => {
+        if (!open) {
+          onDismiss()
+        }
+      }}
+      open
+    >
       <DialogPrimitive.Portal>
         <DialogPrimitive.Content aria-describedby={undefined} aria-modal="true" asChild ref={setContentNode}>
           <div
@@ -92,12 +136,19 @@ export function BootFailureOverlay() {
   // to the full Settings page (keeps the user on the recovery surface, no z-index
   // juggling, no second connection form to maintain).
   const [view, setView] = useState<RecoveryView>('recovery')
+  // Dismissal hides the modal only. The latched boot error stays so recovery
+  // can return, and a later clear or a different error shows the overlay again.
+  const [dismissedError, setDismissedError] = useState<string | null>(null)
 
-  const visible = Boolean(boot.error) && !boot.running
+  const visible = Boolean(boot.error) && boot.error !== dismissedError && !boot.running
   // While first-run onboarding owns the picker/flow we let it surface its own
   // progress; the recovery overlay is for hard failures, which it covers via a
   // higher z-index regardless of onboarding state.
   const suppressed = onboarding.flow.status !== 'idle' && onboarding.flow.status !== 'error'
+
+  useEffect(() => {
+    setDismissedError(current => (boot.running || current !== boot.error ? null : current))
+  }, [boot.error, boot.running])
 
   useEffect(() => {
     if (!visible) {
@@ -314,6 +365,9 @@ export function BootFailureOverlay() {
   }
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
+
+  const dismiss = () => setDismissedError(boot.error)
+
   const copy = t.boot.failure
 
   // SSH failures keep their own gloss; every other local failure is classified
@@ -450,8 +504,9 @@ export function BootFailureOverlay() {
 
   if (view === 'connect') {
     return (
-      <BootFailureModal title={copy.gatewaySettings}>
-        <div className="flex max-h-[86vh] w-full max-w-[46rem] flex-col overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+      <BootFailureModal onDismiss={dismiss} title={copy.gatewaySettings}>
+        <div className="relative flex max-h-[86vh] w-full max-w-[46rem] flex-col overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+          <DismissControl />
           {/* Subtle back affordance (projects/overlay idiom): muted → foreground
               on hover, no divider. */}
           <button
@@ -473,9 +528,10 @@ export function BootFailureOverlay() {
   }
 
   return (
-    <BootFailureModal>
-      <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
-        <div className="flex items-start gap-3 px-5 py-4">
+    <BootFailureModal onDismiss={dismiss}>
+      <div className="relative w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+        <DismissControl />
+        <div className="flex items-start gap-3 px-5 py-4 pr-12">
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
             <DialogPrimitive.Title asChild>

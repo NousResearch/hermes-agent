@@ -271,14 +271,13 @@ no API server is enabled); it serves three kinds of profile-prefixed paths:
   adapter instance built without a port; the default listener forwards
   `/p/<profile>/<the adapter's usual path>` to it. See
   [Inbound-port platforms under the multiplexer](#inbound-port-platforms-under-the-multiplexer).
-- **WhatsApp (bridge) and Relay are shared ingress owned by the default profile.**
-  The multiplexer never starts them for a secondary: `WHATSAPP_ENABLED=true` in
-  `profiles/work/.env` does nothing on its own. Enable and configure them on the
-  default profile (their inbound is routed to profiles via `profile_routes`), or
-  disable them in the secondary. The gateway logs one INFO line per skipped
-  secondary platform, and if **no** profile runs it a WARNING says the platform
-  is not being served; `hermes gateway status --profile work` shows
-  `whatsapp: not served under multiplex (shared ingress owned by default)`.
+- **WhatsApp (bridge) runs per paired profile.** Pair each secondary with
+  `hermes -p work whatsapp`. Each profile uses its own session and bridge port;
+  an unpaired profile is skipped with `whatsapp_unpaired` and a pairing remedy.
+  See [WhatsApp multi-profile setup](messaging/whatsapp.md#multiple-profiles).
+- **Relay remains shared ingress owned by the default profile.** Enable and
+  configure Relay on the default profile, then route inbound to profiles via
+  `profile_routes`. A secondary-only Relay configuration is reported as not served.
 
 Authentication follows the profile named in the URL. Unprefixed endpoints keep
 using the default listener's existing credentials.

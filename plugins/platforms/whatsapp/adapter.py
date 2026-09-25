@@ -121,17 +121,29 @@ def _unlink_quietly(path: Path) -> None:
         path.unlink()
 
 
+def _read_bridge_pidfile(session_path: Path) -> tuple:
+    """``(pid, kernel_start_time)`` from ``bridge.pid``; ``(None, None)`` when absent or unparseable.
+    Line 1 = pid, optional line 2 = kernel start time (legacy files: pid only)."""
+    pid_file = session_path / "bridge.pid"
+    if not pid_file.exists():
+        return None, None
+    try:
+        lines = [ln.strip() for ln in pid_file.read_text(encoding="utf-8").split("\n")]
+        pid = int(lines[0])
+        recorded_start = int(lines[1]) if len(lines) > 1 and lines[1] else None
+    except (ValueError, OSError, TypeError, IndexError):
+        return None, None
+    return pid, recorded_start
+
+
 def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     """Kill an orphaned bridge recorded in ``bridge.pid``, after :func:`_bridge_pid_is_ours`."""
     from gateway.status import _pid_exists
     pid_file = session_path / "bridge.pid"
     if not pid_file.exists():
         return
-    try:  # Line 1 = pid, optional line 2 = kernel start time (legacy files: pid only).
-        lines = [ln.strip() for ln in pid_file.read_text(encoding="utf-8").split("\n")]
-        pid = int(lines[0])
-        recorded_start = int(lines[1]) if len(lines) > 1 and lines[1] else None
-    except (ValueError, OSError, TypeError, IndexError):
+    pid, recorded_start = _read_bridge_pidfile(session_path)
+    if pid is None:
         _unlink_quietly(pid_file)
         return
     if _bridge_pid_is_ours(pid, recorded_start):
@@ -274,6 +286,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             from gateway.platforms.whatsapp_common import resolve_whatsapp_bridge_dir
             WhatsAppAdapter._DEFAULT_BRIDGE_DIR = resolve_whatsapp_bridge_dir()
         extra = config.extra
+        from hermes_constants import get_hermes_home
+        self._profile_home = get_hermes_home()
         self._bridge_process: Optional[subprocess.Popen] = None
         self._bridge_port: int = extra.get("bridge_port", 3000)
         self._bridge_script: str = extra.get("bridge_script", str(self._DEFAULT_BRIDGE_DIR / "bridge.js"))
@@ -478,6 +492,19 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Start (or adopt) the Node.js bridge and wait for it to be ready."""
+        secondary = bool(getattr(self, "_runtime_status_platform_key", ""))
+        prior_bridge_is_ours = False
+        if secondary:
+            from .bridge_ownership import secondary_bridge_port, check_secondary_ownership
+            try:
+                self._bridge_port = secondary_bridge_port(self._profile_home, self.config.extra.get("bridge_port"))
+                prior_bridge_is_ours = check_secondary_ownership(self._session_path, self._bridge_port) == "ours"
+            except (OSError, ValueError) as exc:
+                self._set_fatal_error(
+                    "whatsapp_bridge_conflict",
+                    f"{exc}. Set platforms.whatsapp.extra.bridge_port to a distinct free port; "
+                    "or stop the process holding it.", retryable=False)
+                return False
         if not self._preflight():
             return False
         bridge_path = Path(self._bridge_script)
@@ -492,11 +519,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if not self._ensure_bridge_deps(bridge_path.parent):
                 return False
             self._session_path.mkdir(parents=True, exist_ok=True)
-            if await self._reuse_running_bridge(bridge_path):
+            # A secondary adopts or reaps only a bridge its own pidfile identifies (crash restart);
+            # the default keeps its historical adopt-or-clear-the-port path.
+            if (not secondary or prior_bridge_is_ours) and await self._reuse_running_bridge(bridge_path):
                 return True
-            _kill_stale_bridge_by_pidfile(self._session_path)
-            _kill_port_process(self._bridge_port)
-            await asyncio.sleep(1)
+            if not secondary or prior_bridge_is_ours:
+                _kill_stale_bridge_by_pidfile(self._session_path)
+            if not secondary:
+                _kill_port_process(self._bridge_port)
+            if not secondary or prior_bridge_is_ours:
+                await asyncio.sleep(1)
             # Bridge output goes to a log file so QR codes, errors, and reconnection messages survive for troubleshooting.
             self._bridge_log = self._session_path.parent / "bridge.log"
             self._bridge_log_fh = bridge_log_fh = open(self._bridge_log, "a", encoding="utf-8")
@@ -561,7 +593,8 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     self._terminate_bridge(force=True)
             except Exception as e:
                 print(f"[{self.name}] Error stopping bridge: {e}")
-        _unlink_quietly(self._session_path / "bridge.pid")
+        if self._bridge_process or not getattr(self, "_runtime_status_platform_key", ""):
+            _unlink_quietly(self._session_path / "bridge.pid")
         await cancel_task(self._poll_task)
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
@@ -905,7 +938,11 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     except ImportError:
         return send_error("aiohttp not installed. Run: pip install aiohttp")
     try:
-        bridge_port = (getattr(pconfig, "extra", {}) or {}).get("bridge_port", 3000)
+        from hermes_constants import get_hermes_home
+        from .bridge_ownership import standalone_bridge_port
+        bridge_port = standalone_bridge_port(
+            get_hermes_home(), (getattr(pconfig, "extra", {}) or {}).get("bridge_port")
+        )
         normalized_chat_id = to_whatsapp_jid(chat_id)
         media = media_files or []
         # A caption only applies to a single media file — never repeat it across a multi-file send.

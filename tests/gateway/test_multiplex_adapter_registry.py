@@ -1035,14 +1035,21 @@ class TestSecondaryProfileConfigHandling:
         assert runner._profile_adapters["later"][photon] is later
 
     @pytest.mark.asyncio
-    async def test_secondary_profile_adapter_start_skips_whatsapp(self, monkeypatch):
-        """WhatsApp is shared process-level ingress like Relay: the bridge is
-        one authenticated session tied to a single phone number, so a
-        credential-less secondary profile must be skipped (not stall startup
-        in a connect/retry loop) while its other platforms start normally."""
+    @pytest.mark.parametrize("paired", [False, True])
+    async def test_secondary_profile_adapter_start_skips_whatsapp(self, monkeypatch, tmp_path, paired):
+        """Only paired secondaries start a profile-local WhatsApp adapter."""
         runner = _secondary_recovery_runner()
         direct = _SecondaryRecoveryAdapter()
+        _real_profile_scope = gateway_run._profile_runtime_scope
         _install_secondary_reconnect_context(monkeypatch, runner, direct)
+        monkeypatch.setattr(gateway_run, "_profile_runtime_scope", _real_profile_scope)
+        home = tmp_path / "secondary"
+        session = home / "platforms/whatsapp/session"
+        session.mkdir(parents=True)
+        if paired:
+            (session / "creds.json").write_text("{}")
+        statuses = []
+        monkeypatch.setattr(runner, "_update_platform_runtime_status", lambda *a, **kw: statuses.append((a, kw)))
         monkeypatch.setattr(
             "gateway.config.load_gateway_config",
             lambda: GatewayConfig(
@@ -1057,6 +1064,11 @@ class TestSecondaryProfileConfigHandling:
 
         def _create_adapter(platform, config):
             factory_calls.append(platform)
+            if platform is Platform.WHATSAPP:
+                from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+                wa = WhatsAppAdapter(config)
+                assert wa._session_path == session
+                return wa
             return direct
 
         async def _connect(adapter, platform):
@@ -1065,11 +1077,14 @@ class TestSecondaryProfileConfigHandling:
         monkeypatch.setattr(runner, "_create_adapter", _create_adapter)
         monkeypatch.setattr(runner, "_connect_initial_adapter_with_timeout", _connect)
 
-        connected = await runner._start_one_profile_adapters("clientbot", "/tmp/x", {})
+        monkeypatch.setattr(runner, "_configure_profile_adapter", lambda *a: None)
+        connected = await runner._start_one_profile_adapters("clientbot", home, {})
 
-        assert connected == 1
-        assert factory_calls == [Platform.DISCORD]
-        assert runner._profile_adapters["clientbot"] == {Platform.DISCORD: direct}
+        assert connected == (2 if paired else 1)
+        assert factory_calls == ([Platform.WHATSAPP, Platform.DISCORD] if paired else [Platform.DISCORD])
+        if not paired:
+            assert statuses[-1][1]["error_code"] == "whatsapp_unpaired"
+            assert "hermes -p clientbot whatsapp" in statuses[-1][1]["error_message"]
 
 
 class TestSecondaryProfileHookRegistration:

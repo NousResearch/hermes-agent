@@ -3160,7 +3160,7 @@ class _StreamingCall(StreamingWaitMonitor):
                     reasoning_parts[-1] if reasoning_parts else "", reasoning_text)
                 if reasoning_guard.tripped or reasoning_guard.feed(reasoning_text):
                     if not reasoning_loop_cut:
-                        # Thinking degenerated into a char-run loop. Keep the clean prefix and
+                        # Thinking degenerated into a char-run loop or quote litter. Keep the clean prefix and
                         # cut the looped tail: the live display, storage, and (critically) the
                         # reasoning_content echo must stop replaying it — echoed loop bytes
                         # re-seed the loop on the next request (#112764 family). The stream

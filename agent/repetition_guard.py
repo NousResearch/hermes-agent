@@ -169,11 +169,28 @@ def _line_repetition_dominated(text: str, n: int) -> bool:
 # (#112764 family). Thresholds calibrated against a real-world corpus of ~175k
 # reasoning messages: 「」『』 runs >= 12 and runs of >= 160 identical non-formatting chars
 # never fired on any message without a degenerate segment.
+#
+# A second shape escaped those run rules and is covered below too: QUOTE LITTER — openers
+# inserted between tokens and mostly never closed (「の「diff「全体「像), net unmatched
+# openers climbing steadily with no long run at all. It goes chronic in long-lived sessions
+# once seeded (1143 rows across 4 sessions in the corpus scan; the litter rule fires on ~93%
+# of them and on none of the healthy rows — analysis sessions that QUOTE degenerate excerpts
+# peak at a 1.4% unmatched-opener rate and a 0.27 dense-bin fraction, under the thresholds).
 THINKING_LOOP_TRUNCATED = "[thinking truncated: repetition loop detected]"
 
 _BRACKET_RUN_CHARS = frozenset("「」『』")
 _BRACKET_RUN_MIN = 12
 _RUN_MIN = 160
+
+# Quote-litter thresholds: the length floor gives the rate/bin statistics runway; a "dense
+# bin" is a 200-char window holding >= _LITTER_BIN_QUOTES openers; the rule needs the net
+# unmatched-opener rate to hold across a majority of bins.
+_LITTER_MIN_CHARS = 600
+_LITTER_MIN_NET = 20
+_LITTER_RATE_PERMILLE = 15
+_LITTER_BIN_CHARS = 200
+_LITTER_BIN_QUOTES = 5
+_LITTER_START_NET = 10
 _RUN_EXCLUDED = frozenset("-=*_|+#~` \t\r\n")
 
 
@@ -181,12 +198,15 @@ class ReasoningLoopGuard:
     """Incremental degeneration detector for a streamed reasoning channel.
 
     Feed each reasoning delta in order (stop once ``tripped`` is True). ``trip_index`` is
-    the offset — in the concatenation of everything fed — where the degenerate run starts;
+    the offset — in the concatenation of everything fed — where the degenerate region starts;
     callers cut accumulators there so display, storage and reasoning echo all stop replaying
     the loop. O(chars), no rescans.
     """
 
-    __slots__ = ("tripped", "trip_index", "_seen", "_run_char", "_run_len", "_run_start")
+    __slots__ = (
+        "tripped", "trip_index", "_seen", "_run_char", "_run_len", "_run_start",
+        "_opens", "_closes", "_litter_start", "_bins", "_dense_bins", "_bin_quotes",
+    )
 
     def __init__(self) -> None:
         self.tripped = False
@@ -195,6 +215,12 @@ class ReasoningLoopGuard:
         self._run_char = ""
         self._run_len = 0
         self._run_start = 0
+        self._opens = 0
+        self._closes = 0
+        self._litter_start = -1
+        self._bins = 0
+        self._dense_bins = 0
+        self._bin_quotes = 0
 
     def feed(self, text: str) -> bool:
         if self.tripped or not isinstance(text, str) or not text:
@@ -213,9 +239,35 @@ class ReasoningLoopGuard:
             if run_len >= _RUN_MIN and ch not in _RUN_EXCLUDED and not ch.isspace():
                 self._trip(run_start, ch, run_len)
                 return True
+            if ch == "「":
+                self._opens += 1
+                self._bin_quotes += 1
+                if self._litter_start < 0 and self._opens - self._closes >= _LITTER_START_NET:
+                    self._litter_start = i
+            elif ch == "」":
+                self._closes += 1
+            if i % _LITTER_BIN_CHARS == 0:
+                self._bins += 1
+                if self._bin_quotes >= _LITTER_BIN_QUOTES:
+                    self._dense_bins += 1
+                self._bin_quotes = 0
         self._seen = i
         self._run_char, self._run_len, self._run_start = run_char, run_len, run_start
+        if self._litter_trips(i):
+            return True
         return self.tripped
+
+    def _litter_trips(self, length: int) -> bool:
+        """Shape 2: net-unclosed quote litter dense across a majority of 200-char bins."""
+        net = self._opens - self._closes
+        if length < _LITTER_MIN_CHARS or net < _LITTER_MIN_NET:
+            return False
+        if net * 1000 < length * _LITTER_RATE_PERMILLE:
+            return False
+        if self._bins == 0 or self._dense_bins * 2 < self._bins:
+            return False
+        self._trip(max(0, self._litter_start), "litter", net)
+        return True
 
     def _trip(self, at: int, ch: str, length: int) -> None:
         self.tripped = True
@@ -226,7 +278,8 @@ class ReasoningLoopGuard:
 def sanitize_degenerate_reasoning(text, *, marker: str = THINKING_LOOP_TRUNCATED):
     """Full-text pass for non-streaming intakes / storage boundaries.
 
-    Returns ``text`` unchanged (same object) unless a degenerate shape is found; then the
+    Returns ``text`` unchanged (same object) unless a degenerate shape (loop or litter) is
+    found; then the
     degenerate tail is dropped and ``marker`` appended. Fail-open for non-strings.
     """
     if not isinstance(text, str) or not text:

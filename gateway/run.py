@@ -419,6 +419,30 @@ _ENDPOINT_UNREACHABLE_MARKERS = (
 _GATEWAY_ENDPOINT_UNREACHABLE_RE = re.compile(
     "(" + "|".join(_ENDPOINT_UNREACHABLE_MARKERS) + ")", re.IGNORECASE)
 
+# pyvenv.cfg's interpreter line, in both spellings: ``version = 3.11.16`` (venv/CPython)
+# and ``version_info = 3.11`` (uv).
+_VENV_PYTHON_VERSION_RE = re.compile(r"^\s*version(?:_info)?\s*=\s*(\d+)\.(\d+)", re.MULTILINE)
+
+def _venv_matches_running_interpreter(venv_dir: Path) -> bool:
+    """True when *venv_dir* was built for THIS interpreter's major.minor.
+
+    Overlaying another Python's site-packages finds the package but cannot load its compiled
+    extension, so the import fails instead of falling through to the environment the launcher
+    committed (store Python 3.14 + in-tree 3.11 venv -> pydantic_core._pydantic_core, #122736).
+    Reads both spellings CPython writes -- ``version = X.Y.Z`` (venv/CPython) and
+    ``version_info = X.Y`` (uv) -- and keeps the historical overlay when the file or the key
+    cannot be read.
+    """
+    try:
+        raw = (venv_dir / "pyvenv.cfg").read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return True
+    match = _VENV_PYTHON_VERSION_RE.search(raw)
+    if not match:
+        return True
+    return (int(match.group(1)), int(match.group(2))) == sys.version_info[:2]
+
+
 def _ensure_windows_gateway_venv_imports() -> None:
     """Make detached Windows gateway runs see the Hermes venv packages.
 
@@ -445,6 +469,9 @@ def _ensure_windows_gateway_venv_imports() -> None:
 
         site_packages = resolved_venv / "Lib" / "site-packages"
         if not site_packages.exists():
+            continue
+
+        if not _venv_matches_running_interpreter(resolved_venv):
             continue
 
         project_entry = str(project_root)

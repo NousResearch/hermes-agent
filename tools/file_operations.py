@@ -249,28 +249,39 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
         return result
 
-    def _fenced_read(self, body: str) -> "tuple[Optional[str], Optional[int], ExecuteResult]":
-        """Run BODY between two sentinel lines; return (payload segment, BODY's exit status, reply).
+    def _fenced_read(self, body: str, *more: str) -> "tuple[Optional[list[str]], Optional[int], ExecuteResult]":
+        """Run BODY, then each of MORE, each in its own sentinel-delimited segment; return (those
+        segments, BODY's exit status, reply).
 
         The transport merges the backend's own stdout with the command's, and every caller here
-        decodes the payload into file bytes, so the payload has to be delimited rather than taken
-        to be the whole reply: a remote shell announcing ``TERM`` is four base64 characters that
-        would otherwise join the payload and decode to ``b"LDL"`` at the head of it. Noise outside
-        the fence is dropped; noise inside fails base64/hex validation, because ``_new_sentinel``'s
-        underscores are outside both alphabets. The status rides in its own trailing segment so a
-        failed BODY is still told apart from an empty file. ``(None, None, reply)`` when no fenced
-        reply came back at all — the command never ran as written.
+        decodes a segment into file bytes, so the payload has to be delimited rather than taken to
+        be the whole reply: a remote shell announcing ``TERM`` is four base64 characters that would
+        otherwise join the payload and decode to ``b"LDL"`` at the head of it. The fence drops noise
+        OUTSIDE it only; output emitted while BODY runs (a ``BASH_ENV`` DEBUG hook) lands inside the
+        payload, so a caller that writes the bytes back must verify them independently (MORE). The
+        status rides in its own trailing segment so a failed BODY is still told apart from an empty
+        file. ``(None, None, reply)`` when no fenced reply came back — the command never ran as
+        written.
         """
         sentinel = _new_sentinel(_BYTES_SENTINEL_PREFIX)
         mark = f"echo {sentinel}"
-        result = self._exec(f"{mark}; {body}; __hb=$?; {mark}; echo $__hb")
+        rest = "".join(f"{mark}; {cmd}; " for cmd in more)
+        result = self._exec(f"{mark}; {body}; __hb=$?; {rest}{mark}; echo $__hb")
         segments = _split_segments(result.stdout or "", sentinel)
-        if len(segments) != 3:
+        if len(segments) != len(more) + 3:
             return None, None, result
         try:
-            return segments[1], int(_strip_terminal_fence_leaks(segments[2]).split()[0]), result
+            return segments[1:-1], int(_strip_terminal_fence_leaks(segments[-1]).split()[0]), result
         except (IndexError, ValueError):
-            return segments[1], None, result
+            return segments[1:-1], None, result
+
+    @staticmethod
+    def _matches_size(data: bytes, size_segment: str) -> bool:
+        """Whether DATA is exactly as long as the file's own ``wc -c``. Noise inside the payload
+        only ever ADDS text, and any addition that still decodes adds bytes, so equal length is
+        the check; noise in the size segment breaks its single-integer shape instead."""
+        tokens = _strip_terminal_fence_leaks(size_segment).split()
+        return len(tokens) == 1 and tokens[0].isdigit() and int(tokens[0]) == len(data)
 
     def _sample_file_bytes(self, path: str, length: int = 1000):
         """First ``length`` raw bytes, base64-wrapped so they survive the terminal
@@ -284,11 +295,11 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         byte-exact read below: this sample is the binary-admission gate in FRONT of that read, so
         backend noise decoded into it decides whether a file is editable at all.
         """
-        payload, read_rc, _ = self._fenced_read(
+        segments, read_rc, _ = self._fenced_read(
             f"head -c {length} {self._escape_shell_arg(path)} 2>/dev/null | base64")
-        if payload is None or read_rc != 0:
+        if segments is None or read_rc != 0:
             return None
-        return self._decode_base64_sample(payload)
+        return self._decode_base64_sample(segments[0])
 
     def _read_exact_bytes(self, path: str) -> "tuple[Optional[bytes], Optional[ExecuteResult]]":
         """The file's bytes exactly, for the edit paths that write back every line they did not touch.
@@ -319,10 +330,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         # Fenced like the compound read probe, and for the same reason: a backend whose merged
         # stdout carries login-shell noise (a remote shell announcing TERM, a banner) would
         # otherwise have it whitespace-joined onto the payload and decoded INTO the file's bytes,
-        # which the edit paths then write back.
-        payload, read_rc, result = self._fenced_read(f"base64 < {self._escape_shell_arg(path)}")
+        # which the edit paths then write back. The file's own byte count travels beside it: output
+        # INSIDE the fence decodes too, so only a read that matches it is ever handed to a writer.
+        arg = self._escape_shell_arg(path)
+        segments, read_rc, result = self._fenced_read(f"base64 < {arg}", f"wc -c < {arg}")
         garbled = ExecuteResult(stdout=f"{path}: the backend returned a garbled byte-exact read", exit_code=1)
-        if payload is None:
+        if segments is None:
             # No fenced reply: the command never ran as written (a wrapper ``cd`` failed, the backend
             # refused it). Hand the backend's own text back so the caller reports what it said.
             return None, result if result.exit_code != 0 else garbled
@@ -330,12 +343,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             return None, garbled
         if read_rc == 127:  # no base64 on this backend (busybox, distroless): try the hex transport
             return self._read_exact_bytes_hex(path)
+        payload, size = segments
         if read_rc != 0:
             # stderr is merged into the fenced segment, so that segment holds base64's own diagnostic
             # ("No such file or directory", "Permission denied"): keep it for the caller's message.
             return None, self._failed_read(path, payload, read_rc)
         data = self._decode_base64_sample(payload)
-        if data is None:  # stray output in the payload: refuse rather than guess (never echo it back)
+        if data is None or not self._matches_size(data, size):  # stray output: refuse, never echo it back
             return None, garbled
         return data, None
 
@@ -353,22 +367,26 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         file" — that clobbers the file the Add was refusing to overwrite. ``od`` is POSIX and
         present in busybox; when it is missing too the caller gets a transport error, never a
         not-found."""
-        payload, read_rc, result = self._fenced_read(
-            f"od -An -v -tx1 < {self._escape_shell_arg(path)}")
+        arg = self._escape_shell_arg(path)
+        segments, read_rc, result = self._fenced_read(f"od -An -v -tx1 < {arg}", f"wc -c < {arg}")
         unavailable = ExecuteResult(
             stdout=f"{path}: this backend has neither base64 nor od, so a byte-exact read is unavailable",
             exit_code=1)
-        if payload is None:
+        if segments is None:
             return None, result if result.exit_code != 0 else unavailable
         if read_rc is None or read_rc == 127:
             return None, unavailable
+        payload, size = segments
         if read_rc != 0:
             return None, self._failed_read(path, payload, read_rc)
         try:
-            return bytes.fromhex("".join(_strip_terminal_fence_leaks(payload).split())), None
+            data = bytes.fromhex("".join(_strip_terminal_fence_leaks(payload).split()))
         except ValueError:
+            data = None
+        if data is None or not self._matches_size(data, size):
             return None, ExecuteResult(stdout=f"{path}: the backend returned a garbled byte-exact read",
                                        exit_code=1)
+        return data, None
 
     @staticmethod
     def _decode_base64_sample(text: str) -> Optional[bytes]:

@@ -524,6 +524,29 @@ class TestBomHandling:
         assert dst.read_bytes() == b"PRECIOUS DESTINATION\n"
         assert not (tmp_path / "new-src.txt").exists()
 
+    @pytest.mark.parametrize("transport,noise", [("base64", "TERM"), ("od", "4c 44")])
+    def test_output_inside_the_byte_exact_read_never_reaches_a_write(
+            self, tmp_path: Path, monkeypatch, transport, noise):
+        # The fence drops noise around the read, not noise printed WHILE it runs: a BASH_ENV DEBUG
+        # hook firing for the transport command alone puts text inside the payload that still
+        # decodes ("TERM" is b"LDL"; "4c 44" is hex). Such a read must fail, and no edit may write.
+        from tools.file_operations import ShellFileOperations
+        monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+        hook = tmp_path / "hook.sh"
+        hook.write_text(f"trap '[[ $BASH_COMMAND == {transport}* ]] && echo \"{noise}\"' DEBUG\n")
+        target = tmp_path / "conf.txt"
+        original = b"HEADER\nVERSION=1\n"
+        target.write_bytes(original)
+        missing = ("base64",) if transport == "od" else ()
+        env = self._env_without(*missing)(cwd=str(tmp_path), env={"BASH_ENV": str(hook)})
+        ops = ShellFileOperations(env, cwd=str(tmp_path))
+
+        assert ops._read_exact_bytes(str(target))[0] is None
+        assert not ops.patch_replace(str(target), "VERSION=1", "VERSION=2").success
+        assert not ops.patch_v4a(
+            f"*** Begin Patch\n*** Update File: {target}\n@@\n-VERSION=1\n+VERSION=2\n*** End Patch").success
+        assert target.read_bytes() == original
+
     @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="POSIX only: needs os.mkfifo and SIGALRM")
     def test_native_byte_exact_read_never_opens_a_non_regular_file(self, tmp_path: Path, monkeypatch):
         # The native fast path bypasses the backend timeout, so a blocking open there hangs the

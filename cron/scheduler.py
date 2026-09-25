@@ -35,6 +35,14 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Union
 # `hermes update`) otherwise fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Cron external worker: acquire the committed dependency generation's lifetime lease and
+# activate its site-packages on this process's path, *before* any Hermes package import.
+# Without this the collector may delete an unselected generation between the gateway's
+# exit and the worker's next import; without site-packages the first dependency import
+# fails (`No module named 'ruamel'`).  No-op when the runner owns its dependencies.
+from cron.worker_bootstrap import worker_bootstrap
+worker_bootstrap()
+
 from hermes_constants import get_hermes_home, hermes_home_key
 from cron.env_settings import cron_env_setting
 from hermes_cli._subprocess_compat import windows_hide_flags

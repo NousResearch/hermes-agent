@@ -108,7 +108,7 @@ function patchUnixTerminalAsarPaths(destRoot) {
   if (!existsSync(filePath)) return
 
   const source = readFileSync(filePath, 'utf8')
-  const patched = source
+  let patched = source
     .replace(
       "helperPath = helperPath.replace('app.asar', 'app.asar.unpacked');",
       "helperPath = helperPath.replace(/app\\.asar(?!\\.unpacked)/, 'app.asar.unpacked');"
@@ -118,9 +118,42 @@ function patchUnixTerminalAsarPaths(destRoot) {
       "helperPath = helperPath.replace(/node_modules\\.asar(?!\\.unpacked)/, 'node_modules.asar.unpacked');"
     )
 
+  patched = patchUnixTerminalSpawnHelperEnv(patched)
+
   if (patched !== source) {
     writeFileSync(filePath, patched)
   }
+}
+
+export const PTY_SPAWN_HELPER_ENV = 'HERMES_NODE_PTY_SPAWN_HELPER'
+
+/**
+ * Inject a runtime env override for node-pty's `spawn-helper` path into the
+ * staged unixTerminal.js. node-pty 1.1.0 computes `helperPath` once at module
+ * load from the native module's directory and passes it to `pty.fork` on every
+ * spawn — there is no public API to override it. On macOS 26 the hardened
+ * runtime rejects `posix_spawn` with POSIX_SPAWN_SETSID when the helper lives
+ * inside the sealed .app bundle subtree even at mode 0755 (#63784), so the
+ * packaged app stages an executable helper copy OUTSIDE the bundle (userData)
+ * and points node-pty at it through this env var. `fs` is already required at
+ * the top of unixTerminal.js. Pure and idempotent: returns `source` unchanged
+ * when the expected marker line is absent (unexpected upstream layout) or the
+ * override is already present.
+ */
+export function patchUnixTerminalSpawnHelperEnv(source) {
+  const marker = "helperPath = helperPath.replace(/node_modules\\.asar(?!\\.unpacked)/, 'node_modules.asar.unpacked');"
+
+  if (!source.includes(marker) || source.includes(PTY_SPAWN_HELPER_ENV)) {
+    return source
+  }
+
+  const injected = `${marker}
+var helperEnvOverride = process.env.${PTY_SPAWN_HELPER_ENV};
+if (helperEnvOverride && fs.existsSync(helperEnvOverride)) {
+    helperPath = helperEnvOverride;
+}`
+
+  return source.replace(marker, injected)
 }
 
 /**

@@ -9,6 +9,8 @@ import { buildHudModifierMonitor } from '../scripts/build-hud-modifier-monitor.m
 import {
   findHalfInstalledGetWindowsDir,
   installGetWindowsNativeBinding,
+  patchUnixTerminalSpawnHelperEnv,
+  PTY_SPAWN_HELPER_ENV,
   stageGetWindows,
   stageGetWindowsInto,
   stageNodePtyInto,
@@ -337,6 +339,50 @@ test.skipIf(process.platform === 'win32')(
     }
   }
 )
+
+// ─── macOS 26 sealed-bundle spawn-helper env override (#63784) ──────
+
+test('patchUnixTerminalSpawnHelperEnv injects the env override once and is idempotent', () => {
+  const marker = "helperPath = helperPath.replace(/node_modules\\.asar(?!\\.unpacked)/, 'node_modules.asar.unpacked');"
+  const source = [
+    "var helperPath = native.dir + '/spawn-helper';",
+    'helperPath = path.resolve(__dirname, helperPath);',
+    "helperPath = helperPath.replace(/app\\.asar(?!\\.unpacked)/, 'app.asar.unpacked');",
+    marker
+  ].join('\n')
+
+  const patched = patchUnixTerminalSpawnHelperEnv(source)
+  assert.ok(patched.includes(PTY_SPAWN_HELPER_ENV))
+  assert.match(patched, /process\.env\.HERMES_NODE_PTY_SPAWN_HELPER/)
+  assert.match(patched, /fs\.existsSync\(helperEnvOverride\)/)
+  assert.equal(patchUnixTerminalSpawnHelperEnv(patched), patched)
+})
+
+test('patchUnixTerminalSpawnHelperEnv leaves unexpected upstream layouts untouched', () => {
+  assert.equal(patchUnixTerminalSpawnHelperEnv('exports.x = 1;'), 'exports.x = 1;')
+})
+
+test('the staged unixTerminal.js copy honors HERMES_NODE_PTY_SPAWN_HELPER', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'node-pty')
+    const destRoot = join(tmp, 'dest')
+    const prebuildDir = join(srcRoot, 'prebuilds', `${process.platform}-${process.arch}`)
+
+    makeFakeNodePty(srcRoot, { prebuildPlatform: process.platform, prebuildArch: process.arch })
+    makeFakeUnixTerminal(srcRoot)
+    makeFakeNode(join(prebuildDir, 'pty.node'), process.platform)
+    fs.writeFileSync(join(prebuildDir, 'spawn-helper'), 'helper')
+    fs.chmodSync(join(prebuildDir, 'spawn-helper'), 0o644)
+
+    stageNodePtyInto(srcRoot, destRoot, { platform: process.platform, arch: process.arch })
+
+    const staged = fs.readFileSync(join(destRoot, 'lib', 'unixTerminal.js'), 'utf8')
+    assert.ok(staged.includes(PTY_SPAWN_HELPER_ENV))
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
 
 // ─── non-ASCII path regression tests ───────────────────────────────
 //

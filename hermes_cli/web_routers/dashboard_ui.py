@@ -17,6 +17,7 @@ from hermes_cli.config import cfg_get
 from hermes_cli.web_routers._common import config_scoped_to_thread
 from hermes_cli.web_server_dashboard import (
     _BUILTIN_DASHBOARD_THEMES, _discover_user_themes, _invalidate_plugins_hub_cache, _merged_plugins_hub,
+    _mount_plugin_api_routes,
 )
 from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
@@ -148,8 +149,9 @@ async def get_dashboard_plugins(profile: Optional[str] = None):
 
 @router.get("/api/dashboard/plugins/rescan")
 async def rescan_dashboard_plugins():
-    """Force re-scan of dashboard plugins."""
-    plugins = _get_dashboard_plugins(force_rescan=True)
+    """Discover plugins and reconcile their backend routes without disconnecting clients."""
+    plugins = await asyncio.to_thread(_mount_plugin_api_routes, force_rescan=True)
+    _invalidate_plugins_hub_cache()
     return {"ok": True, "count": len(plugins)}
 
 
@@ -172,8 +174,7 @@ def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
         return result
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or fallback_error)
-    if rescan:
-        _get_dashboard_plugins(force_rescan=True)
+    _mount_plugin_api_routes(force_rescan=rescan)
     _invalidate_plugins_hub_cache()
     return result
 

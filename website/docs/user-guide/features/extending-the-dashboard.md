@@ -882,7 +882,7 @@ Read the plugin source (`strike-freedom-cockpit/dashboard/dist/index.js` in the 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/dashboard/plugins` | GET | List discovered plugins (with manifests, minus internal fields). |
-| `/api/dashboard/plugins/rescan` | GET | Force re-scan the plugin directories without restarting. |
+| `/api/dashboard/plugins/rescan` | GET | Re-discover plugins, mount new backend APIs and replace changed API handlers without restarting. |
 | `/dashboard-plugins/<name>/<path>` | GET | Serve static assets from a plugin's `dashboard/` directory. Path traversal is blocked. |
 | `/api/plugins/<name>/*` | * | Plugin-registered backend routes. |
 
@@ -913,7 +913,10 @@ The `sidebar` slot only renders when the active theme has `layoutVariant: cockpi
 
 **Plugin backend routes return 404.**
 1. Confirm the manifest has `"api": "plugin_api.py"` pointing to an existing file inside `dashboard/`.
-2. Restart `hermes dashboard` — plugin API routes are mounted once at startup, **not** on rescan.
+2. Call `/api/dashboard/plugins/rescan` with the dashboard session token after installing or editing a backend. This works for both `hermes dashboard` and Desktop's `hermes serve`: new API routers are mounted and changed API files are freshly imported without disconnecting clients. Dashboard install/update/enable/disable/remove actions also reconcile the routes.
+   - A failed import leaves the previous working handlers in place and logs the failure. Removed or disabled plugins lose their routes on rescan. In-flight requests finish using their original handlers.
+   - The API namespace stays owned by the server's launch profile, not the selected chat profile. Imports use that profile's home, secrets and enable/disable policy; project-local Python is never imported.
+   - Only the declared API file is reloaded. Changes to imported helper modules or plugin startup/shutdown/lifespan services still require a backend restart. Desktop's file watcher and **Reload desktop plugins** reload only its JavaScript half; call the backend rescan separately.
 3. Check that `plugin_api.py` exports a module-level `router = APIRouter()`. Other export names are not picked up.
 4. Tail `~/.hermes/logs/errors.log` for `Failed to load plugin <name> API routes` — import errors are logged there.
 

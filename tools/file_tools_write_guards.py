@@ -3,7 +3,8 @@
 Every guard returns ``None`` when the write may proceed, else an error string
 the tool returns verbatim.
 Guards, in the order the tools apply them: ``_check_sensitive_path`` (hard
-deny), ``_check_binary_document_write``, ``_check_protected_instruction_write``
+deny), ``_check_soul_formation_write`` (hard deny: soul eval artifacts),
+``_check_binary_document_write``, ``_check_protected_instruction_write``
 (ALWAYS ask), ``_check_approval_required_write`` (normal gate),
 ``_check_cross_profile_path`` (sandbox-mirror lost-work), ``_is_internal_file_tool_content``.
 ``_stale_overwrite_blocker`` (write_file only, under the per-path lock) refuses a
@@ -324,6 +325,30 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     if not timed and choice in {"once", "session", "always"}:
         return None
     return timed_out if timed else denied
+
+
+def _check_soul_formation_write(paths: list[str], task_id: str = "default") -> str | None:
+    """Soul formation guard — the security boundary of the soul layer.
+
+    "An agent may not edit its own axioms" is enforced here, in code: agent
+    writes to the soul eval artifacts (SOUL.suite.yaml, SOUL.baseline.json)
+    are denied unconditionally, before any configurable rule runs, so no
+    permission config or --yolo flag can override it. Human edits made in
+    their own editor never pass through this path and are unaffected.
+
+    SOUL.md itself is intentionally NOT hard-denied here: it stays on the
+    existing always-ask protected-instruction gate (human approval required,
+    even under --yolo), so axioms still change only by human edit plus a full
+    eval re-run. ONE artifact gates the ENTIRE multi-file patch
+    (all-or-nothing, like the protected-instruction gate).
+    """
+    from agent.soul_constitution import is_soul_eval_artifact, soul_formation_denial
+
+    targets = [p for p in paths if is_soul_eval_artifact(p)]
+    if not targets:
+        return None
+    display = ", ".join(dict.fromkeys(targets))
+    return soul_formation_denial(display)
 
 
 def _check_protected_instruction_write(paths: list[str], task_id: str = "default") -> str | None:

@@ -452,6 +452,51 @@ class PluginContext:
         # tracking makes unload/force-reload remove this transport.
         self._track_mapping_entry("approval_transport", clean, transports, entry, None)
 
+    def register_native_turn_source(
+        self, source: Any, surfaces: tuple[str, ...] | list[str] = ("cli", "tui", "gateway"),
+    ) -> "PluginRegistration":
+        """Register a profile-scoped source of host-admitted native user turns.
+
+        ``source`` is structural: a stable non-empty ``name`` plus synchronous
+        ``poll(session)`` (returns ``None`` or a
+        :class:`~hermes_cli.native_turn_sources.NativeTurnLease``) and synchronous
+        ``on_user_boundary(session, reason)``. The host polls registered sources only
+        for an exact, already-owned idle session whose surface is in ``surfaces``,
+        and admits the lease's prompt as an ordinary native user turn. Stored in the
+        plugin manager's ``_native_turn_sources`` (scoped to this manager's profile
+        home) and published to the board-host registry so ``poll_native_turn`` sees
+        it. Returns a :class:`PluginRegistration` that unregisters it on
+        dispose/unload.
+        """
+        from hermes_cli.native_turn_sources import (  # late import: keep heavy imports off startup
+            RegisteredNativeTurnSource,
+            normalize_surfaces,
+            register_profile_source,
+            source_name,
+        )
+
+        name = source_name(source)
+        registration = RegisteredNativeTurnSource(
+            source=source, surfaces=normalize_surfaces(surfaces), plugin_id=self.plugin_id,
+        )
+        bucket = self._manager._native_turn_sources
+        if name in bucket:
+            owner = bucket[name].plugin_id
+            raise ValueError(
+                f"native turn source {name!r} is already registered by {owner!r}"
+            )
+        bucket[name] = registration
+        # Publish to the profile-scoped board-host registry so poll_native_turn()
+        # sees the source at the exact profile home.
+        unregister_scope = register_profile_source(self._manager.home_path, registration)
+
+        def release() -> None:
+            if bucket.get(name) is registration:
+                bucket.pop(name, None)
+            unregister_scope()
+
+        return self._track("native_turn_source", name, release)
+
     @_serialized_replacement
     def register_tool(
         self, name: str, toolset: str, schema: dict, handler: Callable,
@@ -701,16 +746,48 @@ class PluginContext:
         return self._register_entry("command", clean, self._manager._plugin_commands, entry,
                                     "Plugin %s registered command: /%s", clean)
 
+    def list_profile_homes(self) -> tuple[tuple[str, "Path"], ...]:
+        """Return canonical ``(profile_name, profile_home)`` pairs for every profile,
+        in ``list_profile_names()`` order (root/default first when present). Homes are
+        resolved to their canonical absolute path. Useful for machine-wide read-only
+        audits; pair with :meth:`dispatch_tool` under an explicit ``profile_home``."""
+        from hermes_cli.profiles import get_profile_dir, list_profile_names
+
+        return tuple(
+            (str(name), get_profile_dir(str(name)).resolve())
+            for name in list_profile_names()
+        )
+
     def dispatch_tool(self, tool_name: str, args: dict, **kwargs) -> str:
         """Dispatch a tool call through the registry with the parent agent (when available)
-        resolved automatically; returns the handler's JSON string. ``kwargs`` forward to dispatch."""
+        resolved automatically; returns the handler's JSON string. ``kwargs`` forward to dispatch.
+        When ``profile_home`` is passed, the tool runs under that exact profile scope: the
+        ``get_hermes_home()`` override is set for the duration and the registry scope keys on
+        that profile's canonical home."""
+        from hermes_constants import (
+            hermes_home_key, reset_hermes_home_override, set_hermes_home_override,
+        )
+        from pathlib import Path
         from tools.registry import registry
         # In gateway mode _cli_ref is None — tools degrade gracefully (no spinner, TERMINAL_CWD).
+        raw_profile = kwargs.pop("profile_home", None)
+        if raw_profile is None:
+            scope = self._manager.scope_key
+            target = None
+        else:
+            target = Path(raw_profile).expanduser().resolve()
+            scope = hermes_home_key(target)
         if "parent_agent" not in kwargs:
             agent = getattr(self._manager._cli_ref, "agent", None)
             if agent is not None:
                 kwargs["parent_agent"] = agent
-        return registry.dispatch(tool_name, args, scope=self._manager.scope_key, **kwargs)
+        if target is None:
+            return registry.dispatch(tool_name, args, scope=scope, **kwargs)
+        token = set_hermes_home_override(target)
+        try:
+            return registry.dispatch(tool_name, args, scope=scope, **kwargs)
+        finally:
+            reset_hermes_home_override(token)
 
     @_serialized_replacement
     def register_context_engine(self, engine) -> Optional[PluginRegistration]:
@@ -1215,6 +1292,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._portable_mcp_server_plugins: Dict[str, str] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
         self._approval_transports: Dict[str, Any] = {}
+        self._native_turn_sources: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
         self._platform_handler_factories: Dict[str, List[tuple]] = {}
         # Process-owned discovery listeners (``on_plugin_loaded``); never cleared by unload().

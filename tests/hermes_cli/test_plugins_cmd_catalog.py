@@ -204,6 +204,100 @@ def test_repin_keeps_local_files_backs_up_edits_and_follows_manifest_rename(worl
     assert any("plugins-backup" in w for w in result["warnings"]) and any("renamed" in w for w in result["warnings"])
 
 
+def test_carry_user_files_without_git_preserves_data_but_not_old_code_or_type_clashes(tmp_path):
+    """No-git fallback keeps user state without resurrecting removed code or fighting new tree shapes."""
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+
+    (old / "config.yaml").write_text("endpoint: mine\n")
+    (old / "data").mkdir()
+    (old / "data" / "state.db").write_text("user data")
+    (old / "legacy.py").write_text("OLD = True\n")
+
+    # old=file/new=dir: the new directory owns the path.
+    (old / "file-to-dir").write_text("old user file")
+    (new / "file-to-dir").mkdir()
+    (new / "file-to-dir" / "current.txt").write_text("new tree")
+
+    # old=dir/new=file: carrying a descendant must not make mkdir abort the update.
+    (old / "dir-to-file").mkdir()
+    (old / "dir-to-file" / "state.db").write_text("old nested data")
+    (new / "dir-to-file").write_text("new tree file")
+
+    cat._carry_user_files(old, new, None)
+
+    assert (new / "config.yaml").read_text() == "endpoint: mine\n"
+    assert (new / "data" / "state.db").read_text() == "user data"
+    assert not (new / "legacy.py").exists()
+    assert (new / "file-to-dir" / "current.txt").read_text() == "new tree"
+    assert sorted(path.name for path in (new / "file-to-dir").iterdir()) == ["current.txt"]
+    assert (new / "dir-to-file").read_text() == "new tree file"
+
+
+@pytest.mark.parametrize("via", ["url", "catalog"])
+def test_update_of_a_subdir_install_keeps_files_the_user_created_or_edited(world, tmp_path, monkeypatch, via):
+    """A subdirectory install carries no ``.git``; both update paths must preserve user config/data."""
+    mono = tmp_path / "mono"
+    src = mono / "plugins" / "sub-plugin"
+    src.mkdir(parents=True)
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 1.0.0\ndescription: d\n")
+    (src / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    (src / "config.yaml.example").write_text("endpoint: default\n")
+    sp.run(["git", "init", "-q"], cwd=mono, check=True, env=_GIT_ENV)
+    pin = {"sha": _commit(mono, "v1")}
+
+    def entry():
+        return pc_cat.PluginCatalogEntry(
+            name="sub-plugin",
+            repo=mono.as_uri(),
+            sha=pin["sha"],
+            description="d",
+            maintainer="t",
+            subdir="plugins/sub-plugin",
+        )
+
+    monkeypatch.setattr(pc_cat, "load_catalog", lambda catalog_dir=None: [entry()])
+    if via == "catalog":
+        target = cat.install_catalog_entry(entry(), force=False)[0]
+    else:
+        target = pc._install_plugin_core(f"{mono.as_uri()}#plugins/sub-plugin", force=False)[0]
+    assert not (target / ".git").exists()
+
+    (target / "config.yaml").write_text("endpoint: mine\n")
+    (target / "data").mkdir()
+    (target / "data" / "state.json").write_text("{}")
+
+    (src / "plugin.yaml").write_text("name: sub-plugin\nversion: 2.0.0\ndescription: d\n")
+    (src / "config.yaml.example").write_text("endpoint: new-default\n")
+    pin["sha"] = _commit(mono, "v2")
+    assert pc.dashboard_update_user_plugin("sub-plugin")["ok"] is True
+
+    assert "version: 2.0.0" in (target / "plugin.yaml").read_text()
+    assert (target / "config.yaml").read_text() == "endpoint: mine\n"
+    assert (target / "data" / "state.json").read_text() == "{}"
+
+
+def test_repin_keeps_a_wholly_ignored_data_dir_in_a_git_checkout(world):
+    """A single ``!! data/`` status entry must preserve every file below that ignored directory."""
+    repo = world["repo"]
+    (repo / ".gitignore").write_text("data/\n")
+    world["state"]["pin"] = _commit(repo, "ignore data")
+    target = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)[0]
+    assert (target / ".git").exists()
+
+    (target / "data" / "db").mkdir(parents=True)
+    (target / "data" / "db" / "index.db").write_text("user data")
+
+    (repo / "__init__.py").write_text("def register(ctx):\n    pass  # v3\n")
+    world["state"]["pin"] = _commit(repo, "v3")
+    assert pc.dashboard_update_user_plugin("cat-plugin")["unchanged"] is False
+
+    assert _head(target) == world["state"]["pin"]
+    assert (target / "data" / "db" / "index.db").read_text() == "user data"
+
+
 def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, tmp_path, monkeypatch):
     """A URL install whose name lands on the kill list AFTER install must stop pulling, cannot be enabled
     and is refused at load; an install made with --allow-removed keeps working."""

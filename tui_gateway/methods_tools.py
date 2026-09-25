@@ -476,6 +476,7 @@ def _catalog_skills(cat: _Catalog, skills: dict[str, dict]) -> str:
     sc = _tools_mod("agent.skill_commands")
     for k, info in sorted(sc.scan_skill_commands().items()):
         cat.pairs.append([k, str(info.get("description", "Skill"))])
+        cat.canon.setdefault(k.lower(), k)
         name = str(info.get("name") or k.lstrip("/"))
         skills[k] = {"usage": usage(name), "origin": origin_of(name)}
     names = sorted(s["name"] for s in _tools_mod("tools.skills_tool")._find_all_skills())

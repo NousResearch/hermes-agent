@@ -11402,6 +11402,31 @@ def test_commands_catalog_ranks_skill_commands_by_recorded_usage(monkeypatch):
     assert resp["result"]["skill_count"] == len(skills)
 
 
+def test_commands_catalog_resolves_skill_commands_exactly(monkeypatch):
+    """A skill's `/name` must be an exact `canon` entry.
+
+    The TUI prefix-matches any name missing from `canon`, so a skill `/pr`
+    collided with /prompt, /profile and /proactive (-> /loop) and was
+    rejected as "ambiguous command" before the gateway could dispatch it.
+    """
+    monkeypatch.setattr(
+        "agent.skill_commands.scan_skill_commands",
+        lambda: {
+            "/pr": {"name": "pr", "description": "Open a PR worktree"},
+            "/proactive": {"name": "proactive", "description": "Shadows an alias"},
+        },
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    canon = resp["result"]["canon"]
+    assert canon["/pr"] == "/pr"
+    # A skill never re-points a built-in name or alias.
+    assert canon["/proactive"] == "/loop"
+
+
 def test_commands_catalog_survives_an_unreadable_usage_sidecar(monkeypatch):
     """A broken/absent .usage.json degrades to no ranking, never a broken menu."""
     monkeypatch.setattr(

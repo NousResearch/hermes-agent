@@ -411,7 +411,9 @@ def camofox_navigate(url: str, task_id: Optional[str] = None) -> str:
             result["vnc_hint"] = ("Browser is visible via VNC. "
                                   "Share this link with the user so they can watch the browser live.")
         try:  # Auto-take a compact snapshot so the model can act immediately.
-            result["snapshot"], result["element_count"] = _fetch_snapshot(session)
+            from tools.browser_tool_snapshot import _redact_browser_output
+            snapshot, result["element_count"] = _fetch_snapshot(session)
+            result["snapshot"] = _redact_browser_output(snapshot)
         except Exception:
             pass  # Navigation succeeded; snapshot is a bonus
         return json.dumps(result)
@@ -538,8 +540,9 @@ def camofox_close(task_id: Optional[str] = None) -> str:
 def camofox_get_images(task_id: Optional[str] = None) -> str:
     """Get images on the current page via Camofox (parsed from the snapshot)."""
     def body(session):
+        from tools.browser_tool_snapshot import _redact_browser_output
         images = _parse_snapshot_images(_snapshot_data(session).get("snapshot", ""))
-        return json.dumps({"success": True, "images": images, "count": len(images)})
+        return json.dumps({"success": True, "images": _redact_browser_output(images), "count": len(images)})
     return _with_tab(task_id, "extract page images", body)
 
 

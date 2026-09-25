@@ -4,9 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesReadDirResult } from '@/global'
 import { $connection, $selectedStoredSessionId, $workspaceCwdOwner, setCurrentCwd } from '@/store/session'
 
+import { $showIgnoredRoots } from './files/prefs'
 import { resetProjectTreeState } from './files/use-project-tree'
 
 import { RightSidebarPane } from './index'
+
+vi.mock('@/api/client', async importOriginal => ({
+  ...(await importOriginal()),
+  hermesApi: vi.fn().mockResolvedValue({ entries: [] })
+}))
 
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
 
@@ -19,6 +25,7 @@ describe('RightSidebarPane', () => {
     $connection.set(null)
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
+    $showIgnoredRoots.set([])
     resetProjectTreeState()
     readDir.mockReset()
     readDir.mockResolvedValue({ entries: [{ isDirectory: false, name: 'README.md', path: '/repo/README.md' }] })
@@ -30,6 +37,7 @@ describe('RightSidebarPane', () => {
     $connection.set(null)
     $selectedStoredSessionId.set(null)
     $workspaceCwdOwner.set(null)
+    $showIgnoredRoots.set([])
     setCurrentCwd('')
     resetProjectTreeState()
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
@@ -41,7 +49,6 @@ describe('RightSidebarPane', () => {
     render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
 
     const refresh = await screen.findByRole('button', { name: 'Refresh tree' })
-
     readDir.mockClear()
     fireEvent.click(refresh)
     await waitFor(() => expect(readDir).toHaveBeenCalledWith('/repo'))
@@ -68,5 +75,26 @@ describe('RightSidebarPane', () => {
 
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
     expect(readDir).not.toHaveBeenCalled()
+  })
+
+  it('explains the remote security filter when showing gitignored files', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    setCurrentCwd('/repo')
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+
+    const notice = /remote backends hide sensitive files/i
+    expect(screen.queryByText(notice)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Show gitignored files' }))
+    expect(await screen.findByText(notice)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Hide gitignored files' }))
+    expect(screen.queryByText(notice)).toBeNull()
+    expect(readDir).not.toHaveBeenCalled()
+  })
+
+  it('does not claim local files are hidden by the remote security filter', () => {
+    setCurrentCwd('/repo')
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Show gitignored files' }))
+    expect(screen.queryByText(/remote backends hide sensitive files/i)).toBeNull()
   })
 })

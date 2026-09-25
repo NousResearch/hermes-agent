@@ -3386,6 +3386,7 @@ export const ja = defineLocale({
     collapseAll: 'すべてのフォルダーを折りたたむ',
     showIgnored: 'gitignore されたファイルを表示',
     hideIgnored: 'gitignore されたファイルを非表示',
+    remoteSensitiveFilesHidden: 'リモートではセキュリティ上、gitignore 対象を表示しても .env などの機密ファイルは非表示です。',
     previewUnavailable: 'プレビューは利用できません',
     couldNotPreview: path => `${path} をプレビューできませんでした`,
     noProjectTitle: 'プロジェクトなし',

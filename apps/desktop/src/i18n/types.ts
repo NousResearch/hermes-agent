@@ -3922,6 +3922,7 @@ export interface Translations {
     collapseAll: string
     showIgnored: string
     hideIgnored: string
+    remoteSensitiveFilesHidden: string
     previewUnavailable: string
     couldNotPreview: (path: string) => string
     noProjectTitle: string

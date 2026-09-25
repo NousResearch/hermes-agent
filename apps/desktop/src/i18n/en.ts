@@ -4649,6 +4649,7 @@ export const en: Translations = {
     collapseAll: 'Collapse all folders',
     showIgnored: 'Show gitignored files',
     hideIgnored: 'Hide gitignored files',
+    remoteSensitiveFilesHidden: 'Remote backends hide sensitive files (such as .env) for security, even when gitignored files are shown.',
     previewUnavailable: 'Preview unavailable',
     couldNotPreview: path => `Could not preview ${path}`,
     noProjectTitle: 'No project',

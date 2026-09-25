@@ -3583,6 +3583,7 @@ export const zhHant = defineLocale({
     collapseAll: '收合所有資料夾',
     showIgnored: '顯示 gitignore 的檔案',
     hideIgnored: '隱藏 gitignore 的檔案',
+    remoteSensitiveFilesHidden: '基於安全考量，遠端後端會隱藏 .env 等敏感檔案，即使已顯示 gitignore 忽略的檔案。',
     previewUnavailable: '預覽不可用',
     couldNotPreview: path => `無法預覽 ${path}`,
     noProjectTitle: '沒有專案',

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 
+import { Switch } from '@/components/ui/switch'
 import { useI18n } from '@/i18n'
 
 import { ListStripButton } from '../master-detail'
@@ -7,6 +8,41 @@ import { PanelEmpty } from '../overlays/panel'
 
 // The chrome the Skills and Tools tabs share: one inspector header, one empty
 // state and one sort control, so switching between them never jumps.
+
+// Section header for a grouped capability list: the group label, its row
+// count, and one group-wide switch. Mixed state reads as off; flipping it on
+// enables the whole group (the strip-menu bulk convention, inline).
+export function GroupHeaderRow({
+  busy,
+  count,
+  enabled,
+  label,
+  onToggle
+}: {
+  busy?: boolean
+  count: number
+  enabled: boolean
+  label: string
+  onToggle: (checked: boolean) => void
+}) {
+  return (
+    <div className="flex h-7 shrink-0 items-center gap-1.5 pr-1.5 pl-2">
+      <span className="truncate text-[0.62rem] font-medium uppercase tracking-wide text-(--ui-text-quaternary)">
+        {label}
+      </span>
+      <span className="shrink-0 text-[0.62rem] tabular-nums text-(--ui-text-quaternary)">{count}</span>
+      <Switch
+        aria-label={label}
+        checked={enabled}
+        className="ml-auto shrink-0 cursor-pointer"
+        disabled={busy}
+        onCheckedChange={onToggle}
+        size="xs"
+        title={label}
+      />
+    </div>
+  )
+}
 
 // Shared inspector header — mirrors Messaging's PlatformDetail so Skills and
 // Tools share one title/description block and tab switches don't jump.

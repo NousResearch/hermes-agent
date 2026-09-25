@@ -26,11 +26,18 @@ import {
   MasterDetail
 } from '../../master-detail'
 import { asText, toolNames, toolsetDisplayLabel } from '../../settings/helpers'
-import { CapabilityEmpty, SortButton } from '../primitives'
+import { CapabilityEmpty, GroupHeaderRow, SortButton } from '../primitives'
 
 import { useToolCalls } from './tool-calls'
 import { ToolsetDetail } from './toolset-detail'
 import { filteredToolsets, toolsetCalls, TOOLSETS_QUERY_KEY, toolsetsQueryKey } from './toolsets-data'
+
+// Display order for TOOLSET_GROUPS sections; unknown groups trail.
+const GROUP_ORDER = ['web', 'system', 'media', 'knowledge', 'integrations', 'plugins', 'other']
+const groupRank = (group: string) => {
+  const i = GROUP_ORDER.indexOf(group)
+  return i === -1 ? GROUP_ORDER.length : i
+}
 
 // Sort direction for the Tools list — persisted so the tab remembers
 // most/least-used across navigations and restarts.
@@ -71,10 +78,40 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
     [query, toolCalls, toolsets, toolsetsSortDesc]
   )
 
+  // The list renders as TOOLSET_GROUPS sections (header + its rows, list sort
+  // preserved inside a section). Switch state and the header switch's write
+  // target the WHOLE group, never the search-filtered view — same contract as
+  // the strip-menu bulk items.
+  const groupedToolsets = useMemo(() => {
+    const byGroup = new Map<string, ToolsetInfo[]>()
+    for (const ts of visibleToolsets) {
+      const key = ts.group ?? 'other'
+      byGroup.set(key, [...(byGroup.get(key) ?? []), ts])
+    }
+
+    return Array.from(byGroup.entries()).sort((a, b) => groupRank(a[0]) - groupRank(b[0]))
+  }, [visibleToolsets])
+
   // Bulk actions and the master-switch state target the WHOLE tab, never the
   // search-filtered view — a tab-wide control that silently scoped to the
   // current query would be a lie.
   const bulkToolsets = useMemo(() => toolsets.filter(ts => isDesktopToolsetVisible(ts.name)), [toolsets])
+
+  // Whole-group truth for the section-header switches: size + are all enabled.
+  const groupState = useMemo(() => {
+    const state = new Map<string, { allEnabled: boolean; size: number }>()
+    const rowsByGroup = new Map<string, ToolsetInfo[]>()
+    for (const ts of bulkToolsets) {
+      const key = ts.group ?? 'other'
+      rowsByGroup.set(key, [...(rowsByGroup.get(key) ?? []), ts])
+    }
+
+    for (const [group, rows] of rowsByGroup) {
+      state.set(group, { allEnabled: rows.every(ts => ts.enabled), size: rows.length })
+    }
+
+    return state
+  }, [bulkToolsets])
 
   // Keep a valid selection: fall back to the first visible row when the
   // current selection is filtered out (or nothing is selected yet).
@@ -198,31 +235,47 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
           />
         }
       >
-        {visibleToolsets.map(toolset => {
-          const label = toolsetDisplayLabel(toolset)
-          const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
+        {groupedToolsets.map(([group, rows]) => {
+          const state = groupState.get(group)
+          const size = state?.size ?? rows.length
 
           return (
-            <CapRow
-              active={activeToolset?.name === toolset.name}
-              busy={bulkBusy}
-              enabled={toolset.enabled}
-              key={toolset.name}
-              meta={
-                calls === null ? (
-                  <CountSkeleton />
-                ) : calls > 0 ? (
-                  `×${compactNumber(calls)}`
-                ) : (
-                  `${toolNames(toolset).length} tools`
+            <div className="contents" key={group}>
+              <GroupHeaderRow
+                busy={bulkBusy}
+                count={size}
+                enabled={state?.allEnabled ?? false}
+                label={t.skills.toolsetGroupName(group)}
+                onToggle={checked => void bulkApplyGroup(group, checked)}
+              />
+              {rows.map(toolset => {
+                const label = toolsetDisplayLabel(toolset)
+                const calls = toolCalls ? toolsetCalls(toolset, toolCalls) : null
+
+                return (
+                  <CapRow
+                    active={activeToolset?.name === toolset.name}
+                    busy={bulkBusy}
+                    enabled={toolset.enabled}
+                    key={toolset.name}
+                    meta={
+                      calls === null ? (
+                        <CountSkeleton />
+                      ) : calls > 0 ? (
+                        `×${compactNumber(calls)}`
+                      ) : (
+                        `${toolNames(toolset).length} tools`
+                      )
+                    }
+                    onSelect={() => setSelectedToolset(toolset.name)}
+                    onToggle={checked => void handleToggleToolset(toolset, checked)}
+                    subtitle={asText(toolset.description)}
+                    title={label}
+                    toggleLabel={t.skills.toggleToolset(label, !toolset.enabled)}
+                  />
                 )
-              }
-              onSelect={() => setSelectedToolset(toolset.name)}
-              onToggle={checked => void handleToggleToolset(toolset, checked)}
-              subtitle={asText(toolset.description)}
-              title={label}
-              toggleLabel={t.skills.toggleToolset(label, !toolset.enabled)}
-            />
+              })}
+            </div>
           )
         })}
       </ListColumn>

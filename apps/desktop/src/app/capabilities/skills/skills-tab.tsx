@@ -37,7 +37,7 @@ import {
   MasterDetail
 } from '../../master-detail'
 import { prettyName } from '../../settings/helpers'
-import { CapabilityEmpty, SortButton } from '../primitives'
+import { CapabilityEmpty, GroupHeaderRow, SortButton } from '../primitives'
 
 import { OfficialSkillDetail } from './official-skill-detail'
 import { SkillDetail } from './skill-detail'
@@ -112,6 +112,35 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
   )
 
   const visibleSkills = useMemo(() => filteredSkills(skills, query, skillsSortDesc), [query, skills, skillsSortDesc])
+
+  // The installed list renders as category sections (header + its rows, list
+  // sort preserved inside a section). The header switch's state and write
+  // target the WHOLE category, never the search-filtered view — same contract
+  // as the strip-menu bulk items.
+  const groupedSkills = useMemo(() => {
+    const byCategory = new Map<string, SkillInfo[]>()
+    for (const skill of visibleSkills) {
+      const key = categoryFor(skill)
+      byCategory.set(key, [...(byCategory.get(key) ?? []), skill])
+    }
+
+    return Array.from(byCategory.entries()).sort((a, b) => a[0].localeCompare(b[0]))
+  }, [visibleSkills])
+
+  const categoryState = useMemo(() => {
+    const state = new Map<string, { allEnabled: boolean; size: number }>()
+    const rowsByCategory = new Map<string, SkillInfo[]>()
+    for (const skill of skills) {
+      const key = categoryFor(skill)
+      rowsByCategory.set(key, [...(rowsByCategory.get(key) ?? []), skill])
+    }
+
+    for (const [category, rows] of rowsByCategory) {
+      state.set(category, { allEnabled: rows.every(skill => skill.enabled), size: rows.length })
+    }
+
+    return state
+  }, [skills])
 
   // Installed-name set stays unfiltered so search cannot make a skill look absent.
   const installedSkillNames = useMemo(() => new Set(skills.map(s => s.name)), [skills])
@@ -348,23 +377,39 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
               />
             }
           >
-            {visibleSkills.map(skill => (
-              <CapRow
-                active={activeOfficial === null && activeSkill?.name === skill.name}
-                busy={bulkBusy}
-                enabled={skill.enabled}
-                key={skill.name}
-                meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
-                onSelect={() => {
-                  setSelectedSkill(skill.name)
-                  setSelectedOfficial(null)
-                }}
-                onToggle={enabled => void handleToggleSkill(skill, enabled)}
-                subtitle={skillSubtitle(skill)}
-                title={skill.name}
-                toggleLabel={skill.name}
-              />
-            ))}
+            {groupedSkills.map(([category, rows]) => {
+              const state = categoryState.get(category)
+              const size = state?.size ?? rows.length
+
+              return (
+                <div className="contents" key={category}>
+                  <GroupHeaderRow
+                    busy={bulkBusy}
+                    count={size}
+                    enabled={state?.allEnabled ?? false}
+                    label={prettyName(category)}
+                    onToggle={checked => void bulkCategoryApply(category, checked)}
+                  />
+                  {rows.map(skill => (
+                    <CapRow
+                      active={activeOfficial === null && activeSkill?.name === skill.name}
+                      busy={bulkBusy}
+                      enabled={skill.enabled}
+                      key={skill.name}
+                      meta={usageOf(skill) > 0 ? `×${compactNumber(usageOf(skill))}` : undefined}
+                      onSelect={() => {
+                        setSelectedSkill(skill.name)
+                        setSelectedOfficial(null)
+                      }}
+                      onToggle={enabled => void handleToggleSkill(skill, enabled)}
+                      subtitle={skillSubtitle(skill)}
+                      title={skill.name}
+                      toggleLabel={skill.name}
+                    />
+                  ))}
+                </div>
+              )
+            })}
             {visibleOfficial.length > 0 && (
               <div className="flex h-7 shrink-0 items-end px-2 pb-1 text-[0.62rem] font-medium uppercase tracking-wide text-(--ui-text-quaternary)">
                 {t.skills.officialCatalog}

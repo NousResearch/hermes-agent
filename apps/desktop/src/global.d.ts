@@ -320,8 +320,9 @@ declare global {
        *  menu's Cut/Copy/Paste/Select all). */
       contextMenuEdit?: (command: 'copy' | 'cut' | 'paste' | 'selectAll') => Promise<void>
       /** Copy the image under the LAST context-menu gesture (Chromium tracks
-       *  its coordinates on the main-process context-menu event). */
-      contextMenuCopyImage?: () => Promise<void>
+       *  its coordinates on the main-process context-menu event). Guests pass
+       *  their webview id + click point — main never sees their gesture. */
+      contextMenuCopyImage?: (payload?: { webContentsId: number; x: number; y: number }) => Promise<void>
       /** Replace the misspelled word or add it to the dictionary. */
       contextMenuSpellcheck?: (action: { kind: 'add' | 'replace'; word: string }) => Promise<void>
       /** Add a word to the spell-check dictionary of a webview guest's

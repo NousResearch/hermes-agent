@@ -17273,7 +17273,23 @@ ipcMain.handle('hermes:context-menu:edit', (event, command) => {
 
 // Copy the image under the sender's LAST context-menu gesture. Chromium only
 // exposes image bytes through copyImageAt, and only main saw the coordinates.
-ipcMain.handle('hermes:context-menu:copy-image', event => {
+// A guest (in-app browser) ask is different: main never records the guest's
+// gestures, so the renderer names the webview by id and passes the point in
+// the guest's own coordinate space. A guest ask never falls through to the
+// host lookup — a stale host point would copy the wrong image.
+ipcMain.handle('hermes:context-menu:copy-image', (event, payload) => {
+  const guestId = Number(payload?.webContentsId)
+
+  if (Number.isFinite(guestId) && guestId > 0) {
+    const guest = electronWebContents.fromId(guestId)
+
+    if (guest && !guest.isDestroyed()) {
+      guest.copyImageAt(Number(payload?.x) || 0, Number(payload?.y) || 0)
+    }
+
+    return
+  }
+
   const point = lastContextMenuPoint.get(event.sender.id)
 
   if (point) {

@@ -1633,7 +1633,7 @@ try {
         $verify = Invoke-HermesStep $verifyCommand[0] $verifyArgs 'verify'
         if ($verify.Code -ne 0) {
             $finalCode = 8
-            $finalMsg = "The updated Hermes runtime or Desktop build failed verification. Repair the installation and review antivirus quarantine before retrying."
+            $finalMsg = "Hermes was updated, but the new Desktop build could not be verified. Nothing was removed. If Hermes does not start normally, run 'hermes desktop --force-build' in a terminal to rebuild it."
             Write-HandoffLog $finalMsg
             exit $finalCode
         }

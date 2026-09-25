@@ -60,23 +60,23 @@ describe('kanban connection scope', () => {
     const dispose = bindApi(async () => ({}) as never, storage, socket)
 
     expect($boardSlug.get()).toBe('ops')
-    expect(dials).toEqual(['/events?board=ops'])
+    expect(dials).toEqual(['/dashboard/events?board=ops'])
 
     // Boot publishes the local descriptor after plugins bound: same scope, no dial.
     setConnection({ mode: 'local' } as never)
-    expect(dials).toEqual(['/events?board=ops'])
+    expect(dials).toEqual(['/dashboard/events?board=ops'])
 
     // Different slug on the next gateway: exactly one dial, not one per listener.
     setConnection({ connectionId: 'spark', mode: 'remote' } as never)
     expect($boardSlug.get()).toBe('research')
-    expect(dials).toEqual(['/events?board=ops', '/events?board=research'])
+    expect(dials).toEqual(['/dashboard/events?board=ops', '/dashboard/events?board=research'])
 
     // Same slug on the way back to a gateway with an equal selection still
     // dials once — the backend behind the slug changed.
     stored.set('boardSlug', 'research')
     setConnection({ mode: 'local' } as never)
     expect($boardSlug.get()).toBe('research')
-    expect(dials).toEqual(['/events?board=ops', '/events?board=research', '/events?board=research'])
+    expect(dials).toEqual(['/dashboard/events?board=ops', '/dashboard/events?board=research', '/dashboard/events?board=research'])
 
     // Writes land under the scope current at write time.
     $boardSlug.set('triage')

@@ -1,5 +1,7 @@
 """Kanban dashboard plugin — backend API routes, mounted at /api/plugins/kanban/.
 
+The sanitized integration API (``hermes_cli.kanban_api``) owns ``/api/plugins/kanban``; these
+richer, session-authenticated operator routes are retained under ``/api/plugins/kanban/dashboard``.
 Every handler is a thin wrapper around ``hermes_cli.kanban_db`` (the same code paths the CLI
 and gateway ``/kanban`` command use, so the surfaces cannot drift). The ``/events`` WebSocket
 tails the append-only ``task_events`` table on a short poll (WAL reads run alongside the
@@ -1762,3 +1764,14 @@ async def stream_events(ws: WebSocket):
             pass
     finally:
         await tail.shutdown()
+
+
+# Keep the rich dashboard surface isolated from the safe-by-default external
+# contract. Both routers still call the same kanban_db module and therefore
+# share one schema and one set of state-transition rules.
+_dashboard_router = router
+from hermes_cli.kanban_api import router as _integration_router  # noqa: E402
+
+router = APIRouter()
+router.include_router(_integration_router)
+router.include_router(_dashboard_router, prefix="/dashboard")

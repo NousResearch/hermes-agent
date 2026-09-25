@@ -7,6 +7,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -164,7 +165,10 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     # And their indexes — the regression scope of this test:
     assert "idx_tasks_session_id" in indexes
     assert "idx_tasks_tenant" in indexes
-    assert "idx_tasks_idempotency" in indexes
+    # The idempotency index is now a partial UNIQUE index (live tasks only)
+    # that supersedes the old non-unique idx_tasks_idempotency.
+    assert "idx_tasks_idempotency_unique" in indexes
+    assert "idx_tasks_idempotency" not in indexes
     assert "idx_events_run" in indexes
 
 
@@ -172,6 +176,99 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 # Task creation + status inference
 # ---------------------------------------------------------------------------
 
+
+
+def test_create_task_idempotent_reports_replay(kanban_home):
+    with kbc.connect() as conn:
+        first_id, first_created = kb.create_task_idempotent(
+            conn, title="original", idempotency_key="replay-key"
+        )
+        replay_id, replay_created = kb.create_task_idempotent(
+            conn, title="retry of original", idempotency_key="replay-key"
+        )
+    assert first_created is True
+    assert replay_created is False
+    assert replay_id == first_id
+
+
+def test_create_task_idempotent_resolves_lost_unique_index_race(
+    kanban_home, monkeypatch
+):
+    """A creator that loses the UNIQUE-index race returns the winner's id.
+
+    The concurrent winner is injected through the ``_new_task_id`` seam,
+    which runs exactly between the loser's fast-path key lookup and its
+    INSERT — so the loser's INSERT hits the partial UNIQUE index
+    deterministically and must recover to ``(winner_id, False)`` instead of
+    raising IntegrityError.
+    """
+    real_new_id = kb._new_task_id
+    state = {"injected": False}
+
+    def winner_commits_then_new_id():
+        if not state["injected"]:
+            state["injected"] = True
+            other = kbc.connect()
+            try:
+                with kb.write_txn(other):
+                    other.execute(
+                        "INSERT INTO tasks "
+                        "(id, title, status, created_at, workspace_kind, idempotency_key) "
+                        "VALUES ('t_winner', 'winner', 'ready', 1, 'scratch', 'race-key')"
+                    )
+            finally:
+                other.close()
+        return real_new_id()
+
+    monkeypatch.setattr(kb, "_new_task_id", winner_commits_then_new_id)
+
+    with kbc.connect() as conn:
+        task_id, created = kb.create_task_idempotent(
+            conn, title="loser", idempotency_key="race-key"
+        )
+        count = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE idempotency_key = 'race-key'"
+        ).fetchone()[0]
+
+    assert (task_id, created) == ("t_winner", False)
+    assert count == 1
+
+
+def test_concurrent_creates_with_one_key_yield_one_task(kanban_home):
+    """Stress-contract regression (idempotency_key_race in tests/stress):
+    concurrent create_task calls with one idempotency key must all return
+    the same id and persist a single row."""
+    barrier = threading.Barrier(4)
+    results: list[str] = []
+    errors: list[BaseException] = []
+
+    def worker():
+        try:
+            conn = kbc.connect()
+            try:
+                barrier.wait(timeout=10)
+                results.append(
+                    kb.create_task(conn, title="racer", idempotency_key="stampede")
+                )
+            finally:
+                conn.close()
+        except BaseException as exc:  # noqa: BLE001 — surfaced by the assert below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, errors
+    assert len(results) == 4
+    assert len(set(results)) == 1
+    with kbc.connect() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE idempotency_key = 'stampede'"
+        ).fetchone()[0]
+    assert count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1490,8 +1587,6 @@ def test_add_column_if_missing_is_idempotent_on_race(kanban_home):
     assert added_again is False
 
     conn.close()
-
-
 
 
 def test_connect_heals_reduced_tasks_schema_seeded_by_external_harness(kanban_home):

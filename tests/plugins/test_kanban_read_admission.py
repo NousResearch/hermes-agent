@@ -41,7 +41,7 @@ async def test_board_burst_preserves_http_worker_capacity(tmp_path, monkeypatch)
     monkeypatch.setitem(sys.modules, spec.name, plugin)
     spec.loader.exec_module(plugin)
     app = FastAPI()
-    app.include_router(plugin.router, prefix="/api/plugins/kanban")
+    app.include_router(plugin._dashboard_router, prefix="/api/plugins/kanban")
 
     @app.get(STATUS_PATH)
     async def probe():

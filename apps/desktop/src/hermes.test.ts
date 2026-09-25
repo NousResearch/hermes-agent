@@ -465,6 +465,21 @@ describe('Hermes REST helpers', () => {
     expect(call.timeoutMs).toBeUndefined()
   })
 
+  it('bounds the live model metadata probe so a dead provider cannot hold the settings page', async () => {
+    api.mockResolvedValue({})
+    api.mockClear()
+
+    await getGlobalModelInfo()
+
+    // /api/model/info resolves the live context window by probing the
+    // configured provider; it carries its own short budget rather than the
+    // 60s startup timeout so Model Settings degrades instead of hanging
+    // when the provider backend is unreachable (#63214).
+    const call = api.mock.calls[0]?.[0] as { path: string; timeoutMs?: number }
+    expect(call.path).toBe('/api/model/info')
+    expect(call.timeoutMs).toBe(5_000)
+  })
+
   // Explicit profile/connection writes (deleting a profile) carry the foreground
   // dial tag; session reads stay on the ambient default (#111651).
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {

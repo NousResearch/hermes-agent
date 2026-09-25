@@ -291,26 +291,57 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
       setSkewRestart(false)
 
       try {
-        const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
-          getGlobalModelInfo(scopeProfile),
-          getGlobalModelOptions(undefined, scopeProfile),
-          getAuxiliaryModels(scopeProfile),
-          getMoaModels(scopeProfile).catch(() => null)
-        ])
+        // Degrade per call: a hung /api/model/info (its context-length probe
+        // hits the configured provider, which can be unreachable) must not
+        // block the config-backed sections — auxiliary and MOA are fast
+        // config-file reads — behind a single all-or-nothing Promise.all.
+        const [modelInfoResult, modelOptionsResult, auxiliaryModelsResult, moaModelsResult] =
+          await Promise.allSettled([
+            getGlobalModelInfo(scopeProfile),
+            getGlobalModelOptions(undefined, scopeProfile),
+            getAuxiliaryModels(scopeProfile),
+            getMoaModels(scopeProfile)
+          ])
 
         if (profileEpoch.current !== epoch) {
           return
         }
 
-        setMainModel({ model: modelInfo.model, provider: modelInfo.provider })
-        setCatalogProviders(modelOptions.providers || [])
+        const failures: string[] = []
 
-        if (replaceSelection) {
-          setSelectedProvider(modelInfo.provider)
-          setSelectedModel(modelInfo.model)
-        } else {
-          setSelectedProvider(prev => prev || modelInfo.provider)
-          setSelectedModel(prev => prev || modelInfo.model)
+        const settledValue = <T,>(result: PromiseSettledResult<T>): T | null => {
+          if (result.status === 'fulfilled') {
+            return result.value
+          }
+
+          failures.push(result.reason instanceof Error ? result.reason.message : String(result.reason))
+
+          return null
+        }
+
+        const modelInfo = settledValue(modelInfoResult)
+        const modelOptions = settledValue(modelOptionsResult)
+        const auxiliaryModels = settledValue(auxiliaryModelsResult)
+        // MOA has always been optional-on-failure; keep it out of the banner.
+        const moaModels = moaModelsResult.status === 'fulfilled' ? moaModelsResult.value : null
+        // The main assignment also lives in the auxiliary config read, so the
+        // page still knows the current model when only the live probe failed.
+        const resolvedMain = modelInfo ?? auxiliaryModels?.main ?? null
+
+        if (resolvedMain) {
+          setMainModel({ model: resolvedMain.model, provider: resolvedMain.provider })
+
+          if (replaceSelection) {
+            setSelectedProvider(resolvedMain.provider)
+            setSelectedModel(resolvedMain.model)
+          } else {
+            setSelectedProvider(prev => prev || resolvedMain.provider)
+            setSelectedModel(prev => prev || resolvedMain.model)
+          }
+        }
+
+        if (modelOptions) {
+          setCatalogProviders(modelOptions.providers || [])
         }
 
         setAuxiliary(auxiliaryModels)
@@ -318,6 +349,10 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
 
         if (moaModels) {
           setSelectedMoaPreset(prev => (prev && moaModels.presets[prev] ? prev : moaModels.default_preset))
+        }
+
+        if (failures.length > 0) {
+          setCaughtError(new Error(failures.join('; ')), m.loadFailed)
         }
 
         // The config record loads via its own shared query; a model switch can

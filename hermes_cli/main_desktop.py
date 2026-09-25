@@ -1383,6 +1383,40 @@ def _packaged_desktop_launch_command(packaged_executable: Path) -> list[str]:
     return launch_command
 
 
+def _site_packages_install_kind(project_root: Path) -> Optional[str]:
+    """The package manager owning a non-editable install at *project_root*, or None.
+
+    A package-manager install (Homebrew, pip, distro packaging) places this
+    code in a ``site-packages``/``dist-packages`` tree. Such a tree ships no
+    ``apps/desktop`` source, so the build ladder below can never run — the
+    caller must not treat it like a broken checkout. A Homebrew formula lives
+    under a ``Cellar`` directory; any other site-packages owner is reported
+    generically as pip.
+    """
+    parts = Path(project_root).parts
+    if "site-packages" in parts or "dist-packages" in parts:
+        return "homebrew" if "Cellar" in parts else "pip"
+    return None
+
+
+def _launch_installed_macos_desktop_app() -> bool:
+    """Launch a separately installed ``/Applications/Hermes.app``, if present.
+
+    Returns True only when the app bundle exists and a detached launch was
+    started — the caller then exits without touching the build ladder.
+    """
+    if sys.platform != "darwin":
+        return False
+    executable = Path("/Applications/Hermes.app/Contents/MacOS/Hermes")
+    if not executable.is_file():
+        return False
+    from hermes_cli.bundled_app import launch_detached
+
+    pid = launch_detached([str(executable)], cwd=executable.parent)
+    print(f"→ Launched the installed Hermes Desktop app: {executable} (pid {pid})")
+    return True
+
+
 def cmd_gui(args: argparse.Namespace):
     """Build and launch the native Electron desktop GUI."""
     from hermes_cli.main import PROJECT_ROOT
@@ -1396,7 +1430,21 @@ def cmd_gui(args: argparse.Namespace):
 
     bundled = is_bundled_payload(PROJECT_ROOT)
     if not bundled and not (desktop_dir / "package.json").exists():
+        # A package-manager install (Homebrew, pip, ...) ships no desktop
+        # source tree, so building here is impossible by construction (#61056).
+        # Prefer the separately installed desktop app; otherwise explain the
+        # packaging shape instead of the generic missing-source error.
+        install_kind = _site_packages_install_kind(PROJECT_ROOT)
+        if install_kind is not None and _launch_installed_macos_desktop_app():
+            sys.exit(0)
         print(f"Desktop GUI source not found at: {desktop_dir}")
+        if install_kind == "homebrew":
+            print(
+                "  This Hermes came from Homebrew, which does not ship the desktop app's\n"
+                "  source tree, so it cannot be built from this install.\n"
+                "  Install the desktop app from https://hermes-agent.nousresearch.com,\n"
+                "  or run `hermes desktop` from a source checkout."
+            )
         sys.exit(1)
 
     with contextlib.suppress(Exception):

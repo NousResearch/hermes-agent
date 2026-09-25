@@ -192,3 +192,69 @@ def test_probe_outliving_its_budget_answers_retryable_unknown_then_reprobes(monk
     assert second["result"]["ok"] is True
     assert second["result"]["provider"] == "custom"
     assert len(calls) == 2
+
+
+def test_fast_probe_cannot_deadlock_the_share_lock(monkeypatch):
+    """A probe that settles before ``add_done_callback`` is registered must not
+    self-deadlock: the done callback acquires the same non-reentrant lock the
+    owner still held when registering it (a probe settling in that window runs
+    the callback inline on the RPC worker thread, freezing every later
+    readiness call and hanging the desktop at "Gateway checking")."""
+    def instant_resolve(requested=None, **kwargs):
+        return {"provider": "custom", "api_key": "no-key-required", "source": "config"}
+
+    _patch_fast_probe_env(monkeypatch, instant_resolve)
+    transport = _RecordingTransport()
+
+    # Real dispatch through the shared pool; the probe resolves immediately, so
+    # the future is routinely already done when the callback is registered.
+    for index in range(20):
+        _dispatch(transport, f"fast-{index}", "setup.runtime_check")
+
+    for index in range(20):
+        response = transport.wait_for(f"fast-{index}", timeout=5)
+        # An overlapping poll may legitimately answer the retryable error while
+        # the probe is in flight; it must NEVER hang the worker that owns it.
+        assert "result" in response or response["error"]["code"] == server._READINESS_IN_PROGRESS_ERR
+
+    # The lock must be free: the inflight entry was cleared, and a further
+    # readiness call neither blocks nor answers the retryable error.
+    deadline = time.monotonic() + 2
+    while server._readiness_inflight and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert not server._readiness_inflight
+    _dispatch(transport, "after", "setup.runtime_check")
+    after = transport.wait_for("after", timeout=5)
+    assert after["result"]["ok"] is True
+
+
+def test_overlapping_poll_joins_a_fast_probe_instead_of_erroring(monkeypatch):
+    """Two consumers poll at the same seam (boot, the post-assignment
+    ``setup.ready`` broadcast): the joiner must read the shared result of a
+    fast probe, not answer the retryable error at once — the onboarding gate
+    treats an unknown pair (setup.status + setup.runtime_check both errored)
+    as not-ready and the blocking overlay never closes (the E2E hang)."""
+    release = threading.Event()
+
+    def brief_resolve(requested=None, **kwargs):
+        release.wait(timeout=10)
+        return {"provider": "custom", "api_key": "no-key-required", "source": "config"}
+
+    _patch_fast_probe_env(monkeypatch, brief_resolve)
+    transport = _RecordingTransport()
+
+    _dispatch(transport, "owner", "setup.runtime_check")
+
+    # Give the owner's probe a head start, then fire the overlapping poll.
+    time.sleep(0.05)
+    _dispatch(transport, "joiner", "setup.runtime_check")
+    time.sleep(0.05)
+
+    release.set()
+
+    owner = transport.wait_for("owner", timeout=3)
+    joiner = transport.wait_for("joiner", timeout=3)
+    assert owner["result"]["ok"] is True
+    # Inside the join grace the joiner reads the shared result — the same
+    # authoritative answer, not the retryable-in-progress error.
+    assert joiner["result"]["ok"] is True

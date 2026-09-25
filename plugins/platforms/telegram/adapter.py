@@ -6252,11 +6252,22 @@ class TelegramAdapter(BasePlatformAdapter):
         logger.info(log_fmt, cached.kind, cached.path)
 
     async def _cache_replied_media(self, msg: Any, event: MessageEvent) -> None:
-        """Cache media from the message this turn replies to, if any."""
+        """Cache media from the message this turn replies to, if any; an attachment that cannot be cached
+        (oversized, download failure, unreadable) is noted in the transcript so the agent knows it is missing."""
         reply_msg = getattr(msg, "reply_to_message", None)
         if reply_msg is None:
             return
         status, cached = await self._download_observed_media(reply_msg, "replied-to media")
+        if status == "oversized":
+            limit_mb = getattr(self, "_max_doc_bytes", 20 * 1024 * 1024) // (1024 * 1024)
+            event.text = self._append_observed_note(
+                event.text, f"[Replied-to Telegram attachment too large or unverifiable, not cached. Maximum: {limit_mb} MB.]")
+            logger.info("[Telegram] Replied-to attachment skipped (size=%s)", cached)
+            return
+        if status in ("failed", "unreadable"):
+            event.text = self._append_observed_note(
+                event.text, "[Replied-to Telegram attachment could not be read, not cached.]")
+            return
         if status == "ok":
             self._attach_cached(
                 event, cached, f"[Replied-to {cached.kind} '{cached.display_name}' saved at: {cached.path}]",

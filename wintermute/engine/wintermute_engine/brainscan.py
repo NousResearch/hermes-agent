@@ -15,7 +15,7 @@ import math
 import os
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from . import physics
 
@@ -128,10 +128,8 @@ NODES: Dict[str, Tuple[int, int, str]] = {
     "anxiety": (14, 8, "u"), "hypervigilance": (24, 8, "u"), "irritability": (34, 8, "u"),
     "melancholy": (10, 11, "u"), "satiation": (22, 11, "u"), "torpor": (34, 11, "u"),
     "restlessness": (7, 14, "d"), "fusion": (17, 15, "d"), "solitude": (28, 15, "d"),
-    "recognition2": (0, 0, "x"),  # placeholder guard (unused)
     "melatonin": (38, 12, "m"), "oxytocin_global": (18, 17, "m"), "entropy": (33, 15, "m"),
 }
-NODES.pop("recognition2", None)
 
 # Edges: modulator -> drive (from physics.MODULATION), plus limbic couplings.
 def _edges() -> List[Tuple[str, str]]:

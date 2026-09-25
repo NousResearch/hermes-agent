@@ -310,7 +310,7 @@ def drift_bonds(drives: Dict[str, Any], peers: Dict[str, Any], ts: datetime, dt_
         peer["longing"] = round(limits.clamp(longing, 0, 100), 3)
         peer["oxytocin"] = round(physics.safe_float(peer.get("oxytocin")) * math.exp(-dt_h / BOND_FADE_TAU_H), 3)
         strongest = max(strongest, peer["longing"])
-    physics.nudge(drives, "drives", "fusion", strongest / 100.0 * 4.0 * dt_h / 4.0)
+    physics.nudge(drives, "drives", "fusion", strongest / 100.0 * dt_h)
     physics.refresh_oxytocin_global(drives, peers)
 
 

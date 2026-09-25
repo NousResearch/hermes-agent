@@ -212,7 +212,7 @@ def appraise(state: Dict[str, Any], event: str, peer: Optional[Dict[str, Any]]) 
     longing = safe_float(peer.get("longing")) / 100
     if event in ("no_response", "ignored_message", "outreach_timeout"):
         return limits.clamp(0.7 + 1.1 * trust, 0.5, 1.8)          # the more he trusted, the worse
-    if event in ("reply_to_outreach", "message_received", "late_reply", "reunion"):
+    if event in ("reply_to_outreach", "message_received", "late_reply"):  # reunion is already longing-scaled by the caller
         return limits.clamp(0.8 + 1.0 * longing, 0.5, 1.8)        # the more he missed them, the more it lands
     return 1.0
 

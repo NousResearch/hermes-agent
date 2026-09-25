@@ -525,7 +525,6 @@ def wipe(deep: bool) -> List[str]:
     """Reset him. ``deep=False``: the weather only (drives, hormones, unconscious, temperament,
     entropy, bonds, the curves) — memory, self-portrait, secrets and journals stay. ``deep=True``:
     a rebirth — also erase MEMORY.md, self, secrets, dreams, and every journal. Returns what it did."""
-    done: List[str] = []
     with exclusive():
         return _wipe_locked(deep)
 

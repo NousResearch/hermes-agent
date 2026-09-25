@@ -17,7 +17,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from . import limits, physics, store
+from . import physics, store
 
 CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"

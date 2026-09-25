@@ -976,7 +976,7 @@ export function ModelSettings({ onMainModelChanged, scopeProfile, subpage }: Mod
               )}
               {fastSupported && (
                 <label className="flex items-center gap-2 text-xs">
-                  {t.shell.modelOptions.fast}
+                  <span className="shrink-0 whitespace-nowrap">{t.shell.modelOptions.fast}</span>
                   <Switch
                     checked={fastOn}
                     onCheckedChange={checked =>

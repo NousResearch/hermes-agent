@@ -56,6 +56,9 @@ _SESSION_ASYNC_DELIVERY = ContextVar("HERMES_SESSION_ASYNC_DELIVERY", default=_U
 # or child-process export: a bound id alone cannot authorize detached delivery.
 _SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", default=_UNSET)
 
+# Proof of an authorized real gateway turn. Never exported to the environment.
+_SESSION_AUTHORIZED_EXTERNAL = ContextVar("HERMES_SESSION_AUTHORIZED_EXTERNAL", default=False)
+
 # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
 _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
 _CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
@@ -120,6 +123,7 @@ def set_session_vars(
     browser_control_transport_family: str = "", cwd: str = "", async_delivery: bool = True,
     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
     session_history_delivery: str | None = None,
+    authorized_external: bool = False,
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -140,6 +144,7 @@ def set_session_vars(
     tokens = [var.set(value) for var, value in zip(_SESSION_VARS, values)]
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
+    tokens.append(_SESSION_AUTHORIZED_EXTERNAL.set(authorized_external is True))
     _runtime_cwd("set_session_cwd", cwd)
     return tokens
 
@@ -154,6 +159,7 @@ def clear_session_vars(tokens: list) -> None:
         var.set("")
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _SESSION_AUTHORIZED_EXTERNAL.set(False)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -167,6 +173,7 @@ def reset_session_vars() -> None:
         var.set(_UNSET)
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
+    _SESSION_AUTHORIZED_EXTERNAL.set(False)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -177,6 +184,21 @@ def get_session_env(name: str, default: str = "") -> str:
     if var is not None and (value := var.get()) is not _UNSET:
         return value
     return os.getenv(name, default)
+
+
+def get_authenticated_gateway_source() -> tuple[str, str, str] | None:
+    """Return (platform, chat ID, user ID) only for an authorized real inbound turn.
+
+    This intentionally ignores environment fallbacks and synthetic event source IDs.
+    """
+    if _SESSION_AUTHORIZED_EXTERNAL.get() is not True:
+        return None
+    platform = _SESSION_PLATFORM.get()
+    chat_id = _SESSION_CHAT_ID.get()
+    user_id = _SESSION_USER_ID.get()
+    if not isinstance(platform, str) or not platform or not isinstance(chat_id, str) or not chat_id:
+        return None
+    return platform, chat_id, user_id if isinstance(user_id, str) else ""
 
 
 # Surfaces that are not a human chat channel (gateway binds HERMES_SESSION_PLATFORM, CLI/TUI/

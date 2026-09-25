@@ -280,6 +280,34 @@ def test_build_failure_releases_display_name(monkeypatch):
     assert after <= before, f"display-name reservation leaked on build failure: {sorted(after - before)}"
 
 
+def test_post_reserve_failure_releases_display_name(monkeypatch):
+    """A failure between reserve and AIAgent construction — config/runtime
+    resolution, not just child construction — must also give the reserved name
+    back (non-blocking finding ① in review of #118104)."""
+    from unittest.mock import MagicMock
+
+    from tools import delegate_tool
+    from tools.delegate_tool_registry import _active_subagents_lock, _reserved_display_names
+
+    def _boom(*args, **kwargs):
+        raise ValueError("child toolset resolution failed")
+
+    # First call AFTER the reservation but (pre-fix) OUTSIDE the release guard.
+    monkeypatch.setattr(delegate_tool, "_resolve_child_toolsets", _boom)
+    parent = MagicMock()
+    parent._delegate_depth = 0
+
+    with _active_subagents_lock:
+        before = set(_reserved_display_names)
+    with pytest.raises(ValueError, match="child toolset resolution failed"):
+        delegate_tool._build_child_agent(
+            0, "goal", "context", None, "test/model", 10, 1, parent,
+        )
+    with _active_subagents_lock:
+        after = set(_reserved_display_names)
+    assert after <= before, f"display-name reservation leaked on post-reserve failure: {sorted(after - before)}"
+
+
 def test_steer_closed_acceptance_is_refused():
     parent = _StubParent()
     child = _StubChild(parent)

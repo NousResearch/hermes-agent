@@ -200,45 +200,46 @@ def _build_child_agent(
     from tools.delegate_tool_registry import release_display_name, reserve_display_name
     display_name = reserve_display_name()
 
-    # General delegation behavior (reasoning, compression, capabilities) stays
-    # global. Only fallback policy follows the owner of a per-call route such
-    # as auxiliary.review.
-    delegation_cfg = _load_config()
-    child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
-    child_prompt = _build_child_system_prompt(
-        goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
-        max_spawn_depth=max_spawn, child_depth=child_depth,
-    )
-    parent_api_key = getattr(parent_agent, "api_key", None)
-    if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
-        parent_api_key = parent_agent._client_kwargs.get("api_key")
+    child_session_db = None
+    try:
+        # General delegation behavior (reasoning, compression, capabilities) stays
+        # global. Only fallback policy follows the owner of a per-call route such
+        # as auxiliary.review.
+        delegation_cfg = _load_config()
+        child_toolsets, child_disabled_toolsets = _resolve_child_toolsets(parent_agent, toolsets, effective_role)
+        child_prompt = _build_child_system_prompt(
+            goal, context, workspace_path=_resolve_workspace_hint(parent_agent), role=effective_role,
+            max_spawn_depth=max_spawn, child_depth=child_depth,
+        )
+        parent_api_key = getattr(parent_agent, "api_key", None)
+        if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
+            parent_api_key = parent_agent._client_kwargs.get("api_key")
 
-    # Shared ref: session_id once the child exists, delegation_id once
-    # delegate_task stamps it — both ride on every relayed event.
-    child_session_ref: Dict[str, Any] = {}
-    child_progress_cb = _build_child_progress_callback(
-        task_index, goal, parent_agent, task_count, subagent_id=subagent_id, parent_id=parent_subagent_id,
-        depth=max(0, child_depth - 1),  # 0 = first-level child for the UI
-        model=model or getattr(parent_agent, "model", None), toolsets=child_toolsets, session_ref=child_session_ref,
-        display_name=display_name,
-    )
-    rt = _resolve_child_runtime(
-        parent_agent, delegation_cfg, parent_api_key, model=model, override_provider=override_provider,
-        override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
-        override_acp_command=override_acp_command,
-        override_acp_args=override_acp_args,
-        routing_cfg=routing_cfg,
-    )
-    if override_request_overrides is not None:
-        # honored whenever set, incl. the inherit branch where
-        # _resolve_delegation_credentials already merged OVER the parent's
-        request_overrides = dict(override_request_overrides)
-    else:
-        request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
-    parent_sid = getattr(parent_agent, "session_id", None)
-    child_session_db = _open_child_session_db(parent_agent)
-    with delegated_child_context():
-        try:
+        # Shared ref: session_id once the child exists, delegation_id once
+        # delegate_task stamps it — both ride on every relayed event.
+        child_session_ref: Dict[str, Any] = {}
+        child_progress_cb = _build_child_progress_callback(
+            task_index, goal, parent_agent, task_count, subagent_id=subagent_id, parent_id=parent_subagent_id,
+            depth=max(0, child_depth - 1),  # 0 = first-level child for the UI
+            model=model or getattr(parent_agent, "model", None), toolsets=child_toolsets, session_ref=child_session_ref,
+            display_name=display_name,
+        )
+        rt = _resolve_child_runtime(
+            parent_agent, delegation_cfg, parent_api_key, model=model, override_provider=override_provider,
+            override_base_url=override_base_url, override_api_key=override_api_key, override_api_mode=override_api_mode,
+            override_acp_command=override_acp_command,
+            override_acp_args=override_acp_args,
+            routing_cfg=routing_cfg,
+        )
+        if override_request_overrides is not None:
+            # honored whenever set, incl. the inherit branch where
+            # _resolve_delegation_credentials already merged OVER the parent's
+            request_overrides = dict(override_request_overrides)
+        else:
+            request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
+        parent_sid = getattr(parent_agent, "session_id", None)
+        child_session_db = _open_child_session_db(parent_agent)
+        with delegated_child_context():
             child = AIAgent(
                 **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
@@ -253,17 +254,17 @@ def _build_child_agent(
                 tool_progress_callback=child_progress_cb,
                 iteration_budget=None,  # fresh budget per subagent
             )
-        except BaseException:
-            # No child close() will ever run: release the dedicated handle here.
-            if child_session_db is not None:
-                with _quiet(None):
-                    from hermes_state_registry import release_or_close
-                    release_or_close(child_session_db)
-            # And free the display-name reservation the same way — the child will
-            # never register a record that would carry it (nit in review of #118104).
+    except BaseException:
+        # No child close() will ever run: release the dedicated handle (if one was
+        # opened) and the display-name reservation. Covers the whole span from
+        # config/runtime resolution to AIAgent construction (review of #118104).
+        if child_session_db is not None:
             with _quiet(None):
-                release_display_name(display_name)
-            raise
+                from hermes_state_registry import release_or_close
+                release_or_close(child_session_db)
+        with _quiet(None):
+            release_display_name(display_name)
+        raise
     child._print_fn = getattr(parent_agent, "_print_fn", None)
     _apply_child_cache_ttl(child)
     if child_session_db is not None:

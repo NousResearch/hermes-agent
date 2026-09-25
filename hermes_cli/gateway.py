@@ -1768,14 +1768,15 @@ def _reaper_candidate_is_supervisor_owned(pid: int) -> bool:
 def _gateway_process_age_s(pid: int) -> float:
     """Seconds since ``pid`` started, or ``0.0`` when undeterminable (never negative).
 
-    A probe failure must not widen a reap, so an unknown age reads as "too young to
-    touch" under a positive grace and is irrelevant when the grace is 0.
+    Delegates to the shared dashboard reaper probe instead of re-deriving the
+    psutil/epoch math, and swallows its failure: an unknown age must never widen
+    a reap, so it reads as "too young to touch" under a positive grace (and is
+    irrelevant when the grace is 0).
     """
     try:
-        import psutil  # type: ignore
-        import time as _time
+        from hermes_cli.dashboard_procs import _process_age_seconds
 
-        return max(0.0, _time.time() - float(psutil.Process(int(pid)).create_time()))
+        return max(0.0, _process_age_seconds(pid))
     except Exception:
         return 0.0
 

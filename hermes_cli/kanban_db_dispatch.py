@@ -261,6 +261,10 @@ _EXIT_TRAILER_RE = re.compile(
     r"^" + re.escape(KANBAN_WORKER_EXIT_TRAILER) + r"(\d+)\s*$", re.MULTILINE,
 )
 
+# Written by ``_default_spawn`` before each run's output, so a trailer from an
+# EARLIER run in the append-mode log is never read as this run's exit.
+_WORKER_START_MARKER = "[kanban-worker-start]"
+
 
 def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional[int]:
     """Exit code from the trailer the worker CLI wrote to its own log; None when absent.
@@ -274,7 +278,8 @@ def _worker_log_exit_code(task_id: str, board: Optional[str] = None) -> Optional
         raw = _kb.read_worker_log(task_id, tail_bytes=4000, board=board)
     except Exception:
         return None
-    matches = _EXIT_TRAILER_RE.findall(raw or "")
+    raw = (raw or "").rpartition(_WORKER_START_MARKER)[2]
+    matches = _EXIT_TRAILER_RE.findall(raw)
     return int(matches[-1]) if matches else None
 
 
@@ -2871,6 +2876,12 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     env.pop("HERMES_TUI", None)
 
     cmd = _worker_argv(task, profile_arg, env.get("HERMES_HOME"))
+    if cmd[:3] == _module_hermes_argv():
+        # The secret scrub above strips Hermes-owned PYTHONPATH, which is the ONLY import
+        # path a pm store interpreter has: without it the re-exec dies with "No module
+        # named 'hermes_cli'" on every routed-profile spawn from the multiplexer.
+        from hermes_cli._subprocess_compat import restore_ambient_pythonpath
+        env = restore_ambient_pythonpath(env)
     # A worker spawned by a managed systemd gateway must leave the gateway's
     # cgroup before startup; otherwise restarting the service kills the worker
     # that is performing the handoff.
@@ -2878,6 +2889,8 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     from tools.process_registry import systemd_user_bus_env
     env = systemd_user_bus_env(env)
     log_f = _open_worker_log(task, board)
+    log_f.write(f"\n{_WORKER_START_MARKER} run={task.current_run_id}\n".encode())
+    log_f.flush()
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,

@@ -118,3 +118,52 @@ def test_runtime_status_running_pid_validates_live_gateway_record(monkeypatch):
     assert status_mod.get_runtime_status_running_pid(runtime) == 12345
 
 
+def test_runtime_health_lines_abandoned_dead_pid_record_stays_silent(monkeypatch):
+    """#122439: a live-claiming record whose PID is dead and whose heartbeat is WEEKS old is an
+    abandoned historical file (pre-multiplex leftover, retired profile), not an ungraceful
+    shutdown — the status warning exists to flag a FRESH dirty death. It must stay silent, and
+    the ancient live-claim must not render as draining/live state either."""
+    from gateway import status as status_mod
+
+    monkeypatch.setattr(
+        "gateway.status.read_runtime_status",
+        lambda: {
+            "gateway_state": "running",
+            "pid": 4242,
+            "start_time": 111,
+            "updated_at": _iso_age(30 * 24 * 3600),  # 30 days old: abandoned, not news
+            "active_agents": 0,
+        },
+    )
+    monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: False)
+    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: None)
+
+    lines = _runtime_health_lines()
+
+    assert not _stale_lines(lines), lines
+    assert not any("draining" in ln.lower() for ln in lines), lines
+
+
+def test_runtime_health_lines_recent_dead_pid_still_warns(monkeypatch):
+    """Invariant (the warning is narrowed, not deleted): a live-claiming record with a dead PID
+    inside the notice window is still the ungraceful-shutdown signal (#113372's sibling case)."""
+    from gateway import status as status_mod
+
+    monkeypatch.setattr(
+        "gateway.status.read_runtime_status",
+        lambda: {
+            "gateway_state": "running",
+            "pid": 4242,
+            "start_time": 111,
+            "updated_at": _iso_age(600),  # past the 120s TTL, far inside the notice window
+            "active_agents": 0,
+        },
+    )
+    monkeypatch.setattr(status_mod, "_pid_exists", lambda pid: False)
+    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda pid: None)
+
+    stale = _stale_lines(_runtime_health_lines())
+    assert len(stale) == 1
+    assert "recorded state 'running'" in stale[0]
+
+

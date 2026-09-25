@@ -4597,7 +4597,8 @@ def _runtime_health_lines() -> list[str]:
     """Summarize the latest persisted gateway runtime health state."""
     try:
         from gateway.status import (
-            read_runtime_status, runtime_status_heartbeat_age_s, runtime_status_is_stale, runtime_status_pid_is_live)
+            read_runtime_status, runtime_status_heartbeat_age_s, runtime_status_is_stale,
+            runtime_status_pid_is_live, runtime_status_record_is_abandoned)
     except Exception:
         return []
 
@@ -4614,13 +4615,16 @@ def _runtime_health_lines() -> list[str]:
     ]
 
     # A live-claiming snapshot can outlive an ungracefully killed gateway (taskkill /F, OOM). Past
-    # the freshness TTL with the recorded PID gone, say so instead of rendering stale live state.
+    # the freshness TTL with the recorded PID gone, say so instead of rendering stale live state —
+    # but only while the record is recent enough to be news: a provably old dead-PID claim is an
+    # abandoned historical file (pre-multiplex leftover, retired profile), not a crash (#122439).
     if gateway_state in ("running", "degraded", "starting", "draining") and runtime_status_is_stale(state):
         if not runtime_status_pid_is_live(state):
-            lines.append(
-                f"⚠ Stale gateway_state.json: recorded state '{gateway_state}' but the "
-                "recorded process is gone (likely an ungraceful shutdown)"
-            )
+            if not runtime_status_record_is_abandoned(state):
+                lines.append(
+                    f"⚠ Stale gateway_state.json: recorded state '{gateway_state}' but the "
+                    "recorded process is gone (likely an ungraceful shutdown)"
+                )
             return lines
         # PID alive but housekeeping stopped re-stamping the file: the reporter's "not a crash" case
         # (#113372) — the process looks 'running' while housekeeping/cron/kanban dispatch are frozen.

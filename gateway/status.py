@@ -1220,6 +1220,24 @@ def runtime_status_pid_is_live(record: Optional[dict[str, Any]]) -> bool:
     return _live_pid_from_record(record) is not None
 
 
+# Horizon past which a dead-PID live-claiming record is abandoned HISTORY rather than an
+# ungraceful-shutdown signal: the status warning exists to flag a fresh dirty death, and any
+# supervisor that was going to restart the process has long done so (refreshing the record).
+# Pre-multiplex leftover files and retired profiles carry week-old 'running' claims that read
+# as false incidents on every `gateway status` call (#122439).
+_STALE_RECORD_NOTICE_WINDOW_S = 24 * 60 * 60
+
+
+def runtime_status_record_is_abandoned(
+    record: Optional[dict[str, Any]], window_s: int = _STALE_RECORD_NOTICE_WINDOW_S
+) -> bool:
+    """True when the snapshot's ``updated_at`` is provably older than ``window_s`` — old enough
+    that a dead-PID live claim is history, not a fresh ungraceful shutdown. An unparseable stamp
+    answers False: unknown age must not silence the warning."""
+    age = runtime_status_heartbeat_age_s(record)
+    return age is not None and age > window_s
+
+
 def parse_active_agents(raw: Any) -> int:
     """Coerce ``active_agents`` to a non-negative int; shared by writer and both HTTP readers."""
     try:

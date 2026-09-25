@@ -185,6 +185,20 @@ class TestSendFinalization:
         client.chat_postMessage.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_final_send_trailing_whitespace_only_difference_seals_no_duplicate(self):
+        # Regression for #121326: streamed frames keep the reply's trailing
+        # whitespace while the gateway's authoritative final is stripped. The
+        # stream is still the final message: seal it, don't post a duplicate.
+        adapter, client = _make_adapter()
+        await adapter.send_draft("D1", 7, "Hello world\n\n", metadata=META)
+        result = await adapter.send("D1", "Hello world", metadata=META)
+        assert result.success
+        assert result.message_id == "123.456"
+        client.chat_stopStream.assert_awaited()
+        client.chat_postMessage.assert_not_awaited()
+        assert "D1" not in adapter._active_streams
+
+    @pytest.mark.asyncio
     async def test_unrelated_send_passes_through(self):
         adapter, client = _make_adapter()
         await adapter.send_draft("D1", 7, "Streaming text here", metadata=META)

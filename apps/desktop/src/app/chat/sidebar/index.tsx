@@ -1524,8 +1524,17 @@ export function ChatSidebar({
 
   // Filtered down to nothing still renders the section: the empty state is what
   // tells you the filter — not an empty account — is why the list is bare.
+  // Messaging threads and cron jobs live inside this area too: a profile whose
+  // only sessions are messaging threads (or that only has scheduled jobs) must
+  // not collapse the whole sidebar to the blank state (#63593).
   const showSessionSections =
-    showSessionSkeletons || sessionsLoadError || filtersActive || sortedSessions.length > 0 || projectModel.length > 0
+    showSessionSkeletons ||
+    sessionsLoadError ||
+    filtersActive ||
+    sortedSessions.length > 0 ||
+    projectModel.length > 0 ||
+    messagingGroups.length > 0 ||
+    (showsAdvancedChrome && cronJobs.length > 0)
 
   // The sidebar's session-area mode — exposed as data-attributes so custom
   // skins can target project mode (overview vs. entered), archived, or search

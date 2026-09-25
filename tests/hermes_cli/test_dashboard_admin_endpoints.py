@@ -837,6 +837,14 @@ class TestUpdateCheckEndpoint:
         assert body["update_available"] is False
         assert body["behind"] is None
         assert "managed outside this dashboard" in body["message"]
+        # No runnable command exists; clients render update_command verbatim
+        # as a copyable shell line, so prose here is a fake command.
+        assert body["update_command"] == ""
+
+        refused = self.client.post("/api/hermes/update").json()
+        assert refused["ok"] is False
+        assert refused["error"] == "dashboard_update_managed_externally"
+        assert refused["update_command"] == ""
 
 
 class TestDebugShareEndpoint:

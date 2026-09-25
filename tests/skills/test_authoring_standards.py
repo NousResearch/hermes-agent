@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 REPO = Path(__file__).resolve().parents[2]
 MARKETING = re.compile(
@@ -34,25 +34,20 @@ GRANDFATHER: dict[str, set[str]] = {
     # (empty — the Aug 2026 sweep cleared all mechanical violations)
 }
 
-
 def _skill_paths():
     return sorted(
         list(REPO.glob("skills/**/SKILL.md"))
         + list(REPO.glob("optional-skills/**/SKILL.md"))
     )
 
-
 def _rel(p: Path) -> str:
     return str(p.parent.relative_to(REPO))
-
 
 def _params():
     return [pytest.param(p, id=_rel(p)) for p in _skill_paths()]
 
-
 def _grandfathered(p: Path, rule: str) -> bool:
     return rule in GRANDFATHER.get(_rel(p), set())
-
 
 def _frontmatter(p: Path):
     content = p.read_text(encoding="utf-8")
@@ -63,9 +58,7 @@ def _frontmatter(p: Path):
     assert isinstance(fm, dict), f"{_rel(p)}: frontmatter must be a YAML mapping"
     return fm, content
 
-
 ALL_SKILL_NAMES = None
-
 
 def _all_names():
     global ALL_SKILL_NAMES
@@ -76,13 +69,11 @@ def _all_names():
         ALL_SKILL_NAMES = names
     return ALL_SKILL_NAMES
 
-
 def test_at_least_the_expected_population():
     # sanity: the globs actually find the trees (not a count snapshot)
     paths = _skill_paths()
     assert any("optional-skills" in str(p) for p in paths)
     assert any(str(p.parent).startswith(str(REPO / "skills")) for p in paths)
-
 
 @pytest.mark.parametrize("p", _params())
 def test_required_frontmatter_fields(p):
@@ -98,7 +89,6 @@ def test_required_frontmatter_fields(p):
     if not (hermes.get("tags") or fm.get("tags")) and not _grandfathered(p, "tags"):
         pytest.fail(f"{_rel(p)}: no tags (metadata.hermes.tags or top-level tags)")
 
-
 @pytest.mark.parametrize("p", _params())
 def test_name_matches_directory(p):
     fm, _ = _frontmatter(p)
@@ -106,7 +96,6 @@ def test_name_matches_directory(p):
         pytest.fail(
             f"{_rel(p)}: frontmatter name {fm.get('name')!r} != dir {p.parent.name!r}"
         )
-
 
 @pytest.mark.parametrize("p", _params())
 def test_description_hardline(p):
@@ -119,7 +108,6 @@ def test_description_hardline(p):
     m = MARKETING.search(desc)
     assert not m, f"{_rel(p)}: marketing word in description: {m.group(0)!r}"
 
-
 @pytest.mark.parametrize("p", _params())
 def test_related_skills_resolve(p):
     fm, _ = _frontmatter(p)
@@ -130,14 +118,12 @@ def test_related_skills_resolve(p):
     if dangling and not _grandfathered(p, "related"):
         pytest.fail(f"{_rel(p)}: dangling related_skills: {dangling}")
 
-
 @pytest.mark.parametrize("p", _params())
 def test_no_machine_local_paths(p):
     _, content = _frontmatter(p)
     m = MACHINE_LOCAL.search(content)
     if m and not _grandfathered(p, "paths"):
         pytest.fail(f"{_rel(p)}: machine-local path {m.group(0)!r}")
-
 
 @pytest.mark.parametrize("p", _params())
 def test_size_limit(p):
@@ -146,7 +132,6 @@ def test_size_limit(p):
         pytest.fail(
             f"{_rel(p)}: {len(content)} chars > 100k — split into references/"
         )
-
 
 def _shell_fence_lines(content: str):
     """Yield (lineno, line) for every line inside a fenced bash/sh block."""
@@ -162,7 +147,6 @@ def _shell_fence_lines(content: str):
             continue
         yield i, line
 
-
 @pytest.mark.parametrize("p", _params())
 def test_shell_snippets_paste_safe(p):
     _, content = _frontmatter(p)
@@ -175,5 +159,3 @@ def test_shell_snippets_paste_safe(p):
         "comment after a line-continuation backslash breaks the pasted command; "
         "move the note above the whole command:\n" + "\n".join(bad)
     )
-
-

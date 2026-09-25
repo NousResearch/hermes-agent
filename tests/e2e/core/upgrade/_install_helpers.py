@@ -7,7 +7,8 @@ of that this module stages what a real user machine looks like to the installer 
   the official clone URLs are rewritten to by the sandbox's own ``~/.gitconfig``, plus a ``git``
   wrapper that reports the official URL for ``remote get-url origin`` (``insteadOf`` would
   otherwise expose the local path and send the updater down the fork path);
-* a managed ``$HERMES_HOME/bin/uv`` pointing at the host's uv (warm cache, no download);
+* the real host uv on PATH as an optional warm-cache shortcut; the installer
+  still rejects a version below its PM pin and provisions the pinned artifact;
 * ``TMPDIR`` inside the sandbox root (the host's is not writable in the sandbox).
 """
 
@@ -100,6 +101,18 @@ class Sandbox:
         """The command the installer put on PATH, as a user's shell resolves it."""
         return str(self.home / ".local" / "bin" / "hermes")
 
+    @property
+    def python(self) -> str:
+        """The installed PM generation's selected interpreter, not a legacy checkout venv."""
+        from pm.environments import install_key
+
+        facts = self.hermes_home / "installs" / install_key(self.checkout) / "facts.json"
+        assert facts.is_file(), f"installer did not publish PM facts at {facts}"
+        selected = json.loads(facts.read_text(encoding="utf-8"))["packages"]["venv"]["environment"]
+        python = Path(selected) / "bin" / "python"
+        assert python.is_file(), f"selected PM Python missing: {python}"
+        return str(python)
+
     def run(self, argv: list[str], *, timeout: float = 600, cwd: Path | None = None,
             input: str | None = None) -> subprocess.CompletedProcess:
         return H.run(argv, env=self.env, cwd=cwd or self.root, writable=[self.root], timeout=timeout, input=input)
@@ -119,11 +132,6 @@ def new_sandbox(root: Path, origin: Path | None = None, *, pythonpath: Path | No
     env["TMPDIR"] = str(root / "tmp")
     env["SHELL"] = "/bin/bash"
     # A fresh machine: ~/.local/bin is NOT on PATH yet; the installer must wire it up.
-    managed = home / ".hermes" / "bin"
-    managed.mkdir(parents=True)
-    uv = managed / "uv"
-    uv.write_text(f'#!/bin/sh\nif [ "$1" = self ]; then exit 0; fi\nexec "{real_uv()}" "$@"\n', encoding="utf-8")
-    uv.chmod(0o755)
     if origin is not None:
         (home / ".gitconfig").write_text(
             f'[url "file://{origin}"]\n  insteadOf = {OFFICIAL_HTTPS}\n  insteadOf = {OFFICIAL_SSH}\n', encoding="utf-8")
@@ -146,7 +154,7 @@ def run_installer(sb: Sandbox, *, timeout: float = 1800) -> subprocess.Completed
     """HEAD's scripts/install.sh, non-interactive, as the documented `curl | bash` run does it."""
     script = sb.root / "install.sh"
     shutil.copy(H.WORKTREE / "scripts" / "install.sh", script)
-    return sb.run(["bash", str(script), "--skip-setup", "--skip-browser", "--skip-computer-use", "--non-interactive"],
+    return sb.run(["bash", str(script), "--non-interactive"],
                   timeout=timeout, input="")
 
 

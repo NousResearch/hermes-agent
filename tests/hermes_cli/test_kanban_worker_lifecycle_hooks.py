@@ -29,7 +29,6 @@ WORKER_HOOKS = (
     "on_kanban_worker_stale_claim",
 )
 
-
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
@@ -40,7 +39,6 @@ def kanban_home(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
-
 
 @pytest.fixture
 def captured_hooks(monkeypatch):
@@ -185,5 +183,3 @@ def test_raising_callbacks_never_break_worker_lifecycle(
             conn.close()
     finally:
         mgr._hooks = saved
-
-

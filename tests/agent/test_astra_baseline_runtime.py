@@ -61,7 +61,7 @@ def test_astra_900k_opt_in_preserves_live_limits_and_wire_contract(monkeypatch, 
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setattr(metadata, "_codex_oauth_context_cache", {})
-    monkeypatch.setattr(metadata.requests, "get", lambda *args, **kwargs: SimpleNamespace(
+    monkeypatch.setattr(metadata.model_metadata_http, "get", lambda *args, **kwargs: SimpleNamespace(
         status_code=200,
         json=lambda: {"models": [{"slug": "gpt-6-astra", "context_window": advertised}]},
     ))

@@ -21,7 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-import yaml
+import hermes_yaml as yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 TURN_TIMEOUT = 180.0
@@ -172,8 +172,9 @@ def tool_calls_of(row: dict[str, Any]) -> list[dict[str, Any]]:
 class KnownSymptom(AssertionError):
     """Raised ONLY at a tracked bug's exact symptom.
 
-    Every KNOWN strict xfail uses ``raises=KnownSymptom`` so a harness failure (process death, timeout,
-    precondition assert, fixture teardown error) fails for real instead of counting as the known bug.
+    It is the type ``known_gate``/``known_failure`` accept (``raises=KnownSymptom``), so a harness failure
+    (process death, timeout, precondition assert, fixture teardown error) fails for real instead of
+    counting as the known bug.
     """
 
 

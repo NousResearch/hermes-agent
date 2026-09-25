@@ -35,8 +35,8 @@ def test_py_files_prunes_dependency_trees_before_descent(tmp_path, monkeypatch):
     visited = []
     real_walk = os.walk
 
-    def tracking_walk(root):
-        for dirpath, dirnames, filenames in real_walk(root):
+    def tracking_walk(root, **kwargs):
+        for dirpath, dirnames, filenames in real_walk(root, **kwargs):
             visited.append(Path(dirpath))
             yield dirpath, dirnames, filenames
 

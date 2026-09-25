@@ -226,8 +226,16 @@ def check_systemd_timing_alignment(
 
 
 def _systemd_unit_is_loaded(fields: Dict[str, str]) -> bool:
-    """A not-found unit still prints the compiled TimeoutStopUSec default."""
-    return fields.get("LoadState") == "loaded" or bool(fields.get("FragmentPath"))
+    """A not-found unit still prints the compiled TimeoutStopUSec default.
+
+    Masked and error units also keep a fragment path while TimeoutStopUSec
+    stays the manager default. That is not a loaded unit. FragmentPath
+    counts only when LoadState itself is absent.
+    """
+    state = fields.get("LoadState")
+    if not state:
+        return bool(fields.get("FragmentPath"))
+    return state == "loaded"
 
 
 def _systemd_timeout_stop_us(unit_name: str) -> Optional[int]:

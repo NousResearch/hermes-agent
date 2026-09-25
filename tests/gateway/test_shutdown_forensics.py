@@ -212,6 +212,31 @@ def test_not_found_user_unit_does_not_hide_the_loaded_system_unit(monkeypatch):
     assert any("--user" not in cmd for cmd in seen)
 
 
+def test_masked_user_unit_does_not_hide_the_loaded_system_unit(monkeypatch):
+    """A masked user unit keeps a fragment path and the manager default timeout."""
+    seen = []
+
+    def fake_run(cmd, **kwargs):
+        seen.append(list(cmd))
+        if "--user" in cmd:
+            return _Show(
+                "LoadState=masked\n"
+                "FragmentPath=/dev/null\n"
+                "TimeoutStopUSec=1min 30s\n"
+            )
+        return _Show(
+            "LoadState=loaded\n"
+            "FragmentPath=/etc/systemd/system/hermes-gateway.service\n"
+            "TimeoutStopUSec=3min 30s\n"
+        )
+
+    monkeypatch.setattr(sf.subprocess, "run", fake_run)
+
+    assert sf._systemd_timeout_stop_us("hermes-gateway.service") == 210 * 1_000_000
+    assert any("--user" in cmd for cmd in seen)
+    assert any("--user" not in cmd for cmd in seen)
+
+
 def test_unloaded_unit_on_both_managers_is_undeterminable(monkeypatch):
     def fake_run(cmd, **kwargs):
         return _Show("LoadState=not-found\nFragmentPath=\nTimeoutStopUSec=1min 30s\n")

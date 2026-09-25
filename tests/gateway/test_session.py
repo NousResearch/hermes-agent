@@ -101,22 +101,36 @@ class TestBuildSessionContextPrompt:
 
 
     @pytest.mark.parametrize("thread_id", [None, "1727000000.123456"])
-    def test_slack_prompt_target_resolves_to_current_conversation(self, thread_id):
-        """The model must be able to address "this channel": the Source line shows only the
-        channel/peer display name, so the rendered target has to round-trip through
-        send_message's parser back to this session's chat_id/thread_id."""
+    @pytest.mark.parametrize("tools_loaded", [False, True])
+    def test_slack_prompt_target_resolves_to_current_conversation(self, thread_id, tools_loaded):
+        """Compact Discord-style IDs retain the Slack destination, with or without tools."""
         import re
         from tools.send_message_targets import resolve_send_target
 
         source = SessionSource(platform=Platform.SLACK, chat_id="D0BTK1PBRC2", chat_name="Donovan",
                                chat_type="dm", user_name="Donovan", thread_id=thread_id)
         config = GatewayConfig(platforms={Platform.SLACK: PlatformConfig(enabled=True, token="x")})
-        prompt = build_session_context_prompt(build_session_context(source, config))
+        with patch("gateway.session._slack_tools_loaded", return_value=tools_loaded):
+            prompt = build_session_context_prompt(build_session_context(source, config))
 
-        target = re.search(r"delivery target:\*\* `([^`]+)`", prompt).group(1)
-        platform_name, _, ref = target.partition(":")
-        chat_id, resolved_thread, error = resolve_send_target(platform_name, ref)
-        assert (platform_name, chat_id, resolved_thread, error) == ("slack", source.chat_id, thread_id, None)
+        discord_source = replace(source, platform=Platform.DISCORD, thread_id=None)
+        with patch("gateway.session._discord_tools_loaded", return_value=True):
+            discord_prompt = build_session_context_prompt(build_session_context(discord_source, config))
+        channel_line = next(line for line in discord_prompt.splitlines() if line.startswith("  - Channel:"))
+        assert channel_line in prompt.splitlines()
+        assert "delivery target" not in prompt
+        channel_match = re.search(r"^  - Channel: `([^`]+)`$", prompt, re.MULTILINE)
+        assert channel_match is not None
+        channel = channel_match.group(1)
+        thread = re.search(r"^  - Thread: `([^`]+)`$", prompt, re.MULTILINE)
+        if thread_id:
+            assert thread is not None
+            assert thread.group(1) == thread_id
+        else:
+            assert thread is None
+        ref = f"{channel}:{thread.group(1)}" if thread else channel
+        chat_id, resolved_thread, error = resolve_send_target("slack", ref)
+        assert (chat_id, resolved_thread, error) == (source.chat_id, thread_id, None)
 
     def test_slack_tools_loaded_scope_failure_fails_closed(self, monkeypatch):
         """A bound scope whose SLACK_BOT_TOKEN read fails must fail closed --

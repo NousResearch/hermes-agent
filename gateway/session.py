@@ -309,8 +309,9 @@ def _slack_platform_notes(context: SessionContext) -> List[str]:
     # chat_name is the channel/peer display name, so without this the model cannot address "this
     # channel" (DMs and private channels have no resolvable name). Session-stable: cache-safe.
     src = context.source
-    target = f"slack:{src.chat_id}:{src.thread_id}" if src.thread_id else f"slack:{src.chat_id}"
-    lines.append(f"**This conversation's delivery target:** `{target}`")
+    lines.append(f"  - Channel: `{src.chat_id}`")
+    if src.thread_id:
+        lines.append(f"  - Thread: `{src.thread_id}`")
     if context.shared_multi_user_session:
         lines.append(
             "In shared Slack threads, use the current turn's sender prefix as the only verified "

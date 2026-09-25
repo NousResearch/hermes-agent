@@ -2684,7 +2684,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         except Exception:
             logger.exception("browser-control WS ticket consumption failed")
             raise web.HTTPUnauthorized() from None
-        ws = web.WebSocketResponse(heartbeat=30.0, protocols=(_BROWSER_CONTROL_WS_PROTOCOL,))
+        # Liveness is the extension app heartbeat (browser.controller.heartbeat).
+        # Protocol PINGs kill the socket when Chrome suspends the MV3 worker
+        # before it can pong. heartbeat=None leaves that ping off.
+        ws = web.WebSocketResponse(heartbeat=None, protocols=(_BROWSER_CONTROL_WS_PROTOCOL,))
         await ws.prepare(request)
         loop = asyncio.get_running_loop()
         _send = _browser_controller_ws_sender(ws, loop)

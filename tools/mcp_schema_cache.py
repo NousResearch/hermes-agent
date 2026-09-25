@@ -33,14 +33,18 @@ def config_fingerprint(config: dict) -> str:
     schema cache.
     """
     from tools.mcp_tool_common import normalize_tools_filter
+    from tools.mcp_tool_schema import _normalize_name_filter
     tools_filter = normalize_tools_filter(config.get("tools"), "mcp_servers.<name>.tools")
+    # Include/exclude entries go through _normalize_name_filter — the same scalar-is-one-name
+    # contract runtime matching enforces — so a scalar entry fingerprints as its one-item list
+    # (not character-wise) and never collides with a multi-name list.
     payload = {
         "command": config.get("command"),
         "args": config.get("args") or [],
         "url": config.get("url"),
         "transport": config.get("transport"),
-        "tools_include": sorted(tools_filter.get("include") or []),
-        "tools_exclude": sorted(tools_filter.get("exclude") or [])}
+        "tools_include": sorted(_normalize_name_filter(tools_filter.get("include"), "mcp_servers.<name>.tools.include")),
+        "tools_exclude": sorted(_normalize_name_filter(tools_filter.get("exclude"), "mcp_servers.<name>.tools.exclude"))}
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 

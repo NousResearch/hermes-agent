@@ -76,6 +76,37 @@ class TestConfigFingerprintToolsShapes:
         assert entry is not None
         assert msc.tools_from_cache_entry(entry) == tools
 
+    def test_scalar_include_equals_one_item_list_not_multi(self):
+        # A scalar entry is ONE tool name at runtime; it must fingerprint as its one-item
+        # list and never collide with a multi-name list (lazy-cache key collision).
+        scalar = {**BASE, "tools": {"include": "ab"}}
+        one_item = {**BASE, "tools": {"include": ["ab"]}}
+        two_items = {**BASE, "tools": {"include": ["a", "b"]}}
+        assert msc.config_fingerprint(scalar) == msc.config_fingerprint(one_item)
+        assert msc.config_fingerprint(scalar) != msc.config_fingerprint(two_items)
+
+    def test_scalar_exclude_equals_one_item_list_not_multi(self):
+        scalar = {**BASE, "tools": {"exclude": "ab"}}
+        one_item = {**BASE, "tools": {"exclude": ["ab"]}}
+        two_items = {**BASE, "tools": {"exclude": ["a", "b"]}}
+        assert msc.config_fingerprint(scalar) == msc.config_fingerprint(one_item)
+        assert msc.config_fingerprint(scalar) != msc.config_fingerprint(two_items)
+
+    def test_lazy_cache_round_trip_scalar_entries(self, monkeypatch, tmp_path):
+        # A cache entry written for a multi-name filter must not be served for the scalar
+        # single-name filter (the reviewer's collision scenario), and the scalar's list
+        # form is the same filter and must hit.
+        monkeypatch.setattr(msc, "_cache_path", lambda: tmp_path / "cache.json")
+        tools = [{"name": "t1", "description": "d", "inputSchema": {"type": "object"}}]
+        msc.write_cache_entry("srv", msc.config_fingerprint({**BASE, "tools": {"include": ["a", "b"]}}),
+                              tools=tools, utility_tools=[])
+        assert msc.get_cached_entry("srv", msc.config_fingerprint({**BASE, "tools": {"include": "ab"}})) is None
+        msc.write_cache_entry("srv2", msc.config_fingerprint({**BASE, "tools": {"include": "ab"}}),
+                              tools=tools, utility_tools=[])
+        entry = msc.get_cached_entry("srv2", msc.config_fingerprint({**BASE, "tools": {"include": ["ab"]}}))
+        assert entry is not None
+        assert msc.tools_from_cache_entry(entry) == tools
+
 
 class TestMakeToolFilterToolsShapes:
     def test_comma_string_is_whitelist(self):

@@ -646,18 +646,32 @@ export function usePromptActions({
       const visibleText = sanitizeComposerInput(rawText).trim()
       const attachments = options?.attachments ?? $composerAttachments.get()
 
-      if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
-        triggerHaptic('selection')
-        // Forward the explicit target (background queue drain, tile) — dropping
-        // it ran the command against whatever chat happened to be in front.
-        await executeSlashCommand(visibleText, options?.sessionId ? { sessionId: options.sessionId } : undefined)
+      if (SLASH_COMMAND_RE.test(visibleText)) {
+        if (!attachments.length) {
+          triggerHaptic('selection')
+          // Forward the explicit target (background queue drain, tile) — dropping
+          // it ran the command against whatever chat happened to be in front.
+          await executeSlashCommand(visibleText, options?.sessionId ? { sessionId: options.sessionId } : undefined)
 
-        return true
+          return true
+        }
+
+        // An attachment's refText gets prepended ahead of the typed text in
+        // submitPromptText's buildContextText (submit.ts), so "/goal ..." with
+        // a file attached silently arrives as "@file:...\n\n/goal ..." — no
+        // longer slash-prefixed. It used to fall through to submitPromptText
+        // here and run as an ordinary chat message with zero indication the
+        // command never fired (confirmed: /goal never reached
+        // executeSlashCommand, goal/criteria never persisted — session
+        // 20260917_100928_8a67bd). Refuse loudly instead of degrading silently.
+        notify({ kind: 'error', message: copy.slashCommandWithAttachments })
+
+        return false
       }
 
       return await submitPromptText(rawText, options)
     },
-    [executeSlashCommand, submitPromptText]
+    [copy.slashCommandWithAttachments, executeSlashCommand, submitPromptText]
   )
 
   const transcribeVoiceAudio = useCallback(

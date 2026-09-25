@@ -5335,6 +5335,7 @@ export const en: Translations = {
     promptFailed: 'Prompt failed',
     providerCredentialRequired: 'Add a provider credential before sending your first message.',
     emptySlashCommand: 'empty slash command',
+    slashCommandWithAttachments: 'Slash commands cannot be sent with attachments. Remove the attachment, or send it as a separate message.',
     desktopCommands: 'Desktop commands',
     skillCommandsAvailable: count => `${count} skill commands available.`,
     warningLine: message => `warning: ${message}`,

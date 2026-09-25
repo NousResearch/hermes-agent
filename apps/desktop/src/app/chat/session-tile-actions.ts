@@ -324,16 +324,25 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
 
       listTileSession(visibleText)
 
-      if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
-        triggerHaptic('selection')
-        await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
+      if (SLASH_COMMAND_RE.test(visibleText)) {
+        if (!attachments.length) {
+          triggerHaptic('selection')
+          await sessionTileDelegate()?.executeSlash(visibleText, runtimeIdRef.current)
 
-        return true
+          return true
+        }
+
+        // Same silent-degrade bug as the primary composer (index.ts): an
+        // attachment's refText gets prepended ahead of the typed text and the
+        // command never fires. Refuse loudly instead.
+        notifyError(new Error(copy.slashCommandWithAttachments), copy.slashCommandWithAttachments)
+
+        return false
       }
 
       return await submitPromptText(rawText, options)
     },
-    [listTileSession, scope.attachments.$attachments, submitPromptText]
+    [copy.slashCommandWithAttachments, listTileSession, scope.attachments.$attachments, submitPromptText]
   )
 
   const cancelRun = useCallback(async () => {

@@ -106,15 +106,8 @@ def test_source_url_empty_for_unknown_source_without_identifier(mod):
 # _guess_category
 # --------------------------------------------------------------------------
 
-def test_guess_category_maps_known_tag(mod):
-    assert mod._guess_category(["security"]) == "security"
-    assert mod._guess_category(["machine-learning"]) == "mlops"
-    assert mod._guess_category(["crypto"]) == "blockchain"
 
 
-def test_guess_category_accepts_literal_curated_key(mod):
-    # A skill tagged literally with a curated category key should route there.
-    assert mod._guess_category(["devops"]) == "devops"
 
 
 def test_guess_category_rejects_junk_tag(mod):

@@ -1,0 +1,150 @@
+name: Plugin Catalog CI
+
+# Admission gate for plugin-catalog entries. Fires ONLY on PRs touching
+# plugin-catalog/** so it can never go red on unrelated PRs.
+#
+# Two gates:
+#   structural            — cheap schema check, no hermes install needed
+#   pinned-source-validate — supply-chain gate: the pinned sha MUST be
+#                            reachable in the entry's repo, and the plugin
+#                            at that exact commit must pass
+#                            `hermes plugins validate`.
+
+on:
+  pull_request:
+    paths:
+      - "plugin-catalog/**"
+
+permissions:
+  contents: read
+
+jobs:
+  structural:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+
+      - name: Install ruamel.yaml
+        uses: ./.github/actions/retry
+        with:
+          command: pip install ruamel.yaml==0.18.17
+
+      - name: Validate catalog files (structural)
+        run: |
+          set -euo pipefail
+          # Validating the whole directory is simpler than diffing and keeps
+          # the invariant that EVERYTHING in plugin-catalog/ stays valid.
+          python3 scripts/validate_plugin_catalog.py plugin-catalog/
+
+  pinned-source-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0 # need the merge-base to diff changed catalog files
+
+      - name: Find changed catalog entries
+        id: changed
+        run: |
+          set -euo pipefail
+          MERGE_BASE=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
+          # Added + modified entry files only; deletions and removed.yaml
+          # have nothing to clone.
+          CHANGED=$(git diff --name-only --diff-filter=AM "$MERGE_BASE"...HEAD \
+            -- 'plugin-catalog/*.yaml' 'plugin-catalog/*.yml' \
+            | grep -v '/removed\.yaml$' || true)
+          echo "Changed catalog entries:"
+          echo "${CHANGED:-<none>}"
+          {
+            echo 'files<<__EOF__'
+            echo "$CHANGED"
+            echo '__EOF__'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Hermes from the PR's own checkout
+        if: steps.changed.outputs.files != ''
+        uses: ./.github/actions/setup-pm
+        with:
+          toolchain: python
+          extras: '[]'
+
+      - name: Clone each entry at its pinned sha and validate
+        if: steps.changed.outputs.files != ''
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+        run: |
+          set -euo pipefail
+          FAILED=0
+          while IFS= read -r entry; do
+            [ -z "$entry" ] && continue
+            echo "::group::validate $entry"
+
+            # Parse repo / sha / subdir from the entry yaml.
+            eval "$(python3 - "$entry" <<'PYEOF'
+          import shlex
+          import sys
+
+          import hermes_yaml as yaml
+
+          with open(sys.argv[1], encoding="utf-8") as fh:
+              data = yaml.safe_load(fh) or {}
+          print(f"REPO={shlex.quote(str(data.get('repo', '')))}")
+          print(f"SHA={shlex.quote(str(data.get('sha', '')))}")
+          print(f"SUBDIR={shlex.quote(str(data.get('subdir', '') or ''))}")
+          PYEOF
+          )"
+            echo "repo=$REPO sha=$SHA subdir=$SUBDIR"
+
+            CLONE_DIR=$(mktemp -d)
+            # Full clone (no --depth 1): the pinned sha may not be the branch tip.
+            if ! git clone "$REPO" "$CLONE_DIR"; then
+              echo "::error file=$entry::clone failed for $REPO"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+
+            # SUPPLY-CHAIN GATE: the pinned sha must be reachable in the repo.
+            if ! git -C "$CLONE_DIR" checkout --detach "$SHA"; then
+              echo "::error file=$entry::pinned sha $SHA is not reachable in $REPO"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+
+            PLUGIN_DIR="$CLONE_DIR${SUBDIR:+/$SUBDIR}"
+            # Native plugin.yaml OR portable Agent Plugins v1 plugin.json
+            # (#81196; native manifest wins when both exist).
+            if [ ! -f "$PLUGIN_DIR/plugin.yaml" ] && [ ! -f "$PLUGIN_DIR/plugin.yml" ] && [ ! -f "$PLUGIN_DIR/plugin.json" ]; then
+              echo "::error file=$entry::no plugin.yaml or plugin.json at subdir '$SUBDIR' of $REPO@$SHA"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+
+            # Manifest schema + declared-vs-registered capability check.
+            if ! hermes plugins validate --install-deps "$PLUGIN_DIR"; then
+              echo "::error file=$entry::hermes plugins validate failed"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+
+            # SELF-UPDATER GATE (README rule 3): the pin is the only update path.
+            # A desktop bundle that both fetches from GitHub AND writes/renames
+            # plugin files is a self-updater; either half alone is fine (a
+            # plugin may read the API, or manage its own data files).
+            SELF_UPDATE=$(grep -rlE 'releases/latest|raw\.githubusercontent\.com' \
+                --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.ts' "$PLUGIN_DIR" \
+              | xargs -r grep -lE 'writeTextFile|renamePath|writeFile\(' || true)
+            if [ -n "$SELF_UPDATE" ]; then
+              echo "::error file=$entry::self-updating code in catalog build (fetches GitHub AND writes plugin files): $SELF_UPDATE"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+            echo "✅ PASS: $entry"
+            echo "::endgroup::"
+          done <<< "$CHANGED_FILES"
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "❌ FAIL: one or more catalog entries failed pinned-source validation"
+            exit 1
+          fi
+          echo "✅ PASS: all changed catalog entries validated at their pinned shas"

@@ -1,7 +1,8 @@
 """Voice Mode -- push-to-talk recording and playback for the CLI.
 
 Capture via sounddevice, WAV via stdlib wave, STT via tools.transcription_tools,
-playback via sounddevice or system players. Optional deps: ``uv sync --extra voice``.
+playback via sounddevice or system players. Optional deps: the ``audio-io`` / ``stt-whisper``
+extras, installed through PM (``hermes tools`` configures speech-to-text).
 """
 
 import logging
@@ -23,8 +24,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
 from hermes_constants import is_termux as _is_termux_environment
+from hermes_platform.host.runtime import is_wsl
+from tools.voice_mode_transcript import _voice_config, is_voice_stop_phrase, is_whisper_hallucination
 
 # ── Recording parameters ──
 SAMPLE_RATE = 16000  # Whisper native rate
@@ -41,7 +43,19 @@ _TEMP_DIR = os.path.join(tempfile.gettempdir(), "hermes_voice")
 # WSL, no PortAudio).
 
 def _import_audio():
-    """Lazy-import (sounddevice, numpy); raises ImportError/OSError when unavailable."""
+    """Lazy-import (sounddevice, numpy), enabling the ``audio-io`` extra through PM first.
+
+    Raises ImportError when the extra cannot be enabled here (lazy installs off, platform
+    gate, or installed-but-needs-restart) and OSError when PortAudio's shared library is
+    missing — pip can't fix that one, so it is reported separately.
+    """
+    import pm
+
+    if not pm.available("audio-io"):
+        try:
+            pm.ensure_import("audio-io")
+        except pm.InstallError as exc:
+            raise ImportError(str(exc)) from exc
     import sounddevice as sd
     import numpy as np
     return sd, np
@@ -89,6 +103,16 @@ def _unlink_quietly(path: Optional[str]) -> None:
             os.unlink(path)
 
 
+def _audio_unavailable_reason() -> str:
+    try:
+        _import_audio()
+    except ImportError as exc:
+        return _voice_capture_install_hint(exc)
+    except OSError:
+        return _portaudio_missing_message().splitlines()[0]
+    return ""
+
+
 def _audio_available() -> bool:
     try:
         _import_audio()
@@ -112,19 +136,13 @@ def _default_input_samplerate(sd) -> int:
 
 
 # ── Environment detection ──
-def _voice_capture_install_hint() -> str:
-    # sounddevice imports but PortAudio's shared library is missing — a pip install can't fix that; point at
-    # the system package instead of misreporting missing Python packages (#18432).
+def _voice_capture_install_hint(error: BaseException | None = None) -> str:
+    """Why audio capture is unavailable. ``_import_audio`` already tried to enable the
+    ``audio-io`` extra through PM, so the ImportError it raised IS the remediation."""
+    # On Termux PortAudio is a system package a pip install can't provide (#18432).
     if _is_termux_environment():
         return "pkg install python-numpy portaudio && python -m pip install sounddevice"
-    # Inside a venv a bare `pip install` may hit whichever Python the shell
-    # resolves first (macOS: often a Rosetta system Python) — use the venv's pip.
-    with suppress(Exception):
-        if sys.prefix != getattr(sys, "base_prefix", sys.prefix):
-            pip_in_venv = Path(sys.prefix) / "bin" / "pip"
-            if pip_in_venv.exists():
-                return f"{pip_in_venv} install sounddevice numpy"
-    return "pip install sounddevice numpy"
+    return str(error) if error else "audio-io extra unavailable"
 
 
 def _portaudio_missing_message() -> str:
@@ -251,9 +269,9 @@ def _probe_audio_libraries(warnings: List[str], notices: List[str], *, has_forwa
 
     try:
         sd, _ = _import_audio()
-    except ImportError:
+    except ImportError as exc:
         return outcome("Termux:API microphone recording available (sounddevice not required)",
-                       f"Audio libraries not installed ({_voice_capture_install_hint()})", import_failed=True)
+                       f"Audio libraries not installed ({_voice_capture_install_hint(exc)})", import_failed=True)
     except OSError:
         return outcome("Termux:API microphone recording available (PortAudio not required)",
                        _portaudio_missing_message(), import_failed=True)
@@ -310,7 +328,7 @@ def detect_audio_environment() -> dict:
     # WSL: the PowerShell/Media.SoundPlayer fallback only covers OUTPUT, so when
     # it is all that's available downgrade to a notice (recording guidance stays
     # visible, TTS-only usage isn't blocked).
-    if _is_wsl2_env():
+    if is_wsl():
         if has_forwarded_audio:
             notices.append("Running in WSL with a reachable PulseAudio/PipeWire sound server")
         elif _wsl_powershell_tts_available():
@@ -320,13 +338,13 @@ def detect_audio_environment() -> dict:
                 "Voice INPUT (recording) still requires a PulseAudio bridge:\n"
                 "  1. Set PULSE_SERVER=unix:/mnt/wslg/PulseServer\n"
                 "  2. Create ~/.asoundrc pointing ALSA at PulseAudio\n"
-                "  3. Verify with: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav")
+                "  3. Verify with: arecord -d 3 test.wav && aplay test.wav")
         else:
             warnings.append(
                 "Running in WSL -- audio requires a forwarded sound server.\n"
                 "  PulseAudio: export PULSE_SERVER=unix:/mnt/wslg/PulseServer\n"
                 "  PipeWire:   export PIPEWIRE_REMOTE=$XDG_RUNTIME_DIR/pipewire-0\n"
-                "  Then verify: arecord -d 3 /tmp/test.wav && aplay /tmp/test.wav")
+                "  Then verify: arecord -d 3 test.wav && aplay test.wav")
 
     _probe_audio_libraries(warnings, notices, has_forwarded_audio=has_forwarded_audio,
                            termux_mic_cmd=termux_mic_cmd, termux_app_installed=termux_app_installed)
@@ -729,16 +747,25 @@ class AudioRecorder(_RecorderBase):
                 self._on_audio_block(np, indata)
 
         stream = None
-        try:  # may block on CoreAudio (first call only)
-            stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
-                                    callback=_callback)
-            stream.start()
-        except Exception as e:
-            with suppress(Exception):
-                stream.close()
-            raise RuntimeError(
-                f"Failed to open audio input stream: {e}. "
-                "Check that a microphone is connected and accessible.") from e
+        for attempt in range(2):
+            try:  # may block on CoreAudio (first call only)
+                stream = sd.InputStream(samplerate=self._sample_rate, channels=CHANNELS, dtype=DTYPE,
+                                        callback=_callback)
+                stream.start()
+                break
+            except Exception as e:
+                with suppress(Exception):
+                    stream.close()
+                stream = None
+                # PortAudio paTimedOut (-9987): a cold host-API bridge (WSLg ALSA->Pulse
+                # with a SUSPENDED RDP source) missed the 1 s thread-start window. The
+                # failed open itself wakes the bridge, so one immediate retry succeeds
+                # where the user's second key press would have (#109303).
+                if attempt or "timed out" not in str(e).lower():
+                    raise RuntimeError(
+                        f"Failed to open audio input stream: {e}. "
+                        "Check that a microphone is connected and accessible.") from e
+                logger.info("Audio input stream start timed out; retrying once")
         self._stream = stream
 
     def start(self, on_silence_stop=None) -> None:
@@ -749,9 +776,7 @@ class AudioRecorder(_RecorderBase):
         except OSError as e:
             raise RuntimeError(_portaudio_missing_message()) from e
         except ImportError as e:
-            raise RuntimeError(
-                "Voice mode requires sounddevice and numpy.\n"
-                f"Install with: {sys.executable} -m pip install sounddevice numpy") from e
+            raise RuntimeError(f"Voice mode requires sounddevice and numpy.\n{_voice_capture_install_hint(e)}") from e
         with self._lock:
             if self._recording:
                 return
@@ -952,20 +977,10 @@ def stop_playback() -> None:
         sd.stop()
 
 
-def _is_wsl2_env() -> bool:
-    """True inside WSL (Microsoft kernel signature in /proc/version); False on any error.
-    Module-level so tests can patch it instead of ``builtins.open``."""
-    try:
-        with open("/proc/version", encoding="utf-8", errors="replace") as _fv:
-            return "microsoft" in _fv.read().lower()
-    except OSError:
-        return False
-
-
 def _wsl_powershell_tts_available() -> bool:
     """WSL2 PowerShell TTS fallback usable. OUTPUT only (Media.SoundPlayer on the host) —
     recording still needs a PulseAudio bridge, so callers keep surfacing that guidance."""
-    return bool(_is_wsl2_env() and shutil.which("powershell.exe") and shutil.which("ffmpeg"))
+    return bool(is_wsl() and shutil.which("powershell.exe") and shutil.which("ffmpeg"))
 
 
 def play_audio_file(file_path: str) -> bool:
@@ -991,7 +1006,7 @@ def _play_wav_via_sounddevice(file_path: str) -> bool:
         # ~100 ms to stabilise and the small default blocksize worsens
         # clock-adjustment jitter (microsoft/wslg#1257).
         blocksize = 0  # default (auto)
-        if _is_wsl2_env():
+        if is_wsl():
             fade_samples = int(0.1 * sample_rate)
             audio_float = audio_data.astype(np.float64)
             audio_float[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples, dtype=np.float64)
@@ -1014,7 +1029,7 @@ def _wsl_powershell_player_cmd(file_path: str) -> Optional[List[str]]:
     ffplay/aplay have no device, but Media.SoundPlayer on the host does: convert to a
     uniquely-named WAV in Windows %TEMP% (concurrent TTS must not collide), play, always
     delete, and re-raise the ORIGINAL exit status past the cleanup (rm -f exits 0)."""
-    if not (shutil.which("powershell.exe") and shutil.which("ffmpeg") and _is_wsl2_env()):
+    if not (shutil.which("powershell.exe") and shutil.which("ffmpeg") and is_wsl()):
         return None
     try:
         import uuid
@@ -1478,12 +1493,11 @@ def check_voice_requirements() -> Dict[str, Any]:
     details = [
         "Audio capture: OK (Termux:API microphone)" if termux_capture
         else "Audio capture: OK" if has_audio
-        else f"Audio capture: MISSING ({_voice_capture_install_hint()})",
+        else f"Audio capture: MISSING ({_audio_unavailable_reason()})",
         "STT provider: DISABLED in config (stt.enabled: false)" if not stt_enabled
         else f"STT provider: {stt_label}" if stt_label
-        else ("STT provider: MISSING (uv pip install faster-whisper — "
-              "`pip install faster-whisper` also works if pip is on PATH, "
-              "or set GROQ_API_KEY / VOICE_TOOLS_OPENAI_KEY)"),
+        else ("STT provider: MISSING (run `hermes tools` and configure "
+              "Speech-to-Text: Local Whisper or a cloud provider)"),
     ]
     details += [f"Environment: {w}" for w in env_check["warnings"]]
     details += [f"Environment: {n}" for n in env_check.get("notices", [])]

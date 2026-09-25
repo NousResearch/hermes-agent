@@ -1,18 +1,33 @@
 import { useStore } from '@nanostores/react'
+import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ComponentProps, lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import { ErrorIcon } from '@/components/ui/error-state'
 import { Loader } from '@/components/ui/loader'
 import { LogView } from '@/components/ui/log-view'
-import type { DesktopConnectionConfig } from '@/global'
+import type { DesktopConnectionConfig, DesktopOauthLoginResult } from '@/global'
 import { useI18n } from '@/i18n'
+import { reestablishCloudAgentSession } from '@/lib/cloud-agent-session'
+import { DESKTOP_DOCS_URL } from '@/lib/docs'
 import { openExternalLink } from '@/lib/external-link'
-import { ChevronLeft, ExternalLink, FileText, Loader2, LogIn, RefreshCw, SlidersHorizontal, Wrench } from '@/lib/icons'
+import {
+  ChevronLeft,
+  ExternalLink,
+  FileText,
+  Loader2,
+  LogIn,
+  RefreshCw,
+  SlidersHorizontal,
+  Wrench,
+  X
+} from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
 
+import { classifyLocalBootFailure, type LocalBootFailureCopy, localBootFailureCopy } from './boot-failure-cause'
 import type { RemoteReauth } from './boot-failure-reauth'
 import {
   deriveProviderShape,
@@ -39,10 +54,68 @@ type RecoveryView = 'connect' | 'recovery'
 // re-establish the remote session. The detection + copy helpers live in
 // ./boot-failure-reauth so they're unit-testable without a React render.
 
+// Radix Close routes through the modal's onOpenChange, same path as Escape.
+function DismissControl() {
+  const { t } = useI18n()
+
+  return (
+    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
+      <Button
+        aria-label={t.common.close}
+        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+        size="icon-xs"
+        variant="ghost"
+      >
+        <X className="size-4" />
+        <span className="sr-only">{t.common.close}</span>
+      </Button>
+    </DialogPrimitive.Close>
+  )
+}
+
 // Recovery surface for a hard boot failure (gateway never came up, backend
 // exited during startup, bootstrap latched, …). Without this the app shell
 // renders dead — "gateway offline", no composer, only a toast — with no way
 // to retry, repair the install, switch the gateway, or find the logs.
+function BootFailureModal({
+  children,
+  onDismiss,
+  title
+}: {
+  children: ReactNode
+  onDismiss: () => void
+  title?: string
+}) {
+  const [contentNode, setContentNode] = useState<HTMLDivElement | null>(null)
+
+  return (
+    <DialogPrimitive.Root
+      onOpenChange={open => {
+        if (!open) {
+          onDismiss()
+        }
+      }}
+      open
+    >
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Content aria-describedby={undefined} aria-modal="true" asChild ref={setContentNode}>
+          <div
+            className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
+            // Masks the whole app on boot failure — must stay filled under window
+            // glass. Contract: `[data-glass-opaque]` in styles.css.
+            data-glass-opaque=""
+          >
+            <DialogPortalContainerContext.Provider value={contentNode}>
+              {title ? <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title> : null}
+              {children}
+            </DialogPortalContainerContext.Provider>
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  )
+}
+
 export function BootFailureOverlay() {
   const boot = useStore($desktopBoot)
   const onboarding = useStore($desktopOnboarding)
@@ -55,16 +128,27 @@ export function BootFailureOverlay() {
   // A remote/cloud backend that failed to boot is fixable from gateway settings,
   // so the escape hatch earns emphasis (local failures keep it as a quiet ghost).
   const [remoteFailure, setRemoteFailure] = useState(false)
+  // A bundled install (payload ships in-app) has no installer to repair with.
+  // Read from the bootstrap state snapshot so Repair is never offered there;
+  // "Reinstall the app" replaces it only when the payload itself is damaged.
+  const [bundled, setBundled] = useState(false)
   // Swap the card body to the embedded Gateway settings panel in place of routing
   // to the full Settings page (keeps the user on the recovery surface, no z-index
   // juggling, no second connection form to maintain).
   const [view, setView] = useState<RecoveryView>('recovery')
+  // Dismissal hides the modal only. The latched boot error stays so recovery
+  // can return, and a later clear or a different error shows the overlay again.
+  const [dismissedError, setDismissedError] = useState<string | null>(null)
 
-  const visible = Boolean(boot.error) && !boot.running
+  const visible = Boolean(boot.error) && boot.error !== dismissedError && !boot.running
   // While first-run onboarding owns the picker/flow we let it surface its own
   // progress; the recovery overlay is for hard failures, which it covers via a
   // higher z-index regardless of onboarding state.
   const suppressed = onboarding.flow.status !== 'idle' && onboarding.flow.status !== 'error'
+
+  useEffect(() => {
+    setDismissedError(current => (boot.running || current !== boot.error ? null : current))
+  }, [boot.error, boot.running])
 
   useEffect(() => {
     if (!visible) {
@@ -75,6 +159,30 @@ export function BootFailureOverlay() {
       ?.getRecentLogs()
       .then(res => setLogs(res.lines ?? []))
       .catch(() => undefined)
+  }, [boot.error, visible])
+
+  // Bundled installs carry their runtime as an immutable payload — repair
+  // would re-run an installer that must never fire for them. Resolve the
+  // artifact kind from the bootstrap snapshot, including failures before setup.
+  useEffect(() => {
+    if (!visible) {
+      return
+    }
+
+    let cancelled = false
+
+    void window.hermesDesktop
+      ?.getBootstrapState()
+      .then(snapshot => {
+        if (!cancelled && snapshot) {
+          setBundled(snapshot.bundled)
+        }
+      })
+      .catch(() => undefined)
+
+    return () => {
+      cancelled = true
+    }
   }, [boot.error, visible])
 
   // Resolve whether this boot failure is a remote-gateway reauth so we can
@@ -150,10 +258,32 @@ export function BootFailureOverlay() {
     window.location.reload()
   }
 
-  const repair = async () => {
+  const repair = async (): Promise<void> => {
     setBusy('repair')
-    await window.hermesDesktop?.repairBootstrap().catch(() => undefined)
-    window.location.reload()
+
+    try {
+      if (!window.hermesDesktop?.repairBootstrap) {
+        throw new Error(t.boot.errors.ipcBridgeUnavailable)
+      }
+
+      const result = await window.hermesDesktop.repairBootstrap()
+
+      // Main refuses repair on a bundled install (its stamp is authoritative;
+      // our snapshot may be stale) — say what to do instead of the raw code.
+      if (result?.error === 'bundled-immutable') {
+        throw new Error(t.boot.failure.bundledReinstallHint)
+      }
+
+      if (!result?.ok) {
+        throw new Error(result?.error || t.boot.errors.desktopBootFailed)
+      }
+
+      window.location.reload()
+    } catch (error) {
+      notifyError(error, t.boot.failure.repairInstall)
+    } finally {
+      setBusy(null)
+    }
   }
 
   const switchToLocalGateway = async () => {
@@ -167,6 +297,8 @@ export function BootFailureOverlay() {
   // connection's owning login flow. Hermes Cloud must reuse its portal session
   // and per-agent cascade; generic remote gateways use native/embedded OAuth.
   // Reload after success so boot mints a fresh ticket against the new session.
+  // The cloud ladder is shared with Settings (reestablishCloudAgentSession) so
+  // the boot recovery and the in-Settings recovery cannot drift apart.
   const signInRemote = async () => {
     if (!remoteReauth) {
       return
@@ -177,33 +309,37 @@ export function BootFailureOverlay() {
     try {
       const desktop = window.hermesDesktop
 
-      await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
-
-      let result: { connected?: boolean } | undefined
+      let connected: boolean
+      // Only the oauth arm reports a reason (DesktopOauthLoginResult.error);
+      // the incomplete sign-in notice below surfaces it. The cloud ladder
+      // reports an outcome, handled in its own branch.
+      let error: string | undefined
 
       if (connectionConfig?.mode === 'cloud' && desktop?.cloud) {
-        const status = await desktop.cloud.status()
+        // The ladder drops this gateway's lapsed cookies itself — logging out
+        // here as well would fire the IPC twice for the cloud path.
+        const outcome = await reestablishCloudAgentSession(desktop, remoteReauth.url)
 
-        if (!status.signedIn) {
-          const login = await desktop.cloud.login()
+        if (outcome === 'portal-incomplete') {
+          notify({
+            kind: 'warning',
+            title: t.boot.failure.signInIncompleteTitle,
+            message: t.boot.failure.signInIncompleteMessage
+          })
 
-          if (!login.signedIn) {
-            notify({
-              kind: 'warning',
-              title: t.boot.failure.signInIncompleteTitle,
-              message: t.boot.failure.signInIncompleteMessage
-            })
-
-            return
-          }
+          return
         }
 
-        result = await desktop.cloud.agentSignIn(remoteReauth.url)
+        connected = true
       } else {
-        result = await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
+        await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
+
+        const result: DesktopOauthLoginResult | undefined = await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
+        connected = result?.connected === true
+        error = result?.error
       }
 
-      if (result?.connected) {
+      if (connected) {
         if (connectionConfig?.mode === 'cloud') {
           await desktop?.resetBootstrap().catch(() => undefined)
         }
@@ -217,7 +353,9 @@ export function BootFailureOverlay() {
       notify({
         kind: 'warning',
         title: t.boot.failure.signInIncompleteTitle,
-        message: t.boot.failure.signInIncompleteMessage
+        message: error
+          ? `${t.boot.failure.signInIncompleteMessage}: ${error}`
+          : t.boot.failure.signInIncompleteMessage
       })
     } catch (err) {
       notifyError(err, t.boot.failure.signInFailed)
@@ -227,7 +365,17 @@ export function BootFailureOverlay() {
   }
 
   const openLogs = () => void window.hermesDesktop?.revealLogs().catch(() => undefined)
+
+  const dismiss = () => setDismissedError(boot.error)
+
   const copy = t.boot.failure
+
+  // SSH failures keep their own gloss; every other local failure is classified
+  // into one plain sentence, raw output collapsed underneath (desktop-05).
+  const failureCopy: LocalBootFailureCopy =
+    connectionConfig?.mode === 'ssh'
+      ? { headline: sshFailureMessage(connectionConfig, boot.error, t.settings.gateway), rawDetail: null }
+      : localBootFailureCopy(boot.error, t.boot.causes)
 
   const label = signInLabel(remoteReauth, {
     identityProvider: copy.identityProvider,
@@ -325,30 +473,40 @@ export function BootFailureOverlay() {
   } else {
     // Local failure: Use-local is redundant with Retry (both re-target local), so
     // it's dropped here; keep it for remote failures where it's the fall-back.
-    actions = [
-      retryAction,
-      {
-        key: 'repair',
-        label: copy.repairInstall,
-        onClick: () => void repair(),
-        icon: <Wrench />,
-        variant: 'secondary',
-        busy: 'repair'
-      },
-      { ...settingsAction, variant: 'ghost' }
-    ]
-    hint = copy.repairHint
+    // A bundled install's payload is immutable, so there is no installer to
+    // re-run: Repair is dropped, and "Reinstall the app" is offered only when
+    // the payload itself is what's broken — a port clash or timeout on a
+    // bundled install is not fixed by reinstalling.
+    const damagedPayload: boolean = bundled && classifyLocalBootFailure(boot.error) === 'installMissing'
+
+    const fixAction: RecoveryAction | null = damagedPayload
+      ? {
+          key: 'reinstall',
+          label: copy.reinstallApp,
+          onClick: () => openExternalLink(DESKTOP_DOCS_URL),
+          icon: <ExternalLink />,
+          variant: 'secondary'
+        }
+      : bundled
+        ? null
+        : {
+            key: 'repair',
+            label: copy.repairInstall,
+            onClick: () => void repair(),
+            icon: <Wrench />,
+            variant: 'secondary',
+            busy: 'repair'
+          }
+
+    actions = [retryAction, ...(fixAction ? [fixAction] : []), { ...settingsAction, variant: 'ghost' }]
+    hint = damagedPayload ? copy.bundledReinstallHint : bundled ? '' : copy.repairHint
   }
 
   if (view === 'connect') {
     return (
-      <div
-        className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
-        // Masks the whole app on boot failure — must stay filled under window
-        // glass. Contract: `[data-glass-opaque]` in styles.css.
-        data-glass-opaque=""
-      >
-        <div className="flex max-h-[86vh] w-full max-w-[46rem] flex-col overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+      <BootFailureModal onDismiss={dismiss} title={copy.gatewaySettings}>
+        <div className="relative flex max-h-[86vh] w-full max-w-[46rem] flex-col overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+          <DismissControl />
           {/* Subtle back affordance (projects/overlay idiom): muted → foreground
               on hover, no divider. */}
           <button
@@ -365,24 +523,22 @@ export function BootFailureOverlay() {
             </Suspense>
           </div>
         </div>
-      </div>
+      </BootFailureModal>
     )
   }
 
   return (
-    <div
-      className="fixed inset-0 z-(--z-setup) flex items-center justify-center bg-(--ui-chat-surface-background) p-6"
-      // Masks the whole app on boot failure — must stay filled under window
-      // glass. Contract: `[data-glass-opaque]` in styles.css.
-      data-glass-opaque=""
-    >
-      <div className="w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
-        <div className="flex items-start gap-3 px-5 py-4">
+    <BootFailureModal onDismiss={dismiss}>
+      <div className="relative w-full max-w-[40rem] overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous">
+        <DismissControl />
+        <div className="flex items-start gap-3 px-5 py-4 pr-12">
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
-            <h2 className="text-[0.9375rem] font-semibold tracking-tight">
-              {remoteReauth ? copy.remoteTitle : cloudDown ? copy.cloudDownTitle : copy.title}
-            </h2>
+            <DialogPrimitive.Title asChild>
+              <h2 className="text-[0.9375rem] font-semibold tracking-tight">
+                {remoteReauth ? copy.remoteTitle : cloudDown ? copy.cloudDownTitle : copy.title}
+              </h2>
+            </DialogPrimitive.Title>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
               {remoteReauth ? copy.remoteDescription : cloudDown ? copy.cloudDownDescription : copy.description}
             </p>
@@ -391,7 +547,18 @@ export function BootFailureOverlay() {
 
         <div className="grid gap-4 p-5 pt-0">
           <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-            {sshFailureMessage(connectionConfig, boot.error, t.settings.gateway)}
+            {failureCopy.headline}
+            {failureCopy.rawDetail ? (
+              <details className="mt-2 text-muted-foreground">
+                <summary className="cursor-pointer select-none font-medium">{copy.details}</summary>
+                <pre
+                  className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem] leading-relaxed"
+                  data-selectable-text="true"
+                >
+                  {failureCopy.rawDetail}
+                </pre>
+              </details>
+            ) : null}
           </div>
 
           <div className="grid gap-2">
@@ -407,7 +574,7 @@ export function BootFailureOverlay() {
                 {copy.openLogs}
               </Button>
             </div>
-            <p className="text-xs text-muted-foreground">{hint}</p>
+            {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
           </div>
 
           {logs.length > 0 ? (
@@ -426,6 +593,6 @@ export function BootFailureOverlay() {
           ) : null}
         </div>
       </div>
-    </div>
+    </BootFailureModal>
   )
 }

@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import logging
+import os
 import sqlite3
 import sys
 import threading
@@ -15,6 +16,7 @@ import time
 from typing import Any, Dict, Optional
 
 from hermes_cli.sqlite_runtime import is_sqlite_wal_reset_vulnerable as _is_sqlite_wal_reset_vulnerable
+from hermes_state_errors import is_sqlite_lock_error
 
 # Log-record parity with the origin module (caplog tests pin "hermes_state").
 logger = logging.getLogger("hermes_state")
@@ -32,6 +34,14 @@ _WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
 # line would repeat per connection). Tests clear these via ``hermes_state_wal.<name>``.
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
+
+# Dedup for the both-pragmas-failed WARNING (WAL *and* DELETE rejected, e.g. APFS external SSDs under contention).
+_wal_delete_fallback_failed_paths: set[str] = set()
+_wal_delete_fallback_failed_lock = threading.Lock()
+
+# Dedup for the probe-unknown WARNING (on-disk journal mode unreadable, nothing touched).
+_wal_probe_unknown_paths: set[str] = set()
+_wal_probe_unknown_lock = threading.Lock()
 _wal_reset_bug_warned_paths: set[str] = set()
 _wal_reset_bug_warned_lock = threading.Lock()
 _delete_overridden_warned_paths: set[str] = set()
@@ -160,7 +170,78 @@ def resolve_journal_mode() -> str:
 class WalUnsupportedError(sqlite3.OperationalError):
     """Raised by :func:`apply_wal_with_fallback` under ``require_wal=True`` when
     the filesystem cannot provide WAL (SQLITE_PROTOCOL raised, or macOS-NFS silent
-    refusal). Subclasses ``OperationalError`` so DB-init handlers still catch it."""
+    refusal) or the on-disk mode cannot be verified (probe blocked by a concurrent
+    opener). Subclasses ``OperationalError`` so DB-init handlers still catch it."""
+
+
+# Docker Desktop / OrbStack / Podman expose host bind mounts to the guest as ``fuse.virtiofs`` or ``9p``. WAL's
+# -shm file must be coherent shared memory for every opener; across the VM boundary it is not, and under write
+# pressure the failure is SILENT (zero-filled pages), so the reactive ``_WAL_INCOMPAT_MARKERS`` fallback in
+# ``_enable_wal`` never gets a signal — WAL must be refused before the pragma. Port of openclaw/openclaw#120597.
+# Detection is Linux ``/proc/self/mountinfo`` only (statvfs carries no fstype); elsewhere, or when the table is
+# unreadable, the answer is False and behaviour is unchanged. Nothing else (ext4/btrfs/xfs/zfs/tmpfs/overlay/nfs)
+# is ever flagged here — those keep the existing reactive paths.
+_CROSS_VM_FSTYPES = frozenset({"virtiofs", "fuse.virtiofs", "9p", "9p2000", "9p2000.l", "9p2000.u"})
+_cross_vm_fs_cache: Dict[str, bool] = {}  # per DB directory; kanban_db.connect() opens per operation
+_cross_vm_fs_cache_lock = threading.Lock()
+_cross_vm_warned_paths: set[str] = set()
+_cross_vm_warned_lock = threading.Lock()
+_cross_vm_existing_wal_warned_paths: set[str] = set()
+_cross_vm_existing_wal_warned_lock = threading.Lock()
+
+
+def _mountinfo_fstype(directory: str, mountinfo_path: str = "/proc/self/mountinfo") -> str:
+    """fstype of the longest mount point that is a prefix of ``directory`` (``""`` if unreadable / no match)."""
+    try:
+        with open(mountinfo_path, "r", encoding="utf-8", errors="replace") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return ""
+    best_len, best_fstype = -1, ""
+    for line in lines:
+        # proc(5): <id> <parent> <maj:min> <root> <mount point> <opts> [optional...] - <fstype> <source> <super opts>
+        fields, _, tail = line.partition(" - ")
+        parts = fields.split()
+        if len(parts) < 5 or not tail:
+            continue
+        mount_point = parts[4]
+        if "\\" in mount_point:  # octal escapes (\040 = space)
+            mount_point = mount_point.encode("latin-1", "ignore").decode("unicode_escape")
+        if directory == mount_point or directory.startswith(mount_point.rstrip("/") + "/"):
+            if len(mount_point) > best_len:
+                best_len, best_fstype = len(mount_point), tail.split()[0]
+    return best_fstype.lower()
+
+
+def _detect_cross_vm_fs(directory: str, mountinfo_path: str = "/proc/self/mountinfo") -> bool:
+    """True only when ``directory`` sits on a virtiofs/9p mount per ``mountinfo_path``."""
+    if sys.platform != "linux":
+        return False
+    return _mountinfo_fstype(directory, mountinfo_path) in _CROSS_VM_FSTYPES
+
+
+def _path_on_cross_vm_fs(path: str) -> bool:
+    """True when ``path`` resides on a virtiofs/9p (cross-VM) filesystem; cached per resolved directory."""
+    try:
+        directory = os.path.dirname(os.path.realpath(path)) or "/"
+    except (OSError, ValueError):
+        return False
+    with _cross_vm_fs_cache_lock:
+        cached = _cross_vm_fs_cache.get(directory)
+    if cached is None:
+        cached = _detect_cross_vm_fs(directory)
+        with _cross_vm_fs_cache_lock:
+            _cross_vm_fs_cache[directory] = cached
+    return cached
+
+
+def _connection_db_file(conn: sqlite3.Connection) -> str:
+    """Filesystem path of the ``main`` database, ``""`` for in-memory / unknown."""
+    try:
+        row = conn.execute("PRAGMA database_list").fetchone()
+        return str(row[2]) if row and row[2] else ""
+    except (sqlite3.OperationalError, IndexError, TypeError):
+        return ""
 
 
 def _verify_configured_delete(actual: str) -> str:
@@ -173,8 +254,9 @@ def _verify_configured_delete(actual: str) -> str:
 def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.db", require_wal: bool = False) -> str:
     """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
 
-    Returns the mode actually set. Shared by :class:`SessionDB` and ``hermes_cli.kanban_db_connect.connect``.
-    WAL-incompatible filesystems either raise ``OperationalError`` ("locking protocol" / "disk I/O error") or —
+    Returns the mode actually set — or, when the read-only mode probe is blocked by a concurrent opener, ``"wal"``
+    as the assumed mode with nothing touched (``require_wal=True`` raises instead). Shared by :class:`SessionDB`
+    and ``hermes_cli.kanban_db_connect.connect``. WAL-incompatible filesystems either raise ``OperationalError`` ("locking protocol" / "disk I/O error") or —
     macOS NFS / SMB / AgentFS — silently refuse and stay in DELETE; either way log ERROR once per process per
     ``db_label`` and fall back. ``require_wal=True`` raises :class:`WalUnsupportedError` instead. WAL-reset-bug
     builds (https://sqlite.org/wal.html#walresetbug) never enable WAL on non-WAL files; an already-WAL DB keeps WAL
@@ -204,6 +286,7 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
         if configured == "delete":
             # Never-live-downgrade keeps WAL; tell the operator their delete did not apply.
             _log_configured_delete_overridden_once(db_label)
+        _warn_existing_wal_on_cross_vm_fs(conn)
         _apply_wal_companions(conn)
         return "wal"
 
@@ -214,6 +297,24 @@ def apply_wal_with_fallback(conn: sqlite3.Connection, *, db_label: str = "state.
             # Probe failed (locked/busy): ownership not provably exclusive. Fail loudly.
             raise sqlite3.OperationalError(_CANNOT_VERIFY_DELETE_MSG)
         return _verify_configured_delete(_set_journal_mode_no_wait(conn, "DELETE"))
+    if current_mode is None:
+        # Probe failed (locked/busy): ownership not provably exclusive, same as the DELETE branch above. A fresh
+        # 0-page DB probes "delete" cleanly, so this is a real file some other connection holds — running WAL-init
+        # would unlink its -wal/-shm sidecars. Touch nothing: the connection inherits whatever mode the header has.
+        if require_wal:
+            raise WalUnsupportedError("could not verify the on-disk journal mode (database is locked — possible "
+                                      "concurrent openers); cannot guarantee WAL")
+        _log_once("wal_probe_unknown", db_label)
+        return "wal"
+    # Cross-VM bind mount (virtiofs/9p): WAL corrupts silently there, so refuse to ENABLE it. On-disk WAL
+    # databases were returned above (never live-downgrade); a 0-page / DELETE file just stays DELETE.
+    db_file = _connection_db_file(conn)
+    if db_file and _path_on_cross_vm_fs(db_file):
+        if require_wal:
+            raise WalUnsupportedError("journal_mode=WAL refused: database is on a cross-VM filesystem (virtiofs/9p) "
+                                      "where WAL shared-memory silently corrupts")
+        _log_once("cross_vm_fs", db_label)
+        return _set_journal_mode_no_wait(conn, "DELETE") or "delete"
     return _enable_wal(conn, db_label, require_wal, current_mode)
 
 
@@ -276,7 +377,20 @@ def _enable_wal(conn: sqlite3.Connection, db_label: str, require_wal: bool, curr
         if require_wal:
             raise WalUnsupportedError(str(exc)) from exc
         _log_wal_fallback_once(db_label, exc)
-        _set_journal_mode_no_wait(conn, "DELETE")
+        try:
+            _set_journal_mode_no_wait(conn, "DELETE")
+        except sqlite3.OperationalError as delete_exc:
+            # Filesystems that reject BOTH pragmas (APFS external SSDs under heavy contention raise
+            # "disk I/O error" on DELETE too). The connection keeps its current mode — typically the
+            # SQLite default DELETE — and stays usable for reads/writes, so propagating would crash
+            # every DB-init caller (SessionDB, kanban_db, ResponseStore) for no benefit. Log once
+            # per db_label and return the mode actually in effect, read back rather than guessed.
+            _log_once("wal_delete_fallback_failed", db_label, exc, delete_exc)
+            try:
+                read_back = _mode_from_row(conn.execute("PRAGMA journal_mode").fetchone())
+            except sqlite3.OperationalError:
+                read_back = ""
+            return read_back or "delete"
         return "delete"
 
 
@@ -301,6 +415,16 @@ def _set_journal_mode_no_wait(conn: sqlite3.Connection, mode: str) -> str:
             conn.execute(f"PRAGMA busy_timeout={previous_timeout}")
 
 
+def _warn_existing_wal_on_cross_vm_fs(conn: sqlite3.Connection) -> None:
+    """#110848: the fresh-DB cross-VM refusal never sees a DB that was already WAL before the check existed (or was
+    created on a native volume and then moved). Keeping WAL is right (never live-downgrade); staying silent is not.
+    Both the vulnerable-SQLite and the regular already-WAL paths return early, so both must call this."""
+    db_file = _connection_db_file(conn)
+    if db_file and _path_on_cross_vm_fs(db_file):
+        # Keyed (and labelled) by path, not db_label: a gateway serving several profiles must hear about each one.
+        _log_once("cross_vm_fs_existing_wal", db_file)
+
+
 def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, require_delete: bool = False) -> str:
     """Avoid enabling WAL when the linked SQLite has the WAL-reset bug.
 
@@ -314,6 +438,7 @@ def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, 
         if require_delete:
             # Upgrading SQLite doesn't help here; emit the actionable message last.
             _log_configured_delete_overridden_once(db_label)
+        _warn_existing_wal_on_cross_vm_fs(conn)
         _apply_wal_companions(conn)
         return "wal"
     if current is None:
@@ -327,7 +452,7 @@ def _apply_delete_for_wal_reset_bug(conn: sqlite3.Connection, *, db_label: str, 
     except sqlite3.OperationalError as exc:
         if require_delete:
             raise
-        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+        if is_sqlite_lock_error(exc):
             # A concurrent opener appeared between probe and flip: leave the mode as is.
             _log_wal_reset_bug_once(db_label, kept_wal=True, indeterminate=True)
             return current or "delete"
@@ -383,12 +508,43 @@ _ONCE_LOGS = {
         "%s: WAL journal_mode unsupported on this filesystem (%s) — falling back to journal_mode=DELETE (slower "
         "rollback-journal mode; reduces concurrency but works on NFS/SMB/FUSE/ZFS). See "
         "https://www.sqlite.org/wal.html for details. This message fires once per process per database."),
+    "wal_delete_fallback_failed": (_wal_delete_fallback_failed_lock, "_wal_delete_fallback_failed_paths", logging.WARNING,
+        # Both pragmas rejected (observed on APFS external SSDs under heavy contention): the connection keeps
+        # whatever mode it has (typically the SQLite default DELETE) and stays usable for reads/writes, so this
+        # is WARNING, not ERROR — propagating would crash every DB-init caller. Deduped per db_label because
+        # kanban_db.connect() runs on every kanban operation.
+        "%s: both WAL and DELETE journal_mode failed (WAL: %s; DELETE: %s) — continuing with the connection's "
+        "current journal mode (reads/writes still work). Typically seen on APFS external SSDs under heavy "
+        "contention. This message fires once per process per database."),
     "delete_overridden": (_delete_overridden_warned_lock, "_delete_overridden_warned_paths", logging.ERROR,
         # Never-live-downgrade keeps WAL; without this the operator never learns their delete had no effect.
         "%s: database.journal_mode=delete is configured but the on-disk database is already WAL; keeping WAL (a live "
-        "downgrade under open connections can corrupt the DB). To apply journal_mode=DELETE, stop all connections to "
-        "this DB and run a one-time offline 'PRAGMA journal_mode=DELETE' on the file. This message fires once per "
+        "downgrade under open connections can corrupt the DB). To apply journal_mode=DELETE, stop every Hermes "
+        "process using this database and run `hermes sessions set-journal-mode delete` (add `--db PATH` for a "
+        "store other than state.db). This message fires once per process per database."),
+    "wal_probe_unknown": (_wal_probe_unknown_lock, "_wal_probe_unknown_paths", logging.WARNING,
+        # WARNING, not ERROR: the connection inherits the header's mode, so an already-WAL file (the common case)
+        # keeps working; only a true-DELETE file stays DELETE for this connection.
+        "%s: could not verify the on-disk journal mode (database is locked / busy); not issuing a journal-mode "
+        "set-pragma while another connection may hold the file (it could unlink the -wal/-shm sidecars that "
+        "connection still uses). Leaving the file untouched; this connection inherits the on-disk mode. This message fires once per process per database."),
+    "cross_vm_fs": (_cross_vm_warned_lock, "_cross_vm_warned_paths", logging.WARNING,
+        # The DB keeps working in DELETE mode; the loss is concurrency, so WARNING with the actionable fix.
+        "%s: database directory is on a cross-VM filesystem (virtiofs/9p — typical for Docker Desktop / OrbStack / "
+        "Podman host bind mounts). SQLite WAL shared-memory is not coherent across the VM boundary and can silently "
+        "corrupt the database, so journal_mode=DELETE is used instead. To restore WAL concurrency, move the database "
+        "onto a native volume (e.g. a named Docker volume) instead of a host bind mount. This message fires once per "
         "process per database."),
+    "cross_vm_fs_existing_wal": (_cross_vm_existing_wal_warned_lock, "_cross_vm_existing_wal_warned_paths", logging.ERROR,
+        # ERROR, unlike the fresh-DB refusal: this database IS running WAL on the corrupting filesystem and only the
+        # operator can fix it (a live downgrade under other openers would destroy their uncheckpointed commits).
+        "%s: existing WAL-mode database is on a cross-VM filesystem (virtiofs/9p — typical for Docker Desktop / "
+        "OrbStack / Podman host bind mounts). SQLite WAL shared-memory is not coherent across the VM boundary and "
+        "concurrent writers can silently corrupt the database. Hermes does not live-downgrade an on-disk WAL database. "
+        "Fix one of two ways: stop every Hermes process using this database and run `hermes sessions "
+        "set-journal-mode delete` (set `database.journal_mode: delete` in config.yaml to keep it), "
+        "or move the database onto a native volume (e.g. a named Docker volume). This message fires once per process "
+        "per database."),
 }
 
 

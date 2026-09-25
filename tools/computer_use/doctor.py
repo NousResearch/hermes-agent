@@ -17,6 +17,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Sequence, Tupl
 
 from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.computer_use.permissions import _child_env as _sanitized_cua_env
+from tools.computer_use.permissions import stale_tcc_grant_hint
 
 # Match the ALLOWED_STATUS_VALUES + ALLOWED_OVERALL_VALUES the cua-driver integration test pins.
 _STATUS_GLYPH = {"pass": "✅", "fail": "❌", "skip": "⏭️"}
@@ -27,6 +28,13 @@ _ZERO_DISPLAY_MSG = "ScreenCaptureKit reachable but 0 shareable display(s) — e
 _ZERO_DISPLAY_HINT = ("Wake the built-in display, connect a monitor or HDMI dummy dongle (e.g. Headless Ghost), or enable "
                       "a virtual display (Screen Sharing/VNC, BetterDisplay). Verify with `system_profiler SPDisplaysDataType`.")
 _IO_EXC = (OSError, subprocess.TimeoutExpired)
+_PRUNED_UNIT_MSG = "Exec targets {target} which no longer exists — a cua-driver upgrade pruned that release directory"
+_PRUNED_UNIT_HINT = ("Point the {kind} at ~/.cua-driver/packages/current/cua-driver — `current` survives upgrades; "
+                     "versioned packages/releases/<version>/ dirs are pruned (only the last 5 are kept)")
+_DEAD_DAEMON_MSG = ("{unit} is configured to run `cua-driver serve` but no daemon is listening on {socket} — "
+                    "the unit is not running (crash loop, stopped, or never started)")
+_DEAD_DAEMON_HINT = ("Check `systemctl --user status {unit}` / `journalctl --user -u {unit}`; a driver reinstall does not "
+                     "start the daemon and cannot fix a broken unit")
 Report = Dict[str, Any]
 _Row = Tuple[str, str, Report]  # (status, message, extra {hint?, data?}) for one check
 
@@ -265,6 +273,19 @@ def _compose_fallback_report(binary: str, *, reason: str = "", timeout: float = 
             "overall": _overall_from(checks), "checks": checks,
             "fallback": True, "fallback_reason": reason or "health_report unavailable"}
 
+_TCC_CHECK_FIELDS = {"tcc_accessibility": "accessibility", "tcc_screen_recording": "screen_recording"}
+
+def _apply_stale_tcc_guard(report: Report) -> Report:
+    """Append the stale-row recovery to every failed ``tcc_*`` check. Applied at the report seam so the driver's
+    own health_report rows (0.22+) get it too, not only the 0.10 fallback probes — the users hit by a stale row
+    are on current drivers (trycua/cua#3170)."""
+    checks = report.get("checks")
+    for check in (c for c in (checks if isinstance(checks, list) else ()) if isinstance(c, dict)):
+        field = _TCC_CHECK_FIELDS.get(check.get("name"))
+        if field and check.get("status") == "fail":
+            check["hint"] = f"{check.get('hint') or ''} {stale_tcc_grant_hint(field)}".strip()
+    return report
+
 def _apply_display_count_guard(report: Report) -> Report:
     """Fail an 'ok' screen_capture_capability with ``display_count=0``: macOS ScreenCaptureKit reports 0 on headless
     / asleep panels — TCC fine, health_report ok, yet every capture is 0x0. Turns a silent failure actionable; applied
@@ -278,6 +299,88 @@ def _apply_display_count_guard(report: Report) -> Report:
         if (data.get("display_count") if isinstance(data, dict) else None) == 0 and check.get("status") == "pass":
             check.update(status="fail", message=_ZERO_DISPLAY_MSG, hint=_ZERO_DISPLAY_HINT)
             if report.get("overall") == "ok":
+                report["overall"] = "degraded"
+    return report
+
+def cua_daemon_units(config_dir: Optional[str] = None) -> List[Tuple[str, str, str, bool, Optional[str]]]:
+    """(kind, unit, exec_target, runs_serve, --socket path or None) for every systemd user unit / XDG autostart
+    entry whose Exec runs cua-driver — the hand-written daemon units Linux relies on (there is no managed
+    autostart). ``%h`` is expanded in the socket path so it can be probed; the exec target is left as written."""
+    home = os.path.expanduser("~")
+    # systemd --user and XDG autostart both honour $XDG_CONFIG_HOME; a host that sets it keeps its units there.
+    base = config_dir or os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    units: List[Tuple[str, str, str, bool, Optional[str]]] = []
+    sources = (("systemd user unit", os.path.join(base, "systemd", "user"), ".service", "ExecStart"),
+               ("XDG autostart entry", os.path.join(base, "autostart"), ".desktop", "Exec"))
+    for kind, directory, suffix, key in sources:
+        try:
+            names = sorted(e.name for e in os.scandir(directory) if e.name.endswith(suffix) and e.is_file())
+        except OSError:
+            continue
+        for name in names:
+            try:
+                with open(os.path.join(directory, name), encoding="utf-8-sig", errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            for line in text.splitlines():
+                stripped = line.strip()
+                tokens = stripped.split("=", 1)[1].split() if stripped.startswith(key + "=") else []
+                # first token = executable; systemd's prefix modifiers (-, +, !, :) never start a path
+                if not tokens or "cua-driver" not in tokens[0]:
+                    continue
+                socket = next((tokens[i + 1] for i, t in enumerate(tokens[:-1]) if t == "--socket"), None)
+                units.append((kind, name, tokens[0].lstrip("-+:!"), "serve" in tokens[1:],
+                              os.path.expanduser(socket.replace("%h", home)) if socket else None))
+    return units
+
+def _stale_cua_exec_references(config_dir: Optional[str] = None) -> List[Tuple[str, str, str]]:
+    """(kind, unit, target) for daemon units whose cua-driver Exec points at a pruned ``packages/releases/<version>/``
+    directory. The installer prunes all but the last five, so a versioned reference crash-loops with 203/EXEC after
+    every upgrade while every binary-level check stays green (#114748). ``packages/current`` and still-present
+    release dirs are healthy by construction and never reported."""
+    home = os.path.expanduser("~")
+    findings: List[Tuple[str, str, str]] = []
+    for kind, unit, target, _serve, _socket in cua_daemon_units(config_dir):
+        resolved = os.path.expanduser(target.replace("%h", home))
+        if "/packages/releases/" in resolved and not os.path.exists(resolved):
+            findings.append((kind, unit, target))
+    return findings
+
+def _apply_daemon_liveness_guard(report: Report, binary: str) -> Report:
+    """Append one check per configured daemon unit whose ``cua-driver serve`` is not answering on its socket
+    (pass when it is). Only configured daemons are probed: on Linux the MCP runtime needs no daemon, so an
+    unconfigured, silent socket is not a finding. Unknown probe results add nothing (#114748)."""
+    from tools.computer_use.cua_backend import cua_daemon_listening
+
+    checks = report.get("checks")
+    if sys.platform != "linux" or not isinstance(checks, list):
+        return report
+    for _kind, unit, _target, serve, socket in cua_daemon_units():
+        listening = cua_daemon_listening(binary, socket) if serve else None
+        if listening is None:
+            continue
+        shown = socket or "the default socket"
+        if listening:
+            checks.append({"name": f"daemon ({unit})", "status": "pass", "message": f"cua-driver serve is listening on {shown}"})
+            continue
+        checks.append({"name": f"daemon ({unit})", "status": "fail", "message": _DEAD_DAEMON_MSG.format(unit=unit, socket=shown),
+                       "hint": _DEAD_DAEMON_HINT.format(unit=unit)})
+        if report.get("overall") == "ok":
+            report["overall"] = "degraded"
+    return report
+
+def _apply_stale_unit_guard(report: Report) -> Report:
+    """Append a fail check per hand-written unit/autostart entry whose cua-driver Exec target was pruned — the
+    daemon can crash-loop (203/EXEC) for days while every binary-level check stays green (#114748). Binary-level
+    repair (`install`) cannot fix a stale unit reference, so doctor is the only surface that can name it."""
+    for kind, unit, target in _stale_cua_exec_references() if sys.platform == "linux" else ():
+        checks = report.get("checks")
+        if isinstance(checks, list):
+            checks.append({"name": f"daemon unit ({unit})", "status": "fail",
+                           "message": _PRUNED_UNIT_MSG.format(target=target),
+                           "hint": _PRUNED_UNIT_HINT.format(kind=kind)})
+            if report.get("overall") == "ok":  # fail-worse overalls are never softened
                 report["overall"] = "degraded"
     return report
 
@@ -339,10 +442,22 @@ def run_doctor(driver_cmd: Optional[str] = None, *, include: Sequence[str] = (),
             report = _drive_health_report(binary, include=include, skip=skip, timeout=12.0)
         except HealthReportUnavailable as e:
             report = _compose_fallback_report(binary, reason=str(e), timeout=12.0)
+    except OSError as e:
+        # The spawn itself failed (Windows: a venv interpreter denied `CreateProcess` on a binary under
+        # `C:\Program Files\WindowsApps`, WinError 5). A traceback here hides the one fact the user needs.
+        print(f"cua-driver could not be started from {binary!r}: {e}\n"
+              "  The Hermes runtime interpreter cannot execute this binary; the tool may still work because the\n"
+              "  shell resolves a different copy on PATH. Fix: install cua-driver outside the protected directory\n"
+              "  (e.g. the upstream installer's default under your user profile) or point HERMES_CUA_DRIVER_CMD at\n"
+              "  a copy the runtime can execute, then re-run `hermes computer-use doctor`.", file=sys.stderr)
+        return 2
     except RuntimeError as e:
         print(f"cua-driver health_report failed: {e}", file=sys.stderr)
         return 2
     report = _apply_display_count_guard(report)
+    report = _apply_stale_tcc_guard(report)
+    report = _apply_stale_unit_guard(report)
+    report = _apply_daemon_liveness_guard(report, binary)
     identity = _build_identity(binary, report)
     environment = _wayland_environment_context(report)
     if json_output:

@@ -75,6 +75,11 @@ def _indent_level(spaces: str) -> int:
 # Order matters: code first (opaque), then links, then emphasis.
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 _LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^()\s]+(?:\([^()]*\)[^()\s]*)*)\)")
+# Slack mrkdwn autolink: <scheme:target> or <scheme:target|label>.
+# Mentions (<@U…>, <#C…>, <!here>) have no scheme: and stay as text.
+_SLACK_LINK_RE = re.compile(
+    r"<([a-zA-Z][a-zA-Z0-9+.\-]*:[^>|]+)(?:\|([^>]+))?>"
+)
 _BOLD_RE = re.compile(r"(?:\*\*|__)(.+?)(?:\*\*|__)")
 _ITALIC_RE = re.compile(r"(?<![\*_])(?:\*|_)(?![\*_\s])(.+?)(?<![\*_\s])(?:\*|_)(?![\*_])")
 _STRIKE_RE = re.compile(r"~~(.+?)~~")
@@ -105,14 +110,28 @@ def _inline_elements(text: str) -> List[Dict[str, Any]]:
             emit_text(m.group(1), {**style, "code": True})
             pos = m.end()
         _walk_links(s[pos:], style)
+    def _emit_link(url: str, text: str, style: Dict[str, bool]) -> None:
+        link_el: Dict[str, Any] = {"type": "link", "url": url, "text": text}
+        if style:
+            link_el["style"] = dict(style)
+        elements.append(link_el)
+
     def _walk_links(s: str, style: Dict[str, bool]) -> None:
         pos = 0
         for m in _LINK_RE.finditer(s):
+            _walk_slack_links(s[pos : m.start()], style)
+            _emit_link(m.group(2), m.group(1), style)
+            pos = m.end()
+        _walk_slack_links(s[pos:], style)
+
+    def _walk_slack_links(s: str, style: Dict[str, bool]) -> None:
+        # rich_text does not interpret mrkdwn. Agents often emit <url|label>
+        # (works in section/mrkdwn; was literal in lists/quotes/table cells).
+        pos = 0
+        for m in _SLACK_LINK_RE.finditer(s):
             _walk_emphasis(s[pos : m.start()], style)
-            link_el: Dict[str, Any] = {"type": "link", "url": m.group(2), "text": m.group(1)}
-            if style:
-                link_el["style"] = dict(style)
-            elements.append(link_el)
+            url = m.group(1)
+            _emit_link(url, m.group(2) or url, style)
             pos = m.end()
         _walk_emphasis(s[pos:], style)
     def _walk_emphasis(s: str, style: Dict[str, bool]) -> None:

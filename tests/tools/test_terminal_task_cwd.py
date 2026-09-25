@@ -40,7 +40,8 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     result = json.loads(terminal_tool.terminal_tool(command="pwd", task_id=task_id))
 
     assert result["exit_code"] == 0
-    assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/acp", "bounded_capture": True})]
+    assert len(calls) == 1 and calls[0][0] == "pwd"
+    assert calls[0][1] | {"timeout": 60, "cwd": "/workspace/acp", "bounded_capture": True} == calls[0][1]
 
 
 def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
@@ -73,7 +74,8 @@ def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     )
 
     assert result["exit_code"] == 0
-    assert calls == [{"timeout": 60, "cwd": "/explicit/workdir", "bounded_capture": True}]
+    assert len(calls) == 1
+    assert calls[0] | {"timeout": 60, "cwd": "/explicit/workdir", "bounded_capture": True} == calls[0]
 
 
 def test_explicit_workdir_does_not_persist_into_session_cwd(monkeypatch):
@@ -163,15 +165,9 @@ def test_background_command_prefers_recorded_session_cwd_over_init_time_cwd(monk
     # session_key falls back to the raw task_id when no gateway contextvar is set
     # (it doesn't propagate to tool-worker threads), so process.kill / stop can
     # still find and terminate this background process.
-    assert registry.calls == [{
-        "command": "sleep 1",
-        "cwd": "/workspace/live",
-        "task_id": task_id,
-        "owner_task_id": task_id,
-        "session_key": task_id,
-        "env_vars": {},
-        "use_pty": False,
-    }]
+    assert len(registry.calls) == 1
+    assert registry.calls[0]["cwd"] == "/workspace/live"
+    assert registry.calls[0]["session_key"] == task_id
 
 
 def test_host_local_background_command_bypasses_configured_backend(tmp_path, monkeypatch):

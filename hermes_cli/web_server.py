@@ -23,6 +23,7 @@ import time
 import urllib.parse
 
 from hermes_cli.install_identity import get_install_id as _shared_get_install_id
+from hermes_cli.process_identity import is_desktop_owned_backend
 from hermes_cli.pty_session import run_reaper
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -32,8 +33,8 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from hermes_cli import __version__
 from hermes_cli.config import load_config
+from hermes_cli.version_info import get_version_info
 
 try:
     from fastapi import FastAPI, HTTPException, Request
@@ -44,15 +45,17 @@ except ImportError:
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
     # them out of every other install path. After install, re-import.
     try:
-        from tools.lazy_deps import ensure as _lazy_ensure
-        _lazy_ensure("tool.dashboard", prompt=False)
-        from fastapi import FastAPI, HTTPException, Request
+        from pm import ensure_import
+        ensure_import("web")
+        from fastapi import (
+            FastAPI, HTTPException, Request,
+        )
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import JSONResponse
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
-            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
+            "Run hermes pm repair, then restart Hermes."
         )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
@@ -97,24 +100,34 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     start_kwargs: dict = {"interval": interval}
     if isinstance(provider, InProcessCronScheduler):
         try:
-            from hermes_cli.profiles import profiles_to_serve
+            from hermes_cli.profiles import (
+                _check_gateway_running, _served_by_running_multiplexer, profiles_to_serve)
 
-            profile_homes = list(profiles_to_serve(multiplex=True))
-            if len(profile_homes) > 1:
+            # Same served set as the multiplexer: default + every live profile under profiles/.
+            # The ticker re-enumerates this callable every cycle. Passing a
+            # startup snapshot leaves deleted profiles in the scheduler until
+            # restart, which both writes their removed stores and keeps stale
+            # profiles alive in Desktop's background work.
+            profile_homes = lambda: list(profiles_to_serve(multiplex=True))
+            initial_profile_homes = profile_homes()
+            if initial_profile_homes:
+                # Even one profile needs the per-tick gateway gate; otherwise
+                # Desktop races its dedicated gateway for the same cron store.
                 start_kwargs["profile_homes"] = profile_homes
-                # Stand down, per tick, for a profile whose OWN gateway runs:
-                # it ticks with live adapters, and the tick-lock race would
-                # otherwise deliver through the standalone path (#100489).
-                from hermes_cli.profiles import _check_gateway_running
-
-                start_kwargs["profile_gate"] = lambda _name, home: not _check_gateway_running(Path(home))
+                # Stand down, per tick, for a profile already owned by a gateway — its OWN
+                # process, or the live default multiplexer (a served satellite has no gateway.pid
+                # of its own). That gateway ticks with live adapters; winning the tick-lock race
+                # here would deliver through the standalone path (#100489, #107485).
+                start_kwargs["profile_gate"] = lambda name, home: not (
+                    _check_gateway_running(Path(home))
+                    or (name != "default" and _served_by_running_multiplexer(name)))
                 from hermes_logging import enable_profile_log_routing
 
-                enable_profile_log_routing(profile_homes)
+                enable_profile_log_routing(initial_profile_homes)
                 _log.info(
                     "Desktop cron scheduler will tick %d profile(s): %s",
-                    len(profile_homes),
-                    [name for name, _home in profile_homes],
+                    len(initial_profile_homes),
+                    [name for name, _home in initial_profile_homes],
                 )
         except Exception:
             # Fail open to the single-store ticker so the active profile keeps firing.
@@ -142,13 +155,18 @@ async def _lifespan(app: "FastAPI"):
     # Bring state.db schema current BEFORE the first session-list poll
     # (#79531/#80037): a store left behind by `hermes update` otherwise 500s
     # every poll while the read-probe heal loses to sibling lock contention.
-    # Daemon thread so a locked store never delays the socket (Desktop
-    # ready-probe times out at 10s, GH-73083).
-    threading.Thread(
+    # Off-thread so a locked store never delays the socket (Desktop
+    # ready-probe times out at 10s, GH-73083). NOT a daemon, and joined at
+    # shutdown: its sqlite connection must be closed by the thread that is
+    # stepping it. A daemon copy that outlived the lifespan had its
+    # connection closed from the main thread mid-probe (pytest's leaked-DB
+    # sweep) and segfaulted the interpreter. The worker is time-bounded by
+    # SessionDB's lock patience, so the join cannot hang shutdown.
+    eager_reconcile_thread = threading.Thread(
         target=_eager_reconcile_own_session_db,
-        daemon=True,
         name="statedb-eager-reconcile",
-    ).start()
+    )
+    eager_reconcile_thread.start()
 
     # Import hermes_cli.gateway *before* the yield: on Windows + 3.11 the
     # import holds the GIL, so run_in_executor still froze the loop 15-22s and
@@ -168,6 +186,11 @@ async def _lifespan(app: "FastAPI"):
     from tui_gateway import methods_groups as _hosted_groups
     import tui_gateway.server  # noqa: F401
 
+    try:
+        tui_gateway.server.install_tui_message_injector()
+    except Exception:
+        _log.warning("TUI message injector did not install", exc_info=True)
+
     hosted_room_start_cancel = threading.Event()
 
     def _start_hosted_rooms() -> None:
@@ -186,12 +209,13 @@ async def _lifespan(app: "FastAPI"):
     )
     hosted_room_start_thread.start()
 
-    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
+    # Desktop-spawned backends fire cron jobs themselves, since the app has no
+    # gateway running the scheduler. Server `hermes dashboard` is unaffected —
+    # it relies on its own gateway.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
-    if os.getenv("HERMES_DESKTOP") == "1":
+    desktop_owned = is_desktop_owned_backend()
+    if desktop_owned:
         # Reap an orphaned gateway from an abnormal previous exit (reparented to
         # launchd, still holding the platform WebSocket) before forking a fresh
         # one that would race the same credential (#77276). Runs
@@ -235,9 +259,21 @@ async def _lifespan(app: "FastAPI"):
 
     threading.Thread(target=_boot_local_runtime, daemon=True, name="local-runtime-boot").start()
 
+    # Nous free tier: the ONE place its identity is created. Inventories credentials, mints only
+    # when HERMES_GUEST_ONBOARDING=1, records the answer for setup.status / free_tier.status and
+    # broadcasts `setup.ready`. Off-thread so a slow portal never delays the socket; the desktop's
+    # first setup.status waits on the record (bounded) instead.
+    from hermes_cli.free_tier_bootstrap import start_background_bootstrap
+
+    start_background_bootstrap()
+
     try:
         yield
     finally:
+        try:
+            tui_gateway.server.clear_tui_message_injector()
+        except Exception:
+            _log.debug("TUI message injector clear skipped", exc_info=True)
         hosted_room_start_cancel.set()
         _hosted_groups.stop_hosted_room_service(timeout=5.0)
         hosted_room_start_thread.join(timeout=1.0)
@@ -254,8 +290,9 @@ async def _lifespan(app: "FastAPI"):
             shutdown_local_runtime()
         except Exception:  # noqa: BLE001
             pass
-        if os.getenv("HERMES_DESKTOP") == "1":
+        if desktop_owned:
             _terminate_desktop_managed_gateway()
+        eager_reconcile_thread.join()
 
 
 def _app_state_default(app: "FastAPI", name: str, factory):
@@ -280,7 +317,7 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
     return _app_state_default(app, "pty_active_session_files", dict)
 
 
-app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+app = FastAPI(title="Hermes Agent", version=get_version_info().base_version, lifespan=_lifespan)
 
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
@@ -919,6 +956,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     status as _status_routes,
     actions as _actions_routes,
     audio as _audio_routes,
+    display as _display_routes,
     sessions as _sessions_routes,
     profiles as _profiles_routes,
     memory_providers as _memory_providers_routes,
@@ -933,6 +971,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     tools as _tools_routes,
     analytics as _analytics_routes,
     chat_ws as _chat_ws_routes,
+    chat_workspaces as _chat_workspaces_routes,
     dashboard_ui as _dashboard_ui_routes,
 )
 
@@ -942,6 +981,7 @@ app.include_router(_local_models_routes.router)
 app.include_router(_status_routes.router)
 app.include_router(_actions_routes.router)
 app.include_router(_audio_routes.router)
+app.include_router(_display_routes.router)
 app.include_router(_actions_routes.status_router)
 app.include_router(_sessions_routes.list_router)
 app.include_router(_profiles_routes.sessions_router)
@@ -963,6 +1003,7 @@ app.include_router(_skills_routes.router)
 app.include_router(_tools_routes.router)
 app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
+app.include_router(_chat_workspaces_routes.router)
 app.include_router(_dashboard_ui_routes.router)
 
 # Plugin API routes and the dashboard auth routes (/login, /auth/*, /api/auth/*)
@@ -1114,7 +1155,7 @@ def _configure_auth_gate(
         )
 
 
-def _build_uvicorn_server(host: str, port: int):
+def _build_uvicorn_server(host: str, port: int, *, ssh_isolated: bool = False):
     """Build the uvicorn ``Config`` + ``Server`` for this bind (reads ``app.state.auth_required``).
 
     uvicorn.Server is driven directly (not uvicorn.run) so startup is split from
@@ -1145,8 +1186,22 @@ def _build_uvicorn_server(host: str, port: int):
         except (TypeError, ValueError):
             return default
 
+    # A Desktop-owned SSH-isolated backend is loopback on the SERVER, but the client sits at the far
+    # end of a tunnel: the local socket stays healthy while the laptop sleeps, so only a slow WS ping
+    # notices the half-open tunnel (#101626). Its client count is tracked at the ASGI boundary so
+    # the idle watchdog can retire the backend once nothing is connected.
+    served_app = app
+    ping_interval, ping_timeout = (None, None) if _is_loopback else (
+        _ws_ping_setting("ws_ping_interval"), _ws_ping_setting("ws_ping_timeout"))
+    if ssh_isolated:
+        from hermes_cli.web_server_idle_exit import (
+            TUNNEL_WS_PING_INTERVAL_S, TUNNEL_WS_PING_TIMEOUT_S, IdleClientTracker, wrap_asgi_with_ws_tracking)
+        app.state.ssh_isolated_clients = IdleClientTracker()
+        served_app = wrap_asgi_with_ws_tracking(app, app.state.ssh_isolated_clients)
+        ping_interval, ping_timeout = TUNNEL_WS_PING_INTERVAL_S, TUNNEL_WS_PING_TIMEOUT_S
+
     config = uvicorn.Config(
-        app, host=host, port=port, log_level="warning",
+        served_app, host=host, port=port, log_level="warning",
         # Off by default so _ws_client_is_allowed sees the real peer, not
         # X-Forwarded-For. Gated mode runs behind a TLS terminator and needs
         # X-Forwarded-Proto for cookie Secure flags.
@@ -1154,8 +1209,8 @@ def _build_uvicorn_server(host: str, port: int):
         # Loopback-only unless the operator trusts a bounded upstream proxy, so
         # spoofed X-Forwarded-* from arbitrary callers is never honoured.
         forwarded_allow_ips=_dashboard_forwarded_allow_ips(_dash_cfg),
-        ws_ping_interval=None if _is_loopback else _ws_ping_setting("ws_ping_interval"),
-        ws_ping_timeout=None if _is_loopback else _ws_ping_setting("ws_ping_timeout"),
+        ws_ping_interval=ping_interval,
+        ws_ping_timeout=ping_timeout,
         ws_max_size=_DESKTOP_ATTACHMENT_WS_MAX_BYTES,
     )
     return config, uvicorn.Server(config)
@@ -1167,6 +1222,53 @@ def _best_effort(what: str, fn) -> None:
         fn()
     except Exception as exc:
         _log.debug("%s skipped: %s", what, exc)
+
+
+def _publish_host_rendezvous(host: str, port: int) -> None:
+    """Publish this backend's host record: ``ROLE_SERVE`` for the machine-level owner,
+    ``ROLE_DESKTOP_SERVE`` for a Desktop-owned child."""
+    # Desktop-spawned backends (flag + per-spawn credential; the bare flag is inherited by every
+    # Desktop shell) are loopback, random-port and per-profile. Recording one as the HOST owner
+    # made a later independently supervised `dashboard --host 0.0.0.0 --port N` refuse behind
+    # the private child on every restart (#119824): the attach/refuse ladder reads ROLE_SERVE
+    # only. They still publish under their own role so `hermes plugins install` from a terminal
+    # can reach the backend hosting the open chats on a Desktop-only box (#119644).
+    from gateway import host_rendezvous as hr
+
+    desktop_child = is_desktop_owned_backend()
+    role = hr.ROLE_DESKTOP_SERVE if desktop_child else hr.ROLE_SERVE
+
+    outcome, error = hr.claim_host_lock(role)
+    if outcome is hr.HostLockOutcome.COULD_NOT_OPEN:
+        _log.warning(
+            "Host backend lock could not be opened (%s); this backend is not discoverable. "
+            "This is NOT another backend holding it.", error)
+        return
+    if outcome is hr.HostLockOutcome.HELD_BY_OTHER:
+        owner = hr.read_record(role)
+        if desktop_child:
+            # A second pool child is Desktop's own topology, not a conflict.
+            _log.debug("another Desktop backend holds the %s record (%s)", role,
+                       hr.describe(owner) if owner else "owner unknown")
+            return
+        _log.warning(
+            "Another backend already owns this host (%s); this one bound anyway "
+            "(observe-only). Multiplex-only expects exactly one backend per host.",
+            hr.describe(owner) if owner else "owner unknown",
+        )
+        return
+    app.state.host_role = role
+    hr.publish_record(
+        role,
+        host=host,
+        port=port,
+        profiles=hr.served_profiles(),
+        # The live session token, so an attaching client of the same OS user can
+        # authenticate even when the backend is gated and `GET /` withholds it.
+        token=_SESSION_TOKEN,
+    )
+    # SIGTERM included: it is the normal stop, and it does not run atexit here.
+    hr.cleanup_on_exit(role)
 
 
 def _on_server_started(
@@ -1199,7 +1301,7 @@ def _on_server_started(
 
         reap_orphaned_mcp_helpers()
 
-    if os.getenv("HERMES_DESKTOP") == "1":
+    if is_desktop_owned_backend():
         _best_effort("orphan desktop-local serve reap", _reap_desktop_serves)
     # Same sweep for stdio MCP helpers (#61514): positive identity only (spawn
     # ledger + spawner provably dead); anything alive or unprovable is untouched.
@@ -1207,9 +1309,21 @@ def _on_server_started(
 
     # No-op for standalone `hermes serve` (no HERMES_PARENT_PID).
     _start_parent_death_watchdog()
+    # SSH-isolated backends are detached from any parent on purpose (#91668); their liveness signal
+    # is "does a client still hold a WebSocket" (#101626).
+    if getattr(app.state, "ssh_isolated_clients", None) is not None:
+        from hermes_cli.web_server_idle_exit import DEFAULT_IDLE_GRACE_S, start_idle_watchdog
+        try:
+            grace = float((load_config().get("dashboard") or {}).get("ssh_isolated_idle_grace_s", DEFAULT_IDLE_GRACE_S))
+        except (TypeError, ValueError):
+            grace = DEFAULT_IDLE_GRACE_S
+        start_idle_watchdog(server, app.state.ssh_isolated_clients, grace_s=grace)
 
     actual_port = _read_bound_port(server, fallback=port)
     app.state.bound_port = actual_port
+    # Published by /api/host/identity: an attaching `hermes dashboard` must never be routed to a
+    # headless backend (a URL with no UI behind it).
+    app.state.serves_spa = not headless
 
     # Positive process identity in the machine spawn ledger (+ Windows
     # kill-on-close job). Registered AFTER the bind so the entry carries the
@@ -1225,6 +1339,12 @@ def _on_server_started(
         attach_self_to_kill_on_close_job()
 
     _best_effort("process-identity registration", _register_identity)
+
+    # Host rendezvous (multiplex-only): the host lock + record that let a SECOND `hermes serve`
+    # for any profile find this process and attach instead of binding a second port. Published
+    # after the bind so the record carries the real port, and beside — not instead of — the
+    # spawn-ledger entry above, which Desktop's attach ladder reads.
+    _best_effort("host rendezvous publish", lambda: _publish_host_rendezvous(host, actual_port))
 
     _write_dashboard_ready_file(actual_port)
     # Port-discovery sentinel parsed by the Desktop spawn (matches either
@@ -1282,6 +1402,21 @@ def _on_server_started(
     _hb_loop.call_later(_hb_interval, _loop_heartbeat, _hb_loop.time() + _hb_interval)
 
 
+def _windows_serve_loop_factory(config):
+    """Loop factory for serve on Windows: always a selector loop.
+
+    uvicorn 0.41's ``asyncio_loop_factory`` returns ProactorEventLoop on
+    win32, on which uvicorn's socket stack binds-but-never-accepts (READY
+    prints, then WinError 10014 accept failures, exit 1, desktop
+    ECONNREFUSED — #120164, regression of #50641). A factory that already
+    yields selector loops (older uvicorn, explicit ``--loop``) passes through.
+    """
+    factory = config.get_loop_factory()
+    if factory is None or factory is asyncio.ProactorEventLoop:  # type: ignore[attr-defined]
+        return asyncio.SelectorEventLoop
+    return factory
+
+
 def _run_serve(serve, config, host: str, port: int) -> None:
     """Drive ``serve()`` on the loop uvicorn expects.
 
@@ -1299,7 +1434,7 @@ def _run_serve(serve, config, host: str, port: int) -> None:
         try:
             from uvicorn._compat import asyncio_run as runner
 
-            runner_kwargs = {"loop_factory": config.get_loop_factory()}
+            runner_kwargs = {"loop_factory": _windows_serve_loop_factory(config)}
         except Exception:
             runner = asyncio.run
             runner_kwargs = {}
@@ -1371,8 +1506,11 @@ def start_server(
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
+    # The SPA bootstrap reads this so profile-less deep links (/chat?resume=<id>) inherit the
+    # launcher's preselected profile instead of silently running in the launch scope (#73085).
+    app.state.initial_profile = str(initial_profile or "")
 
-    config, server = _build_uvicorn_server(host, port)
+    config, server = _build_uvicorn_server(host, port, ssh_isolated=bool(ssh_session_token))
 
     # Flush-on-kill guard (#94724): chaining SIGTERM/SIGINT handlers persist
     # in-memory transcripts to state.db before shutdown. Installed BEFORE
@@ -1392,6 +1530,22 @@ def start_server(
     if _port_bind_conflict(host, port):
         _report_port_in_use(host, port)
         raise SystemExit(PORT_IN_USE_EXIT_CODE)
+
+    # LAST boot step, deliberately. One host process serves every profile and this one can be asked
+    # for any of them via ``?profile=``, so the decision is made here instead of on the first such
+    # request — activation is one-way, and everything the backend had already done by then
+    # (idle-reaper flushes, hosted rooms, cron) stayed on single-profile assumptions. It runs after
+    # the keepalive / auth gate / uvicorn build because activation FREEZES ``os.environ`` as the
+    # launch profile's credentials, and that snapshot is the only source for launch keys with no
+    # ``.env`` to rebuild from (systemd ``Environment=``, ``op run``, Compose): anything injected or
+    # rotated by a later boot step would otherwise be invisible for the process lifetime. No-op on a
+    # single-profile host; `gateway.multiplex_profiles: false` is retired and no longer skips it.
+    try:
+        from tui_gateway.launch_profile_policy import activate_multi_profile_hosting_eagerly
+
+        activate_multi_profile_hosting_eagerly()
+    except Exception:
+        _log.warning("eager multi-profile activation failed", exc_info=True)
 
     async def _serve():
         # startup split from main_loop so the bound (ephemeral) port is readable.
@@ -1448,7 +1602,7 @@ import shutil  # noqa: F401,E402
 import stat  # noqa: F401,E402
 import tempfile  # noqa: F401,E402
 from datetime import timezone  # noqa: F401,E402
-import yaml  # noqa: F401,E402
+import hermes_yaml as yaml  # noqa: F401,E402
 import zipfile  # noqa: F401,E402
 
 
@@ -1550,7 +1704,6 @@ _PLUGIN_COMPAT_LAZY = {
     'apply_whatsapp_onboarding': ('hermes_cli.web_routers.messaging', 'apply_whatsapp_onboarding'),
     'approve_pairing': ('hermes_cli.web_routers.ops', 'approve_pairing'),
     'auth_mcp_server': ('hermes_cli.web_routers.mcp', 'auth_mcp_server'),
-    'build_cron_model_impact': ('hermes_cli.config', 'build_cron_model_impact'),
     'bulk_delete_sessions_endpoint': ('hermes_cli.web_routers.sessions', 'bulk_delete_sessions_endpoint'),
     'cancel_oauth_session': ('hermes_cli.web_routers.oauth', 'cancel_oauth_session'),
     'cancel_telegram_onboarding': ('hermes_cli.web_routers.messaging', 'cancel_telegram_onboarding'),
@@ -1739,7 +1892,6 @@ _PLUGIN_COMPAT_LAZY = {
     'replace_mcp_servers': ('hermes_cli.web_routers.mcp', 'replace_mcp_servers'),
     'rescan_dashboard_plugins': ('hermes_cli.web_routers.dashboard_ui', 'rescan_dashboard_plugins'),
     'reset_memory': ('hermes_cli.web_routers.ops', 'reset_memory'),
-    'resolve_cron_model_drift_defaults': ('hermes_cli.config', 'resolve_cron_model_drift_defaults'),
     'resolve_gateway_liveness': ('gateway.status', 'resolve_gateway_liveness'),
     'restart_gateway': ('hermes_cli.web_routers.actions', 'restart_gateway'),
     'resume_cron_job': ('hermes_cli.web_routers.cron', 'resume_cron_job'),

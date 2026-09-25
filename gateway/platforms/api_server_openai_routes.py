@@ -88,6 +88,81 @@ def _message_item(text: Any) -> Dict[str, Any]:
             "content": [{"type": "output_text", "text": text}]}
 
 
+def _cap_text(text: str, keep: int) -> str:
+    """Head of ``text`` plus a marker saying how much was cut (the Responses truncation rule)."""
+    return text[:keep] + "...[" + str(len(text) - keep) + " more chars]"
+
+
+def _cap_history_tool_outputs(history: List[Dict[str, Any]], max_chars: int) -> List[Dict[str, Any]]:
+    """Copy of ``history`` with tool outputs and string tool-call arguments longer than
+    ``max_chars`` cut down. Only tool rows and ``tool_calls`` blobs change; user/assistant text
+    is left alone, and the agent's own transcript rows are never mutated (rows are copied).
+    Opt-in via gateway.api_server.history_tool_output_max_chars: a single stored snapshot
+    embeds the full cumulative history, so a few large tool outputs pushed one
+    response_store.db write to ~677 KB (#82513)."""
+    if max_chars <= 0:
+        return history
+    out: List[Dict[str, Any]] = []
+    for msg in history:
+        if not isinstance(msg, dict):
+            out.append(msg)
+            continue
+        content = msg.get("content")
+        if msg.get("role") == "tool" and isinstance(content, str) and len(content) > max_chars:
+            msg = {**msg, "content": _cap_text(content, max_chars)}
+        tool_calls = msg.get("tool_calls")
+        if msg.get("role") == "assistant" and isinstance(tool_calls, list):
+            capped_calls = []
+            for call in tool_calls:
+                fn = call.get("function") if isinstance(call, dict) else None
+                raw = fn.get("arguments") if isinstance(fn, dict) else None
+                if isinstance(raw, str) and len(raw) > max_chars:
+                    try:
+                        args = json.loads(raw)
+                    except ValueError:
+                        args = None
+                    if isinstance(args, dict):
+                        for k, v in args.items():
+                            if isinstance(v, str) and len(v) > max_chars:
+                                args[k] = _cap_text(v, max_chars)
+                        call = {**call, "function": {**fn, "arguments": json.dumps(args)}}
+                capped_calls.append(call)
+            msg = {**msg, "tool_calls": capped_calls}
+        out.append(msg)
+    return out
+
+
+def _reasoning_item(text: str) -> Dict[str, Any]:
+    """Completed Responses ``reasoning`` output item (same shape the SSE writer closes with)."""
+    return {"id": f"rs_{uuid.uuid4().hex[:24]}", "type": "reasoning", "status": "completed",
+            "summary": [{"type": "summary_text", "text": text}]}
+
+
+def _is_reasoning_input_item(item: Any) -> bool:
+    """Echoed-back ``reasoning`` output item: Responses SDK clients replay a prior response's
+    ``output`` list as the next ``input``. It carries no message content, so it must be
+    skipped rather than parsed into an empty ``user`` turn (#99552)."""
+    return isinstance(item, dict) and item.get("type") == "reasoning"
+
+
+def _turn_reasoning_text(
+        conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any]) -> str:
+    """Reasoning the model produced on this turn, joined for a non-streaming
+    ``message.reasoning_content``. Read from the assistant messages the agent already
+    persisted (``build_assistant_message`` stores the structured reasoning under
+    ``reasoning``) rather than re-accumulating callback deltas, so it is exactly what the
+    stream would have carried and cannot double-count the post-response fallback."""
+    messages = result.get("messages") if isinstance(result, dict) else None
+    if not isinstance(messages, list):
+        return ""
+    start = OpenAICompatRoutesMixin._response_messages_turn_start_index(
+        conversation_history, user_message, result)
+    parts = [m["reasoning"] for m in messages[start:]
+             if isinstance(m, dict) and m.get("role") == "assistant"
+             and isinstance(m.get("reasoning"), str) and m["reasoning"].strip()]
+    return "\n\n".join(parts)
+
+
 def _trim_tool_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Trim large tool payloads in place so response.completed stays under ~100KB (clients
     already received the full details via the incremental events)."""
@@ -110,7 +185,7 @@ def _trim_tool_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 if isinstance(first, dict) and first.get("type") == "input_text":
                     text = first.get("text", "")
                     if len(text) > 1000:
-                        first["text"] = text[:500] + "...[" + str(len(text) - 500) + " more chars]"
+                        first["text"] = _cap_text(text, 500)
                         item["output"] = [first]
     return items
 
@@ -131,6 +206,8 @@ class _ResponsesStream:
         self.model, self.created_at, self.conversation_history = model, created_at, conversation_history
         self.user_message, self.instructions = user_message, instructions
         self.conversation, self.store, self.session_id = conversation, store, session_id
+        # Resolved in the request's profile scope: a snapshot written after it (disconnect) must not follow another.
+        self.response_store = adapter._current_response_store()
         self.final_text_parts: List[str] = []
         self.pending_tool_calls: List[Dict[str, Any]] = []  # open function_call items, in order
         self.emitted_items: List[Dict[str, Any]] = []  # output items so far (terminal payload)
@@ -140,6 +217,7 @@ class _ResponsesStream:
         self.message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
         self.message_output_index: Optional[int] = None
         self.message_opened = False
+        self.reasoning_item: Optional[Dict[str, Any]] = None  # open ``reasoning`` output item
         self.final_response_text = ""
         self.agent_error: Optional[str] = None
         self.usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -174,13 +252,13 @@ class _ResponsesStream:
     def persist_snapshot(self, response_env: Dict[str, Any], *, history=None, session_id=None):
         if not self.store:
             return
-        self.adapter._response_store.put(self.response_id, {
+        self.response_store.put(self.response_id, {
             "response": response_env,
             "conversation_history": self._history_with_user() if history is None else history,
             "instructions": self.instructions,
             "session_id": session_id or self.session_id})
         if self.conversation:
-            self.adapter._response_store.set_conversation(self.conversation, self.response_id)
+            self.response_store.set_conversation(self.conversation, self.response_id)
 
     def persist_incomplete_if_needed(self) -> None:
         """Persist an ``incomplete`` snapshot when no terminal one was written (disconnect /
@@ -214,6 +292,7 @@ class _ResponsesStream:
                      "role": "assistant", "content": []}})
 
     async def emit_text_delta(self, delta_text: str) -> None:
+        await self.close_reasoning_item()
         await self._open_message_item()
         self.final_text_parts.append(delta_text)
         await self.write_event("response.output_text.delta", {
@@ -221,8 +300,60 @@ class _ResponsesStream:
             "output_index": self.message_output_index, "content_index": 0, "delta": delta_text,
             "logprobs": []})
 
+    async def emit_reasoning_delta(self, delta_text: str) -> None:
+        """Responses reasoning-summary family (#99552): one ``reasoning`` output item per
+        thinking burst, closed before the next message/tool item opens."""
+        if self.reasoning_item is None:
+            item = {"id": f"rs_{uuid.uuid4().hex[:24]}", "type": "reasoning", "status": "in_progress",
+                    "summary": []}
+            self.reasoning_item = {"item": item, "output_index": self.output_index, "parts": []}
+            self.output_index += 1
+            await self.write_event("response.output_item.added", {
+                "type": "response.output_item.added",
+                "output_index": self.reasoning_item["output_index"], "item": item})
+            await self.write_event("response.reasoning_summary_part.added", {
+                "type": "response.reasoning_summary_part.added", "item_id": item["id"],
+                "output_index": self.reasoning_item["output_index"], "summary_index": 0,
+                "part": {"type": "summary_text", "text": ""}})
+        rs = self.reasoning_item
+        rs["parts"].append(delta_text)
+        await self.write_event("response.reasoning_summary_text.delta", {
+            "type": "response.reasoning_summary_text.delta", "item_id": rs["item"]["id"],
+            "output_index": rs["output_index"], "summary_index": 0, "delta": delta_text})
+
+    async def close_reasoning_item(self) -> None:
+        rs, self.reasoning_item = self.reasoning_item, None
+        if rs is None:
+            return
+        text = "".join(rs["parts"])
+        item = dict(rs["item"], status="completed", summary=[{"type": "summary_text", "text": text}])
+        base = {"item_id": item["id"], "output_index": rs["output_index"], "summary_index": 0}
+        await self.write_event("response.reasoning_summary_text.done", {
+            "type": "response.reasoning_summary_text.done", **base, "text": text})
+        await self.write_event("response.reasoning_summary_part.done", {
+            "type": "response.reasoning_summary_part.done", **base,
+            "part": {"type": "summary_text", "text": text}})
+        self.emitted_items.append(item)
+        await self.write_event("response.output_item.done", {
+            "type": "response.output_item.done", "output_index": rs["output_index"], "item": item})
+
+    async def emit_commentary(self, text: str) -> None:
+        """Mid-turn assistant commentary as its own completed ``message`` item carrying
+        ``"phase": "commentary"`` — never appended to ``final_text_parts``, so the final answer
+        item stays clean (#67580). Closes any open reasoning item first so a reasoning item
+        never straddles a message item."""
+        await self.close_reasoning_item()
+        item = {"id": f"msg_{uuid.uuid4().hex[:24]}", "status": "completed", "phase": "commentary",
+                **_message_item(text)}
+        idx = self.output_index
+        self.output_index += 1
+        self.emitted_items.append({"phase": "commentary", **_message_item(text)})
+        for event in ("response.output_item.added", "response.output_item.done"):
+            await self.write_event(event, {"type": event, "output_index": idx, "item": item})
+
     async def emit_tool_started(self, payload: Dict[str, Any]) -> None:
         """function_call ``output_item.added``; the agent's tool_call_id beats a generated call id."""
+        await self.close_reasoning_item()
         self.call_counter += 1
         call_id = payload.get("tool_call_id") or f"call_{self.response_id[5:]}_{self.call_counter}"
         args = payload.get("arguments", {})
@@ -265,15 +396,29 @@ class _ResponsesStream:
         for event in ("response.output_item.added", "response.output_item.done"):
             await self.write_event(event, {"type": event, "output_index": idx, "item": output_item})
 
+    async def emit_status(self, payload: Dict[str, Any]) -> None:
+        """Lifecycle/warning status (provider wait, auto-recovery countdown, fallback switch) as a
+        ``hermes.status`` custom event; not a Responses output item."""
+        await self.response.write(self._api._sse_frame(payload, event="hermes.status"))
+
+    # queue tag -> (method name, payload adapter)
+    _TAG_HANDLERS = {
+        "__tool_started__": ("emit_tool_started", lambda p: p),
+        "__tool_completed__": ("emit_tool_completed", lambda p: p),
+        "__commentary__": ("emit_commentary", lambda p: p["text"]),
+        "__reasoning__": ("emit_reasoning_delta", lambda p: p),
+        "__status__": ("emit_status", lambda p: p),
+    }
+
     async def dispatch(self, item: Any) -> None:
-        """Route one queue item: tool tuples emit immediately, strings are batched, others dropped."""
+        """Route one queue item: tagged tuples emit immediately, strings are batched, others dropped."""
         if isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str):
             tag, payload = item
             await self.flush_batch()
-            if tag == "__tool_started__":
-                await self.emit_tool_started(payload)
-            elif tag == "__tool_completed__":
-                await self.emit_tool_completed(payload)
+            handler = self._TAG_HANDLERS.get(tag)
+            if handler is not None:
+                method, adapt = handler
+                await getattr(self, method)(adapt(payload))
         elif isinstance(item, str):
             self._batch_buf.append(item)
             if self._batch_timer is None:
@@ -322,6 +467,7 @@ class _ResponsesStream:
             self.agent_error = self._api._redact_api_error_text(e)
 
     async def close_message_item(self) -> None:
+        await self.close_reasoning_item()
         self.final_response_text = "".join(self.final_text_parts) or self.final_response_text
         if not self.message_opened:
             return
@@ -358,7 +504,8 @@ class _ResponsesStream:
         env = self.terminal_envelope("completed", self._final_items())
         result = self.result
         full_history = self.adapter._build_response_conversation_history(
-            self.conversation_history, self.user_message, result, self.final_response_text)
+            self.conversation_history, self.user_message, result, self.final_response_text,
+            tool_output_max_chars=self.adapter._history_tool_output_max_chars)
         # Transcript substitution for result["_compressed"] happens in the history builder; only
         # a compression-rotated session_id is propagated so chaining resumes the child session.
         sid = result.get("session_id") if isinstance(result, dict) else None
@@ -391,19 +538,72 @@ class OpenAICompatRoutesMixin:
             requested_provider=overrides.get("requested_provider"), route=route)
         return route, overrides, (_error_response(err, 400) if err else None)
 
-    def _spawn_stream_agent(self, stream_q, **run_kwargs) -> tuple:
+    def _register_stream_approval(self, request, completion_id, stream_q, session_id) -> tuple:
+        """Expose a streaming completion as a run for ``POST /v1/runs/{completion_id}/approval``
+        (#51871) -> ``(notify, on_done)``. Owner + status are stamped like the session stream, so
+        ``_load_owned_run`` finds it; keyed by the completion id (never the shared session key) so
+        concurrent turns can't cross-resolve. ``on_done`` retires it when the agent task ends."""
+        from gateway.platforms.api_server import _approval_request_event
+        self._run_owners[completion_id] = self._run_idempotency_scope(request)
+        self._set_run_status(completion_id, "running", session_id=session_id or "")
+        self._run_approval_sessions[completion_id] = completion_id
+
+        def _approval_notify(approval_data):
+            event = _approval_request_event(completion_id, approval_data, session_id=session_id or "")
+            self._set_run_status(completion_id, "waiting_for_approval", last_event="approval.request",
+                                 approval=event)
+            stream_q.put_threadsafe(("__approval__", event))
+
+        def _on_done(fut):
+            from gateway.platforms.api_server_runs import terminal_run_status
+            self._run_approval_sessions.pop(completion_id, None)
+            if fut.cancelled():
+                status = "cancelled"
+            elif fut.exception() is not None:
+                status = "failed"
+            else:
+                result = (fut.result() or (None,))[0]
+                status = terminal_run_status(result)[0] if isinstance(result, dict) else "completed"
+            self._set_run_status(completion_id, status)
+            self._release_run_owner_if_forgotten(completion_id)
+        return _approval_notify, _on_done
+
+    def _spawn_stream_agent(self, stream_q, *, on_done=None, **run_kwargs) -> tuple:
         """Start ``_run_agent`` for an SSE writer -> ``(agent_task, agent_ref)``. ``agent_ref[0]``
         lets the writer interrupt on disconnect; the EOS sentinel is enqueued from the task's done
-        callback so drain loops never race a polled ``agent_task.done()``."""
+        callback so drain loops never race a polled ``agent_task.done()``. ``on_done(task)`` runs
+        in that same callback, before EOS."""
         def _on_delta(delta):
             # None from the agent is a CLI box-close signal, not EOS — forwarding it would end
             # the stream early. Called from the run_conversation worker thread: put_threadsafe.
             if delta is not None:
                 stream_q.put_threadsafe(delta)
+        def _on_reasoning(text):
+            # Structured reasoning deltas (#99552): the agent's reasoning_callback, not the
+            # lossy 500-char ``reasoning.available`` progress preview. Tagged so the writers
+            # keep them distinct from answer text.
+            if text:
+                stream_q.put_threadsafe(("__reasoning__", text))
+        def _on_status(kind, message=None):
+            # Lifecycle/warning status (provider wait, auto-recovery countdown, fallback switch) as a
+            # ``hermes.status`` event, so a client sees why the stream is silent instead of a dead socket.
+            from gateway.platforms.api_server import _redact_api_error_text
+            text = _redact_api_error_text(message if message is not None else kind or "").strip()
+            if text:
+                stream_q.put_threadsafe(("__status__", {"kind": str(kind), "text": text}))
         agent_ref = [None]
         agent_task = asyncio.ensure_future(self._run_agent(
-            stream_delta_callback=_on_delta, agent_ref=agent_ref, **run_kwargs))
-        agent_task.add_done_callback(lambda _fut: stream_q.put_nowait(None))
+            stream_delta_callback=_on_delta, reasoning_callback=_on_reasoning, status_callback=_on_status,
+            agent_ref=agent_ref, **run_kwargs))
+        def _done(fut):
+            try:
+                if on_done is not None:
+                    on_done(fut)
+            except Exception:
+                logger.debug("[api_server] stream on_done hook failed", exc_info=True)
+            finally:
+                stream_q.put_nowait(None)
+        agent_task.add_done_callback(_done)
         return agent_task, agent_ref
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
@@ -421,6 +621,8 @@ class OpenAICompatRoutesMixin:
             body = await request.json()
         except Exception:
             return _error_response("Invalid JSON in request body", 400)
+        from gateway.platforms.api_server import _request_relay_metadata
+        relay_metadata = _request_relay_metadata(body)
         messages = body.get("messages")
         if not messages or not isinstance(messages, list):
             return _invalid_request("Missing or invalid 'messages' field")
@@ -473,6 +675,13 @@ class OpenAICompatRoutesMixin:
             try:
                 db = await self._ensure_session_db_async()
                 if db is not None:
+                    # #98619/#13437: a client-addressed id from before a compression rotation
+                    # must adopt the live continuation tip — history loads from it, the turn and
+                    # the wake target bind it, and a detached delegation delivery row persisted
+                    # on the tip is what this continuation consumes. Same canonical resolution
+                    # the delivery writer (gateway/wake.py) and /v1/runs use; fails open.
+                    from gateway.platforms.api_server_runs import _resolve_live_session_id
+                    session_id = await _resolve_live_session_id(self, provided_session_id)
                     history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
@@ -494,7 +703,18 @@ class OpenAICompatRoutesMixin:
         run_kwargs = dict(
             user_message=user_message, conversation_history=history,
             ephemeral_system_prompt=system_prompt, session_id=session_id,
-            gateway_session_key=gateway_session_key, **agent_overrides, route=route)
+            gateway_session_key=gateway_session_key, **agent_overrides, route=route,
+            relay_metadata=relay_metadata,
+            # #98619: only an explicitly provided X-Hermes-Session-Id is wake-capable (the
+            # header is 403-gated on API_SERVER_KEY, so the wake self-post can authenticate
+            # and the client can resume the session by sending it again). A fingerprint-derived
+            # id from a header-less client is NOT: delegate_task keeps its forced-sync fallback
+            # there — the wake would hard-fail or land in history that client never reloads.
+            session_history_delivery=("1" if provided_session_id else ""))
+        # This is presentation only. The ordinary API-key/session authorization
+        # above still applies; it grants no internal ingress or control authority.
+        if provided_session_id and body.get("hermes_notification_category") == "diagnostic":
+            run_kwargs["notification_category"] = "diagnostic"
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
@@ -521,36 +741,52 @@ class OpenAICompatRoutesMixin:
 
             # tool_progress_callback deliberately NOT wired: it would duplicate the structured
             # start/complete callbacks (which carry the tool_call id).
+            # The completion id doubles as the run id; on_done drops the approval mapping once the
+            # turn ends (POST /v1/runs/{id}/approval then answers 409) and sets the terminal status.
+            approval_notify, end_stream_run = self._register_stream_approval(
+                request, completion_id, _stream_q, session_id)
             agent_task, agent_ref = self._spawn_stream_agent(
-                _stream_q, tool_start_callback=_on_tool_start,
-                tool_complete_callback=_on_tool_complete, **run_kwargs)
+                _stream_q, on_done=end_stream_run, tool_start_callback=_on_tool_start,
+                tool_complete_callback=_on_tool_complete, approval_notify_callback=approval_notify,
+                approval_session_key=completion_id, **run_kwargs)
+            # #13437 identity contract: an explicit-header client keeps addressing the id it
+            # sent; the response echoes that stable id while reads/writes adopt the live tip,
+            # so a rotation mid-turn (after these headers are prepared) never changes what the
+            # client should send next — it re-sends the same id and the tip resolution above
+            # finds whatever session is live by then.
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
-                agent_task, agent_ref, session_id=session_id,
+                agent_task, agent_ref, session_id=(provided_session_id or session_id),
                 gateway_session_key=gateway_session_key)
 
         async def _compute_completion():
             return await self._run_agent(**run_kwargs)
         outcome, err = await self._run_idempotent(
             request, body, _compute_completion, log_label="chat completions",
-            fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream"],
+            fingerprint_keys=["model", "provider", "model_options", "messages", "tools", "tool_choice", "stream",
+                              "hermes_notification_category"],
+            route="chat_completions",
         )
         if err is not None:
             return err
         result, usage = outcome
+        presentation_muted = result.get("_notification_presentation_suppressed") is True
         final_response = _resolve_media_to_data_urls(result.get("final_response") or "")
         completed, is_partial, is_failed, err_msg = _result_flags(result)
         if err_msg:
             err_msg = _redact_api_error_text(err_msg)
         finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg)
-        response_headers = {"X-Hermes-Session-Id": result.get("session_id", session_id)}
+        # Same #13437 identity contract as the SSE path: an explicit-header client is echoed
+        # the stable id it sent; a fingerprint-derived (header-less) turn keeps reporting the
+        # id the agent actually resolved, so headerless clients still learn where the turn went.
+        response_headers = {"X-Hermes-Session-Id": (provided_session_id or result.get("session_id", session_id))}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         # Hard fail (no usable text AND a real failure) -> 502 OpenAI error envelope so SDK
         # clients raise instead of rendering the failure string as message.content.
         if not final_response and (is_failed or is_partial):
             err_body = _openai_error(
-                err_msg or "Agent run did not produce a response.", err_type="server_error",
+                "" if presentation_muted else (err_msg or "Agent run did not produce a response."), err_type="server_error",
                 code="agent_incomplete")
             err_body["error"]["hermes"] = {
                 "completed": completed, "partial": is_partial, "failed": is_failed}
@@ -561,36 +797,50 @@ class OpenAICompatRoutesMixin:
         response_data = {
             "id": completion_id, "object": "chat.completion", "created": created,
             "model": model_name,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": final_response},
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "" if presentation_muted else final_response},
                          "finish_reason": finish_reason}],
             "usage": _chat_usage_payload(usage)}
+        # Non-streaming twin of ``delta.reasoning_content`` (#99552).
+        reasoning_text = _turn_reasoning_text(history, user_message, result)
+        if reasoning_text and not presentation_muted:
+            response_data["choices"][0]["message"]["reasoning_content"] = reasoning_text
         if is_partial or is_failed or not completed:
             response_data["hermes"] = _hermes_extras(
-                completed, is_partial, is_failed, err_msg, finish_reason)
+                completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason)
             response_headers["X-Hermes-Completed"] = "false"
             response_headers["X-Hermes-Partial"] = "true" if is_partial else "false"
-            if err_msg:
+            if err_msg and not presentation_muted:
                 response_headers["X-Hermes-Error"] = _redact_api_error_text(err_msg, limit=200)
         return web.json_response(response_data, headers=response_headers)
 
     async def _run_idempotent(
         self, request: "web.Request", body: Dict[str, Any], compute, *,
-        log_label: str, fingerprint_keys: List[str]) -> tuple:
-        """Run ``compute()`` once per Idempotency-Key + body fingerprint ->
-        ``((result, usage), None)`` or ``(None, 500 response)``."""
-        from gateway.platforms.api_server import (
-            _error_response, _idem_cache, _make_request_fingerprint)
+        log_label: str, fingerprint_keys: List[str], route: str) -> tuple:
+        """Run ``compute()`` once per (principal scope, logical route, Idempotency-Key) + body fingerprint
+        -> ``((result, usage), None)`` or ``(None, 500 response)``.
+
+        ``_idem_cache`` is process-global: under ``gateway.multiplex_profiles`` every profile's
+        ``/p/<profile>/v1/...`` mirror shares it, so the key carries ``_run_idempotency_scope`` (the same
+        ``sha256(profile, expected API key)`` namespace the durable ``/v1/runs`` API uses) — a client key
+        colliding across profiles, or a rotated API_SERVER_KEY, never replays another principal's response.
+        ``route`` is the logical endpoint (``/v1/...`` and its ``/p/<profile>/v1/...`` alias are the same
+        route), folded into the key because the store keeps the fingerprint only as the slot's value.
+        """
+        from gateway.platforms.api_server import _error_response, _idem_cache, _make_request_fingerprint
         idempotency_key = request.headers.get("Idempotency-Key")
         try:
             if idempotency_key:
+                principal_scope = self._run_idempotency_scope(request)
+                scoped_key = f"{principal_scope}\0{route}\0{idempotency_key}"
                 fp = _make_request_fingerprint(body, keys=fingerprint_keys)
-                result, usage = await _idem_cache.get_or_set(idempotency_key, fp, compute)
+                result, usage = await _idem_cache.get_or_set(scoped_key, fp, compute)
             else:
                 result, usage = await compute()
             return (result, usage), None
         except Exception as e:
             logger.error("Error running agent for %s: %s", log_label, e, exc_info=True)
-            return None, _error_response(f"Internal server error: {e}", 500, err_type="server_error")
+            message = "" if getattr(e, "_notification_presentation_suppressed", False) is True else f"Internal server error: {e}"
+            return None, _error_response(message, 500, err_type="server_error")
 
     async def _prepare_sse_response(
         self, request: "web.Request", session_id: Optional[str], gateway_session_key: Optional[str],
@@ -632,6 +882,14 @@ class OpenAICompatRoutesMixin:
                 if isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__tool_progress__":
                     # Custom event: tool lifecycle for frontends without markers in history.
                     await response.write(_sse_frame(delta[1], event="hermes.tool.progress"))
+                elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__reasoning__":
+                    # DeepSeek-style ``delta.reasoning_content`` (#99552), the field Open WebUI,
+                    # opencode and the Vercel AI SDK render as a thinking block.
+                    await response.write(_sse_frame(_chunk({"reasoning_content": delta[1]})))
+                elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__status__":
+                    await response.write(_sse_frame(delta[1], event="hermes.status"))
+                elif isinstance(delta, tuple) and len(delta) == 2 and delta[0] == "__approval__":
+                    await response.write(_sse_frame(delta[1], event="approval.request"))
                 else:
                     await response.write(_sse_frame(_chunk({"content": delta})))
             # The agent can fail after the queue drains (task raises / result flagged failed or
@@ -650,13 +908,17 @@ class OpenAICompatRoutesMixin:
                 err_msg = err_msg or str(agent_error)
             finish_reason = _finish_reason(completed, is_partial, is_failed, err_msg, agent_error)
             finish_chunk = _chunk({}, finish_reason, usage=_chat_usage_payload(usage))
+            presentation_muted = (
+                (isinstance(result, dict) and result.get("_notification_presentation_suppressed") is True)
+                or getattr(agent_error, "_notification_presentation_suppressed", False) is True
+            )
             if finish_reason != "stop":
-                if err_msg:
+                if err_msg and not presentation_muted:
                     finish_chunk["error"] = {
                         "message": err_msg,
                         "type": type(agent_error).__name__ if agent_error else "agent_error"}
                 finish_chunk["hermes"] = _hermes_extras(
-                    completed, is_partial, is_failed, err_msg, finish_reason)
+                    completed, is_partial, is_failed, "" if presentation_muted else err_msg, finish_reason)
             await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
@@ -679,7 +941,8 @@ class OpenAICompatRoutesMixin:
         """Write the SSE stream for POST /v1/responses.
 
         Events: ``response.created`` -> ``output_text.delta/done`` + ``output_item.added/done``
-        (function_call / function_call_output) -> ``response.completed`` (non-streaming envelope)
+        (reasoning / function_call / function_call_output) + ``reasoning_summary_part/text.*``
+        -> ``response.completed`` (non-streaming envelope)
         or ``response.failed``. On disconnect the agent is interrupted and, with ``store=True``,
         an ``incomplete`` snapshot replaces ``in_progress`` so GET / chaining still work.
         """
@@ -745,6 +1008,8 @@ class OpenAICompatRoutesMixin:
             body = await request.json()
         except Exception:
             return _invalid_request("Invalid JSON in request body")
+        from gateway.platforms.api_server import _request_relay_metadata
+        relay_metadata = _request_relay_metadata(body)
         raw_input = body.get("input")
         if raw_input is None:
             return _error_response("Missing 'input' field", 400)
@@ -756,7 +1021,7 @@ class OpenAICompatRoutesMixin:
             return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
         if conversation:
             # A conversation name resolves to its latest response_id (unknown = new conversation).
-            previous_response_id = self._response_store.get_conversation(conversation)
+            previous_response_id = self._current_response_store().get_conversation(conversation)
 
         input_messages: List[Dict[str, Any]] = []
         if isinstance(raw_input, str):
@@ -765,6 +1030,8 @@ class OpenAICompatRoutesMixin:
             for idx, item in enumerate(raw_input):
                 if isinstance(item, str):
                     input_messages.append({"role": "user", "content": item})
+                elif _is_reasoning_input_item(item):
+                    continue
                 elif isinstance(item, dict):
                     try:
                         content = _normalize_multimodal_content(item.get("content", ""))
@@ -781,6 +1048,8 @@ class OpenAICompatRoutesMixin:
             if not isinstance(raw_history, list):
                 return _error_response("'conversation_history' must be an array of message objects", 400)
             for i, entry in enumerate(raw_history):
+                if _is_reasoning_input_item(entry):
+                    continue
                 if not isinstance(entry, dict) or "role" not in entry or "content" not in entry:
                     return _error_response(f"conversation_history[{i}] must have 'role' and 'content' fields", 400)
                 try:
@@ -792,7 +1061,7 @@ class OpenAICompatRoutesMixin:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
         stored_session_id = None
         if not conversation_history and previous_response_id:
-            stored = self._response_store.get(previous_response_id)
+            stored = self._current_response_store().get(previous_response_id)
             if stored is None:
                 return _error_response(f"Previous response not found: {previous_response_id}", 404)
             conversation_history = list(stored.get("conversation_history", []))
@@ -813,7 +1082,7 @@ class OpenAICompatRoutesMixin:
         _declared_selected = not stored_session_id and bool(gateway_session_key)
         session_id = (
             stored_session_id
-            or self._declared_conversation_session(gateway_session_key)
+            or await asyncio.to_thread(self._declared_conversation_session, gateway_session_key)
             or str(uuid.uuid4()))
         stream = _coerce_request_bool(body.get("stream"), default=False)
         route, agent_overrides, selection_error = self._select_request_route(
@@ -825,7 +1094,7 @@ class OpenAICompatRoutesMixin:
             user_message=user_message, conversation_history=conversation_history,
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
-            **agent_overrides, route=route)
+            **agent_overrides, route=route, relay_metadata=relay_metadata)
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 
@@ -841,10 +1110,16 @@ class OpenAICompatRoutesMixin:
                 _stream_q.put_threadsafe(("__tool_completed__", {
                     "tool_call_id": tool_call_id, "name": function_name,
                     "arguments": function_args or {}, "result": function_result}))
+
+            def _on_commentary(text, *, already_streamed: bool = False):
+                # Already-streamed text went out as output_text.delta of the final item; a second
+                # copy as a commentary item would duplicate it.
+                if not already_streamed and isinstance(text, str) and text.strip():
+                    _stream_q.put_threadsafe(("__commentary__", {"text": text}))
             agent_task, agent_ref = self._spawn_stream_agent(
                 _stream_q, tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start, tool_complete_callback=_on_tool_complete,
-                **run_kwargs)
+                interim_assistant_callback=_on_commentary, **run_kwargs)
             return await self._write_sse_responses(
                 request=request, response_id=f"resp_{uuid.uuid4().hex[:28]}",
                 model=body.get("model", self._model_name), created_at=int(time.time()),
@@ -858,6 +1133,7 @@ class OpenAICompatRoutesMixin:
         outcome, err = await self._run_idempotent(
             request, body, _compute_response, log_label="responses",
             fingerprint_keys=["input", "instructions", "previous_response_id", "conversation", "model", "provider", "model_options", "tools"],
+            route="responses",
         )
         if err is not None:
             return err
@@ -868,7 +1144,8 @@ class OpenAICompatRoutesMixin:
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
         created_at = int(time.time())
         full_history = self._build_response_conversation_history(
-            conversation_history, user_message, result, final_response)
+            conversation_history, user_message, result, final_response,
+            tool_output_max_chars=self._history_tool_output_max_chars)
         # _run_agent's effective session id carries compression rotations; storing it keeps
         # previous_response_id chaining off the pre-rotation session (else compression re-fires).
         _result_sid = result.get("session_id") if isinstance(result, dict) else None
@@ -884,11 +1161,12 @@ class OpenAICompatRoutesMixin:
             "output": self._extract_output_items(result, start_index=output_start_index),
             "usage": _responses_usage_payload(usage)}
         if store:
-            self._response_store.put(response_id, {
+            response_store = self._current_response_store()
+            response_store.put(response_id, {
                 "response": response_data, "conversation_history": full_history,
                 "instructions": instructions, "session_id": _effective_session_id})
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                response_store.set_conversation(conversation, response_id)
         response_headers = {"X-Hermes-Session-Id": _effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
@@ -901,7 +1179,7 @@ class OpenAICompatRoutesMixin:
         if auth_err:
             return auth_err
         response_id = request.match_info["response_id"]
-        stored = self._response_store.get(response_id)
+        stored = self._current_response_store().get(response_id)
         if stored is None:
             return _error_response(f"Response not found: {response_id}", 404)
         return web.json_response(stored["response"])
@@ -913,19 +1191,22 @@ class OpenAICompatRoutesMixin:
         if auth_err:
             return auth_err
         response_id = request.match_info["response_id"]
-        if not self._response_store.delete(response_id):
+        if not self._current_response_store().delete(response_id):
             return _error_response(f"Response not found: {response_id}", 404)
         return web.json_response({"id": response_id, "object": "response", "deleted": True})
 
     @staticmethod
     def _build_response_conversation_history(
         conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any],
-        final_response: Any) -> List[Dict[str, Any]]:
+        final_response: Any, *, tool_output_max_chars: int = 0) -> List[Dict[str, Any]]:
         """Build the stored Responses transcript without duplicating history.
 
         A compressed transcript (``result["_compressed"]``) shares no input-history prefix, so
         turn-start detection fails; prepending the uncompressed history would bloat the stored
         context and re-trigger compression every request — it is stored as-is instead.
+
+        ``tool_output_max_chars`` > 0 caps tool outputs / tool-call argument blobs in the
+        stored copy (gateway.api_server.history_tool_output_max_chars; 0 = store verbatim).
         """
         from gateway.platforms.api_server import APIServerAdapter
         prior = list(conversation_history)
@@ -936,25 +1217,20 @@ class OpenAICompatRoutesMixin:
                 conversation_history, user_message, result)
             # turn_start == 0: compression rewrote the transcript or agent_messages is turn-only.
             if turn_start or result.get("_compressed"):
-                return list(agent_messages)
-            return prior + [current_user] + agent_messages
-        return prior + [current_user, {"role": "assistant", "content": final_response}]
+                history = list(agent_messages)
+            else:
+                history = prior + [current_user] + agent_messages
+        else:
+            history = prior + [current_user, {"role": "assistant", "content": final_response}]
+        return _cap_history_tool_outputs(history, tool_output_max_chars)
 
     @staticmethod
     def _response_messages_turn_start_index(
         conversation_history: List[Dict[str, Any]], user_message: Any, result: Dict[str, Any],
     ) -> int:
-        """Detect transcript-shaped result["messages"] and return turn start."""
-        agent_messages = result.get("messages") if isinstance(result, dict) else None
-        if not isinstance(agent_messages, list) or not agent_messages:
-            return 0
-        prior = list(conversation_history)
-        expected_prefix = prior + [{"role": "user", "content": user_message}]
-        if agent_messages[:len(expected_prefix)] == expected_prefix:
-            return len(expected_prefix)
-        if prior and agent_messages[:len(prior)] == prior:
-            return len(prior)
-        return 0
+        """Index where this turn starts in a transcript-shaped result["messages"] (0 = all)."""
+        from gateway.platforms.api_server_turn_boundary import response_turn_start_index
+        return response_turn_start_index(conversation_history, user_message, result)
 
     @classmethod
     def _turn_transcript_messages(
@@ -993,6 +1269,11 @@ class OpenAICompatRoutesMixin:
             messages = messages[start_index:]
         for msg in messages:
             role = msg.get("role")
+            reasoning = msg.get("reasoning") if role == "assistant" else None
+            if isinstance(reasoning, str) and reasoning.strip():
+                # Precedes this message's function_call items, like the SSE writer closes a
+                # thinking burst before the next tool item opens (#99552).
+                items.append(_reasoning_item(reasoning))
             if role == "assistant" and msg.get("tool_calls"):
                 for tc in msg["tool_calls"]:
                     func = tc.get("function", {})

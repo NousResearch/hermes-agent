@@ -30,6 +30,9 @@ export interface SidebarSessionGroup {
   isKanban?: boolean
   mode?: 'profile' | 'source' | 'workspace'
   sourceId?: string
+  // Exact owner for gateway/profile sidebar sections; absent for workspace lanes.
+  connectionId?: null | string
+  profile?: string
 }
 
 /** A repo node: holds its branch/worktree lanes (`repo -> lane -> sessions`). */
@@ -66,6 +69,9 @@ export interface SidebarProjectTree {
   lastActive?: number
   // Up to N most-recent sessions for the overview preview (set by `projects.tree`).
   previewSessions?: SessionInfo[]
+  // Every session id the backend assigned to this project — the authoritative
+  // owner set the live overlay keys on (complete, unlike `previewSessions`).
+  sessionIds?: string[]
 }
 
 /** Path split into segments, ignoring trailing slashes and mixed separators. */
@@ -89,9 +95,15 @@ const isWindowsPath = (path: string): boolean =>
  * Segments for identity comparison: Windows paths fold case (and separators, via
  * {@link segments}) so `C:\Work` and `c:/work` are one lane; POSIX stays
  * case-sensitive. Comparison-only — emitted ids/labels keep their spelling.
+ *
+ * Segments are NFC-normalized before comparing: the same on-disk folder can
+ * reach us as NFC (typed paths, backend cwd) or NFD (macOS file pickers,
+ * HFS+/APFS round-trips), and case folding does not unify the two forms — an
+ * accented project folder would otherwise render empty (#65014). Mirrors
+ * `_comparison_segments` in `tui_gateway/project_tree.py`.
  */
 const comparisonSegments = (path: string): string[] => {
-  const segs = segments(path)
+  const segs = segments(path).map(seg => seg.normalize('NFC'))
 
   return isWindowsPath(path) ? segs.map(seg => seg.toLowerCase()) : segs
 }
@@ -353,6 +365,8 @@ export function mergeRepoWorktreeGroups(
 // needs the backend common-root probe, so those rows are left for the next
 // tree refresh; the common case (a new main-checkout session) overlays here.
 
+const NO_OWNERS: ReadonlyMap<string, string> = new Map()
+
 /** True when `target` equals `folder` or is nested under it (segment-wise). */
 function isPathUnder(folder: string, target: string): boolean {
   const f = comparisonSegments(folder)
@@ -379,8 +393,21 @@ function isPathUnder(folder: string, target: string): boolean {
  * the row's cwd sits outside its recorded repo root (a mid-session relocation,
  * or a sibling worktree of a project repo), the folder match is authoritative;
  * only the repo-root AUTO-project fallback needs cwd-under-root confidence.
+ * When the backend tree already claims the row (`owners`, see
+ * {@link projectOwnerBySessionId}), that owner wins over the cwd walk so a
+ * sibling worktree under an umbrella folder files with its repo project.
  */
-export function liveSessionProjectId(session: SessionInfo, explicitProjects: ProjectInfo[]): null | string {
+export function liveSessionProjectId(
+  session: SessionInfo,
+  explicitProjects: ProjectInfo[],
+  owners: ReadonlyMap<string, string> = NO_OWNERS
+): null | string {
+  const owner = owners.get(session.id)
+
+  if (owner && owner !== NO_PROJECT_ID) {
+    return owner
+  }
+
   const cwd = (session.cwd || '').trim()
   // A session may carry only a git_repo_root and no cwd — older/imported rows,
   // or ones captured before cwd tracking. The backend still groups those by repo
@@ -428,6 +455,36 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
   return repoRoot
 }
 
+/** The lane a row files under: its live project, or Home for detached (cwd-less) rows. */
+export function sessionBucketId(
+  session: SessionInfo,
+  explicitProjects: ProjectInfo[],
+  owners: ReadonlyMap<string, string> = NO_OWNERS
+): null | string {
+  return liveSessionProjectId(session, explicitProjects, owners) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+}
+
+/**
+ * The ONE row-level project-filter rule the flat list and the project lanes
+ * narrow by. Detached (cwd-less) rows belong to the Home bucket
+ * (`NO_PROJECT_ID`, like the overview preview overlay) — filing them under
+ * `''` meant filtering to Home hid Home's own rows.
+ */
+export function sessionMatchesProjectFilter(
+  session: SessionInfo,
+  filter: readonly string[],
+  explicitProjects: ProjectInfo[],
+  owners: ReadonlyMap<string, string> = NO_OWNERS
+): boolean {
+  if (!filter.length) {
+    return true
+  }
+
+  const id = sessionBucketId(session, explicitProjects, owners)
+
+  return id !== null && filter.includes(id)
+}
+
 /**
  * The color a session inherits from its owning project — the explicit project
  * whose folder is the longest prefix of the session's cwd/repo-root, when that
@@ -438,8 +495,12 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
  * sidebar groups by; returns null for rootless / kanban / out-of-tree rows and
  * for sessions under an uncolored (or auto) project.
  */
-export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[]): null | string {
-  const projectId = liveSessionProjectId(session, projects)
+export function sessionProjectColor(
+  session: SessionInfo,
+  projects: ProjectInfo[],
+  owners: ReadonlyMap<string, string> = NO_OWNERS
+): null | string {
+  const projectId = liveSessionProjectId(session, projects, owners)
 
   if (!projectId) {
     return null
@@ -448,8 +509,85 @@ export function sessionProjectColor(session: SessionInfo, projects: ProjectInfo[
   return projects.find(project => project.id === projectId)?.color ?? null
 }
 
-const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] =>
-  [session, ...rows.filter(row => row.id !== session.id)].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+/**
+ * Membership in a project-tree snapshot is backend-resolved: in particular,
+ * the git probe can identify a sibling worktree even while its persisted row
+ * has not yet been backfilled with `git_repo_root`. Keep that answer when the
+ * live cache refreshes the same row instead of re-inferring ownership from its
+ * cwd (which can make an umbrella project claim it as well).
+ */
+export function projectOwnerBySessionId(projects: SidebarProjectTree[]): ReadonlyMap<string, string> {
+  const owners = new Map<string, string>()
+
+  for (const project of projects) {
+    const ids = [
+      ...(project.sessionIds ?? []),
+      // Older backends only carry the rows themselves.
+      ...(project.previewSessions ?? []).map(session => session.id),
+      ...project.repos.flatMap(repo => repo.groups.flatMap(group => group.sessions.map(session => session.id)))
+    ]
+
+    for (const id of ids) {
+      owners.set(id, project.id)
+    }
+  }
+
+  return owners
+}
+
+/**
+ * Every id a row has answered to. Compression rotates a chat's live id (root ->
+ * tip), so the snapshot and the live cache can each hold a different segment
+ * of one conversation; the projected row carries its lineage root and chain.
+ */
+const conversationIds = (session: SessionInfo): string[] => [
+  session.id,
+  ...(session._lineage_root_id ? [session._lineage_root_id] : []),
+  ...(session._lineage_ids ?? [])
+]
+
+/** A predicate matching any row that is the same conversation as `session`. */
+function sameConversationAs(session: SessionInfo): (row: SessionInfo) => boolean {
+  const ids = new Set(conversationIds(session))
+
+  return row => conversationIds(row).some(id => ids.has(id))
+}
+
+/** The snapshot's owner for a live row, found by any id its conversation has had. */
+function ownerOf(owners: ReadonlyMap<string, string>, session: SessionInfo): string | undefined {
+  for (const id of conversationIds(session)) {
+    const owner = owners.get(id)
+
+    if (owner) {
+      return owner
+    }
+  }
+
+  return undefined
+}
+
+/** Rows minus any that repeat an earlier row's conversation (first wins). */
+function uniqueConversations(rows: SessionInfo[]): SessionInfo[] {
+  const seen = new Set<string>()
+
+  return rows.filter(row => {
+    const ids = conversationIds(row)
+
+    if (ids.some(id => seen.has(id))) {
+      return false
+    }
+
+    ids.forEach(id => seen.add(id))
+
+    return true
+  })
+}
+
+const upsertSession = (rows: SessionInfo[], session: SessionInfo): SessionInfo[] => {
+  const isSame = sameConversationAs(session)
+
+  return [session, ...rows.filter(row => !isSame(row))].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+}
 
 /** A live row's placement path, with an exact repo-root fallback when cwd is absent. */
 function livePathForRepo(repoRoot: string, session: SessionInfo): string {
@@ -601,9 +739,11 @@ export function overlayRepoLanes(
     // new worktree — the overlay places it into the worktree lane, but without
     // this eviction the stale main-lane entry persists and the session appears
     // under both groups until the next backend tree refresh).
+    const isSame = sameConversationAs(session)
+
     for (const g of lanes) {
       if (g !== lane) {
-        const idx = g.sessions.findIndex(s => s.id === session.id)
+        const idx = g.sessions.findIndex(isSame)
 
         if (idx >= 0) {
           g.sessions = [...g.sessions.slice(0, idx), ...g.sessions.slice(idx + 1)]
@@ -630,16 +770,26 @@ export function overlayRepoLanes(
 /**
  * Home's overlay: its rows have no cwd to place, so this is a plain upsert of
  * detached live sessions into its single lane — a brand-new project-less chat
- * shows the instant it's created, matching the flat Recents list.
+ * shows the instant it's created, matching the flat Recents list. A chat the
+ * authoritative owner map gives to a named project stays out, even while its
+ * live copy is briefly detached (else it lists in both places).
  */
 function overlayHomeLane(
   project: SidebarProjectTree,
   live: SessionInfo[],
-  removed: ReadonlySet<string>
+  removed: ReadonlySet<string>,
+  owners: ReadonlyMap<string, string>
 ): SidebarProjectTree {
+  const ownedElsewhere = (session: SessionInfo): boolean => {
+    const owner = ownerOf(owners, session)
+
+    return Boolean(owner) && owner !== NO_PROJECT_ID
+  }
+
+  const belongs = (session: SessionInfo): boolean => !removed.has(session.id) && !ownedElsewhere(session)
   const lane = project.repos[0]?.groups[0]
-  const detached = live.filter(session => isDetachedSession(session) && !removed.has(session.id))
-  const kept = (lane?.sessions ?? []).filter(session => !removed.has(session.id))
+  const detached = live.filter(session => isDetachedSession(session) && belongs(session))
+  const kept = (lane?.sessions ?? []).filter(belongs)
 
   if (!detached.length && kept.length === (lane?.sessions.length ?? 0)) {
     return project
@@ -718,16 +868,23 @@ export function excludeProjectSessions(
 export function overlayLiveLanes(
   project: SidebarProjectTree,
   live: SessionInfo[],
-  removed: ReadonlySet<string> = NO_REMOVED
+  removed: ReadonlySet<string> = NO_REMOVED,
+  authoritativeOwners: ReadonlyMap<string, string> = NO_OWNERS
 ): SidebarProjectTree {
   if (project.isNoProject) {
-    return overlayHomeLane(project, live, removed)
+    return overlayHomeLane(project, live, removed, authoritativeOwners)
   }
 
   let changed = false
 
+  const projectLive = live.filter(session => {
+    const owner = ownerOf(authoritativeOwners, session)
+
+    return !owner || owner === project.id
+  })
+
   const repos = project.repos.map(repo => {
-    const next = overlayRepoLanes(repo, live, removed)
+    const next = overlayRepoLanes(repo, projectLive, removed)
 
     changed ||= next !== repo
 
@@ -755,8 +912,8 @@ export function reconcileEnteredProjectSessions(
     return live
   }
 
-  const liveIds = new Set(live.map(session => session.id))
-  const missingPreviews = previewSessions.filter(session => !liveIds.has(session.id))
+  const liveIds = new Set(live.flatMap(conversationIds))
+  const missingPreviews = previewSessions.filter(session => !conversationIds(session).some(id => liveIds.has(id)))
 
   return missingPreviews.length ? [...live, ...missingPreviews] : live
 }
@@ -776,14 +933,14 @@ export function overlayLivePreviews(
   { removed = NO_REMOVED, rankIds }: PreviewOverlayOptions = {}
 ): Record<string, SessionInfo[]> {
   const byProject = new Map<string, SessionInfo[]>()
+  const authoritativeOwners = projectOwnerBySessionId(projects)
 
   for (const session of live) {
     if (removed.has(session.id)) {
       continue
     }
 
-    const projectId =
-      liveSessionProjectId(session, explicitProjects) ?? (isDetachedSession(session) ? NO_PROJECT_ID : null)
+    const projectId = ownerOf(authoritativeOwners, session) ?? sessionBucketId(session, explicitProjects)
 
     if (!projectId) {
       continue
@@ -804,16 +961,9 @@ export function overlayLivePreviews(
       continue
     }
 
-    // Live rows take precedence (fresher title/activity/working state).
-    const map = new Map<string, SessionInfo>()
-
-    for (const session of [...liveRows, ...base]) {
-      if (!map.has(session.id)) {
-        map.set(session.id, session)
-      }
-    }
-
-    const pool = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+    // Live rows take precedence (fresher title/activity/working state), and a
+    // compressed chat's live tip stands in for the snapshot's older segment.
+    const pool = uniqueConversations([...liveRows, ...base]).sort((a, b) => sessionRecency(b) - sessionRecency(a))
 
     out[node.id] = rankSessions(pool, rankIds).slice(0, limit)
   }

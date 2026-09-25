@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      选择 [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ 超时 — 已拒绝命令"
+  timeout:         "      ⏱ {waited} 内没有回应——未执行该命令。再次请求即可重试，或提高上限：hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ 本次允许"
   allowed_session: "      ✓ 本次会话内允许"
   allowed_always:  "      ✓ 已加入永久允许列表"
@@ -86,6 +86,9 @@ gateway:
     switch_failed:         "分支已创建，但无法切换到它。"
     branched_one:          "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
     branched_many:         "⑂ 已分支到 **{title}**（已复制 {count} 条消息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切换回原始会话。"
+    branched_thread_one:   "⑂ 已在新话题中分支到 **{title}**（已复制 {count} 条消息）\n话题：{thread}\n原始：`{parent}` — 本聊天保持在原会话\n分支：`{new}`\n使用 `/branch --here` 可在本聊天中分支。"
+    branched_thread_many:  "⑂ 已在新话题中分支到 **{title}**（已复制 {count} 条消息）\n话题：{thread}\n原始：`{parent}` — 本聊天保持在原会话\n分支：`{new}`\n使用 `/branch --here` 可在本聊天中分支。"
+    thread_fallback:       "此处无法创建话题，因此分支替换了本聊天的会话。"
 
   commands:
     usage:                 "用法：`/commands [page]`"
@@ -179,7 +182,7 @@ gateway:
       blocked:             "被阻塞，需要处理"
       review_requested:    "已交付评审；实现已完成"
       changes_requested:   "评审要求修改（BLOCK)，实现未获批准"
-      block_loop_detected: "反复阻塞后被转入待分诊，需要做出决定"
+      block_loop_detected: "反复阻塞后被转入待分诊，需要编排关注"
       status_default:      "状态变化"
       status_joiner:       "，"
       message:             "[kanban] 任务 {task_id} {status}。\n标题: {title}\n执行者: @{assignee}\n看板: {board}\n\n请检查结果或决定下一步动作。"
@@ -341,6 +344,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     last_activity:         "**最近活动：** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    free_tier:             "Nous · 免费套餐 · nous/welcome · /login 登录"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Lifetime tokens billed:** {tokens} _(not your current context size; use `/context`)_"
@@ -386,7 +390,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     not_git_repo:            "✗ 不是 git 仓库 — 无法更新。"
     hermes_cmd_not_found:    "✗ 无法找到 `hermes` 命令。Hermes 正在运行，但更新命令无法在 PATH 上或通过当前 Python 解释器找到可执行文件。请尝试在终端中手动运行 `hermes update`。"
     start_failed:            "✗ 启动更新失败：{error}"
-    starting:                "⚕ 正在启动 Hermes 更新…… 进度将在此处显示。"
+    starting:                "☤ 正在启动 Hermes 更新…… 进度将在此处显示。"
 
   usage:
     rate_limits:              "⏱️ **速率限制：** {state}"

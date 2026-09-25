@@ -10,9 +10,10 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.image_eviction_policy import outbound_image_retire_count
 from agent.anthropic_endpoints import (
     _is_deepseek_anthropic_endpoint, _is_kimi_family_endpoint, _is_nous_portal_endpoint,
-    _is_third_party_anthropic_endpoint,
+    _is_third_party_anthropic_endpoint, _model_name_is_deepseek_thinking,
 )
 
 logger = logging.getLogger(__name__)
@@ -166,15 +167,24 @@ def convert_tools_to_anthropic(tools: List[Dict]) -> List[Dict]:
     return result
 
 
-def _image_source_from_openai_url(url: str) -> Dict[str, str]:
-    """OpenAI image URL / data URL -> Anthropic image ``source``."""
+def _image_block_from_openai_url(url: str) -> Dict[str, Any]:
+    """OpenAI image URL / data URL -> Anthropic ``image`` block. An inline subtype the API rejects
+    (svg+xml, bmp, tiff) 400s every replay once in history: an SVG is rasterized to PNG when a
+    rasterizer is installed, anything else unsupported becomes a text placeholder."""
+    from tools.vision_tools_image_prep import rasterize_svg_data_url, unsupported_inline_image_media_type
     url = str(url or "").strip()
-    if url.startswith("data:"):
-        header, _, data = url.partition(",")
-        mime_part = header[len("data:"):].split(";", 1)[0].strip()
-        media_type = mime_part if mime_part.startswith("image/") else "image/jpeg"
-        return {"type": "base64", "media_type": media_type, "data": data}
-    return {"type": "url", "url": url}
+    if not url.startswith("data:"):
+        return {"type": "image", "source": {"type": "url", "url": url}}
+    unsupported = unsupported_inline_image_media_type(url)
+    if unsupported == "image/svg+xml" and (png_url := rasterize_svg_data_url(url)) is not None:
+        url, unsupported = png_url, None
+    if unsupported is not None:
+        return _text_block(f"[image omitted: {unsupported} is not a supported image format]")
+    header, _, data = url.partition(",")
+    mime_part = header[len("data:"):].split(";", 1)[0].strip()
+    media_type = mime_part if mime_part.startswith("image/") else "image/jpeg"
+    media_type = "image/jpeg" if media_type.lower() == "image/jpg" else media_type
+    return {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": data}}
 
 
 def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
@@ -191,7 +201,7 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
         url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
-        block = {"type": "image", "source": _image_source_from_openai_url(url)}
+        block = _image_block_from_openai_url(url)
     else:
         block = dict(part)
     if (cache_control := _cache_control_of(part)) is not None:
@@ -507,12 +517,13 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
             m["content"] = new_content if new_content else [_text_block("(tool result removed)")]
 
 
-def _concat_content(prev: Any, curr: Any) -> Any:
-    """Merge two message contents: str+str joined by newline, list+list concatenated, mixed shapes
-    promoted to block lists."""
-    if isinstance(prev, str) and isinstance(curr, str):
-        return prev + "\n" + curr
-    as_blocks = lambda c: [_text_block(c)] if isinstance(c, str) else c  # noqa: E731
+def _concat_content(prev: Any, curr: Any) -> List[Any]:
+    """Merge two message contents into one block list, each side's blocks kept intact (a string
+    becomes its own text block). Strings are never joined: the first turn's bytes must equal what a
+    later request replays as a standalone turn, or the prompt-cache prefix diverges at that block
+    (MoA appends per-turn guidance after ``user(task)`` on iteration 1 and replays ``user(task)``
+    alone on iteration 2 — #112358)."""
+    as_blocks = lambda c: [_text_block(c)] if isinstance(c, str) else list(c)  # noqa: E731
     return as_blocks(prev) + as_blocks(curr)
 
 
@@ -565,7 +576,9 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
     """
     is_third_party = _is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url)
     is_kimi = _is_kimi_family_endpoint(base_url, model)
-    is_deepseek = _is_deepseek_anthropic_endpoint(base_url)
+    is_deepseek = _is_deepseek_anthropic_endpoint(base_url) or (
+        is_third_party and _model_name_is_deepseek_thinking(model)
+    )
     last_assistant_idx = next((i for i in range(len(result) - 1, -1, -1) if result[i].get("role") == "assistant"), None)
     for idx, m in _assistant_block_lists(result):
         if is_kimi:
@@ -590,19 +603,36 @@ def _manage_thinking_signatures(result: List[Dict[str, Any]], base_url: str | No
 
 
 def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
-    """Keep only the 3 most recent computer-use screenshots (~1,465 tokens each); older images
-    become a placeholder text block. Mutates ``result`` in place."""
-    image_count = 0
-    for msg in reversed(result):
-        content = msg.get("content")
-        for block in content if isinstance(content, list) else []:
-            inner = block.get("content") if _block_type(block) == "tool_result" else None
-            if not isinstance(inner, list) or not _has_block_type(inner, {"image"}):
-                continue
-            image_count += 1
-            if image_count > 3:
-                placeholder = _text_block("[screenshot removed to save context]")
-                block["content"] = [placeholder if b.get("type") == "image" else b for b in inner]
+    """Retire screenshot payloads once the request would cross the API's per-request image limit.
+
+    Mutates ``result`` in place. This wire pass has no byte sizes, so it enforces the block
+    ceiling only; the auxiliary Anthropic client (``agent.auxiliary_client`` via
+    ``anthropic_adapter.build_anthropic_kwargs``) reaches it without the compressor's
+    send-path pass, so it must hold the invariant alone. Policy: :mod:`agent.image_eviction_policy`.
+    """
+    reserved = sum(
+        1
+        for msg in result
+        for block in (msg.get("content") if isinstance(msg.get("content"), list) else [])
+        if _block_type(block) == "image"
+    )
+    # Parallel tool calls land as sibling tool_result blocks inside ONE user message
+    # (oldest first), so the inner walk must also run newest -> oldest or a batch that
+    # ends mid-message retires the newest frames instead of the oldest (#103217).
+    carriers = [
+        (block, sum(1 for b in block["content"] if _block_type(b) == "image"))
+        for msg in reversed(result)
+        for block in reversed(msg.get("content") if isinstance(msg.get("content"), list) else [])
+        if _block_type(block) == "tool_result"
+        and isinstance(block.get("content"), list)
+        and _has_block_type(block["content"], {"image"})
+    ]
+    retire = outbound_image_retire_count([n for _, n in carriers], reserved)
+    for block, _ in carriers[len(carriers) - retire:]:
+        placeholder = _text_block("[screenshot removed to save context]")
+        block["content"] = [
+            placeholder if _block_type(b) == "image" else b for b in block["content"]
+        ]
 
 
 def _ensure_leading_user_turn(result: List[Dict[str, Any]]) -> None:

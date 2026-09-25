@@ -15,6 +15,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from agent.model_metadata import CHARS_PER_TOKEN
 from tools.tts_command_provider import (
     _command_output_format, _command_timeout, _is_command_provider_config as _is_command_stt_provider_config,
     _named_provider_config, _resolve_command_config, command_env_passthrough as _command_stt_env_passthrough,
@@ -57,7 +58,7 @@ _get_command_stt_output_format = partial(_command_output_format, formats=COMMAND
 
 def _read_command_stt_output(output_path: Path, stdout: str, fmt: str) -> str:
     """Transcript: non-empty output file > non-empty stdout (curl one-liners) > RuntimeError. JSON is returned raw."""
-    content = (output_path.read_bytes().decode("utf-8", errors="replace").strip()
+    content = (output_path.read_text(encoding="utf-8-sig", errors="replace").strip()
                if output_path.exists() else "")
     if content or (stdout or "").strip():
         return content or stdout.strip()
@@ -195,7 +196,7 @@ _PRE_TRANSCRIPTION_MUTABLE_FIELDS = ("prompt", "language", "model")
 # waste upload bytes and can trip stricter OpenAI-compatible servers. Enforced
 # client-side (truncate with a warning, never error), ~4 chars/token.
 _WHISPER_PROMPT_TOKEN_CAP = 224
-_PROMPT_CHARS_PER_TOKEN = 4
+_PROMPT_CHARS_PER_TOKEN = CHARS_PER_TOKEN
 _WHISPER_PROMPT_CAPPED_PROVIDERS = frozenset({"local", "openai", "groq", "deepinfra"})
 
 

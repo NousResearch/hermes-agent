@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import urllib.error
 from pathlib import Path
 
@@ -95,3 +96,19 @@ def test_failed_probe_keeps_the_previous_timestamp_and_warns(mod, tmp_path, monk
     data = json.loads(out.read_text())
     assert data == {"fetched_at": "2026-09-16T18:40:16+00:00", "stars": {"a/one": 7}}
     assert "::warning::" in capsys.readouterr().out
+
+
+def test_script_imports_hermes_yaml_under_the_ci_invocation():
+    """skills-index.yml runs ``python website/scripts/fetch-plugin-stars.py --probe`` with no
+    PYTHONPATH (unlike deploy-site, whose setup-pm exports PYTHONPATH=<repo>). b4a294f9 added
+    ``import hermes_yaml`` without the sys.path.insert the sibling scripts have, so every
+    scheduled run died with ModuleNotFoundError and the stale-index watchdog reopened (#122609).
+    Regression: the script must import cleanly as a plain file, the way CI invokes it."""
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+    proc = subprocess.run([sys.executable, str(SCRIPT)], env=env,
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert "Reused plugin stars" in proc.stdout

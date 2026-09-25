@@ -726,17 +726,37 @@ def list_voices(context):
     return [{"value": v["id"], "label": v["name"]} for v in _fetch_voices(context["settings"])]
 ```
 
-The function returns a list in the same shape as `choices` and is called each
-time the Plugins tab builds the form and again when a value is saved. It runs
-only while the plugin is enabled and loaded, on a worker thread with a
-2-second deadline. If it is not called (plugin disabled), raises, times out or
-returns anything other than a non-empty list of strings / `{value, label}`
-mappings, the field falls back to the static `choices` when you declared them,
-otherwise to a free-text input; the failure is logged and never breaks the
-plugin list or the form. Saving validates against exactly what the fallback
-renders: the static values when declared, any string otherwise. Keep the
-function fast and side-effect free (cache remote lookups yourself); it receives
-the saved settings, not unsaved edits in the form.
+The function returns a list in the same shape as `choices`. A repeated value
+keeps its first entry. It runs only while the plugin is enabled and loaded, on
+a worker thread with a deadline. If it is not called (plugin disabled), raises,
+times out or returns anything other than a non-empty list of strings /
+`{value, label}` mappings, the field falls back to the static `choices` when you
+declared them, otherwise to a free-text input. The failure is logged and never
+breaks the plugin list or the form.
+
+When it is called:
+
+- **Building the Plugins tab.** Every plugin's `choices_from` fields are
+  resolved at the same time and share one 2-second budget for the whole list.
+  A result is cached per profile and field for 30 seconds, and a failure for 5
+  seconds, so reopening the tab within that window doesn't call your function
+  again. A call that finishes after the budget still fills the cache for the
+  next load.
+- **Saving.** The field being saved is resolved fresh (not from the cache), with
+  a 2-second deadline. A successful save clears that plugin's cached choices.
+
+Saving validates against exactly what the fallback renders: the static values
+when declared, any string otherwise. If the saved value is no longer offered
+(the model or voice went away), the dropdown still shows it, marked
+"(unavailable)", and saving it unchanged is allowed. Any new value must be one
+of the offered choices.
+
+Python can't stop a thread. A `choices_from` call that never returns keeps that
+field on its fallback until Hermes restarts, because the field is not called
+again while the previous call is still running. Put your own timeouts on
+network calls (for example `requests.get(url, timeout=1)`). Keep the function
+fast and free of side effects; it receives the saved settings, not unsaved
+edits in the form.
 
 ## Step 6: Test it
 

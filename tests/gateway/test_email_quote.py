@@ -260,6 +260,37 @@ class TestQuoteOriginal(unittest.TestCase):
             adapter._send_email("intruder@test.com", "Pairing code: 123456", None)
         self.assertEqual(smtp.bodies, ["Pairing code: 123456"])
 
+    def test_pair_reply_to_not_granted_sender_never_quotes(self):
+        adapter = _make_adapter(extra={"quote_original": True, "unauthorized_dm_behavior": "pair"})
+        with patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "", "EMAIL_ALLOWED_USERS": "friend@test.com"}):
+            _dispatch(adapter, _msg_data(sender="stranger@test.com"))
+        adapter.handle_message.assert_called_once()
+        with _SmtpCapture() as smtp:
+            adapter._send_email("stranger@test.com", "Pairing code: 123456", "<orig-1@test.com>")
+        self.assertEqual(smtp.bodies, ["Pairing code: 123456"])
+        self.assertEqual(adapter._original_by_msg_id, {})
+
+    def test_revoked_sender_does_not_quote_an_earlier_mail(self):
+        adapter = _make_adapter(extra={"quote_original": True, "unauthorized_dm_behavior": "decline"})
+        _dispatch(adapter, _msg_data(message_id=""))
+        with patch.dict(os.environ, {"EMAIL_ALLOW_ALL_USERS": "", "EMAIL_ALLOWED_USERS": "friend@test.com"}):
+            _dispatch(adapter, _msg_data(body="second mail", message_id=""))
+        with _SmtpCapture() as smtp:
+            adapter._send_email("user@test.com", "Access declined.", None)
+        self.assertEqual(smtp.bodies, ["Access declined."])
+
+    def test_failure_building_the_reply_releases_the_quote(self):
+        from plugins.platforms.email.adapter import EmailAdapter
+
+        adapter = _make_adapter(extra={"quote_original": True})
+        _dispatch(adapter, _msg_data())
+        with patch.object(EmailAdapter, "_new_reply", side_effect=ValueError("bad header")):
+            with self.assertRaises(ValueError):
+                adapter._send_email("user@test.com", "Answer", "<orig-1@test.com>")
+        with _SmtpCapture() as smtp:
+            adapter._send_email("user@test.com", "Answer", "<orig-1@test.com>")
+        self.assertIn("> Hello Hermes,", smtp.bodies[0])
+
     def test_lookup_is_bounded(self):
         from plugins.platforms.email.adapter import _QUOTE_LOOKUP_MAX
 
@@ -270,6 +301,17 @@ class TestQuoteOriginal(unittest.TestCase):
         self.assertEqual(len(adapter._original_by_msg_id), _QUOTE_LOOKUP_MAX)
         self.assertNotIn("<m0@test.com>", adapter._original_by_msg_id)
         self.assertIn(f"<m{_QUOTE_LOOKUP_MAX + 49}@test.com>", adapter._original_by_msg_id)
+
+    def test_sender_fallback_is_bounded(self):
+        from plugins.platforms.email.adapter import _QUOTE_LOOKUP_MAX
+
+        adapter = _make_adapter(extra={"quote_original": True})
+        adapter.handle_message = AsyncMock()
+        for i in range(_QUOTE_LOOKUP_MAX + 50):
+            asyncio.run(adapter._dispatch_message(_msg_data(message_id="", sender=f"user{i}@test.com")))
+        self.assertEqual(len(adapter._last_original_by_sender), _QUOTE_LOOKUP_MAX)
+        self.assertNotIn("user0@test.com", adapter._last_original_by_sender)
+        self.assertIn(f"user{_QUOTE_LOOKUP_MAX + 49}@test.com", adapter._last_original_by_sender)
 
 
 if __name__ == "__main__":

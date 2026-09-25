@@ -429,7 +429,7 @@ Everything connection-related lives on one settings page: **Settings → Gateway
 **Settings → Gateways → Connection mode** offers the alternatives to the local gateway:
 
 - **Remote gateway** — enter the URL of a `hermes serve` backend you run yourself and sign in. This is the mode the rest of this section walks through.
-- **Hermes Cloud** — sign in once to Hermes Cloud and pick from the agents on your account; no URL to paste. The app discovers your agents (with an organization picker if your account spans several orgs), and connecting to one switches the session over automatically. The status bar shows the cloud connection while it's active.
+- **Hermes Cloud** — sign in once to Hermes Cloud in your default browser and pick from the agents on your account; no URL to paste. If your account spans several organizations you choose one in the browser during sign-in (switching organization means signing in again), the app discovers that organization's agents, and connecting to one switches the session over automatically — see [Desktop Native Sign-In](../guides/desktop-native-signin.md#hermes-cloud). The status bar shows the cloud connection while it's active.
 
 Gateway connections are **machine-level**: the Gateways page manages which gateway backends this desktop can connect to, and profiles are discovered *from* the gateways you connect. Sessions select one gateway at a time, while the adjacent profile rail selects a profile discovered on that gateway.
 

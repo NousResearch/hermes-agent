@@ -84,7 +84,8 @@ export function useRemoteOAuth(options: RemoteOAuthOptions): RemoteOAuth {
 
       if (result.connected) {
         notify({ kind: 'success', title: g.signedIn, message: g.connectedTo(providerLabel) })
-      } else {
+      } else if (!result.cancelled) {
+        // A Deny in the browser is the user's choice: no error.
         const message = host === 'first-run' ? t.install.signInIncomplete : t.boot.failure.signInIncompleteMessage
         reportError(
           result.error ? `${message}: ${result.error}` : message,

@@ -1,5 +1,6 @@
 import { readStatusCode } from './api-transport'
-import { isGatewayAuthRejection } from './connection-config'
+import { isCloudRateLimited } from './cloud-auth-errors'
+import { isGatewayAuthRejection, withTransientRetries } from './connection-config'
 import { type NativeAccessTokenOptions, NativeAuthChangedError } from './native-access-token'
 import { shouldRotateNativeTokenAfterRejection } from './native-auth-decisions'
 
@@ -112,5 +113,27 @@ export async function mintGatewayWsTicket(
         return cookieFallback(requestWithCookie, error)
       }
     }
+  })
+}
+
+/**
+ * main.ts's ws-ticket mint: the replay-safe mint above inside the transient
+ * retry loop. Transport blips (brief host unreachable, 5xx, timeouts) retry so
+ * a 1-3s flap does not become the "couldn't start" lockout. Never retried:
+ * an auth rejection (hammers a dead session), a binding change (the caller's
+ * next connect uses the fresh binding), and a 429 (Hermes Cloud exchange rate
+ * limit / its Retry-After backoff — fail this mint, the next connect retries
+ * once the backoff has passed).
+ */
+export function mintGatewayWsTicketWithRetries(
+  baseUrl: string,
+  deps: MintGatewayWsTicketDeps,
+  headers: Record<string, string> = {},
+  retry: { sleep?: (ms: number) => Promise<unknown> } = {}
+): Promise<string> {
+  return withTransientRetries(() => mintGatewayWsTicket(baseUrl, deps, headers), {
+    ...retry,
+    isRetryable: (error: unknown) =>
+      !(error instanceof NativeAuthChangedError) && !isGatewayAuthRejection(error) && !isCloudRateLimited(error)
   })
 }

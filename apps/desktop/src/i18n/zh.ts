@@ -1455,10 +1455,7 @@ export const zh = defineLocale({
       cloudNeedsSignIn: '登录 Hermes Cloud 以发现你账户下的智能体。',
       cloudSignedInDesc: '你已登录。在下方选择一个智能体；会话会自动刷新。',
       cloudAgentsTitle: '你的智能体',
-      cloudOrgPickerTitle: '选择一个组织',
-      cloudOrgSelect: '选择',
       cloudOrgChange: '切换组织',
-      cloudOrgRole: role => `角色：${role}`,
       cloudLoadingAgents: '正在加载你的智能体…',
       cloudNoAgents: {
         before: '此账户下未找到智能体。请在',

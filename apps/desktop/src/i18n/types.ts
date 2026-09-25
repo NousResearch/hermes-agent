@@ -483,6 +483,7 @@ export interface Translations {
       signedInMessage: string
       signInIncompleteTitle: string
       signInIncompleteMessage: string
+      browserSignInIncompleteMessage: string
       signInFailed: string
       signInToRemoteGateway: string
       signInWithProvider: (provider: string) => string
@@ -1261,10 +1262,13 @@ export interface Translations {
       cloudNeedsSignIn: string
       cloudSignedInDesc: string
       cloudAgentsTitle: string
-      cloudOrgPickerTitle: string
-      cloudOrgSelect: string
       cloudOrgChange: string
-      cloudOrgRole: (role: string) => string
+      cloudBrowserPendingTitle: string
+      cloudBrowserPendingDesc: string
+      cloudCopySignInLink: string
+      cloudCancelSignIn: string
+      cloudSignInLinkCopied: string
+      cloudSignInLinkCopiedMessage: string
       cloudLoadingAgents: string
       cloudNoAgents: { before: string; linkText: string; after: string }
       cloudRefresh: string

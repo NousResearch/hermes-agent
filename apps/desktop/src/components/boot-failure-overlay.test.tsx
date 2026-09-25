@@ -8,6 +8,13 @@ import { $desktopOnboarding } from '@/store/onboarding'
 
 import { BootFailureOverlay } from './boot-failure-overlay'
 
+const { notifyMock } = vi.hoisted(() => ({ notifyMock: vi.fn() }))
+
+vi.mock('@/store/notifications', async importOriginal => ({
+  ...(await importOriginal<any>()),
+  notify: notifyMock
+}))
+
 // Remote-backend users hit a hard boot failure that isn't OAuth reauth (token
 // auth, wrong URL, unreachable host). The recovery screen must let them fix the
 // remote connection in place — the "Connection settings" action swaps the card
@@ -226,6 +233,115 @@ describe('BootFailureOverlay', () => {
       expect(cloudStatus).toHaveBeenCalledTimes(1)
       expect(cloudLogin).toHaveBeenCalledTimes(1)
       expect(nativeLogin).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  const cloudReauthConfig = {
+    ...remoteToken,
+    mode: 'cloud',
+    remoteAuthMode: 'oauth',
+    remoteOauthConnected: false,
+    remoteTokenSet: false,
+    remoteUrl: 'https://agent-1.agents.nousresearch.com'
+  }
+
+  const cloudReauthDeps = (cloud: Record<string, unknown>) => ({
+    cloud: {
+      status: vi.fn().mockResolvedValue({ portalBaseUrl: 'https://portal.nousresearch.com', signedIn: false }),
+      ...cloud
+    },
+    oauthLogoutConnectionConfig: vi.fn().mockResolvedValue({ ok: true, connected: false }),
+    probeConnectionConfig: vi.fn().mockResolvedValue({ providers: [{ id: 'nous', type: 'oauth' }] })
+  })
+
+  it('a denied or cancelled cloud browser sign-in is quiet: no warning toast, no agent sign-in', async () => {
+    const cloudAgentSignIn = vi.fn()
+
+    const restore = stubDesktop(
+      cloudReauthConfig,
+      cloudReauthDeps({
+        login: vi.fn().mockResolvedValue({ ok: false, signedIn: false, cancelled: true }),
+        agentSignIn: cloudAgentSignIn
+      })
+    )
+
+    try {
+      notifyMock.mockClear()
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
+
+      await waitFor(() => expect(screen.getByRole('button', { name: /sign in/i }).hasAttribute('disabled')).toBe(false))
+      expect(notifyMock).not.toHaveBeenCalled()
+      expect(cloudAgentSignIn).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it('a cloud browser sign-in that did not complete gets browser copy, not "login window closed"', async () => {
+    const restore = stubDesktop(
+      cloudReauthConfig,
+      cloudReauthDeps({ login: vi.fn().mockResolvedValue({ ok: false, signedIn: false }), agentSignIn: vi.fn() })
+    )
+
+    try {
+      notifyMock.mockClear()
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
+
+      await waitFor(() =>
+        expect(notifyMock).toHaveBeenCalledWith(
+          expect.objectContaining({ kind: 'warning', message: 'Sign-in was not completed in the browser.' })
+        )
+      )
+      expect(notifyMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'The login window closed before authentication finished.' })
+      )
+    } finally {
+      restore()
+    }
+  })
+
+  it('while the cloud browser sign-in is pending, offers Copy sign-in link (once a URL exists) and Cancel sign-in', async () => {
+    let finishLogin!: (value: unknown) => void
+    const url = 'https://portal.nousresearch.com/oauth/authorize?client_id=hermes-desktop'
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+
+    const cancelLogin = vi.fn(async () => {
+      finishLogin({ ok: false, signedIn: false, cancelled: true })
+
+      return { cancelled: true }
+    })
+
+    const restore = stubDesktop(
+      cloudReauthConfig,
+      cloudReauthDeps({
+        login: vi.fn(() => new Promise(resolve => (finishLogin = resolve))),
+        cancelLogin,
+        loginUrl: vi.fn().mockResolvedValue({ url }),
+        agentSignIn: vi.fn()
+      })
+    )
+
+    try {
+      notifyMock.mockClear()
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
+
+      const status = await screen.findByRole('status')
+      const copyLink = await screen.findByRole('button', { name: 'Copy sign-in link' })
+      await waitFor(() => expect(copyLink.hasAttribute('disabled')).toBe(false))
+      fireEvent.click(copyLink)
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith(url))
+      expect(status.getAttribute('aria-live')).toBe('polite')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel sign-in' }))
+      await waitFor(() => expect(cancelLogin).toHaveBeenCalledTimes(1))
+      await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel sign-in' })).toBeNull())
+      expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'warning' }))
     } finally {
       restore()
     }

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { Dialog as DialogPrimitive } from 'radix-ui'
 import { type ComponentProps, lazy, type ReactNode, Suspense, useEffect, useState } from 'react'
 
+import { cancelCloudSignIn, copyCloudSignInLink, useCloudSignInLink } from '@/app/settings/cloud-sign-in-link'
 import { Button } from '@/components/ui/button'
 import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import { ErrorIcon } from '@/components/ui/error-state'
@@ -92,6 +93,9 @@ export function BootFailureOverlay() {
   // to the full Settings page (keeps the user on the recovery surface, no z-index
   // juggling, no second connection form to maintain).
   const [view, setView] = useState<RecoveryView>('recovery')
+  // A Hermes Cloud browser sign-in started from this card is pending.
+  const [cloudBrowserPending, setCloudBrowserPending] = useState(false)
+  const cloudSignInUrl = useCloudSignInLink(cloudBrowserPending)
 
   const visible = Boolean(boot.error) && !boot.running
   // While first-run onboarding owns the picker/flow we let it surface its own
@@ -243,8 +247,9 @@ export function BootFailureOverlay() {
   }
 
   // Clear this gateway's stale auth first, then re-establish it through the
-  // connection's owning login flow. Hermes Cloud must reuse its portal session
-  // and per-agent cascade; generic remote gateways use native/embedded OAuth.
+  // connection's owning login flow. Hermes Cloud reuses its desktop session
+  // (browser sign-in only when absent) and the per-agent token exchange;
+  // generic remote gateways use native/embedded OAuth.
   // Reload after success so boot mints a fresh ticket against the new session.
   // The cloud ladder is shared with Settings (reestablishCloudAgentSession) so
   // the boot recovery and the in-Settings recovery cannot drift apart.
@@ -265,15 +270,23 @@ export function BootFailureOverlay() {
       let error: string | undefined
 
       if (connectionConfig?.mode === 'cloud' && desktop?.cloud) {
-        // The ladder drops this gateway's lapsed cookies itself — logging out
+        // The ladder drops this gateway's lapsed bearer itself — logging out
         // here as well would fire the IPC twice for the cloud path.
-        const outcome = await reestablishCloudAgentSession(desktop, remoteReauth.url)
+        const outcome = await reestablishCloudAgentSession(desktop, remoteReauth.url, {
+          onBrowserSignIn: setCloudBrowserPending
+        })
+
+        // A Deny in the browser or Cancel sign-in is the user's choice: quiet.
+        if (outcome === 'cancelled') {
+          return
+        }
 
         if (outcome === 'portal-incomplete') {
+          // The Cloud sign-in happens in the default browser, not a window.
           notify({
             kind: 'warning',
             title: t.boot.failure.signInIncompleteTitle,
-            message: t.boot.failure.signInIncompleteMessage
+            message: t.boot.failure.browserSignInIncompleteMessage
           })
 
           return
@@ -284,6 +297,12 @@ export function BootFailureOverlay() {
         await desktop?.oauthLogoutConnectionConfig?.(remoteReauth.url)
 
         const result: DesktopOauthLoginResult | undefined = await desktop?.oauthLoginConnectionConfig(remoteReauth.url)
+
+        // A Deny in the browser is the user's choice: quiet.
+        if (result?.cancelled) {
+          return
+        }
+
         connected = result?.connected === true
         error = result?.error
       }
@@ -520,6 +539,27 @@ export function BootFailureOverlay() {
             </div>
             {hint ? <p className="text-xs text-muted-foreground">{hint}</p> : null}
           </div>
+
+          {cloudBrowserPending ? (
+            <div
+              aria-live="polite"
+              className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground"
+              role="status"
+            >
+              <span className="mr-auto">{t.settings.gateway.cloudBrowserPendingTitle}</span>
+              <Button
+                disabled={!cloudSignInUrl}
+                onClick={() => cloudSignInUrl && void copyCloudSignInLink(cloudSignInUrl, t.settings.gateway)}
+                size="sm"
+                variant="text"
+              >
+                {t.settings.gateway.cloudCopySignInLink}
+              </Button>
+              <Button onClick={cancelCloudSignIn} size="sm" variant="outline">
+                {t.settings.gateway.cloudCancelSignIn}
+              </Button>
+            </div>
+          ) : null}
 
           {logs.length > 0 ? (
             <div className="grid gap-2">

@@ -7,10 +7,18 @@ import { deferred } from '@/test/deferred'
 // Collect the component graph before the behavioral test deadline starts.
 import { GatewaySettings } from './gateway-settings'
 
-const { registry, activeId, selectConnection } = vi.hoisted(() => ({
+const { registry, activeId, selectConnection, notifyMock, notifyErrorMock } = vi.hoisted(() => ({
   registry: { value: null as any },
   activeId: { value: 'saved-b' },
-  selectConnection: vi.fn().mockResolvedValue(undefined)
+  selectConnection: vi.fn().mockResolvedValue(undefined),
+  notifyMock: vi.fn(),
+  notifyErrorMock: vi.fn()
+}))
+
+vi.mock('@/store/notifications', async importOriginal => ({
+  ...(await importOriginal<any>()),
+  notify: notifyMock,
+  notifyError: notifyErrorMock
 }))
 
 vi.mock('@nanostores/react', () => ({ useStore: (store: any) => store.value }))
@@ -241,9 +249,10 @@ describe('GatewaySettings', () => {
       calls.push('save')
     })
 
+    // The session is now pinned to the new team (chosen in the browser).
     const discover = vi.fn().mockResolvedValue({
-      needsOrgSelection: true,
-      orgs: [{ id: 'new-team', name: 'New team', role: 'OWNER' }]
+      agents: [{ id: 'moved', name: 'Moved agent', dashboardUrl: saved.url }],
+      org: { id: 'new-team' }
     })
 
     Object.assign(window.hermesDesktop, {
@@ -252,13 +261,8 @@ describe('GatewaySettings', () => {
       cloud: { status: vi.fn().mockResolvedValue({ signedIn: true }), discover, agentSignIn }
     })
     render(<GatewaySettings embedded />)
-    await screen.findByText('New team')
-    discover.mockResolvedValue({
-      agents: [{ id: 'moved', name: 'Moved agent', dashboardUrl: saved.url }],
-      org: { id: 'new-team' }
-    })
-    fireEvent.click(screen.getByRole('button', { name: 'Select', exact: true }))
     await screen.findByRole('button', { name: 'Use gateway' })
+    expect(screen.queryByText('Choose an organization')).toBeNull()
     expect(save).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Use gateway' }))
     await waitFor(() => expect(selectConnection).toHaveBeenCalledWith(saved.id))
@@ -328,8 +332,209 @@ describe('GatewaySettings', () => {
         cloudName: 'Research Bot'
       })
     )
-    expect(agentSignIn).toHaveBeenCalledExactlyOnceWith('https://new-a.example')
+    // The discovered agent id rides along so main can exchange for it directly.
+    expect(agentSignIn).toHaveBeenCalledExactlyOnceWith('https://new-a.example', 'new-a')
     expect(applyConnectionConfig).toHaveBeenCalledTimes(1)
+  })
+  it('"Change org" re-runs the browser sign-in (the session is pinned to one org) and re-discovers', async () => {
+    registry.value = null
+    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud' })
+    const login = vi.fn().mockResolvedValue({ ok: true, signedIn: true })
+    const logout = vi.fn()
+
+    const discover = vi.fn().mockResolvedValue({
+      agents: [{ id: 'a1', name: 'Team A agent', dashboardUrl: 'https://a1.example' }],
+      org: { id: 'org-a' }
+    })
+
+    Object.assign(window.hermesDesktop, {
+      cloud: { status: vi.fn().mockResolvedValue({ signedIn: true }), login, logout, discover, agentSignIn: vi.fn() }
+    })
+    render(<GatewaySettings embedded />)
+    await screen.findByText('Team A agent')
+    discover.mockResolvedValue({
+      agents: [{ id: 'b1', name: 'Team B agent', dashboardUrl: 'https://b1.example' }],
+      org: { id: 'org-b' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Change org' }))
+    await screen.findByText('Team B agent')
+    expect(login).toHaveBeenCalledTimes(1)
+    // The old session is replaced by the new sign-in, never torn down first.
+    expect(logout).not.toHaveBeenCalled()
+    // Discovery never sends a team: the bearer pins it.
+    expect(discover.mock.lastCall?.[0]).toBeUndefined()
+  })
+  it('"Change org" keeps the current org and agents while the browser is open, and can be cancelled', async () => {
+    registry.value = null
+    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud' })
+    let finishLogin!: (value: any) => void
+    const login = vi.fn(() => new Promise(resolve => (finishLogin = resolve)))
+
+    const cancelLogin = vi.fn(async () => {
+      finishLogin({ ok: false, signedIn: true, cancelled: true })
+
+      return { cancelled: true }
+    })
+
+    const discover = vi.fn().mockResolvedValue({
+      agents: [{ id: 'a1', name: 'Team A agent', dashboardUrl: 'https://a1.example' }],
+      org: { id: 'org-a' }
+    })
+
+    Object.assign(window.hermesDesktop, {
+      cloud: {
+        status: vi.fn().mockResolvedValue({ signedIn: true }),
+        login,
+        cancelLogin,
+        loginUrl: vi.fn().mockResolvedValue({ url: null }),
+        logout: vi.fn(),
+        discover,
+        agentSignIn: vi.fn()
+      }
+    })
+    render(<GatewaySettings embedded />)
+    await screen.findByText('Team A agent')
+    fireEvent.click(screen.getByRole('button', { name: 'Change org' }))
+
+    // The browser flow is pending: nothing is torn down meanwhile.
+    const cancel = await screen.findByRole('button', { name: 'Cancel sign-in' })
+    expect(screen.getByText('Team A agent')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Change org' })).toBeTruthy()
+
+    fireEvent.click(cancel)
+    await waitFor(() => expect(cancelLogin).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Cancel sign-in' })).toBeNull())
+    // Discovery re-runs after the flow ends, and the list stays populated.
+    await waitFor(() => expect(discover).toHaveBeenCalledTimes(2))
+    expect(screen.getByText('Team A agent')).toBeTruthy()
+    expect(notifyErrorMock).not.toHaveBeenCalled()
+  })
+  it('a failed or timed-out "Change org" sign-in leaves the agent list usable', async () => {
+    registry.value = null
+    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud' })
+    const login = vi.fn().mockRejectedValue(new Error('Native sign-in timed out.'))
+
+    const discover = vi.fn().mockResolvedValue({
+      agents: [{ id: 'a1', name: 'Team A agent', dashboardUrl: 'https://a1.example' }],
+      org: { id: 'org-a' }
+    })
+
+    Object.assign(window.hermesDesktop, {
+      cloud: { status: vi.fn().mockResolvedValue({ signedIn: true }), login, discover, agentSignIn: vi.fn() }
+    })
+    render(<GatewaySettings embedded />)
+    await screen.findByText('Team A agent')
+    fireEvent.click(screen.getByRole('button', { name: 'Change org' }))
+    await waitFor(() => expect(notifyErrorMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(discover).toHaveBeenCalledTimes(2))
+    expect(screen.getByText('Team A agent')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Cancel sign-in' })).toBeNull()
+  })
+  it('T3/U1/U2: during "Change org" the org switch is disabled, Sign out stays idle, and focus moves to Cancel', async () => {
+    registry.value = null
+    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud' })
+
+    Object.assign(window.hermesDesktop, {
+      cloud: {
+        status: vi.fn().mockResolvedValue({ signedIn: true }),
+        login: vi.fn(() => new Promise(() => undefined)),
+        cancelLogin: vi.fn(),
+        loginUrl: vi.fn().mockResolvedValue({ url: null }),
+        logout: vi.fn(),
+        discover: vi.fn().mockResolvedValue({
+          agents: [{ id: 'a1', name: 'Team A agent', dashboardUrl: 'https://a1.example' }],
+          org: { id: 'org-a' }
+        }),
+        agentSignIn: vi.fn()
+      }
+    })
+    render(<GatewaySettings embedded />)
+    await screen.findByText('Team A agent')
+    fireEvent.click(screen.getByRole('button', { name: 'Change org' }))
+
+    const cancel = await screen.findByRole('button', { name: 'Cancel sign-in' })
+    // T3: a second "Change org" cannot start while the browser flow is open.
+    expect((screen.getByRole('button', { name: 'Change org' }) as HTMLButtonElement).disabled).toBe(true)
+    // U1: this is not a sign-out; the Sign out control is not busy or disabled.
+    expect((screen.getByRole('button', { name: 'Sign out' }) as HTMLButtonElement).disabled).toBe(false)
+    // U2: the pending row is announced, the link is not copyable yet, and
+    // keyboard focus lands on the way out.
+    const status = screen.getByRole('status')
+    expect(status.getAttribute('aria-live')).toBe('polite')
+    expect((within(status).getByRole('button', { name: 'Copy sign-in link' }) as HTMLButtonElement).disabled).toBe(true)
+    await waitFor(() => expect(globalThis.document.activeElement).toBe(cancel))
+  })
+  it('U1: signing out during a pending "Change org" cancels that browser flow and clears the pending row', async () => {
+    registry.value = null
+    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud' })
+    const cancelLogin = vi.fn().mockResolvedValue({ cancelled: true })
+
+    Object.assign(window.hermesDesktop, {
+      cloud: {
+        status: vi.fn().mockResolvedValue({ signedIn: true }),
+        login: vi.fn(() => new Promise(() => undefined)),
+        cancelLogin,
+        loginUrl: vi.fn().mockResolvedValue({ url: null }),
+        logout: vi.fn().mockResolvedValue({ ok: true, signedIn: false }),
+        discover: vi.fn().mockResolvedValue({
+          agents: [{ id: 'a1', name: 'Team A agent', dashboardUrl: 'https://a1.example' }],
+          org: { id: 'org-a' }
+        }),
+        agentSignIn: vi.fn()
+      }
+    })
+    render(<GatewaySettings embedded />)
+    await screen.findByText('Team A agent')
+    fireEvent.click(screen.getByRole('button', { name: 'Change org' }))
+    await screen.findByRole('button', { name: 'Cancel sign-in' })
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }))
+    await waitFor(() => expect(cancelLogin).toHaveBeenCalledTimes(1))
+    expect(await screen.findByRole('button', { name: 'Sign in to Hermes Cloud' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Cancel sign-in' })).toBeNull()
+  })
+  it('6: a needsCloudLogin rejection that crossed IPC (plain Error, wrapped message) flips the panel to signed out', async () => {
+    registry.value = null
+    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud' })
+
+    const ipcError = new Error(
+      "Error invoking remote method 'hermes:cloud:discover': Error: Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again."
+    )
+
+    Object.assign(window.hermesDesktop, {
+      cloud: {
+        status: vi.fn().mockResolvedValue({ signedIn: true }),
+        discover: vi.fn().mockRejectedValue(ipcError),
+        agentSignIn: vi.fn()
+      }
+    })
+    render(<GatewaySettings embedded />)
+    expect(await screen.findByRole('button', { name: 'Sign in to Hermes Cloud' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Sign out' })).toBeNull()
+  })
+  it('offers to copy the pending sign-in link when the browser did not open', async () => {
+    registry.value = null
+    getConnectionConfig.mockResolvedValue({ ...localConnection, mode: 'cloud' })
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    const url = 'https://portal.example/oauth/authorize?client_id=hermes-desktop'
+
+    Object.assign(window.hermesDesktop, {
+      cloud: {
+        status: vi.fn().mockResolvedValue({ signedIn: false }),
+        login: vi.fn(() => new Promise(() => undefined)),
+        cancelLogin: vi.fn(),
+        loginUrl: vi.fn().mockResolvedValue({ url }),
+        discover: vi.fn(),
+        agentSignIn: vi.fn()
+      }
+    })
+    render(<GatewaySettings embedded />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Sign in to Hermes Cloud' }))
+    const copyLink = await screen.findByRole('button', { name: 'Copy sign-in link' })
+    // Enabled once main reports the authorize URL.
+    await waitFor(() => expect((copyLink as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(copyLink)
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(url))
   })
   // #114856: an env-pinned remote (HERMES_DESKTOP_REMOTE_URL) whose session
   // lapsed could not be re-authenticated from Settings → Gateway at all — the
@@ -374,6 +579,24 @@ describe('GatewaySettings', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Sign in with Nous Research' }))
 
       await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith(envUrl))
+    })
+
+    it('a Deny in the browser is a quiet "not signed in", not a warning', async () => {
+      const oauthLoginConnectionConfig = vi.fn().mockResolvedValue({ ok: false, connected: false, cancelled: true })
+
+      getConnectionConfig.mockResolvedValue({ ...envRemote, remoteOauthConnected: false })
+      saveConnectionConfig.mockResolvedValue({ ...envRemote, remoteAuthMode: 'oauth' })
+      Object.assign(window.hermesDesktop, {
+        oauthLoginConnectionConfig,
+        probeConnectionConfig: vi.fn().mockResolvedValue(oauthProbe)
+      })
+
+      render(<GatewaySettings embedded />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Sign in with Nous Research' }))
+      await waitFor(() => expect(oauthLoginConnectionConfig).toHaveBeenCalledWith(envUrl))
+      await new Promise(r => setTimeout(r, 10))
+      expect(notifyMock).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'warning' }))
+      expect(notifyErrorMock).not.toHaveBeenCalled()
     })
 
     it('leaves a saved (non-env) remote session editable and unchanged', async () => {

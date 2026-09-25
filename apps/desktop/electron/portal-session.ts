@@ -1,262 +1,317 @@
-import type { BrowserWindow, BrowserWindowConstructorOptions, Session } from 'electron'
+/**
+ * portal-session.ts
+ *
+ * Hermes Desktop's own session with the Nous portal, as the public OAuth
+ * client `hermes-desktop` (see portal-oauth.ts for the wire shapes).
+ *
+ *   - Sign-in opens the user's DEFAULT BROWSER (RFC 8252 loopback + PKCE);
+ *     the portal handles login, team choice and consent there. No embedded
+ *     window and no partition cookies are involved.
+ *   - The token set is persisted through the same encrypted native token
+ *     store the gateway flow uses (keyed by the portal base URL), so it obeys
+ *     the same keychain-optional storage policy and survives restarts.
+ *   - Access tokens renew through the shared native access-token coordinator:
+ *     concurrent callers share one refresh flight, the rotated refresh token
+ *     is persisted BEFORE the new access token is handed out, and a rejected
+ *     refresh (400 invalid_grant) clears the store — i.e. signed out.
+ *   - exchangeForAgent() turns the desktop token into a bearer for one Hermes
+ *     Cloud agent (RFC 8693, §5). It issues no refresh token; callers renew by
+ *     exchanging again.
+ *
+ * All I/O is injected so the whole lifecycle unit-tests without Electron.
+ */
 
-import { cookiesHavePortalSession, portalAccessCookies, type PortalCookie } from './portal-cookies'
-import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
+import type http from 'node:http'
 
-interface PortalSessionDependencies {
-  isReady: () => boolean
-  getOauthSession: () => Session | null
+import { readStatusCode } from './api-transport'
+import {
+  CLOUD_NOT_SIGNED_IN_MESSAGE,
+  CLOUD_SESSION_EXPIRED_MESSAGE,
+  cloudAgentAccessLostError,
+  cloudExchangeRateLimitedError,
+  cloudLoginRequiredError
+} from './cloud-auth-errors'
+import {
+  createNativeAccessTokenCoordinator,
+  type NativeAccessTokenOptions,
+  NativeAuthChangedError
+} from './native-access-token'
+import { NativeLoginCancelledError, type NativeTokenSet, tokenNeedsRefresh } from './native-oauth'
+import { runLoopbackAuthorization } from './native-oauth-login'
+import {
+  agentTokenExchangeGrant,
+  authorizationCodeGrant,
+  buildPortalAuthorizeUrl,
+  isPortalRateLimited,
+  oauthErrorCode,
+  parseAgentTokenResponse,
+  parsePortalTokenResponse,
+  portalTokenOrgId,
+  portalTokenUrl,
+  refreshTokenGrant,
+  retryAfterSeconds
+} from './portal-oauth'
+
+const TOKEN_REQUEST_TIMEOUT_MS = 15_000
+
+export interface PortalSessionDependencies {
   resolvePortalBaseUrl: () => string
-  warmOauthCookieStore: () => Promise<unknown>
-  createWindow: (options: BrowserWindowConstructorOptions) => BrowserWindow
-  rememberLog: (message: string) => void
+  /** Encrypted native token store, keyed here by the portal base URL. */
+  loadTokens: (key: string) => NativeTokenSet | null
+  storeTokens: (key: string, tokens: NativeTokenSet) => void
+  clearTokens: (key: string) => void
+  /** Cookieless JSON POST; throws an httpStatusError on >= 400. */
+  postJson: (url: string, body: unknown, opts?: { timeoutMs?: number }) => Promise<any>
+  /** shell.openExternal — the user's default browser. */
+  openExternal: (url: string) => Promise<void>
+  createServer?: typeof http.createServer
+  loginTimeoutMs?: number
+  nowSeconds?: () => number
+  /**
+   * Monotonic seconds for the §5 rate-limit backoff, so a wall-clock
+   * rollback cannot stretch it. Defaults to `nowSeconds` when that is
+   * injected (tests), else `performance.now()`.
+   */
+  monotonicSeconds?: () => number
+  rememberLog?: (message: string) => void
+  /**
+   * Every successful sign-in reports the org the new desktop token is pinned
+   * to (its `org_id` claim, read for this comparison only; null when absent).
+   * The agent registry compares it with the org it was populated under — so
+   * an org switch is detected even across a sign-out, when no previous token
+   * is left to compare against.
+   */
+  onSignedIn?: (orgId: null | string) => void
 }
 
-interface CookieWindowOptions {
-  kind: string
-  title: string
-  show: boolean
-  pollMs: number
-  deadlineMs?: number
+export interface PortalLoginResult {
+  signedIn: boolean
+  cancelled?: true
 }
 
-type CookieWindowOutcome = 'landed' | 'closed' | 'timeout' | Error
+// §3 failures that mean the refresh token is dead (revoked, reused, expired,
+// or the client itself was refused). Anything else — network, 5xx — keeps the
+// token for the next attempt.
+function isRefreshRejection(error: unknown): boolean {
+  const status = readStatusCode(error)
+  const code = oauthErrorCode(error)
 
-// Portal credentials belong to NAS, independently of the selected gateway.
-// Read the jar on every operation so provider changes never latch in Desktop.
-export function createPortalSession({
-  isReady,
-  getOauthSession,
-  resolvePortalBaseUrl,
-  warmOauthCookieStore,
-  createWindow,
-  rememberLog
-}: PortalSessionDependencies) {
-  // One reader for every portal-cookie question so the failure rungs cannot
-  // drift between callers: URL-scoped first, host-scoped when Chromium rejects
-  // the URL form, empty when the jar is unreadable.
-  async function readPortalCookies() {
-    const sess = getOauthSession()
+  return status === 401 || (status === 400 && (code === 'invalid_grant' || code === 'unauthorized_client'))
+}
 
-    if (!sess) {
-      return []
+export function createPortalSession(deps: PortalSessionDependencies) {
+  const nowSeconds = () => deps.nowSeconds?.() ?? Math.floor(Date.now() / 1_000)
+  const monotonicSeconds = deps.monotonicSeconds ?? (deps.nowSeconds ? nowSeconds : () => performance.now() / 1_000)
+  const portal = () => deps.resolvePortalBaseUrl()
+  const log = deps.rememberLog ?? (() => undefined)
+
+  const coordinator = createNativeAccessTokenCoordinator({
+    clearTokens: deps.clearTokens,
+    isRefreshAuthRejection: isRefreshRejection,
+    loadTokens: deps.loadTokens,
+    normalizeBaseUrl: url => String(url).trim().replace(/\/+$/, ''),
+    nowSeconds,
+    refreshTokens: async (portalBaseUrl, tokens) =>
+      parsePortalTokenResponse(
+        await deps.postJson(portalTokenUrl(portalBaseUrl), refreshTokenGrant(tokens.refreshToken), {
+          timeoutMs: TOKEN_REQUEST_TIMEOUT_MS
+        }),
+        nowSeconds()
+      ),
+    storeTokens: deps.storeTokens,
+    tokenNeedsRefresh
+  })
+
+  /** A refresh token (or a still-unexpired access token) is a live session. */
+  function hasLivePortalSession(): boolean {
+    const tokens = deps.loadTokens(portal())
+
+    return Boolean(tokens && (tokens.refreshToken || !tokenNeedsRefresh(tokens, nowSeconds(), 0)))
+  }
+
+  /** Current desktop access token, refreshed when near expiry; null = signed out. */
+  function getPortalAccessToken(options: NativeAccessTokenOptions = {}): Promise<null | string> {
+    return coordinator.ensure(portal(), options)
+  }
+
+  // The newest pending browser flow: its cancel handle and the authorize URL
+  // (for the "browser didn't open? copy the link" fallback).
+  let pending: null | { controller: AbortController; authorizeUrl: null | string } = null
+
+  /** Abort the pending browser sign-in; it resolves as a clean cancel. */
+  function cancelLogin(): boolean {
+    if (!pending) {
+      return false
     }
 
-    const portalBaseUrl = resolvePortalBaseUrl()
+    pending.controller.abort()
+
+    return true
+  }
+
+  function pendingAuthorizeUrl(): null | string {
+    return pending?.authorizeUrl ?? null
+  }
+
+  async function login(): Promise<PortalLoginResult> {
+    const portalBaseUrl = portal()
+    const isCurrent = coordinator.beginLogin(portalBaseUrl)
+    const flow = { controller: new AbortController(), authorizeUrl: null as null | string }
+
+    // A newer sign-in supersedes the pending one: close its loopback listener
+    // now (it resolves as a clean cancel) instead of leaving it open until
+    // its timeout with no way left to cancel it.
+    pending?.controller.abort()
+    pending = flow
+
+    let tokens: NativeTokenSet
 
     try {
-      return await sess.cookies.get({ url: portalBaseUrl })
-    } catch {
-      try {
-        return await sess.cookies.get({ domain: new URL(portalBaseUrl).hostname })
-      } catch {
-        return []
-      }
-    }
-  }
-
-  // A persisted Chromium jar hydrates lazily; warm and retry before reporting
-  // signed-out on a cold start. Both access and refresh credentials count here.
-  async function hasLivePortalSession() {
-    if (!getOauthSession()) {
-      return false
-    }
-
-    const readPortal = async () => cookiesHavePortalSession(await readPortalCookies())
-
-    if (await readPortal()) {
-      return true
-    }
-
-    await warmOauthCookieStore()
-
-    for (const delayMs of [30, 60, 90]) {
-      if (await readPortal()) {
-        return true
-      }
-
-      await new Promise(resolve => setTimeout(resolve, delayMs))
-    }
-
-    return readPortal()
-  }
-
-  async function readAccessCookies() {
-    return portalAccessCookies(await readPortalCookies())
-  }
-
-  async function hasPortalAccessToken() {
-    return (await readAccessCookies()).length > 0
-  }
-
-  // A portal window has done its job only when the jar holds an access cookie
-  // it did not hold when the window opened. Presence alone is not enough: a
-  // token the server already rejected can sit unexpired in Chromium's jar, and
-  // trusting it would close the login window before the user signs in, or
-  // report a renewal that never happened.
-  async function hasNewAccessCookie(previous: PortalCookie[]) {
-    const access = await readAccessCookies()
-
-    return access.some(cookie => !previous.some(old => old.name === cookie.name && old.value === cookie.value))
-  }
-
-  // The portal owns provider selection, provisioning and refresh redirects;
-  // Desktop only watches the jar for a new access cookie.
-  function driveCookieWindow(sess: Session, previous: PortalCookie[], options: CookieWindowOptions) {
-    const portalBaseUrl = resolvePortalBaseUrl()
-
-    return new Promise<CookieWindowOutcome>(resolve => {
-      let settled = false
-      let win: BrowserWindow | null = null
-      let pollTimer: ReturnType<typeof setInterval> | null = null
-      let deadlineTimer: ReturnType<typeof setTimeout> | null = null
-
-      const finish = (outcome: CookieWindowOutcome) => {
-        if (settled) {
-          return
-        }
-
-        settled = true
-
-        if (pollTimer) {
-          clearInterval(pollTimer)
-        }
-
-        if (deadlineTimer) {
-          clearTimeout(deadlineTimer)
-        }
-
-        // Settle first: a destroy() that throws must not leave the caller hanging.
-        resolve(outcome)
-
-        if (win && !win.isDestroyed()) {
-          win.destroy()
-        }
-      }
-
-      const checkCookie = async () => {
-        if (!settled && (await hasNewAccessCookie(previous))) {
-          finish('landed')
-        }
-      }
-
-      try {
-        win = createWindow({
-          width: 520,
-          height: 720,
-          show: options.show,
-          title: options.title,
-          autoHideMenuBar: true,
-          webPreferences: {
-            contextIsolation: true,
-            nodeIntegration: false,
-            sandbox: true,
-            session: sess,
-            webSecurity: true
+      tokens = await runLoopbackAuthorization(
+        {
+          openExternal: deps.openExternal,
+          createServer: deps.createServer,
+          timeoutMs: deps.loginTimeoutMs,
+          rememberLog: deps.rememberLog,
+          signal: flow.controller.signal,
+          onAuthorizeUrl: url => {
+            flow.authorizeUrl = url
           }
-        })
+        },
+        {
+          buildAuthorizeUrl: params => buildPortalAuthorizeUrl(portalBaseUrl, params),
+          redeem: async ({ code, verifier, redirectUri }) =>
+            parsePortalTokenResponse(
+              await deps.postJson(
+                portalTokenUrl(portalBaseUrl),
+                authorizationCodeGrant({ code, codeVerifier: verifier, redirectUri }),
+                { timeoutMs: TOKEN_REQUEST_TIMEOUT_MS }
+              ),
+              nowSeconds()
+            )
+        }
+      )
+    } catch (error) {
+      if (error instanceof NativeLoginCancelledError) {
+        log('[cloud] Hermes Cloud sign-in was cancelled')
+
+        // A cancel changes nothing: an existing session stays signed in.
+        return { signedIn: hasLivePortalSession(), cancelled: true }
+      }
+
+      throw error
+    } finally {
+      if (pending === flow) {
+        pending = null
+      }
+    }
+
+    // A newer sign-in (or a sign-out) started while this browser flow was
+    // open: never let the older one overwrite it.
+    if (!isCurrent()) {
+      throw new NativeAuthChangedError()
+    }
+
+    coordinator.storeTokens(portalBaseUrl, tokens)
+    log('[cloud] signed in to Hermes Cloud')
+    deps.onSignedIn?.(portalTokenOrgId(tokens.accessToken))
+
+    return { signedIn: true }
+  }
+
+  function logout(): void {
+    coordinator.clearTokens(portal())
+  }
+
+  async function postExchange(subjectToken: string, agentId: string): Promise<NativeTokenSet> {
+    return parseAgentTokenResponse(
+      await deps.postJson(portalTokenUrl(portal()), agentTokenExchangeGrant({ subjectToken, agentId }), {
+        timeoutMs: TOKEN_REQUEST_TIMEOUT_MS
+      }),
+      agentId,
+      nowSeconds()
+    )
+  }
+
+  // §5 is rate limited per desktop session: after a 429 no exchange (for any
+  // agent) is sent before this time (monotonic seconds).
+  let exchangeNotBefore = 0
+
+  /**
+   * §5: mint a bearer for one agent. `invalid_grant` is ambiguous (a stale
+   * subject token OR a failed access gate), so it earns exactly ONE forced
+   * portal refresh + retry; if it survives a fresh subject token the user
+   * lost access. `invalid_target` is access lost outright. A 429 honours
+   * Retry-After session-wide and is transient — never an auth verdict.
+   * Never loops.
+   */
+  async function exchangeForAgent(agentId: string): Promise<NativeTokenSet> {
+    const backoff = Math.ceil(exchangeNotBefore - monotonicSeconds())
+
+    if (backoff > 0) {
+      throw cloudExchangeRateLimitedError(backoff)
+    }
+
+    let subject = await getPortalAccessToken()
+
+    if (!subject) {
+      throw cloudLoginRequiredError(CLOUD_NOT_SIGNED_IN_MESSAGE)
+    }
+
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await postExchange(subject, agentId)
       } catch (error) {
-        finish(error instanceof Error ? error : new Error(String(error)))
+        const code = oauthErrorCode(error)
+        const status = readStatusCode(error)
 
-        return
+        if (isPortalRateLimited(error)) {
+          const wait = retryAfterSeconds(error, nowSeconds() * 1_000)
+
+          exchangeNotBefore = monotonicSeconds() + wait
+          log(`[cloud] Hermes Cloud token exchange rate limited; backing off ${wait}s`)
+
+          throw cloudExchangeRateLimitedError(wait, error)
+        }
+
+        if (code === 'invalid_target') {
+          throw cloudAgentAccessLostError(error)
+        }
+
+        const subjectMaybeStale = code === 'invalid_grant' || status === 401
+
+        if (subjectMaybeStale && attempt === 0) {
+          const rotated = await getPortalAccessToken({ forceRefresh: true, rejectedAccessToken: subject })
+
+          if (!rotated) {
+            throw cloudLoginRequiredError(CLOUD_SESSION_EXPIRED_MESSAGE, error)
+          }
+
+          if (rotated !== subject) {
+            subject = rotated
+
+            continue
+          }
+        }
+
+        if (subjectMaybeStale || code === 'unauthorized_client') {
+          throw cloudAgentAccessLostError(error)
+        }
+
+        throw error
       }
-
-      win.webContents.on('did-navigate', () => void checkCookie())
-      win.webContents.on('did-redirect-navigation', () => void checkCookie())
-      win.webContents.on('did-frame-navigate', () => void checkCookie())
-      // Log-only lifecycle diagnostics: a crashed portal renderer never settles
-      // the promise, so the failure would otherwise leave no trace in
-      // desktop.log (#81290 follow-up).
-      installWindowRendererLifecycle(win, { kind: options.kind, callbacks: { log: rememberLog } })
-      pollTimer = setInterval(() => void checkCookie(), options.pollMs)
-
-      if (options.deadlineMs !== undefined) {
-        deadlineTimer = setTimeout(() => finish('timeout'), options.deadlineMs)
-      }
-
-      win.on('closed', () => finish('closed'))
-      win.loadURL(portalBaseUrl).catch(error => finish(error instanceof Error ? error : new Error(String(error))))
-    })
-  }
-
-  // Loading the portal lets NAS choose its own refresher: Privy client renewal,
-  // or the NAS server-side refresh redirect. Never pin a provider in Desktop.
-  // Concurrent callers share one hidden window so they cannot race rotating
-  // refresh tokens; a `force` caller (discovery just got a 401 with this very
-  // cookie) is never satisfied by a short-circuit, only by a real renewal.
-  let portalAccessRenewal: Promise<boolean> | null = null
-
-  async function renewPortalAccessSilently({ force = false }: { force?: boolean } = {}) {
-    const sess = getOauthSession()
-
-    if (!isReady() || !sess) {
-      return false
-    }
-
-    // No renewal material at all → nothing to renew; interactive login is
-    // genuinely required.
-    if (!(await hasLivePortalSession())) {
-      return false
-    }
-
-    if (!force && (await hasPortalAccessToken())) {
-      return true
-    }
-
-    portalAccessRenewal ??= (async () => {
-      const previous = await readAccessCookies()
-
-      // Hard deadline: this window is never revealed, so an unrenewable session
-      // (revoked refresh token, portal down) must resolve false rather than
-      // hang the discovery call behind an invisible window.
-      const outcome = await driveCookieWindow(sess, previous, {
-        kind: 'portal-renew',
-        title: 'Renewing Hermes Cloud session…',
-        show: false,
-        pollMs: 500,
-        deadlineMs: 12_000
-      })
-
-      const ok = outcome === 'landed'
-
-      rememberLog(`[cloud] silent portal access renewal ${ok ? 'succeeded' : 'did not complete'}`)
-
-      return ok
-    })().finally(() => {
-      portalAccessRenewal = null
-    })
-
-    return portalAccessRenewal
-  }
-
-  // Drive a one-time interactive portal sign-in in the OAuth partition. Unlike
-  // openOauthLoginWindow (which targets a gateway's /login), this lands on the
-  // portal itself so the resulting session cookie is portal-scoped — the cookie
-  // that authenticates discovery AND is reused for every silent per-agent
-  // cascade. Resolves once a new access cookie appears; refresh material alone
-  // must not close the window before the portal can replace it.
-  async function openPortalLoginWindow(): Promise<void> {
-    if (!isReady()) {
-      throw new Error('Desktop is not ready to start a Hermes Cloud sign-in.')
-    }
-
-    const sess = getOauthSession()
-
-    if (!sess) {
-      throw new Error('OAuth session partition is unavailable.')
-    }
-
-    const outcome = await driveCookieWindow(sess, await readAccessCookies(), {
-      kind: 'portal',
-      title: 'Sign in to Hermes Cloud',
-      show: true,
-      pollMs: 750
-    })
-
-    if (outcome !== 'landed') {
-      throw outcome instanceof Error ? outcome : new Error('Sign-in window closed before authentication completed.')
     }
   }
 
-  return { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, openPortalLoginWindow }
+  return {
+    hasLivePortalSession,
+    getPortalAccessToken,
+    login,
+    cancelLogin,
+    pendingAuthorizeUrl,
+    logout,
+    exchangeForAgent
+  }
 }
+
+export type PortalSession = ReturnType<typeof createPortalSession>

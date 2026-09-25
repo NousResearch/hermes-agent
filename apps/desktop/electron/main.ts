@@ -35,15 +35,7 @@ import {
 import type { Session } from 'electron'
 
 import { type ActiveRuntimeState, classifyActiveRuntime } from './active-runtime-state'
-import {
-  destroyKeepaliveAgents,
-  htmlResponseError,
-  httpStatusError,
-  jsonAgentFor,
-  readJsonErrorBody,
-  readStatusCode,
-  withRetry
-} from './api-transport'
+import { destroyKeepaliveAgents, htmlResponseError, httpStatusError, jsonAgentFor, withRetry } from './api-transport'
 import { appIconCandidates, resolveAppIcon, shouldOverrideDockIcon } from './app-icon'
 import { stageAppInstallerFile } from './app-installer-file'
 import { appVersionInfo, type AppVersionInfo, assertSourceUpdateChannel, packagedReleaseChannel } from './app-version'
@@ -109,8 +101,9 @@ import { detectBundleSkew } from './bundle-skew'
 import { detectBundleSwap, readBundleSwapStamp } from './bundle-swap'
 import { registerChatOnboardingWindow } from './chat-onboarding-window'
 import { provisionCliLinks } from './cli-provision'
+import { createCloudAgentAuth, createCloudAgentRegistry } from './cloud-agent-auth'
 import { shouldAttemptCloudBootCascade } from './cloud-boot-cascade'
-import { discoverWithTeamFallback } from './cloud-discovery'
+import { discoverCloudAgentsWithBearer } from './cloud-discovery'
 import { installCommandScreenshot } from './command-screenshot'
 import { writeComposerPaste } from './composer-paste'
 import { applyConnectionChange, teardownSshState } from './connection-apply'
@@ -151,8 +144,7 @@ import {
   sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
-  unscopableMutatingRequest,
-  withTransientRetries
+  unscopableMutatingRequest
 } from './connection-config'
 import { applyConnectionConfigAtomically } from './connection-config-apply'
 import {
@@ -294,6 +286,7 @@ import { resolveHudWindowing } from './hud-windowing'
 import { INSTALL_STAMP, installShape } from './install-stamp'
 import type { InstallStamp } from './install-stamp'
 import { createIntroRevealWindowController } from './intro-reveal-window'
+import { purgeLegacyPortalCookiesOnce } from './legacy-portal-cookie-purge'
 import { isAuthWall, resolveLinkTitle } from './link-title-wall'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
@@ -326,14 +319,7 @@ import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import { createMinimizeToTray } from './minimize-to-tray'
 import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
-import type { GatedDownloadAuth } from './native-auth-decisions'
-import {
-  oauthSessionIsLive,
-  resolveGatedDownloadAuth,
-  resolveJsonBody,
-  resolveOauthRestAuth,
-  resolveReadinessProbeAuth
-} from './native-auth-decisions'
+import { oauthSessionIsLive, resolveJsonBody, resolveReadinessProbeAuth } from './native-auth-decisions'
 import {
   nativeRefreshUrl,
   type NativeTokenSet,
@@ -341,11 +327,13 @@ import {
   resolveLoginStrategy,
   tokenNeedsRefresh
 } from './native-oauth'
-import { runNativeLogin } from './native-oauth-login'
-import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import { nativeLoginFailureResult, runNativeLogin } from './native-oauth-login'
+import { createNativeTokenCoordinatorDeps } from './native-token-coordinator-deps'
+import { createNativeTokenCache, type NativeTokenStoreIo } from './native-token-store'
 import { registerNativeNotifications } from './notification-ipc'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import { mintGatewayWsTicketWithRetries, requestWithOauthFallback } from './oauth-rest-request'
 import { wireOauthSessionResponse } from './oauth-session-response'
 import { listWindowsProcesses, reapPackageRootedProcesses } from './package-process-reap'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
@@ -1391,8 +1379,7 @@ protocol.registerSchemesAsPrivileged([
 
 function registerMediaProtocol(): void {
   const handler: ReturnType<typeof createMediaProtocolHandler> = createMediaProtocolHandler({
-    ensureRemoteBearer: (baseUrl: string): Promise<string | null> =>
-      ensureNativeAccessToken(baseUrl).catch((): null => null),
+    ensureRemoteBearer: (baseUrl: string): Promise<string | null> => ensureNativeAccessToken(baseUrl),
     // Electron's file:// loader ignores Range, which prevents video seeking.
     fetchLocal: fetchLocalMedia,
     fetchRemote: (url, headers, method) =>
@@ -4880,7 +4867,14 @@ function fetchJson(url, token, options: any = {}) {
               const text = Buffer.concat(chunks).toString('utf8')
 
               if ((res.statusCode || 500) >= 400) {
-                reject(httpStatusError(res.statusCode, text, res.statusMessage))
+                const error = httpStatusError(res.statusCode, text, res.statusMessage)
+
+                // Rate-limit answers (portal §5 429) say when to come back.
+                if (res.headers['retry-after']) {
+                  error.retryAfter = String(res.headers['retry-after'])
+                }
+
+                reject(error)
 
                 return
               }
@@ -5978,25 +5972,19 @@ async function gatewayAuthProviders(baseUrl, headers = {}) {
 // answers before the SPA catch-all). `probeIsCredentialed` tells
 // waitForHermesReady how to read a 401 — rejected session vs gated route.
 async function buildReadinessHealthProbe(baseUrl, authMode, token) {
-  const nativeAt = authMode === 'oauth' ? await ensureNativeAccessToken(baseUrl).catch(() => null) : null
-  const probeAuth = resolveReadinessProbeAuth(authMode, nativeAt, token)
-
-  if (probeAuth.kind === 'bearer') {
+  if (authMode === 'oauth') {
     return {
-      // fetchJson takes the bearer via `options.bearer` — a raw `headers`
-      // option is ignored, so passing one here would silently probe
-      // uncredentialed and reintroduce the 401 loop.
-      probeHealth: (url, options: any = {}) => fetchJson(url, null, { ...options, bearer: probeAuth.token }),
+      probeHealth: (url: string, options: any = {}) =>
+        requestWithOauthFallback(baseUrl, {
+          ensureNativeAccessToken,
+          requestWithBearer: bearer => fetchJson(url, null, { ...options, bearer }),
+          requestWithCookie: () => fetchJsonViaOauthSession(url, options)
+        }),
       probeIsCredentialed: true
     }
   }
 
-  if (probeAuth.kind === 'cookie') {
-    return {
-      probeHealth: (url, options: any = {}) => fetchJsonViaOauthSession(url, options),
-      probeIsCredentialed: true
-    }
-  }
+  const probeAuth = resolveReadinessProbeAuth(authMode, null, token)
 
   if (probeAuth.kind === 'token' && probeAuth.token) {
     return {
@@ -6009,12 +5997,11 @@ async function buildReadinessHealthProbe(baseUrl, authMode, token) {
 }
 
 // Boot-time readiness for a remote connection object. For a Hermes Cloud agent
-// whose own session cookie has expired, `waitForHermes` ends in the terminal
-// reauth error even though the portal session that can silently re-mint that
-// cookie is still live: the per-agent cascade (`cloudAgentSilentSignIn`) was
-// only ever driven by the settings UI, never by boot, so every relaunch needed
-// a manual "Use gateway" click. Run the cascade once and retry once; anything
-// that is not that exact case surfaces unchanged.
+// whose bearer the gateway rejected, `waitForHermes` ends in the terminal
+// reauth error even though the portal session that can mint a fresh one is
+// still live. Run one silent per-agent sign-in (a token exchange whose
+// audience comes only from a portal-confirmed binding — cloudAgentAuth.signIn)
+// and retry once; anything that is not that exact case surfaces unchanged.
 async function waitForRemoteHermes(remote) {
   try {
     await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
@@ -6023,14 +6010,14 @@ async function waitForRemoteHermes(remote) {
       throw error
     }
 
-    if (!(await hasLivePortalSession())) {
+    if (!portalSession.hasLivePortalSession()) {
       throw error
     }
 
-    rememberLog('[cloud] boot: agent session rejected but portal session is live, running silent sign-in')
+    rememberLog('[cloud] boot: agent bearer rejected but portal session is live, running silent sign-in')
 
     try {
-      await cloudAgentSilentSignIn(remote.baseUrl)
+      await cloudAgentAuth.signIn(remote.baseUrl)
     } catch (cascadeError) {
       rememberLog(`[cloud] boot: silent sign-in did not complete: ${cascadeError?.message || cascadeError}`)
 
@@ -7117,47 +7104,49 @@ async function hasLiveOauthSession(baseUrl) {
   return readLive()
 }
 
-async function clearOauthSession(baseUrl) {
+// Resolves true when every matching cookie was removed (or there were none),
+// false when the jar was unavailable or any read/removal failed. Most callers
+// treat this as best effort; the one-shot legacy purge only records itself
+// done on true.
+async function clearOauthSession(baseUrl): Promise<boolean> {
   const sess = getOauthSessionForUrl(baseUrl)
 
   if (!sess) {
-    return
+    return false
   }
 
   try {
+    // cookies.get({ url }) also returns cookies set on PARENT domains of the
+    // URL's host (e.g. `.example.com` for `portal.example.com`). Intended: in
+    // the legacy portal partition those are portal-session cookies too.
     const cookies = await sess.cookies.get(baseUrl ? { url: baseUrl } : {})
-    await Promise.all(
+
+    const removed = await Promise.all(
       cookies.map(c => {
         const scheme = c.secure ? 'https' : 'http'
         const cookieUrl = `${scheme}://${c.domain.replace(/^\./, '')}${c.path || '/'}`
 
-        return sess.cookies.remove(cookieUrl, c.name).catch(() => undefined)
+        return sess.cookies.remove(cookieUrl, c.name).then(
+          () => true,
+          () => false
+        )
       })
     )
+
+    return removed.every(Boolean)
   } catch {
     // Best effort — a stale cookie self-expires anyway.
+    return false
   }
 }
 
 // Open a gateway login window in the OAuth session partition, resolving once
 // the access-token cookie appears (login done) or rejecting if the user closes
-// the window first. The window navigates through the IDP and back to
-// /auth/callback, which sets the session cookies on the partition; we poll the
-// cookie jar rather than try to read the HttpOnly value.
-//
-// `silent` selects the URL the window loads, which decides interactive-vs-silent:
-//   - silent=false (default): load ``/login`` — the public interstitial that
-//     renders the "Log in with X" provider chooser. This is the interactive
-//     remote-gateway login the settings UI drives.
-//   - silent=true: load the PROTECTED root ``/`` instead. ``/login`` is a public
-//     route, so loading it NEVER triggers the gate's auto-SSO and always shows
-//     the chooser. Loading a protected page with no session cookie makes the
-//     gate run ``_auto_sso_response``: single registered provider + a live
-//     portal session in this partition → a silent 302 through
-//     ``/auth/login`` → portal ``/oauth/authorize`` (auto-approves org members)
-//     → ``/auth/callback``, which sets the gateway cookie with NO interactive
-//     prompt. This is the per-agent cloud cascade (decisions.md Q5).
-function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
+// the window first. The window loads the gateway's public ``/login`` chooser,
+// navigates through the IDP and back to /auth/callback, which sets the session
+// cookies on the partition; we poll the cookie jar rather than try to read the
+// HttpOnly value.
+function openOauthLoginWindow(baseUrl) {
   return new Promise((resolve, reject) => {
     if (!app.isReady()) {
       reject(new Error('Desktop is not ready to start an OAuth login.'))
@@ -7176,7 +7165,6 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     let settled = false
     let win = null
     let pollTimer = null
-    let revealTimer = null
 
     const finish = err => {
       if (settled) {
@@ -7187,10 +7175,6 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
 
       if (pollTimer) {
         clearInterval(pollTimer)
-      }
-
-      if (revealTimer) {
-        clearTimeout(revealTimer)
       }
 
       try {
@@ -7222,14 +7206,8 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
       win = new BrowserWindow({
         width: 520,
         height: 720,
-        title: silent ? 'Connecting to Hermes Cloud agent…' : 'Sign in to Hermes gateway',
+        title: 'Sign in to Hermes gateway',
         autoHideMenuBar: true,
-        // Silent cascade: start HIDDEN. The auto-SSO 302 chain completes in
-        // well under a second, so the window normally never needs to show. We
-        // only reveal it as a fallback if the cascade DOESN'T complete quickly
-        // (e.g. the portal session lapsed and the gate fell through to the
-        // interactive chooser) — see the reveal timer below.
-        show: !silent,
         webPreferences: {
           contextIsolation: true,
           nodeIntegration: false,
@@ -7256,23 +7234,6 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     installWindowRendererLifecycle(win, { kind: 'oauth', callbacks: { log: rememberLog } })
     pollTimer = setInterval(() => void checkCookie(), 750)
 
-    // Silent-mode reveal fallback: if the cascade hasn't settled shortly, the
-    // auto-SSO didn't go through silently (no portal session, multi-provider,
-    // loop-guard tripped, etc.) and the window is now showing an interactive
-    // page. Reveal it so the user can complete sign-in manually rather than
-    // staring at nothing. Cleared on finish().
-    if (silent && win) {
-      revealTimer = setTimeout(() => {
-        try {
-          if (!settled && win && !win.isDestroyed() && !win.isVisible()) {
-            win.show()
-          }
-        } catch {
-          // window torn down
-        }
-      }, 2500)
-    }
-
     win.on('closed', () => {
       if (!settled) {
         finish(new Error('Login window closed before authentication completed.'))
@@ -7282,11 +7243,8 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     // ``next`` is intentionally omitted: the gateway lands on ``/`` after
     // login, which is a valid authenticated page that sets the cookies. We
     // only care that the cookie jar is populated.
-    //
-    // silent=true loads the protected root so the gate auto-SSOs (no chooser);
-    // silent=false loads the public ``/login`` chooser for interactive sign-in.
     const normalizedBase = normalizeRemoteBaseUrl(baseUrl)
-    const loginUrl = silent ? `${normalizedBase}/` : `${normalizedBase}/login`
+    const loginUrl = `${normalizedBase}/login`
     const loginHeaders = headersForRemoteRequest(loginUrl)
     rememberLog(
       `OAuth login: attaching ${Object.keys(loginHeaders).length} extra gateway header(s) to ${new URL(normalizedBase).host}`
@@ -7396,10 +7354,6 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
 // feature; the server half lives in hermes_cli/dashboard_auth/native_flow.py.
 // ---------------------------------------------------------------------------
 
-// In-memory cache of decrypted native tokens, keyed by normalized base URL.
-// Backed by the encrypted on-disk store so it survives restarts.
-const _nativeTokens = new Map<string, NativeTokenSet>()
-
 function _nativeTokenStorePath() {
   // Co-located with the connection config under userData; one JSON file mapping
   // baseUrl → { encoding, value } safeStorage payloads.
@@ -7422,34 +7376,22 @@ function _nativeTokenStoreIo(): NativeTokenStoreIo {
   }
 }
 
-function _persistNativeTokens(baseUrl: string, tokens: NativeTokenSet | null) {
-  persistNativeTokenSet(baseUrl, tokens, _nativeTokenStoreIo())
-}
+// In-memory cache of decrypted native tokens, keyed by normalized base URL,
+// backed by the encrypted on-disk store so it survives restarts. A store
+// updates memory before persisting, so a rotated refresh token survives a
+// failed disk write for the rest of the session (native-token-store.ts).
+const _nativeTokenCache = createNativeTokenCache(_nativeTokenStoreIo(), normalizeRemoteBaseUrl)
 
 function _loadNativeTokens(baseUrl: string): NativeTokenSet | null {
-  const cached = _nativeTokens.get(baseUrl)
-
-  if (cached) {
-    return cached
-  }
-
-  const tokens = loadNativeTokenSet(baseUrl, _nativeTokenStoreIo())
-
-  if (tokens) {
-    _nativeTokens.set(baseUrl, tokens)
-  }
-
-  return tokens
+  return _nativeTokenCache.load(baseUrl)
 }
 
 function _storeNativeTokens(baseUrl: string, tokens: NativeTokenSet) {
-  _nativeTokens.set(baseUrl, tokens)
-  _persistNativeTokens(baseUrl, tokens)
+  _nativeTokenCache.store(baseUrl, tokens)
 }
 
 function _clearNativeTokens(baseUrl: string) {
-  _nativeTokens.delete(baseUrl)
-  _persistNativeTokens(baseUrl, null)
+  _nativeTokenCache.clear(baseUrl)
 }
 
 // True when we hold native bearer tokens for this gateway (the native-flow
@@ -7471,34 +7413,80 @@ function postJsonNoAuth(url: string, body: unknown, opts: any = {}) {
 }
 
 // All explicit mutations go through the coordinator; only its refresh/store
-// dependencies may call the raw persistence helpers above. It single-flights
-// the /auth/native/refresh rotation per host (concurrent callers share one
-// flight instead of racing rotations and losing the winner) and fences a
-// refresh that lands after a login/logout changed the identity underneath it
-// (22751c8fd9b9). A 401 on refresh means the RT is dead — tokens are dropped
-// so the UI prompts a fresh native login; a 503/transient keeps them.
+// dependencies may call the raw persistence helpers above.
+//
+// The refresh strategy is per connection and decided ONLY by the Hermes Cloud
+// agent registry (written from portal discovery), never by token-set fields a
+// remote gateway can write: a registry-known dashboard renews by re-exchanging
+// the portal session (and lazily exchanges when nothing is stored yet), with
+// the audience always taken from a freshly portal-confirmed binding; every
+// other gateway rotates through its own /auth/native/refresh. See
+// native-token-coordinator-deps.ts. The Hermes Cloud helpers are resolved at
+// call time; they are defined below, long before any request needs a token.
 const nativeAccessTokenCoordinator: ReturnType<typeof createNativeAccessTokenCoordinator> =
-  createNativeAccessTokenCoordinator({
-    clearTokens: _clearNativeTokens,
-    isRefreshAuthRejection: (error: unknown): boolean => readStatusCode(error) === 401,
-    loadTokens: _loadNativeTokens,
-    normalizeBaseUrl: normalizeRemoteBaseUrl,
-    refreshTokens: async (baseUrl: string, tokens: NativeTokenSet): Promise<NativeTokenSet> =>
-      parseTokenResponse(
-        await postJsonNoAuth(
-          nativeRefreshUrl(baseUrl),
-          { refresh_token: tokens.refreshToken, provider: tokens.provider },
-          { timeoutMs: 10_000 }
-        )
-      ),
-    storeTokens: _storeNativeTokens,
-    tokenNeedsRefresh
-  })
+  createNativeAccessTokenCoordinator(
+    createNativeTokenCoordinatorDeps({
+      clearTokens: _clearNativeTokens,
+      loadTokens: _loadNativeTokens,
+      normalizeBaseUrl: normalizeRemoteBaseUrl,
+      storeTokens: _storeNativeTokens,
+      tokenNeedsRefresh,
+      refreshGatewayTokens: async (baseUrl, tokens) =>
+        parseTokenResponse(
+          await postJsonNoAuth(
+            nativeRefreshUrl(baseUrl),
+            { refresh_token: tokens.refreshToken, provider: tokens.provider },
+            { timeoutMs: 10_000 }
+          )
+        ),
+      isCloudAgentUrl: baseUrl => cloudAgentRegistry.agentIdFor(baseUrl) !== null,
+      confirmedCloudAgentId: baseUrl => cloudAgentAuth.confirmedAgentIdFor(baseUrl),
+      isCloudBindingCurrent: (baseUrl, agentId) => cloudAgentAuth.isBindingCurrent(baseUrl, agentId),
+      exchangeForAgent: agentId => portalSession.exchangeForAgent(agentId),
+      hasLivePortalSession: () => portalSession.hasLivePortalSession(),
+      isSavedCloudConnection: baseUrl => isSavedCloudConnectionUrl(baseUrl)
+    })
+  )
+
+// Whether a saved connection (legacy connection.json — global or per-profile —
+// or the v2 registry) points at this URL in Hermes Cloud mode. Only gates the
+// bootstrap's one throttled portal discovery; the portal's answer decides.
+function isSavedCloudConnectionUrl(baseUrl) {
+  const key = normalizeRemoteBaseUrl(baseUrl)
+
+  const sameUrl = url => {
+    try {
+      return Boolean(url) && normalizeRemoteBaseUrl(url) === key
+    } catch {
+      return false
+    }
+  }
+
+  try {
+    const config: any = readDesktopConnectionConfig()
+
+    if (config.mode === 'cloud' && sameUrl(config.remote?.url)) {
+      return true
+    }
+
+    if (Object.values(config.profiles || {}).some((p: any) => p?.mode === 'cloud' && sameUrl(p.url))) {
+      return true
+    }
+  } catch {
+    // Fall through to the registry.
+  }
+
+  try {
+    return readDesktopConnectionsRegistry().connections.some(c => c.kind === 'cloud' && sameUrl(c.url))
+  } catch {
+    return false
+  }
+}
 
 // Return a valid native access token for baseUrl, refreshing via
 // /auth/native/refresh if the stored one is at/near expiry. Returns null when
 // there are no tokens or the refresh is terminally rejected (caller re-logins).
-const ensureNativeAccessToken: (baseUrl: string) => Promise<string | null> = nativeAccessTokenCoordinator.ensure
+const ensureNativeAccessToken = nativeAccessTokenCoordinator.ensure
 
 interface GatewayFileConnection extends RegistryBackendRequestScope {
   authMode?: 'oauth' | 'token'
@@ -7512,13 +7500,6 @@ interface GatewayFileSavePayload {
   path?: unknown
   profile?: unknown
   suggestedName?: unknown
-}
-
-async function gatedFileAuth(connection: GatewayFileConnection): Promise<GatedDownloadAuth> {
-  const nativeAt =
-    connection.authMode === 'oauth' ? await ensureNativeAccessToken(connection.baseUrl).catch(() => null) : null
-
-  return resolveGatedDownloadAuth(connection.authMode, nativeAt, connection.token)
 }
 
 function gatewayFileRequestPath(
@@ -7563,40 +7544,28 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}): Promise<Ga
     ...deps,
     download: async (requestPath: string, context: GatewayFileSaveContext): Promise<GatewayFileSaveResult> => {
       const url: string = `${connection.baseUrl}${requestPath}`
-      const auth: GatedDownloadAuth = await gatedFileAuth(connection)
 
-      if (auth.kind === 'cookie') {
-        return downloadViaOauthSessionToFile<Session>(url, context, {
-          ...deps,
-          getSession: getOauthSessionForUrl,
-          request: electronNet.request
+      if (connection.authMode === 'oauth') {
+        return requestWithOauthFallback(connection.baseUrl, {
+          ensureNativeAccessToken,
+          requestWithBearer: bearer => downloadViaTokenToFile(url, null, context, deps, { bearer }),
+          requestWithCookie: () =>
+            downloadViaOauthSessionToFile<Session>(url, context, {
+              ...deps,
+              getSession: getOauthSessionForUrl,
+              request: electronNet.request
+            })
         })
       }
 
-      return downloadViaTokenToFile(
-        url,
-        auth.token,
-        context,
-        deps,
-        auth.kind === 'bearer' ? { bearer: auth.token } : {}
-      )
+      return downloadViaTokenToFile(url, connection.token, context, deps)
     },
     readDataUrl: (requestPath: string): Promise<string> => readGatewayFileDataUrl(connection, requestPath)
   })
 }
 
 async function readGatewayFileDataUrl(connection: GatewayFileConnection, requestPath: string): Promise<string> {
-  const url = `${connection.baseUrl}${requestPath}`
-  const auth = await gatedFileAuth(connection)
-  let json: unknown
-
-  if (auth.kind === 'bearer') {
-    json = await fetchJson(url, null, { bearer: auth.token })
-  } else if (auth.kind === 'cookie') {
-    json = await fetchJsonViaOauthSession(url)
-  } else {
-    json = await fetchJson(url, auth.token)
-  }
+  const json: unknown = await fetchJsonForBackend(connection, requestPath)
 
   const dataUrl =
     json && typeof json === 'object' && 'dataUrl' in json && typeof json.dataUrl === 'string' ? json.dataUrl : ''
@@ -7608,50 +7577,16 @@ async function readGatewayFileDataUrl(connection: GatewayFileConnection, request
   return dataUrl
 }
 
-// Mint a single-use WS ticket for a gated gateway. Returns the ticket string.
-// Prefers a native bearer token (cookieless RFC 8252 flow) when present,
-// falling back to the OAuth cookie partition otherwise.
-// Throws (with statusCode 401) if the session cookie is missing/expired —
-// callers treat that as "needs re-login".
-// Transient transport blips (brief host unreachable, 5xx, timeouts) are retried
-// a few times before failing — those 1-3s flaps were promoting into the
-// full-screen "couldn't start" lockout on reconnect.
+// Mint a single-use WS ticket for a gated gateway: native bearer first (one
+// forced re-exchange after a structured 401), cookie session as a fallback
+// that never turns a transport failure or a binding change into a sign-in.
+// Ticket POSTs are replay-safe; arbitrary REST mutations never use this retry loop.
 async function mintGatewayWsTicket(baseUrl, headers = {}) {
-  return withTransientRetries(async () => {
-    // Native flow: mint the ticket with the bearer token, no cookie involved.
-    const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
-
-    if (nativeAt) {
-      const body = (await fetchJson(`${baseUrl}/api/auth/ws-ticket`, null, {
-        method: 'POST',
-        timeoutMs: 8_000,
-        bearer: nativeAt,
-        headers
-      })) as any
-
-      const ticket = body?.ticket
-
-      if (!ticket || typeof ticket !== 'string') {
-        throw new Error('Gateway did not return a WS ticket.')
-      }
-
-      return ticket
-    }
-
-    const body = (await fetchJsonViaOauthSession(`${baseUrl}/api/auth/ws-ticket`, {
-      method: 'POST',
-      timeoutMs: 8_000,
-      headers
-    })) as any
-
-    const ticket = body?.ticket
-
-    if (!ticket || typeof ticket !== 'string') {
-      throw new Error('Gateway did not return a WS ticket.')
-    }
-
-    return ticket
-  })
+  return mintGatewayWsTicketWithRetries(
+    baseUrl,
+    { ensureNativeAccessToken, fetchJson, fetchJsonViaOauthSession },
+    headers
+  )
 }
 
 // Build a fresh WS URL for the *current* connection. Critical for reconnects:
@@ -7684,19 +7619,17 @@ async function freshGatewayWsUrl(profile) {
   return connection.wsUrl
 }
 
-// --- Hermes Cloud discovery + silent per-agent sign-in (cloud-auto-discovery
-// Phase 3) ---------------------------------------------------------------
+// --- Hermes Cloud: system-browser sign-in, discovery, per-agent bearers -----
 //
-// The "cloud" connection mode lets a user sign in to the Nous portal ONCE in
-// the OAuth session partition, then (a) discover their hosted agents and (b)
-// connect to any of them with no second interactive sign-in. Both ride the one
-// portal session cookie living in `persist:hermes-remote-oauth`:
-//   - discovery  → GET {portal}/api/agents over the partition-bound net; the
-//     portal session cookie authenticates it (NAS Phase 2.5 accepts the cookie).
-//   - cascade    → opening an agent's own /login in the same partition hits the
-//     portal's silent auto-approve (org member, existing session) and 302s back
-//     with that agent's session cookie — no prompt. Each agent still completes
-//     its own PKCE exchange; SSO removes the human click, not a security check.
+// The "cloud" connection mode signs the desktop in to the Nous portal ONCE as
+// the public OAuth client `hermes-desktop` — in the user's default browser
+// (RFC 8252 loopback + PKCE), where the portal handles login, team choice and
+// consent. The resulting desktop token set (portal-session.ts) then:
+//   - authenticates discovery   → GET {portal}/api/agents with a bearer;
+//   - mints per-agent bearers   → RFC 8693 token exchange with
+//     `audience=agent:<id>`, stored as that connection's native token set so
+//     the existing bearer transport (REST + ws-ticket) is reused as-is.
+// No embedded window and no partition cookies are involved for cloud.
 
 // Canonical Nous portal base URL, overridable for staging/dev. Mirrors the CLI
 // convention (hermes_cli/auth.py DEFAULT_NOUS_PORTAL_URL + the same env names)
@@ -7709,191 +7642,115 @@ function resolvePortalBaseUrl() {
   return String(raw).trim().replace(/\/+$/, '')
 }
 
-const { hasLivePortalSession, hasPortalAccessToken, renewPortalAccessSilently, openPortalLoginWindow } =
-  createPortalSession({
-    isReady: () => app.isReady(),
-    getOauthSession,
-    resolvePortalBaseUrl,
-    warmOauthCookieStore,
-    createWindow: options => new BrowserWindow(options),
-    rememberLog
+// The desktop portal session shares the encrypted native token store (and so
+// its keychain-optional policy) with gateway tokens, keyed by the portal URL.
+const portalSession = createPortalSession({
+  resolvePortalBaseUrl,
+  loadTokens: _loadNativeTokens,
+  storeTokens: (key, tokens) => _storeNativeTokens(normalizeRemoteBaseUrl(key), tokens),
+  clearTokens: key => _clearNativeTokens(normalizeRemoteBaseUrl(key)),
+  postJson: (url, body, opts) => postJsonNoAuth(url, body, opts),
+  openExternal: url => shell.openExternal(url),
+  rememberLog,
+  // A sign-in pinned to another org than the one the agent registry was
+  // populated under (persisted, so this also holds across a sign-out)
+  // invalidates every agent bearer and registry entry of the old org
+  // (resolved at call time, defined below).
+  onSignedIn: orgId => cloudAgentAuth.adoptSessionOrg(orgId)
+})
+
+function _cloudAgentRegistryPath() {
+  return path.join(app.getPath('userData'), 'hermes-cloud-agents.json')
+}
+
+// dashboardUrl → { AgentInstance id, confirmedAt }: routes a saved cloud
+// connection to re-exchange; the exchange audience itself always comes from a
+// binding portal discovery confirmed within the last few minutes.
+const cloudAgentRegistry = createCloudAgentRegistry(
+  {
+    readText: () => fs.readFileSync(_cloudAgentRegistryPath(), 'utf8'),
+    writeText: text => {
+      fs.mkdirSync(path.dirname(_cloudAgentRegistryPath()), { recursive: true })
+      fs.writeFileSync(_cloudAgentRegistryPath(), text, { mode: 0o600 })
+    }
+  },
+  normalizeRemoteBaseUrl
+)
+
+async function discoverCloudAgentsRaw() {
+  return discoverCloudAgentsWithBearer({
+    portalBaseUrl: resolvePortalBaseUrl(),
+    getAccessToken: options => portalSession.getPortalAccessToken(options),
+    fetchJson: (url, token, options) => fetchJson(url, token, options)
   })
+}
 
-// Discover the hosted (Hermes Cloud) agents the signed-in user can see. Calls
-// the NAS trimmed-summary endpoint over the partition-bound net, so the portal
-// session cookie is attached automatically (no bearer needed — NAS accepts the
-// cookie). Returns { agents } on success, or { needsOrgSelection: true, orgs }
-// when the user belongs to multiple orgs and hasn't picked one yet (NAS 409
-// org_selection_required). Pass `org` (a slug/id from a prior org list) to
-// scope discovery to that org. Throws a needsCloudLogin-tagged error when no
-// portal session is present.
-async function discoverCloudAgents(org?: string) {
-  const portalBaseUrl = resolvePortalBaseUrl()
+const cloudAgentAuth = createCloudAgentAuth({
+  normalizeBaseUrl: normalizeRemoteBaseUrl,
+  registry: cloudAgentRegistry,
+  exchangeForAgent: agentId => portalSession.exchangeForAgent(agentId),
+  storeAgentTokens: (baseUrl, tokens) => nativeAccessTokenCoordinator.storeTokens(baseUrl, tokens),
+  clearAgentTokens: baseUrl => nativeAccessTokenCoordinator.clearTokens(baseUrl),
+  listStoredTokenUrls: () => _nativeTokenCache.urls(),
+  loadStoredTokens: _loadNativeTokens,
+  clearPortalSession: () => portalSession.logout(),
+  discoverAgents: async () => (await discoverCloudAgentsRaw()).agents,
+  log: rememberLog
+})
 
-  if (!(await hasLivePortalSession())) {
-    const err = new Error(
-      'You are not signed in to Hermes Cloud. Open Settings → Gateway, choose Hermes Cloud, and sign in.'
-    ) as any
+// Discover the hosted (Hermes Cloud) agents the signed-in user can see, in
+// the org the desktop token is pinned to (switching team = signing in again
+// and choosing it in the browser). Throws a needsCloudLogin-tagged error when
+// there is no usable portal session. Only portal results feed the agent
+// registry, each as an authoritative snapshot (unlisted URLs are dropped).
+async function discoverCloudAgents() {
+  const ticket = cloudAgentAuth.beginDiscovery()
+  const result = await discoverCloudAgentsRaw()
 
-    err.needsCloudLogin = true
-    throw err
-  }
+  cloudAgentAuth.reconcileDiscovered(result.agents, ticket)
 
-  // Access cookies expire before refresh credentials. Let the portal renew
-  // whichever session this browser currently holds before discovery.
-  if (!(await hasPortalAccessToken())) {
-    await renewPortalAccessSilently()
-  }
+  return result
+}
 
-  let body
+// Earlier builds signed in to the portal inside the shared OAuth cookie
+// partition. Those portal cookies would let an embedded gateway login
+// silently reuse a portal session after a Cloud sign-out, so drop them: on
+// every Cloud sign-out, and once for installs upgrading from the cookie flow.
+function _legacyPortalCookiesPurgedMarkerPath() {
+  return path.join(app.getPath('userData'), 'hermes-cloud-legacy-portal-cookies-purged')
+}
 
-  const fetchAgents = () =>
-    discoverWithTeamFallback(
-      selectedOrg =>
-        fetchJsonViaOauthSession(
-          `${portalBaseUrl}/api/agents${selectedOrg ? `?org=${encodeURIComponent(selectedOrg)}` : ''}`,
-          {
-            method: 'GET',
-            timeoutMs: 15_000
-          }
-        ),
-      org
+async function clearLegacyPortalCookies(): Promise<boolean> {
+  try {
+    const cleared = await clearOauthSession(resolvePortalBaseUrl())
+
+    if (!cleared) {
+      rememberLog('[cloud] could not clear every legacy portal cookie')
+    }
+
+    return cleared
+  } catch (error) {
+    rememberLog(
+      `[cloud] could not clear legacy portal cookies: ${error instanceof Error ? error.message : String(error)}`
     )
 
-  try {
-    body = (await fetchAgents()) as any
-  } catch (initialError) {
-    let error = initialError as any
+    return false
+  }
+}
 
-    // A 401 with renewal material still in the jar: attempt ONE bounded silent
-    // renewal and retry, so a lapsed access token doesn't surface as a full
-    // interactive re-login while a 30-day refresh session sits unused. Only a
-    // rejected/failed renewal (or a second 401 on genuinely fresh access)
-    // falls through to needsCloudLogin.
-    if (error && error.statusCode === 401 && (await renewPortalAccessSilently({ force: true }))) {
-      try {
-        body = (await fetchAgents()) as any
-      } catch (retryError) {
-        error = retryError
-      }
+// Only a complete purge writes the marker; otherwise the next launch retries.
+// The jar is hydrated first: a cold cookies.get() can resolve empty before
+// the on-disk store loads, which would read as "nothing to purge".
+function purgeLegacyPortalCookiesAtStartup() {
+  return purgeLegacyPortalCookiesOnce({
+    markerExists: () => fs.existsSync(_legacyPortalCookiesPurgedMarkerPath()),
+    warm: () => warmOauthCookieStore(resolvePortalBaseUrl()),
+    clearCookies: clearLegacyPortalCookies,
+    writeMarker: () => {
+      fs.mkdirSync(path.dirname(_legacyPortalCookiesPurgedMarkerPath()), { recursive: true })
+      fs.writeFileSync(_legacyPortalCookiesPurgedMarkerPath(), `${new Date().toISOString()}\n`, { mode: 0o600 })
     }
-
-    if (body === undefined) {
-      // A 401 means the portal session lapsed (and silent renewal could not
-      // recover it) — surface it as a re-login, not a generic failure.
-      if (error && error.statusCode === 401) {
-        const err = new Error(
-          'Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.'
-        ) as any
-
-        err.needsCloudLogin = true
-        err.cause = error
-        throw err
-      }
-
-      // A 409 means we're a multi-org user who hasn't picked an org. The body
-      // carries the user's org list; surface it so the renderer shows a picker
-      // and re-calls discovery with the chosen org. (fetchJsonViaOauthSession
-      // throws on >=400 with err.statusCode + err.message "409: <json body>".)
-      if (error && error.statusCode === 409) {
-        const orgs = parseOrgSelectionError(error)
-
-        if (orgs) {
-          return { needsOrgSelection: true, orgs }
-        }
-      }
-
-      throw error
-    }
-  }
-
-  return { agents: trimCloudAgents(body), org: trimCloudOrg(body?.org) }
-}
-
-// Project a NAS response org ({ id, slug, name, isPersonal }) to the trimmed
-// shape the renderer persists, or null when absent/malformed.
-function trimCloudOrg(org) {
-  if (!org || typeof org !== 'object' || typeof org.id !== 'string') {
-    return null
-  }
-
-  return {
-    id: org.id,
-    slug: typeof org.slug === 'string' ? org.slug : null,
-    name: typeof org.name === 'string' ? org.name : org.id,
-    isPersonal: Boolean(org.isPersonal),
-    role: typeof org.role === 'string' ? org.role : 'MEMBER'
-  }
-}
-
-// Extract the org list from a 409 org_selection_required error body. Parse
-// defensively and return null if it isn't the shape we expect (caller then
-// rethrows).
-function parseOrgSelectionError(error) {
-  const parsed = readJsonErrorBody(error)
-
-  if (parsed?.error !== 'org_selection_required' || !Array.isArray(parsed.orgs)) {
-    return null
-  }
-
-  return parsed.orgs
-    .filter(o => o && typeof o === 'object' && typeof o.id === 'string')
-    .map(o => ({
-      id: o.id,
-      slug: typeof o.slug === 'string' ? o.slug : null,
-      name: typeof o.name === 'string' ? o.name : o.id,
-      isPersonal: Boolean(o.isPersonal),
-      role: typeof o.role === 'string' ? o.role : 'MEMBER'
-    }))
-}
-
-// Project NAS's agent rows to the trimmed DTO the renderer consumes.
-function trimCloudAgents(body) {
-  const agents = Array.isArray(body?.agents) ? body.agents : []
-
-  return agents
-    .filter(a => a && typeof a === 'object' && typeof a.id === 'string')
-    .map(a => ({
-      id: a.id,
-      name: typeof a.name === 'string' ? a.name : a.id,
-      status: typeof a.status === 'string' ? a.status : 'unknown',
-      dashboardUrl: typeof a.dashboardUrl === 'string' ? a.dashboardUrl : null,
-      dashboardGatewayState: typeof a.dashboardGatewayState === 'string' ? a.dashboardGatewayState : 'unknown'
-    }))
-}
-
-// Silent per-agent sign-in: open the selected agent dashboard's /login in the
-// SAME OAuth partition. Because the user already holds a live portal session
-// there, the agent's /oauth/authorize auto-approves (org member) and 302s back,
-// setting that agent's gateway session cookie WITHOUT a second interactive
-// prompt. Reuses openOauthLoginWindow — the window self-closes the instant the
-// agent's session cookie lands (a silent flow finishes in well under a second;
-// if the portal session were absent it would fall through to an interactive
-// login, which the discovery gate already prevents). Returns once the agent's
-// gateway session cookie is present.
-async function cloudAgentSilentSignIn(dashboardUrl) {
-  const baseUrl = normalizeRemoteBaseUrl(dashboardUrl)
-
-  // Pre-req: a live portal session must exist, or this would surface an
-  // interactive prompt rather than a silent cascade. Discovery already gates on
-  // this, but a selection can arrive after the session lapsed.
-  if (!(await hasLivePortalSession())) {
-    const err = new Error('Your Hermes Cloud session has expired. Sign in to Hermes Cloud again.') as any
-    err.needsCloudLogin = true
-    throw err
-  }
-
-  // The cascade rides the portal's auto-approve, which needs the short-lived
-  // access state just like discovery. If only renewal material survived the
-  // restart, mint a fresh access token first so the hidden cascade window
-  // auto-SSOs instead of stalling on an interactive chooser (#73495).
-  if (!(await hasPortalAccessToken())) {
-    await renewPortalAccessSilently()
-  }
-
-  await openOauthLoginWindow(baseUrl, { silent: true })
-
-  return { baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -10077,22 +9934,8 @@ async function fetchJsonForProfile(profile, path) {
 // Issue an arbitrary method against a profile's resolved backend, parsed JSON.
 async function requestJsonForProfile(profile: string, path: string, method: string, body?: string) {
   const conn = await ensureBackend(profile)
-  const url = `${conn.baseUrl}${path}`
-  const opts = { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS }
 
-  if (conn.authMode === 'oauth') {
-    // Native RFC 8252 flow: authenticate with the bearer token (cookieless)
-    // when we hold one for this gateway; otherwise use the cookie partition.
-    const nativeAt = await ensureNativeAccessToken(conn.baseUrl).catch(() => null)
-
-    if (nativeAt) {
-      return fetchJson(url, null, { ...opts, bearer: nativeAt, headers: conn.headers })
-    }
-
-    return fetchJsonViaOauthSession(url, { ...opts, headers: conn.headers })
-  }
-
-  return fetchJson(url, conn.token, { ...opts, headers: conn.headers })
+  return fetchJsonForBackend(conn, path, { method, body, timeoutMs: DEFAULT_FETCH_TIMEOUT_MS })
 }
 
 async function probeRemoteAuthMode(rawUrl) {
@@ -10317,25 +10160,9 @@ async function testDesktopConnectionConfig(input: any = {}) {
 }
 
 async function fetchConnectionStatus(baseUrl, authMode, token, headers = {}) {
-  const url = `${baseUrl}/api/status`
-
-  if (authMode === 'oauth') {
-    // Native PKCE bearer first, OAuth session cookies second — the same two
-    // credentials real traffic uses, in the same order. A refresh failure is
-    // NOT a silent downgrade to an anonymous probe: the cookie path is still
-    // an authenticated request, and if neither credential works the probe
-    // fails, which is the correct answer for a gateway we cannot reach with
-    // the credentials we hold.
-    const nativeAt = await ensureNativeAccessToken(baseUrl).catch(() => null)
-
-    if (nativeAt) {
-      return fetchJson(url, null, { timeoutMs: 8_000, bearer: nativeAt, headers })
-    }
-
-    return fetchJsonViaOauthSession(url, { timeoutMs: 8_000, headers })
-  }
-
-  return fetchJson(url, token, { timeoutMs: 8_000, headers })
+  // /api/status is public on newer gateways; the subsequent ticket/WS probe
+  // remains authoritative. Older gated status routes retain cookie fallback.
+  return fetchJsonForBackend({ baseUrl, authMode, token, headers }, '/api/status', { timeoutMs: 8_000 })
 }
 
 function resetBootProgressForReconnect() {
@@ -15755,23 +15582,17 @@ async function fetchJsonForBackend(
       throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
     }
 
-    const nativeAt = await ensureNativeAccessToken(descriptor.baseUrl).catch(() => null)
-
-    if (nativeAt) {
-      return fetchJson(url, null, {
-        method: opts.method,
-        body: opts.body,
-        timeoutMs: opts.timeoutMs,
-        bearer: nativeAt,
-        headers: descriptor.headers
-      })
-    }
-
-    return fetchJsonViaOauthSession(url, {
+    const options = {
       method: opts.method,
       body: opts.body,
       timeoutMs: opts.timeoutMs,
       headers: descriptor.headers
+    }
+
+    return requestWithOauthFallback(descriptor.baseUrl, {
+      ensureNativeAccessToken,
+      requestWithBearer: bearer => fetchJson(url, null, { ...options, bearer }),
+      requestWithCookie: () => fetchJsonViaOauthSession(url, options)
     })
   }
 
@@ -15848,9 +15669,15 @@ ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) =>
 
       return { ok: true, baseUrl, connected: true }
     } catch (error) {
-      rememberLog(`[native-oauth] native login failed (${error instanceof Error ? error.message : String(error)})`)
+      const failure = nativeLoginFailureResult(error)
 
-      return { ok: false, error: error instanceof Error ? error.message : String(error), connected: false }
+      rememberLog(
+        'cancelled' in failure
+          ? '[native-oauth] native login was cancelled in the browser'
+          : `[native-oauth] native login failed (${failure.error})`
+      )
+
+      return failure
     }
   }
 
@@ -15892,33 +15719,43 @@ ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) =
   return { ok: true, connected }
 })
 
-// --- Hermes Cloud (cloud-auto-discovery Phase 3) ---
-// One portal login in the OAuth partition powers both discovery and the silent
-// per-agent cascade. See the discovery/cascade helpers above.
+// --- Hermes Cloud ---
+// One system-browser sign-in (client `hermes-desktop`) powers discovery and the
+// silent per-agent token exchange. See the Hermes Cloud helpers above.
 ipcMain.handle('hermes:cloud:status', async () => ({
   portalBaseUrl: resolvePortalBaseUrl(),
-  signedIn: await hasLivePortalSession()
+  signedIn: portalSession.hasLivePortalSession()
 }))
 ipcMain.handle('hermes:cloud:login', async () => {
-  await openPortalLoginWindow()
+  // Opens the default browser; resolves when the loopback redirect lands. A
+  // Deny in the browser (or login-cancel) is a clean `{ ok: false, cancelled }`
+  // that leaves an existing session signed in.
+  const result = await portalSession.login()
 
-  return { ok: true, signedIn: await hasLivePortalSession() }
+  return {
+    ok: result.signedIn && !result.cancelled,
+    signedIn: result.signedIn,
+    ...(result.cancelled ? { cancelled: true } : {})
+  }
 })
+ipcMain.handle('hermes:cloud:login-cancel', async () => ({ cancelled: portalSession.cancelLogin() }))
+// The pending sign-in's authorize URL, for "browser didn't open? copy link".
+ipcMain.handle('hermes:cloud:login-url', async () => ({ url: portalSession.pendingAuthorizeUrl() }))
 ipcMain.handle('hermes:cloud:logout', async () => {
-  await clearOauthSession(resolvePortalBaseUrl())
+  // Clears the desktop portal session AND every derived agent bearer. The
+  // contract has no revoke endpoint; the refresh token simply stops being used.
+  cloudAgentAuth.logout()
+  await clearLegacyPortalCookies()
 
-  return { ok: true, signedIn: await hasLivePortalSession() }
+  return { ok: true, signedIn: portalSession.hasLivePortalSession() }
 })
-ipcMain.handle('hermes:cloud:discover', async (_event, org) => {
-  // Returns { agents } or { needsOrgSelection: true, orgs }. `org` (optional)
-  // scopes discovery to a chosen org for multi-org users.
-  return discoverCloudAgents(typeof org === 'string' && org ? org : undefined)
-})
-ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl) => {
-  // Silent per-agent sign-in via the shared portal session. Returns the agent's
-  // gateway baseUrl + whether its session cookie landed; the renderer then
-  // saves a cloud-mode connection pointed at this dashboardUrl.
-  return cloudAgentSilentSignIn(dashboardUrl)
+ipcMain.handle('hermes:cloud:discover', async () => discoverCloudAgents())
+ipcMain.handle('hermes:cloud:agent-sign-in', async (_event, dashboardUrl, agentId) => {
+  // Silent per-agent sign-in via the portal token exchange. The agent id hint
+  // is honoured only when it matches portal discovery for this URL; a URL
+  // discovery never returned is refused. The renderer then saves a cloud-mode
+  // connection pointed at this dashboardUrl.
+  return cloudAgentAuth.signIn(String(dashboardUrl || ''), typeof agentId === 'string' && agentId ? agentId : null)
 })
 ipcMain.handle('hermes:connection-config:save', async (_event, payload) => {
   assertCanMutateManagedPrimaryRouting()
@@ -16478,51 +16315,12 @@ async function handleHermesApiRequest(request) {
     })
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-    const url = `${connection.baseUrl}${apiRoute.requestPath}`
-
-    // OAuth gateways authenticate REST via EITHER a native bearer token
-    // (cookieless RFC 8252 flow) OR the HttpOnly session cookie held in the OAuth
-    // partition. Prefer the native bearer when present (mirroring
-    // mintGatewayWsTicket): the native flow never sets a cookie, so routing an
-    // oauth-mode REST call through the cookie-only path returns 401 no_cookie even
-    // though a valid bearer is held. Cookie mode rides Electron's net stack bound
-    // to the OAuth partition so the cookie attaches automatically. Token/local
-    // modes keep using the static session-token header.
-    if (connection.authMode === 'oauth') {
-      // The OAuth path rides electron.net with JSON headers; multipart isn't
-      // wired there. Fail loudly rather than corrupting the upload.
-      if (request?.upload) {
-        throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
-      }
-
-      // Native bearer first (cookieless). ensureNativeAccessToken transparently
-      // refreshes a near-expiry AT via /auth/native/refresh; a null return means
-      // no native session (resolveOauthRestAuth then selects the cookie path).
-      const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
-      const restAuth = resolveOauthRestAuth(nativeAt)
-
-      if (restAuth.kind === 'bearer') {
-        response = await fetchJson(url, null, {
-          method: request?.method,
-          body: request?.body,
-          timeoutMs,
-          bearer: restAuth.token
-        })
-      } else {
-        response = await fetchJsonViaOauthSession(url, {
-          method: request?.method,
-          body: request?.body,
-          timeoutMs
-        })
-      }
-    } else {
-      response = await fetchJson(url, connection.token, {
-        method: request?.method,
-        body: request?.body,
-        upload: request?.upload,
-        timeoutMs
-      })
-    }
+    response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
+      method: request?.method,
+      body: request?.body,
+      upload: request?.upload,
+      timeoutMs
+    })
   } catch (error) {
     // A failed rename PATCH must not strand the app on the temporary primary:
     // restore the original active profile and restart its backend.
@@ -18040,6 +17838,9 @@ app.whenReady().then(() => {
   // Settings → Gateway. Must run before createWindow() and the first
   // connection resolution.
   migrateLegacyEncryptedSecretsOnce()
+  // Hermes Cloud no longer signs in inside the OAuth cookie partition; drop
+  // any portal cookies an earlier build left there (one-shot, best-effort).
+  void purgeLegacyPortalCookiesAtStartup()
 
   installMediaPermissions()
   installDownloadHandling()

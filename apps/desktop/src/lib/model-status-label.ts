@@ -164,17 +164,35 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
-/** Composer model-pill label — model name plus Fast when it applies. The
- *  reasoning level is NOT here: it has its own pill (`ReasoningPill`), so a
- *  long model name can no longer push the effort out of the truncating span. */
+/** The variant tag a model id carries (Fast, Flash, Thinking, Preview,
+ *  Latest) — the one taxonomy both the catalog rows and the composer pill
+ *  split on, so distinct ids never render as one model listed twice.
+ *  Quant and context-window tags stay picker-row detail. */
+export function modelVariantTag(model: string): string {
+  const base = modelBaseId(model)
+
+  for (const [pattern, label] of VARIANT_TAGS) {
+    if (pattern.test(base)) {
+      return label
+    }
+  }
+
+  return ''
+}
+
+/** Composer model-pill label — model name plus its variant tag (Fast, Flash,
+ *  …) when one applies. The reasoning level is NOT here: it has its own pill
+ *  (`ReasoningPill`), so a long model name can no longer push the effort out
+ *  of the truncating span. */
 export function formatModelPillLabel(model: string, options?: { fastMode?: boolean }): string {
   const name = displayModelName(model)
 
   // Fast is shown when the speed=fast param is on (options.fastMode) OR the
-  // active model is a `…-fast` variant (fast via a separate model id).
-  if (model.trim() && (options?.fastMode || /-fast$/i.test(modelBaseId(model)))) {
-    return `${name} · Fast`
-  }
+  // active model is a `…-fast` variant (fast via a separate model id). Other
+  // variant ids ride the same VARIANT_TAGS taxonomy the catalog rows split
+  // on (#118083): a `-flash` id without its tag collapses onto the bare
+  // model's pill, so a model switch reads as a no-op.
+  const tag = model.trim() ? (options?.fastMode ? 'Fast' : modelVariantTag(model)) : ''
 
-  return name
+  return tag ? `${name} · ${tag}` : name
 }

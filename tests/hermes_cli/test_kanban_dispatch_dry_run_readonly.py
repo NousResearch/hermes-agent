@@ -24,6 +24,7 @@ import json
 import subprocess
 import time
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -80,6 +81,24 @@ def workers(monkeypatch) -> _Workers:
     monkeypatch.setattr(kb, "_pid_alive", w.pid_alive)
     monkeypatch.setattr(kbd, "_kill_fn", lambda signal_fn=None: w.kill)
     return w
+
+
+@pytest.fixture(autouse=True)
+def _stable_worker_identity(monkeypatch):
+    """A deterministic worker fingerprint for the whole module.
+
+    The ``subprocess.Popen(["true"])`` children in ``_claimed_running`` have
+    already exited by the time ``_set_worker_pid`` runs, so the real
+    ``_process_fingerprint`` read is unavailable and the spawn would be
+    persisted as ``UNVERIFIED_WORKER_FINGERPRINT`` — which every signalling
+    sweep refuses. The stub must ALSO cover the tick itself: at signal time
+    ``_pid_recycled`` re-reads the fingerprint, and for a dead pid that read
+    returns ``None``, which reads as "recycled" and routes the row into
+    ``detect_crashed_workers`` instead of ``enforce_max_runtime``. The
+    constant stub matches the persisted value at both ends, the same way
+    tests/hermes_cli/test_kanban_db.py stubs it for a verified spawn.
+    """
+    monkeypatch.setattr(kbd, "_process_fingerprint", lambda _pid: "boot:1|777")
 
 
 def _spawn_fn(task, workspace, board=None):

@@ -399,14 +399,19 @@ function appendStreamPart(
   parts: ChatMessagePart[],
   type: 'reasoning' | 'text',
   delta: string,
-  timestamp?: number
+  timestamp?: number,
+  sourceId?: string
 ): { index: number; parts: ChatMessagePart[] } {
   const next = [...parts]
 
   const tailIndex = next.length - 1
   const tail = next[tailIndex]
 
-  if (tail?.type === type && tail.completedAt === undefined) {
+  if (
+    tail?.type === type &&
+    tail.completedAt === undefined &&
+    (tail.type !== 'reasoning' || tail.sourceId === sourceId)
+  ) {
     next[tailIndex] = { ...tail, text: `${tail.text}${delta}` } as ChatMessagePart
 
     return { index: tailIndex, parts: next }
@@ -420,12 +425,15 @@ function appendStreamPart(
     next[tailIndex] = { ...tail, completedAt: timestamp } as ChatMessagePart
   }
 
-  const STREAM_PART: Record<'reasoning' | 'text', (text: string, timestamp?: number) => ChatMessagePart> = {
+  const STREAM_PART: Record<
+    'reasoning' | 'text',
+    (text: string, timestamp?: number, sourceId?: string) => ChatMessagePart
+  > = {
     reasoning: reasoningPart,
     text: textPart
   }
 
-  next.push(STREAM_PART[type](delta, timestamp))
+  next.push(STREAM_PART[type](delta, timestamp, sourceId))
 
   return { index: next.length - 1, parts: next }
 }
@@ -436,24 +444,7 @@ export function appendReasoningPart(
   timestamp?: number,
   sourceId?: string
 ): ChatMessagePart[] {
-  if (sourceId) {
-    const next = [...parts]
-    const tail = next.at(-1)
-
-    if (tail?.type === 'reasoning' && tail.sourceId === sourceId && tail.completedAt === undefined) {
-      next[next.length - 1] = { ...tail, text: `${tail.text}${delta}` }
-
-      return next
-    }
-
-    return [...next, reasoningPart(delta, timestamp, sourceId)]
-  }
-
-  if (parts.at(-1)?.type === 'reasoning' && parts.at(-1)?.sourceId) {
-    return [...parts, reasoningPart(delta, timestamp)]
-  }
-
-  return appendStreamPart(parts, 'reasoning', delta, timestamp).parts
+  return appendStreamPart(parts, 'reasoning', delta, timestamp, sourceId).parts
 }
 
 export function appendAssistantTextPart(

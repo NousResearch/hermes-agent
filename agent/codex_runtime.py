@@ -379,6 +379,8 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     # item_id -> (tool_name, args, started_monotonic); duration even when codex omits durationMs.
     started: dict[str, tuple[str, dict, float]] = {}
     active_reasoning_item_id: str | None = None
+    previous_reasoning_source: str | None = None
+    reasoning_sources: dict[str, list[str]] = {}
 
     def agent_cb(attr: str, fail_msg: str, *fail_args: Any, args: tuple = (), kwargs: dict | None = None) -> None:
         _call_guarded(getattr(agent, attr, None), fail_msg, *fail_args, args=args, kwargs=kwargs)
@@ -419,33 +421,54 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
             agent_cb(attr, f"{attr} raised", args=(text,))
 
     def _fire_reasoning_delta(params: dict) -> None:
-        text = params.get("delta") or params.get("text") or ""
+        nonlocal previous_reasoning_source
+        text = _delta_text(params)
+        if not text:
+            return
         item_id = params.get("itemId") or params.get("item_id") or active_reasoning_item_id
+        source_id = item_id if isinstance(item_id, str) and item_id else None
+        # Canonical app-server events and their legacy aliases carry the same coordinates.
+        for kind, camel, snake in (("summary", "summaryIndex", "summary_index"),
+                                   ("content", "contentIndex", "content_index")):
+            index = params.get(camel, params.get(snake))
+            if source_id and isinstance(index, int) and not isinstance(index, bool) and index >= 0:
+                source_id = f"{item_id}:{kind}:{index}"
+                break
+        if source_id:
+            if previous_reasoning_source is not None and source_id != previous_reasoning_source:
+                text = "\n\n" + text
+            previous_reasoning_source = source_id
         callback = getattr(agent, "reasoning_event_callback", None)
-        if isinstance(text, str) and text and isinstance(item_id, str) and item_id and callback is not None:
+        if source_id and callback is not None:
             try:
                 delivery = getattr(agent, "_fire_reasoning_event", None) or callback
-                delivery("delta", item_id, text)
+                if source_id != item_id:
+                    sources = reasoning_sources.setdefault(item_id, [])
+                    if source_id not in sources:
+                        delivery("start", source_id, "")
+                        sources.append(source_id)
+                delivery("delta", source_id, text)
                 return
             except Exception:
                 logger.debug("reasoning_event_callback raised", exc_info=True)
-        _fire_delta(params, "_fire_reasoning_delta")
+        agent_cb("_fire_reasoning_delta", "_fire_reasoning_delta raised", args=(text,))
 
     def _fire_reasoning_item_event(event: str, item: dict) -> None:
         nonlocal active_reasoning_item_id
         item_id = item.get("id")
-        callback = getattr(agent, "reasoning_event_callback", None)
-        if not isinstance(item_id, str) or not item_id or callback is None:
+        if not isinstance(item_id, str) or not item_id:
             return
-        try:
-            delivery = getattr(agent, "_fire_reasoning_event", None) or callback
-            delivery(event, item_id, "")
-            if event == "start":
-                active_reasoning_item_id = item_id
-            elif event == "end" and active_reasoning_item_id == item_id:
-                active_reasoning_item_id = None
-        except Exception:
-            logger.debug("reasoning_event_callback raised", exc_info=True)
+        if event == "start":
+            active_reasoning_item_id = item_id
+        elif event == "end" and active_reasoning_item_id == item_id:
+            active_reasoning_item_id = None
+        ended_sources = reasoning_sources.pop(item_id, []) if event == "end" else []
+        callback = getattr(agent, "reasoning_event_callback", None)
+        if callback is None:
+            return
+        delivery = getattr(agent, "_fire_reasoning_event", None) or callback
+        for source_id in [*ended_sources, item_id]:
+            _call_guarded(delivery, "reasoning_event_callback raised", args=(event, source_id, ""))
 
     def _fire_agent_message_completed(item: dict) -> None:
         text = item.get("text") or ""
@@ -477,11 +500,18 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     handlers["item/completed"] = lambda p: _on_item(p, completed=True)
 
     def on_event(note: dict) -> None:
+        nonlocal previous_reasoning_source, active_reasoning_item_id
         if not isinstance(note, dict):
             return
         method = note.get("method") or ""
         params = note.get("params")
         params = params if isinstance(params, dict) else {}
+        # The bridge belongs to a reusable app-server session, not a single turn.
+        # A later turn must not inherit separators or unfinished native source IDs.
+        if method in {"turn/started", "turn/completed"}:
+            previous_reasoning_source = None
+            active_reasoning_item_id = None
+            reasoning_sources.clear()
         # The session has already filtered foreign thread/turn notifications. Count
         # progress even without UI callbacks (or when commentary is hidden), but
         # never let empty deltas or transport keepalives mask a stalled turn.
@@ -914,6 +944,13 @@ class _CodexResponseAssembler:
             return
         summary_index = _event_field(event, "summary_index")
         item_id = _event_field(event, "item_id")
+        # A native source ID must not remove separators needed by flat gateway/plugin
+        # consumers. Coordinates include the item: each new item can restart at index 0.
+        if summary_index is not None:
+            source = (item_id, summary_index)
+            if self.active_summary_index is not None and source != self.active_summary_index:
+                reasoning_text = f"\n\n{reasoning_text}"
+            self.active_summary_index = source
         structured = (
             self.on_reasoning_event is not None and isinstance(item_id, str) and item_id
             and isinstance(summary_index, int) and not isinstance(summary_index, bool) and summary_index >= 0
@@ -923,14 +960,8 @@ class _CodexResponseAssembler:
                 self.on_reasoning_event, "on_reasoning_event",
                 "delta", f"{item_id}:summary:{summary_index}", reasoning_text,
             )
-            return
-        if self.on_reasoning_delta is None:
-            return
-        if summary_index is not None:
-            if self.active_summary_index is not None and summary_index != self.active_summary_index:
-                reasoning_text = f"\n\n{reasoning_text}"
-            self.active_summary_index = summary_index
-        self._safe(self.on_reasoning_delta, "on_reasoning_delta", reasoning_text)
+        elif self.on_reasoning_delta is not None:
+            self._safe(self.on_reasoning_delta, "on_reasoning_delta", reasoning_text)
 
     def _on_reasoning_part(self, event: Any, event_type: str) -> None:
         item_id = _event_field(event, "item_id")

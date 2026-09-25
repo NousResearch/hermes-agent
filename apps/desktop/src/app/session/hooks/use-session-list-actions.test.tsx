@@ -105,8 +105,19 @@ vi.mock('@/store/session-removal', async importActual => ({
   $removedSessionIds: { get: () => removed.ids }
 }))
 
+// The settle-grace keep set must be mocked at MODULE scope: the hook imports
+// getRecentlySettledSessionIds as a live ESM binding, so patching a
+// dynamically-imported copy (or a temporary object) never reaches it.
+const settled = vi.hoisted(() => ({ ids: [] as string[] }))
+
+vi.mock('@/store/session-states', async importActual => ({
+  ...(await importActual<Record<string, unknown>>()),
+  getRecentlySettledSessionIds: () => settled.ids
+}))
+
 beforeEach(() => {
   gatewayScope.epoch = 0
+  settled.ids = []
   getCronJobs.mockReset()
   getCronJobs.mockResolvedValue([])
   listSidebarSessions.mockReset()
@@ -316,10 +327,7 @@ describe('refreshSessions identity + loading hygiene', () => {
     // optimistic drop would see it.
     setSessions([row('just-archived'), row('mine')])
     // And make the settle grace name it: simulate a turn that just ended.
-    const { getRecentlySettledSessionIds } = await import('@/store/session-states')
-    const settled = vi.spyOn({ getRecentlySettledSessionIds }, 'getRecentlySettledSessionIds')
-
-    settled.mockReturnValue(['just-archived'])
+    settled.ids = ['just-archived']
 
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [row('mine', { message_count: 3 })] }))
 

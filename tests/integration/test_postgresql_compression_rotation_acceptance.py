@@ -34,6 +34,12 @@ def _store(schema: str) -> PostgreSQLStateStore:
     return PostgreSQLStateStore(_SETTINGS, _DSN, schema=schema)
 
 
+def _bootstrap_owned_tenant(schema: str) -> None:
+    """Let production Alembic own the empty fixture before harness tables exist."""
+    store = _store(schema)
+    store.close()
+
+
 @pytest.fixture(autouse=True)
 def requires_postgresql_18(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PG_ROTATION_GATE_DSN", _DSN)
@@ -44,6 +50,7 @@ def requires_postgresql_18(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture
 def harness(postgresql_test_target: OwnedPostgreSQLTestTarget) -> tuple[str, str]:
+    _bootstrap_owned_tenant(postgresql_test_target.schema)
     install(_DSN, postgresql_test_target.schema)
     parent = f"parent-{uuid.uuid4().hex}"
     seed(_DSN, postgresql_test_target.schema, parent)
@@ -172,6 +179,7 @@ def test_pg18_spawned_owners_server_clock_fence_stale_rejection_and_namespace_is
 
     other = OwnedPostgreSQLTestTarget(_DSN).allocate()
     try:
+        _bootstrap_owned_tenant(other.schema)
         install(_DSN, other.schema); seed(_DSN, other.schema, parent, tenant="tenant-b")
         other_fence = acquire(_DSN, other.schema, parent, loser)
         assert other_fence == 1
@@ -202,9 +210,12 @@ def test_pg18_sigkill_during_real_transaction_is_rolled_back_without_replay(harn
     _assert_exact_oracle_snapshot(audit(_DSN, schema, parent))
 
 
-def test_pg18_production_rotation_interface_publishes_fenced_handoff(harness):
-    schema, _parent = harness
-    store = _store(schema)
+def test_pg18_production_rotation_interface_publishes_fenced_handoff(
+    postgresql_test_target: OwnedPostgreSQLTestTarget,
+):
+    # The production store must reopen an Alembic-owned tenant, never the
+    # protocol harness schema that deliberately contains test-only relations.
+    store = _store(postgresql_test_target.schema)
     try:
         parent, child, holder = "production-parent", "production-child", "production-owner"
         store.ensure_session(parent, "telegram", metadata={
@@ -249,15 +260,11 @@ def test_pg18_production_rotation_interface_publishes_fenced_handoff(harness):
         store.close()
 
 
-def test_pg18_unknown_catalog_version_is_rejected_fail_closed(postgresql_test_target: OwnedPostgreSQLTestTarget):
+def test_pg18_legacy_catalog_is_rejected_fail_closed(postgresql_test_target: OwnedPostgreSQLTestTarget):
     store = _store(postgresql_test_target.schema); store.close()
-    unknown_version = 26
     postgresql_test_target.execute(
-        f"INSERT INTO {postgresql_test_target.schema}.schema_migrations "
-        f"(version, applied_at) VALUES ({unknown_version}, 0)"
+        f"CREATE TABLE {postgresql_test_target.schema}.schema_migrations "
+        "(version integer PRIMARY KEY, applied_at double precision NOT NULL)"
     )
-    with pytest.raises(
-        StateStoreConfigurationError,
-        match=rf"Unsupported PostgreSQL State Store schema migration versions: \[{unknown_version}\]",
-    ):
+    with pytest.raises(StateStoreConfigurationError, match="formal reinitialization"):
         _store(postgresql_test_target.schema)

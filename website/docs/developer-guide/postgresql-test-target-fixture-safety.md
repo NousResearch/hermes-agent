@@ -1,9 +1,16 @@
 # PostgreSQL test-target fixture safety inventory
 
 `tests/integration/postgresql_test_target.py` is the only allowed implementation
-of target allocation, ownership-marker validation, or schema teardown. Its
-fixture allocates a UUID-derived schema, stores an opaque marker capability, and
-revalidates that marker immediately before destructive teardown.
+of integration-test target allocation, ownership-marker validation, or schema
+teardown. Its fixture allocates a UUID-derived schema, stores an opaque marker
+capability, and revalidates that marker immediately before destructive teardown.
+
+The standalone SQLite importer has a separate CLI lifecycle because its retained
+rehearsal target must outlive a test fixture. It allocates a tenant and a
+same-invocation UUID companion marker schema in one PostgreSQL transaction. It
+never creates or mutates a `public` ownership registry. Import failure performs
+marker-validated atomic reconciliation and the CLI renders only the cleanup
+status and target schema—never the DSN.
 
 ## Migrated family
 

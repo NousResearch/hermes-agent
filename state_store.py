@@ -731,10 +731,9 @@ def resolve_contextual_session_search_store(
 
     A named profile is identified only through the profile registry; neither a
     caller-supplied database path nor a caller-supplied PostgreSQL schema is
-    accepted.  PostgreSQL is acquired under that canonical home so its tenant
-    selection remains the trusted ``postgresql_tenant_schema`` path, then is
-    admitted only when its complete contextual and generated-search contracts
-    are healthy.
+    accepted.  PostgreSQL is acquired under that canonical home, derives its
+    tenant from canonical profile identity, then is admitted only when its
+    complete contextual and generated-search contracts are healthy.
     """
     target_profile, home = _canonical_contextual_profile(profile)
     if target_profile is not None and (session_db is not None or session_db_factory is not None):
@@ -776,25 +775,69 @@ def _profile_secret_lookup(home: Path, name: str) -> str | None:
     return build_profile_secret_scope(home).get(name)
 
 
-def postgresql_tenant_schema() -> str:
-    """Return the identifier-safe schema for the already resolved Hermes profile.
+def _resolve_postgresql_tenant_schema():
+    """Derive the active profile's tenant identity for internal store owners.
 
     The profile identity comes only from the active ``HERMES_HOME`` resolution,
     never from StateStore caller metadata or a configuration value.  Hashing the
     canonical home and canonical profile name makes identifiers deterministic and
     keeps even unusual profile names out of SQL text.
     """
+    # Keep the raw identifier inside this resolver.  Constructor/operation
+    # boundaries receive the explicit capability below, never a caller string.
+    from state_store_alembic.migration_helpers import _issue_runtime_tenant_schema
+
+    return _issue_runtime_tenant_schema(_canonical_postgresql_tenant_schema_name())
+
+
+_HISTORIC_DEFAULT_POSTGRESQL_SCHEMA = "hermes_state_store_slice"
+
+
+def _canonical_postgresql_tenant_schema_name() -> str:
+    """Return the resolver-owned name for the active profile without minting it."""
+
     from hermes_constants import get_hermes_home, profile_name_for_home
 
     home = get_hermes_home().resolve()
     profile_name = profile_name_for_home(home)
-    # The formerly global schema is deliberately the root/default compatibility
-    # tenant only. Named profiles never acquire it, so a shared DSN cannot expose
-    # legacy root rows to a named profile.
-    if profile_name == "default":
-        return "hermes_state_store_slice"
     digest = hashlib.sha256(f"{home}\0{profile_name}".encode("utf-8")).hexdigest()[:32]
     return f"hermes_state_store_tenant_{digest}"
+
+
+def _is_default_state_store_profile() -> bool:
+    """Whether this process is opening the installation-root/default profile."""
+
+    from hermes_constants import get_hermes_home, profile_name_for_home
+
+    return str(profile_name_for_home(get_hermes_home().resolve()) or "default").casefold() == "default"
+
+
+def _historic_default_postgresql_state_exists(
+    settings: PostgreSQLStateStoreConfig, dsn: str, *, canonical_default_binding: bool,
+) -> bool:
+    """Detect historic default state before the canonical tenant bootstrap."""
+
+    if not canonical_default_binding:
+        return False
+    try:
+        import importlib
+        # A historic schema name is a cutover marker in its own right.  Checking
+        # only relations leaves schema-local collations, every text-search
+        # catalog class, and future namespace-scoped object classes outside the
+        # guard.  An empty schema is also fail-closed: only formal cutover may
+        # retire the fixed historic binding.
+        psycopg = importlib.import_module("psycopg")
+        with psycopg.connect(dsn, connect_timeout=settings.connect_timeout_seconds, autocommit=True) as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_namespace WHERE nspname=%s)",
+                    (_HISTORIC_DEFAULT_POSTGRESQL_SCHEMA,),
+                )
+                return bool(cursor.fetchone()[0])
+    except Exception as exc:
+        raise StateStoreConfigurationError(
+            "PostgreSQL state store could not inspect the historic default-profile cutover boundary"
+        ) from exc
 
 
 def open_state_store(
@@ -812,4 +855,16 @@ def open_state_store(
             f"PostgreSQL state store requires secret {resolved.postgresql.dsn_env}; configure it in the active profile secret scope")
     from state_store_postgresql import PostgreSQLStateStore
 
-    return PostgreSQLStateStore(resolved.postgresql, str(dsn), schema=postgresql_tenant_schema())
+    schema = _resolve_postgresql_tenant_schema()
+    canonical_default_binding = (
+        _is_default_state_store_profile()
+        and schema.name == _canonical_postgresql_tenant_schema_name()
+    )
+    if _historic_default_postgresql_state_exists(
+        resolved.postgresql, str(dsn), canonical_default_binding=canonical_default_binding,
+    ):
+        raise StateStoreConfigurationError(
+            "PostgreSQL state store found historic default-profile schema hermes_state_store_slice; "
+            "formal reinitialization/cutover is required before hashed tenant bootstrap"
+        )
+    return PostgreSQLStateStore(resolved.postgresql, str(dsn), schema=schema)

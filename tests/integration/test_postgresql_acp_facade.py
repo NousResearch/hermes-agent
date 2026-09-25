@@ -28,7 +28,7 @@ def pg_cli_home(tmp_path, monkeypatch, postgresql_test_target):
     )
     monkeypatch.setenv("HERMES_STATE_STORE_TEST_DSN", _DSN)
     import state_store
-    monkeypatch.setattr(state_store, "postgresql_tenant_schema", lambda *_args, **_kwargs: postgresql_test_target.schema)
+    monkeypatch.setattr(state_store, "_resolve_postgresql_tenant_schema", lambda *_args, **_kwargs: postgresql_test_target.schema)
     token = set_hermes_home_override(str(home))
     stores = []
     try:

@@ -52,7 +52,7 @@ def owned_postgresql_schema(monkeypatch, postgresql_test_target):
     _SCHEMA, _TARGET = postgresql_test_target.schema, postgresql_test_target
     monkeypatch.setenv(_DSN_ENV, postgresql_test_target.dsn)
     import state_store
-    original_schema = state_store.postgresql_tenant_schema
+    original_schema = state_store._resolve_postgresql_tenant_schema
     targets: dict[str, OwnedPostgreSQLTestTarget] = {}
 
     def owned_schema(*args: object, **kwargs: object) -> str:
@@ -63,7 +63,7 @@ def owned_postgresql_schema(monkeypatch, postgresql_test_target):
             targets[trusted_schema] = OwnedPostgreSQLTestTarget(postgresql_test_target.dsn).allocate()
         return targets[trusted_schema].schema
 
-    monkeypatch.setattr(state_store, "postgresql_tenant_schema", owned_schema)
+    monkeypatch.setattr(state_store, "_resolve_postgresql_tenant_schema", owned_schema)
     yield
     for target in targets.values():
         if target is not postgresql_test_target:
@@ -98,10 +98,10 @@ def _seed_v2_schema(dsn: str, ledger_versions: tuple[int, ...]) -> None:
         _target().execute(f"INSERT INTO {_SCHEMA}.schema_migrations (version, applied_at) VALUES (%s, 1)", (version,))
 
 
-def _migration_versions(dsn: str) -> list[int]:
+def _alembic_revisions(dsn: str) -> list[str]:
     with _psycopg().connect(dsn) as connection, connection.cursor() as cursor:
-        cursor.execute(f"SELECT version FROM {_SCHEMA}.schema_migrations ORDER BY version")
-        return [int(row[0]) for row in cursor.fetchall()]
+        cursor.execute(f"SELECT version_num FROM {_SCHEMA}.alembic_version ORDER BY version_num")
+        return [str(row[0]) for row in cursor.fetchall()]
 
 
 def test_postgresql_store_persists_session_messages_and_closes_pool(monkeypatch):
@@ -347,14 +347,14 @@ def test_sqlite_and_postgresql_content_addressed_system_prompt_parity(monkeypatc
             store.close()
 
 
-def test_postgresql_fresh_migration_contract_is_linear_idempotent_and_catalog_complete(monkeypatch):
+def test_postgresql_fresh_alembic_baseline_is_idempotent_and_catalog_complete(monkeypatch):
     dsn = "postgresql://hermes_state_store_test@127.0.0.1:5432/hermes_state_store_test"
     monkeypatch.setenv(_DSN_ENV, dsn)
     _reset_schema(dsn)
     try:
         store = open_state_store(_config())
         store.close()
-        assert _migration_versions(dsn) == list(range(1, 26))
+        assert _alembic_revisions(dsn) == ["state_store_v26_sqlite_import"]
         with _psycopg().connect(dsn) as connection, connection.cursor() as cursor:
             cursor.execute(f"SELECT column_name FROM information_schema.columns WHERE table_schema = '{_SCHEMA}' AND table_name = 'sessions'")
             columns = {row[0] for row in cursor.fetchall()}
@@ -371,63 +371,23 @@ def test_postgresql_fresh_migration_contract_is_linear_idempotent_and_catalog_co
                 ("sessions_parent_session_id_fkey", False),
                 ("sessions_system_prompt_hash_fkey", True),
             ]
-            cursor.execute(
-                "SELECT conname FROM pg_constraint "
-                f"WHERE conrelid = '{_SCHEMA}.conversation_generations'::regclass "
-                "AND contype = 'p'"
-            )
-            assert cursor.fetchall() == [("conversation_generations_pkey",)]
         store = open_state_store(_config())
         store.close()
-        assert _migration_versions(dsn) == list(range(1, 26))
-        _target().execute(f"INSERT INTO {_SCHEMA}.schema_migrations (version, applied_at) VALUES (26, 0)")
-        with pytest.raises(
-            StateStoreConfigurationError,
-            match=r"Unsupported PostgreSQL State Store schema migration versions: \[26\]",
-        ):
-            open_state_store(_config())
-        _target().execute(f"DELETE FROM {_SCHEMA}.schema_migrations WHERE version=26")
-        _target().execute(f"ALTER TABLE {_SCHEMA}.conversation_generations DROP CONSTRAINT conversation_generations_pkey")
-        _target().execute(f"ALTER TABLE {_SCHEMA}.conversation_generations ADD CONSTRAINT conversation_generations_pkey PRIMARY KEY (session_key, source)")
-        with pytest.raises(StateStoreConfigurationError, match="primary key must be"):
+        assert _alembic_revisions(dsn) == ["state_store_v26_sqlite_import"]
+        _target().execute(f"UPDATE {_SCHEMA}.alembic_version SET version_num='unknown_revision'")
+        with pytest.raises(StateStoreConfigurationError, match="exactly one supported revision"):
             open_state_store(_config())
     finally:
         _reset_schema(dsn)
 
 
-def test_postgresql_upgrade_migrations_accept_v2_and_legacy_v5_ledgers(monkeypatch):
+def test_postgresql_legacy_ledgers_require_formal_reinitialization(monkeypatch):
     dsn = "postgresql://hermes_state_store_test@127.0.0.1:5432/hermes_state_store_test"
     monkeypatch.setenv(_DSN_ENV, dsn)
     _reset_schema(dsn)
     try:
         _seed_v2_schema(dsn, (1, 2))
-        _target().execute(f"INSERT INTO {_SCHEMA}.sessions (id, source, started_at) VALUES ('survives-v2', 'fixture', 1)")
-        store = open_state_store(_config())
-        session = store.get_session("survives-v2")
-        assert session is not None
-        assert session["source"] == "fixture"
-        store.close()
-        assert _migration_versions(dsn) == list(range(1, 26))
-
-        _reset_schema(dsn)
-        _seed_v2_schema(dsn, (1, 2, 3, 4))
-        _target().execute(f"ALTER TABLE {_SCHEMA}.sessions ADD CONSTRAINT sessions_parent_session_id_fkey FOREIGN KEY (parent_session_id) REFERENCES {_SCHEMA}.sessions(id) NOT VALID")
-        store = open_state_store(_config())
-        store.close()
-        assert _migration_versions(dsn) == list(range(1, 26))
-
-        _reset_schema(dsn)
-        _seed_v2_schema(dsn, (1, 2, 5))
-        _target().execute(f"ALTER TABLE {_SCHEMA}.sessions ADD COLUMN title text")
-        _target().execute(f"ALTER TABLE {_SCHEMA}.sessions ADD COLUMN title_source text")
-        _target().execute(f"ALTER TABLE {_SCHEMA}.sessions ADD COLUMN hidden boolean NOT NULL DEFAULT false")
-        _target().execute(f"CREATE UNIQUE INDEX sessions_title_unique ON {_SCHEMA}.sessions (title) WHERE title IS NOT NULL")
-        _target().execute(f"ALTER TABLE {_SCHEMA}.sessions ADD CONSTRAINT sessions_parent_session_id_fkey FOREIGN KEY (parent_session_id) REFERENCES {_SCHEMA}.sessions(id) NOT VALID")
-        store = open_state_store(_config())
-        store.close()
-        assert _migration_versions(dsn) == list(range(1, 26))
-        _target().execute(f"DROP INDEX {_SCHEMA}.sessions_title_unique")
-        with pytest.raises(StateStoreConfigurationError, match="sessions_title_unique"):
+        with pytest.raises(StateStoreConfigurationError, match="formal reinitialization"):
             open_state_store(_config())
     finally:
         _reset_schema(dsn)
@@ -720,8 +680,8 @@ def test_sqlite_and_postgresql_model_config_lifecycle_parity(monkeypatch, tmp_pa
         }] * 2
         postgresql = cast(Any, stores[1])
         with postgresql._connection() as connection, connection.cursor() as cursor:
-            cursor.execute(f"SELECT version FROM {_SCHEMA}.schema_migrations ORDER BY version")
-            assert [row[0] for row in cursor.fetchall()][-5:] == [21, 22, 23, 24, 25]
+            cursor.execute(f"SELECT version_num FROM {_SCHEMA}.alembic_version")
+            assert cursor.fetchall() == [("state_store_v26_sqlite_import",)]
     finally:
         for store in stores:
             store.close()
@@ -819,7 +779,7 @@ def test_postgresql_git_metadata_generation_catalog_drift_fails_closed(monkeypat
             store = open_state_store(_config())
             store.close()
             _target().execute(statement)
-            with pytest.raises(StateStoreConfigurationError, match="Git metadata columns"):
+            with pytest.raises(StateStoreConfigurationError, match="catalog drift"):
                 open_state_store(_config())
     finally:
         _reset_schema(dsn)
@@ -958,7 +918,7 @@ def test_postgresql_rejects_injection_looking_schema_before_connecting():
     from state_store import PostgreSQLStateStoreConfig
     from state_store_postgresql import PostgreSQLStateStore
 
-    with pytest.raises(StateStoreConfigurationError, match="invalid trusted tenant schema"):
+    with pytest.raises(StateStoreConfigurationError, match="runtime-derived trusted tenant schema"):
         PostgreSQLStateStore(
             PostgreSQLStateStoreConfig(dsn_env="TEST_DSN", connect_timeout_seconds=1, pool_max_size=1),
             "postgresql://invalid",
@@ -1210,8 +1170,8 @@ def test_postgresql_anchored_and_scroll_views_match_sqlite_physical_boundaries(m
         _reset_schema(dsn)
 
 
-def test_postgresql_generated_search_health_rebuild_and_contextual_admission(monkeypatch, tmp_path):
-    """PG18 catalog drift is tenant-local, repairable, and never SQLite FTS progress."""
+def test_postgresql_generated_search_health_rejects_runtime_repair_and_contextual_admission(monkeypatch, tmp_path):
+    """PG18 catalog drift is tenant-local, fail-closed, and Alembic-owned."""
     dsn = "postgresql://hermes_state_store_test@127.0.0.1:5432/hermes_state_store_test"
     monkeypatch.setenv(_DSN_ENV, dsn)
     _reset_schema(dsn)
@@ -1225,7 +1185,7 @@ def test_postgresql_generated_search_health_rebuild_and_contextual_admission(mon
         assert healthy["backend"] == "postgresql"
         assert healthy["available"] is True and healthy["query_path_available"] is True
         assert healthy["generated_document"] == "valid" and healthy["gin_index"] == "valid"
-        assert healthy["rebuild"] == {"supported": True, "operation": "reindex_or_create", "in_progress": False}
+        assert healthy["rebuild"] == {"supported": False, "operation": "alembic_only", "in_progress": False}
         assert healthy["sqlite_fts_semantics"] == {
             "corruption_detach": False, "canonical_like_fallback": False,
             "deferred_backfill": False, "high_water": False, "retry_quarantine": False,
@@ -1235,26 +1195,16 @@ def test_postgresql_generated_search_health_rebuild_and_contextual_admission(mon
         assert contextual.search_messages("health", fields=("session_id",)) == [{"session_id": "health"}]
 
         _target().execute(f"DROP INDEX {_SCHEMA}.messages_search_document_gin")
-        missing = postgresql.search_index_status()
-        assert missing["available"] is False and missing["gin_index"] == "missing"
-        # The predicate can sequential-scan, but contextual admission is explicitly fail-closed.
-        assert postgresql.search_messages("health", fields=("session_id",)) == [{"session_id": "health"}]
-        with pytest.raises(Exception, match="generated-search health"):
+        with pytest.raises(Exception, match="index method"):
+            postgresql.search_index_status()
+        with pytest.raises(Exception, match="index method"):
             contextual_session_search_store(postgresql, backend="postgresql")
-        repaired = postgresql.rebuild_search_index()
-        assert repaired["available"] is True and repaired["rebuild"]["operation"] == "create"
-        assert repaired["last_successful_rebuild_at"] is not None
-
-        _target().execute(f"DROP INDEX {_SCHEMA}.messages_search_document_gin")
-        _target().execute(f"CREATE INDEX messages_search_document_gin ON {_SCHEMA}.messages (search_document)")
-        assert postgresql.search_index_status()["gin_index"] == "invalid"
-        assert postgresql.rebuild_search_index()["rebuild"]["operation"] == "replace_invalid"
-        assert postgresql.search_index_status()["gin_index"] == "valid"
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            outcomes = list(executor.map(lambda _: postgresql.rebuild_search_index(), range(2)))
-        assert all(outcome["available"] for outcome in outcomes)
-        assert {outcome["rebuild"]["operation"] for outcome in outcomes} <= {"reindex", "already_running"}
+        with postgresql._connection() as connection, connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=%s AND indexname='messages_search_document_gin')",
+                (postgresql._schema,),
+            )
+            assert cursor.fetchone() == (False,)
     finally:
         sqlite.close()
         postgresql.close()

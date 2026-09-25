@@ -122,6 +122,23 @@ def test_rewind_classifies_only_user_originated_turns(backend):
     assert [m["role"] for m in store.get_messages_as_conversation(sid)] == ["user", "assistant", "tool"]
 
 
+def test_rewind_repairs_adjacent_durable_user_turns(backend):
+    """Rewind addresses the same repaired projection the live resume path exposes."""
+    _kind, store = backend
+    sid = f"rewind-repaired-{uuid.uuid4()}"
+    store.ensure_session(sid, source="test")
+    _append(store, sid, "user", "first question")
+    _append(store, sid, "user", "second question")
+    _append(store, sid, "assistant", "answer")
+
+    outcome = rewind_user_turn(store, sid, -1)
+
+    assert outcome.turns_undone == 1
+    assert "first question" in outcome.live_text
+    assert "second question" in outcome.live_text
+    assert _visible(store, sid) == []
+
+
 def test_rewind_receipt_visibility(backend):
     kind, store = backend
     sid = f"rewind-receipt-{uuid.uuid4()}"

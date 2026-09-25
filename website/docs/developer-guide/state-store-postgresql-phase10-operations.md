@@ -8,7 +8,7 @@ This is an isolated PG18 reliability slice for the already implemented PostgreSQ
 
 ## Doctor/status contract
 
-`doctor()` is sanitized: it returns no DSN or credentials. It proves loopback reachability, PostgreSQL server version, required extension availability, migration ledger values, required-table inventory/counts, message and usage FK-orphan checks, generated-document/GIN search health, active ownership-lease count, and delivery-ledger v1/catalog/count when present. A missing extension, catalog drift, unhealthy search index, or orphan invariant fails closed.
+`doctor()` is sanitized: it returns no DSN or credentials. It proves loopback reachability, PostgreSQL server version, required extension availability, and the exact current Alembic head `state_store_v26_sqlite_import`. The exact contract is: **v25 immutable historic core baseline -> v26 non-topic sqlite import manifest head** (`state_store_v25_core` → `state_store_v26_sqlite_import`). Its read-only semantic validation covers the v1–v25 core catalog plus `sqlite_import_manifests`: exact tenant relations, columns/types/nullability/defaults/generated expression, PK/UQ/FK semantics and FK validation state, and non-primary index method/key/predicate/unique/ready/live/valid state. It then reports required-table inventory/counts, message and usage FK-orphan checks, generated-document/GIN search health, active ownership-lease count, and delivery-ledger v1/catalog/count when present. A legacy `schema_migrations` ledger, malformed Alembic metadata, a v25 tenant that cannot be upgraded to the current head, catalog drift, unhealthy search index, or orphan invariant fails closed; no SQLite fallback is permitted. `session_topics` and `messages.topic_id` are not part of this chain; their DDL is reserved for the separate session-topic branch. **v26 is NOT historic session-topic v26.**
 
 ## Logical backup and restore contract
 
@@ -21,7 +21,7 @@ This is an isolated PG18 reliability slice for the already implemented PostgreSQ
 
 ## PG18 acceptance evidence
 
-`tests/integration/test_postgresql_state_store_operations.py` proves on the loopback named-volume PG18 fixture:
+`tests/integration/test_postgresql_state_store_operations.py` proves the loopback named-volume PG18 operations path, and `tests/integration/test_postgresql_state_store_core_alembic.py` covers destructive-fixture-only bootstrap from the historic v25 baseline through the current v26 non-topic importer head, plus legacy-ledger refusal:
 
 - doctor covers state search, active lease, `pg_trgm`/`vector`, and dedicated delivery-ledger catalog/count;
 - a schema-only logical dump round-trips state and ledger into a new database, validates the manifest contract, and leaves the pre-existing restore-database set unchanged after cleanup;

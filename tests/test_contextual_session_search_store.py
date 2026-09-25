@@ -156,7 +156,7 @@ def test_profile_resolver_routes_postgresql_through_canonical_tenant_and_health_
 
     def fake_open(config, *, secret_lookup):
         seen["home"] = get_hermes_home().resolve()
-        seen["schema"] = state_store.postgresql_tenant_schema()
+        seen["schema"] = state_store._resolve_postgresql_tenant_schema()
         seen["secret"] = secret_lookup("PROFILE_PG_DSN")
         return _UnhealthyPostgreSQLStore()
 

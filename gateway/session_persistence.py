@@ -106,13 +106,10 @@ class SessionPersistenceMixin:
             return cached
         from gateway.session_route_store import PostgreSQLSessionRouteStore
 
-        def _fallback_tenant_schema():
-            from state_store import postgresql_tenant_schema
-            return postgresql_tenant_schema()
-
-        cached = PostgreSQLSessionRouteStore(
-            state_store, tenant_namespace=getattr(
-                state_store, "tenant_schema", None) or _fallback_tenant_schema())
+        tenant_namespace = getattr(state_store, "tenant_schema", None)
+        if not isinstance(tenant_namespace, str) or not tenant_namespace.strip():
+            raise RuntimeError("PostgreSQL state store did not provide its resolver-derived tenant namespace")
+        cached = PostgreSQLSessionRouteStore(state_store, tenant_namespace=tenant_namespace)
         self._pg_route_store = cached
         return cached
 

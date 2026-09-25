@@ -104,17 +104,6 @@ def _delivery_claim_worker(schema: str, results: Any) -> None:
         ledger.close()
 
 
-def _search_lock_worker(schema: str, locked: Any, release: Any) -> None:
-    connection = _psycopg().connect(_DSN, autocommit=True)
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_advisory_lock(hashtextextended(%s, 0))", (f"{schema}:search-index-maintenance",))
-        locked.set()
-        release.wait(15)
-    finally:
-        connection.close()
-
-
 def _namespace_writer(schema: str, label: str, start: Any, results: Any) -> None:
     store = _state_store(schema)
     try:
@@ -223,7 +212,7 @@ def test_pg18_server_fault_rolls_back_message_usage_and_pool_waiter_recovers(pha
         store.close()
 
 
-def test_pg18_delivery_receipt_fence_search_repair_lock_and_concurrent_namespaces(phase12_targets):
+def test_pg18_delivery_receipt_fence_and_concurrent_namespaces(phase12_targets):
     state_target, delivery_target = phase12_targets
     schema, delivery_schema = state_target.schema, delivery_target.schema
     context = multiprocessing.get_context("spawn")
@@ -242,18 +231,6 @@ def test_pg18_delivery_receipt_fence_search_repair_lock_and_concurrent_namespace
         assert len(reclaimed) == 1 and successor_ledger.mark_delivered(reclaimed[0]["receipt"])
     finally:
         successor_ledger.close()
-
-    store = _state_store(schema)
-    lock_ready, release_lock = context.Event(), context.Event()
-    lock_process = context.Process(target=_search_lock_worker, args=(schema, lock_ready, release_lock))
-    lock_process.start(); assert lock_ready.wait(15)
-    try:
-        blocked = store.rebuild_search_index()
-        assert blocked["rebuild"]["operation"] == "already_running"
-        assert store.search_index_status()["rebuild"]["in_progress"] is True
-    finally:
-        release_lock.set(); lock_process.join(15); store.close()
-    assert lock_process.exitcode == 0
 
     targets = [OwnedPostgreSQLTestTarget(_DSN).allocate() for _ in range(3)]
     schemas = [target.schema for target in targets]

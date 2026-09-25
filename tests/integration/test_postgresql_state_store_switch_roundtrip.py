@@ -59,7 +59,7 @@ def switch_home(tmp_path, monkeypatch, postgresql_test_target: OwnedPostgreSQLTe
     # Route the production tenant-schema resolution to this test's owned,
     # marker-verified disposable schema, exactly as a profile home would.
     monkeypatch.setattr(
-        state_store, "postgresql_tenant_schema", lambda *_a, **_k: postgresql_test_target.schema
+        state_store, "_resolve_postgresql_tenant_schema", lambda *_a, **_k: postgresql_test_target.schema
     )
     token = set_hermes_home_override(str(home))
     opened: list[Any] = []
@@ -165,27 +165,19 @@ def test_sqlite_to_pg_to_sqlite_round_trip_preserves_and_isolates_semantics(
     importer = SQLitePostgreSQLSandboxImporter(
         settings, TEST_DSN, schema=target.schema, owned_target=target
     )
-    # Real-fixture evidence: the production SQLite schema currently carries
-    # objects beyond the importer's approved map (session_topics).  The switch
-    # must fail closed on them rather than silently dropping or mis-mapping.
-    with pytest.raises(SQLitePostgreSQLImportError, match="without an approved map"):
-        importer.import_source(disposable_source, snapshot_root=tmp_path)
-    with sqlite3.connect(disposable_source) as connection:
-        unmapped = sorted(
-            row[0]
-            for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
-            if row[0] == "session_topics"
-        )
-    assert unmapped == ["session_topics"], (
-        "if this grows, the approved import map changed; update the round-trip contract"
+    # The Alembic cutover owns an empty tenant only. A legacy numeric ledger is
+    # rejected before this switch can consider any SQLite-source metadata.
+    target.execute(
+        f'CREATE TABLE "{target.schema}".schema_migrations '
+        "(version integer PRIMARY KEY, applied_at double precision NOT NULL)"
     )
-    with sqlite3.connect(disposable_source) as connection:
-        connection.execute("DROP TABLE session_topics")
-    # Second real boundary: SQLite bookkeeping rows (schema_version/state_meta)
-    # that every production state.db populates at init are also rejected —
-    # populated non-migrated objects never ride along silently.
+    with pytest.raises(StateStoreConfigurationError, match="legacy schema_migrations"):
+        PostgreSQLStateStore(settings, TEST_DSN, schema=target.schema)
+    target.reset()
+
+    # SQLite bookkeeping rows (schema_version/state_meta) that every production
+    # state.db populates at init are rejected — populated non-migrated objects
+    # never ride along silently.
     with pytest.raises(
         SQLitePostgreSQLImportError, match="populated non-migrated objects"
     ):

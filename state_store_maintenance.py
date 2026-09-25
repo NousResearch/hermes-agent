@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from state_store import StateStoreConfigurationError, resolve_state_store_config
+from state_store_alembic.migration_helpers import TrustedTenantSchema, require_trusted_tenant_schema
 from state_store_runtime_readiness import inspect_runtime_activation
 
 
@@ -28,7 +29,7 @@ class StateStoreMaintenanceOperations:
     selected_backend: str
     profile_home: Path
     profile_name: str | None = None
-    tenant_schema: str | None = None
+    tenant_schema: TrustedTenantSchema | None = None
     _sqlite_capabilities = frozenset({
         "sessions-repair", "sessions-recover", "sessions-import", "sessions-repair-profiles",
         "backup", "backup-quick", "archive-import", "snapshot-list", "snapshot-create", "snapshot-restore",
@@ -53,7 +54,14 @@ class StateStoreMaintenanceOperations:
                     f"no SQLite fallback is permitted: {exc}"
                 ) from exc
             return cls("sqlite", (home or _current_home()).expanduser().resolve())
-        return cls(report.selected_backend, Path(report.profile_home), report.profile_name, report.tenant_schema)
+        tenant_schema = None
+        if report.selected_backend == "postgresql":
+            tenant_schema = _canonical_profile_tenant_schema(Path(report.profile_home))
+            if tenant_schema.name != report.tenant_schema:
+                raise StateStoreMaintenanceConfigurationError(
+                    "PostgreSQL state-store maintenance could not verify the active canonical tenant"
+                )
+        return cls(report.selected_backend, Path(report.profile_home), report.profile_name, tenant_schema)
 
     def require(self, capability: str) -> None:
         supported = self._sqlite_capabilities if self.selected_backend == "sqlite" else self._postgresql_capabilities
@@ -92,6 +100,12 @@ class StateStoreMaintenanceOperations:
         if self.selected_backend != "postgresql" or not self.tenant_schema:
             raise StateStoreMaintenanceCapabilityError("state-store doctor", self.profile_home)
         try:
+            schema = require_trusted_tenant_schema(self.tenant_schema)
+            expected_schema = _canonical_profile_tenant_schema(self.profile_home)
+            if schema.name != expected_schema.name:
+                raise StateStoreMaintenanceConfigurationError(
+                    "PostgreSQL state-store maintenance tenant does not match the canonical profile tenant"
+                )
             from state_store import _profile_secret_lookup
             from postgresql_state_store_operations import PostgreSQLSandboxOperations
 
@@ -107,7 +121,7 @@ class StateStoreMaintenanceOperations:
             if not str(dsn or "").strip():
                 raise StateStoreMaintenanceConfigurationError("PostgreSQL state-store secret is unavailable; no SQLite fallback is permitted")
             return PostgreSQLSandboxOperations(
-                resolved.postgresql, str(dsn), schema=self.tenant_schema,
+                resolved.postgresql, str(dsn), schema=schema,
                 profile_identity={"home": str(self.profile_home), "name": str(self.profile_name or "default")},
             )
         except StateStoreMaintenanceError:
@@ -153,6 +167,19 @@ def _current_home() -> Path:
     from hermes_constants import get_hermes_home
 
     return get_hermes_home()
+
+
+def _canonical_profile_tenant_schema(home: Path) -> TrustedTenantSchema:
+    """Issue one runtime capability for this resolved profile, never a caller string."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from state_store import _resolve_postgresql_tenant_schema
+
+    canonical_home = home.expanduser().resolve()
+    token = set_hermes_home_override(str(canonical_home))
+    try:
+        return _resolve_postgresql_tenant_schema()
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _declares_state_store(config: Mapping[str, Any] | None, home: Path) -> bool:

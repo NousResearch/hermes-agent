@@ -140,10 +140,10 @@ def build_profile_terminal_scope(
     # "unparseable" into {}): present-but-unparseable must fail closed.
     config_path = home / "config.yaml"
     try:
-        config_exists = config_exists(config_path)
+        has_config = config_exists(config_path)
     except Exception as exc:
         raise TerminalPolicyUnavailable(f"cannot resolve terminal config in {home}: {exc}") from exc
-    if config_exists:
+    if has_config:
         from hermes_cli.config_backend import read_config_doc_readonly
 
         try:

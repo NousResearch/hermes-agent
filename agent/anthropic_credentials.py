@@ -599,7 +599,9 @@ def _mirror_claude_code_credentials_to_keychain(
             return
         argv, line = _keychain_mirror_command(
             account, _merge_keychain_credential_payload(existing, access_token, refresh_token, expires_at_ms))
-        if len(line) > _SECURITY_I_LINE_LIMIT:
+        # The line limit is on the line's content; the appended newline doesn't count.
+        line_length = len(line.rstrip("\n"))
+        if line_length > _SECURITY_I_LINE_LIMIT:
             # The secret must stay off argv and ``security -i`` has no line-continuation
             # syntax, so a payload this large has no safe write — refuse rather than let the
             # truncated first half clobber the item.
@@ -608,7 +610,7 @@ def _mirror_claude_code_credentials_to_keychain(
                 " line (limit %d; typically too many mcpOAuth entries to mirror). The Keychain"
                 " item is left untouched but still holds the already-spent refresh token, so"
                 " Claude Code may log itself out",
-                len(line),
+                line_length,
                 _SECURITY_I_LINE_LIMIT,
             )
             return

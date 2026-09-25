@@ -82,6 +82,22 @@ def _hermes_extras(completed, is_partial, is_failed, err_msg, finish_reason: str
         "error_code": "output_truncated" if finish_reason == "length" else "agent_error"}
 
 
+_TRANSFORMED_NOTICE = "\n\n[Response transformed after streaming]\n"
+
+
+def _post_stream_transform(result: Any) -> tuple:
+    """``(text, appended)`` a stream still owes after ``transform_llm_output`` rewrote the final
+    (the deltas already carried the raw reply): the appended suffix, or the whole rewrite with
+    ``appended=False`` when it is not a pure append. ``("", False)`` when nothing was transformed."""
+    if not isinstance(result, dict) or not result.get("response_transformed"):
+        return "", False
+    final = result.get("final_response") or ""
+    original = result.get("pre_transform_response") or ""
+    if original and final.startswith(original):
+        return final[len(original):], True
+    return final, False
+
+
 def _message_item(text: Any) -> Dict[str, Any]:
     """Responses ``message`` output item carrying one ``output_text`` part."""
     return {"type": "message", "role": "assistant",
@@ -219,6 +235,7 @@ class _ResponsesStream:
         self.message_opened = False
         self.reasoning_item: Optional[Dict[str, Any]] = None  # open ``reasoning`` output item
         self.final_response_text = ""
+        self.transformed_final = ""  # non-append transform_llm_output rewrite; replaces the deltas
         self.agent_error: Optional[str] = None
         self.usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         self.terminal_snapshot_persisted = False
@@ -456,6 +473,12 @@ class _ResponsesStream:
             self.result = result
             self.usage = agent_usage or self.usage
             agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
+            tail, appended = _post_stream_transform(result)
+            if tail and self.final_text_parts:
+                if appended:
+                    await self.emit_text_delta(tail)
+                else:
+                    self.transformed_final = agent_final
             if agent_final and not self.final_text_parts:
                 await self.emit_text_delta(agent_final)
             if agent_final and not self.final_response_text:
@@ -468,7 +491,8 @@ class _ResponsesStream:
 
     async def close_message_item(self) -> None:
         await self.close_reasoning_item()
-        self.final_response_text = "".join(self.final_text_parts) or self.final_response_text
+        self.final_response_text = (
+            self.transformed_final or "".join(self.final_text_parts) or self.final_response_text)
         if not self.message_opened:
             return
         await self.write_event("response.output_text.done", {
@@ -921,6 +945,11 @@ class OpenAICompatRoutesMixin:
                 fallback_text = _resolve_media_to_data_urls(result.get("final_response") or "")
                 if fallback_text:
                     await response.write(_sse_frame(_chunk({"content": fallback_text})))
+            elif not presentation_muted:
+                # Chat chunks can only append: a non-append rewrite follows the streamed text (as in the CLI).
+                tail, appended = _post_stream_transform(result)
+                if tail:
+                    await response.write(_sse_frame(_chunk({"content": tail if appended else _TRANSFORMED_NOTICE + tail})))
             if finish_reason != "stop":
                 if err_msg and not presentation_muted:
                     finish_chunk["error"] = {

@@ -3138,11 +3138,21 @@ def tool_results_this_turn(messages: List[Dict[str, Any]]) -> int:
 
 
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
-# message TAIL announcing a next action, so mid-sentence "I will" never trips it.
+# message TAIL announcing a next action, so mid-sentence "I will" never trips it. Three shapes:
+# (1) an explicit "now"/"next" announcement ("Let me now update it."); (2) a progressive action
+# verb whose sentence stops on a colon or ellipsis ("Doing it now:", "Running all 9 lookups in
+# parallel right now:", "Pulling the members and each user's status:"); (3) a first-person
+# promise that stops on a colon or ellipsis ("Let me try once more:", "I'll re-pull the list:").
+# Shapes 2 and 3 require the colon/ellipsis: the message ends exactly where the tool call should
+# have followed, so ordinary sentences ("Running now means the job is active.") never match.
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
-    r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
+    r"(?:(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
     r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
-    r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
+    r"[^.!?\n]{0,100}[.:\u2026]?"
+    r"|\b(?:doing|running|executing|starting|checking|pulling|re-?pulling|fetching|looking"
+    r"|trying|calling|querying|searching|reading|opening|scanning)\b[^.!?\n]{0,120}[:\u2026]"
+    r"|\b(?:let me|i(?:['\u2019]ll| will)) (?!know\b)[^.!?\n]{0,100}[:\u2026])"
+    r"\s*$", re.IGNORECASE,
 )
 
 # Content longer than this is a substantive reply, not a dangling ack.

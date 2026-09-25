@@ -210,11 +210,13 @@ class TestRealProfileCdpLaunch:
         import tools.browser_tool as bt
         self._reset()
         proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
+        proc.wait.return_value = None
         captured = {}
 
-        def fake_run(argv, **kw):
+        def fake_popen_ab(argv, env, socket_dir, tag, **kw):
             captured["argv"] = argv
-            captured["env"] = kw["env"]
+            captured["env"] = env
+            captured["socket_dir"] = socket_dir
             return proc
 
         class FakeChrome:
@@ -234,7 +236,8 @@ class TestRealProfileCdpLaunch:
              patch.object(bt_real_profile, "_agent_browser_get_cdp",
                           side_effect=[None, "http://127.0.0.1:41000"]), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt.subprocess, "run", side_effect=fake_run), \
+             patch.object(bt_session, "_popen_agent_browser", side_effect=fake_popen_ab), \
+             patch.object(bt_session, "_read_command_output_files", return_value=("", "")), \
              patch.object(bt, "_socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             bt_real_profile._real_profile_cdp()
@@ -257,6 +260,7 @@ class TestRealProfileCdpLaunch:
         import tools.browser_tool as bt
         self._reset()
         proc = Mock(return_value=None, returncode=0, stdout="", stderr="")
+        proc.wait.return_value = None
         closed = {"n": 0}
 
         class FakeChrome:
@@ -279,7 +283,8 @@ class TestRealProfileCdpLaunch:
              patch.object(bt_real_profile, "_agent_browser_close_session",
                           side_effect=lambda s: closed.__setitem__("n", closed["n"] + 1)), \
              patch.object(bt_install, "_find_agent_browser", return_value="/usr/bin/agent-browser"), \
-             patch.object(bt.subprocess, "run", return_value=proc), \
+             patch.object(bt_session, "_popen_agent_browser", return_value=proc), \
+             patch.object(bt_session, "_read_command_output_files", return_value=("", "")), \
              patch.object(bt_cloud, "_is_headed_mode", return_value=False):
             cdp, err = bt_real_profile._real_profile_cdp()
         assert closed["n"] == 1  # stale wrong-dir session was closed

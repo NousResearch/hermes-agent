@@ -477,6 +477,9 @@ class SessionMessagesMixin:
                 ),
                 decode_row_fn=self._decoded_repair_row,
             )
+            if any("_delegation_delivery_claims" in msg for msg in inserted_rows):
+                from tools.async_delegation import validate_tool_carrier_claims
+                validate_tool_carrier_claims(conn, session_id, inserted_rows)
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, inserted_rows)
             self._bump_session_counters(conn, session_id, inserted, tool_calls_total, unit=False)
             return inserted

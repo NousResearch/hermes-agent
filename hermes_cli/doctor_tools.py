@@ -172,6 +172,7 @@ def _enabled_cli_toolsets_for_doctor() -> set[str] | None:
 # Name the real fix instead (#9516).
 _TOOLSET_SETUP_HINTS: dict[str, str] = {
     "image_gen": "(image generation unavailable — check the provider selection and its key or SDK with 'hermes tools')",
+    "browser-use": "(browser-use CLI missing — install with 'hermes tools post-setup browser_use_cli', then restart the gateway)",
 }
 
 

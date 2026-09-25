@@ -162,6 +162,31 @@ class TestDoctorToolAvailabilitySummary:
         assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
         assert any("hermes setup" in issue for issue in f.issues)
 
+    def test_browser_use_row_reports_setup_hint_not_system_dependency(self, monkeypatch):
+        """browser-use declares no env var (the CLI is a PM-managed install, not a key); a
+        missing CLI is a setup problem and must name the post-setup hook, not 'system
+        dependency' — this exact row is what users see after an update skipped provisioning."""
+        unavailable = [{"name": "browser-use", "env_vars": [], "tools": ["browser_exec"]},
+                       {"name": "homeassistant", "env_vars": [], "tools": []}]
+        monkeypatch.setattr(doctor_tools, "_enabled_cli_toolsets_for_doctor", lambda: {"browser-use"})
+        monkeypatch.setattr(doctor_tools, "_apply_doctor_tool_availability_overrides", lambda a, u: (a, u))
+        monkeypatch.setattr(doctor_tools, "_doctor_web_capability_rows", lambda: [])
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda: ([], unavailable),
+            TOOLSET_REQUIREMENTS={"browser-use": {"name": "browser-use"}, "homeassistant": {"name": "homeassistant"}},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            f = doctor_tools._check_tool_availability(False)
+        out = buf.getvalue()
+
+        row = next(line for line in out.splitlines() if "browser-use" in line)
+        assert "post-setup browser_use_cli" in row and "system dependency" not in row
+        assert "system dependency not met" in next(line for line in out.splitlines() if "homeassistant" in line)
+        assert any("hermes setup" in issue for issue in f.issues)
+
     def test_web_capability_rows_warn_when_selected_provider_not_ready(self, monkeypatch):
         """#78412: selected firecrawl with is_available=False must warn."""
         class _Unavailable:

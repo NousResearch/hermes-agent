@@ -3,7 +3,8 @@ import { useStore } from '@nanostores/react'
 import { type Translations, useI18n } from '@/i18n'
 import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { $sessionColorById, sessionColorFor } from '@/store/session-color'
+import { $projectOwnerBySessionId, $projects } from '@/store/projects'
+import { $sessionColorById, $sessionColorOverrides, sessionColorFrom } from '@/store/session-color'
 import { $sessionDotStateById, type SessionDotState } from '@/store/session-dot-state'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -15,6 +16,10 @@ type DotVariant = {
   className: string
   role?: 'status'
   title?: (r: Translations['sidebar']['row']) => string
+  /** Which part of the dot a user-chosen session colour paints. Absent on the
+   *  attention states (needs-input, unread) — an act-now cue must never hide
+   *  behind a tint — and on the quiet greys, which carry no colour at all. */
+  tint?: 'background' | 'border'
 }
 
 // Shared base for every active dot; idle is smaller and uses its own class.
@@ -35,11 +40,13 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status',
     title: r => r.waitingForAnswer
   },
-  // Accent — the turn is running. The row's arc carries the motion.
+  // Accent — the turn is running. The row's arc carries the motion, so a
+  // session with a colour of its own keeps that colour here too.
   working: {
     ariaLabel: r => r.sessionRunning,
     className: `${DOT_BASE} bg-(--ui-accent)`,
-    role: 'status'
+    role: 'status',
+    tint: 'background'
   },
   // Hollow accent — still authoritatively running, but nothing has arrived for
   // the watchdog window. Same color as working because it IS working; hollow
@@ -48,6 +55,7 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     ariaLabel: r => r.sessionRunning,
     className: `${DOT_BASE} border border-(--ui-accent)`,
     role: 'status',
+    tint: 'border',
     title: r => r.sessionRunning
   },
   // Hollow muted — a terminal(background=true) process outlived the turn. An
@@ -83,7 +91,8 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
   // reads as broken next to its neighbours, so "no color" falls back to the
   // quietest ink rather than to an invisible dot.
   idle: {
-    className: 'size-1 rounded-full bg-(--ui-text-quaternary)'
+    className: 'size-1 rounded-full bg-(--ui-text-quaternary)',
+    tint: 'background'
   }
 }
 
@@ -118,18 +127,23 @@ export interface SessionStatusDotProps {
  * the session switcher render, so a session's status can never disagree
  * between surfaces. It resolves everything itself from the stored session id:
  * the live state (via `$sessionDotStateById`, already reduced to one mutually
- * exclusive answer) and the color (override → project, via `sessionColorFor`).
- * An idle session shows its project color; the active states own the dot with
- * their semantic color so an attention cue is never masked by the tint.
+ * exclusive answer) and the color (override → project, via `sessionColorFrom`).
+ * A session with a colour of its own shows it while it is idle, working or
+ * stalled; the attention states (needs-input, unread) keep their semantic ink,
+ * so an act-now cue is never masked by the tint.
  */
 export function SessionStatusDot({ storedSessionId, session, branchStem, className }: SessionStatusDotProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
 
-  // Subscribe to the shared color map for reactivity; sessionColorFor falls
-  // back to the resolver for a session outside the recents page.
-  useStore($sessionColorById)
-  const color = sessionColorFor(session) ?? null
+  // Render from SUBSCRIBED values, not from sessionColorFor(): that resolver
+  // re-reads the atoms with .get() during render, which does not schedule a
+  // repaint — a picked color only appeared on the row after it remounted.
+  const colorById = useStore($sessionColorById)
+  const projects = useStore($projects)
+  const overrides = useStore($sessionColorOverrides)
+  const owners = useStore($projectOwnerBySessionId)
+  const color = sessionColorFrom(session, { colorById, overrides, owners, projects }) ?? null
 
   // Selector, not a plain useStore: the map is rebuilt whenever any session's
   // status changes, but a given dot only repaints when ITS OWN state flips.
@@ -138,6 +152,13 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
   )
 
   const variant = DOT_VARIANTS[dotState]
+
+  // The session's own colour, where the variant allows one: a running turn is
+  // still the user's session, and the row's arc says it is running.
+  const tintStyle =
+    color && variant.tint
+      ? { [variant.tint === 'border' ? 'borderColor' : 'backgroundColor']: color }
+      : undefined
 
   return (
     <span className={cn('flex items-center gap-0.5', className)}>
@@ -150,12 +171,13 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
         // Rendered even with no color to paint: an empty dot of the same size
         // keeps every row's title on one left edge, so a session finishing
         // can't shift the list under the pointer.
-        <span aria-hidden="true" className={variant.className} style={color ? { backgroundColor: color } : undefined} />
+        <span aria-hidden="true" className={variant.className} style={tintStyle} />
       ) : (
         <span
           aria-label={variant.ariaLabel?.(r)}
           className={variant.className}
           role={variant.role}
+          style={tintStyle}
           title={variant.title?.(r)}
         />
       )}

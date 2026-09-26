@@ -66,7 +66,10 @@ def _post(url, data=None, headers=None, form=False, timeout=30):
         finally:
             _close(r)
     except urllib.error.HTTPError as e:
-        return e.code, dict(e.headers), e.read()
+        try:
+            return e.code, dict(e.headers), e.read()
+        finally:
+            _close(e)
 
 
 def _get_json(url, timeout=20):

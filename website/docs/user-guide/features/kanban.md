@@ -263,7 +263,9 @@ body and hoping it finds them.
   metadata row; the on-disk file is deleted only when no other attachment
   row still references it (a file shared by several tasks stays until its
   last reference is removed). From the CLI, `hermes kanban attach-rm
-  ATTACHMENT_ID` removes an attachment the same way.
+  ATTACHMENT_ID` removes an attachment the same way. Deleting a task (the
+  drawer's **Delete**, or `hermes kanban archive --rm`) removes its
+  attachments the same way too.
 
 :::note Remote terminal backends
 Attachment paths resolve directly on the **local** terminal backend, which

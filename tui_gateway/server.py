@@ -34,6 +34,10 @@ from agent.reasoning_effort import clamp_effort, route_supported_efforts
 from agent.compaction_display import project_compaction_message_for_display  # noqa: F401
 from agent.skill_commands import describe_skill_invocation  # noqa: F401
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX  # noqa: F401
+# Force this onto the single-threaded startup import path: concurrent first-use imports of
+# this module from multiple turn-dispatch threads can race on hermes_cli._subprocess_compat
+# and see it mid-initialization, raising ImportError for harden_git_argv.
+import agent.context_references  # noqa: F401
 from tui_gateway import git_probe
 from tui_gateway._env import env_float, env_int
 from tui_gateway.turn_marker import clear_turn_marker, read_turn_marker, record_turn_start  # noqa: F401

@@ -126,6 +126,33 @@ class TestScanContent:
         )
         assert "react_dangerously_set_html" in [n for n, _ in findings]
 
+    _SIX_DOM_RULES_CONTENT = (
+        "new Function; dangerouslySetInnerHTML; document.write; "
+        "x.innerHTML = input; x.outerHTML = input; x.insertAdjacentHTML("
+    )
+    _SIX_DOM_RULES = {
+        "new_function_injection",
+        "react_dangerously_set_html",
+        "document_write_xss",
+        "innerHTML_xss",
+        "outerHTML_xss",
+        "insertAdjacentHTML_xss",
+    }
+
+    def test_six_dom_rules_fire_on_js_and_tsx_paths(self):
+        """new Function / DOM XSS sinks stay active on JS-family files."""
+        mod = _load_plugin_init()
+        for path in ("/app/client.js", "/app/client.tsx"):
+            names = {n for n, _ in mod._scan_content(path, self._SIX_DOM_RULES_CONTENT)}
+            assert self._SIX_DOM_RULES <= names, path
+
+    def test_six_dom_rules_stay_off_prose_and_python_paths(self):
+        """Documenting these APIs in Markdown or mentioning them in Python
+        must not warn — the six rules keep their source file-type filters."""
+        mod = _load_plugin_init()
+        for path in ("/docs/example.md", "/tmp/script.py"):
+            assert mod._scan_content(path, self._SIX_DOM_RULES_CONTENT) == [], path
+
     def test_github_workflow_path_check_fires_on_path_alone(self):
         """github_actions_workflow has no regex/substring — fires on path."""
         mod = _load_plugin_init()

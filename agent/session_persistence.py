@@ -14,6 +14,7 @@ from agent.context_compressor import (
     _DB_PERSISTED_MARKER,
     ContextCompressor,
     _newest_checkpoint_carrier,
+    _strip_persistence_markers,
     drop_shadowed_checkpoints,
     user_originated_turn_view,
 )
@@ -299,12 +300,26 @@ def _db_flush_adopt_compression_tip(agent) -> bool:
     return True
 
 
+def _db_flush_session_row_gone(agent, session_id: Optional[str]) -> bool:
+    """True only when ``session_id``'s row is confirmed absent; a failed lookup is not proof."""
+    try:
+        return agent._session_db.get_session(session_id) is None
+    except Exception as lookup_exc:
+        logger.warning("session row lookup failed for %s: %s", session_id, lookup_exc)
+        return False
+
+
 def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adoption_budget: int,
-                     messages: Optional[List[Dict]] = None) -> bool:
-    """Classify a failed flush; True when the caller should retry once on an adopted compression tip."""
+                     messages: List[Dict]) -> Optional[str]:
+    """Classify a failed flush and name the one retry the caller should take, or None to fail closed.
+
+    ``"adopted"``: a compression-closed session moved onto its live tip. ``"healed"``: the session row was
+    deleted under the live agent and has been recreated (unparented for a delegate child whose parent went
+    with it); flush markers are reset so the caller replays the full in-memory transcript. Either retry is
+    taken at most once (``adoption_budget``)."""
     agent._db_flush_scan_prefix = None  # full re-scan next flush: an exception mid-loop leaves mixed dispositions
     # The only place the SQLite error is visible before it becomes a bare False — classify it so the turn-end
-    # explanation can distinguish lock contention from disk-full/read-only.
+    # explanation names the real cause.
     from hermes_state import StateDbCorruptError, StateDbReplacedError, classify_persistence_error, divert_session_transcript_jsonl
     from hermes_state_errors import CompressionSessionClosedError
     agent._last_persistence_error_cause = classify_persistence_error(e)
@@ -315,17 +330,17 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
         # the FK). The deletion already erased the session's message rows with it, so the durable
         # transcript is empty: drop the stale flag, reset the flush markers, and replay the FULL
         # in-memory transcript onto the recreated row — not just the current tail (#123583).
-        if adoption_budget <= 0:
-            return False
-        for msg in messages or ():
-            if isinstance(msg, dict):
-                msg.pop(_DB_PERSISTED_MARKER, None)
+        # The FK class also covers the sessions table's own parent/system-prompt FKs, and create is an
+        # upsert: only heal when the row is really gone, or the replay would duplicate a live transcript.
+        if adoption_budget <= 0 or not _db_flush_session_row_gone(agent, agent.session_id):
+            return None
+        _strip_persistence_markers(messages)
         agent._flushed_db_message_ids = set()
         agent._last_flushed_db_idx = 0
         agent._session_db_created = False
         agent._ensure_db_session()
         parent_id = agent._parent_session_id
-        if not agent._session_db_created and parent_id and agent._session_db.get_session(parent_id) is None:
+        if not agent._session_db_created and parent_id and _db_flush_session_row_gone(agent, parent_id):
             # Delegate child whose parent was deleted (cascade): the row's own parent FK would reject every
             # recreate. Create it unparented for this call only; the relay and hooks still use the parent id.
             agent._parent_session_id = None
@@ -338,10 +353,10 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
             # rollback — keep the batch unmarked so the next flush retries the whole thing.
             logger.warning("Session DB row for %s is missing and could not be recreated; will retry next flush",
                            getattr(agent, "session_id", None))
-            return False
+            return None
         logger.warning("Session DB row for %s was removed under the live agent; recreated it and replaying the transcript",
                        getattr(agent, "session_id", None))
-        return True
+        return "healed"
     if isinstance(e, (StateDbReplacedError, StateDbCorruptError)):
         # A replaced/quarantined handle will not take this batch again — keep it on disk.
         try:
@@ -353,10 +368,10 @@ def _db_flush_failed(agent, e: Exception, batch_rows: List[Dict[str, Any]], adop
         # Compression race: another path rotated this session mid-write. Retry exactly once on the live tip; a
         # second closed-parent write fails closed.
         if adoption_budget > 0 and _db_flush_adopt_compression_tip(agent):
-            return True
+            return "adopted"
         agent._compression_adoption_failed = True  # lets the turn explanation name rotation, not full-disk advice
     logger.warning("Session DB append_message failed: %s", e)
-    return False
+    return None
 
 
 
@@ -454,13 +469,13 @@ class SessionPersistenceMixin:
             self._db_flush_scan_prefix = messages[:]
             return True
         except Exception as e:
-            if _db_flush_failed(self, e, batch_rows, _adoption_budget, messages):
-                # A recreated row lost the history prefix too: replay it rather than stamping it durable, but keep
-                # the history set so a muted notification turn hides only its own rows.
-                healed = self._last_persistence_error_cause == "session_row_missing"
-                return self._flush_messages_to_session_db_unlocked(
-                    messages, conversation_history, _adoption_budget=0, _replay_history=healed)
-            return False
+            retry = _db_flush_failed(self, e, batch_rows, _adoption_budget, messages)
+            if retry is None:
+                return False
+            # A recreated row lost the history prefix too: replay it rather than stamping it durable, but keep
+            # the history set so a muted notification turn hides only its own rows.
+            return self._flush_messages_to_session_db_unlocked(
+                messages, conversation_history, _adoption_budget=0, _replay_history=retry == "healed")
 
     def _get_messages_up_to_last_assistant(self, messages: List[Dict]) -> List[Dict]:
         """Messages before the last assistant turn (rollback point for a malformed final answer); all if none."""

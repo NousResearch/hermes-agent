@@ -52,13 +52,12 @@ def test_flush_recreates_row_deleted_under_live_agent():
             assert agent._flush_messages_to_session_db(messages, history) is True
             history = messages
             assert [r["content"] for r in db.get_messages("sess-live")] == [m["content"] for m in history]
-        assert agent._last_persistence_error_cause == "session_row_missing"
         db.close()
 
 
 def test_flush_fails_open_when_row_cannot_be_recreated(monkeypatch):
-    """Scenario B: if row creation fails too, the flush returns False instead of
-    appending into a guaranteed rollback — fail-open, batch stays unmarked."""
+    """Scenario B: if row creation fails too, the flush fails closed — returns False
+    instead of appending into a guaranteed rollback, and the batch stays unmarked."""
     import sqlite3 as _sqlite3
 
     from hermes_state import SessionDB

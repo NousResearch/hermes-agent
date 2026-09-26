@@ -4414,8 +4414,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "API_SERVER_KEY was rejected by the startup guard (missing, "
                 "placeholder/too short, or strength unverifiable — see the "
                 "error logged above). Generate a strong secret (e.g. "
-                "`openssl rand -hex 32`), set API_SERVER_KEY, then "
-                "`/platform resume api_server`.",
+                "`openssl rand -hex 32`), set API_SERVER_KEY, then restart "
+                "the gateway (`hermes gateway restart`).",
                 retryable=False)
             return False
         try:
@@ -4489,12 +4489,14 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                         # watcher in gateway.run treat it as retryable and loop forever at the backoff cap
                         # (observed: 1568+ retries over 5 days across multi-profile setups all defaulting
                         # to the same port, #52132), filling errors.log and leaking the adapter's ResponseStore
-                        # fds each retry. Non-retryable drops it from the reconnect queue; the operator
-                        # recovers with ``/platform resume api_server`` after changing the port.
+                        # fds each retry. Non-retryable drops it from the reconnect queue, so
+                        # ``/platform resume`` cannot bring it back — the operator must restart the
+                        # gateway after changing the port.
                         "api_server_port_in_use",
                         f"Port {self._port} already in use. Set "
                         f"platforms.api_server.port in config.yaml to a "
-                        f"different value, then `/platform resume api_server`.",
+                        f"different value, then restart the gateway "
+                        f"(`hermes gateway restart`).",
                         retryable=False)
                 logger.error(
                     "[%s] Could not bind %s:%d: %s. Set a different port in "

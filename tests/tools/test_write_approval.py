@@ -317,6 +317,71 @@ def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
     assert store.memory_entries == []
     assert wa.pending_count("memory") == 0  # denied, not staged
 
+
+@pytest.mark.parametrize("failure, staged", [("import", False), ("runtime", True)])
+def test_memory_probe_failure_preserves_approval_contract(
+    failure, staged, hermes_home, approval_callback_cleanup, monkeypatch
+):
+    import sys
+
+    from tools import approval, write_approval as wa
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools.terminal_tool import set_approval_callback
+
+    _set_approval("memory", True)
+    if failure == "import":
+        monkeypatch.setitem(sys.modules, "tools.approval", None)
+    else:
+        def broken_probe():
+            raise RuntimeError("probe failed")
+        monkeypatch.setattr(approval, "_is_single_query_approval_context", broken_probe)
+
+    calls = []
+    def approve(*args, **kwargs):
+        calls.append(args)
+        return "once"
+    set_approval_callback(approve)
+    store = MemoryStore()
+    store.load_from_disk()
+    result = json.loads(memory_tool("add", "memory", "probe fact", store=store))
+
+    assert result["success"] is True
+    assert bool(result.get("staged")) is staged
+    assert bool(calls) is not staged
+    assert store.memory_entries == ([] if staged else ["probe fact"])
+    assert wa.pending_count("memory") == int(staged)
+
+
+def test_single_query_memory_stages_without_inline_prompt(
+    hermes_home, approval_callback_cleanup, monkeypatch
+):
+    """Headless ``hermes chat -q`` runs have no human to answer a callback."""
+    from tools.memory_tool import memory_tool, MemoryStore
+    from tools.terminal_tool import set_approval_callback
+    from tools import write_approval as wa
+
+    _set_approval("memory", True)
+    monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+
+    calls = []
+
+    def approve_if_prompted(*args, **kwargs):
+        calls.append((args, kwargs))
+        return "once"
+
+    set_approval_callback(approve_if_prompted)
+    store = MemoryStore()
+    store.load_from_disk()
+
+    r = json.loads(memory_tool("add", "memory", "headless fact", store=store))
+
+    assert calls == []
+    assert r["success"] is True
+    assert r["staged"] is True
+    assert store.memory_entries == []
+    assert wa.pending_count("memory") == 1
+
+
 def test_memory_invalid_params_rejected_before_staging(hermes_home):
     # Param validation must run BEFORE the gate so a broken write is rejected
     # immediately instead of staged and failing at approve time.

@@ -992,9 +992,12 @@ class _ChildRun:
         _files_read: list = []
         with _quiet(None):
             _files_read = list(file_state.known_reads(self.child_task_id))[:40]
-        _files_written_map: dict = {}
+        # writes_since("", …, []) is NOT "all writes": its paths argument is a strict
+        # whitelist, so the old call here matched nothing and files_written was
+        # permanently empty. writes_by asks the registry directly for this child's writes.
+        _files_written: list = []
         with _quiet(None):
-            _files_written_map = file_state.writes_since("", self.wall_start, [])  # all writes since wall_start
+            _files_written = file_state.writes_by(self.child_task_id, self.wall_start)[:40]
         complete_kwargs: Dict[str, Any] = {
             "preview": summary[:160] if summary else entry.get("error", ""),
             "status": entry["status"],
@@ -1005,7 +1008,7 @@ class _ChildRun:
             "reasoning_tokens": _num(getattr(child, "session_reasoning_tokens", 0)),
             "api_calls": _num(entry["api_calls"]),
             "files_read": _files_read,
-            "files_written": sorted({p for tid, paths in _files_written_map.items() if tid == self.child_task_id for p in paths})[:40],
+            "files_written": _files_written,
             "output_tail": _extract_output_tail(result, max_entries=8, max_chars=600),
         }
         if entry.get("failure_reason"):

@@ -13,6 +13,13 @@ from typing import Any, Dict, Optional
 _PRESET_SIZES = {"landscape": "landscape_16_9", "square": "square_hd", "portrait": "portrait_16_9"}
 _ASPECT_SIZES = {"landscape": "16:9", "square": "1:1", "portrait": "9:16"}
 _DEFAULT_SIZES = {"image_size_preset": _PRESET_SIZES, "aspect_ratio": _ASPECT_SIZES}
+# Seedream 5.0 Pro and Flash require total pixels between 1024² and 2048²; explicit
+# ImageSize dicts keep every aspect inside that window (the named presets fall under it).
+_SEEDREAM_2K_SIZES = {
+    "landscape": {"width": 2048, "height": 1152},
+    "square": {"width": 1536, "height": 1536},
+    "portrait": {"width": 1152, "height": 2048},
+}
 
 
 def _model(
@@ -238,15 +245,9 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
     # Entries below take endpoint ids, `supports` whitelists and enum defaults from
     # each model's FAL OpenAPI schema; paired `/edit` apps hang off their
     # text-to-image entry rather than appearing as separate picker rows.
-    # Seedream Pro requires total pixels between 1024² and 2048² — explicit
-    # ImageSize dicts keep every aspect inside that window.
     "bytedance/seedream/v5/pro/text-to-image": _model(
         "Seedream 5.0 Pro", "~10s", "ByteDance flagship, dense layouts, native text in 14 languages", "$0.0675/image (≤1536²)",
-        style="image_size_preset", sizes={
-            "landscape": {"width": 2048, "height": 1152},
-            "square": {"width": 1536, "height": 1536},
-            "portrait": {"width": 1152, "height": 2048},
-        },
+        style="image_size_preset", sizes=_SEEDREAM_2K_SIZES,
         defaults={
             "num_images": 1, "output_format": "png", "enable_safety_checker": False,
         },
@@ -268,6 +269,24 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         supports={
             "prompt", "image_size", "num_images", "max_images", "sync_mode", "enable_safety_checker",
         },
+    ),
+    # Flash is the fast/cheap Seedream 5.0 tier and the only one below Pro with an edit
+    # endpoint (Lite has none). Same 1024²–2048² pixel window as Pro; up to 10 reference images.
+    "bytedance/seedream/v5/flash/text-to-image": _model(
+        "Seedream 5.0 Flash", "~3s", "Fast Seedream tier with image editing, Pro-style layouts at a quarter of the price", "$0.027/image",
+        style="image_size_preset", sizes=_SEEDREAM_2K_SIZES,
+        defaults={
+            "num_images": 1, "output_format": "png", "enable_safety_checker": False,
+        },
+        supports={
+            "prompt", "image_size", "num_images", "output_format", "sync_mode", "enable_safety_checker",
+        },
+        edit_endpoint="bytedance/seedream/v5/flash/edit",
+        edit_supports={
+            "prompt", "image_urls", "image_size", "num_images", "output_format", "sync_mode",
+            "enable_safety_checker",
+        },
+        max_reference_images=10,
     ),
     "ideogram/v4/instant": _model(
         "Ideogram V4 (Instant)", "<1s", "Latest Ideogram typography, posters/logos, instant", "$0.0075/MP",
@@ -327,6 +346,14 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
     ),
     "fal-ai/recraft/v4.1/text-to-image": _model(
         "Recraft V4.1", "~8s", "Design-first raster, brand systems, editorial", "$0.035/image",
+        defaults={"enable_safety_checker": False},
+        supports={
+            "prompt", "image_size", "enable_safety_checker", "colors", "background_color",
+        },
+    ),
+    # Same request schema as V4.1 (no seed, no num_images).
+    "fal-ai/recraft/v4.1/flash/text-to-image": _model(
+        "Recraft V4.1 Flash", "~2s", "Recraft design quality at draft speed, 5x cheaper than V4.1", "$0.007/image",
         defaults={"enable_safety_checker": False},
         supports={
             "prompt", "image_size", "enable_safety_checker", "colors", "background_color",

@@ -678,10 +678,13 @@ def _target_selection(package, fact: dict, *, extras, inputs: dict, repair: bool
             else _still_declared(package, recorded)
         if enabled != recorded:
             # The recorded stamp hashed the stale selection; recompute so the
-            # repaired fact reads current against today's tree.
-            stamp = package.expected_stamp(enabled, plugin_dirs=[])
+            # repaired fact reads current against today's tree. Stamp with the
+            # caller's member inputs (discovery on repair, since repair carries
+            # no plugin change) — the same members the launch path will stamp
+            # with, or the next sync reads the fresh build as drifted.
+            stamp = package.expected_stamp(enabled, **inputs)
         else:
-            stamp = fact.get("stamp") or package.expected_stamp(enabled, plugin_dirs=[])
+            stamp = fact.get("stamp") or package.expected_stamp(enabled, **inputs)
         return enabled, stamp, {"repair": True}
     # The first writable generation replaces, rather than layers on,
     # the payload. Retain its extras until a recorded selection owns them.

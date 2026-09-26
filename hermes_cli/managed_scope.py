@@ -25,6 +25,10 @@ drop_stale_root_modules()
 
 from utils import fast_safe_load, file_signature
 
+# Single definition of "are we under pytest" (session-wide: env markers + pytest ancestry).
+# Root-level module, so it rides the same stale-module bridge as ``utils`` above.
+from hermes_state_guard import _in_test_context
+
 logger = logging.getLogger(__name__)
 
 # POSIX default. Other-platform locations belong ONLY inside get_managed_dir().
@@ -38,8 +42,18 @@ _ENV_CACHE: Dict[str, tuple] = {}
 
 def _under_pytest() -> bool:
     """True inside the test suite: ignore the system ``/etc/hermes`` so a real managed scope on a
-    dev/CI box can't leak policy into the suite. An explicit ``HERMES_MANAGED_DIR`` still wins."""
-    return "PYTEST_CURRENT_TEST" in os.environ
+    dev/CI box can't leak policy into the suite. An explicit ``HERMES_MANAGED_DIR`` still wins.
+
+    "Under pytest" is a property of the SESSION, not of the currently-executing test, so this
+    delegates to the single strict definition in ``hermes_state_guard._in_test_context()`` rather
+    than keeping a second private copy. ``PYTEST_CURRENT_TEST`` alone only answers for the
+    in-test phase: pytest unsets it at collection, in any thread that outlives its test, and at
+    interpreter shutdown, so a narrow check let a real ``/etc/hermes`` back into the suite in
+    exactly those phases. ``_in_test_context()`` adds ``PYTEST_VERSION`` (whole session),
+    ``HERMES_TEST_ISOLATION`` (our own marker, survives an env rebuild) and pytest process
+    ancestry. The ancestry leg is memoised, so the common production answer stays cheap.
+    """
+    return _in_test_context()
 
 
 def get_managed_dir() -> Optional[Path]:

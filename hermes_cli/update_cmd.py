@@ -92,6 +92,7 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
+    _recover_partial_clone_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
     _sync_with_upstream_if_needed)
@@ -169,16 +170,30 @@ def _updates_config() -> dict:
 def _no_prompt_git_kwargs() -> dict:
     """``subprocess.run`` kwargs for the updater's network git calls.
 
-    GitHub answers anonymous fetches with HTTP 401 during outages (and for
-    unreachable repos); git then prompts ``Username for 'https://github.com':``
-    on the inherited terminal and the update sits there forever. Disable the
-    prompt so the fetch fails fast into ``_classify_fetch_failure``. Only the
-    *prompt* is disabled — a configured credential helper / askpass still
-    runs, so a private-fork origin keeps authenticating non-interactively.
+    Besides disabling prompts, every updater-owned network Git command runs
+    with command-scoped auto maintenance disabled.  In a partial clone an
+    affected Git build can repack promisor objects after a fetch and lose
+    ``.promisor`` provenance (#123324); suppress that implicit rewrite at
+    the network boundary while leaving the user's persistent Git config alone.
+    Existing GIT_CONFIG_COUNT entries (credential helpers, enterprise policy,
+    etc.) keep their original indices and precedence.
     """
     env = dict(os.environ)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GCM_INTERACTIVE"] = "Never"
+    raw_count = env.get("GIT_CONFIG_COUNT", "0")
+    try:
+        config_count = int(raw_count)
+    except ValueError:
+        # A malformed inherited count already makes Git reject its config
+        # injection. Do not overwrite caller state while diagnosing that.
+        config_count = -1
+    if config_count >= 0:
+        for key, value in (("gc.auto", "0"), ("maintenance.auto", "false")):
+            env[f"GIT_CONFIG_KEY_{config_count}"] = key
+            env[f"GIT_CONFIG_VALUE_{config_count}"] = value
+            config_count += 1
+        env["GIT_CONFIG_COUNT"] = str(config_count)
     return {"stdin": subprocess.DEVNULL, "env": env}
 
 
@@ -1373,9 +1388,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print("→ Fetching updates...")
         if release_sha:
-            fetch_result = _git_run(git_cmd, ["fetch", "--no-tags", "origin", target_ref], network=True)
+            fetch_args = ["fetch", "--no-tags", "origin", target_ref]
         else:
-            fetch_result = _git_run(git_cmd, ["fetch", "origin", branch], network=True)
+            fetch_args = ["fetch", "origin", branch]
+        fetch_result = _git_run(git_cmd, fetch_args, network=True)
+        if fetch_result.returncode != 0:
+            fetch_result = _recover_partial_clone_fetch_failure(
+                git_cmd, fetch_args, _m().PROJECT_ROOT, fetch_result)
         if fetch_result.returncode != 0:
             _print_fetch_failure(fetch_result.stderr)
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)

@@ -106,21 +106,22 @@ class TestPrintFetchFailure:
         assert out == ["✗ Failed to fetch updates from origin."]
 
 
-def test_update_network_git_calls_never_prompt_for_credentials():
-    """Every `git fetch`/`pull`/`push` in the updater runs with prompts disabled.
-
-    Live incident (Sep 2026): a GitHub-side 401 made `hermes update` sit on
-    ``Username for 'https://github.com':`` instead of failing with a diagnosis.
-    """
-    import os
+def test_update_network_git_calls_never_prompt_or_auto_maintain(monkeypatch):
+    """Updater-owned network Git neither prompts nor command-triggers pack maintenance."""
     import subprocess
+
+    for key in list(__import__("os").environ):
+        if key == "GIT_CONFIG_COUNT" or key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            monkeypatch.delenv(key, raising=False)
 
     kw = update_cmd._no_prompt_git_kwargs()
     assert kw["stdin"] is subprocess.DEVNULL
-    assert kw["env"]["GIT_TERMINAL_PROMPT"] == "0"
-    # Only the prompt is disabled — credential helpers / askpass stay
-    # configured so a private-fork origin still authenticates.
-    assert "GIT_CONFIG_COUNT" not in kw["env"] or kw["env"]["GIT_CONFIG_COUNT"] == os.environ.get("GIT_CONFIG_COUNT")
+    env = kw["env"]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert env["GCM_INTERACTIVE"] == "Never"
+    assert env["GIT_CONFIG_COUNT"] == "2"
+    assert (env["GIT_CONFIG_KEY_0"], env["GIT_CONFIG_VALUE_0"]) == ("gc.auto", "0")
+    assert (env["GIT_CONFIG_KEY_1"], env["GIT_CONFIG_VALUE_1"]) == ("maintenance.auto", "false")
 
 
 def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch, tmp_path):
@@ -153,5 +154,7 @@ def test_update_and_upstream_network_calls_disable_terminal_prompts(monkeypatch,
         assert env["GIT_TERMINAL_PROMPT"] == "0", args
         assert env["GCM_INTERACTIVE"] == "Never", args
         assert env["GIT_ASKPASS"] == "fixture-askpass", args
-        assert env["GIT_CONFIG_COUNT"] == "1", args
+        assert env["GIT_CONFIG_COUNT"] == "3", args
         assert env["GIT_CONFIG_VALUE_0"] == "fixture-helper", args
+        assert (env["GIT_CONFIG_KEY_1"], env["GIT_CONFIG_VALUE_1"]) == ("gc.auto", "0"), args
+        assert (env["GIT_CONFIG_KEY_2"], env["GIT_CONFIG_VALUE_2"]) == ("maintenance.auto", "false"), args

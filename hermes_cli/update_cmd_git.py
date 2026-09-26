@@ -53,6 +53,99 @@ def _git_stdout(git_cmd, args, cwd, **kw) -> Optional[str]:
     return None
 
 
+_PARTIAL_CLONE_PACK_BUG = "should_include_obj should only be called on existing objects"
+
+
+def _git_config_values(run, git_cmd, cwd, key: str) -> list[str]:
+    """Return all local values for a git config key; missing/unreadable keys are empty."""
+    result = run(git_cmd, ["config", "--get-all", key], cwd)
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _restore_git_config_values(run, git_cmd, cwd, key: str, values: list[str]) -> None:
+    """Restore a multi-valued local config key after a failed transactional repair."""
+    run(git_cmd, ["config", "--unset-all", key], cwd)
+    for value in values:
+        run(git_cmd, ["config", "--add", key, value], cwd)
+
+
+def _recover_partial_clone_fetch_failure(git_cmd, fetch_args: list[str], cwd, failure):
+    """Repair the Git partial-clone pack corruption behind #123324, once.
+
+    Affected Git builds can lose .promisor sidecars during pack maintenance.
+    The next promisor fetch then asks pack-objects to repack links it now
+    mistakes for local; its best-effort walk reaches an intentionally missing
+    object and aborts at should_include_obj. Guessing which packs are really
+    promisor is unsafe because a source checkout may also contain local commits.
+
+    On that exact assertion, and only in an origin promisor checkout, remove
+    the promisor config transactionally and --refetch the requested ref without
+    a filter. A successful refetch materializes the complete reachable object
+    graph and leaves automatic pack rewriting disabled. If the refetch fails,
+    restore the original promisor config byte-for-value and return the failure.
+    The working tree/index are never touched.
+    """
+    stderr = failure.stderr or ""
+    if failure.returncode == 0 or _PARTIAL_CLONE_PACK_BUG not in stderr:
+        return failure
+    if not fetch_args or fetch_args[0] != "fetch":
+        return failure
+
+    from hermes_cli.update_cmd import _git_run as run
+
+    promisor_key = "remote.origin.promisor"
+    filter_key = "remote.origin.partialclonefilter"
+    legacy_key = "extensions.partialclone"
+    config_snapshot = {
+        promisor_key: _git_config_values(run, git_cmd, cwd, promisor_key),
+        filter_key: _git_config_values(run, git_cmd, cwd, filter_key),
+        legacy_key: _git_config_values(run, git_cmd, cwd, legacy_key),
+    }
+    origin_is_promisor = (
+        any(value.lower() == "true" for value in config_snapshot[promisor_key])
+        or any(value.lower() == "origin" for value in config_snapshot[legacy_key])
+    )
+    if not origin_is_promisor:
+        return failure
+
+    def restore_partial_clone_config() -> None:
+        for key, values in config_snapshot.items():
+            _restore_git_config_values(run, git_cmd, cwd, key, values)
+
+    print("  ↻ Git partial-clone pack metadata is inconsistent; retrying once with a full refetch...")
+
+    for key, values in config_snapshot.items():
+        if not values:
+            continue
+        unset = run(git_cmd, ["config", "--unset-all", key], cwd)
+        if unset.returncode != 0:
+            restore_partial_clone_config()
+            return failure
+
+    retry_args = ["fetch", "--refetch", *fetch_args[1:]]
+    retry = run(git_cmd, retry_args, cwd, network=True)
+    if retry.returncode != 0:
+        restore_partial_clone_config()
+        retry.stderr = "\n".join(
+            part for part in (
+                stderr.rstrip(),
+                "Automatic full-refetch recovery also failed:",
+                (retry.stderr or "").rstrip(),
+            ) if part
+        )
+        return retry
+
+    for key, value in (("gc.auto", "0"), ("maintenance.auto", "false")):
+        configured = run(git_cmd, ["config", "--replace-all", key, value], cwd)
+        if configured.returncode != 0:
+            logger.warning("could not persist %s=%s after partial-clone recovery", key, value)
+
+    print("  ✓ Repaired the partial-clone object store with a full refetch")
+    return retry
+
+
 def _prune_orphan_rescue_refs(
     git_cmd, cwd, branch, keep=_ORPHAN_RESCUE_REFS_TO_KEEP, max_age_days=_ORPHAN_RESCUE_REF_MAX_AGE_DAYS
 ) -> None:
@@ -348,6 +441,8 @@ def _has_http_code(stderr: str, *codes: str) -> bool:
 # answered with HTTP 401 ("could not read Username") is GitHub during an outage (or a renamed/private
 # repo), not a user credentials problem.
 _FETCH_FAILURE_RULES = (
+    (lambda s: _PARTIAL_CLONE_PACK_BUG in s,
+     "✗ Git's partial-clone pack metadata is inconsistent."),
     (lambda s: _has_http_code(s, "429") or "rate limit" in s.lower(),
      "✗ GitHub is rate limiting requests or having an outage (HTTP 429) — try again in 5 minutes."),
     (lambda s: _has_http_code(s, "500", "502", "503", "504"),

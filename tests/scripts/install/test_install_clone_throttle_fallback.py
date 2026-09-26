@@ -42,10 +42,13 @@ stage_repository
     calls = attempts.read_text().splitlines()
     assert len(calls) > 1
     assert "--no-checkout" in calls[-1]
+    assert all("-c gc.auto=0" in call and "-c maintenance.auto=false" in call for call in calls)
     if materialize_fails:
         assert result.returncode != 0
         assert not dest.exists()
     else:
         assert result.returncode == 0, result.stdout + result.stderr
         assert (dest / "README").read_text() == "complete checkout\n"
+        assert git("-C", str(dest), "config", "--get", "gc.auto").stdout.strip() == "0"
+        assert git("-C", str(dest), "config", "--get", "maintenance.auto").stdout.strip() == "false"
     assert not list(tmp_path.glob(".hermes-clone-*"))

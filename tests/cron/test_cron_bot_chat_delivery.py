@@ -129,8 +129,11 @@ def test_deliver_runs_canonical_bot_chat_lane():
     assert err is None
     argv = calls["argv"]
     # The running install's interpreter, not whatever `hermes` PATH names (same order as /update).
-    assert argv[:3] == [sys.executable, "-m", "hermes_cli.main"]
-    assert argv[3:5] == ["-p", "default"]  # do not follow active_profile
+    from pathlib import Path
+    from hermes_cli._launchers import runtime_command
+    launcher = runtime_command(Path(sched_delivery.__file__).resolve().parents[1])
+    assert argv[:len(launcher)] == launcher
+    assert argv[len(launcher):len(launcher) + 2] == ["-p", "default"]
     assert "chat" in argv
     assert "Bot Chat" in argv
     assert "--create-if-missing" in argv

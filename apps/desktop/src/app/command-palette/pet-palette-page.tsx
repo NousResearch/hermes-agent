@@ -192,7 +192,6 @@ export function PetInlineToggle() {
       onClick={toggle}
       // Don't steal focus from the search input on click.
       onMouseDown={event => event.preventDefault()}
-      title={enabled ? copy.turnOff : copy.turnOn}
       type="button"
     >
       {busy ? <Loader2 className="size-4 animate-spin" /> : <PawPrint className="size-4" />}

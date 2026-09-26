@@ -65,7 +65,9 @@ export const en: Translations = {
     activeSessionsLabel: "Active Sessions:",
     gatewayStatusLabel: "Gateway Status:",
     gatewayStrip: {
+      degraded: "Degraded",
       failed: "Start failed",
+      heartbeatStale: "Heartbeat stale",
       off: "Off",
       running: "Running",
       starting: "Starting",
@@ -108,6 +110,8 @@ export const en: Translations = {
       "Your agent's disk is almost full. New messages, memories, and settings may fail to save.",
     diskElevatedBanner:
       "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage.",
+    multiplexStandaloneBanner:
+      "Your gateway serves only one profile. Not served: {profiles}. Why: {reason}. Fix: hermes gateway migrate --multiplex",
     dismiss: "Dismiss",
   },
 
@@ -192,6 +196,10 @@ export const en: Translations = {
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
     newChat: "New chat",
+    workspace: "workspace",
+    workspaceDefault: "Default",
+    workspaceRescan: "Rescan repositories",
+    workspaceCustom: "Other path…",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {
@@ -306,6 +314,10 @@ export const en: Translations = {
     noJobs: "No cron jobs configured. Create one above.",
     last: "Last",
     next: "Next",
+    /** Replaces `next` when the stored next_run_at is already past the scheduler grace. */
+    overdueSince: "Overdue since",
+    /** Banner when the ticker heartbeat is stale; {when} is a relative time such as "7h ago". */
+    schedulerLastTicked: "Scheduler last ticked {when} — jobs that came due since then have not fired",
     pause: "Pause",
     resume: "Resume",
     triggerNow: "Trigger now",
@@ -392,6 +404,8 @@ export const en: Translations = {
     disableRuntime: "Disable",
     enableAfterInstall: "Enable after install",
     enableRuntime: "Enable",
+    toggleTakesEffectAfterRestart:
+      "Saved — restart the gateway to apply the change.",
     forceReinstall: "Force reinstall (delete existing folder first)",
     headline:
       "Discover, install, enable, and update Hermes plugins (`hermes plugins` parity).",
@@ -422,6 +436,8 @@ export const en: Translations = {
     authRequired: "Auth required",
     authRequiredHint: "Run this command to authenticate:",
     updateGit: "Git pull",
+    updateConsentBody: (name: string, sha: string) =>
+      `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
     versionBadge: "Version",
     showInSidebar: "Show in sidebar",
     hideFromSidebar: "Hide from sidebar",

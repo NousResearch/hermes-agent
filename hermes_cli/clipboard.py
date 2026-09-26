@@ -1,13 +1,14 @@
 """Clipboard image extraction and text write for macOS, Windows, Linux, and WSL2.
 
-No Python deps — only OS-level CLI tools: macOS osascript (always present) / pngpaste (optional);
-Windows and WSL2 PowerShell via WinForms, Get-Clipboard, then a file-drop fallback; Linux
-wl-paste (Wayland), xclip (X11).
+No Python deps — only OS-level CLI tools: macOS osascript (always present) / pngpaste (optional)
+plus a file-url fallback for Finder copies; Windows and WSL2 PowerShell via WinForms,
+Get-Clipboard, then a file-drop fallback; Linux wl-paste (Wayland), xclip (X11).
 """
 
 import base64
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -16,8 +17,9 @@ from hermes_constants import is_wsl as _is_wsl
 
 logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-_TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace')
+_TEXT = dict(capture_output=True, text=True, encoding='utf-8', errors='replace', stdin=subprocess.DEVNULL)
 _PS_FLAGS = ("-NoProfile", "-NonInteractive")
+_FILE_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
 
 
 def _nonempty(path: Path) -> bool:
@@ -40,7 +42,7 @@ def _probe(argv: list, timeout: int, ok, *, missing: str | None = None) -> bool:
 def _pipe_to_file(argv: list, dest: Path) -> bool:
     """Run *argv* with stdout redirected into *dest*; True when a non-empty file resulted."""
     with open(dest, "wb") as f:
-        subprocess.run(argv, stdout=f, stderr=subprocess.DEVNULL, timeout=5, check=True)
+        subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.DEVNULL, timeout=5, check=True)
     return _nonempty(dest)
 
 
@@ -117,15 +119,51 @@ def write_clipboard_text(text: str) -> bool:
 
 # ── macOS ────────────────────────────────────────────────────────────────
 
+def _osascript(expr: str, timeout: int = 3) -> str:
+    """stdout of an osascript expression; "" on any failure."""
+    try:
+        r = subprocess.run(["osascript", "-e", expr], timeout=timeout, **_TEXT)
+        return r.stdout if r.returncode == 0 else ""
+    except Exception as e:
+        logger.debug("osascript probe failed: %s", e)
+        return ""
+
+
+def _macos_has_bitmap(info: str) -> bool:
+    return "«class PNGf»" in info or "«class TIFF»" in info
+
+
+def _macos_clipboard_file_image() -> Path | None:
+    """Local image path when the clipboard holds a Finder file-url: Cmd+C on a file puts
+    «class furl» (no bitmap) on the pasteboard, yet other apps paste it as an image."""
+    path = Path(_osascript("POSIX path of (the clipboard as «class furl»)").strip())
+    return path if path.suffix.lower() in _FILE_IMAGE_EXTS and os.path.isfile(path) else None
+
+
 def _macos_has_image() -> bool:
-    return _probe(["osascript", "-e", "clipboard info"], 3,
-                  lambda r: "«class PNGf»" in r.stdout or "«class TIFF»" in r.stdout)
+    info = _osascript("clipboard info")
+    return _macos_has_bitmap(info) or (
+        "«class furl»" in info and _macos_clipboard_file_image() is not None)
+
+
+def _macos_save_file_image(dest: Path) -> bool:
+    src = _macos_clipboard_file_image()
+    if src is None:
+        return False
+    try:
+        shutil.copyfile(src, dest)
+        if _is_png_file(dest) or (_convert_to_png(dest) and _is_png_file(dest)):
+            return True
+    except OSError as e:
+        logger.debug("clipboard file-url extract failed: %s", e)
+    dest.unlink(missing_ok=True)
+    return False
 
 
 def _macos_pngpaste(dest: Path) -> bool:
     """pngpaste (brew install pngpaste) — fastest, cleanest."""
     try:
-        r = subprocess.run(["pngpaste", str(dest)], capture_output=True, timeout=3)
+        r = subprocess.run(["pngpaste", str(dest)], stdin=subprocess.DEVNULL, capture_output=True, timeout=3)
         return r.returncode == 0 and _nonempty(dest)
     except FileNotFoundError:
         pass  # pngpaste not installed
@@ -135,9 +173,11 @@ def _macos_pngpaste(dest: Path) -> bool:
 
 
 def _macos_osascript(dest: Path) -> bool:
-    """osascript PNG extraction (always available)."""
-    if not _macos_has_image():
-        return False
+    """osascript extraction (always available): bitmap PNGf, else a Finder file-url. One
+    `clipboard info` listing gates both — the furl read is a pasteboard *content* access."""
+    info = _osascript("clipboard info")
+    if not _macos_has_bitmap(info):
+        return "«class furl»" in info and _macos_save_file_image(dest)
     script = f'''try
   set imgData to the clipboard as «class PNGf»
   set f to open for access POSIX file "{dest}" with write permission
@@ -157,7 +197,7 @@ end try
 
 # ── PowerShell (native Windows powershell/pwsh + WSL2 powershell.exe) ─────
 
-_FILEDROP_IMAGE_EXTS = "'.png','.jpg','.jpeg','.gif','.webp','.bmp','.tiff','.tif'"
+_FILEDROP_IMAGE_EXTS = ",".join(f"'{e}'" for e in sorted(_FILE_IMAGE_EXTS))
 _PS_FILEDROP_HIT = (
     "try { "
     "$files = Get-Clipboard -Format FileDropList -ErrorAction Stop;"
@@ -320,7 +360,7 @@ def _convert_to_png(path: Path) -> bool:
     tmp = path.with_suffix(".bmp")
     try:
         path.rename(tmp)
-        r = subprocess.run(["convert", str(tmp), "png:" + str(path)], capture_output=True,
+        r = subprocess.run(["convert", str(tmp), "png:" + str(path)], stdin=subprocess.DEVNULL, capture_output=True,
                            timeout=5)
         if r.returncode == 0 and _nonempty(path):
             tmp.unlink(missing_ok=True)

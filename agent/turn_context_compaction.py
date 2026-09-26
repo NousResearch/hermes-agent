@@ -101,7 +101,8 @@ def _apply_grown_window(agent: Any, compressor: Any, grown: int) -> None:
 
 
 def _refund_api_call(agent: Any, api_call_count: int) -> int:
-    """A pass that never reached the provider refunds the call count and budget."""
+    """Refund the call count and iteration budget for a pass that should not consume it:
+    one that never reached the provider (preflight) or a provider-switch fallback hop."""
     # Host progress-aware timeout (#98722, salvaged from #98741): this preflight iteration never reached the
     # provider. Refund its provisional call/budget exactly like a successful pre-API compaction, then stop
     # before the unchanged oversized request reaches the provider — its overflow error would only invoke
@@ -404,6 +405,7 @@ def _run_preflight_passes(
             _orig_len, len(out.messages), _orig_tokens, _preflight_tokens
         ):
             _tc._fail_closed_after_preflight_timeout(agent, _preflight_tokens)
+            _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
             out.blocked = True
             break  # Cannot compress further: neither rows nor tokens moved
         out.conversation_history = conversation_history_after_compression(
@@ -421,6 +423,8 @@ def _run_preflight_passes(
                 "~%s -> ~%s request tokens; skipping additional passes",
                 f"{_orig_tokens:,}", f"{_preflight_tokens:,}",
             )
+            # Sub-5% progress on a request still above the window: no further pass will get under it.
+            _tc._fail_closed_on_insufficient_progress(agent, _preflight_tokens)
             break
 
 

@@ -31,6 +31,8 @@ _AZURE_OPENAI_PROBE_API_VERSIONS = (
 
 # Matches the value ``agent/anthropic_adapter.py`` uses when building the Anthropic client.
 _AZURE_ANTHROPIC_API_VERSION = "2025-04-15"
+_AZURE_DETECT_JSON_BODY_MAX_BYTES = 1024 * 1024
+_AZURE_DETECT_ERROR_BODY_MAX_BYTES = 64 * 1024
 
 
 @dataclass
@@ -86,14 +88,23 @@ def _authed_request(url: str, api_key: Any, token_provider, *, method: str = "GE
     return req
 
 
+def _read_limited_response_body(resp: Any, limit: int, *, label: str) -> bytes:
+    body = resp.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError(f"{label} exceeded {limit} bytes")
+    return body
+
+
 def _http_get_json(url: str, api_key: Any, timeout: float = 6.0, *,
                    token_provider: TokenProvider = None) -> tuple[int, Optional[dict]]:
     """GET with auth headers; return ``(status_code, parsed_json_or_None)``. Never raises."""
     req = _authed_request(url, api_key, token_provider)
     try:
         with open_credentialed_url(req, timeout=timeout) as resp:
-            body = resp.read()
             try:
+                body = _read_limited_response_body(
+                    resp, _AZURE_DETECT_JSON_BODY_MAX_BYTES, label="Azure detection JSON response body",
+                )
                 return resp.status, json.loads(body.decode("utf-8", errors="replace"))
             except Exception:
                 return resp.status, None
@@ -171,7 +182,11 @@ def _probe_anthropic_messages(base_url: str, api_key: Any, *, token_provider: To
             return resp.status < 500
     except HTTPError as exc:
         try:
-            lowered = exc.read().decode("utf-8", errors="replace").lower()
+            with exc:
+                body = _read_limited_response_body(
+                    exc, _AZURE_DETECT_ERROR_BODY_MAX_BYTES, label="Azure Anthropic probe error response body",
+                )
+            lowered = body.decode("utf-8", errors="replace").lower()
             if "anthropic" in lowered or '"type"' in lowered and '"error"' in lowered:
                 return True
             # Pre-Azure-v1 Foundry returns a plain 404 for Anthropic-style calls on non-Anthropic

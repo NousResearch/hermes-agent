@@ -24,6 +24,10 @@ _ABORT = object()
 _DONE = object()
 
 
+class _HandleDeclined(Exception):
+    """The adapter declined ``begin_streaming_tts`` when the first PCM chunk arrived."""
+
+
 class StreamingTTSConsumer:
     """Consumes LLM text deltas and produces streaming PCM audio for an adapter."""
 
@@ -34,11 +38,10 @@ class StreamingTTSConsumer:
         self._adapter, self._chat_id, self._loop, self._metadata = adapter, chat_id, loop, metadata
         # Resolved once; None => inactive, gateway falls back to whole-file TTS.
         self._streamer = resolve_streaming_provider(tts_config)
-        self._chunker = SentenceChunker()
-        self._audio_format = audio_format or AudioFormat() if self._streamer is None else (
-            AudioFormat(**{f: int(getattr(self._streamer, f, getattr(AudioFormat, f)))
-                           for f in ("sample_rate", "channels", "sample_width")})
-        )
+        self._chunker = SentenceChunker.from_config(tts_config)
+        # Provisional: refreshed from the streamer when the handle opens on the first PCM chunk,
+        # since an OpenAI-compatible endpoint reports its real rate only in the response (#76466).
+        self._audio_format = audio_format or AudioFormat() if self._streamer is None else self._streamer_format()
         # Thread-safe queue of completed clauses plus the _DONE/_ABORT sentinels.
         self._queue: "queue.Queue[Any]" = queue.Queue(maxsize=256)
         self._handle: Optional[StreamingTTSHandle] = None
@@ -46,6 +49,10 @@ class StreamingTTSConsumer:
         self._completed = self._partial = self._aborted = False
         self._finished = self._dropped = self._suppress_whole_file = False
         self._lock, self._strip_markdown = threading.Lock(), None  # stripper lazily imported
+
+    def _streamer_format(self) -> AudioFormat:
+        return AudioFormat(**{f: int(getattr(self._streamer, f, getattr(AudioFormat, f)))
+                              for f in ("sample_rate", "channels", "sample_width")})
 
     active = property(lambda self: self._streamer is not None)  # usable streaming provider
     completed = property(lambda self: self._completed)  # streaming audio fully delivered
@@ -110,19 +117,16 @@ class StreamingTTSConsumer:
     def _settle(self, *, failed: bool) -> None:
         """Set outcome flags from what was audible: never report completion after a failure or a
         dropped clause; keep suppression whenever audio was audible (no replay from the start)."""
-        audible, degraded = self._handle.audible, failed or self._dropped
+        audible, degraded = bool(self._handle and self._handle.audible), failed or self._dropped
         self._completed = audible and not degraded
         self._partial = self._partial or (audible and degraded)
         self._suppress_whole_file = audible
 
     async def _open_handle(self) -> bool:
-        """Open the adapter's streaming-audio handle; False when unsupported or begin failed."""
-        if not self.active:
-            return False
-        if not self._adapter.supports_streaming_tts(self._chat_id, self._audio_format):
-            name = getattr(self._adapter, "name", "?")
-            logger.debug("adapter %s does not support streaming TTS", name)
-            return False
+        """Open the adapter's streaming-audio handle at the streamer's now-final format; False when
+        begin failed. Called from the first PCM chunk, not before the provider answered."""
+        if self._streamer is not None:
+            self._audio_format = self._streamer_format()
         try:
             self._handle = await self._adapter.begin_streaming_tts(
                 self._chat_id, self._audio_format, metadata=self._metadata
@@ -135,7 +139,8 @@ class StreamingTTSConsumer:
     async def _run(self) -> None:
         """Drain clauses until a sentinel/abort, synthesise + write each, then finalise the stream;
         a clause or finalise failure settles the outcome flags and aborts the adapter stream."""
-        if not await self._open_handle():
+        if not self.active or not self._adapter.supports_streaming_tts(self._chat_id, self._audio_format):
+            logger.debug("adapter %s does not support streaming TTS", getattr(self._adapter, "name", "?"))
             return
         self._suppress_whole_file = False
         try:
@@ -150,6 +155,8 @@ class StreamingTTSConsumer:
                     continue
                 try:
                     await self._synthesise_and_write(item)
+                except _HandleDeclined:
+                    return  # nothing audible yet: gateway falls back to whole-file TTS
                 except Exception as exc:
                     logger.warning("streaming TTS clause failed: %s", exc)
                     self._settle(failed=True)
@@ -175,7 +182,7 @@ class StreamingTTSConsumer:
 
     async def _synthesise_and_write(self, clause: str) -> None:
         """Synthesise one clause via the streamer and write PCM chunks."""
-        if self._handle is None or self._handle.aborted or self._streamer is None:
+        if self._streamer is None or (self._handle is not None and self._handle.aborted):
             return
         if self._strip_markdown is None:  # lazy import: tools.tts_tool would cycle at module load
             try:
@@ -189,10 +196,12 @@ class StreamingTTSConsumer:
         while True:
             # next() runs in a thread so a blocking provider never stalls the loop.
             chunk = await asyncio.to_thread(next, iterator, _DONE)
-            if chunk is _DONE or self._aborted or self._handle.aborted:
+            if chunk is _DONE or self._aborted or (self._handle is not None and self._handle.aborted):
                 return
             if not chunk:
                 continue
+            if self._handle is None and not await self._open_handle():
+                raise _HandleDeclined()
             was_audible = self._handle.audible
             await self._adapter.write_streaming_tts(self._handle, chunk)
             if not was_audible:

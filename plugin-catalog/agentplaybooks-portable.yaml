@@ -1,0 +1,19 @@
+name: agentplaybooks-portable
+repo: https://github.com/matebenyovszky/agentplaybooks
+sha: f453163d449f5ee0c28881da8c689932dd4141e8
+subdir: packages/hermes-portable/agentplaybooks-portable
+description: "Portable agent setup for Hermes: a skill for on-demand CLI audits, cross-client config sync, Agent Plugin packaging, playbook recovery, and Bot Mode profile export. Requires Node.js 20+ and separately installed @agentplaybooks/cli@0.4.0. Disclosure — skill-only; the separately installed apb CLI does the work. Local writes (including `apb sync --target=hermes --apply`, which edits Hermes config/MCP settings) require --apply; hosted pull/push contact agentplaybooks.ai after `apb login`, and `apb push --apply` uploads your project's persona, instructions, skills and MCP references (secret names, not values)."
+maintainer: matebenyovszky
+tier: community
+category: tools
+requires_hermes: ">=0.21.4"
+version: "0.1.0"
+docs_url: https://github.com/matebenyovszky/agentplaybooks/tree/f453163d449f5ee0c28881da8c689932dd4141e8/packages/hermes-portable/agentplaybooks-portable
+image: https://raw.githubusercontent.com/matebenyovszky/agentplaybooks/f453163d449f5ee0c28881da8c689932dd4141e8/public/plugin-catalog/portable-agents.png
+readme: true
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

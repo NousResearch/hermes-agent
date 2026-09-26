@@ -217,23 +217,33 @@ When you turn the toggle back off, Hermes deletes the snapshot store
 (`~/.hermes/browser-profile/`) on the next browser use, so the copied
 credentials don't linger after you revoke consent.
 
-:::note Windows: the browser must be fully closed
+:::note A running browser can block the login/autofill databases
 On Windows a running Chrome/Edge/Brave holds its cookie and login databases with
 an exclusive (deny-all) lock, so Hermes cannot copy them while the browser is
 open — it fails fast with a "fully quit the browser and retry" message rather
 than hang or produce a signed-out session. Real-profile browsing on Windows
 therefore requires the browser **fully quit**, including any background/tray
 instance (Chrome's "continue running background apps when closed" keeps a
-`chrome.exe` alive after you close the window). macOS and Linux can usually copy
-the profile while the browser is running. On every platform, each authentication
-database backup has a five-second retry budget. If the source or snapshot database
-stays locked, Hermes stops the launch and asks you to close the browser and retry.
-It preserves committed WAL data through SQLite rather than falling back to a raw
-file copy, which could silently lose recent logins. Unreadable or corrupt databases
-also stop the launch.
+`chrome.exe` alive after you close the window).
+
+On macOS and Linux the profile is not file-locked, but each authentication
+database is snapshotted through SQLite's online backup with a five-second
+budget, and a running Chrome typically holds `Login Data`, `Login Data For
+Account` and `Web Data` with a hot write lock that never yields within that
+budget (`Cookies` usually snapshots fine). When that happens Hermes stops the
+launch and names the databases it could not read — for example "chrome is
+running and holds the profile's Login Data, Login Data For Account, Web Data
+with a write lock" — so in practice **quit the browser before launching a
+real-profile session on macOS/Linux too**. You can reopen it once the session is
+up (the snapshot is a separate directory), but the auth files are re-synced on
+every fresh session launch, so a browser left running then hits the same lock.
+Hermes preserves committed
+WAL data through SQLite rather than falling back to a raw file copy, which could
+silently lose recent logins. Unreadable or corrupt databases also stop the
+launch, with the SQLite error named in the message.
 
 Set `browser.real_profile_autoclose: true` to let Hermes **offer to close the
-browser for you** when it's holding the profile. Even with this on, Hermes never
+browser for you** when it's holding the profile lock (the Windows case). Even with this on, Hermes never
 closes it automatically — when the profile is locked it always stops and the
 agent asks you first; only on your approval does it run `hermes browser
 close-profile` (terminates the browser process tree bound to that profile,
@@ -620,13 +630,19 @@ AGENT_BROWSER_ARGS=--no-sandbox
 
 ### Install agent-browser CLI
 
-You don't need to install anything — `agent-browser` resolves automatically via
-`npx agent-browser` on first browser-tool use. To avoid the one-time npx fetch,
-you can install it globally ahead of time (optional):
+The installers and `hermes update` install `agent-browser` and its pinned
+Chromium through Hermes's package manager by default. If you installed with
+`--skip-browser` / `-SkipBrowser`, or the download failed, install them with:
 
 ```bash
-npm install -g agent-browser
+hermes pm install agent-browser
 ```
+
+This also undoes an earlier `--skip-browser` choice, so updates keep the
+browser tools current. An `agent-browser` already on your `PATH` also works.
+On Linux, Chromium may also need system libraries
+(`npx playwright install-deps chromium`). On Android/Termux, run
+`npm install -g agent-browser && agent-browser install` instead.
 
 :::info
 The `browser` toolset must be included in your config's `toolsets` list or enabled via `hermes config set toolsets '["hermes-cli", "browser"]'`.

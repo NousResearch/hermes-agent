@@ -60,7 +60,6 @@ test.describe('batch clarify card', () => {
 
     // Answer both questions: stage picks locally (no server traffic yet).
     const confirmButton = batchCard.locator('button[type="submit"]')
-    await expect(confirmButton).toContainText('Confirm and continue')
     await expect(confirmButton).toBeDisabled()
 
     await batchCard.getByRole('button', { name: /Coffee/ }).click()

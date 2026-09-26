@@ -2129,7 +2129,9 @@ def _config_override_context_length(model: str, base_url: str, provider: str, cu
     if base_url and model:
         with contextlib.suppress(Exception):  # fall through to probing
             from hermes_cli.config import get_custom_provider_context_length
-            cp_ctx = get_custom_provider_context_length(model=model, base_url=base_url, custom_providers=custom_providers)
+            cp_ctx = get_custom_provider_context_length(
+                model=model, base_url=base_url, custom_providers=custom_providers, provider=provider,
+            )
             if cp_ctx:
                 return cp_ctx
     return None
@@ -2194,7 +2196,7 @@ def _resolve_provider_aware_context_length(model: str, base_url: str, api_key: s
 
 def get_model_context_length(
     model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None,
-    provider: str = "", custom_providers: list | None = None,
+    provider: str = "", custom_providers: list | None = None, requested_provider: str = "",
 ) -> int:
     """Context length for a model. Resolution order: 0 config override / MoA aggregator /
     model_overrides / custom_providers / endpoint-scoped; 1 persistent cache (Nous, LM
@@ -2202,6 +2204,7 @@ def get_model_context_length(
     probe, Ollama); 4 Anthropic /v1/models (API keys only); 5 provider-aware (Copilot,
     Nous, Codex OAuth, GMI, Ollama, OpenRouter live, models.dev); 6 OpenRouter for
     unknown providers; 7 local server; 8 hardcoded defaults; 9 256K fallback."""
+    provider_identity = requested_provider or provider
     # 0. Explicit config override — user knows best
     if isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
@@ -2209,9 +2212,9 @@ def get_model_context_length(
         ctx = _resolve_moa_context_length(model, custom_providers)
         if ctx is not None:
             return ctx
-    ctx = _config_override_context_length(model, base_url, provider, custom_providers)
-    if ctx is not None:
-        return ctx
+    config_ctx = _config_override_context_length(model, base_url, provider_identity, custom_providers)
+    if config_ctx is not None:
+        return config_ctx
     # Malformed URLs (unmatched IPv6 bracket) make urllib.parse raise; treat them as unknown so
     # the inference layer reports the configuration error itself.
     if base_url:
@@ -2309,12 +2312,13 @@ def get_model_context_length(
     return DEFAULT_FALLBACK_CONTEXT
 
 
-async def get_model_context_length_async(model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "", custom_providers: list | None = None) -> int:
+async def get_model_context_length_async(model: str, base_url: str = "", api_key: str = "", config_context_length: int | None = None, provider: str = "", custom_providers: list | None = None, requested_provider: str = "") -> int:
     """get_model_context_length on a worker thread (its blocking HTTP would stall the event loop)."""
     import asyncio
     return await asyncio.to_thread(
         get_model_context_length, model, base_url=base_url, api_key=api_key,
-        config_context_length=config_context_length, provider=provider, custom_providers=custom_providers)
+        config_context_length=config_context_length, provider=provider, custom_providers=custom_providers,
+        requested_provider=requested_provider)
 
 
 # CJK/Hangul/Kana codepoints (~1 token each), counted in one C-level regex pass: Hangul

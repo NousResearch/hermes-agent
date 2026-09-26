@@ -63,7 +63,7 @@ def notify_approval(self, approval_data: dict) -> None:
                     description=desc, metadata=_exec_approval_metadata(
                         {**(ctx._status_thread_metadata or {}), "requester_user_id": ctx.source.user_id},
                         approval_data,
-                    ), **flags,
+                    ), request_id=approval_data.get("request_id"), **flags,
                 ),
                 "send_exec_approval scheduling error",
             )

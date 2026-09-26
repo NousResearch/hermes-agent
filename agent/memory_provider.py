@@ -191,6 +191,13 @@ class MemoryProvider(ABC):
         """Write non-secret setup ``values`` to the provider's native config. Plugins MUST either
         override this or use only env vars (every schema field carrying ``env_var``)."""
 
+    def load_saved_config(self) -> Optional[Dict[str, Any]]:
+        """Read this provider's saved non-secret setup values (what ``save_config`` wrote), or
+        None when the provider does not persist config itself. Providers storing config outside
+        ``memory.<name>`` MUST override this so ``hermes memory setup`` re-runs offer the saved
+        values instead of schema defaults."""
+        return None
+
     def on_memory_write(self, action: str, target: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Mirror a built-in memory-tool write (``action``: add | replace | remove; ``target``:
         memory | user; ``metadata``: provenance such as write_origin, session_id, tool_name).

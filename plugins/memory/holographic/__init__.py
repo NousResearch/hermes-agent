@@ -115,6 +115,10 @@ class HolographicMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         return True  # SQLite is always available, numpy is optional
 
+    def load_saved_config(self):
+        """Saved values for ``hermes memory setup`` re-runs (the ``save_config`` section)."""
+        return dict(_load_plugin_config())
+
     def save_config(self, values, hermes_home):
         """Write config to config.yaml under plugins.hermes-memory-store."""
         # The canonical writer: config lock, managed-mode refusal, default stripping, atomic replace.

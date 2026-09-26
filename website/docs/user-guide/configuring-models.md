@@ -251,6 +251,27 @@ host, or model family. The marker layout follows the configured transport:
 `prompt_caching: false` to explicitly disable cache markers for a model; when
 omitted, Hermes keeps its normal provider and model capability detection.
 
+### Declaring a model's reasoning-effort vocabulary
+
+A relay or gateway usually accepts a narrower set of reasoning levels than the
+shared ladder, and its catalog rarely says which. Declare the set and Hermes
+offers exactly those levels — the `/reasoning` picker stops presenting levels
+the endpoint would reject or silently clamp:
+
+```yaml
+providers:
+  model-proxy:
+    models:
+      fable:
+        reasoning_efforts: [none, low, high, max]
+```
+
+The declaration is per route and per model, so two models behind the same
+provider can differ. An empty list (`[]`) says the model takes no reasoning
+level at all. Leave the key out and nothing changes: an undeclared model keeps
+the full ladder, and a provider profile that declares a vocabulary of its own
+(Ramp Router reads its live catalog) still applies.
+
 :::note Legacy format
 Older configs used a top-level `custom_providers:` list (with `base_url` instead of `api`). It still works and is auto-migrated to the `providers:` dict on `hermes update` (config v12).
 :::

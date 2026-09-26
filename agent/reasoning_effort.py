@@ -159,6 +159,73 @@ def route_supported_efforts(provider: Optional[str], model: Optional[str]) -> tu
     return OPENAI_COMPAT_WIRE_EFFORTS
 
 
+def _config_declared_efforts(provider: Optional[str], model: Optional[str], config: Optional[dict] = None) -> Optional[tuple[str, ...]]:
+    """``providers.<provider>.models.<model>.reasoning_efforts`` from config, or None.
+
+    *config* is the already-loaded mapping when the caller has one (the gateway reads its
+    config once per command); otherwise the shared cached read-only config is used.
+    """
+    name, model_id = str(provider or "").strip(), str(model or "").strip()
+    if not model_id:
+        return None
+    try:
+        if config is None:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly()
+        providers = (config or {}).get("providers")
+        if not isinstance(providers, dict):
+            return None
+        # Without a provider name (transports know the model and the base_url, not the
+        # config key) any entry declaring this exact model id answers: a declaration is
+        # written per model, and the same id under two entries declares the same wire.
+        entries = [providers.get(name)] if name else list(providers.values())
+        declared = None
+        for entry in entries:
+            models = entry.get("models") if isinstance(entry, dict) else None
+            row = models.get(model_id) if isinstance(models, dict) else None
+            candidate = row.get("reasoning_efforts") if isinstance(row, dict) else None
+            if isinstance(candidate, (list, tuple)):
+                declared = candidate
+                break
+    except Exception:  # config is user input: never break a command over it
+        return None
+    return tuple(declared) if isinstance(declared, (list, tuple)) else None
+
+
+def declared_route_efforts(
+    provider: Optional[str], model: Optional[str], config: Optional[dict] = None
+) -> Optional[tuple[str, ...]]:
+    """Vocabulary the (provider, model) route DECLARES, or ``None`` when nothing declares one.
+
+    Two sources, in order of authority:
+
+    1. ``providers.<provider>.models.<model>.reasoning_efforts`` in config — the explicit
+       declaration for an endpoint whose catalog Hermes cannot discover (a relay, a gateway,
+       a local server). It wins because the user configured that route on purpose.
+    2. :meth:`ProviderProfile.supported_reasoning_efforts` — the profile hook Router feeds
+       from its live catalog and Kilo declares statically.
+
+    Levels outside :data:`EFFORT_LADDER` are dropped (``clamp_effort`` ignores them anyway).
+    ``None`` means undeclared and keeps every caller fail-open: a picker goes on offering the
+    shared ladder instead of hiding levels that may well work. An empty tuple is a declaration
+    in its own right — the route takes no reasoning level at all.
+    """
+    declared = _config_declared_efforts(provider, model, config)
+    if declared is None:
+        try:
+            from providers import get_provider_profile
+
+            profile = get_provider_profile(provider) if provider else None
+            declared = profile.supported_reasoning_efforts(model) if profile is not None else None
+        except Exception:  # a plugin profile must never break the caller
+            declared = None
+    if declared is None:
+        return None
+    levels = dict.fromkeys(str(level).strip().lower() for level in declared)
+    return tuple(level for level in levels if level in EFFORT_LADDER)
+
+
 def effort_display_label(effort: Optional[str], provider: Optional[str] = None, model: Optional[str] = None) -> str:
     """Picker / ``/reasoning`` status label for a ladder level: the level itself when the route sends
     it verbatim, else ``"<level> (sends <clamped> on this route)"`` so a Hermes-internal step such as

@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
+    declared_route_efforts,
     KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
     clamp_reasoning_config, kimi_supported_efforts, requested_effort,
 )
@@ -488,6 +489,19 @@ class ChatCompletionsTransport(ProviderTransport):
         # Kimi / TokenHub / LM Studio: top-level reasoning_effort (unless thinking disabled).
         thinking_off = isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False
         _e = requested_effort(reasoning_config)
+
+        # A route that DECLARES its vocabulary (``models.<id>.reasoning_efforts``) has told us
+        # the endpoint takes these levels, so send the one the user picked. Without that
+        # declaration nothing changes: an undeclared OpenAI-compatible relay keeps receiving no
+        # reasoning field at all, which is why a gateway that honours it (LiteLLM, vLLM behind a
+        # proxy) used to ignore every level the picker offered — the level never left Hermes.
+        _declared_wire = declared_route_efforts(params.get("provider"), model)
+        if _declared_wire and "reasoning_effort" not in api_kwargs:
+            if thinking_off or _e == "none":
+                if "none" in _declared_wire:
+                    api_kwargs["reasoning_effort"] = "none"
+            elif _e:
+                api_kwargs["reasoning_effort"] = clamp_effort(_e, _declared_wire)
         if is_kimi and not thinking_off:
             # K3 = low/high/max (server default high), K2-era = low/medium/high (default medium).
             _supported = kimi_supported_efforts(model)

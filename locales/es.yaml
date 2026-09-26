@@ -218,6 +218,7 @@ gateway:
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` no es compatible. Usa `/reasoning <level> --global` para cambiar el valor global por defecto."
     reset_done:                "🧠 ✓ Anulación de razonamiento de la sesión borrada; volviendo a la configuración global."
     unknown_arg:               "⚠️ Argumento desconocido: `{arg}`\n\n**Niveles válidos:** none, minimal, low, medium, high, xhigh, max, ultra\n**Visualización:** show, hide\n**Persistir:** añade `--global` para guardar más allá de esta sesión"
+    undeclared_level:          "⚠️ `{arg}` no está disponible en este modelo.\n\n**Niveles que admite:** {levels}\n**Pantalla:** show, hide\n**Guardar:** añade `--global` para que persista"
     picker_title:              "🧠 **Ajustes de razonamiento**\\n\\n**Esfuerzo:** `{level}`\\n**Alcance:** {scope}\\n**Visualización:** {display}\\n\\nElige una opción:"
     choice_none:               "none — desactivar razonamiento"
     choice_reset:              "reset — borrar el ajuste de sesión"

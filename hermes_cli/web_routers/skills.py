@@ -10,7 +10,7 @@ seam so ``monkeypatch.setattr(<owning module>, ...)`` keeps working.
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request  # noqa: F401
 
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_profiles import _hub_action_name, _installed_hub_identifiers
@@ -25,6 +25,7 @@ hub_router = APIRouter()
 router = APIRouter()
 
 _config_profile_scope = late("_config_profile_scope", "hermes_cli.web_server_profiles")
+_require_dashboard_admin = late("_require_dashboard_admin")
 load_config = late("load_config", "hermes_cli.config")
 # Labels per hub source id (matches `hermes skills search` provenance); keep in
 # sync with create_source_router()'s source list.
@@ -372,7 +373,8 @@ async def get_skills(profile: Optional[str] = None):
 
 
 @router.put("/api/skills/toggle")
-async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
+async def toggle_skill(request: Request, body: SkillToggle, profile: Optional[str] = None):
+    _require_dashboard_admin(request)
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
 
     def _run():
@@ -390,8 +392,18 @@ async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
 
 
 @router.get("/api/skills/content")
-async def get_skill_content(name: str, profile: Optional[str] = None):
-    """Raw SKILL.md text for the dashboard editor."""
+async def get_skill_content(request: Request, name: str, profile: Optional[str] = None):
+    """Return the raw SKILL.md text for a skill, for the dashboard editor.
+
+    Mini App token route (required=False), admin-tier only: the spec's
+    paired/"member" tier gets metadata only (name/category/description via
+    GET /api/skills) -- no skill-content read, no open. The Mini App UI
+    already hides the open affordance for non-admin, but this is the
+    server-side backstop; a cookie/session desktop caller (scope None) and
+    an admin-scoped Mini App token both pass unconditionally, matching
+    every other _require_dashboard_admin call site in this file.
+    """
+    _require_dashboard_admin(request)
     from tools.skill_manager_tool import _find_skill
 
     def _read():

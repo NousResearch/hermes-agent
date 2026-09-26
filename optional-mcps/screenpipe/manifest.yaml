@@ -1,0 +1,80 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: screenpipe
+description: >-
+  Local workflow memory from screen and audio history. Recall past
+  work, meetings, decisions, and repeated workflows with timestamped evidence.
+source: https://github.com/screenpipe/screenpipe/tree/main/packages/screenpipe-mcp
+
+# The desktop app owns capture and the local API. This MCP server is a stdio
+# bridge to that loopback service; it does not expose a public port.
+transport:
+  type: stdio
+  command: npx
+  args:
+    - "-y"
+    - "screenpipe-mcp@0.20.0"
+  env:
+    SCREENPIPE_DISABLE_TELEMETRY: "1"
+
+# screenpipe-mcp discovers the local API key from the desktop installation.
+auth:
+  type: none
+
+# Keep the default surface read-only and focused on recall, meetings, and
+# workflow reconstruction. Users can opt into mutation and automation tools
+# from Hermes's install-time tool checklist.
+tools:
+  default_enabled:
+    - activity-summary
+    - search-content
+    - keyword-search
+    - frame-context
+    - search-elements
+    - get-frame-elements
+    - list-meetings
+    - get-meeting
+    - get-feedback
+    - health-check
+
+suggest:
+  keywords:
+    - screenpipe
+    - screen history
+    - workflow memory
+  hosts:
+    - screenpi.pe
+    - screenpipe.com
+  applications:
+    - Screenpipe
+  requires_app: true
+
+post_install: |
+  Screenpipe continuously records your screen and selected audio sources while
+  recording is enabled. Installing this connector does not install the recorder,
+  start recording, or grant OS permissions.
+
+  Install and open the desktop app from https://screenpipe.com/download on the
+  same computer as Hermes. Complete Screenpipe's permission flow, then enable
+  Settings > General > Auto-start to keep it running in the background after
+  login, including between Hermes sessions. Review recording, exclusion, and
+  retention controls in the app: https://docs.screenpipe.com/api-recipes.
+
+  This stdio bridge defaults to http://localhost:3030 and discovers the local
+  API key from the Screenpipe installation. It requires Node.js/npx on Hermes's
+  PATH. A remote Hermes host needs a separately configured, authenticated
+  connection to the recording computer; its localhost is a different machine.
+
+  Start a new Hermes session and ask it to run Screenpipe's health-check, then
+  recall a recent activity. A successful MCP connection alone does not prove
+  capture is active. If stopped or permissions are missing, open Screenpipe
+  and resolve them there; do not restart recording after an intentional pause.
+
+  The default tool selection is read-only. Retrieved excerpts enter Hermes's
+  conversation and may be sent to its configured model provider. Pausing
+  recording does not revoke access to existing history; remove this connection
+  and restart active Hermes sessions to stop access through it. Ask Hermes to
+  cite Screenpipe and timestamps when using this history, and open the app
+  to review the source recordings.

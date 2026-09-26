@@ -741,8 +741,8 @@ def _handle_complete(args: dict, **kw) -> str:
                 raise _Reject(
                     f"could not complete {tid}: unsatisfied parent dependencies: "
                     f"{detail}; complete the parents first (done or archived)")
-            _check(False, (task.last_failure_error if task else None) or
-                   f"could not complete {tid} (unknown id, stale run, or already terminal)")
+            _check(False, (task.last_failure_error if task else None)
+                   or _complete_refusal(kb, task, tid))
         run = kb.latest_run(conn, tid)
         # Artifact staging is atomic with the completion write, so a worker that
         # read `kanban_attachments` before completing saw an empty list and has
@@ -752,6 +752,27 @@ def _handle_complete(args: dict, **kw) -> str:
                    attachments=[
                        _fields(a, _ATTACHMENT_FIELDS)
                        for a in kb.list_attachments(conn, tid)])
+
+
+def _complete_refusal(kb, task, tid: str) -> str:
+    """Explain *why* ``kanban_complete`` was refused.
+
+    The old catch-all ("unknown id, stale run, or already terminal") hid the
+    recoverable dead end in #104430: a card stranded in ``triage`` was neither
+    terminal nor claimable, so a caller could not tell a stale run from a state
+    the board itself had produced and no verb could leave."""
+    if task is None:
+        return f"could not complete {tid} (unknown id)"
+    if task.status in ("done", "archived"):
+        return f"could not complete {tid}: already terminal (status={task.status})"
+    if task.status in kb.COMPLETABLE_STATUSES:
+        # Reachable only when the CAS lost: a reopen/parent race, or a stale
+        # expected_run_id (dispatcher workers pin theirs).
+        return (f"could not complete {tid} (status={task.status}): the state is "
+                f"completable, so the write lost a race — retry; a pinned run id "
+                f"that was reclaimed shows up here too")
+    return (f"could not complete {tid} (status={task.status}); completable states "
+            f"are {sorted(kb.COMPLETABLE_STATUSES)}")
 
 
 @_kanban_handler("kanban_block")

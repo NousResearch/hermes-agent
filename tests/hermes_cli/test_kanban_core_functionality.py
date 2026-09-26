@@ -690,6 +690,14 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
         def __init__(self):
             self.pid = 99999
 
+        def poll(self):
+            # main's zombie reaper (`reap_worker_zombies`) polls every Popen
+            # parked by `_default_spawn` on Windows; this fake never exits, so
+            # it must answer "still running" instead of raising AttributeError.
+            # Without it the reaper's ERROR log trips the no-traceback
+            # assertion in the gateway-watcher tests below.
+            return None
+
     def fake_popen(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env", {})

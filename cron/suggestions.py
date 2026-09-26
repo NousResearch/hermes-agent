@@ -14,8 +14,15 @@ import json
 import logging
 import threading
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# fcntl is Unix-only; Windows falls back to the in-process threading.Lock alone.
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
@@ -30,7 +37,8 @@ logger = logging.getLogger(__name__)
 # get_hermes_home() (profile home), not the shared default root. Same pattern as cron/executions.py.
 SUGGESTIONS_FILE: Optional[Path] = None
 
-# Protects load->modify->save cycles (the background review fork and the main agent can both write).
+# Protects load->modify->save cycles (the background review fork and the main agent can both write);
+# the cross-process side of that exclusion is added by _cross_process_lock() inside each block.
 _suggestions_lock = threading.Lock()
 
 # Cap pending suggestions so the list never becomes a nag wall; when full, new ones are dropped.
@@ -50,6 +58,30 @@ def _ensure_dir() -> None:
     from cron.jobs import _ensure_cron_dir
 
     _ensure_cron_dir(_current_suggestions_file().parent)
+
+
+@contextmanager
+def _cross_process_lock():
+    """Serialize the load->modify->_save_raw span across PROCESSES, not just this process's
+    threads: an exclusive ``flock`` on a sidecar ``.suggestions.lock`` in the suggestions file's
+    directory (gateway review fork / blueprints vs. the ``hermes suggestions`` CLI — a separate
+    process — otherwise race on suggestions.json and the last writer silently wins). Blocking
+    acquire is fine: the sections are short. Errors propagate (no silent fail-open); without an
+    flock backend (Windows) the in-process threading.Lock remains the only guard."""
+    if fcntl is None:  # pragma: no cover
+        yield
+        return
+    _ensure_dir()
+    lock_path = _current_suggestions_file().parent / ".suggestions.lock"
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def _load_raw() -> Dict[str, Any]:
@@ -102,7 +134,7 @@ def add_suggestion(
     if not title.strip() or not dedup_key.strip():
         raise ValueError("title and dedup_key are required")
 
-    with _suggestions_lock:
+    with _suggestions_lock, _cross_process_lock():
         suggestions = _load_raw().get("suggestions", [])
         if any(
             existing.get("dedup_key") == dedup_key
@@ -147,7 +179,7 @@ def get_suggestion(ref: str) -> Optional[Dict[str, Any]]:
 
 
 def _set_status(suggestion_id: str, status: str) -> bool:
-    with _suggestions_lock:
+    with _suggestions_lock, _cross_process_lock():
         suggestions = _load_raw().get("suggestions", [])
         for s in suggestions:
             if s.get("id") == suggestion_id:
@@ -193,7 +225,7 @@ def accept_suggestion(ref: str, *, origin: Optional[Dict[str, Any]] = None) -> O
 def clear_resolved() -> int:
     """Drop ACCEPTED records from disk (they served their purpose once the job exists); dismissed
     records are RETAINED for their dedup_key. Returns the count removed."""
-    with _suggestions_lock:
+    with _suggestions_lock, _cross_process_lock():
         suggestions = _load_raw().get("suggestions", [])
         kept = [s for s in suggestions if s.get("status") != _STATUS_ACCEPTED]
         removed = len(suggestions) - len(kept)

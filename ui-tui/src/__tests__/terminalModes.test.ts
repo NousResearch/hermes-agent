@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  clearNativeTuiFrame,
   isPaintableHex,
   resetTerminalModes,
   setTerminalBackground,
@@ -9,6 +10,17 @@ import {
 } from '../lib/terminalModes.js'
 
 describe('terminal mode reset', () => {
+  it('clears the native frame only on TTY streams', () => {
+    const write = vi.fn()
+    const tty = { isTTY: true, write } as unknown as NodeJS.WriteStream
+    const pipe = { isTTY: false, write: vi.fn() } as unknown as NodeJS.WriteStream
+
+    expect(clearNativeTuiFrame(tty)).toBe(true)
+    expect(write).toHaveBeenCalledWith('\x1b[2J\x1b[H')
+    expect(clearNativeTuiFrame(pipe)).toBe(false)
+    expect(pipe.write).not.toHaveBeenCalled()
+  })
+
   it('writes reset sequence to TTY streams without fds', () => {
     const write = vi.fn()
 

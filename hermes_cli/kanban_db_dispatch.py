@@ -1911,7 +1911,10 @@ def _memory_pressure_level(sample: Optional[Mapping[str, Any]] = None) -> str:
         return "unknown"
     try:
         from gateway.memory_status import classify_pressure
-        return classify_pressure(sample.get("mem_available_kib"), sample.get("mem_total_kib"))
+        return classify_pressure(
+            sample.get("mem_available_kib"), sample.get("mem_total_kib"),
+            sample.get("swap_used_kib"), sample.get("swap_total_kib"),
+        )
     except Exception:
         return "unknown"
 

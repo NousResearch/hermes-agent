@@ -267,6 +267,47 @@ class TestTrustGateApprovalRouting:
         assert gateway_waits == []
 
 
+class TestCliPromptCallbackWiring:
+    """The CLI branch of request_elicitation_consent must route through the per-thread
+    CLI approval callback (#123486): without it, _ask_human's prompt_toolkit fail-closed
+    guard auto-cancels every consent in ~0 ms and no prompt is ever shown."""
+
+    def test_cli_branch_forwards_thread_callback(self, monkeypatch):
+        import tools.approval_prompt as approval_prompt
+        import tools.terminal_tool as terminal_tool
+
+        seen = {}
+
+        def fake_callback(command, description, **kwargs):
+            seen.update(kwargs)
+            return "once"
+
+        monkeypatch.setattr(terminal_tool, "_get_approval_callback", lambda: fake_callback)
+
+        def fake_prompt(message, description, **kwargs):
+            cb = kwargs.get("approval_callback")
+            return cb(message, description, **kwargs) if cb is not None else "cancelled"
+
+        monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval", fake_prompt)
+
+        # No gateway session in this bare test process -> CLI branch.
+        assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "accept"
+        assert seen.get("allow_permanent") is False  # elicitation stays per-call: no [a]lways
+
+    def test_missing_callback_under_prompt_toolkit_still_fails_closed(self, monkeypatch):
+        """No callback registered + prompt_toolkit owning the terminal -> 'cancel'
+        (unanswered), never a silent allow."""
+        import tools.approval_prompt as approval_prompt
+        import tools.terminal_tool as terminal_tool
+
+        monkeypatch.setattr(terminal_tool, "_get_approval_callback", lambda: None)
+        from prompt_toolkit.application.current import get_app_or_none
+        monkeypatch.setattr(
+            "prompt_toolkit.application.current.get_app_or_none", lambda: object())
+
+        assert approval_prompt.request_elicitation_consent("write", "Approve once or deny.") == "cancel"
+
+
 class TestTrustNormalization:
     def test_unknown_trust_value_treated_as_untrusted(self):
         """Garbage trust strings fail closed to untrusted."""
@@ -331,4 +372,25 @@ class TestAnnotationCaptureAtDiscovery:
         ) is False
         assert _mcp_registration._annotation_read_only_hint(
             SimpleNamespace()
+        ) is False
+
+    def test_mcp2x_snake_case_sdk_annotation(self):
+        """mcp 2.x renamed Tool fields to snake_case with camelCase as a *serialization*
+        alias only — pydantic does not apply aliases to attribute access, so
+        ``getattr(annotations, "readOnlyHint")`` is None on 2.x and a read-only tool
+        classified as write-capable (prompted on every call). Read both spellings."""
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=True))
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=SimpleNamespace(read_only_hint=False))
+        ) is False
+
+        pytest.importorskip("mcp.types")
+        from mcp.types import ToolAnnotations
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=ToolAnnotations(readOnlyHint=True))
+        ) is True
+        assert _mcp_registration._annotation_read_only_hint(
+            SimpleNamespace(annotations=ToolAnnotations())
         ) is False

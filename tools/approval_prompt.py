@@ -327,9 +327,19 @@ def request_elicitation_consent(message: str, description: str, *,
         return _consent(decision.get("choice"), "decline")
 
     # allow_permanent=False: elicitation is a per-call confirmation — no pattern to remember.
+    # The interactive CLI answers prompts only through the per-thread callback registered on the
+    # agent thread (cli_chat_turn_mixin -> terminal_tool.set_approval_callback); without it
+    # _ask_human's fail-closed guard fires the moment prompt_toolkit owns the terminal and every
+    # consent auto-cancels in ~0 ms (#123486). Same seam as the write guards (tools/write_approval.py).
+    try:
+        from tools.terminal_tool import _get_approval_callback
+        callback = _get_approval_callback()
+    except Exception:
+        callback = None
     try:
         choice = prompt_dangerous_approval(message, description, timeout_seconds=timeout_seconds,
-                                           allow_permanent=False, title=title)
+                                           allow_permanent=False, title=title,
+                                           approval_callback=callback)
     except Exception as exc:
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)
         return "decline"

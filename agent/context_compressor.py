@@ -2371,12 +2371,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def _persist_consecutive_overload_aborts(self) -> None:
         self._durable_write("set_compression_overload_streak", "compression overload streak", self._consecutive_overload_aborts)
 
-    def _reset_consecutive_overload_aborts(self, *, settle: bool = False) -> None:
-        """Zero the sustained-overload budget, writing the row only when it was armed. ``settle``
-        writes unconditionally: another agent on the session may have bumped the row since."""
-        if settle or self._consecutive_overload_aborts:
-            self._consecutive_overload_aborts = 0
-            self._persist_consecutive_overload_aborts()
+    def _reset_consecutive_overload_aborts(self) -> None:
+        """Zero the sustained-overload budget and ALWAYS write the row: the in-memory count is not
+        authoritative when two agents share a session, so skipping the write would let another
+        agent's streak survive a success or runtime switch."""
+        self._consecutive_overload_aborts = 0
+        self._persist_consecutive_overload_aborts()
 
     def _increment_consecutive_overload_aborts(self) -> None:
         """Count one overload abort. The bound row is bumped atomically and is authoritative, so two
@@ -2462,7 +2462,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             self._fallback_compression_streak = 0
         self._persist_fallback_compression_streak()
         # Any completed boundary (incl. the degraded fallback) settles the overload budget (#123167).
-        self._reset_consecutive_overload_aborts(settle=True)
+        self._reset_consecutive_overload_aborts()
 
     def get_active_compression_failure_cooldown(self, *, refresh: bool = False) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""

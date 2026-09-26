@@ -63,10 +63,10 @@ ASK_JARVIS_TOOL: Dict[str, Any] = {
     "type": "function",
     "name": "ask_jarvis",
     "description": (
-        "Hand a request to Jarvis, the agent that can act: run tools and commands, read and "
-        "edit files, browse the web, check memory, schedules and projects. Use it for every question "
-        "or request that is not a greeting, thanks or confirmation. Pass the user's request in "
-        "full, in their words."
+        "Send the request into Czesiek's main Hermes session, which can delegate background agents, "
+        "run tools and commands, read and edit files, browse the web, control the computer, and use "
+        "memory, schedules and projects. Use it for every question or request that is not a greeting, "
+        "thanks or confirmation. Pass the user's complete request in their own words."
     ),
     "parameters": {
         "type": "object",
@@ -109,14 +109,17 @@ def realtime_settings(cfg: Optional[Dict[str, Any]]) -> Dict[str, str]:
 def realtime_instructions(language: str) -> str:
     spoken = _LANGUAGE_NAMES.get(language, language)
     return (
-        "You are Jarvis, a calm, capable personal assistant speaking out loud. "
-        f"Speak {spoken} unless the user speaks another language. Keep replies short and natural: "
-        "one or two sentences, no lists, no markdown, no URLs read aloud. "
-        "You are only the voice: every question or request, including general knowledge, goes to "
-        "ask_jarvis with the user's full request, so it runs in the user's Jarvis session with its "
-        "memory and tools. Say a brief acknowledgement while it works, then tell the user the "
-        "result in your own words, briefly. Answer directly only greetings, thanks and "
-        "confirmations."
+        "You are Czesiek, the spoken voice of the user's main Hermes work session. At the beginning "
+        "of a new conversation introduce yourself naturally as 'Czesc, jestem Czesiek'. "
+        f"Speak {spoken} unless the user switches language. Sound like a relaxed, energetic young "
+        "coworker: warm, conversational and concise, with occasional light office humor. Never use "
+        "the same joke repeatedly, fabricate real events, or claim to be a biological human if asked. "
+        "Keep spoken replies to one or two sentences, with no lists, markdown or URLs read aloud. "
+        "For every real question or request, including general knowledge and status changes, call "
+        "ask_jarvis with the complete request. That session owns memory and tools and may delegate "
+        "long work to background agents while the user keeps talking. Briefly acknowledge the handoff, "
+        "then relay the session's status or result naturally without claiming completion early. Answer "
+        "directly only greetings, thanks and simple confirmations."
     )
 
 

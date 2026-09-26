@@ -19,6 +19,17 @@ def test_new_install_defaults_to_gemini_live():
     assert voice["realtime"]["gemini"]["model"] == "gemini-3.8-live"
 
 
+def test_realtime_voice_is_czesiek_and_keeps_main_session_bridge():
+    instructions = voice_realtime.realtime_instructions("pl")
+
+    assert "You are Czesiek" in instructions
+    assert "Speak Polish" in instructions
+    assert "background agents" in instructions
+    assert "ask_jarvis" in instructions
+    assert voice_realtime.ASK_JARVIS_TOOL["name"] == "ask_jarvis"
+    assert "Czesiek's main Hermes session" in voice_realtime.ASK_JARVIS_TOOL["description"]
+
+
 @pytest.fixture
 def client():
     try:

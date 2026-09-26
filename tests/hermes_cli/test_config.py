@@ -62,6 +62,24 @@ class TestEnsureHermesHome:
             assert soul_path.exists()
             assert soul_path.read_text(encoding="utf-8").strip() != ""
 
+    def test_default_soul_is_czesiek_coordinator_and_matches_prompt_fallback(self):
+        from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD
+
+        assert DEFAULT_SOUL_MD == DEFAULT_AGENT_IDENTITY
+        assert "Agent Czesiek" in DEFAULT_SOUL_MD
+        assert "Speak Polish by default" in DEFAULT_SOUL_MD
+        assert "delegate_task" in DEFAULT_SOUL_MD
+        assert "browser and computer tools" in DEFAULT_SOUL_MD
+
+    def test_upgrades_pre_czesiek_auto_seeded_soul(self, tmp_path):
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD, _PRE_CZESIEK_DEFAULT_SOUL
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(_PRE_CZESIEK_DEFAULT_SOUL, encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
 
     def test_upgrades_legacy_template_soul_md(self, tmp_path):
         # Older installers seeded a comment-only scaffold that shadowed the

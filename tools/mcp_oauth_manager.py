@@ -53,7 +53,8 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
 
     _hermes_logger = logger
 
-    def __init__(self, *args: Any, server_name: str = "", preregistered: bool = False, **kwargs: Any):
+    def __init__(self, *args: Any, server_name: str = "", preregistered: bool = False,
+                 configured_scope: "str | None" = None, **kwargs: Any):
         super().__init__(*args, **kwargs)
         # mcp 2.0 uses a task-owned anyio.Lock held across the yielded resource request (a session-long GET blocks
         # every POST; HTTPX may close the generator from another task). A binary semaphore drops task ownership.
@@ -63,6 +64,33 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         self._hermes_home = ""
         # A config-supplied client_id rejected as invalid_client means the *config* is wrong — only DCR clients auto-heal.
         self._hermes_preregistered = preregistered
+        # Explicit ``oauth.scope`` from config.yaml (#93719). The SDK's challenge loop (Step 3 in
+        # ``async_auth_flow``) overwrites ``client_metadata.scope`` with server-derived scopes and
+        # never consults the configured value; restore it as the requested baseline right before
+        # the /authorize URL is built (see _perform_authorization_code_grant below).
+        self._hermes_configured_scope = configured_scope
+
+    def _restore_configured_scope(self) -> None:
+        """Re-apply an explicit ``oauth.scope`` after the SDK's Step-3 overwrite, unioned with
+        whatever the challenge added.
+
+        Server-required scopes (e.g. a WWW-Authenticate demand or the SEP-2207 offline_access
+        augmentation) are kept — configuration is the baseline, not a replacement. No-op when no
+        scope is configured.
+        """
+        configured = getattr(self, "_hermes_configured_scope", None)
+        if not configured:
+            return
+        metadata = getattr(self.context, "client_metadata", None)
+        if metadata is None:
+            return
+        current = metadata.scope or ""
+        merged: list[str] = []
+        for scope in (configured, current):
+            for item in scope.split():
+                if item not in merged:
+                    merged.append(item)
+        metadata.scope = " ".join(merged)
 
     def _hermes_storage(self):
         """The context storage when it is a ``HermesTokenStorage``, else None."""
@@ -206,6 +234,17 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         except Exception as exc:  # pragma: no cover — must not throw
             self._log_nonfatal("invalid_client detection", exc)
 
+    async def _perform_authorization_code_grant(self, *args: Any, **kwargs: Any):
+        """Restore an explicitly configured oauth.scope before /authorize.
+
+        The SDK's Step 3 (inside ``async_auth_flow``) overwrites ``client_metadata.scope`` with
+        server-derived scopes; without this restore, an explicit ``oauth.scope`` from config.yaml
+        never reaches the authorization request (#93719). Union order keeps configured scopes
+        first so consent screens show them as the requested baseline.
+        """
+        self._restore_configured_scope()
+        return await super()._perform_authorization_code_grant(*args, **kwargs)
+
     async def async_auth_flow(self, request):  # type: ignore[override]
         try:  # pre-flow hook: reload from disk if it changed (non-fatal on error)
             await get_manager().invalidate_if_disk_changed(self._hermes_server_name, hermes_home=self._hermes_home)
@@ -268,6 +307,16 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
 # Cached at import time; None when the SDK's OAuth module is unavailable.
 _HERMES_PROVIDER_CLS: Optional[type] = HermesMCPOAuthProvider if _SDK_BASES else None
 
+# Silent-shadowing guard (#93719 review): _perform_authorization_code_grant below overrides a
+# specific SDK method name. If an mcp release renames it, Python would keep the dead override and
+# the configured-scope bug would silently return. Warn once at import so the breakage is visible.
+if _SDK_BASES and not callable(
+        getattr(_SDK_BASES[0], "_perform_authorization_code_grant", None)):
+    logger.warning(
+        "mcp SDK: OAuthClientProvider has no _perform_authorization_code_grant; "
+        "the configured oauth.scope restore override will never run — check "
+        "upstream for a renamed hook")
+
 
 class MCPOAuthManager:
     """Single source of truth for per-server MCP OAuth state. ``_entries`` is guarded by
@@ -318,7 +367,12 @@ class MCPOAuthManager:
                 f"MCP OAuth for '{server_name}': non-interactive environment and no cached tokens found. "
                 f"Run `hermes mcp login {server_name}` interactively first to complete initial authorization.")
         return _HERMES_PROVIDER_CLS(
-            server_name=server_name, preregistered=bool(cfg.get("client_id")), server_url=entry.server_url,
+            server_name=server_name, preregistered=bool(cfg.get("client_id")),
+            # cfg here is the per-server `mcp_servers.<name>.oauth:` mapping (entry.oauth_config
+            # after apply_oauth_provider_defaults), NOT the top-level server config — scope and
+            # client_id both live under oauth:.
+            configured_scope=cfg.get("scope"),
+            server_url=entry.server_url,
             **build_provider_kwargs(cfg, storage, ssh_proxy_hint=False))
 
     def remove(self, server_name: str, *, hermes_home: str | Path | None = None) -> _ProviderEntry | None:

@@ -426,10 +426,10 @@ export async function extractBridgeEvent({
 
   const mediaFailures = [];
 
-  const saveMedia = async ({ mediaMessage, dir, prefix, fallbackExt, fileName: name, type }) => {
+  const saveMedia = async ({ mediaMessage, dir, prefix, fallbackExt, fileName: name, type, source = msg }) => {
     if (!downloadMedia) return;
     try {
-      const buf = await downloadMedia(msg);
+      const buf = await downloadMedia(source);
       const ext = mediaExtForMime(mediaMessage?.mimetype, fallbackExt);
       const writer = writeMediaFile || defaultWriteMediaFile;
       const saved = await writer({ buffer: buf, dir, prefix, ext, fileName: name });
@@ -548,6 +548,35 @@ export async function extractBridgeEvent({
     nativeType = 'pollUpdateMessage';
     body = formatPollUpdateText(messageContent.pollUpdateMessage);
     nativeMetadata.pollUpdate = messageContent.pollUpdateMessage;
+  }
+
+  // Quote of a document/image that lookupQuotedMedia could not resolve: the
+  // original predates this bridge process (restart, reboot) or was evicted
+  // from the bounded cache. The quoted stub still carries the mediaKey /
+  // directPath Baileys needs, so fetch it from the CDN as if it were attached
+  // to this message. Only when the reply has no media of its own.
+  const quoted = contextInfo?.quotedMessage ? unwrapMessageEnvelopes(contextInfo.quotedMessage) : null;
+  const quotedItem = quoted?.documentMessage || quoted?.imageMessage;
+  const fetchable = !!(quotedItem && (quotedItem.mediaKey || quotedItem.directPath || quotedItem.url));
+  if (!hasMedia && !quotedMediaUrls.length && fetchable) {
+    const source = {
+      key: { remoteJid: quotedRemoteJid || chatId, id: quotedMessageId, fromMe: false, participant: contextInfo?.participant || undefined },
+      message: quoted,
+    };
+    if (quoted.documentMessage) {
+      const item = quoted.documentMessage;
+      hasMedia = true;
+      mediaType = 'document';
+      mime = item.mimetype || 'application/octet-stream';
+      fileName = item.fileName || 'document';
+      await saveMedia({ mediaMessage: item, dir: cacheDirs.document, prefix: 'doc', fallbackExt: '.bin', fileName, type: 'document', source });
+    } else {
+      const item = quoted.imageMessage;
+      hasMedia = true;
+      mediaType = 'image';
+      mime = item.mimetype || 'image/jpeg';
+      await saveMedia({ mediaMessage: item, dir: cacheDirs.image, prefix: 'img', fallbackExt: '.jpg', type: 'image', source });
+    }
   }
 
   // Surface failed downloads to the agent instead of silently losing the

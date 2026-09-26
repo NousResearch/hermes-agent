@@ -23,7 +23,8 @@ interface TranscriptPeerSyncOptions {
 /**
  * When another window finishes a turn on a stored session this window is
  * showing, re-pull that transcript. The completing window does not receive
- * its own broadcast. Submit still refuses if this pull has not landed yet.
+ * its own broadcast. Submit still catches its own view up before sending if
+ * this pull has not landed yet (#123033).
  */
 export function useTranscriptPeerSync({
   activeSessionIdRef,

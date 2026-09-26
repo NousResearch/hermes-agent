@@ -824,9 +824,13 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         rewriteOptimistic(liveSessionId, syncedAttachments)
         const text = buildContextText(syncedAttachments)
 
-        // Another Desktop window may own a newer transcript while this one
-        // still shows an open-time snapshot. Refuse the send and refresh
-        // rather than forking the session (#65047).
+        // Another Desktop window — or this same session continuing in the
+        // background (a live turn, an auto-continue) — may have grown the
+        // transcript past this window's open-time snapshot. Catch this
+        // window's view up before sending rather than forking the session
+        // (#65047). A continuously-active session outgrows the snapshot on
+        // every turn, so refusing the send here would block it forever
+        // (#123033); send into the caught-up transcript instead.
         const guardStoredId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
         if (guardStoredId && liveSessionId) {
@@ -844,30 +848,21 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
           }
 
           if (refreshed) {
+            const caughtUp = [...refreshed, buildUserMessage()]
+
             updateSessionState(
               liveSessionId,
               state => ({
                 ...state,
-                awaitingResponse: false,
-                busy: false,
-                messages: refreshed,
+                messages: caughtUp,
                 pendingBranchGroup: null
               }),
               targetStoredSessionId
             )
 
             if (targetIsCurrentView()) {
-              scope.setMessages(() => refreshed)
-              notify({
-                kind: 'warning',
-                message: copy.staleSessionBody,
-                title: copy.staleSessionTitle
-              })
+              scope.setMessages(() => caughtUp)
             }
-
-            releaseBusy()
-
-            return false
           }
         }
 

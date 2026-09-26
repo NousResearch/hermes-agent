@@ -573,7 +573,7 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
     $notifications.set([])
   })
 
-  it('refuses submitToSession when a peer window advanced the transcript', async () => {
+  it('catches up and sends when a peer window advanced the transcript, instead of refusing forever (#123033)', async () => {
     setSessions([row({ id: storedId, profile: 'work-vps' })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({
       session_id: storedId,
@@ -608,20 +608,22 @@ describe('useSessionTileDelegate stale multi-window guard (#65047)', () => {
       })
     })
 
-    await sessionTileDelegate()!.submitToSession(runtimeId, 'stale tile send')
+    // A continuously-active session keeps the remote transcript ahead of a
+    // background tile's snapshot on every send attempt. The guard must catch
+    // the tile's view up and still send — refusing here left the send
+    // permanently stuck (#123033).
+    await sessionTileDelegate()!.submitToSession(runtimeId, 'send while remote is ahead')
 
     expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, 'work-vps')
-    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
-    expect(requestGatewayForProfile).not.toHaveBeenCalledWith(
+    expect(requestGatewayForProfile).toHaveBeenCalledWith(
       'work-vps',
       'prompt.submit',
-      expect.anything(),
-      expect.anything(),
-      expect.anything()
+      { session_id: runtimeId, text: 'send while remote is ahead' },
+      1_800_000,
+      undefined
     )
-    expect(seeds.at(-1)).toEqual(expect.objectContaining({ busy: false, messages: expect.any(Array) }))
     expect((seeds.at(-1) as { messages: unknown[] }).messages).toHaveLength(4)
-    expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
+    expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
   })
 
   it('allows submitToSession when the authoritative transcript is not ahead', async () => {

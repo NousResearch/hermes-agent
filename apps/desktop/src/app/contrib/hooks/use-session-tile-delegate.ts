@@ -461,25 +461,20 @@ export function useSessionTileDelegate({
             profile: profileScopeForSessionOwner(owner)
           })
 
+          // Catch this tile's view up rather than refusing to send (#123033):
+          // a continuously-active session outgrows a snapshot on every turn,
+          // so treating "remote grew" as a reason to refuse forever leaves a
+          // background send permanently stuck.
           if (refreshed) {
             updateSessionState(
               runtimeId,
               state => ({
                 ...state,
-                awaitingResponse: false,
-                busy: false,
                 messages: refreshed,
                 pendingBranchGroup: null
               }),
               storedSessionId
             )
-            notify({
-              kind: 'warning',
-              message: translateNow('desktop.staleSessionBody'),
-              title: translateNow('desktop.staleSessionTitle')
-            })
-
-            return
           }
         }
 

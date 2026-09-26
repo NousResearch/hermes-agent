@@ -5951,7 +5951,7 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     setSessions(() => [])
   })
 
-  it('refuses prompt.submit when the local transcript is behind and refreshes it', async () => {
+  it('catches up and sends when the local transcript is behind, instead of refusing forever (#123033)', async () => {
     const storedId = 'stored-stale-submit'
     setSessions(() => [sessionInfo({ id: storedId, profile: 'work-vps', title: 'Remote chat' })])
     vi.mocked(getLatestSessionMessages).mockResolvedValue({
@@ -5982,15 +5982,22 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
       />
     )
 
-    expect(await handle!.submitText('stale send from secondary window')).toBe(false)
+    // A continuously-active session (or a peer window) keeps the remote
+    // transcript ahead of this window's snapshot on every send attempt. The
+    // guard must catch this window's view up and still send — refusing here
+    // left the composer permanently stuck (#123033).
+    expect(await handle!.submitText('send while remote is ahead')).toBe(true)
     expect(getLatestSessionMessages).toHaveBeenCalledWith(storedId, 'work-vps')
-    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: RUNTIME_SESSION_ID, text: 'send while remote is ahead' },
+      1_800_000
+    )
 
-    const last = seeds.at(-1) as { awaitingResponse?: boolean; busy?: boolean; messages?: unknown[] } | undefined
-    expect(last?.busy).toBe(false)
-    expect(last?.awaitingResponse).toBe(false)
-    expect(last?.messages).toHaveLength(4)
-    expect($notifications.get().some(note => note.kind === 'warning')).toBe(true)
+    const last = seeds.at(-1) as { messages?: unknown[] } | undefined
+    // The 4 refreshed remote rows, plus this window's own new message.
+    expect(last?.messages).toHaveLength(5)
+    expect($notifications.get().some(note => note.kind === 'warning')).toBe(false)
   })
 
   it('allows prompt.submit when the authoritative transcript is not ahead', async () => {

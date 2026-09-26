@@ -339,6 +339,28 @@ class HomeChannel:
         return cls(platform=Platform(data["platform"]), chat_id=str(data["chat_id"]), name=data.get("name", "Home"), **optional)
 
 
+def _coerce_home_channel(value: Any, platform: Optional[Platform]) -> Optional["HomeChannel"]:
+    """``home_channel`` in either spelling: the mapping form, or a bare chat id.
+
+    ``hermes config set platforms.<name>.home_channel <chat_id>`` (and any hand-written config)
+    writes a bare scalar, but the loader historically read only the mapping — a bare value was
+    dropped silently, so cron/notification delivery kept going to the old destination with no
+    diagnostic (issue #33141). The bare form needs the platform, which only the caller knows;
+    without it a scalar still resolves to ``None`` so generic callers keep their old behaviour.
+    """
+    if isinstance(value, dict):
+        try:
+            return HomeChannel.from_dict(value)
+        except (KeyError, TypeError, ValueError):
+            # House rule: a malformed value is ignored with a warning, never a startup blocker.
+            logger.warning("Ignoring malformed home_channel %r — expected {platform, chat_id, name}", value)
+            return None
+    if platform is None or isinstance(value, bool) or not isinstance(value, (str, int)) or not value:
+        return None
+    chat_id = str(value).strip()
+    return HomeChannel(platform=platform, chat_id=chat_id, name="Home") if chat_id else None
+
+
 def persist_home_channel(home: HomeChannel, *, enabled_if_new: bool = False) -> None:
     """Persist a logical home without falsely enabling a Relay-fronted adapter."""
     from hermes_cli.config import load_config, save_config
@@ -449,7 +471,7 @@ class PlatformConfig:
     })
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+    def from_dict(cls, data: Dict[str, Any], *, platform: Optional[Platform] = None) -> "PlatformConfig":
         data = _coerce_dict(data)
         home = data.get("home_channel")
         # Adapters read their settings from ``extra`` (``config.extra.get("port")``), but users
@@ -473,7 +495,7 @@ class PlatformConfig:
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
-            home_channel=HomeChannel.from_dict(home) if isinstance(home, dict) else None,
+            home_channel=_coerce_home_channel(home, platform),
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(toplevel_or_extra("gateway_restart_notification"), True),
             typing_indicator=_coerce_bool(toplevel_or_extra("typing_indicator"), True),
@@ -732,14 +754,19 @@ class GatewayConfig:
             """Warning key prefix: "gateway." when the nested form was the one consulted."""
             return key if key in data else f"gateway.{key}"
 
-        def by_platform(key: str, parse, *, dicts_only: bool = False) -> dict:
-            """``{Platform(name): parse(block)}`` for a platform-keyed mapping; unknown platforms skipped."""
+        def by_platform(key: str, parse, *, dicts_only: bool = False, with_platform: bool = False) -> dict:
+            """``{Platform(name): parse(block)}`` for a platform-keyed mapping; unknown platforms skipped.
+
+            ``with_platform`` also hands the resolved ``Platform`` to *parse* — needed by blocks whose
+            keys are only meaningful with their platform (a bare ``home_channel`` chat id).
+            """
             out = {}
             for platform_name, block in _coerce_dict(data.get(key, {})).items():
                 if dicts_only and not isinstance(block, dict):
                     continue
                 try:
-                    out[Platform(platform_name)] = parse(block)
+                    platform = Platform(platform_name)
+                    out[platform] = parse(block, platform=platform) if with_platform else parse(block)
                 except ValueError:
                     pass
             return out
@@ -783,7 +810,7 @@ class GatewayConfig:
         from gateway.profile_routing import parse_profile_routes
 
         return cls(
-            platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True),
+            platforms=by_platform("platforms", PlatformConfig.from_dict, dicts_only=True, with_platform=True),
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=_coerce_dict(data.get("quick_commands", {})),
             sessions_dir=Path(data["sessions_dir"]) if "sessions_dir" in data else get_hermes_home() / "sessions",

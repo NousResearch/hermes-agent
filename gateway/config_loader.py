@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
-from gateway.config import UNAUTHORIZED_DM_BEHAVIORS, Platform, PlatformConfig, _coerce_dict, _dict_slot, _normalize_choice
+from gateway.config import UNAUTHORIZED_DM_BEHAVIORS, Platform, PlatformConfig, _coerce_dict, _coerce_home_channel, _dict_slot, _normalize_choice
 
 # Logger name parity with the origin module: records stay under "gateway.config".
 logger = logging.getLogger("gateway.config")
@@ -252,6 +252,26 @@ def shared_loop_targets(registry) -> list:
     return targets
 
 
+def _lift_root_home_channel(plat: Platform, platform_cfg: dict, platforms_data: dict) -> None:
+    """Carry a ROOT-level ``<platform>:`` block's ``home_channel`` into ``platforms.<platform>``.
+
+    ``merge_platform_sections`` never copies a root block into ``platforms_data``, and
+    ``home_channel`` is a typed key, so ``_bridged_keys`` excludes it from ``extra`` as well — a
+    home configured in the root section was dropped on the floor with no diagnostic, and bare
+    scalars were dropped in both positions (issue #33141). An existing
+    ``platforms.<platform>.home_channel`` (richer: name/thread_id) always wins.
+    """
+    raw = platform_cfg.get("home_channel")
+    if raw is None:
+        return
+    plat_data = _dict_slot(platforms_data, plat.value)
+    if plat_data.get("home_channel") is not None:
+        return
+    home = _coerce_home_channel(raw, plat)
+    if home is not None:
+        plat_data["home_channel"] = home.to_dict()
+
+
 def bridge_platform_shared_keys(
     yaml_cfg: dict, gateway_platforms: Any, gw_data: dict, platforms_data: dict, targets: list
 ) -> None:
@@ -269,6 +289,8 @@ def bridge_platform_shared_keys(
         if not isinstance(platform_cfg, dict):
             continue
         bridged = _bridged_keys(plat, platform_cfg, gw_data, root_block=cfg_toplevel)
+        if cfg_toplevel:  # a root block is never merged into platforms_data — carry its home over
+            _lift_root_home_channel(plat, platform_cfg, platforms_data)
         has_channel_overrides = "channel_overrides" in platform_cfg
         if has_channel_overrides and isinstance(platform_cfg.get("channel_overrides"), dict):
             plat_data = _dict_slot(platforms_data, plat.value)

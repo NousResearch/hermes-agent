@@ -255,11 +255,13 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         now = time.time()
         if (now - self._last_event_time.get(entity_id, 0)) < self._cooldown_seconds:
             return
-        self._last_event_time[entity_id] = now
         message = self._format_state_change(
             entity_id, event_data.get("old_state", {}), event_data.get("new_state", {}))
         if not message:
             return
+        # Only a forwarded change starts the cooldown: HA emits attribute-only state_changed events
+        # constantly, and letting one stamp the window would drop the real change right behind it.
+        self._last_event_time[entity_id] = now
         source = self.build_source(
             chat_id="ha_events", chat_name="Home Assistant Events", chat_type="channel",
             user_id="homeassistant", user_name="Home Assistant")

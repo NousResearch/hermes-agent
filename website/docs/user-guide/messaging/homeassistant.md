@@ -157,7 +157,7 @@ platforms:
 | `watch_entities` | *(none)* | Only watch these specific entity IDs |
 | `watch_all` | `false` | Set to `true` to receive **all** state changes (not recommended for most setups) |
 | `ignore_entities` | *(none)* | Always ignore these entities (applied before domain/entity filters) |
-| `cooldown_seconds` | `30` | Minimum seconds between events for the same entity |
+| `cooldown_seconds` | `30` | Minimum seconds between forwarded events for the same entity (an attribute-only update that is not forwarded does not start the cooldown) |
 
 :::tip
 Start with a focused set of domains — `climate`, `binary_sensor`, and `alarm_control_panel` cover the most useful automations. Add more as needed. Use `ignore_entities` to suppress noisy sensors like CPU temperature or uptime counters.

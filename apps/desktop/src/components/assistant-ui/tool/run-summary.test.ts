@@ -8,7 +8,11 @@ function tool(toolName: string, args: Record<string, unknown> = {}, result?: unk
 
 const read = (path: string) => tool('read_file', { path }, { content: '' })
 const searched = (query: string) => tool('search_files', { query }, { hits: [] })
-const webSearched = (query: string) => tool('web_search', { search_term: query }, { success: true })
+// Fixtures carry the REAL tool schemas (tools/web_tools.py): web_search takes
+// `query`, web_extract takes `urls` (a list). `search_term`/`url` fixtures
+// asserted shapes production never sends.
+const webSearched = (query: string) => tool('web_search', { query }, { success: true })
+const webExtracted = (urls: string[]) => tool('web_extract', { urls }, { success: true })
 const ran = (command: string) => tool('terminal', { command }, { exit_code: 0 })
 
 const settled = (tools: ToolCallLike[]) => summarizeToolRun(tools, false)
@@ -70,6 +74,16 @@ describe('summarizeToolRun', () => {
   })
 
   it('names a lone web extract by hostname', () => {
+    expect(settled([webExtracted(['https://example.com/docs'])])).toBe('Searched example.com/docs')
+  })
+
+  it('names a lone web extract by its first URL when several were fetched', () => {
+    expect(settled([webExtracted(['https://example.com/docs', 'https://other.example/page'])])).toBe(
+      'Searched example.com/docs'
+    )
+  })
+
+  it('still names a legacy string-url web extract shape', () => {
     expect(settled([tool('web_extract', { url: 'https://example.com/docs' }, { success: true })])).toBe(
       'Searched example.com/docs'
     )

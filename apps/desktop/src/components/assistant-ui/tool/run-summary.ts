@@ -3,7 +3,7 @@ import { summarizeShellCommand } from '@/lib/summarize-command'
 import { firstStringField } from '@/lib/text'
 import { extractToolErrorMessage } from '@/lib/tool-result-summary'
 
-import { compactPreview, fileEditBasename, hostnameOf, isFileEditTool, parseMaybeObject } from './fallback-model'
+import { compactPreview, fileEditBasename, findFirstUrl, hostnameOf, isFileEditTool, parseMaybeObject } from './fallback-model'
 import { skillActivityTitle } from './skill-activity'
 
 /**
@@ -98,15 +98,17 @@ function toolTarget(tool: ToolCallLike): string {
 
   // A search names what its own row names — the quoted query for web_search,
   // the hostname for web_extract — so the summary and the rows underneath it
-  // read as the same work.
+  // read as the same work. The real schemas: web_search takes `query`,
+  // web_extract takes `urls` (a list); findFirstUrl walks the args for a URL
+  // so any shape still names a host instead of dropping to the count form.
   if (category === 'search') {
-    const query = firstStringField(args, ['search_term', 'query'])
+    const query = firstStringField(args, ['query', 'search_term'])
 
     if (query) {
       return `“${compactPreview(query, 48)}”`
     }
 
-    return hostnameOf(firstStringField(args, ['url']) ?? '')
+    return hostnameOf(findFirstUrl(args))
   }
 
   const path = firstStringField(args, ['path', 'file', 'filepath'])

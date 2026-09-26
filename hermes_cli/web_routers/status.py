@@ -60,6 +60,7 @@ _open_session_db_for_profile = late("_open_session_db_for_profile", "hermes_cli.
 
 
 _STATUS_ACTIVE_SESSIONS_TIMEOUT = 0.75
+_STATUS_FTS_REBUILD_TIMEOUT = 0.75
 _GATEWAY_HEALTH_ROUTE_TIMEOUT = 1.0
 _HEALTHY_PLATFORM_STATES = {"connected", "running", "ok"}
 
@@ -425,6 +426,21 @@ async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
     return components
 
 
+def _read_fts_rebuild_status() -> Optional[Dict[str, Any]]:
+    """Deferred FTS rebuild progress, or None without a store. The read-only open waits out a
+    writer's lock (up to the read busy timeout), so /api/status runs this off the event loop."""
+    from hermes_state import SessionDB
+    from hermes_constants import get_hermes_home as _ghh
+    db_path = _ghh() / "state.db"
+    if not db_path.exists():
+        return None
+    db = SessionDB(db_path=db_path, read_only=True)
+    try:
+        return db.fts_rebuild_status()
+    finally:
+        db.close()
+
+
 async def _advisory_pressure(status: Dict[str, Any], home: Path) -> None:
     """Memory / disk pressure rollups + deferred FTS rebuild progress (coarse numbers/enums
     only; public payload). Deliberately NOT folded into components/overall: pressure is
@@ -440,17 +456,13 @@ async def _advisory_pressure(status: Dict[str, Any], home: Path) -> None:
             status[key] = {"pressure": "unknown"}
 
     try:
-        from hermes_state import SessionDB as _SDB
-        from hermes_constants import get_hermes_home as _ghh
-        _db_path = _ghh() / "state.db"
-        if _db_path.exists():
-            _sdb = _SDB(db_path=_db_path, read_only=True)
-            try:
-                _rebuild = _sdb.fts_rebuild_status()
-            finally:
-                _sdb.close()
-            if _rebuild is not None:
-                status["fts_rebuild"] = _rebuild
+        rebuild = await asyncio.wait_for(run_in_threadpool(_read_fts_rebuild_status),
+                                         timeout=_STATUS_FTS_REBUILD_TIMEOUT)
+        if rebuild is not None:
+            status["fts_rebuild"] = rebuild
+    except asyncio.TimeoutError:
+        _log.debug("/api/status FTS rebuild status exceeded %.2fs; omitting it",
+                   _STATUS_FTS_REBUILD_TIMEOUT)
     except Exception:
         pass
 

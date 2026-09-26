@@ -8,7 +8,8 @@ the blocking import and measuring response latency.
 Covered: the gateway warmup import completes before the lifespan yields
 (#73083/#73291), backend startup is not blocked by hosted-room recovery, shutdown joins the
 state.db reconcile worker, and /api/status runs its slow drain-timeout resolution off
-the event loop so a concurrent fast endpoint (/api/version) still responds.
+the event loop so a concurrent fast endpoint (/api/version) still responds, and its
+state.db reads stay off the loop while another writer holds the store locked.
 """
 
 from __future__ import annotations
@@ -179,5 +180,68 @@ def test_get_status_does_not_block_event_loop():
     )
 
 # ---------------------------------------------------------------------------
-# Test 3 — no orphan accumulation: concurrent probes all receive 200
+# Test 3 — a write-locked state.db never stalls the loop through /api/status
 # ---------------------------------------------------------------------------
+
+def test_get_status_keeps_event_loop_free_while_state_db_is_write_locked():
+    """
+    Another process holding state.db in a long rollback-journal write makes every read
+    wait out SQLite's busy timeout. /api/status must do those reads off the event loop:
+    while it is in flight against the locked store, the loop keeps ticking (so the desktop
+    handshake and every other dashboard request still get served) and it still answers 200.
+    A seeded FTS rebuild is reported while the store is free and omitted while it is locked,
+    which proves the lock really held the bounded read past its limit.
+    """
+    import sqlite3
+
+    import httpx
+    from hermes_constants import get_hermes_home
+    from hermes_state import SessionDB
+
+    db_path = get_hermes_home() / "state.db"
+    seeded = SessionDB(db_path=db_path)
+    seeded.set_meta("fts_rebuild_high_water", "10")
+    seeded.set_meta("fts_rebuild_progress", "3")
+    seeded.close()
+    writer = sqlite3.connect(db_path, isolation_level=None, check_same_thread=False)
+    assert writer.execute("PRAGMA journal_mode=DELETE").fetchone()[0] == "delete"
+
+    async def _run():
+        transport = httpx.ASGITransport(app=web_server_mod.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            # Unlocked first call pays one-time imports so the timed call measures only the lock.
+            unlocked = await client.get("/api/status", timeout=30)
+            assert unlocked.status_code == 200
+            assert unlocked.json().get("fts_rebuild", {}).get("pending") is True
+
+            gaps: list[float] = []
+            stop = asyncio.Event()
+
+            async def _heartbeat():
+                last = time.perf_counter()
+                while not stop.is_set():
+                    await asyncio.sleep(0.02)
+                    now = time.perf_counter()
+                    gaps.append(now - last)
+                    last = now
+
+            writer.execute("BEGIN EXCLUSIVE")
+            try:
+                beat = asyncio.create_task(_heartbeat())
+                response = await client.get("/api/status", timeout=30)
+                stop.set()
+                await beat
+            finally:
+                writer.execute("ROLLBACK")
+            return response, max(gaps)
+
+    try:
+        response, worst_gap = asyncio.run(_run())
+    finally:
+        writer.close()
+
+    assert response.status_code == 200
+    assert "fts_rebuild" not in response.json()
+    assert worst_gap < 2.0, (
+        f"event loop stalled {worst_gap:.1f}s while /api/status read a write-locked state.db"
+    )

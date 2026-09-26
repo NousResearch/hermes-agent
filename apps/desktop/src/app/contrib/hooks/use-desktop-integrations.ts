@@ -12,6 +12,7 @@ import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
 import { announceNewSessionDraftKey } from '@/store/composer'
+import { $activeConnectionId, $connectionContextRestore } from '@/store/connections'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
 import { startMcpHealthChecker, stopMcpHealthChecker } from '@/store/mcp-health'
 import {
@@ -112,6 +113,10 @@ export function useDesktopIntegrations({
   }, [])
 
   const restoredRef = useRef(false)
+  const connectionRestoreRequest = useStore($connectionContextRestore)
+  const activeConnectionId = useStore($activeConnectionId)
+  const handledConnectionRestoreRef = useRef(0)
+  const restoreAfterSwitchRef = useRef(false)
   const diskPluginsScanPending = useStore($diskPluginsScanPending)
 
   // Wait until boot has adopted the primary profile, then restore that profile's
@@ -120,11 +125,27 @@ export function useDesktopIntegrations({
   // This ref is a one-time lifecycle latch, not a mirror of reactive atom state.
   // eslint-disable-next-line no-restricted-syntax
   useEffect(() => {
+    if (
+      connectionRestoreRequest &&
+      connectionRestoreRequest.sequence > handledConnectionRestoreRef.current &&
+      connectionRestoreRequest.connectionId === activeConnectionId &&
+      connectionRestoreRequest.profile === activeProfile
+    ) {
+      handledConnectionRestoreRef.current = connectionRestoreRequest.sequence
+      restoreAfterSwitchRef.current = true
+      restoredRef.current = false
+    }
+
     if (!profileReady || isHudWindow() || isBrowserWindow()) {
       return
     }
 
     if (!restoredRef.current) {
+      // The switch first clears the outgoing runtime and navigates to a safe
+      // draft. Never interpret its old URL as a route on the new backend.
+      if (restoreAfterSwitchRef.current && locationPathname !== NEW_CHAT_ROUTE) {
+        return
+      }
       // Only cold-start navigation at the default route is replaceable; a deep
       // link or hidden-then-shown window keeps its explicit destination.
       if (locationPathname === NEW_CHAT_ROUTE) {
@@ -132,11 +153,11 @@ export function useDesktopIntegrations({
         // record answers, then either restore below or stay on the fresh chat.
         // Remembered ids keep being written either way, so flipping the switch
         // back on resumes from the very next launch.
-        if (resumeLastSession === undefined) {
+        if (resumeLastSession === undefined && !restoreAfterSwitchRef.current) {
           return
         }
 
-        if (!resumeLastSession) {
+        if (!resumeLastSession && !restoreAfterSwitchRef.current) {
           restoredRef.current = true
 
           return
@@ -166,6 +187,7 @@ export function useDesktopIntegrations({
         }
 
         restoredRef.current = true
+        restoreAfterSwitchRef.current = false
 
         // A delegate child (source='subagent') is never a restorable
         // destination: it is invisible in the sidebar, so resuming one leaves
@@ -261,7 +283,9 @@ export function useDesktopIntegrations({
       setRememberedRoute(locationPathname, activeProfile)
     }
   }, [
+    activeConnectionId,
     activeProfile,
+    connectionRestoreRequest,
     diskPluginsScanPending,
     locationPathname,
     navigate,

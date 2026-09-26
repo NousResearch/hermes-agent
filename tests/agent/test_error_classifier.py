@@ -1844,6 +1844,23 @@ class TestExpandedOverflowPatterns:
         assert result.reason == FailoverReason.context_overflow
         assert result.should_compress is True
 
+    def test_zai_prompt_too_long_400_is_overflow(self):
+        # Z.AI/GLM: 400 `{"code":"1261","message":"Prompt too long"}` — no "is", so only the
+        # Anthropic "prompt is too long" pattern existed and the 400 fell through to the
+        # non-retryable format-error verdict, ending the turn instead of compacting
+        # (port of earendil-works/pi 0e283203c).
+        import httpx
+        import openai
+
+        body = {"error": {"code": "1261", "message": "Prompt too long"}}
+        response = httpx.Response(
+            400, json=body, request=httpx.Request("POST", "https://api.z.ai/api/paas/v4/chat/completions"),
+        )
+        e = openai.APIStatusError("Prompt too long", response=response, body=body)
+        result = classify_api_error(e, provider="zai", model="glm-5", base_url="https://api.z.ai/api/paas/v4")
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
     def test_request_too_large_message_only_is_payload_too_large(self):
         # Anthropic's structured 413 type re-wrapped by a proxy with no
         # status attribute — was falling through to `unknown`.

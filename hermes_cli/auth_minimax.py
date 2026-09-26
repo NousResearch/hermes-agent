@@ -14,6 +14,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional, TYPE_CHECKING
+from urllib.parse import urlparse, urlunparse
 from hermes_cli.auth_constants import (
     AuthError, MINIMAX_OAUTH_GRANT_TYPE, MINIMAX_OAUTH_REFRESH_SKEW_SECONDS, MINIMAX_OAUTH_SCOPE,
     _FORM_JSON_HEADERS, _minimax_err, httpx,
@@ -87,7 +88,34 @@ def _minimax_request_user_code(
             raise _minimax_err(f"MiniMax OAuth response missing field: {field}", "authorization_incomplete")
     if payload.get("state") != state:
         raise _minimax_err("MiniMax OAuth state mismatch (possible CSRF).", "state_mismatch")
+    # Defensive host rewrite: MiniMax's OAuth server is currently returning
+    # ``https://www.minimaxi.io/oauth-authorize?…`` which 307-redirects to the
+    # marketing homepage; the live approval page is at ``platform.minimaxi.io``.
+    # Rewrite here so every caller (CLI ``_minimax_oauth_login``, web router
+    # ``_start_minimax_device_code``) gets the working URL (#19337).
+    if "verification_uri" in payload:
+        payload["verification_uri"] = _minimax_rewrite_verification_uri(str(payload["verification_uri"]))
     return payload
+
+
+def _minimax_rewrite_verification_uri(uri: str) -> str:
+    """Rewrite MiniMax's stale ``www.minimaxi.io/oauth-authorize`` host to the live approval host.
+
+    The OAuth endpoint still returns ``https://www.minimaxi.io/oauth-authorize?…`` as
+    ``verification_uri``; that path 307-redirects to ``/`` (the marketing homepage),
+    so a user following the printed URL can never approve the device code. The
+    actual approval page lives at ``platform.minimaxi.io`` with the same path and
+    query (#19337). When the upstream fixes its response, this is a no-op.
+    """
+    try:
+        parsed = urlparse(uri)
+    except ValueError:
+        return uri
+    if parsed.hostname != "www.minimaxi.io":
+        return uri
+    if not (parsed.path or "").startswith("/oauth-authorize"):
+        return uri
+    return urlunparse(parsed._replace(netloc="platform.minimaxi.io" + (f":{parsed.port}" if parsed.port else "")))
 
 
 def _minimax_expired_in_looks_like_unix_ms(expired_in: int, *, now_ms: int) -> bool:

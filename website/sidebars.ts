@@ -36,6 +36,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/switching-to-source',
         'user-guide/configuration',
         'user-guide/managed-scope',
+        'user-guide/remote-config',
         'user-guide/configuring-models',
         {
           type: 'category',

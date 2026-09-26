@@ -148,6 +148,7 @@ def _primary_profile_routes_for_current_home() -> list:
     home never holds the platform credentials itself (giving it a token of its own is a
     ``duplicate_credential`` fatal).
     """
+    from hermes_cli.config_backend import config_exists
     try:
         from hermes_constants import get_default_hermes_root, get_hermes_home
         primary_home = get_default_hermes_root()
@@ -158,7 +159,7 @@ def _primary_profile_routes_for_current_home() -> list:
         ):
             return []  # this IS the primary home — nothing to consult
         config_path = primary_home.expanduser() / "config.yaml"
-        if not config_path.exists():
+        if not config_exists(config_path):
             return []
 
         from hermes_cli.config import read_user_config_raw

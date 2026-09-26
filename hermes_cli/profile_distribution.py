@@ -497,6 +497,8 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
     A top-level owned directory is merged per authored root. ``cron/jobs.json`` is
     special: it is one multi-record runtime store, so shipped definitions merge by job id
     instead of replacing the file."""
+    from hermes_cli.config_backend import require_file_tooling
+    require_file_tooling("Profile distribution install")
     target.mkdir(parents=True, exist_ok=True)
     entries = list(_owned_entries(staged, manifest))
     _refuse_symlinked_targets(target, entries)
@@ -517,7 +519,7 @@ def _copy_dist_payload(staged: Path, target: Path, manifest: DistributionManifes
                 # _replace_entry unlinks first so copy2 cannot write through a symlinked .env.EXAMPLE.
                 _replace_entry(src, target / ENV_EXAMPLE_FILENAME)
                 continue
-            if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():
+            if name == "config.yaml" and preserve_config and (target / "config.yaml").exists():  # config-reader: ok — file tooling
                 continue
             if src.is_dir():
                 _merge_dir(src, _real_dir(target, rel_parts), rel_parts)

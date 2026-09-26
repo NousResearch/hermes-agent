@@ -15,7 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv  # noqa: F401
-from utils import atomic_replace, load_yaml_file_readonly
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -455,6 +455,14 @@ def load_hermes_dotenv(
             if os.environ.get(name) != value:
                 os.environ[name] = value
 
+    # The config backend is selected here — after the .env files, before the first config.yaml read
+    # (``_apply_external_secret_sources`` reads ``secrets:``) — so an unavailable backend stops the
+    # process before any reader could fall back to defaults (config-config design §4.4, D11/D32). A
+    # remote backend fetches this home's config here, failing closed; the file backend does nothing.
+    from hermes_cli.config_backend import get_config_backend
+
+    get_config_backend().boot(home_path)
+
     # External sources are skipped for the updater (dotenv + managed env still load): ``update`` must not
     # import optional secret-manager libs (Bitwarden → cryptography → _rust.pyd) into the process replacing
     # that env on Windows, and a fresh retry after a deferred dependency install would otherwise make the
@@ -518,6 +526,26 @@ def _apply_managed_env(*, load_pass: int | None = None) -> None:
     _load_dotenv_with_fallback(managed_env, override=True, load_pass=load_pass)
 
 
+def _refuse_protected_env_from_sources(report) -> None:
+    """D32: the config backend's own credential (which plane, which agent, which token) must never
+    come from a secret source — a source that could change it could point config at another plane.
+    Exits (the backend is unusable), even when the pre-existing value won."""
+    from hermes_cli.config_backend import ConfigBackendUnavailable, get_config_backend
+
+    protected = get_config_backend().protected_env_names()
+    if not protected:
+        return
+    supplied = set(report.provenance)
+    for src in report.sources:
+        supplied.update(getattr(src, "skipped_existing", ()) or ())
+    clash = sorted(supplied & protected)
+    if clash:
+        raise ConfigBackendUnavailable(
+            f"A secrets: source supplies {', '.join(clash)}, which the {get_config_backend().name!r} config "
+            "backend uses to reach its config plane. That credential must come from auth.json or .env, never "
+            "from a secret source; remove the mapping. Hermes does not start with it.")
+
+
 def _apply_external_secret_sources(home_path: Path) -> None:
     """Pull secrets from every enabled external source into env — AFTER dotenv (sources need .env bootstrap
     tokens), BEFORE Hermes reads credentials; failures never block startup. Precedence/conflicts/provenance
@@ -557,6 +585,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
 
     if not report.sources:  # no source enabled: keep retrying cheaply so flipping one on takes effect
         return
+    _refuse_protected_env_from_sources(report)
 
     # A real fetch attempt happened (success OR error): mark the home so the 3-5 import-time calls per
     # startup don't re-fetch / re-print (error retries are opt-in via reset_secret_source_cache()).
@@ -619,8 +648,10 @@ def _remediation_hint(source_name: str, error_kind, secrets_cfg: dict, *, scope:
 
 def _load_secrets_config(home_path: Path) -> dict:
     """Read just the ``secrets:`` section of config.yaml, isolated so a malformed config can't break dotenv."""
+    from hermes_cli.config_backend import config_exists, read_config_doc_readonly
+
     config_path = home_path / "config.yaml"
-    if not config_path.exists():
+    if not config_exists(config_path):
         return {}
     # Prefer the shared raw-config cache: this is the first config.yaml read of a normal startup, so
     # populating it lets main.py's early bridge and hermes_logging reuse one parse instead of 3-4.
@@ -634,7 +665,7 @@ def _load_secrets_config(home_path: Path) -> dict:
             pass
     # Routed profiles re-enter their scope on every poll/turn; only re-parse after the file changed.
     try:
-        data = load_yaml_file_readonly(config_path) or {}
+        data = read_config_doc_readonly(config_path) or {}
     except Exception:  # noqa: BLE001
         return {}
     return data.get("secrets") or {}

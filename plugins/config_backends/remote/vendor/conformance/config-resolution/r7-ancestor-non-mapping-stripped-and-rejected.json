@@ -1,0 +1,142 @@
+{
+  "fixtureVersion": 1,
+  "name": "r7-ancestor-non-mapping-stripped-and-rejected",
+  "description": "Proves r7: A lower scalar, null or list at a strict ancestor of a locked path would replace the locked subtree: it is stripped on read and refused on write; a mapping at the ancestor is accepted.",
+  "levels": [
+    {
+      "kind": "global",
+      "values": {
+        "terminal": {
+          "backend": "local"
+        }
+      },
+      "locks": []
+    },
+    {
+      "kind": "tenant",
+      "values": {
+        "terminal": {
+          "timeout": 180
+        }
+      },
+      "locks": [
+        "terminal.timeout"
+      ]
+    },
+    {
+      "kind": "principal",
+      "values": {
+        "terminal": "docker"
+      },
+      "locks": []
+    },
+    {
+      "kind": "agent",
+      "values": {
+        "terminal": null
+      },
+      "locks": []
+    },
+    {
+      "kind": "profile",
+      "values": {
+        "terminal": [
+          "x"
+        ]
+      },
+      "locks": []
+    }
+  ],
+  "expect": {
+    "effective": {
+      "terminal": {
+        "backend": "local",
+        "timeout": 180
+      }
+    },
+    "provenance": {
+      "terminal.backend": "global",
+      "terminal.timeout": "tenant"
+    },
+    "locks": [
+      {
+        "path": "terminal.timeout",
+        "level": "tenant"
+      }
+    ]
+  },
+  "writes": [
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal",
+      "value": "docker",
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal.timeout",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal",
+      "value": null,
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal.timeout",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal",
+      "value": [
+        "x"
+      ],
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal.timeout",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal",
+      "value": {
+        "backend": "docker"
+      },
+      "expect": {
+        "result": "accept"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal",
+      "value": {
+        "timeout": 5
+      },
+      "expect": {
+        "result": "reject",
+        "error": "config_key_locked",
+        "path": "terminal.timeout",
+        "lockedBy": "tenant"
+      }
+    },
+    {
+      "by": "profile",
+      "op": "set",
+      "path": "terminal.backend",
+      "value": "ssh",
+      "expect": {
+        "result": "accept"
+      }
+    }
+  ]
+}

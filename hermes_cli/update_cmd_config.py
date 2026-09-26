@@ -56,7 +56,7 @@ def _migrate_sibling_profile_configs() -> list[tuple[str, int, int]]:
                     continue
             except OSError:
                 continue
-            if not (entry / "config.yaml").is_file():
+            if not (entry / "config.yaml").is_file():  # config-reader: ok — profile directory discovery marker
                 continue  # profile never configured — nothing to migrate
             token = set_hermes_home_override(entry)
             try:

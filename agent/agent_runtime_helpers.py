@@ -3151,6 +3151,52 @@ _TRAILING_CONTINUE_INTENT_RE = re.compile(
 # Content longer than this is a substantive reply, not a dangling ack.
 _TRAILING_CONTINUE_INTENT_MAX_CHARS = 400
 
+# Sentence/segment boundary for paraphrase-loop scanning: split the full turn text
+# on these and check each segment's tail. A normal reply announces at most one next
+# action (at the very end); two or more segments ending on a continuation-intent
+# pattern is the signature of a paraphrased intent loop (same plan re-narrated with
+# different words, never acted on). Conservative: the two detectors below only share
+# a handful of trigger phrases, so a real multi-paragraph answer rarely trips 2+.
+
+
+def _segment_continuation_intent_segments(text: str) -> int:
+    """Count how many text segments end on a continuation-intent pattern.
+
+    Uses ``trailing_continue_intent``'s narrow shape for normal content and
+    ``promoted_reasoning_announces_action``'s broader first-person plan shape
+    for promoted-reasoning content. Returns the count of segments that trip
+    either detector. A count >= 2 is a paraphrase/intent loop signal.
+    """
+    t = (text or "").strip()
+    if not t:
+        return 0
+    # Split on sentence/line boundaries; keep non-empty segments.
+    segments = [seg.strip() for seg in re.split(r"[.!?\n]+", t) if seg.strip()]
+    if not segments:
+        return 0
+    hits = 0
+    for seg in segments:
+        if not seg:
+            continue
+        if trailing_continue_intent(seg):
+            hits += 1
+        elif bool(_PROMOTED_REASONING_PLAN_TAIL_RE.search(seg[-240:])):
+            hits += 1
+    return hits
+
+
+def paraphrase_loop_detected(text: str) -> bool:
+    """True when the turn text re-announces the same next action 2+ times with
+    different wording — a paraphrased intent loop that the verbatim
+    ``is_runaway_repetition`` check would miss.
+
+    Conservative: a normal reply announces at most one next action at the very
+    end, so this only fires when multiple segments in the SAME turn end on a
+    continuation-intent pattern. Two is the floor so a single legit "let me
+    check X" at the end of an otherwise complete reply does not trip it.
+    """
+    return _segment_continuation_intent_segments(text) >= 2
+
 
 def trailing_continue_intent(text: str) -> bool:
     """Whether ``text`` is a short reply ENDING on an announced next action (stall-guard re-prompt trigger)."""

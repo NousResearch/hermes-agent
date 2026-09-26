@@ -597,7 +597,7 @@ import {
   writeGpuStackCookieMarker
 } from './windows-stack-cookie-fallback'
 import { readWindowsUserEnvVar } from './windows-user-env'
-import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
+import { isPackagedInstallPath as isPackagedInstallPathUnderRoots, resolveTerminalCwd } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
 import { resolvePickerDefaultPath, setActiveGatewayProfile, setWslBridgeProfileState } from './wsl-path-bridge'
 
@@ -4707,6 +4707,29 @@ function sanitizeWorkspaceCwd(cwd) {
   }
 
   return { cwd: resolveHermesCwd(), sanitized: Boolean(trimmed) }
+}
+
+// TERMINAL_CWD becomes every session's tool cwd, so it must never be the
+// dev-run source-tree fallback by accident: a source run with no chosen
+// project dir spawns in the repo, and pinning that verbatim defeats the
+// agent's install-tree context guard for sessions not developing Hermes
+// (see #121259). The spawn cwd itself stays untouched for dev ergonomics.
+function resolvePinnedTerminalCwd(spawnCwd) {
+  if (IS_PACKAGED) {
+    return spawnCwd
+  }
+
+  const envChoice = process.env.HERMES_DESKTOP_CWD
+  const chosen =
+    readDefaultProjectDir() ??
+    (envChoice && directoryExists(path.resolve(String(envChoice))) ? path.resolve(String(envChoice)) : null)
+
+  return resolveTerminalCwd(spawnCwd, {
+    chosenCwd: chosen,
+    homeDir: app.getPath('home'),
+    isPackaged: IS_PACKAGED,
+    sourceRoot: SOURCE_REPO_ROOT
+  })
 }
 
 // Persisted "Default project directory" — surfaced as a setting in the
@@ -12007,10 +12030,11 @@ async function runPoolBackendStart(
           ...profileBackendParentEnv({ hermesHome: HERMES_HOME, profile }),
           HERMES_HOME,
           ...backend.env,
-          // Pin the gateway's tool/terminal cwd to the same directory we chose for
-          // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
-          // can still point at the install dir even when spawn cwd is home.
-          TERMINAL_CWD: hermesCwd,
+          // Pin the gateway's tool/terminal cwd (never the dev-run source-tree
+          // fallback — see resolvePinnedTerminalCwd / #121259). Inherited TERMINAL_CWD
+          // (or a stale config bridge) can still point at the install dir even
+          // when spawn cwd is home.
+          TERMINAL_CWD: resolvePinnedTerminalCwd(hermesCwd),
           HERMES_DASHBOARD_SESSION_TOKEN: token,
           // Marks this dashboard backend as desktop-spawned so it runs the cron
           // scheduler tick loop (the gateway isn't running under the app).
@@ -12911,7 +12935,8 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
             // can't reliably do that, so we set it inline for every spawn.
             HERMES_HOME,
             ...backend.env,
-            TERMINAL_CWD: hermesCwd,
+            // Never the dev-run source-tree fallback (see resolvePinnedTerminalCwd / #121259).
+            TERMINAL_CWD: resolvePinnedTerminalCwd(hermesCwd),
             HERMES_DASHBOARD_SESSION_TOKEN: token,
             // Marks this dashboard backend as desktop-spawned so it runs the cron
             // scheduler tick loop (the gateway isn't running under the app).

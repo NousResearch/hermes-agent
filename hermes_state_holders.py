@@ -544,15 +544,40 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
             holders.append((-1, f"open-file scan failed: {exc}"))
         return holders
 
+    holders.extend(_psutil_foreign_holders(watched))
+    return holders
+
+
+def _psutil_foreign_holders(watched: Set[str]) -> List[Tuple[int, str]]:
+    """Interpret psutil's open-file scan without treating unavailable as empty."""
     if psutil is None:
         return [(-1, "open-file scan unavailable")]
+    holders: List[Tuple[int, str]] = []
     try:
-        for process in psutil.process_iter(["pid", "open_files"]):
+        for process in psutil.process_iter(["pid", "open_files", "cmdline", "name"]):
             info = process.info
             pid = int(info["pid"])
             if pid == os.getpid():
                 continue
-            for opened in info.get("open_files") or ():
+            open_files = info.get("open_files")
+            if open_files is None:
+                # Unavailable descriptors alone do not implicate unrelated system
+                # daemons. Use the same execution-target matcher as the Linux scan,
+                # never a Hermes substring in an argument or Python -c payload.
+                argv = info.get("cmdline")
+                name = info.get("name")
+                if argv:
+                    if not _looks_like_hermes(argv):
+                        continue
+                elif name and not (
+                    _looks_like_hermes([name]) or _looks_like_python_executable(name)
+                ):
+                    continue
+                # A Hermes target, an interpreter with hidden argv, or a wholly
+                # unidentified process remains plausible; None is not an all-clear.
+                holders.append((pid, "uninspectable holder: open_files unavailable"))
+                continue
+            for opened in open_files:
                 path = getattr(opened, "path", "")
                 if path and canonical_sqlite_path(os.path.realpath(path)) in watched:
                     holders.append((pid, path))

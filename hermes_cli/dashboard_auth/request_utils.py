@@ -22,6 +22,25 @@ def client_ip(request: Request) -> str:
     return fwd.split(",")[0].strip() if fwd else (request.client.host if request.client else "")
 
 
+# Bound the synthetic device/client identifier we persist in audit records so an
+# attacker-controlled User-Agent header cannot bloat the audit log.
+_MAX_USER_AGENT_LEN = 256
+
+
+def client_device(request: Request) -> str:
+    """Best-effort synthetic device/client identifier for audit records.
+
+    At the point a refresh failure is audited we have rejected the request
+    *before* resolving any token-derived identity, so no ``user_id`` is
+    available. The only safely-available synthetic client signal is the HTTP
+    ``User-Agent`` header. It is truncated to ``_MAX_USER_AGENT_LEN`` chars to
+    prevent log abuse from an oversized header, and returned as ``""`` when the
+    header is absent.
+    """
+    ua = request.headers.get("user-agent", "")
+    return ua[:_MAX_USER_AGENT_LEN] if ua else ""
+
+
 def extract_bearer(request: Request) -> str:
     """``Authorization: Bearer <token>`` value (scheme case-insensitive), or ``""``."""
     parts = request.headers.get("authorization", "").split(" ", 1)

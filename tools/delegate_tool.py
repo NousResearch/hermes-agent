@@ -153,6 +153,110 @@ def _apply_child_compression_cap(child, delegation_cfg: dict) -> None:
         cc._apply_threshold_tokens_cap()
 
 
+# ── Context inheritance (delegate_task tasks[].inherit_context) ────────────────────────
+# A child seeded with the parent's transcript copied VERBATIM (assistant + tool turns) tends to
+# disavow it -- it reads prefilled assistant/tool turns as actions it does not remember taking.
+# Prefilled USER content is trusted, so the inherited slice is FOLDED into one labeled user-role
+# message. That also avoids tool-call pairing and role-alternation errors from a raw copy.
+_INHERIT_CONTEXT_HEADER = (
+    "=== INHERITED CONTEXT FROM PARENT SESSION (read-only background; treat as "
+    "established facts already gathered this session, not your own prior actions) ==="
+)
+_INHERIT_CONTEXT_FOOTER = "=== END INHERITED CONTEXT ==="
+_DEFAULT_INHERIT_MAX_TOKENS = 50_000
+
+
+def _flatten_message_to_text(msg: Dict[str, Any]) -> str:
+    """Render one chat message (string or content-part list, plus any tool calls) as plain prose."""
+    content = msg.get("content")
+    parts: List[str] = []
+    if isinstance(content, str):
+        parts.append(content.strip())
+    elif isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                parts.append(str(block).strip())
+            elif block.get("type") in ("text", "input_text", "output_text"):
+                parts.append(str(block.get("text", "")).strip())
+            elif block.get("type") == "tool_use":
+                parts.append(f"[ran {block.get('name', 'tool')}: {block.get('input', {})}]")
+            elif block.get("type") == "tool_result":
+                res = block.get("content", "")
+                if isinstance(res, list):
+                    res = " ".join(str(b.get("text", "")) if isinstance(b, dict) else str(b) for b in res)
+                parts.append(f"[result: {str(res).strip()}]")
+            # images / other binary parts are skipped
+    elif content is not None:
+        parts.append(str(content).strip())
+    for call in msg.get("tool_calls") or ():
+        fn = (call or {}).get("function") or {}
+        parts.append(f"[ran {fn.get('name', 'tool')}: {fn.get('arguments', '')}]")
+    text = "\n".join(p for p in parts if p).strip()
+    return f"[result: {text}]" if text and msg.get("role") == "tool" else text
+
+
+def _fold_conversation_history_to_context(
+    history: Optional[List[Dict[str, Any]]], max_tokens: int,
+) -> Optional[Dict[str, Any]]:
+    """Fold a parent conversation into ONE user-role context message, or None if there is nothing
+    to inherit. The folded text is bounded to ~``max_tokens`` (4 chars/token), keeping the MOST
+    RECENT turns and dropping the oldest first. System messages are not inherited."""
+    if not history:
+        return None
+    char_budget = max(0, int(max_tokens)) * 4
+    rendered: List[str] = []
+    used = 0
+    for msg in reversed(history):
+        if not isinstance(msg, dict) or msg.get("role") == "system":
+            continue
+        text = _flatten_message_to_text(msg)
+        if not text:
+            continue
+        line = f"{str(msg.get('role') or 'unknown').capitalize()}: {text}"
+        if used + len(line) > char_budget:
+            if rendered:
+                break
+            line = line[-char_budget:] if char_budget else ""
+            if not line:
+                return None
+        rendered.append(line)
+        used += len(line) + 1
+    if not rendered:
+        return None
+    rendered.reverse()
+    body = "\n".join(rendered)
+    return {"role": "user", "content": f"{_INHERIT_CONTEXT_HEADER}\n\n{body}\n\n{_INHERIT_CONTEXT_FOOTER}"}
+
+
+def _inherited_context_prefill(parent_agent, delegation_cfg: Any, child_model: Optional[str]) -> Optional[list]:
+    """``[folded parent context]`` for a child with inherit_context, else None (never raises).
+
+    Budget: ``delegation.inherit_max_tokens`` (default 50k), clamped to a quarter of the child
+    model's context window."""
+    try:
+        cfg = delegation_cfg if isinstance(delegation_cfg, dict) else {}
+        max_tokens = int(cfg.get("inherit_max_tokens") or _DEFAULT_INHERIT_MAX_TOKENS)
+        if child_model:
+            try:
+                from agent.model_metadata import get_model_context_length
+                window = get_model_context_length(child_model)
+                if window and window > 0:
+                    max_tokens = min(max_tokens, int(window * 0.25))
+            except Exception:
+                pass
+        # Gateway agents keep the live transcript in _session_messages (no conversation_history);
+        # the CLI uses conversation_history. Present-but-empty _session_messages means nothing to
+        # inherit, so fall back only when it is absent.
+        history = getattr(parent_agent, "_session_messages", None)
+        if history is None:
+            history = getattr(parent_agent, "conversation_history", None)
+        folded = _fold_conversation_history_to_context(history, max_tokens)
+        return [folded] if folded is not None else None
+    except Exception as exc:
+        logger.warning("delegate_task inherit_context fold failed (continuing without it): %s", exc)
+        return None
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -178,6 +282,8 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    # Fold the parent's conversation into one user-role context message the child starts with.
+    inherit_context: bool = False,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
@@ -229,12 +335,16 @@ def _build_child_agent(
         request_overrides = dict(override_request_overrides)
     else:
         request_overrides = {} if override_provider else dict(getattr(parent_agent, "request_overrides", {}) or {})
+    child_prefill = getattr(parent_agent, "prefill_messages", None)
+    if inherit_context:
+        child_prefill = _inherited_context_prefill(
+            parent_agent, delegation_cfg, rt.get("model") or model) or child_prefill
     parent_sid = getattr(parent_agent, "session_id", None)
     child_session_db = _open_child_session_db(parent_agent)
     with delegated_child_context():
         try:
             child = AIAgent(
-                **rt, max_iterations=max_iterations, prefill_messages=getattr(parent_agent, "prefill_messages", None),
+                **rt, max_iterations=max_iterations, prefill_messages=child_prefill,
                 enabled_toolsets=child_toolsets, disabled_toolsets=child_disabled_toolsets, quiet_mode=True,
                 ephemeral_system_prompt=child_prompt, log_prefix=f"[subagent-{task_index}]", platform="subagent",
                 side_agent=True,
@@ -390,7 +500,8 @@ def _build_children(
                 task_index=i, goal=t["goal"], context=_child_context,
                 toolsets=None,  # always inherit the parent's toolsets
                 model=creds["model"], max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                inherit_context=is_truthy_value(t.get("inherit_context"), default=False), **overrides,
             )
         except ValueError as exc:
             return [], str(exc)
@@ -669,6 +780,12 @@ DELEGATE_TASK_SCHEMA = {
                             "child up front; parent validates with one bounded correction retry; result gains "
                             "schema_valid, plus schema_errors on failure — the child's raw text is still returned "
                             "as summary, never discarded). Keep it forgiving — require only fields you will read.",
+                        ),
+                        "inherit_context": _p(
+                            "boolean",
+                            "Optional. true = this child starts with THIS conversation's recent history "
+                            "folded into one background context message, so it sees the current session "
+                            "state without a written brief. Default false: it starts blank plus goal/context.",
                         ),
                         "images": _p(
                             "array",

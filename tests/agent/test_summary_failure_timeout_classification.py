@@ -6,7 +6,7 @@ code, but summary compression must give timeout semantics precedence so the time
 and normal deterministic fallback remain reachable.
 """
 
-from agent.context_compressor import _classify_summary_failure
+from agent.context_compressor import ContextCompressor, _classify_summary_failure
 
 
 _CODEX_STREAM_STALL = (
@@ -41,3 +41,25 @@ def test_stalled_word_alone_does_not_redefine_transport_taxonomy():
 
     assert kind.timeout is False
     assert kind.streaming_closed is False
+
+
+def test_codex_stall_arms_timeout_ladder_without_terminal_abort():
+    compressor = ContextCompressor(
+        model="test/model",
+        quiet_mode=True,
+        config_context_length=100_000,
+    )
+
+    result = compressor._on_summary_failure(
+        TimeoutError(_CODEX_STREAM_STALL),
+        turns_to_summarize=[],
+        focus_topic=None,
+        memory_context="",
+    )
+
+    assert result is None
+    assert compressor._consecutive_timeout_failures == 1
+    assert compressor._last_summary_network_failure is False
+    # Default compression behavior may now use its deterministic context fallback instead
+    # of preserving the whole transcript as a terminal network failure.
+    assert compressor._abort_on_summary_failure({}, 3, None) is False

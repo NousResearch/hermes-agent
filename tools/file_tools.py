@@ -21,6 +21,7 @@ from pathlib import Path
 from agent.file_safety import get_nt_namespace_error, get_read_block_error
 from agent.tool_result_classification import GUARDRAIL_REFUSAL_KEY
 from tools.binary_extensions import has_binary_extension
+from tools.python_outline import PYTHON_OUTLINE_MAX_ENTRIES, python_outline
 from tools.skill_provenance import is_background_review
 from tools.file_operations import (
     ShellFileOperations, normalize_read_pagination, normalize_search_pagination)
@@ -595,13 +596,76 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     return count
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default") -> str:
+def _read_python_outline(path: str, resolved_str: str, task_id: str) -> str | None:
+    """Outline-mode body for ``read_file(outline=True)`` on Python files.
+
+    Returns a JSON payload string, or ``None`` when outline mode does not
+    apply (unparseable source or backend read error) so the caller falls
+    back to the normal full-text read. Outline reads are intentionally NOT
+    recorded in the read history: an outline never satisfies the
+    read-before-write guard; a later edit still needs a real read.
+    """
+    file_ops = _get_file_ops(task_id)
+    raw_path = resolved_str if _file_ops_uses_host_paths(file_ops) else path
+    try:
+        result = file_ops.read_file_raw(raw_path)
+    except Exception:
+        return None
+    result_dict = result.to_dict()
+    if result_dict.get("error"):
+        return None
+    content = result.content or ""
+    try:
+        entries = python_outline(content)
+    except SyntaxError:
+        return None
+    total = len(entries)
+    truncated = total > PYTHON_OUTLINE_MAX_ENTRIES
+    entries = entries[:PYTHON_OUTLINE_MAX_ENTRIES]
+    lines = []
+    for e in entries:
+        indent = "  " * e["depth"]
+        doc = f" — {e['doc']}" if e["doc"] else ""
+        lines.append(f"{e['line']:>6}  {indent}{e['kind']} {e['name']}{e['signature']}{doc}")
+    secret_file = _is_secret_file_arg(resolved_str)
+    text = "\n".join(lines)
+    if text:
+        redacted = redact_sensitive_text(text, file_read=True, secret_file=secret_file)
+    else:
+        redacted = text
+    payload: dict = {
+        "outline": True,
+        "path": path,
+        "entries": len(entries),
+        "total_lines": content.count("\n") + (1 if content else 0),
+        "content": redacted,
+    }
+    if truncated:
+        payload["truncated"] = True
+        payload["_hint"] = (
+            f"Outline capped at {PYTHON_OUTLINE_MAX_ENTRIES} of {total} entries "
+            "(outermost definitions first, in source order). "
+            "Use offset/limit reads for the body you need.")
+    payload["_note"] = (
+        "Outline only: signatures and first docstring lines, no body. "
+        "Read the file normally (outline=False) before editing.")
+    return json.dumps(payload, ensure_ascii=False)
+
+
+def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, task_id: str = "default", outline: bool = False) -> str:
     """Read a file with pagination and line numbers.
 
     Guard order: NT/device-namespace prefix (raw string, no resolution) →
     device-path blocklist (no I/O) → stat-based special-file guard (host only)
     → Hermes internal denylist → document extraction → binary-extension guard
     → negative-result cache → dedup stub → real read.
+
+    Opt-in ``outline=True`` (default ``False``, unchanged): for Python files
+    returns the code structure — each class/function name, signature, source
+    line and first docstring line — instead of the body, for quick
+    orientation in long files. Non-Python files and unparseable sources fall
+    back to the normal full-text read. Outline reads never count as having
+    read the body for read-before-write checks.
     """
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -654,6 +718,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 "Use vision_analyze for images, or terminal to inspect binary files.")
 
         resolved_str = str(_resolved)
+        if outline and _resolved.suffix.lower() == ".py":
+            outlined = _read_python_outline(path, resolved_str, task_id)
+            if outlined is not None:
+                return outlined
+            # Falls through to the normal full-text read below (default
+            # behavior preserved) when the source does not parse or the
+            # backend raw read fails.
         cached_not_found = _check_not_found_cache("read", resolved_str, task_id)
         if cached_not_found is not None:
             return cached_not_found
@@ -1145,7 +1216,8 @@ READ_FILE_SCHEMA = {
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 2000, max: 2000). Reads are additionally capped at a ~100K-character budget with a next_offset continuation.", "default": DEFAULT_READ_LIMIT, "maximum": 2000},
+            "outline": {"type": "boolean", "description": "Opt-in code outline (Python files only): return class/function signatures with source lines instead of the body. Non-Python or unparseable files fall back to a normal read. Default false.", "default": False}
         },
         "required": ["path"]
     }
@@ -1289,7 +1361,7 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", DEFAULT_READ_LIMIT), task_id=tid, outline=bool(args.get("outline", False)))
 
 
 def _handle_write_file(args, **kw):

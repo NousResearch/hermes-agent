@@ -8,16 +8,18 @@ thread-safely onto the loop.
 
 import asyncio
 import logging
+import threading
 import uuid
 from collections import deque
+from contextlib import nullcontext
 from typing import Any, Callable, Deque, Dict
 
 import acp
 from acp.schema import AgentPlanUpdate, PlanEntry
 
 from .tools import (
-    _json_loads_maybe, build_tool_abandoned, build_tool_complete, build_tool_start, coerce_tool_args,
-    make_tool_call_id,
+    _json_loads_maybe, build_delegation_progress, build_tool_abandoned, build_tool_complete, build_tool_start,
+    coerce_tool_args, make_tool_call_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -77,18 +79,43 @@ def _upgrade_queue(tool_call_ids: Dict[str, Deque[str]], name: str) -> Deque[str
 
 def close_tool_call(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]], name: str, result: Any = None, is_error: bool = False,
+    tool_call_meta: Dict[str, Dict[str, Any]], name: str, result: Any = None, is_error: bool | None = None,
 ) -> str | None:
     """Close the oldest open ACP tool call for ``name``; returns its id, or None when none is open."""
     queue = _upgrade_queue(tool_call_ids, name)
     if not queue:
         return None
     tc_id = queue.popleft()
-    meta = tool_call_meta.pop(tc_id, {})
-    _send_update(conn, session_id, loop, build_tool_complete(
-        tc_id, name, result=str(result) if result is not None else None,
-        function_args=meta.get("args"), snapshot=meta.get("snapshot"), is_error=is_error,
-    ))
+    meta = tool_call_meta.get(tc_id, {})
+    completion_kwargs = {
+        "result": str(result) if result is not None else None,
+        "function_args": meta.get("args"),
+        "snapshot": meta.get("snapshot"),
+    }
+    if is_error is not None:
+        completion_kwargs["is_error"] = is_error
+    update = build_tool_complete(tc_id, name, **completion_kwargs)
+    # A background delegation's terminal tool result is a dispatch handle: the
+    # host's call stays open (raw_output.lifecycle marks it dispatched) and keeps
+    # receiving child progress until the background completion closes it.
+    lifecycle = update.raw_output if isinstance(update.raw_output, dict) else {}
+    background = name == "delegate_task" and lifecycle.get("lifecycle") == {
+        "status": "dispatched", "mode": "background"
+    }
+    if background:
+        meta["background_delegation"] = True
+        parsed_result = _json_loads_maybe(str(result) if result is not None else None)
+        if isinstance(parsed_result, dict) and isinstance(parsed_result.get("delegation_id"), str):
+            meta["delegation_id"] = parsed_result["delegation_id"]
+        if meta.get("delegation_all_completed"):
+            # The last child finished before the dispatch result was projected.
+            # Close immediately with the tracked terminal status — no progress
+            # update will ever arrive to do it.
+            update.status = meta.get("delegation_final_status", "completed")
+            tool_call_meta.pop(tc_id, None)
+    else:
+        tool_call_meta.pop(tc_id, None)
+    _send_update(conn, session_id, loop, update)
     if not queue:
         tool_call_ids.pop(name, None)
     return tc_id
@@ -96,24 +123,92 @@ def close_tool_call(
 
 def flush_open_tool_calls(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
-    tool_call_meta: Dict[str, Dict[str, Any]],
+    tool_call_meta: Dict[str, Dict[str, Any]], tool_call_lock: Any = None,
 ) -> int:
     """Close every tool call still open at the end of a turn, and report how many there were.
 
     A tool blocked by scope, guardrail or an editor permission prompt never
     projects ``tool.completed``, so without this its bubble stays ``in_progress``
     forever and clients read the turn as one that never ran a tool."""
-    open_calls = [(name, list(queue)) for name, queue in list(tool_call_ids.items()) if queue]
-    flushed = 0
-    for name, ids in open_calls:
-        for tc_id in ids:
-            tool_call_meta.pop(tc_id, None)
-            _send_update(conn, session_id, loop, build_tool_abandoned(tc_id, name))
-            flushed += 1
-        tool_call_ids.pop(name, None)
+    with tool_call_lock if tool_call_lock is not None else nullcontext():
+        open_calls = [(name, list(queue)) for name, queue in list(tool_call_ids.items()) if queue]
+        flushed = 0
+        for name, ids in open_calls:
+            for tc_id in ids:
+                tool_call_meta.pop(tc_id, None)
+                _send_update(conn, session_id, loop, build_tool_abandoned(tc_id, name))
+                flushed += 1
+            tool_call_ids.pop(name, None)
     if flushed:
         logger.debug("Flushed %d ACP tool call(s) left open at turn end", flushed)
     return flushed
+
+
+def _delegation_tool_call_id(
+    tool_call_ids: Dict[str, Deque[str]], tool_call_meta: Dict[str, Dict[str, Any]], event: Dict[str, Any]
+) -> str | None:
+    """Resolve a child event to its open or background parent call without exposing child input.
+
+    ``delegation_id`` pins the parent once known (background dispatch stamps it from
+    the tool result). Before that, the (task_index, goal) pair disambiguates parallel
+    calls; a single unbound call absorbs unattributable events. A two-way ambiguity
+    resolves to None — guessing would misroute progress onto a sibling's row."""
+    queue = _upgrade_queue(tool_call_ids, "delegate_task")
+    candidates = list(queue or ())
+    candidates.extend(
+        tc_id
+        for tc_id, meta in tool_call_meta.items()
+        if meta.get("background_delegation") and tc_id not in candidates
+    )
+    if not candidates:
+        return None
+
+    delegation_id = event.get("delegation_id")
+    if isinstance(delegation_id, str) and delegation_id:
+        for tc_id in candidates:
+            if tool_call_meta.get(tc_id, {}).get("delegation_id") == delegation_id:
+                return tc_id
+
+    task_index = event.get("task_index")
+    goal = event.get("goal")
+    matches: list[str] = []
+    if isinstance(task_index, int) and not isinstance(task_index, bool) and task_index >= 0 and isinstance(goal, str):
+        for tc_id in candidates:
+            meta = tool_call_meta.get(tc_id, {})
+            arguments = meta.get("args")
+            if not isinstance(arguments, dict):
+                continue
+            tasks = arguments.get("tasks")
+            task_goal = None
+            if isinstance(tasks, list) and task_index < len(tasks) and isinstance(tasks[task_index], dict):
+                task_goal = tasks[task_index].get("goal")
+            elif task_index == 0:
+                task_goal = arguments.get("goal")
+            if task_goal == goal and not meta.get("delegation_id"):
+                matches.append(tc_id)
+
+    if len(matches) == 1:
+        tc_id = matches[0]
+    else:
+        unbound = [tc_id for tc_id in candidates if not tool_call_meta.get(tc_id, {}).get("delegation_id")]
+        if len(unbound) != 1:
+            return None
+        tc_id = unbound[0]
+
+    if isinstance(delegation_id, str) and delegation_id:
+        tool_call_meta.setdefault(tc_id, {})["delegation_id"] = delegation_id
+    return tc_id
+
+
+def _delegation_task_count(meta: Dict[str, Any]) -> int:
+    """How many children this parent call fan out to (from sanitized arguments)."""
+    arguments = meta.get("args")
+    if not isinstance(arguments, dict):
+        return 0
+    tasks = arguments.get("tasks")
+    if isinstance(tasks, list):
+        return sum(isinstance(task, dict) and isinstance(task.get("goal"), str) for task in tasks)
+    return 1 if isinstance(arguments.get("goal"), str) and arguments["goal"] else 0
 
 
 def make_tool_progress_cb(
@@ -121,6 +216,7 @@ def make_tool_progress_cb(
     tool_call_meta: Dict[str, Dict[str, Any]],
     edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
     turn_state: Dict[str, Any] | None = None,
+    tool_call_lock: Any = None,
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
 
@@ -130,49 +226,95 @@ def make_tool_progress_cb(
     ``tool.completed`` closes that call with its own result — the step callback
     only fires on the *next* step, which leaves a turn's last tools open."""
 
+    # Child events arrive on child worker threads while the parent turn runs on
+    # the executor: per-call sequence/terminal bookkeeping must be atomic.
+    delegation_lock = tool_call_lock or threading.RLock()
+
     def _tool_progress(event_type: str, name: str = None, preview: str = None, args: Any = None, **kwargs) -> None:
+        if event_type.startswith("subagent."):
+            event = {"preview": preview, "tool_name": name, **kwargs}
+            with delegation_lock:
+                tc_id = _delegation_tool_call_id(tool_call_ids, tool_call_meta, event)
+                if tc_id is None:
+                    return
+                meta = tool_call_meta.setdefault(tc_id, {})
+                sequence = int(meta.get("delegation_progress_sequence") or 0) + 1
+                terminal_status = None
+                if event_type == "subagent.complete":
+                    task_index = event.get("task_index")
+                    if isinstance(task_index, int) and not isinstance(task_index, bool) and task_index >= 0:
+                        completed = meta.setdefault("delegation_completed_tasks", set())
+                        completed.add(task_index)
+                    raw_status = str(event.get("status") or "completed").strip().lower()
+                    if raw_status not in {"completed", "success", "succeeded"}:
+                        meta["delegation_had_failure"] = True
+                    expected = _delegation_task_count(meta)
+                    if expected > 0 and len(meta.get("delegation_completed_tasks", ())) >= expected:
+                        # Every child reported: the parent's host call can close.
+                        terminal_status = "failed" if meta.get("delegation_had_failure") else "completed"
+                        meta["delegation_all_completed"] = True
+                        meta["delegation_final_status"] = terminal_status
+                update = build_delegation_progress(
+                    tc_id, event_type, sequence, terminal_status=terminal_status, **event
+                )
+                if update is not None:
+                    meta["delegation_progress_sequence"] = sequence
+                    _send_update(conn, session_id, loop, update)
+                    if terminal_status is not None and meta.get("background_delegation"):
+                        tool_call_meta.pop(tc_id, None)
+            return
         if event_type == "tool.completed" and name:
             if turn_state is not None:
                 turn_state["saw_completion"] = True
             # The executor's verdict: a cancelled/errored tool may return plain text the heuristic misses.
-            close_tool_call(
-                conn, session_id, loop, tool_call_ids, tool_call_meta, name, kwargs.get("result"),
-                is_error=bool(kwargs.get("is_error")),
-            )
+            if name == "delegate_task":
+                # close_tool_call consults progress bookkeeping (the child-can-win
+                # race) — it must not interleave with a subagent.* relay.
+                with delegation_lock:
+                    close_tool_call(
+                        conn, session_id, loop, tool_call_ids, tool_call_meta, name, kwargs.get("result"),
+                        is_error=bool(kwargs.get("is_error")),
+                    )
+            else:
+                close_tool_call(
+                    conn, session_id, loop, tool_call_ids, tool_call_meta, name, kwargs.get("result"),
+                    is_error=bool(kwargs.get("is_error")),
+                )
             return
         if event_type != "tool.started":
             return
         args = coerce_tool_args(args)
-        tc_id = make_tool_call_id()
-        queue = _upgrade_queue(tool_call_ids, name)
-        if queue is None:
-            queue = tool_call_ids[name] = deque()
-        queue.append(tc_id)
+        with delegation_lock:
+            tc_id = make_tool_call_id()
+            queue = _upgrade_queue(tool_call_ids, name)
+            if queue is None:
+                queue = tool_call_ids[name] = deque()
+            queue.append(tc_id)
 
-        snapshot = None
-        if name in {"write_file", "patch", "skill_manage"}:
-            try:
-                from agent.display import capture_local_edit_snapshot
+            snapshot = None
+            if name in {"write_file", "patch", "skill_manage"}:
+                try:
+                    from agent.display import capture_local_edit_snapshot
 
-                snapshot = capture_local_edit_snapshot(name, args)
-            except Exception:
-                logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
-        tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
+                    snapshot = capture_local_edit_snapshot(name, args)
+                except Exception:
+                    logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
+            tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
 
-        edit_diff = None
-        if name in {"write_file", "patch"} and edit_approval_policy_getter is not None:
-            try:
-                from acp_adapter.edit_approval import build_edit_proposal, should_auto_approve_edit
+            edit_diff = None
+            if name in {"write_file", "patch"} and edit_approval_policy_getter is not None:
+                try:
+                    from acp_adapter.edit_approval import build_edit_proposal, should_auto_approve_edit
 
-                proposal = build_edit_proposal(name, args)
-                if proposal is not None:
-                    policy, cwd = edit_approval_policy_getter()
-                    if should_auto_approve_edit(proposal, policy, cwd):
-                        edit_diff = proposal
-            except Exception:
-                logger.debug("Failed to prepare auto-approved ACP edit diff for %s", name, exc_info=True)
+                    proposal = build_edit_proposal(name, args)
+                    if proposal is not None:
+                        policy, cwd = edit_approval_policy_getter()
+                        if should_auto_approve_edit(proposal, policy, cwd):
+                            edit_diff = proposal
+                except Exception:
+                    logger.debug("Failed to prepare auto-approved ACP edit diff for %s", name, exc_info=True)
 
-        _send_update(conn, session_id, loop, build_tool_start(tc_id, name, args, edit_diff=edit_diff))
+            _send_update(conn, session_id, loop, build_tool_start(tc_id, name, args, edit_diff=edit_diff))
 
     return _tool_progress
 
@@ -255,6 +397,7 @@ def make_message_cb(
 def make_step_cb(
     conn: acp.Client, session_id: str, loop: asyncio.AbstractEventLoop, tool_call_ids: Dict[str, Deque[str]],
     tool_call_meta: Dict[str, Dict[str, Any]], turn_state: Dict[str, Any] | None = None,
+    tool_call_lock: Any = None,
 ) -> Callable:
     """Create a ``step_callback(api_call_count: int, prev_tools: list)`` for AIAgent."""
 
@@ -276,21 +419,20 @@ def make_step_cb(
             # ``tool.completed`` already closed this call with its own result;
             # this callback is the fallback for runtimes that never project one.
             if not (turn_state or {}).get("saw_completion"):
-                queue = _upgrade_queue(tool_call_ids, tool_name)
-                if not queue:
-                    continue
-                tc_id = queue.popleft()
-                meta = tool_call_meta.pop(tc_id, {})
-                # ``prev_tools`` carries the wire ``arguments`` JSON *string*; the content
-                # builders index it as a dict, so an uncoerced string raised inside this
-                # (swallowed) callback and the bubble never closed.
-                _send_update(conn, session_id, loop, build_tool_complete(
-                    tc_id, tool_name, result=str(result) if result is not None else None,
-                    function_args=coerce_tool_args(function_args) if function_args else meta.get("args"),
-                    snapshot=meta.get("snapshot"),
-                ))
-                if not queue:
-                    tool_call_ids.pop(tool_name, None)
+                with tool_call_lock if tool_call_lock is not None else nullcontext():
+                    queue = _upgrade_queue(tool_call_ids, tool_name)
+                    if not queue:
+                        continue
+                    tc_id = queue[0]
+                    if function_args:
+                        tool_call_meta.setdefault(tc_id, {})["args"] = coerce_tool_args(function_args)
+                    # Use the same close path as a native tool.completed callback.
+                    # delegate_task dispatch handles remain open and retain their
+                    # routing metadata for later child progress.
+                    close_tool_call(
+                        conn, session_id, loop, tool_call_ids, tool_call_meta, tool_name,
+                        result=str(result) if result is not None else None,
+                    )
             if tool_name == "todo" and (plan_update := _build_plan_update_from_todo_result(result)) is not None:
                 _send_update(conn, session_id, loop, plan_update)
 

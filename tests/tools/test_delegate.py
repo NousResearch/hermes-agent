@@ -25,7 +25,7 @@ from tools.delegate_tool import (
     _build_child_agent,
     _strip_blocked_tools,
     _resolve_child_credential_pool,
-    _resolve_delegation_credentials,
+    _resolve_delegation_credentials,    _build_child_progress_callback,
 )
 from hermes_state import SessionDB
 
@@ -1483,6 +1483,63 @@ class TestDispatchDelegateTask(unittest.TestCase):
         self.assertNotIn("acp_command", captured["tasks"][0])
         self.assertNotIn("acp_args", captured["tasks"][0])
 
+class TestDelegateEventEnum(unittest.TestCase):
+    """Tests for DelegateEvent enum and back-compat aliases."""
+
+    def test_progress_callback_normalises_tool_started(self):
+        """_build_child_progress_callback handles tool.started via enum."""
+        parent = _make_mock_parent()
+        parent._delegate_spinner = MagicMock()
+        parent.tool_progress_callback = MagicMock()
+
+        cb = _build_child_progress_callback(0, "test goal", parent, task_count=1)
+        self.assertIsNotNone(cb)
+
+        cb("tool.started", name="terminal", preview="ls")
+        parent._delegate_spinner.print_above.assert_called()
+        parent.tool_progress_callback.assert_called_once()
+        self.assertEqual(parent.tool_progress_callback.call_args.args[0], "subagent.tool")
+        self.assertEqual(parent.tool_progress_callback.call_args.args[1], "terminal")
+        self.assertEqual(parent.tool_progress_callback.call_args.kwargs["tool_event"], "tool.started")
+
+
+    def test_progress_callback_ignores_unknown_events(self):
+        """Unknown event types are silently ignored."""
+        parent = _make_mock_parent()
+        parent._delegate_spinner = MagicMock()
+
+        cb = _build_child_progress_callback(0, "test goal", parent, task_count=1)
+        # Should not raise
+        cb("some.unknown.event", tool_name="x")
+        parent._delegate_spinner.print_above.assert_not_called()
+
+    def test_progress_callback_task_progress_not_misrendered(self):
+        """'subagent_progress' (legacy name for TASK_PROGRESS) carries a
+        pre-batched summary in the tool_name slot.  Before the fix, this
+        fell through to the TASK_TOOL_STARTED rendering path, treating
+        the summary string as a tool name.  After the fix: distinct
+        render (no tool-start emoji lookup) and pass-through relay
+        upward (no re-batching).
+
+        Regression path only reachable once nested orchestration is
+        enabled: nested orchestrators relay subagent_progress from
+        grandchildren upward through this callback.
+        """
+        parent = _make_mock_parent()
+        parent._delegate_spinner = MagicMock()
+        parent.tool_progress_callback = MagicMock()
+
+        cb = _build_child_progress_callback(0, "test goal", parent, task_count=1)
+        cb("subagent_progress", tool_name="🔀 [1] terminal, file")
+
+        # Spinner gets a distinct 🔀-prefixed line, NOT a tool emoji
+        # followed by the summary string as if it were a tool name.
+        calls = parent._delegate_spinner.print_above.call_args_list
+        self.assertTrue(any("🔀 🔀 [1] terminal, file" in str(c) for c in calls))
+        # Parent callback receives the relay (pass-through, no re-batching).
+        parent.tool_progress_callback.assert_called_once()
+        # No '⚡' tool-start emoji should appear — that's the pre-fix bug.
+        self.assertFalse(any("⚡" in str(c) for c in calls))
 
 
 class TestConcurrencyDefaults(unittest.TestCase):

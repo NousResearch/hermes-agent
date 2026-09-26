@@ -365,7 +365,6 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
 
     for dirpath, dirnames, filenames in os.walk(old, onerror=_walk_error):
         here = Path(dirpath)
-        links = [name for name in dirnames if (here / name).is_symlink()]
         dirnames[:] = [
             name
             for name in dirnames
@@ -373,7 +372,7 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
             and not (here / name).is_symlink()
             and not is_junction(here / name)
         ]
-        for name in (*filenames, *links):
+        for name in filenames:
             src = here / name
             rel = src.relative_to(old)
             if any(part in _PRESERVE_SKIP or part.endswith(".pyc") for part in rel.parts):
@@ -382,16 +381,17 @@ def _carry_user_files(old: Path, new: Path, local: Optional[list[str]]) -> None:
                 src_mode = src.lstat().st_mode
             except OSError as exc:
                 raise PluginOperationError(f"Could not preserve user file '{rel}': {exc}") from exc
-            # FIFOs, sockets and devices are runtime objects, not durable plugin state.
-            if not (stat.S_ISREG(src_mode) or stat.S_ISLNK(src_mode)):
+            # Only regular files are durable state. FIFOs, sockets and devices are runtime objects,
+            # and a symlink injected after the installer's first scan could point outside the plugin
+            # root past the guard (which skips links), so neither branch carries them.
+            if not stat.S_ISREG(src_mode):
                 continue
 
             dst = new / rel
             if local is None:
                 # A no-git subdir install cannot distinguish removed upstream code from user files.
-                # Never resurrect known executable/control surfaces, and never inject links after
-                # the installer's first scan.
-                if stat.S_ISLNK(src_mode) or _revision_owned_without_git(rel):
+                # Never resurrect known executable/control surfaces.
+                if _revision_owned_without_git(rel):
                     continue
                 if os.path.lexists(dst):
                     # A same-shape path belongs to the new revision when git cannot prove otherwise.

@@ -70,7 +70,8 @@
   font-size: 0.72rem;
   letter-spacing: 0.15em;
   text-transform: uppercase;
-  color: #a8860a;
+  /* #a8860a is only 3.5:1 on white. #6E4F00 clears 4.5:1; dark mode overrides. */
+  color: #6e4f00;
   margin: 0 0 0.5rem;
 }
 
@@ -151,6 +152,12 @@
   border-color: rgba(96, 165, 250, 0.45);
   background: rgba(96, 165, 250, 0.12);
   color: rgba(96, 165, 250, 0.95);
+}
+
+[data-theme="light"] .versionPill {
+  border-color: rgba(29, 78, 216, 0.45);
+  background: rgba(29, 78, 216, 0.08);
+  color: #1d4ed8;
 }
 
 .starPill {
@@ -338,6 +345,10 @@
   transform: translateY(-1px);
 }
 
+[data-theme="light"] .shot:hover {
+  border-color: rgba(110, 79, 0, 0.45);
+}
+
 .shot img {
   display: block;
   width: 100%;
@@ -504,6 +515,11 @@
   border-color: rgba(255, 215, 0, 0.25);
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
   transform: translateY(-1px);
+}
+
+[data-theme="light"] .miniCard:hover {
+  border-color: rgba(110, 79, 0, 0.45);
+  box-shadow: 0 4px 16px rgba(28, 30, 33, 0.06);
 }
 
 .miniAccent {

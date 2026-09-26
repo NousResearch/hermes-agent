@@ -62,6 +62,10 @@ class MessagingPlatformUpdate(BaseModel):
     # Explicit body profile beats the switcher's query param (same as other scoped writes).
     profile: Optional[str] = None
 
+class TeamsPreflightRequest(BaseModel):
+    """Ephemeral Teams credentials used only for a connectivity preflight."""
+    config: Dict[str, Any]
+
 class TelegramOnboardingStart(BaseModel):
     bot_name: Optional[str] = None
 

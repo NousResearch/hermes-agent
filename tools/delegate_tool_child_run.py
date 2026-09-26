@@ -73,23 +73,26 @@ def _defer_child_cost_rollup(child: Any, future: Any, parent_agent: Any, account
             state["baseline"] = min(float(state.get("baseline", baseline) or 0.0), baseline)
 
     def _settle(_done: Any) -> None:
-        current = _child_spend(child)["_child_cost_usd"]
-        if parent_session_id is not None and getattr(parent_agent, "session_id", None) != parent_session_id:
-            logger.debug("Skipping deferred subagent cost rollup after parent session changed")
-            return
-        with _DEFERRED_CHILD_COST_LOCK:
-            state = getattr(child, "_delegate_deferred_cost_rollup", None)
-            if not isinstance(state, dict):
+        try:
+            current = _child_spend(child)["_child_cost_usd"]
+            if parent_session_id is not None and getattr(parent_agent, "session_id", None) != parent_session_id:
+                logger.debug("Skipping deferred subagent cost rollup after parent session changed")
                 return
-            desired_extra = max(0.0, current - float(state.get("baseline", 0.0) or 0.0))
-            settled_extra = max(0.0, float(state.get("settled_extra", 0.0) or 0.0))
-            delta = max(0.0, desired_extra - settled_extra)
-            if delta <= 0.0:
-                return
-            state["settled_extra"] = settled_extra + delta
-        from tools.delegate_tool_results import _parent_finalization_lock, _rollup_children_cost
-        with _parent_finalization_lock(parent_agent):
-            _rollup_children_cost(parent_agent, delta)
+            with _DEFERRED_CHILD_COST_LOCK:
+                state = getattr(child, "_delegate_deferred_cost_rollup", None)
+                if not isinstance(state, dict):
+                    return
+                desired_extra = max(0.0, current - float(state.get("baseline", 0.0) or 0.0))
+                settled_extra = max(0.0, float(state.get("settled_extra", 0.0) or 0.0))
+                delta = max(0.0, desired_extra - settled_extra)
+                if delta <= 0.0:
+                    return
+                state["settled_extra"] = settled_extra + delta
+            from tools.delegate_tool_results import _parent_finalization_lock, _rollup_children_cost
+            with _parent_finalization_lock(parent_agent):
+                _rollup_children_cost(parent_agent, delta)
+        except Exception:
+            logger.debug("Deferred subagent cost rollup failed", exc_info=True)
 
     future.add_done_callback(_settle)
 

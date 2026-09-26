@@ -75,6 +75,8 @@ _RESETS_IN_RE = re.compile(
     r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?", re.IGNORECASE,
 )
 _RETRY_AFTER_SECONDS_RE = re.compile(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", re.IGNORECASE)
+# The plan usage-limit body field as it appears once stringified: ``'resets_in_seconds': 30995``.
+_RESETS_IN_SECONDS_FIELD_RE = re.compile(r"resets_in_seconds\W{1,4}(\d+(?:\.\d+)?)", re.IGNORECASE)
 
 
 def _quota_reset_seconds(m: "re.Match[str]") -> float:
@@ -94,8 +96,15 @@ def _resets_in_seconds(m: "re.Match[str]") -> Optional[float]:
 RETRY_DELAY_PATTERNS = (
     (_QUOTA_RESET_DELAY_RE, _quota_reset_seconds),
     (_RETRY_AFTER_SECONDS_RE, lambda m: float(m.group(1))),
+    (_RESETS_IN_SECONDS_FIELD_RE, lambda m: float(m.group(1))),
     (_RESETS_IN_RE, _resets_in_seconds),
 )
+
+
+def format_reset_window(seconds: float) -> str:
+    """``~9h`` / ``~45 min`` for chat copy naming when a quota window reopens (ceilinged)."""
+    seconds = int(seconds)
+    return f"~{-(-seconds // 3600)}h" if seconds >= 3600 else f"~{-(-seconds // 60)} min"
 
 
 def reset_delay_from_message(message: str) -> Optional[float]:

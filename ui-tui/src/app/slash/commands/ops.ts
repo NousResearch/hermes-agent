@@ -462,13 +462,17 @@ export const opsCommands: SlashCommand[] = [
     help: 're-scan installed skills in the live TUI gateway',
     name: 'reload-skills',
     run: (_arg, ctx) => {
+      // Bound to the session so the rescan and the refreshed catalog see its
+      // repo's project-local skills, not the launch environment's.
+      const params = ctx.sid ? { session_id: ctx.sid } : {}
+
       ctx.gateway
-        .rpc<SkillsReloadResponse>('skills.reload', {})
+        .rpc<SkillsReloadResponse>('skills.reload', params)
         .then(
           ctx.guarded<SkillsReloadResponse>(r => {
             ctx.transcript.page(r.output || 'skills reloaded', 'Reload Skills')
             ctx.gateway
-              .rpc<CommandsCatalogResponse>('commands.catalog', {})
+              .rpc<CommandsCatalogResponse>('commands.catalog', params)
               .then(
                 ctx.guarded<CommandsCatalogResponse>(catalog => {
                   if (!catalog?.pairs) {

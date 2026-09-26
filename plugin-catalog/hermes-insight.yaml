@@ -1,0 +1,14 @@
+name: hermes-insight
+repo: https://github.com/BrokeSkill/Hermes-Insight
+sha: 1fb40f7be7b179f8a8f539f8a1d139a40aad9a7a
+subdir: backend-plugin
+description: Selection-definition lookup for Hermes Desktop. Select any text, get an AI definition with sources in a popup. Renders the definition inline, runnable code aside. Backend is a stateless hermes insight CLI; panel, providers, and one-click model picking are configurable. Disclosure — definitions are generated with your configured provider keys (the selected term, your format template and optional web-search results are sent to that provider) via a short-lived `hermes insight` CLI run; no background process remains.
+maintainer: BrokeSkill
+tier: community
+category: desktop
+platforms: [linux, macos, windows]
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

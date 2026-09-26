@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO, ImageGenProvider, error_response, resolve_aspect_ratio, save_b64_image,
     save_url_image, success_response)
-from plugins.image_gen._common import error_factory, load_image_gen_config, post_json
+from plugins.image_gen._common import error_factory, load_image_gen_config, post_json, record_token_usage
 
 logger = logging.getLogger(__name__)
 
@@ -680,6 +680,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                     "model_access", retryable=True)
             return _fail(failure.error, "api_error", retryable=status in _IMAGE_API_FALLBACK_STATUSES)
 
+        # The provider billed these tokens on HTTP 200 whether or not an image came back / saved.
+        record_token_usage(_dict_at(body, "usage"), model=model_id, provider=self._name, base_url=base_url)
         entries = [e for e in _list_at(body, "data") if isinstance(e, dict)]
         if not entries:
             return _fail(
@@ -724,6 +726,8 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 return fail(hint, "model_access"), "unavailable"
             return fail(failure.error, "api_error"), None
 
+        # The provider billed these tokens on HTTP 200 whether or not an image came back / saved.
+        record_token_usage(_dict_at(result, "usage"), model=model_id, provider=self._name, base_url=base_url)
         images = _extract_images(result)
         if not images:
             # Text but no image usually means the model didn't honor image output.

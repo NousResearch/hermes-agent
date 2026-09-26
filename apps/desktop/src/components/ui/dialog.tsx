@@ -78,10 +78,17 @@ function DialogContent({
   blurBackdrop = true,
   banner,
   bannerTone = 'error',
+  chrome,
+  overlayClassName,
   onOpenAutoFocus,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  // Backdrop skin, e.g. a heavier scrim for media viewers.
+  overlayClassName?: string
+  // Controls pinned to the shell rather than the scrolling body (e.g. prev/next
+  // pagers). The shell doesn't clip, so these may sit past its edges.
+  chrome?: React.ReactNode
   // Keep the underlying task readable for context-sensitive prompts.
   blurBackdrop?: boolean
   // Size the dialog to its content (capped at the viewport) instead of the
@@ -111,6 +118,17 @@ function DialogContent({
   // the node mounts.
   const [contentNode, setContentNode] = React.useState<HTMLElement | null>(null)
 
+  // Opened from inside another dialog (e.g. an image lightbox over a detail
+  // modal): both layers step above the parent so its scrim dims the parent too.
+  // Shared z tokens alone would slot this backdrop under the parent's content.
+  const nested = React.useContext(DialogPortalContainerContext) !== null
+
+  const overlay = (
+    <DialogOverlay blur={blurBackdrop} className={cn(nested && 'z-[calc(var(--z-modal)+1)]', overlayClassName)} />
+  )
+
+  const layerClass = nested && 'z-[calc(var(--z-modal)+2)]'
+
   // No default here — Radix's normal autofocus (first focusable element, often
   // an input) is what most dialogs want. Dialogs with no input should pass
   // `onOpenAutoFocus={preventCloseButtonAutoFocus}` explicitly instead.
@@ -137,7 +155,7 @@ function DialogContent({
   if (banner) {
     return (
       <DialogPortal>
-        <DialogOverlay blur={blurBackdrop} />
+        {overlay}
         <DialogPrimitive.Content
           className={cn(
             // The same split as the plain variant. The shell must not clip,
@@ -145,6 +163,7 @@ function DialogContent({
             // below has its own `overflow-hidden`, which rounds its corners.
             'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
             widthClass,
+            layerClass,
             className,
             // Callers often pass `gap-*` for the no-banner grid layout — suppress
             // it here so the banner can tuck under the body's rounded bottom edge.
@@ -179,6 +198,7 @@ function DialogContent({
             >
               {banner}
             </div>
+            {chrome}
             {closeButton}
           </DialogPortalContainerContext.Provider>
         </DialogPrimitive.Content>
@@ -188,7 +208,7 @@ function DialogContent({
 
   return (
     <DialogPortal>
-      <DialogOverlay blur={blurBackdrop} />
+      {overlay}
       <DialogPrimitive.Content
         className={cn(
           // The SHELL: position, size, and skin. It has no overflow of its own,
@@ -199,6 +219,7 @@ function DialogContent({
           // past the edge of that box.
           'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
           widthClass,
+          layerClass,
           className
         )}
         data-slot="dialog-content"
@@ -222,6 +243,7 @@ function DialogContent({
           >
             {children}
           </div>
+          {chrome}
           {closeButton}
         </DialogPortalContainerContext.Provider>
       </DialogPrimitive.Content>

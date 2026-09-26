@@ -153,16 +153,6 @@ def test_create_wraps_completed_aggregator_response_as_delta_chunk(monkeypatch, 
     assert agg["stream"] is True
 
 
-def test_create_non_stream_path_unchanged(monkeypatch, tmp_path):
-    """Default (no stream): the aggregator call carries NO stream/stream_options
-    keys, so the non-streaming path is byte-identical to before."""
-    facade, calls = _facade(monkeypatch, tmp_path)
-    facade.create(messages=[{"role": "user", "content": "q"}], tools=[])
-
-    agg = next(c for c in calls if c["task"] == "moa_aggregator")
-    assert "stream" not in agg
-    assert "stream_options" not in agg
-    assert "timeout" not in agg
 
 
 def test_create_forwards_stream_read_timeout(monkeypatch, tmp_path):

@@ -1,5 +1,5 @@
-"""#105861: a fire-claim that only *reads* as lost AFTER a run delivered must not overwrite
-the delivered run's terminal status — an ok, or a failure notice carrying its real error.
+"""#105861 / #113357: a fire-claim that only *reads* as lost must not overwrite a completed run's
+terminal status — an ok, or a failure notice carrying its real error.
 
 `_FireOwnership.lost()` samples the claim from the store once. When that sample misses after
 the notice already reached the channel, the run must fall through to the owner-fenced terminal
@@ -159,3 +159,109 @@ def test_transport_cancel_during_delivery_stays_fail_closed(temp_home, monkeypat
     record = get_job(job["id"])
     assert record["last_status"] == "error"
     assert record["last_error"] == sched._OWNERSHIP_LOST_INTERRUPTED
+
+
+class _HeartbeatThreadMisses:
+    """The real ``heartbeat_fire_claim``; the first ``misses`` samples taken on the heartbeat
+    thread return False (optionally re-owning the stored claim so the loss is genuine)."""
+
+    def __init__(self, real, misses: int, *, steal: bool = False):
+        self._real, self._left, self._steal = real, misses, steal
+        self.missed = 0
+        self._samples = 0
+        self.processed = threading.Event()
+
+    def __call__(self, job_id, *, expected_owner):
+        if threading.current_thread().name == "cron-fire-claim-heartbeat":
+            self._samples += 1
+            if self._samples > 2:
+                # Reaching the next poll proves the confirmation was accepted without latching.
+                self.processed.set()
+        if threading.current_thread().name == "cron-fire-claim-heartbeat" and self._left:
+            self._left -= 1
+            self.missed += 1
+            if self._steal:
+                from cron.jobs import _with_job, save_jobs
+
+                def re_own(jobs, _i, job):
+                    job["fire_claim"] = {**job["fire_claim"], "by": "replacement:deadbeef"}
+                    save_jobs(jobs)
+
+                _with_job(job_id, re_own)
+            return False
+        return self._real(job_id, expected_owner=expected_owner)
+
+
+def _drive_heartbeat_thread(monkeypatch, *, misses, steal=False):
+    """run_one_job with the REAL fire-claim heartbeat thread sampling every 10 ms; ``run_job``
+    finishes after the heartbeat has processed its confirmation, not merely sampled it."""
+    import cron.scheduler as sched
+
+    job = _claimed_job()
+    hb = _HeartbeatThreadMisses(sched.heartbeat_fire_claim, misses, steal=steal)
+    delivered, run_cancel = [], []
+    start_heartbeat = sched._start_heartbeat_thread
+
+    def observed_heartbeat(loop_fn, name, fail_log):
+        def run():
+            try:
+                loop_fn()
+            finally:
+                # A confirmed loss exits the loop only after setting the real cancel latch.
+                hb.processed.set()
+
+        return start_heartbeat(run, name, fail_log)
+
+    def fake_run_job(job, **kwargs):
+        # Deadlock guard only: store I/O and thread scheduling have no 100 ms upper bound.
+        assert hb.processed.wait(timeout=30), "heartbeat never processed its confirmation"
+        run_cancel.append(kwargs["cancel_event"].is_set())
+        return True, "output text", "the report", None
+
+    monkeypatch.setattr(sched, "_start_heartbeat_thread", observed_heartbeat)
+    monkeypatch.setattr(sched, "_RUN_CLAIM_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(sched, "_FIRE_CLAIM_MISS_CONFIRM_SECONDS", 0.01, raising=False)
+    monkeypatch.setattr(sched, "heartbeat_fire_claim", hb)
+    monkeypatch.setattr(sched, "run_job", fake_run_job)
+    monkeypatch.setattr(sched, "_deliver_result", lambda job, content, **kw: delivered.append(content))
+    return sched, job, hb, delivered, run_cancel
+
+
+@pytest.mark.parametrize("misses, latched", [(1, False), (2, True)], ids=["one-sample", "latched"])
+def test_heartbeat_miss_mid_run_keeps_completed_run(temp_home, monkeypatch, misses, latched):
+    """#113357: the heartbeat thread's miss is a sample, not the verdict. One miss is re-sampled
+    and never cancels the run; two consecutive misses latch, but a claim the store still validates
+    at completion records the completed run — not ``_OWNERSHIP_LOST_INTERRUPTED``."""
+    from cron.executions import get_execution
+    from cron.jobs import get_job
+
+    sched, job, hb, delivered, run_cancel = _drive_heartbeat_thread(monkeypatch, misses=misses)
+
+    assert sched.run_one_job(job) is True
+
+    assert hb.missed == misses
+    assert run_cancel == [latched], "only a confirmed miss reaches the run's cancel event"
+    assert delivered == ["the report"]
+    record = get_job(job["id"])
+    assert record["last_status"] == "ok"
+    assert record["last_error"] is None
+    assert get_execution(job["execution_id"])["status"] == "completed"
+
+
+def test_confirmed_claim_loss_mid_run_still_yields(temp_home, monkeypatch):
+    """A genuinely re-owned claim (two misses, stored ``by`` rewritten) still fences the run out:
+    nothing delivered, no terminal write over the new owner, ledger records the discard."""
+    from cron.executions import get_execution
+    from cron.jobs import get_job
+
+    sched, job, hb, delivered, run_cancel = _drive_heartbeat_thread(
+        monkeypatch, misses=2, steal=True)
+
+    assert sched.run_one_job(job) is True
+
+    assert run_cancel == [True]
+    assert delivered == []
+    record = get_job(job["id"])
+    assert record["last_status"] is None
+    assert record["fire_claim"]["by"] == "replacement:deadbeef"
+    assert "discarded" in get_execution(job["execution_id"])["error"]

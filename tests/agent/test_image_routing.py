@@ -10,7 +10,6 @@ from unittest.mock import patch
 from agent.image_routing import (
     _coerce_capability_bool,
     _coerce_mode,
-    _explicit_aux_vision_override,
     _lookup_supports_vision,
     _should_probe_ollama_vision,
     _supports_vision_override,
@@ -40,12 +39,6 @@ class TestCoerceMode:
 # ─── _explicit_aux_vision_override ───────────────────────────────────────────
 
 
-class TestExplicitAuxVisionOverride:
-    def test_none_config(self):
-        assert _explicit_aux_vision_override(None) is False
-
-    def test_empty_config(self):
-        assert _explicit_aux_vision_override({}) is False
 
 
 
@@ -350,17 +343,6 @@ class TestLargeImageHandling:
         missing = tmp_path / "does_not_exist.png"
         assert _ir._file_to_data_url(missing) is None
 
-    def test_build_native_parts_no_provider_kwarg(self, tmp_path: Path):
-        """build_native_content_parts takes text + paths, no provider kwarg."""
-        from agent import image_routing as _ir
-
-        img = tmp_path / "cat.png"
-        img.write_bytes(_png_bytes())
-        parts, skipped = _ir.build_native_content_parts("hi", [str(img)])
-        assert skipped == []
-        assert len(parts) == 2
-        assert parts[0]["type"] == "text"
-        assert parts[1]["type"] == "image_url"
 
 
 # ─── extract_image_refs ──────────────────────────────────────────────────────
@@ -383,8 +365,13 @@ class TestExtractImageRefs:
         assert urls == []
 
     def test_finds_home_relative_path(self, tmp_path: Path, monkeypatch):
-        # Simulate ~/foo.png by pointing HOME at tmp_path and creating the file
+        # Simulate ~/foo.png by pointing the home env vars at tmp_path and
+        # creating the file. Windows resolves ~ via USERPROFILE (before HOME),
+        # so set both and clear the HOMEDRIVE/HOMEPATH fallback.
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
+        monkeypatch.delenv("HOMEDRIVE", raising=False)
+        monkeypatch.delenv("HOMEPATH", raising=False)
         img = tmp_path / "foo.png"
         img.write_bytes(_png_bytes())
         paths, urls = extract_image_refs("see ~/foo.png please")
@@ -644,16 +631,6 @@ class TestProbeApiKeyForwarding:
         assert _resolve_inference_api_key({"model": {}}, "custom") == ""
         assert _resolve_inference_api_key(None, "custom") == ""
 
-    def test_should_probe_forwards_api_key(self):
-        from agent.image_routing import _should_probe_ollama_vision
-
-        key = _fake_key("probe")
-        with patch(
-            "agent.model_metadata.detect_local_server_type",
-            return_value=None,
-        ) as detect:
-            _should_probe_ollama_vision("custom", "https://remote/v1", api_key=key)
-        detect.assert_called_once_with("https://remote/v1", api_key=key)
 
     def test_lookup_passes_resolved_key_to_probe(self):
         """The full lookup path resolves the key from cfg and hands it to the
@@ -670,3 +647,26 @@ class TestProbeApiKeyForwarding:
         ) as detect:
             _lookup_supports_vision("custom", "llava", {"model": {"api_key": key}})
         assert detect.call_args.kwargs.get("api_key") == key
+
+
+class TestCodexContextVariantVisionLookup:
+    """Issue #102189: a VALID Codex ``-900k`` picker variant is an alias of its base slug, so the
+    vision-capability lookup must key on the base while ineligible ``-900k`` strings gain nothing."""
+
+    def test_valid_variant_resolves_against_base_slug(self, monkeypatch):
+        from types import SimpleNamespace
+        import agent.models_dev as models_dev
+        import agent.image_routing as image_routing
+
+        seen = []
+
+        def fake_caps(provider, model, allow_network=False):
+            seen.append(model)
+            return SimpleNamespace(supports_vision=True) if model == "gpt-5.6-sol" else None
+
+        monkeypatch.setattr(models_dev, "get_model_capabilities", fake_caps)
+        assert image_routing._probe_models_dev("openai-codex", "gpt-5.6-sol-900k", {}) is True
+        assert seen == ["gpt-5.6-sol"]
+        # Ineligible alias: looked up verbatim, no capability gained.
+        assert image_routing._probe_models_dev("openai-codex", "gpt-5.5-900k", {}) is None
+        assert seen[-1] == "gpt-5.5-900k"

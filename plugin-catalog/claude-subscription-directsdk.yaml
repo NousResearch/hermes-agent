@@ -1,0 +1,22 @@
+name: claude-subscription-directsdk
+repo: https://github.com/NousResearch/hermes-plugin-claude-subscription-directsdk
+sha: 72dfaa4556b74f31faf8658d665e1d615e1be62d
+description: Experimental model provider that runs Hermes turns on a Claude Pro/Max subscription through
+  the official Claude Code CLI (the Agent SDK path), so no separate API key or per-token bill. Requires
+  the claude CLI installed and logged in; the plugin checks for it at load, in hermes model, in the pickers
+  and before every request, and refuses cleanly with the install hint when it is missing. Disclosure — every
+  turn is billed against your Claude subscription's Agent SDK allowance, and the provider inherits whatever
+  account claude is logged into.
+maintainer: NousResearch
+tier: official
+category: models
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/NousResearch/hermes-plugin-claude-subscription-directsdk#readme
+version: "0.3.0"
+platforms: []
+image: https://raw.githubusercontent.com/NousResearch/hermes-plugin-claude-subscription-directsdk/72dfaa4556b74f31faf8658d665e1d615e1be62d/assets/card.png
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

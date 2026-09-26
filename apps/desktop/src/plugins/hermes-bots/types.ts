@@ -82,6 +82,9 @@ export interface BotMeta {
   pinned?: boolean
   /** Raise this bot's Screen tab when it starts driving its desktop (`screen-autoraise.ts`). Opt-in per bot. */
   screenAutoOpen?: boolean
+  /** Out of the agent-to-agent mesh (neither advertised to nor addressable by other agents),
+   *  unlike `hidden`, this desktop's display concern. Read by the gateway and the relay publisher. */
+  private?: boolean
   shape?: string
   title?: string
   /** Creation timestamp in ms. Deliberately not copied when duplicating a bot. */

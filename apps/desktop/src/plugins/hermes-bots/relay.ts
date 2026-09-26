@@ -9,6 +9,7 @@
 
 import { host, LruCache } from '@hermes/plugin-sdk'
 
+import { isPrivateFlag } from './bot-flags'
 import { botHandle, clearBotAttention, noteBotAttention } from './data'
 import { ID } from './shared'
 import type { ProfileRoute, RosterRow } from './types'
@@ -283,6 +284,9 @@ async function relayAgentsOn(
     const label = labels.get(connection.id) || connection.id
 
     return profiles
+      // A private bot is never advertised (enforced here and in the gateway consumer, so an
+      // older peer cannot put it back); `hidden` is this desktop's display concern only.
+      .filter(profile => !isPrivateFlag(profile?.ui_meta?.['hermes-bots']?.private))
       .map(profile => ({
         profile: String(profile?.name || ''),
         handle: botHandle(profile?.name, profile),

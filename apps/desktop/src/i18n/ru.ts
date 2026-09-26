@@ -275,6 +275,7 @@ export const ru = defineLocale({
     details: 'Подробности',
     copyDetail: 'Копировать подробность',
     copyDetailFailed: 'Не удалось скопировать подробность уведомления',
+    compressDeferredDone: 'Сжатие контекста завершено',
     backendOutOfDateTitle: 'Устаревший бэкенд',
     backendOutOfDateMessage:
       'Ваш бэкенд Hermes старше этой сборки приложения и может работать некорректно. Обновите их, чтобы они совпали.',
@@ -288,6 +289,7 @@ export const ru = defineLocale({
     updateReadyMessage: count =>
       `Доступно ${count} ${count % 10 === 1 && count % 100 !== 11 ? 'новое изменение' : count % 10 >= 2 && count % 10 <= 4 && (count % 100 < 12 || count % 100 > 14) ? 'новых изменения' : 'новых изменений'}.`,
     updateReadyMessageUnknown: 'Доступно новое обновление.',
+    updateReadyMessageAppInstaller: 'Новая версия Hermes готова. Начните обновление, и Windows завершит его за вас.',
     seeWhatsNew: 'Смотреть, что нового',
     mcp: {
       needsAuthTitle: 'Серверу MCP требуется повторная аутентификация',
@@ -301,15 +303,16 @@ export const ru = defineLocale({
       disableFailed: name => `Не удалось отключить ${name} MCP.`
     },
     errors: {
-      elevenLabsNeedsKey: 'Для STT ElevenLabs нужен ELEVENLABS_API_KEY.',
-      elevenLabsRejectedKey: 'ElevenLabs отклонил API-ключ (401).',
+      elevenLabsNeedsKey: 'Для голосового ввода нужен ключ ElevenLabs. Добавьте его в разделе «Настройки → Ключи».',
+      elevenLabsRejectedKey: 'ElevenLabs не принял ваш API-ключ. Обновите его в разделе «Настройки → Ключи», затем попробуйте снова.',
       diskFull: 'Диск заполнен — освободите место и повторите.',
-      gatewayAuthFailed: 'Аутентификация шлюза не удалась — проверьте API_SERVER_KEY.',
+      gatewayAuthFailed:
+        'Этот экземпляр Hermes больше не принимает сохранённые данные для входа. Откройте раздел «Шлюзы» и войдите снова (или вставьте новый токен доступа), затем повторите попытку.',
       methodNotAllowed:
-        'Бэкенд приложения отклонил запрос (405 Method Not Allowed). Попробуйте перезапустить Hermes Desktop.',
+        'Фоновая служба Hermes не соответствует версии приложения, вероятно после обновления. Перезапустите её, чтобы исправить это.',
       microphonePermission: 'Доступ к микрофону запрещён.',
-      openaiRejectedApiKey: 'OpenAI отклонил API-ключ.',
-      openaiTtsNeedsKey: 'Для TTS OpenAI нужен VOICE_TOOLS_OPENAI_KEY или OPENAI_API_KEY.',
+      openaiRejectedApiKey: 'OpenAI не принял ваш API-ключ. Обновите его в разделе «Настройки → Ключи», затем попробуйте снова.',
+      openaiTtsNeedsKey: 'Для голосовых ответов нужен ключ OpenAI. Добавьте его в разделе «Настройки → Ключи».',
       codeSkewRestartRequired:
         'После обновления этот бэкенд работает на старом коде. Перезапустите его, чтобы загрузить новый код.',
       storageFailure: 'Hermes не смог сохранить данные в свою папку. Откройте раздел «Обслуживание», чтобы проверить и восстановить её.',
@@ -342,6 +345,8 @@ export const ru = defineLocale({
       tryRecordingAgain: 'Попробуйте записать ещё раз.',
       unavailable: 'Голос недоступен',
       liveEnded: 'Живой голосовой сеанс завершён',
+      liveEndedConnectionLost: 'Соединение во время голосового сеанса прервалось.',
+      liveEndedClosed: 'Голосовой сеанс закрыт службой.',
       liveError: 'Живой голос',
       liveDelegationFailed: 'Не удалось передать запрос Hermes',
       liveUnavailable:
@@ -844,6 +849,7 @@ export const ru = defineLocale({
       technical: 'Технический',
       technicalDesc: 'Показывать сырые аргументы/результаты инструментов и низкоуровневые детали.',
       themeTitle: 'Тема',
+      themeSearchPlaceholder: 'Поиск по вашим темам и VS Code Marketplace…',
       themeDesc: 'Только палитры для приложения. Выбранный режим применяется поверх.',
       themeProfileNote: profile => `Сохранено для профиля ${profile} — у каждого профиля своя тема.`,
       installTitle: 'Установить из VS Code',
@@ -1538,6 +1544,11 @@ export const ru = defineLocale({
       namePlaceholder: 'Axet Proxy',
       contextPlaceholder: 'Авто'
     },
+    computerUse: {
+      accessibility: 'Универсальный доступ',
+      screenRecording: 'Запись экрана',
+      driverHealth: 'Состояние драйвера'
+    },
     about: {
       updates: 'Обновления'
     },
@@ -1553,6 +1564,7 @@ export const ru = defineLocale({
       notSet: 'Не задано',
       commaSeparated: 'значения через запятую',
       searchPlaceholder: 'Поиск…',
+      showOptions: 'Показать варианты',
       noResults: 'Ничего не найдено',
       systemDefault: 'Системное по умолчанию',
       loading: 'Загрузка конфигурации Hermes…',
@@ -1979,8 +1991,11 @@ export const ru = defineLocale({
         curator: { label: 'Куратор', hint: 'Просмотр использования навыков' },
         review: {
           label: 'Разбор',
-          hint: '/review reviewer subagent',
+          hint: 'Субагент-рецензент команды /review'
         },
+        triage_specifier: { label: 'Уточнение задачи', hint: 'Детализация спецификации канбан-задачи' },
+        kanban_decomposer: { label: 'Разбиение канбан-задач', hint: 'Разбиение задачи на подзадачи' },
+        profile_describer: { label: 'Описание профиля', hint: 'Автоматическое описание профилей' },
       },
       loadFailed: 'Не удалось загрузить модели',
       restartRequired:
@@ -2084,6 +2099,8 @@ export const ru = defineLocale({
       nousAuthDoneTitle: 'Nous Portal подключён',
       nousAuthDoneMessage: 'Ваши бэкенды по подписке теперь активны.',
       nousAuthFailed: 'Вход в Nous Portal не завершён',
+      nousAuthFailedMessage: 'Повторите попытку.',
+      nousAuthTryAgain: 'Повторить',
       noApiKeyRequired: 'API-ключ не требуется.',
       postSetupHint: step =>
         `Этому бэкенду нужна однократная установка (${step}). Выполняется на этой машине — может занять несколько минут.`,
@@ -2098,6 +2115,8 @@ export const ru = defineLocale({
       postSetupErrorTitle: 'Настройка завершилась с ошибками',
       postSetupErrorMessage: step => `Посмотрите журнал ${step}.`,
       postSetupFailed: step => `Не удалось выполнить настройку ${step}`,
+      postSetupOpenLogs: 'Открыть журналы',
+      postSetupRunAgain: 'Запустить снова',
       webSearchActive: backend => `Поиск: ${backend}`,
       webExtractActive: backend => `Извлечение: ${backend}`,
       webCapabilityUnset: 'не задано',
@@ -2135,7 +2154,13 @@ export const ru = defineLocale({
           `${detail} Сеансы, запущенные после этого изменения, останутся без терминала и файловых инструментов, пока настройка не завершена.`,
         needsSetupConfirmDescriptionGeneric:
           'Этот бэкенд ещё не настроен. Сеансы, запущенные после этого изменения, останутся без терминала и файловых инструментов, пока настройка не завершена.',
-        needsSetupConfirmAction: 'Выбрать всё равно'
+        needsSetupConfirmAction: 'Выбрать всё равно',
+        unavailableTitle: 'Команды терминала недоступны',
+        unavailableMessage: backend =>
+          `Hermes сейчас не может выполнять команды оболочки: ${backend} не готов. Переключитесь на локальный бэкенд или завершите настройку ${backend} и повторите попытку.`,
+        openBackendSettings: 'Открыть настройки терминала',
+        useLocal: 'Использовать локальный бэкенд',
+        switchedToLocal: 'Команды терминала теперь выполняются локально. Применяется к новым сеансам.'
       },
       browserRealProfile: {
         label: 'Использовать мой настоящий профиль браузера',
@@ -2262,6 +2287,7 @@ export const ru = defineLocale({
       scopeNotRestored: (profile, error) => `Профиль \u201C${profile}\u201D не восстановлен: ${error}`,
     },
     localModels: {
+      connectionChanged: 'Подключение к локальным моделям изменилось',
       title: 'Локальные модели',
       runtimeTitle: 'Локальный движок',
       runtimeReady: backend => `Готов \u00B7 ${backend}`,
@@ -2297,6 +2323,17 @@ export const ru = defineLocale({
       downloaded: 'Скачано',
       downloadAction: size => `Скачать \u00B7 ${size}`,
       downloadProgress: (done, total) => `Скачано ${done} из ${total}`,
+      downloadStatusRunning: 'Скачивание',
+      downloadSpeed: rate => `${rate}`,
+      downloadEta: time => `Осталось примерно ${time}`,
+      downloadEtaSeconds: count => `${count} с`,
+      downloadEtaMinutes: count => `${count} мин`,
+      downloadEtaHours: (hours, minutes) => (minutes ? `${hours} ч ${minutes} мин` : `${hours} ч`),
+      downloadPausedLabel: 'Приостановлено',
+      downloadPauseAction: 'Приостановить',
+      downloadResumeAction: 'Продолжить',
+      downloadPauseFailed: model => `Не удалось приостановить скачивание ${model}`,
+      downloadResumeFailed: model => `Не удалось возобновить скачивание ${model}`,
       downloadDoneToast: model => `${model} готова.`,
       installDoneToast: 'Локальный движок установлен и готов.',
       quickstartTitle: 'Запустите модель на этой машине',
@@ -2478,6 +2515,11 @@ export const ru = defineLocale({
       uninstallStarted: name => `Удаление ${name}...`,
       updateStarted: 'Обновление установленных навыков...',
       actionFailed: 'Действие с навыком не удалось',
+      installBlockedTitle: name => `Не удалось установить ${name}`,
+      installBlockedMessage: (findings, unverified) =>
+        `Проверка безопасности обнаружила ${findings > 0 ? `${findings} ${RU_NOUN(findings, 'пункт', 'пункта', 'пунктов')}` : 'подозрительные признаки'}${unverified ? '; источник навыка не проверен' : ''}. Изучите результаты проверки, прежде чем доверять автору.`,
+      viewScan: 'Результаты проверки',
+      openLog: 'Открыть журнал',
       actionLog: 'Журнал действий',
       alreadyInstalled: name => `«${name}» уже установлен`,
       pickerTitle: 'Хаб навыков',
@@ -2512,6 +2554,9 @@ export const ru = defineLocale({
       desktopHalfPending: 'копируем…',
       desktopHalfPendingTip:
         'В пакете есть половина для приложения, но она ещё не скопирована в приложение. Запустите повторное сканирование или перезапустите приложение.',
+      desktopHalfRemote: 'недоступно (удалённый бэкенд)',
+      desktopHalfRemoteTip:
+        'Часть плагина для приложения находится на диске удалённого бэкенда, недоступном этому приложению. Чтобы использовать её здесь, выберите «Установить из Git», укажите URL репозитория пакета и отметьте цель «Приложение» — эта часть будет скопирована на ваш компьютер.',
       emptyAll: 'Плагинов пока нет.',
       empty: 'Для этого профиля плагины агента не установлены.',
       emptyHint: 'Откройте каталог ниже и установите проверенный плагин в один клик.',
@@ -2520,6 +2565,15 @@ export const ru = defineLocale({
       legacyBackend:
         'Этот бэкенд старше переключателей плагинов по ключу — обновите Hermes, чтобы управлять ими здесь.',
       portableBadge: 'переносимый',
+      serverStates: {
+        connected: 'подключено',
+        app_not_running: 'приложение не запущено',
+        endpoint_unavailable: 'адрес недоступен',
+        no_interactive_session: 'нет интерактивного сеанса',
+        version_too_old: 'устаревшая версия',
+        missing_app: 'приложение не найдено',
+        unknown: 'статус неизвестен'
+      },
       catalogTitle: 'Каталог плагинов',
       catalogBrowse: 'Обзор',
       catalogHide: 'Скрыть обзор каталога',
@@ -2536,6 +2590,37 @@ export const ru = defineLocale({
       updateFailed: name => `Не удалось обновить ${name}`,
       updated:
         name => `${name} обновлён до текущего закрепления каталога. Перезапустите шлюз, чтобы применить.`,
+      updateConsentTitle: (name: string) => `${name} запрашивает новые разрешения`,
+      updateConsentBody: (name: string, sha: string) =>
+        `Новая закреплённая версия ${name} из каталога (${sha}) добавляет возможности, которых нет в установленной версии. Применяйте обновление, только если доверяете им:`,
+      updateConsentConfirm: 'Применить обновление',
+      uninstall: 'Удалить',
+      uninstallTip: (name: string, profile: string) => `Удалить ${name} из ${profile}`,
+      uninstallConfirmTitle: (name: string) => `Удалить ${name}?`,
+      uninstallConfirmBody: (name: string, profile: string) =>
+        `Файлы плагина будут удалены из профиля ${profile}. Вместе с ним удалится и часть для приложения, если она есть. Плагин можно снова установить из каталога или Git.`,
+      uninstallFailed: (name: string) => `Не удалось удалить ${name}`,
+      uninstalled: (name: string) => `${name} удалён. Перезапустите шлюз, чтобы выгрузить плагин.`,
+      uninstallDesktopTip: (name: string) => `Удалить ${name} из приложения`,
+      uninstallDesktopConfirmBody: (name: string) =>
+        `${name} будет удалён из папки desktop-plugins на этом компьютере и сразу выгружен. Плагин можно снова установить из Git или вернуть его папку.`,
+      uninstalledDesktop: (name: string) => `${name} удалён.`,
+      deepLinkErrorTitle: 'Ссылка на установку плагина отклонена',
+      deepLinkCatalogInvalidName: 'Имя плагина в ссылке отсутствует или некорректно.',
+      deepLinkCatalogUnknown: (name: string) =>
+        `«${name}» отсутствует в каталоге плагинов Hermes. Ничего не установлено.`,
+      deepLinkCatalogUnavailable:
+        'Не удалось загрузить каталог плагинов Hermes. Проверьте соединение и откройте ссылку снова.',
+      settingsToggle: (name: string) => `Настройки: ${name}`,
+      settingsForm: {
+        save: 'Сохранить настройки',
+        saved: (name: string) => `Настройки ${name} сохранены.`,
+        saveFailed: (name: string) => `Не удалось сохранить настройки ${name}`,
+        optional: '(необязательно)',
+        secretSet: '•••••••• (задан)',
+        secretStoredAs: (env: string) =>
+          `Хранится в .env профиля как ${env}, не в config.yaml. Оставьте поле пустым, чтобы сохранить текущее значение.`
+      },
     },
     officialCatalog: 'Доступно для установки',
     officialPill: 'Официальный',
@@ -3179,6 +3264,11 @@ export const ru = defineLocale({
       installDeviceConfirm: 'Установить локально',
       connectExistingInstead: 'Вместо этого подключить существующий'
     },
+    status: {
+      unread: count => `${count} ${RU_NOUN(count, 'непрочитанный сеанс', 'непрочитанных сеанса', 'непрочитанных сеансов')}`,
+      needsInput: count => `${count} ${RU_NOUN(count, 'сеанс ожидает ответа', 'сеанса ожидают ответа', 'сеансов ожидают ответа')}`,
+      working: count => `${count} ${RU_NOUN(count, 'сеанс', 'сеанса', 'сеансов')} в работе`
+    },
     remoteOverride: {
       menuItem: 'Подключить к удалённому хосту…',
       badge: host => `Работает на ${host}`,
@@ -3489,6 +3579,12 @@ export const ru = defineLocale({
     projectEmpty: 'Сеансов пока нет',
     projectLoadFailed: 'Не удалось загрузить сеансы',
     noSessions: 'Сеансов пока нет',
+    storageCorrupt: {
+      title: 'База данных сеансов повреждена',
+      body: profiles => `Hermes не может прочитать всю историю сеансов для ${profiles}. Отсутствующие в списке чаты не удалены: повреждён файл, в котором они хранятся.`,
+      action: 'Закройте Hermes для этого профиля, затем изучите файл, не изменяя его, или восстановите снимок:',
+      guide: 'Инструкция по восстановлению'
+    },
     noFilterMatches: 'Нет сеансов по этим фильтрам',
     projects: {
       showAllSessions: 'Показать все сессии',
@@ -4065,7 +4161,8 @@ export const ru = defineLocale({
     tryAgain: 'Попробовать снова',
     notAvailableTitle: 'Обновление недоступно',
     unsupportedMessage: 'Эта версия Hermes не может обновлять себя из приложения.',
-    connectionRetry: 'Проверьте соединение и попробуйте снова.',
+    connectionRetry:
+      'Hermes не удалось связаться с сервером обновлений. Проверьте подключение к интернету и попробуйте снова. Если используете удалённый Hermes, убедитесь, что он доступен.',
     gitUnusable: 'Hermes не удалось запустить Git на этом компьютере, поэтому проверить обновления не получилось.',
     latestBody: 'У вас последняя версия.',
     versionDetailsDistributionStore: 'Microsoft Store',
@@ -4159,9 +4256,40 @@ export const ru = defineLocale({
     justNowSuffix: ' · только что',
     bundleOutOfSync: 'Сборка приложения устарела',
     bundleOutOfSyncDesc:
-      'Рантайм Hermes обновлён, но само приложение — ещё старая сборка: новые функции интерфейса (например, Bot Mode) не появятся до обновления. Запустите обновление ниже, чтобы пересобрать приложение. Если предупреждение не исчезнет, переустановите с последнего установщика.',
+      'Среда выполнения Hermes обновлена, но само приложение для компьютера всё ещё использует старую сборку. Обновите его, чтобы получить последние исправления.',
     bundleOutOfSyncAction: 'Скачать установщик',
-    checkingShort: 'Проверка…'
+    checkingShort: 'Проверка…',
+    connectionSettings: 'Настройки подключения',
+    openDownloadPage: 'Открыть страницу загрузки',
+    availableBodyAppInstaller:
+      'Новая версия Hermes готова. Hermes закроется, Windows завершит обновление, а затем Hermes снова откроется автоматически.',
+    applyingBodyAppInstaller:
+      'Hermes закроется, а Windows завершит обновление. Когда всё будет готово, Hermes откроется снова — вам ничего делать не нужно.',
+    applyingCloseAppInstaller: 'Это окно закроется, Windows завершит обновление, и Hermes снова откроется автоматически.',
+    checkUnknownTitleAppInstaller: 'Не удалось проверить обновления',
+    checkUnknownBodyAppInstaller:
+      'Windows сейчас не смогла проверить наличие обновлений. Обновления также устанавливаются автоматически при перезапуске Hermes.',
+    appName: 'Hermes',
+    availableBodyRelease: tag => `Версия ${tag} готова к установке.`,
+    releaseAvailable: tag => `Доступна версия ${tag}.`,
+    versionDetailsTitle: 'Сведения о версии',
+    versionDetailsBody: 'Эта установка управляется вне приложения. Обновите её тем же способом, которым устанавливали.',
+    versionDetailsVersion: 'Версия',
+    versionDetailsCommit: 'Коммит',
+    versionDetailsBuildOrigin: 'Происхождение сборки',
+    versionDetailsDistribution: 'Дистрибутив',
+    versionDetailsDistributionDesktop: 'Приложение для компьютера',
+    versionDetailsDistributionDesktopMsix: 'Приложение для компьютера (MSIX)',
+    versionDetailsDistributionDesktopInstaller: 'Приложение для компьютера (установщик)',
+    versionDetailsDistributionSourceInstaller: 'Исходный код (скрипт установки)',
+    versionDetailsDistributionSourceInstallerDesktop: 'Исходный код (скрипт установки) + hermes desktop',
+    versionDetailsDistributionSource: 'Исходный код',
+    versionDetailsDistributionSourceDesktop: 'Исходный код + hermes desktop',
+    versionDetailsRuntime: 'Среда выполнения',
+    versionDetailsRuntimeEmbedded: 'Встроенная среда выполнения',
+    versionDetailsRuntimeExternal: 'Внешняя (использует среду выполнения на этом компьютере)',
+    versionDetailsInstallId: 'ID установки',
+    versionDetailsUncommittedChanges: 'незафиксированные изменения',
   },
   guidedGreeting: {
     line: 'Заходите. Я Hermes. Дайте мне пару минут — обустрою тут всё под вас, а потом займёмся тем, что вам правда нужно.\n\nДля начала: как к вам обращаться?',
@@ -4186,6 +4314,10 @@ export const ru = defineLocale({
     setupChoiceTitle: 'Настройка Hermes Desktop',
     setupChoiceDesc:
       'Подключите это приложение к уже работающему шлюзу Hermes или установите Hermes локально на этот компьютер.',
+    setupChoiceDescLocal: 'Установите Hermes на этот компьютер или подключитесь к уже работающему шлюзу Hermes.',
+    useLocalTitle: 'Использовать Hermes на этом компьютере',
+    useLocalDesc: 'Среда выполнения Hermes уже установлена здесь — запустите её одним нажатием. Ничего скачивать не нужно.',
+    bundledLocalDesc: 'Используйте среду выполнения Hermes из комплекта приложения — встроенный бэкенд и есть локальная установка.',
     connectExistingTitle: 'Подключиться к существующему Hermes',
     connectExistingShort: 'Подключить существующий',
     connectExistingDesc:
@@ -4199,7 +4331,9 @@ export const ru = defineLocale({
     remoteUrlDesc: 'Используйте базовый URL шлюза Hermes, включая https:// для удалённых.',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: 'Определяем аутентификацию шлюза...',
-    probeError: 'Не удалось подключиться к этому шлюзу Hermes.',
+    probeError:
+      'Hermes не удаётся связаться с этим адресом. Проверьте URL и убедитесь, что Hermes запущен на другом компьютере — варианты входа появятся, когда он ответит.',
+    probeErrorDetails: 'Подробности',
     identityProvider: 'ваш провайдер аутентификации',
     authTitle: 'Аутентификация',
     authNeedsOauth: provider => `Сначала войдите через ${provider}, чтобы проверить этот шлюз.`,
@@ -4222,7 +4356,7 @@ export const ru = defineLocale({
     settingUpTitle: 'Настройка Hermes Agent',
     finishingTitle: 'Завершаем',
     failedDesc:
-      'Один из шагов установки завершился ошибкой. На Windows это может произойти, если запущена другая инстанция Hermes CLI или desktop. Остановите все работающие инстанции Hermes и повторите. Подробности — ниже или в журнале desktop.',
+      'Один из шагов настройки не завершился. Причиной может быть другой запущенный экземпляр Hermes, обрыв интернет-соединения или блокировка установщика антивирусом. Закройте другие окна Hermes и нажмите «Перезагрузить и повторить». Если ошибка повторится, откройте журналы и отправьте их в поддержку.',
     activeDesc:
       'Это одноразовая настройка. Установщик Hermes скачивает зависимости и настраивает вашу машину. При следующих запусках этот шаг будет пропущен.',
     progress: (completed, total) => `Выполнено ${completed} из ${total} шагов`,
@@ -4238,7 +4372,8 @@ export const ru = defineLocale({
     transcriptSaved: 'Полный транскрипт сохранён в',
     copiedOutput: 'Скопировано!',
     copyOutput: 'Копировать вывод',
-    reloadRetry: 'Перезагрузить и повторить'
+    reloadRetry: 'Перезагрузить и повторить',
+    openLogs: 'Открыть журналы'
   },
   onboarding: {
     headerTitle: 'Настроим для вас Hermes Agent',
@@ -4418,6 +4553,7 @@ export const ru = defineLocale({
       restart: 'перезапуск',
       update: 'обновление',
       updateInProgress: 'Обновление выполняется',
+      releaseAvailable: tag => `Доступна версия ${tag}.`,
       commitsBehind: (count, branch) => `${count} ${RU_NOUN(count, 'коммит', 'коммита', 'коммитов')} позади ${branch}`,
       desktopVersion: version => `Hermes Desktop v${version}`,
       backendVersion: version => `Бэкенд v${version}`,
@@ -5742,14 +5878,32 @@ export const ru = defineLocale({
     tryAgain: 'Повторить',
     startAgain: 'Начать заново',
     didNotComplete: 'Вход не завершён',
-    rejectedBody: 'Вход отклонён в браузере. Вы по-прежнему на бесплатном тарифе.',
-    supersededBody: 'Новый код входа заменил предыдущий.',
-    timedOutHeading: 'Время входа истекло',
-    timedOutBody: 'Код не успели использовать. Вы по-прежнему на бесплатном тарифе.',
+    rejectedBody: 'Ничего страшного — бесплатный сервис Nous остаётся доступен. Войдите, когда будете готовы.',
+    supersededBody: 'Новый код для входа заменил предыдущий. Используйте новый код или начните заново.',
+    timedOutHeading: 'Срок действия ссылки для входа истёк',
+    timedOutBody: 'Когда будете готовы, начните заново. Бесплатный сервис Nous остаётся доступен.',
     retiredBody:
-      'Эта личность бесплатного тарифа уже использована или истекла; новая будет создана при следующем запуске.',
-    errorBody: 'Вход не завершён; запустите его снова.',
+      'Ваша сессия завершилась до окончания входа. Hermes начнёт новую сессию; после этого вы сможете снова войти, когда будете готовы.',
+    errorBody: 'Не удалось завершить вход. Попробуйте снова, когда будете готовы.',
     alreadySignedInHeading: 'Вы уже вошли.',
     alreadySignedInBody: 'Этот Hermes уже вошёл в аккаунт Nous.',
+    busyHeading: 'Почти готово',
+    busyBody: wait =>
+      `Hermes не удалось завершить вход, потому что служба Nous перегружена. Попробуйте снова через ${wait}. Пока что ваша сессия остаётся доступной.`,
+    unreachableBody:
+      'Hermes не удалось связаться со службой Nous, чтобы завершить вход. Проверьте подключение к интернету и попробуйте снова. Ваша сессия остаётся доступной.',
+    setupFailed: {
+      gateClosed: 'Эта версия Hermes не может запуститься без аккаунта Nous. Войдите или создайте аккаунт — это бесплатно и займёт всего минуту.',
+      paused: 'Работа с Hermes без входа временно приостановлена. Hermes продолжит проверять доступность. Вход бесплатный и позволит начать прямо сейчас.',
+      rateLimited: wait => `Сейчас много новых пользователей, поэтому Hermes попробует снова через ${wait}. Бесплатный вход позволит не ждать.`,
+      unreachable: 'Hermes не удалось связаться со службой Nous. Проверьте подключение к интернету и нажмите «Повторить». Пока можно подключить другого провайдера.',
+      serverError: 'В работе службы Nous произошёл сбой. Нажмите «Повторить» чуть позже или пока подключите другого провайдера.',
+      powRequired: 'Сервер Nous запросил доказательство выполнения работы, но ваша версия Agent пока его не поддерживает. Войдите или создайте бесплатный аккаунт Nous, чтобы продолжить.',
+      locked: 'Чтобы продолжить эту сессию, нужно войти. Войдите или создайте бесплатный аккаунт Nous.',
+      generic: 'Hermes не удалось настроить бесплатный доступ без входа. Войти можно бесплатно; также можно подключить другого провайдера.',
+      signInBelow: 'Вход бесплатный. Выберите Nous ниже.',
+      tryAgain: 'Повторить',
+      retrying: 'Пробуем снова…'
+    }
   },
 })

@@ -216,7 +216,11 @@ class MCPServerTransportMixin:
         self.session = session
         if mark_lifecycle:
             self._mark_lifecycle_started()
-        await self._discover_tools()
+        try:
+            await self._discover_tools()
+        except BaseException:
+            self.session = None
+            raise
         self._ready.set()
         self._ever_connected = True
         _core._reset_server_error(self.name)
@@ -236,7 +240,12 @@ class MCPServerTransportMixin:
         # recovery isn't gated on a stale consecutive-failure count (#16788).
         # Unproven until keepalive/tool-call success (#62212).
         self._session_proven = False
-        reason = await self._wait_for_lifecycle_event()
+        try:
+            reason = await self._wait_for_lifecycle_event()
+        finally:
+            # Withdraw before ClientSession.__aexit__: a non-None pointer would
+            # still admit new refreshes against a transport that is closing.
+            self.session = None
         if label and reason == "reconnect":
             logger.info("MCP server '%s': reconnect requested — tearing down %s session", self.name, label)
         return reason

@@ -614,6 +614,18 @@ def _managed_runtime_path_entries() -> list[str]:
 
         env = pm.env_for("npm", base_env={"PATH": ""})
         managed = [Path(d) for d in env.get("PATH", "").split(os.pathsep) if d]
+        if os.name == "nt":
+            # The node dir ships its own npm: listed first, the bundled copy
+            # shadows the pinned store npm and EBADENGINEs under engine-strict
+            # (#123333). Store-npm dirs (npm entry point, no node.exe) sort
+            # ahead; stable otherwise so every other resolution is unchanged.
+            def _store_npm_first(entry: Path) -> tuple:
+                try:
+                    return (not ((entry / "npm.cmd").exists()
+                                 and not (entry / "node.exe").exists()),)
+                except OSError:
+                    return (True,)
+            managed = sorted(managed, key=_store_npm_first)
         candidates = [*managed, get_hermes_home() / "bin"]
         return [str(d) for d in candidates if d.is_dir()]
     except Exception:

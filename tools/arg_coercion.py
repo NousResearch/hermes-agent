@@ -70,6 +70,14 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
                 args[key] = _normalize_json_strings_for_schema(value, prop_schema)
             continue
         if not expected and not _schema_allows_null(prop_schema):
+            # anyOf-typed props (e.g. notify: boolean|string[]) carry no "type",
+            # so a stringified "true" never reached _coerce_boolean and failed
+            # validation downstream (#123345). Try the boolean branch the schema
+            # allows; anything else stays a string for the array branch.
+            if isinstance(value, str) and _schema_accepts_kind(prop_schema, "boolean"):
+                coerced = _coerce_boolean(value)
+                if coerced is not value:
+                    args[key] = coerced
             continue
         coerced = _coerce_value(value, expected, schema=prop_schema)
         if coerced is not value:

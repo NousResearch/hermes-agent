@@ -96,6 +96,7 @@ export const managedRolloutsEn: ManagedRolloutMessages = {
       `${label} · ${alias ? `${alias} · ` : ''}${machineId} · ${installId}`,
     wave: (number, targets) => `Wave ${number}: ${targets || 'none'}`,
     emptyWave: number => `Wave ${number}: no targets`,
+    operationalEstimate: duration => `Estimated machine time: ${duration} (observed runs; approval waiting excluded).`,
     progress: (completed, total) => `Progress: ${completed} of ${total} targets completed.`,
     receipt: (outcome, correlationId) => `Receipt: ${outcome} (${correlationId})`,
     readiness: value => `Readiness: ${value}`,

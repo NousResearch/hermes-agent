@@ -100,6 +100,7 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
       `${label} · ${alias ? `${alias} · ` : ''}${machineId} · ${installId}`,
     wave: (number, targets) => `ウェーブ ${number}：${targets || '対象なし'}`,
     emptyWave: number => `ウェーブ ${number}：対象なし`,
+    operationalEstimate: duration => `所要時間の見積もり：${duration}（観測済みの実行に基づく。承認待ちは含まない）。`,
     progress: (completed, total) => `進捗：${total} 件中 ${completed} 件の対象が完了しました。`,
     receipt: (outcome, correlationId) => `レシート：${outcome}（${correlationId}）`,
     readiness: value => `準備状態：${value}`,

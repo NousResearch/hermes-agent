@@ -102,6 +102,7 @@ export type ManagedRolloutMessages = {
     targetDetails: (label: string, alias: string | null | undefined, machineId: string, installId: string) => string
     wave: (number: number, targets: string) => string
     emptyWave: (number: number) => string
+    operationalEstimate: (duration: string) => string
     progress: (completed: number, total: number) => string
     receipt: (outcome: string, correlationId: string) => string
     readiness: (value: string) => string

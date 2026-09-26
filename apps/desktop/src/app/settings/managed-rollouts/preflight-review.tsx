@@ -3,13 +3,13 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
 import { getManagedRolloutMessages } from '@/i18n/managed-rollouts'
-import type { PlanChange, RolloutPlan } from '@/lib/managed-rollout-contract'
+import type { PlanChange, RolloutCapabilities, RolloutPlan, TargetAttempt } from '@/lib/managed-rollout-contract'
 
 import type { RolloutDraft } from './rollout-config'
 import type { WavePlanner } from './wave-preview'
-import { WavePreview } from './wave-preview'
+import { observedDurations, WavePreview } from './wave-preview'
 
-export function PreflightReview({ draft, compatible, reviewedToken, planner, plan, changes = [], blockers = [], expiresAt = null, pending = false, onStart, onRenew }: { draft: RolloutDraft; compatible: boolean; reviewedToken: string | null; planner?: WavePlanner; plan?: RolloutPlan; changes?: PlanChange[]; blockers?: string[]; expiresAt?: number | null; pending?: boolean; onStart: (draft: RolloutDraft, reviewedToken: string) => Promise<void> | void; onRenew?: () => void }) {
+export function PreflightReview({ draft, compatible, reviewedToken, planner, plan, changes = [], blockers = [], attempts = null, capabilities = null, expiresAt = null, pending = false, onStart, onRenew }: { draft: RolloutDraft; compatible: boolean; reviewedToken: string | null; planner?: WavePlanner; plan?: RolloutPlan; changes?: PlanChange[]; blockers?: string[]; attempts?: readonly TargetAttempt[] | null; capabilities?: RolloutCapabilities | null; expiresAt?: number | null; pending?: boolean; onStart: (draft: RolloutDraft, reviewedToken: string) => Promise<void> | void; onRenew?: () => void }) {
   const { t } = useI18n()
   const messages = getManagedRolloutMessages(t)
   const [started, setStarted] = useState(false)
@@ -26,7 +26,7 @@ export function PreflightReview({ draft, compatible, reviewedToken, planner, pla
 
   return <section aria-label={messages.sections.preflight} className="grid gap-3">
     {plan ? <p className="text-sm">{messages.labels.pinnedTarget}: {plan.target.repositoryId} · {plan.target.branch} · {plan.target.sha}</p> : null}
-    {planner ? <WavePreview draft={draft} planner={planner} /> : <p className="text-xs text-amber-600">{messages.warnings.projectionUnavailable}</p>}
+    {planner ? <WavePreview capabilities={capabilities} draft={draft} durations={attempts ? observedDurations(attempts) : null} planner={planner} /> : <p className="text-xs text-amber-600">{messages.warnings.projectionUnavailable}</p>}
     <p className="text-xs text-(--ui-text-tertiary)">{messages.descriptions.canonicalPlan}</p>
     {changes.map((change, index) => <p className="text-xs text-amber-600" key={`${change.installId}:${change.field}:${index}`}>{messages.labels.planChange(change.installId, change.field, change.before ?? messages.labels.unknownFact, change.after ?? messages.labels.unknownFact)}</p>)}
     {blockers.map(blocker => <p className="text-xs text-amber-600" key={blocker}>{messages.labels.blocked(blocker)}</p>)}

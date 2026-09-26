@@ -100,6 +100,7 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
       `${label} · ${alias ? `${alias} · ` : ''}${machineId} · ${installId}`,
     wave: (number, targets) => `第 ${number} 波：${targets || '无目标'}`,
     emptyWave: number => `第 ${number} 波：没有目标`,
+    operationalEstimate: duration => `预计执行时间：${duration}（基于已观测记录；不含等待批准时间）。`,
     progress: (completed, total) => `进度：已完成 ${total} 个目标中的 ${completed} 个。`,
     receipt: (outcome, correlationId) => `回执：${outcome}（${correlationId}）`,
     readiness: value => `就绪状态：${value}`,

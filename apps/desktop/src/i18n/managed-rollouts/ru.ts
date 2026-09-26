@@ -100,6 +100,7 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
       `${label} · ${alias ? `${alias} · ` : ''}${machineId} · ${installId}`,
     wave: (number, targets) => `Волна ${number}: ${targets || 'нет установок'}`,
     emptyWave: number => `Волна ${number}: нет установок`,
+    operationalEstimate: duration => `Оценка времени выполнения: ${duration} (по наблюдённым запускам; ожидание подтверждения не учтено).`,
     progress: (completed, total) => `Ход выполнения: завершено ${completed} из ${total} установок.`,
     receipt: (outcome, correlationId) => `Квитанция: ${outcome} (${correlationId})`,
     readiness: value => `Готовность: ${value}`,

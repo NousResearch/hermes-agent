@@ -381,7 +381,9 @@ export function ManagedRolloutsSection({
     /> : null}
 
     {review && draft ? <PreflightReview
+      attempts={snapshot?.attempts ?? null}
       blockers={review.blockers}
+      capabilities={state.capabilities}
       changes={review.changes}
       compatible={review.ok && state.capabilities?.available === true}
       draft={draft}

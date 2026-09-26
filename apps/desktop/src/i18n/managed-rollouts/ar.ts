@@ -100,6 +100,7 @@ const overrides: TranslationOverride<ManagedRolloutMessages> = {
       `${label} · ${alias ? `${alias} · ` : ''}${machineId} · ${installId}`,
     wave: (number, targets) => `الموجة ${number}: ${targets || 'لا توجد أهداف'}`,
     emptyWave: number => `الموجة ${number}: لا توجد أهداف`,
+    operationalEstimate: duration => `الوقت المقدَّر للتنفيذ: ${duration} (من عمليات مرصودة؛ لا يشمل انتظار الموافقة).`,
     progress: (completed, total) => `التقدم: اكتمل ${completed} من أصل ${total} هدفًا.`,
     receipt: (outcome, correlationId) => `الإيصال: ${outcome} (${correlationId})`,
     readiness: value => `حالة الجاهزية: ${value}`,

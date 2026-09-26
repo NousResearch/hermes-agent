@@ -214,6 +214,102 @@ def _project_override_model_state(agent: Any, overrides: Dict[str, str]) -> None
         )
 
 
+#: Sentinel meaning "the durable key/row did not exist".  Kept distinct from
+#: ``None`` (a real stored NULL) so an exact restore re-creates absence.
+_ABSENT = object()
+
+
+def _snapshot_durable_protection(compressor: Any) -> Optional[Dict[str, Any]]:
+    """Capture the durable compression-protection rows a model projection clears.
+
+    The canonical model-owned projection (``_apply_model_owned_state`` ->
+    ``ContextCompressor.update_model``) clears the per-session fallback streak,
+    failure cooldown, ineffective-strike count and proactive-prune runway as part
+    of a REAL model switch.  A runtime_override reuses that projection but is
+    ephemeral, so the scope rolls those durable clears back exactly on exit.
+    Returns ``None`` when the compressor has no bound session row (nothing durable
+    to roll back).
+    """
+    db = getattr(compressor, "_session_db", None)
+    session_id = getattr(compressor, "_session_id", "") or ""
+    if db is None or not session_id:
+        return None
+    snapshot: Dict[str, Any] = {}
+    for name, getter_name in (
+        ("fallback_streak", "get_compression_fallback_streak"),
+        ("ineffective_count", "get_compression_ineffective_count"),
+    ):
+        getter = getattr(db, getter_name, None)
+        if callable(getter):
+            try:
+                snapshot[name] = getter(session_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("runtime_override: %s snapshot failed: %s", getter_name, exc)
+    getter = getattr(db, "get_compression_failure_cooldown_row", None)
+    if callable(getter):
+        try:
+            snapshot["cooldown_row"] = getter(session_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("runtime_override: cooldown snapshot failed: %s", exc)
+    getter = getattr(db, "get_session_model_config_value", None)
+    if callable(getter):
+        try:
+            from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY
+
+            snapshot["prune_rearm"] = getter(
+                session_id, PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, _ABSENT
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("runtime_override: prune-rearm snapshot failed: %s", exc)
+    return snapshot
+
+
+def _restore_durable_protection(compressor: Any, snapshot: Optional[Dict[str, Any]]) -> None:
+    """Best-effort exact rollback of the projection's durable clears.
+
+    Called on every non-superseded scope exit, including the exception path, so no
+    DB row stays cleared permanently.  A superseded scope skips it: the fallback
+    chain owns the route and its own ``update_model`` writes must stand.
+    """
+    if not snapshot:
+        return
+    db = getattr(compressor, "_session_db", None)
+    session_id = getattr(compressor, "_session_id", "") or ""
+    if db is None or not session_id:
+        return
+
+    def _write(method: str, *args: Any) -> None:
+        setter = getattr(db, method, None)
+        if callable(setter):
+            try:
+                setter(session_id, *args)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("runtime_override: %s restore failed: %s", method, exc)
+
+    if "fallback_streak" in snapshot:
+        _write("set_compression_fallback_streak", snapshot["fallback_streak"])
+    if "ineffective_count" in snapshot:
+        _write("set_compression_ineffective_count", snapshot["ineffective_count"])
+    if "cooldown_row" in snapshot:
+        restorer = getattr(db, "restore_compression_failure_cooldown_row", None)
+        if callable(restorer):
+            try:
+                restorer(session_id, snapshot["cooldown_row"])
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("runtime_override: cooldown restore failed: %s", exc)
+    if "prune_rearm" in snapshot:
+        try:
+            from agent.context_compressor import PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY
+
+            value = snapshot["prune_rearm"]
+            _write(
+                "patch_session_model_config",
+                {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None if value is _ABSENT else value},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("runtime_override: prune-rearm restore failed: %s", exc)
+
+
 class _RuntimeOverrideScope:
     """Context manager that temporarily applies an override to ``agent``.
 
@@ -274,6 +370,10 @@ class _RuntimeOverrideScope:
         self._snapshot: Dict[str, Any] = {}
         self._client_kwargs_snapshot: Optional[Dict[str, Any]] = None
         self._transport_cache_snapshot: Optional[Dict[str, Any]] = None
+        # Durable compression-protection rows the model projection clears; held
+        # on the pre-override compressor and rolled back exactly on exit.
+        self._session_compressor: Any = None
+        self._compressor_durable_snapshot: Optional[Dict[str, Any]] = None
         self._superseded = False
 
     def __enter__(self) -> "_RuntimeOverrideScope":
@@ -327,6 +427,15 @@ class _RuntimeOverrideScope:
                 ov[name] = val
                 setattr(agent, name, ov[name])
         if _ROUTE_KEYS.intersection(ov):
+            # The canonical projection clears durable per-session compression
+            # protection as part of a real model switch; snapshot those rows from
+            # the still-bound session compressor BEFORE the projection so the
+            # ephemeral override can write them back exactly on exit (see
+            # ``_restore_durable_protection``).
+            self._session_compressor = getattr(agent, "context_compressor", None)
+            self._compressor_durable_snapshot = _snapshot_durable_protection(
+                self._session_compressor
+            )
             _refresh_derived_route_state(agent, ov)
 
         # Register as the agent's active scope so the fallback handoff
@@ -390,6 +499,12 @@ class _RuntimeOverrideScope:
                 if isinstance(tc, dict):
                     tc.clear()
                     tc.update(self._transport_cache_snapshot)
+            # The projection's durable compression-protection clears are rolled
+            # back exactly, so a temporary model switch leaves the session's
+            # persisted protection rows byte-identical (P1).
+            _restore_durable_protection(
+                self._session_compressor, self._compressor_durable_snapshot
+            )
         finally:
             # Unregister on every exit path (normal restore AND superseded
             # skip), and only when this scope holds the registration.

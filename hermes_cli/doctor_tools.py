@@ -489,7 +489,10 @@ def _check_npm_audit(should_fix: bool, f: Finding) -> None:
         ):
             # Workspace-scoped audits check the root node_modules; standalone dirs check their own.
             if ((PROJECT_ROOT if audit_extra else npm_dir) / "node_modules").exists():
-                _audit_one(npm_bin, npm_dir, label, audit_extra, f.issues)
+                # `--fix` never runs npm here (the durable remedy is a lockfile bump on
+                # main, not a local mutating command — see `_audit_one`'s docstring), so
+                # this must land in `manual_issues`, not the auto-fixable `issues` list.
+                _audit_one(npm_bin, npm_dir, label, audit_extra, f.manual_issues)
     if _is_termux():
         check_info("Termux compatibility fallbacks:")
         for note in _TERMUX_INSTALL_ALL_FALLBACK_NOTES:

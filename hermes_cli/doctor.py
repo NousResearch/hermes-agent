@@ -154,7 +154,7 @@ def _print_summary(should_fix: bool, total: Finding) -> None:
         print(color(f"  Found {len(remaining)} issue(s) to address:", Colors.YELLOW, Colors.BOLD))
         print()
         print(numbered)
-        if not should_fix:
+        if not should_fix and total.issues:
             print(color("  Tip: run 'hermes doctor --fix' to auto-fix what's possible.", Colors.DIM))
     else:
         print(color("─" * 60, Colors.GREEN))

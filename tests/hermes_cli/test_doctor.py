@@ -449,6 +449,58 @@ class TestDoctorMemoryProviderSection:
 
 
 
+def test_run_doctor_omits_fix_tip_when_only_npm_vulnerabilities_remain(monkeypatch, tmp_path):
+    """#94375: `npm audit fix --workspace <name>` crashes with a known
+    arborist bug (see doctor.py's own `fix_cmd = None` comment for
+    --workspace-scoped audits), and `hermes doctor --fix` never actually
+    invokes npm here regardless of scope. Reporting only such vulnerabilities
+    and still printing "run 'hermes doctor --fix'" tells the user a flag will
+    fix something it provably cannot."""
+    import json as _json
+    from types import SimpleNamespace as _SimpleNamespace
+
+    helper = TestDoctorMemoryProviderSection()
+    project = tmp_path / "project"
+    (project / "node_modules").mkdir(parents=True, exist_ok=True)
+    # Keep unrelated checks quiet so the only remaining issue is the npm one:
+    # a configured .env avoids the real "Run 'hermes setup'" issue.
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".env").write_text("OPENAI_API_KEY=sk-test\n", encoding="utf-8")
+
+    real_which = doctor_mod.shutil.which
+
+    def fake_which(cmd):
+        if cmd in {"node", "npm"}:
+            return f"/usr/bin/{cmd}"
+        return real_which(cmd)
+
+    monkeypatch.setattr(doctor_mod.shutil, "which", fake_which)
+
+    real_run = doctor_mod.subprocess.run
+
+    def fake_run(cmd, **kwargs):
+        if "audit" in cmd:
+            high = 4 if "web" in cmd else 0
+            payload = {"metadata": {"vulnerabilities": {"critical": 0, "high": high, "moderate": 0}}}
+            return _SimpleNamespace(stdout=_json.dumps(payload), stderr="", returncode=0)
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+    # Required Packages must not be allowed to add its own auto-fixable issue
+    # in an environment missing one of these imports (e.g. a fresh
+    # virtualenv without `openai` installed) -- that would make the "no tip"
+    # assertion below pass or fail based on ambient environment, not on the
+    # npm-audit behavior this test targets.
+    monkeypatch.setattr(doctor_platform, "_PACKAGES", ())
+
+    out = helper._run_doctor_and_capture(monkeypatch, tmp_path, provider="")
+
+    assert "web workspace has 4 npm vulnerabilities" in out
+    assert "Tip: run 'hermes doctor --fix'" not in out
+
+
 def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

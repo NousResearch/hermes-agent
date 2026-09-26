@@ -92,6 +92,11 @@ class _ModelSwitchContext:
                 self.current_model = model_cfg.get("default", "")
                 self.current_provider = model_cfg.get("provider", self.current_provider)
                 self.current_base_url = model_cfg.get("base_url", "")
+            elif isinstance(model_cfg, str):
+                # Flat-string form (model: gpt-5.5): normal gateway resolution accepts it,
+                # so the picker must too or /model opens with no current model and the
+                # switch resolves against "". Root provider: is already folded into model.provider.
+                self.current_model = model_cfg
             self.user_provs = cfg.get("providers")
             try:
                 from hermes_cli.config import get_compatible_custom_providers

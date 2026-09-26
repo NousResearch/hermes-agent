@@ -951,7 +951,8 @@ class SessionMessagesMixin:
             if len(ids) != 1:
                 raise PruneRowUnresolvedError(f"{len(ids)} live rows match a pruned {role} message")
             row = conn.execute(
-                "SELECT id, role, content, tool_call_id, tool_calls, timestamp FROM messages "
+                "SELECT id, role, content, tool_call_id, tool_calls, timestamp, display_identity, "
+                "COALESCE(display_order, id) AS display_order FROM messages "
                 "WHERE id = ? AND session_id = ? AND active = 1", (ids[0], session_id)).fetchone()
             if (row is None or row["role"] != role
                     or (row["tool_call_id"] or None) != (original.get("tool_call_id") or None)
@@ -964,7 +965,7 @@ class SessionMessagesMixin:
             patch = model_config_patch is not None
             patched_model_config = self._merge_model_config_json(
                 conn, session_id, model_config_patch, on_missing="raise") if patch else None
-            updates: List[Tuple[int, List[str], List[Any]]] = []
+            updates: List[Tuple[int, List[str], List[Any], Any, Any]] = []
             for original, replacement in changes:
                 row = _resolve(conn, original)
                 role, timestamp = row["role"], row["timestamp"]
@@ -978,14 +979,19 @@ class SessionMessagesMixin:
                            if old != new and column not in _PRUNE_FIXED_COLUMNS]
                 if changed:
                     updates.append((int(row["id"]), changed, [
-                        value for column, value in zip(_MESSAGE_ROW_COLUMNS, after) if column in changed]))
+                        value for column, value in zip(_MESSAGE_ROW_COLUMNS, after) if column in changed],
+                        row["display_identity"], row["display_order"]))
             twin_columns = ", ".join(c for c in self._message_column_names(conn)
                                      if c not in ("id", "active", "compacted", "display_order"))
-            for row_id, columns, values in updates:
-                conn.execute(f"INSERT INTO messages ({twin_columns}, active, compacted) "
-                             f"SELECT {twin_columns}, 0, 1 FROM messages WHERE id = ?", (row_id,))
+            for row_id, columns, values, identity, order in updates:
+                twin_id = conn.execute(f"INSERT INTO messages ({twin_columns}, active, compacted) "
+                             f"SELECT {twin_columns}, 0, 1 FROM messages WHERE id = ?", (row_id,)).lastrowid
                 conn.execute(f"UPDATE messages SET {', '.join(f'{column} = ?' for column in columns)} WHERE id = ?",
                              [*values, row_id])
+                # The identity trigger just nulled both rows; the twin is the live row's superseded body and
+                # keeps its display slot (one page row per display_order; #117750's stored-identity dedupe).
+                conn.execute("UPDATE messages SET display_identity = ?, display_order = ? WHERE id IN (?, ?)",
+                             (identity, order, row_id, twin_id))
             if patch:
                 conn.execute("UPDATE sessions SET model_config = ? WHERE id = ?", (patched_model_config, session_id))
             return len(updates)

@@ -268,6 +268,8 @@ def test_in_place_prune_grows_by_changed_rows_only(tmp_path: Path) -> None:
     assert all(row[4] == 1 for row in twins)  # the demoted full bodies stay searchable
     assert [m["content"] for m in db.get_messages_as_conversation(session_id)] == [m["content"] for m in pruned]
     assert all(m.get("_db_persisted") for m in pruned)
+    # The twin keeps the live row's display slot: the transcript page shows one row per message, in place.
+    assert len(db.get_messages(session_id, include_compacted=True)) == len(pruned)
 
 
 def test_in_place_prune_twice_keeps_one_search_hit_per_unchanged_turn(tmp_path: Path) -> None:

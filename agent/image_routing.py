@@ -3,10 +3,13 @@
 ``native`` attaches images as OpenAI-style ``image_url`` parts; ``text`` runs
 ``vision_analyze`` up-front and prepends the lossy description (right for
 non-vision models). :func:`decide_image_input_mode` picks once per turn from
-``agent.image_input_mode`` (``auto`` | ``native`` | ``text``): in ``auto`` an
-explicit ``auxiliary.vision`` backend forces ``text`` even for vision-capable
-main models (``native`` is the absolute override); else ``supports_vision``
-(config override or catalog) decides. ``vision_analyze`` stays a tool regardless.
+``agent.image_input_mode`` (``auto`` | ``prefer_main`` | ``native`` | ``text``):
+in ``auto`` an explicit ``auxiliary.vision`` backend forces ``text`` even for
+vision-capable main models (``native`` is the absolute override); in
+``prefer_main`` that short-circuit is skipped, so the main model's own vision wins
+whenever it has it and the aux backend stays the fallback (``native`` remains the
+override). Otherwise ``supports_vision`` (config override or catalog) decides.
+``vision_analyze`` stays a tool regardless.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 
-_VALID_MODES = frozenset({"auto", "native", "text"})
+_VALID_MODES = frozenset({"auto", "prefer_main", "native", "text"})
 
 
 # Extensions extract_image_refs() auto-attaches. Documents/archives are excluded:
@@ -376,12 +379,18 @@ def decide_image_input_mode(
     requested_provider: str = "",
 ) -> str:
     """Return ``"native"`` or ``"text"`` for the given turn (``cfg`` None behaves as
-    auto; ``requested_provider`` is the identity before runtime canonicalization)."""
+    auto; ``requested_provider`` is the identity before runtime canonicalization).
+
+    ``prefer_main`` is the only mode that consults the capability probe with an aux
+    backend configured: the user asked for the main model's own vision when it has
+    one, keeping the aux describer as the fallback. ``auto`` keeps its de-facto aux
+    route (a named backend is a deliberate choice), so naming the mode is what opts in.
+    """
     mode_cfg = _coerce_mode(_dict_or_empty(_dict_or_empty(cfg).get("agent")).get("image_input_mode"))
-    if mode_cfg != "auto":
-        return mode_cfg
-    if _explicit_aux_vision_override(cfg):  # auto: an explicit auxiliary.vision backend wins
-        return "text"
+    if mode_cfg not in ("auto", "prefer_main"):
+        return mode_cfg  # native / text — explicit, and the absolute overrides
+    if mode_cfg == "auto" and _explicit_aux_vision_override(cfg):
+        return "text"  # auto: an explicit auxiliary.vision backend wins
     # Keep the three-argument call contract for callers/tests that replace the lookup hook.
     extra = {"requested_provider": requested_provider} if requested_provider else {}
     return "native" if _lookup_supports_vision(provider, model, cfg, **extra) is True else "text"

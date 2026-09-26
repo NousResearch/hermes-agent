@@ -186,3 +186,30 @@ def test_empty_fence_block_atoms_match_main():
     assert split_markdown_atoms("```\n```\ncode\n```\ntail") == ["```\n```", "code", "```\ntail"]
     assert split_markdown_atoms("```py\n```\n\n```\n```") == ["```py\n```", "```\n```"]
     assert split_markdown_atoms("a\n```\ncode\n```\nb") == ["a", "```\ncode\n```", "b"]
+
+
+def test_newline_mode_chunks_within_limit_for_long_language_tags():
+    """#120904: balancing reopens a carried fence with its original language tag, so
+    the headroom must cover ``8 + len(tag)`` — a flat 16 only covers tags of at most
+    8 characters ("javascript"/"typescript" overflowed the caller's limit)."""
+    for lang in ("py", "markdown", "javascript", "typescript", "objective-c++", "x" * 40):
+        text = f"```{lang}\n" + "x" * 600 + "\n```"
+        chunks = split_text_fence_aware(text, 200, prefer_paragraphs=False, balance_fences=True)
+        assert chunks, lang
+        worst = max(len(c) for c in chunks)
+        assert worst <= 200, f"{lang!r}: chunk of {worst} exceeds the caller's limit of 200"
+        assert all(not text_has_unclosed_fence(c) for c in chunks), lang
+
+
+def test_newline_mode_chunks_within_limit_mixed_tags_and_prose():
+    # The reservation must cover the longest tag anywhere in the text: a chunk that
+    # carries the "typescript" fence must still fit the caller's limit.
+    text = (
+        "intro prose line\n\n```python\n" + "y" * 300 + "\n```\n\n"
+        "middle prose\n\n```typescript\n" + "z" * 300 + "\n```\n\ntail"
+    )
+    chunks = split_text_fence_aware(text, 120, prefer_paragraphs=False, balance_fences=True)
+    assert chunks
+    worst = max(len(c) for c in chunks)
+    assert worst <= 120, f"chunk of {worst} exceeds the caller's limit of 120"
+    assert all(not text_has_unclosed_fence(c) for c in chunks)

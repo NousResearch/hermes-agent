@@ -614,12 +614,30 @@ def _chunk_markdown_paragraphs(text, max_chars, len_fn=None):
     return [c for c in merged if c]
 
 
+def _fence_balance_overhead(text: str) -> int:
+    """Worst-case characters :func:`balance_fences_across_chunks` can add to one chunk.
+
+    A carried fence is reopened with its original language tag (a `````lang```` line) and
+    closed again (``\n``````), so one chunk can gain ``8 + len(lang)`` characters. The old
+    flat 16-character reservation only covered tags of at most 8 characters; reserve for
+    the longest language tag the text actually uses (#120904).
+    """
+    longest = 0
+    for line in text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            tag = stripped[3:].split()
+            longest = max(longest, len(tag[0]) if tag else 0)
+    return 8 + longest
+
+
 def _chunk_newline_preferred(text, limit, len_fn):
     """Stream-consumer-derived newline-preferred splitting (no balancing)."""
     if len_fn(text) <= limit:
         return [text]
-    # Reserve headroom for fence markers a balancing pass may add.
-    split_limit = max(limit - 16, limit // 2, 1) if "```" in text else limit
+    # Reserve headroom for the fence markers a balancing pass may add: a reopened
+    # fence carries its original language tag (8 + len(tag) characters worst case).
+    split_limit = max(limit - _fence_balance_overhead(text), 1) if "```" in text else limit
     chunks: "list[str]" = []
     remaining = text
     while len_fn(remaining) > split_limit:

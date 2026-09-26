@@ -588,6 +588,12 @@ def command_line_runs_inline_source(tokens: list[str]) -> bool:
     return inline_source_flag_index(tokens) is not None
 
 
+# Markers of the install's own ``-c`` launchers (``hermes_cli._launchers.runtime_command`` and the
+# published ``.hermes/bin/hermes`` shim script): the inline program IS this process. The detached
+# restart watcher carries neither marker, so #107002 stays byte-identical.
+_OWN_INLINE_LAUNCHER_MARKERS = ("hermes_bootstrap", "runpy")
+
+
 def _gateway_command_subcommand(command: str | None) -> str | None:
     """Hermes gateway lifecycle subcommand from a command line, or None. No loose substring matches
     (``"gateway" in cmdline`` also matched ``gateway status`` / ``python -m tui_gateway``): needs a
@@ -607,10 +613,11 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
     # ``python -c <src> … -m hermes_cli.main gateway run``: the trailing argv belongs to the program
-    # the inline source will spawn later, not to this process (#107002). Case-preserving tokens:
-    # the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
+    # the inline source will spawn later, not to this process (#107002) — UNLESS the inline source
+    # is the install's own launcher, whose program IS this process (#124029). Case-preserving
+    # tokens: the operand-taking ``-X``/``-W``/``-Q`` must not be conflated with ``-q``/``-b``.
     if command_line_runs_inline_source(cased_tokens):
-        return None
+        return _own_launcher_inline_subcommand(cased_tokens)
     # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
     # inside one JXA script string; the gateway itself is its child and is matched on its own command line.
     if basenames[0] == "osascript":
@@ -644,6 +651,38 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     for i, token in enumerate(filtered):
         if token == "gateway":
             # Bare `hermes gateway` defaults to `run`.
+            return filtered[i + 1] if i + 1 < len(filtered) else "run"
+    return None
+
+
+def _own_launcher_inline_subcommand(cased_tokens: list[str]) -> str | None:
+    """Gateway subcommand when an inline-source cmdline is the install's OWN launcher, else None.
+
+    The source literal's token length is unknown quote-free (``_read_process_cmdline`` joins
+    psutil argv with spaces, re-splitting the source), so the trailing-argv boundary is unknown
+    too: the canonical tail rules (profile-strip, bare ``gateway`` defaults to ``run``) run on the
+    whole post-``-c`` region, trailing-first, so a bare ``gateway`` word inside a space-split
+    install path cannot shadow the real trailing ``gateway run``. The marker gate keeps #107002
+    intact: the detached restart watcher carries neither marker, so its future-child argv is
+    never identity."""
+    flag_index = inline_source_flag_index(cased_tokens)
+    if flag_index is None:
+        return None
+    inline_region = " ".join(cased_tokens[flag_index + 1 :]).lower()
+    if any(marker not in inline_region for marker in _OWN_INLINE_LAUNCHER_MARKERS):
+        return None
+    tokens = [t.lower() for t in cased_tokens[flag_index + 1 :]]
+    filtered: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+        elif token in ("--profile", "-p"):
+            skip_next = True
+        elif not token.startswith(("--profile=", "-p=")):
+            filtered.append(token)
+    for i in range(len(filtered) - 1, -1, -1):
+        if filtered[i] == "gateway":
             return filtered[i + 1] if i + 1 < len(filtered) else "run"
     return None
 
@@ -705,7 +744,12 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     argv = record.get("argv")
     if record.get("kind") != _GATEWAY_KIND or not isinstance(argv, list) or not argv:
         return False
-    return looks_like_gateway_runtime_command_line(" ".join(str(part) for part in argv))
+    parts = [str(part) for part in argv]
+    if parts[0] == "-c":
+        # sys.argv of a `-c` launcher omits the source literal, so the joined record carries no
+        # entrypoint token; the kind stamp above is the Hermes-ownership proof (#124029).
+        parts = ["hermes", *parts[1:]]
+    return looks_like_gateway_runtime_command_line(" ".join(parts))
 
 
 def _profile_name_for_home(profile_home: Path) -> Optional[str]:

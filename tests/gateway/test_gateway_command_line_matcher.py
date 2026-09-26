@@ -9,9 +9,14 @@ process and ``status``/``start`` report false positives.
 
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from gateway.status import (
+    _GATEWAY_KIND,
+    _record_looks_like_gateway as record_matches,
     gateway_spawn_intent_subcommand as spawn_intent,
     looks_like_gateway_command_line as matches,
     looks_like_gateway_runtime_command_line as matches_runtime,
@@ -165,3 +170,70 @@ def test_accepts_atomic_desktop_gateway():
     assert matches_runtime(ATOMIC_DESKTOP) is True
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _launcher_commands(extra_args=()):
+    """Live-cmdline shapes for the pm-runtime launcher family (#124029).
+
+    ``runtime_command()`` is the deterministic bootstrap the pm toolchain persists (systemd
+    ExecStart, update relaunch); the POSIX ``.hermes/bin/hermes`` shim execs the same
+    ``python -I -c <script>`` shape. ``_read_process_cmdline`` returns them quote-free
+    (psutil joins argv with spaces), so both the quoted and the flattened spellings must match."""
+    from hermes_cli._launchers import _launcher_script, runtime_command
+
+    root = _repo_root()
+    runtime = runtime_command(root, ["gateway", "run", *extra_args])
+    shim = [
+        __import__("sys").executable, "-I", "-c",
+        _launcher_script("hermes", root, None), "gateway", "run", *extra_args,
+    ]
+    return [runtime, shim]
+
+
+@pytest.mark.parametrize("extra", [[], ["--external-supervisor"]])
+def test_accepts_own_inline_launcher_as_gateway_run(extra):
+    for argv in _launcher_commands(extra):
+        quoted = subprocess.list2cmdline(argv)
+        flattened = " ".join(argv)
+        assert matches(quoted) is True, quoted[-120:]
+        assert matches_runtime(quoted) is True, quoted[-120:]
+        assert matches(flattened) is True, flattened[-120:]
+        assert matches_runtime(flattened) is True, flattened[-120:]
+
+
+@pytest.mark.parametrize(
+    "argv, expected",
+    [
+        (["-c", "gateway", "run"], True),
+        (["-c", "gateway", "run", "--external-supervisor"], True),
+        (["-c", "gateway", "restart"], True),
+        (["-c", "gateway", "status"], False),
+        (["-c"], False),
+        (["gateway", "run"], False),  # no entrypoint and no launcher argv shape
+    ],
+)
+def test_record_accepts_dash_c_launcher_argv(argv, expected):
+    assert record_matches({"kind": _GATEWAY_KIND, "argv": argv}) is expected
+
+
+def test_record_still_rejects_foreign_kind_with_dash_c_argv():
+    assert record_matches({"kind": "something-else", "argv": ["-c", "gateway", "run"]}) is False
+
+
+def test_own_launcher_gate_keeps_hermes_importing_watcher_rejected():
+    """The detached restart watcher imports hermes-side modules too (#107002) but never the
+    install launcher's bootstrap markers, so it must stay rejected even quote-free."""
+    watcher_src = (
+        "import os, subprocess, sys, time; "
+        "from hermes_cli._subprocess_compat import windows_detach_flags; "
+        "from gateway.status import _pid_exists; "
+        "pid = int(sys.argv[1]); cmd = sys.argv[2:]; subprocess.Popen(cmd)"
+    )
+    cmd = " ".join([
+        "python", "-I", "-c", watcher_src, "14980",
+        "python", "-m", "hermes_cli.main", "gateway", "run",
+    ])
+    assert matches(cmd) is False
+    assert matches_runtime(cmd) is False

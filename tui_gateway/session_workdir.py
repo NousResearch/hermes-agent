@@ -30,30 +30,34 @@ def _completion_cwd(params: dict | None = None) -> str:
     # cannot tell the two apart, so the desktop ships the flag alongside the path.
     client_cwd = params.get("cwd")
     profile = params.get("profile")
-    profile_home = None
-    if profile:
-        # Main never resolved the profile for an explicit client cwd; a deleted one must not fail that path now.
-        with contextlib.suppress(ProfileUnavailableError):
-            profile_home = _profile_home(profile)
-        if profile_home is None and not (params.get("cwd_explicit") and client_cwd):
-            profile_home = _profile_home(profile)
+    session_cwd = _sessions.get(params.get("session_id") or "", {}).get("cwd")
+    try:
+        profile_home = _profile_home(profile) if profile else None
+    except ProfileUnavailableError:
+        # Main only resolved the profile when it consulted the profile's config; keep a deleted one fatal exactly there.
+        if (client_cwd and not params.get("cwd_explicit")) or not (client_cwd or session_cwd):
+            raise
+        profile_home = None
     if not params.get("cwd_explicit") and client_cwd:
         if profile_cwd := _profile_workspace_cwd(profile_home):
             return profile_cwd
     # A session bound to another profile resolves its workspace from THAT profile's config before the launch profile's
     # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
     # terminal.cwd is read directly.
-    raw = (client_cwd or _sessions.get(params.get("session_id") or "", {}).get("cwd")
+    raw = (client_cwd or session_cwd
            or _profile_workspace_cwd(profile_home) or _launch_configured_cwd()
            or os.environ.get("TERMINAL_CWD") or os.getcwd())
-    # A named ssh profile's cwd lives on the remote host: host expansion/isdir cannot vouch for it (``~`` would name
-    # THIS host's home). The launch profile keeps main's host check.
+    # An ssh cwd lives on the remote host: host expansion/isdir cannot vouch for it (``~`` would name THIS host's
+    # home), so a named ssh profile's path is returned before the host check. The launch profile keeps main's host
+    # fast path and only then falls back to the raw remote path.
     if profile_home is not None and _cwd_is_remote(profile_home):
         return str(raw)
     with contextlib.suppress(Exception):
         resolved = os.path.abspath(os.path.expanduser(str(raw)))
         if os.path.isdir(resolved):
             return resolved
+    if profile_home is None and _cwd_is_remote(None):
+        return str(raw)
     return os.getcwd()
 
 
@@ -120,7 +124,9 @@ def _workspace_cwd(profile_home, raw: str) -> str:
     """A picked workspace for a session bound to ``profile_home``: an ssh dir raw, else an existing host dir.
     Raises ValueError when a host dir does not exist."""
     if _cwd_is_remote(profile_home):
-        return raw
+        if raw == "~" or raw.startswith("~/") or os.path.isabs(raw):
+            return raw
+        raise ValueError(f"remote working directory must be absolute or ~-relative: {raw}")
     resolved = os.path.abspath(os.path.expanduser(raw))
     if not os.path.isdir(resolved):
         raise ValueError(f"working directory does not exist: {raw}")
@@ -140,14 +146,16 @@ def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
     profile_home = (session or {}).get("profile_home")
     # A named ssh profile's session is ssh whatever the launch process runs; other named backends keep main's
     # process-backend semantics (docker isolation's "process" vs "session" source depends on it).
-    backend = "ssh" if profile_home and _cwd_is_remote(profile_home) else _effective_terminal_backend()
+    named_ssh = bool(profile_home) and _cwd_is_remote(profile_home)
+    backend = "ssh" if named_ssh else _effective_terminal_backend()
     if backend != "local":
         # THIS session's explicit workspace beats the LAST session's env var.
         if session and session.get("explicit_cwd") and session.get("cwd"):
             return str(session["cwd"]), "session"
-        # Process TERMINAL_CWD is the launch profile's; a named ssh profile's own terminal.cwd wins over it.
-        if remote_cwd := _declared_remote_profile_cwd(profile_home):
-            return remote_cwd, "session"
+        # Process TERMINAL_CWD/terminal.cwd are the LAUNCH profile's: a named ssh profile uses its own cwd, else ~.
+        if named_ssh:
+            remote_cwd = _declared_remote_profile_cwd(profile_home)
+            return (remote_cwd, "session") if remote_cwd else ("~", "process")
         raw = os.environ.get("TERMINAL_CWD", "").strip() or _workdir_terminal_cfg("cwd")
         if raw and raw not in {".", "auto", "cwd"}:
             return raw, "process"
@@ -203,13 +211,13 @@ def _heal_dead_cwd(cwd: str) -> str:
 
 
 def _session_is_local_backend(session: dict | None) -> bool:
-    """Whether THIS session's cwd can be stat'ed / git-probed here. The bound profile's backend, not the launch
-    process's: one multiplexed gateway serves many profiles, and a per-profile gateway (``hermes -p x``) may set
-    ``terminal.backend`` in config without ``TERMINAL_ENV`` — either way an env-only check would heal a live remote
-    cwd to its nearest host ancestor (``/home``) and persist that."""
-    if session and session.get("profile_home"):
-        return _bound_terminal_backend(session["profile_home"]) == "local"
-    # Launch profile: main's env check, plus a per-profile gateway whose config (not env) says ssh.
+    """Whether THIS session's cwd can be stat'ed / git-probed here. A session bound to a named ssh profile never can,
+    whatever the launch process runs (one multiplexed gateway serves many profiles), and a per-profile gateway
+    (``hermes -p x``) may set ``terminal.backend: ssh`` in config without ``TERMINAL_ENV``: an env-only check would
+    heal a live remote cwd to its nearest host ancestor (``/home``) and persist that."""
+    if session and session.get("profile_home") and _cwd_is_remote(session["profile_home"]):
+        return False
+    # Otherwise main's env check, plus a per-profile gateway whose config (not env) says ssh.
     env_backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
     return env_backend in ("", "local") and _effective_terminal_backend() != "ssh"
 
@@ -243,9 +251,9 @@ def _reconcile_session_cwd_from_terminal(session: dict | None) -> bool:
     never overridden. Local backends only (a remote cwd cannot be stat'ed or git-probed here)."""
     # An explicit choice only moves by another explicit action; a cwd adopted HERE is marked `cwd_from_settle` so
     # successive settles keep following.
-    if not session or not _session_is_local_backend(session):
+    if not session or (session.get("explicit_cwd") and not session.get("cwd_from_settle")):
         return False
-    if session.get("explicit_cwd") and not session.get("cwd_from_settle"):
+    if not _session_is_local_backend(session):
         return False
     try:
         from tools.terminal_tool import get_session_cwd

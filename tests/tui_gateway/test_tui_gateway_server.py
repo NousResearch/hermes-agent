@@ -22502,4 +22502,3 @@ def test_named_profile_without_backend_stays_local_under_ssh_launch(monkeypatch,
     monkeypatch.setattr(server, "_profile_home", lambda name: home if name == "plain" else None)
 
     assert server._completion_cwd({"profile": "plain", "cwd": launch, "cwd_explicit": False}) == launch
-    assert server._session_is_local_backend({"profile_home": str(home)}) is True

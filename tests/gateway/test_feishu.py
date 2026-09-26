@@ -2150,6 +2150,92 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         self.assertNotIn("[Mentioned:", event.text)
         self.assertTrue(event.text.startswith("/model"))
 
+    def test_thread_mention_only_message_is_processed_not_dropped(self):
+        """Bare @Bot in a topic (thread_id set) synthesises '[Mentioned]' and dispatches."""
+        from gateway.platforms.base import MessageType
+
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_user_1"}),
+            message_type="text",
+            message_id="m_thread_ping",
+            mentions=[bot_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id="omt_thread_abc",
+            root_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_thread_ping",
+            )
+        )
+        adapter._dispatch_inbound_event.assert_called_once()
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.message_type, MessageType.TEXT)
+        self.assertIn("[Mentioned]", event.text)
+
+    def test_root_id_only_mention_still_dropped(self):
+        """root_id alone is a quote reply, not a topic — still drop bare @Bot."""
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_user_1"}),
+            message_type="text",
+            message_id="m_root_only",
+            mentions=[bot_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+            root_id="om_quote_root",
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_root_only",
+            )
+        )
+        adapter._dispatch_inbound_event.assert_not_called()
+
+    def test_non_thread_mention_only_message_still_dropped(self):
+        """Outside thread context a bare @Bot is still dropped."""
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_user_1"}),
+            message_type="text",
+            message_id="m_no_thread",
+            mentions=[bot_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+            root_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_no_thread",
+            )
+        )
+        adapter._dispatch_inbound_event.assert_not_called()
+
     def test_regular_reply_root_id_does_not_become_thread_id(self):
         adapter = self._build_adapter()
         adapter._fetch_message_text = AsyncMock(return_value="parent text")

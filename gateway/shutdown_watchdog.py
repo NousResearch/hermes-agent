@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-from hermes_constants import get_hermes_home, get_process_hermes_home
+from hermes_constants import get_process_hermes_home
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -173,8 +173,9 @@ def _mark_exited_quietly(exit_code: int, reason: str) -> None:
 
 
 def _process_hermes_home() -> Path:
-    """HERMES_HOME for process-level identity files (ignore profile overrides)."""
-    return get_process_hermes_home() if os.environ.get("HERMES_HOME", "").strip() else get_hermes_home()
+    """HERMES_HOME for process-level identity files (ignore profile overrides, including when
+    ``HERMES_HOME`` is unset: the platform default, never ``get_hermes_home()``)."""
+    return get_process_hermes_home()
 
 
 def _home(home: Optional[Path]) -> Path:

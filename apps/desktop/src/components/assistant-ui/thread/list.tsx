@@ -283,10 +283,27 @@ export function buildGroups(signature: string): MessageGroup[] {
     return { id, index: Number(index), role, weight: Number(weight) || 1 }
   })
 
+  // A store-replacement snapshot can transiently expose the same message id
+  // twice (#119131; same race family as assistant-ui#4051/#3652). Two groups
+  // sharing an id hand sibling TurnRows duplicate React keys and the newest
+  // block mounts twice, stacked. Ids are unique in a healthy store, so
+  // first-wins is safe — and keeping the earlier index also avoids pointing
+  // a row at a tail slot the healed store no longer has.
+  const seenIds = new Set<string>()
+  const deduped = messages.filter(message => {
+    if (seenIds.has(message.id)) {
+      return false
+    }
+
+    seenIds.add(message.id)
+
+    return true
+  })
+
   const groups: MessageGroup[] = []
 
-  for (let i = 0; i < messages.length; i++) {
-    const message = messages[i]
+  for (let i = 0; i < deduped.length; i++) {
+    const message = deduped[i]
 
     if (message.role !== 'user') {
       groups.push({ id: message.id, index: message.index, kind: 'standalone', weight: message.weight })
@@ -297,9 +314,9 @@ export function buildGroups(signature: string): MessageGroup[] {
     const indices = [message.index]
     let weight = message.weight
 
-    while (i + 1 < messages.length && messages[i + 1].role !== 'user') {
-      weight += messages[++i].weight
-      indices.push(messages[i].index)
+    while (i + 1 < deduped.length && deduped[i + 1].role !== 'user') {
+      weight += deduped[++i].weight
+      indices.push(deduped[i].index)
     }
 
     groups.push({ id: message.id, indices, kind: 'turn', weight })

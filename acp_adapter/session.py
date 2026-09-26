@@ -136,6 +136,10 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
+    # ACP permission mode (default / accept_edits / dont_ask). Persisted in the
+    # session's model_config JSON so a process restart or session/load keeps the
+    # user's approval setting instead of silently falling back to the default.
+    mode: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
@@ -203,7 +207,8 @@ class SessionManager:
         new_id = str(uuid.uuid4())
         agent = self._make_agent(session_id=new_id, cwd=cwd, model=original.model or None)
         model = getattr(agent, "model", original.model) or original.model
-        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history))
+        state = self._install_state(new_id, agent, cwd, model, copy.deepcopy(original.history),
+                                    mode=getattr(original, "mode", "") or "")
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
@@ -276,10 +281,11 @@ class SessionManager:
     # ---- persistence via SessionDB ------------------------------------------
 
     def _install_state(self, session_id: str, agent: Any, cwd: str, model: str,
-                       history: List[Dict[str, Any]], *, persist: bool = True) -> SessionState:
+                       history: List[Dict[str, Any]], *, persist: bool = True,
+                       mode: str = "") -> SessionState:
         """Build a SessionState, register it in memory, bind its cwd for tools, optionally persist."""
         state = SessionState(session_id=session_id, agent=agent, cwd=cwd, model=model,
-                             history=history, cancel_event=threading.Event())
+                             mode=mode, history=history, cancel_event=threading.Event())
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
@@ -324,6 +330,12 @@ class SessionManager:
             value = getattr(state.agent, key, None)
             if isinstance(value, str) and value.strip():
                 session_meta[key] = value.strip()
+        # Persist the ACP permission mode so session/load after a restart keeps the
+        # user's approval setting. set_session_mode/set_config_option write
+        # state.mode then call save_session() — without this field the mode
+        # silently reverts to the default on restore.
+        if isinstance(getattr(state, "mode", None), str) and state.mode.strip():
+            session_meta["mode"] = state.mode.strip()
 
         try:
             if db.get_session(state.session_id) is None:
@@ -430,6 +442,7 @@ class SessionManager:
 
         meta = _parse_model_config(row.get("model_config"))
         cwd, model = meta.get("cwd", "."), row.get("model") or None
+        restored_mode = str(meta.get("mode") or "")
 
         # repair_alternation: this list becomes the resumed agent's LIVE conversation; a durable
         # ``user;user`` violation in state.db would otherwise re-fire the pre-request repair every request.
@@ -448,7 +461,7 @@ class SessionManager:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
             return None
         state = self._install_state(session_id, agent, cwd, model or getattr(agent, "model", "") or "",
-                                    history, persist=False)
+                                    history, persist=False, mode=restored_mode)
         logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
         return state
 

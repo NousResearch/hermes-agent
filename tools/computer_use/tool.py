@@ -9,6 +9,7 @@ import atexit
 import base64
 import contextlib
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -441,6 +442,30 @@ def _do_scroll(backend, action, args, **delivery):
     return backend.scroll(direction=args.get("direction", "down"), amount=int(args.get("amount", 3)),
                           element=args.get("element"), **_scroll_xy(args), modifiers=args.get("modifiers"), **delivery)
 
+def _do_type(backend, action, args, **delivery):
+    incompatible = ("coordinate", "from_coordinate", "to_coordinate", "from_element", "to_element",
+                    "element_index", "element_token", "snapshot_id")
+    if any(args.get(key) is not None for key in incompatible):
+        return ActionResult(ok=False, action=action, code="incompatible_type_selector",
+                            message="type accepts element= from the last capture; other element/coordinate selectors are unsupported.")
+    target = {}
+    if (element := args.get("element")) is not None:
+        for key in ("pid", "window_id"):
+            if args.get(key) is not None and args[key] != getattr(backend, f"_active_{key}", None):
+                return ActionResult(ok=False, action=action, code="input_target_mismatch",
+                                    message=f"{key} conflicts with the captured target. Capture the requested target first.")
+        # **kwargs alone is not evidence that a backend implements element targeting.
+        try:
+            parameter = inspect.signature(backend.type_text).parameters.get("element")
+        except (TypeError, ValueError):
+            parameter = None
+        if parameter is None or parameter.kind not in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+            return ActionResult(ok=False, action=action, code="targeted_type_unsupported",
+                                message="This backend does not support explicit element targeting for type.")
+        target["element"] = element
+    return backend.type_text(args.get("text", ""), **target, **delivery)
+
 def _do_capture(backend, action, args, fence=lambda: None, session_id=None, **_):
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
@@ -472,7 +497,7 @@ _ACTIONS: Dict[str, _ActionSpec] = {
     "drag": _input(_do_drag, summarize=lambda a, args, fg: (f"drag {args.get('from_element') or args.get('from_coordinate')} → "
                                                              f"{args.get('to_element') or args.get('to_coordinate')}{fg}")),
     "scroll": _input(_do_scroll, summarize=lambda a, args, fg: f"scroll {args.get('direction', '?')} x{args.get('amount', 3)}{fg}"),
-    "type": _input(lambda backend, action, args, **delivery: backend.type_text(args.get("text", ""), **delivery),
+    "type": _input(_do_type,
                    summarize=lambda a, args, fg: f"type {args.get('text', '')[:60]!r}" + ("..." if len(args.get("text", "")) > 60 else "") + fg),
     "key": _input(lambda backend, action, args, **delivery: backend.key(args.get("keys", ""), **delivery),
                   summarize=lambda a, args, fg: f"key {args.get('keys', '')!r}{fg}"),

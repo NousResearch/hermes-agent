@@ -145,10 +145,26 @@ class _InputMixin:
         ), None)
         return refusal if refusal is not None else self._run_input_action("scroll", args, delivery_mode, bring_to_front)
 
-    def type_text(self, text: str, *, delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
+    def type_text(self, text: str, *, element: Optional[int] = None, delivery_mode: Optional[str] = None,
+                  bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("type_text", need_window=True)
-        return refusal if refusal is not None else self._run_input_action("type_text", {**args, "text": text},
-                                                                          delivery_mode, bring_to_front)
+        if refusal is not None:
+            return refusal
+        if element is not None:
+            if not isinstance(element, int) or isinstance(element, bool) or element < 0:
+                return _refuse("type_text", "element must be a non-negative capture index.", code="invalid_element")
+            # An explicit selection must never become global typing, including on older drivers.
+            if not (self._session.supports_input_property("type_text", "element_index") and (
+                    self._session.supports_capability("accessibility.element_tokens", tool="type_text")
+                    or self._session.supports_input_property("type_text", "element_token"))):
+                return _refuse("type_text", "The connected cua-driver cannot type with a captured element token.",
+                               code="targeted_type_unsupported")
+            token = self._snapshot_tokens.get(element)
+            if not isinstance(token, str) or not token:
+                return _refuse("type_text", "No fresh token for this element. Capture the target again before typing.",
+                               code="targeted_type_stale")
+            args["element_index"] = element  # _action attaches the exact opaque token and session owner.
+        return self._run_input_action("type_text", {**args, "text": text}, delivery_mode, bring_to_front)
 
     def key(self, keys: str, *, delivery_mode: Optional[str] = None, bring_to_front: bool = False) -> ActionResult:
         refusal, args = self._target_args("key", need_window=True)

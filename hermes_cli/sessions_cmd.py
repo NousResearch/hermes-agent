@@ -679,6 +679,8 @@ def _cmd_prune_or_archive(db, args, action):
     # Archive flips a compression lineage as a unit, matched through its tip (an old ancestor alone
     # never qualifies); the preview must show the same rows the archive will touch.
     filters["lineage_tips_only"] = not prune
+    # Prune deletes a compression lineage only as a unit; the preview must list the rows it deletes.
+    filters["whole_lineages"] = prune
     if not filters["include_pinned"]:
         _note_pinned_skipped(db, filters, action)
     candidates = db.list_prune_candidates(**filters)

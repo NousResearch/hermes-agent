@@ -8,7 +8,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_state_common import (
-    AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _placeholders, _sql_session_last_active, escape_like as _escape_like
+    AUTO_VACUUM_MIN_FREELIST_RATIO, _id_chunks, _placeholders, _sql_json_extract, _sql_session_last_active,
+    escape_like as _escape_like
 )
 from hermes_startup_watchdog import report_startup_progress
 
@@ -73,6 +74,27 @@ _PRUNE_FILTERS = (
     ("max_tool_calls", "notnone", _one("COALESCE(s.tool_call_count, 0) <= ?")),
 )
 _PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archived", "include_pinned", "lineage_tips_only"}
+
+# Child ``c`` continues compression-ended ``p``; a fork names ``p`` in its marker (compression copies
+# ``model_config``, so a marker naming another row is inherited, not a fork of ``p``).
+_CONTINUATION_EDGE_SQL = " AND ".join([
+    "p.end_reason = 'compression'",
+    *(f"COALESCE({_sql_json_extract('c.model_config', f'$.{marker}')}, '') != p.id"
+      for marker in ("_branched_from", "_delegate_from", "_reset_from")),
+    "COALESCE(c.source, '') != 'tool'",
+])
+
+
+def _continued_ancestors_sql(candidates_where: str) -> str:
+    """Compression ancestors of every row *candidates_where* (alias ``s``) does not select."""
+    return ("WITH RECURSIVE kept(id) AS ("
+            " SELECT p.id FROM sessions c JOIN sessions p ON p.id = c.parent_session_id"
+            f" WHERE {_CONTINUATION_EDGE_SQL}"
+            f" AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = c.id AND {candidates_where})"
+            " UNION"
+            " SELECT p.id FROM kept k JOIN sessions c ON c.id = k.id JOIN sessions p ON p.id = c.parent_session_id"
+            f" WHERE {_CONTINUATION_EDGE_SQL}"
+            ") SELECT id FROM kept")
 
 
 class SessionMaintenanceMixin:
@@ -205,7 +227,10 @@ class SessionMaintenanceMixin:
         return " AND ".join(clauses), params
 
     def _prune_where(self, older_than_days, source, filters) -> Tuple[str, list]:
-        """Translate the legacy age window into the shared activity filter, then build WHERE."""
+        """Translate the legacy age window into the shared activity filter, then build WHERE.
+        ``whole_lineages`` (prune) keeps a compression ancestor while any continuation after it
+        is unmatched."""
+        whole_lineages = filters.pop("whole_lineages", False)
         if (older_than_days is not None and filters.get("last_active_before") is None
                 and filters.get("started_before") is None):
             if older_than_days < 0:
@@ -213,7 +238,12 @@ class SessionMaintenanceMixin:
                     f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
                     "retention builds a future cutoff that matches every ended session.")
             filters["last_active_before"] = time.time() - (older_than_days * 86400)
-        return self._prune_filter_where(source=source, **filters)
+        where, params = self._prune_filter_where(source=source, **filters)
+        if not whole_lineages:
+            return where, params
+        # A compressed-away segment ages with its conversation, not on its own: while any later
+        # segment stays, deleting it would cut the start off a chat that is still in use.
+        return f"{where} AND s.id NOT IN ({_continued_ancestors_sql(where)})", [*params, *params]
 
     def list_prune_candidates(self, older_than_days: Optional[float] = None, source: str = None,
                               **filters) -> List[Dict[str, Any]]:
@@ -277,7 +307,9 @@ class SessionMaintenanceMixin:
         Children outside the window are orphaned (parent NULLed), not cascade-deleted.  With
         *sessions_dir*, transcript files are removed outside the DB transaction.
         ``exclude_active_write_guards`` (automatic maintenance) skips rows under a live turn lease
-        or compression lock while expired/dead holders are reclaimed and fenced."""
+        or compression lock while expired/dead holders are reclaimed and fenced.  A compression
+        ancestor is deleted only together with every continuation after it (``whole_lineages``)."""
+        filters["whole_lineages"] = True
         where, where_params = self._prune_where(older_than_days, source, filters)
         removed_ids: list[str] = []
         def _do(conn):

@@ -92,7 +92,7 @@ def _prune_sessions(body: SessionPrune):
         filters = {
             "older_than_days": effective_older_than, "started_before": body.started_before,
             "started_after": body.started_after,
-            "archived": None if body.include_archived else False,
+            "archived": None if body.include_archived else False, "whole_lineages": True,
             **{f: (getattr(body, f) or None) for f in _PRUNE_STR_FILTERS},
             **{f: getattr(body, f) for f in _PRUNE_NUM_FILTERS}}
         skipped_open = db.count_open_prune_matches(**filters)

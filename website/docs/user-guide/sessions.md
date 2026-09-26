@@ -571,6 +571,7 @@ delete them too.
 
 :::info
 Pruning only deletes **ended** sessions (sessions that have been explicitly ended or auto-reset). Active sessions are never pruned.
+A conversation that compression split into several sessions is pruned as a unit: its older segments stay while any later segment does.
 :::
 
 ### Bulk-Archive Sessions
@@ -1029,7 +1030,9 @@ Only **ended** sessions are ever deleted. Active sessions are never auto-pruned,
 regardless of age. Ended sessions are aged from their last activity — the
 freshest of live activity, latest message, or session start — so a long-lived
 conversation used recently is not deleted merely because it began before the
-retention window.
+retention window. The same holds for a conversation that compression split into
+several sessions: its older segments are kept while any later segment is, and
+are pruned together with it once the whole conversation qualifies.
 
 **Stale open sessions from automation.** Some producers — cron jobs, kanban
 workers, subagents, one-shot CLI runs — can die without ever marking their

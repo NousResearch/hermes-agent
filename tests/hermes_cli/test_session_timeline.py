@@ -212,3 +212,74 @@ def test_timeline_sql_never_reads_tool_columns_or_writes(timeline_store, monkeyp
         assert accesses
     finally:
         reader.close()
+
+
+_ASYNC_DELEGATION_ENVELOPES = {
+    "task_failed": {
+        "type": "async_delegation",
+        "delegation_id": "deleg_x",
+        "task_failure_notice": True,
+        "results": [{"task_index": 1, "goal": "b", "status": "error",
+                     "error": "401 authentication_error", "duration_seconds": 12.5}],
+        "goals": ["a", "b", "c"],
+        "n_tasks": 3,
+    },
+    "batch_complete": {
+        "type": "async_delegation",
+        "delegation_id": "deleg_x",
+        "is_batch": True,
+        "results": [{"task_index": 0, "status": "completed", "summary": "ok"}],
+        "goals": ["a"],
+        "dispatched_at": 1.0,
+        "role": "leaf",
+        "model": "m",
+    },
+    "single_complete": {
+        "type": "async_delegation",
+        "delegation_id": "deleg_x",
+        "status": "completed",
+        "summary": "done",
+        "dispatched_at": 1.0,
+        "role": "leaf",
+        "model": "m",
+    },
+}
+
+
+@pytest.mark.parametrize("envelope", sorted(_ASYNC_DELEGATION_ENVELOPES))
+def test_timeline_hides_every_async_delegation_envelope(timeline_store, envelope):
+    """Every ASYNC DELEGATION notice is machine text, not a human prompt (#113196).
+
+    ``process_registry_notifications`` emits three such headers; the synthetic-prompt filter
+    required the word COMPLETE, so the task-failed early warning surfaced as a prompt. A human
+    quoting the header mid-message stays visible (the pattern is anchored at the start).
+    """
+    from tools.process_registry_notifications import format_process_notification
+
+    db, client, _ = timeline_store
+    notice = format_process_notification(_ASYNC_DELEGATION_ENVELOPES[envelope])
+    assert isinstance(notice, str) and notice.startswith("[ASYNC DELEGATION")
+    quoted = f"why did {notice.splitlines()[0]} show up in the log?"
+    db.append_messages_batch("timeline-root", [
+        {"role": "user", "content": notice, "timestamp": 300},
+        {"role": "user", "content": quoted, "timestamp": 301},
+    ])
+    entries = client.get("/api/sessions/timeline-root/timeline").json()["entries"]
+    assert [entry["preview"] for entry in entries] == [quoted]
+
+
+def test_timeline_keeps_async_headers_the_formatter_never_emits(timeline_store):
+    """The filter enumerates the headers ``format_process_notification`` actually emits.
+
+    ``process_registry_notifications`` emits ``[ASYNC DELEGATION TASK FAILED``,
+    ``[ASYNC DELEGATION BATCH COMPLETE`` and ``[ASYNC DELEGATION COMPLETE``. A looser
+    ``(?:BATCH |TASK )?(?:COMPLETE|FAILED)`` branch also swallows headers nobody emits
+    (here: no TASK), which would hide a prompt-shaped line that is not machine text.
+    """
+    db, client, _ = timeline_store
+    prompt = "[ASYNC DELEGATION FAILED — deleg_x] why did this land on my prompt?"
+    db.append_messages_batch("timeline-root", [
+        {"role": "user", "content": prompt, "timestamp": 300},
+    ])
+    entries = client.get("/api/sessions/timeline-root/timeline").json()["entries"]
+    assert [entry["preview"] for entry in entries] == [prompt]

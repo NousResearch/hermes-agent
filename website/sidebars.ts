@@ -363,6 +363,7 @@ const sidebars: SidebarsConfig = {
                   key: 'skills-optional-creative',
                   collapsed: true,
                   items: [
+                    'user-guide/skills/optional/creative/creative-3dicon',
                     'user-guide/skills/optional/creative/creative-ai-presenter-video',
                     'user-guide/skills/optional/creative/creative-archify',
                     'user-guide/skills/optional/creative/creative-ascii-art',

@@ -1056,10 +1056,15 @@ def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     return hashlib.sha256(repr(subset).encode("utf-8")).hexdigest()
 
 
-def _derive_chat_session_id(system_prompt: Optional[str], first_user_message: str) -> str:
+def _derive_chat_session_id(system_prompt: Optional[str], first_user_message: str,
+                            profile: Optional[str] = None) -> str:
     """Stable session id from the system prompt + first user message (constant across all
-    turns of an Open WebUI-style conversation), so one Hermes session/sandbox is reused."""
-    seed = f"{system_prompt or ''}\n{first_user_message}"
+    turns of an Open WebUI-style conversation), so one Hermes session/sandbox is reused.
+    ``profile`` namespaces the fingerprint: the id keys process-global resources (the session
+    store; the persistent Docker sandbox labeled ``hermes-task-id``), so under
+    ``gateway.multiplex_profiles`` two header-less conversations that open with identical text
+    on different profiles must not land on one session/container (#123989)."""
+    seed = f"{profile or 'default'}\0{system_prompt or ''}\n{first_user_message}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"api-{digest}"
 

@@ -632,21 +632,26 @@ wire_shell_path() {
     # The launcher is published by source_completion; shell rc files belong to
     # the installer, not to PM (updates must not modify a user's shell setup).
     # Never use the installer's inherited PATH as a proxy for a *new* shell.
+    # The existing-setup pattern tolerates BOTH `export PATH=...` and a bare
+    # `PATH=...` (Fedora/Debian skel files): `[^#[:space:]]+[[:space:]]+` is an
+    # optional command word, so a bare assignment still matches (#123424). A
+    # leading `#` stays a comment because the optional command word cannot
+    # start with `#`.
     local login_shell="${SHELL:-/bin/bash}"
     case "${login_shell##*/}" in
         zsh)
-            append_shell_path "$HOME/.zshrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
-            append_shell_path "$HOME/.zprofile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            append_shell_path "$HOME/.zshrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*([^#[:space:]]+[[:space:]]+)?PATH=.*\.local/bin'
+            append_shell_path "$HOME/.zprofile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*([^#[:space:]]+[[:space:]]+)?PATH=.*\.local/bin'
             ;;
         fish)
             append_shell_path "$HOME/.config/fish/config.fish" 'fish_add_path "$HOME/.local/bin"' '^[[:space:]]*fish_add_path.*\.local/bin'
             ;;
         *)
-            append_shell_path "$HOME/.bashrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
-            append_shell_path "$HOME/.profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+            append_shell_path "$HOME/.bashrc" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*([^#[:space:]]+[[:space:]]+)?PATH=.*\.local/bin'
+            append_shell_path "$HOME/.profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*([^#[:space:]]+[[:space:]]+)?PATH=.*\.local/bin'
             # Bash prefers .bash_profile over .profile if both exist.
             if [ -f "$HOME/.bash_profile" ]; then
-                append_shell_path "$HOME/.bash_profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*[^#[:space:]].*PATH=.*\.local/bin'
+                append_shell_path "$HOME/.bash_profile" 'export PATH="$HOME/.local/bin:$PATH"' '^[[:space:]]*([^#[:space:]]+[[:space:]]+)?PATH=.*\.local/bin'
             fi
             ;;
     esac

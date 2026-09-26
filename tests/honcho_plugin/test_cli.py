@@ -272,6 +272,27 @@ class TestCloneHonchoForProfile:
         assert "pinUserPeer" not in new_block
         assert "pinPeerName" not in new_block
 
+    def test_injection_session_start_carries_into_cloned_profile(self, monkeypatch, tmp_path):
+        cfg = {
+            "apiKey": "***",
+            "hosts": {
+                "hermes": {
+                    "peerName": "eri",
+                    "contextTokens": 20000,
+                    "injection": {"sessionStart": ["summary", "peerRepresentation", "peerCard", "aiCard"]},
+                },
+            },
+        }
+        honcho_cli, written = self._setup_clone_env(monkeypatch, tmp_path, cfg)
+        ok = honcho_cli.clone_honcho_for_profile("coder")
+        assert ok is True
+        new_block = written["cfg"]["hosts"]["hermes_coder"]
+        assert new_block["contextTokens"] == 20000
+        assert new_block["injection"] == {"sessionStart": ["summary", "peerRepresentation", "peerCard", "aiCard"]}
+        # Dict-valued keys are copied, not aliased: mutating the clone must not touch the default block.
+        new_block["injection"]["sessionStart"].append("aiRepresentation")
+        assert cfg["hosts"]["hermes"]["injection"] == {"sessionStart": ["summary", "peerRepresentation", "peerCard", "aiCard"]}
+
 
 class TestSetupWizardDeploymentShape:
     """The gateway identity-mapping tree writes pinUserPeer / userPeerAliases /

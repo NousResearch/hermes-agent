@@ -23,7 +23,7 @@ _INHERITED_KEYS = (
     "recallMode", "writeFrequency", "sessionStrategy", "contextTokens",
     "dialecticReasoningLevel", "dialecticDynamic", "dialecticMaxChars",
     "messageMaxChars", "dialecticMaxInputChars", "saveMessages", "observation",
-    "recallSync",
+    "injection", "recallSync",
 )
 # clone_honcho_for_profile also carries the operator's runtime-to-peer routing intent.
 _CLONE_KEYS = _INHERITED_KEYS[:3] + ("sessionPeerPrefix", "sessionAiPeerPrefix") + _INHERITED_KEYS[3:] + (
@@ -272,7 +272,7 @@ def _inherit_defaults(block: dict, default_block: dict, cfg: dict, keys: tuple[s
     """Copy ``keys`` (and peerName) from the default host block into ``block`` where unset."""
     for key in keys:
         if (val := default_block.get(key)) is not None and key not in block:
-            block[key] = val
+            block[key] = copy.deepcopy(val) if isinstance(val, dict) else val
     if (peer_name := _pref(default_block, cfg, "peerName")) and "peerName" not in block:
         block["peerName"] = peer_name
 

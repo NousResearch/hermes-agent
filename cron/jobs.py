@@ -1680,6 +1680,14 @@ def _normalize_failure_deliver(value: Any) -> Optional[str]:
     return _normalize_job_optional_text(value)
 
 
+def _normalize_email_subject_policy(value: Any) -> str:
+    """Validate the per-job email subject mode; absent legacy records default to reply behavior."""
+    text = str(value or "legacy").strip().lower()
+    if text not in {"legacy", "report"}:
+        raise ValueError("email_subject_policy must be 'legacy' or 'report'.")
+    return text
+
+
 def _normalize_reasoning_effort(value: Any) -> Optional[str]:
     """Spelling-only validation via the shared parser (cron knob never stricter/looser than
     config.yaml); model capability is deliberately NOT checked (model unknowable at create time,
@@ -1715,12 +1723,14 @@ _CREATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "no_agent": bool,
     "context_from": _normalize_context_from,
     "failure_deliver": _normalize_failure_deliver,
+    "email_subject_policy": _normalize_email_subject_policy,
 }
 _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
     "workdir": lambda v: None if v in {None, "", False} else _normalize_workdir(v),
     "monitor_script": _normalize_job_optional_text,
     "monitor_url": _normalize_job_optional_text,
     "reasoning_effort": _normalize_reasoning_effort,
+    "email_subject_policy": _normalize_email_subject_policy,
 }
 
 
@@ -1788,6 +1798,7 @@ def create_job(
     monitor_url: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
     failure_deliver: Optional[str] = None,
+    email_subject_policy: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
     pinned: bool = False,
@@ -1875,6 +1886,7 @@ def create_job(
         "last_delivery_unverified": None,
         "failure_streak": 0,
         "deliver": deliver,
+        "email_subject_policy": f["email_subject_policy"] if email_subject_policy is not None else "legacy",
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": f["enabled_toolsets"],
         "workdir": f["workdir"],

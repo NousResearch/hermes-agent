@@ -516,6 +516,51 @@ class TestRegisteredHandlerForwardsAttachToSession:
         listed = next(j for j in listing["jobs"] if j["job_id"] == created["job_id"])
         assert listed.get("attach_to_session") is True
 
+
+class TestEmailSubjectPolicy:
+    """Per-job email subject preference persists through the public cron tool."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_cron_dir(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+        monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+        monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
+
+    def test_create_defaults_to_legacy_and_report_roundtrips_and_updates(self):
+        from cron.jobs import get_job
+        from tools.registry import registry
+
+        default = json.loads(registry.dispatch("cronjob_manage", {
+            "action": "create", "name": "Existing behavior", "schedule": "1h",
+            "prompt": "Check status", "deliver": "email:user@example.com",
+        }))
+        assert default["success"]
+        assert default["job"]["email_subject_policy"] == "legacy"
+
+        report = json.loads(registry.dispatch("cronjob_manage", {
+            "action": "create", "name": "Daily report", "schedule": "1h",
+            "prompt": "Summarize status", "deliver": "email:user@example.com",
+            "email_subject_policy": "report",
+        }))
+        assert report["success"]
+        job_id = report["job_id"]
+        assert get_job(job_id)["email_subject_policy"] == "report"
+        changed = json.loads(registry.dispatch("cronjob_manage", {
+            "action": "update", "job_id": job_id,
+            "email_subject_policy": "legacy",
+        }))
+        assert changed["success"]
+        assert get_job(job_id)["email_subject_policy"] == "legacy"
+
+    def test_invalid_policy_is_rejected(self):
+        from tools.registry import registry
+        result = json.loads(registry.dispatch("cronjob_manage", {
+            "action": "create", "name": "Bad policy", "schedule": "1h",
+            "prompt": "Check status", "email_subject_policy": "daily",
+        }))
+        assert result["success"] is False
+        assert "email_subject_policy" in result["error"]
+
     def test_update_persists_attach_to_session(self):
         from cron.jobs import get_job
         from tools.registry import registry

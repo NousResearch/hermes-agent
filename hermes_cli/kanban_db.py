@@ -308,7 +308,34 @@ KANBAN_RATE_LIMIT_EXIT_CODE = 75
 # Worker exit "provider rejected the configuration": credential revoked (401/403), model gone
 # (404), TLS chain broken — a retry cannot fix it, so the dispatcher parks the card blocked on
 # the FIRST occurrence instead of spending ``failure_limit`` identical spawns. 78 == BSD EX_CONFIG.
+# A card *definition* error a retry cannot fix takes the same route: every name in the worker's
+# ``--skills`` list failed to resolve, so the CLI raises before the agent exists.
 KANBAN_TERMINAL_PROVIDER_EXIT_CODE = 78
+
+# The CLI's own words for that definition error: ``cli.py`` / ``hermes_cli/oneshot.py`` raise
+# ``ValueError("Unknown skill(s): <names>")`` when NONE of the requested names resolves (a partial
+# miss is only a warning, so the card still runs). One definition, two readers — the entry points
+# that turn the failure into a process exit code, and the board diagnostics that describe the death
+# — so both surfaces call the same failure by the same name. The literal parenthesised ``s`` +
+# colon keep ordinary worker prose (``skilled worker``, the unrelated ``Unknown skill conflict
+# mode``) out of the match.
+UNRESOLVABLE_SKILL_RE = re.compile(r"Unknown skill\(s\):", re.IGNORECASE)
+
+
+def kanban_worker_failure_exit_code(error: object, default: int = 1) -> int:
+    """Exit code for a failure escaping a single-shot run; ``default`` when it is nothing special.
+
+    A worker spawned with ``--skills`` names that ALL fail to resolve dies before the agent exists
+    (``hermes -p <bot> --skills <name> chat -q "work kanban task <id>"``, or the same with ``-z``),
+    so the card is never read and a retry reproduces the identical ``ValueError``. For a
+    ``HERMES_KANBAN_TASK`` run that is the same "a retry cannot fix it" verdict a revoked credential
+    gets — ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` — so the dispatcher parks the card on the FIRST
+    spawn instead of spending ``kanban.failure_limit`` spawns on it. Outside a worker (a person
+    typing ``-s englih-learning-app``) it is just a user error and stays ``default``.
+    """
+    if os.environ.get("HERMES_KANBAN_TASK") and UNRESOLVABLE_SKILL_RE.search(str(error)):
+        return KANBAN_TERMINAL_PROVIDER_EXIT_CODE
+    return default
 
 
 def _resolve_crash_grace_seconds() -> int:

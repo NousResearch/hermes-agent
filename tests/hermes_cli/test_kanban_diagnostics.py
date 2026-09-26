@@ -111,6 +111,38 @@ def test_stuck_in_blocked_fires_past_threshold():
     assert d.data["age_hours"] >= 48
 
 
+def test_terminal_trip_on_a_card_naming_skills_the_profile_lacks_is_not_a_credential_problem():
+    """A worker whose ``--skills`` names all fail to resolve exits ``78`` — the same code a revoked
+    credential produces — so the diagnosis must name the real fix (the card's skill list). Sending
+    the operator to re-enter a working API key is the failure mode this guards."""
+    task = _task(
+        status="blocked",
+        consecutive_failures=1,
+        last_failure_error=(
+            "pid 4242 exited with code 78 Worker's last output: Unknown skill(s): english-learning-typ0"
+        ),
+    )
+    events = [_event("gave_up", failures=1, terminal_provider=True)]
+    diags = kd.compute_task_diagnostics(task, events, [_run(outcome="crashed")])
+    d = next(x for x in diags if x.kind == "repeated_failures")
+    assert "skills this profile does not have" in d.title
+    assert "credential" not in d.detail
+    assert any("skills list" in (a.payload or {}).get("command", "") for a in d.actions)
+
+
+def test_terminal_trip_on_a_provider_error_still_names_the_credential():
+    """Control: the provider wording is unchanged for a worker killed by a revoked key."""
+    task = _task(
+        status="blocked",
+        consecutive_failures=1,
+        last_failure_error="pid 4242 exited with code 78 (401 unauthorized: invalid api key)",
+    )
+    events = [_event("gave_up", failures=1, terminal_provider=True)]
+    diags = kd.compute_task_diagnostics(task, events, [_run(outcome="crashed")])
+    d = next(x for x in diags if x.kind == "repeated_failures")
+    assert "Provider rejected this profile" in d.title
+
+
 
 
 

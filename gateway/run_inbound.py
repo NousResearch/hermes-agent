@@ -1580,7 +1580,8 @@ class GatewayInboundMixin:
 
     @staticmethod
     def _prepend_inbound_reply_context(event: MessageEvent, source: SessionSource, message_text: str) -> str:
-        """Prepend the reply-to pointer, then the Discord triggering-message note (outermost)."""
+        """Prepend the reply-to pointer, then the edit marker, then the Discord triggering-message
+        note (outermost)."""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer even when the quoted text is already in history:
             # it's disambiguation (*which* prior message), not deduplication.
@@ -1589,6 +1590,11 @@ class GatewayInboundMixin:
             reply_text = event.reply_to_text
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
             message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
+
+        if getattr(event, "metadata", None) and event.metadata.get("edited_message"):
+            # Platform edit forwarded as a new turn (e.g. Matrix ``process_edits``): flag it so the
+            # agent treats this as a correction/follow-up rather than an unrelated fresh prompt.
+            message_text = f"[Edited message — this corrects/replaces your previous prompt]\n\n{message_text}"
 
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is

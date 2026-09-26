@@ -8,7 +8,7 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_ALLOWED_USERS, MATRIX_ALLOWED_ROOMS (whitelist; DMs exempt), MATRIX_IGNORE_USER_PATTERNS
   (regexes for bridge ghosts), MATRIX_HOME_ROOM (cron delivery), MATRIX_REACTIONS (default true);
   MATRIX_REQUIRE_MENTION (default true), MATRIX_THREAD_REQUIRE_MENTION, MATRIX_FREE_RESPONSE_ROOMS,
-  MATRIX_PROCESS_NOTICES, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
+  MATRIX_PROCESS_NOTICES, MATRIX_PROCESS_EDITS, MATRIX_ALLOW_ROOM_MENTIONS, MATRIX_ALLOW_PUBLIC_ROOMS (all default false);
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
   MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (default 16000),
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
@@ -885,6 +885,7 @@ class MatrixAdapter(BasePlatformAdapter):
         raw_session_scope = str(_extra_or_secret(config.extra, "session_scope", "MATRIX_SESSION_SCOPE", "auto")).strip().lower()
         self._matrix_session_scope = raw_session_scope if raw_session_scope in {"auto", "room", "thread"} else "auto"
         self._process_notices: bool = self._extra_truthy(config, "process_notices", "MATRIX_PROCESS_NOTICES", "false")
+        self._process_edits: bool = self._parse_process_edits(config)
         self._reactions_enabled: bool = str(_extra_or_secret(config.extra, "reactions", "MATRIX_REACTIONS", "true")).lower() not in {"false", "0", "no"}
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Let the final message land before redacting reactions ("missing event" in some
@@ -960,6 +961,16 @@ class MatrixAdapter(BasePlatformAdapter):
         """MATRIX_THREAD_REQUIRE_MENTION (scoped) → ``thread_require_mention`` in config.extra → false."""
         configured = _extra_or_secret(config.extra, "thread_require_mention", "MATRIX_THREAD_REQUIRE_MENTION", False)
         return configured if isinstance(configured, bool) else str(configured).lower() not in {"false", "0", "no", "off"}
+
+    @staticmethod
+    def _parse_process_edits(config) -> bool:
+        """process_edits from config.extra, else MATRIX_PROCESS_EDITS (default false). Opt-in:
+        forwards an ``m.replace`` edit of a user's own message as a new agent turn carrying the
+        corrected text, instead of the default of silently ignoring edits."""
+        configured = MatrixAdapter._configured_bool(config, "process_edits")
+        if configured is not None:
+            return configured
+        return _env_truthy("MATRIX_PROCESS_EDITS", "false")
 
     @staticmethod
     def _extract_server_ed25519(device_keys_obj: Any) -> Optional[str]:
@@ -1470,6 +1481,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 "ignored_user_pattern_count": len(self._ignored_user_patterns),
                 "require_mention": self._require_mention, "free_response_room_count": len(self._free_rooms),
                 "allow_room_mentions": self._allow_room_mentions, "process_notices": self._process_notices,
+                "process_edits": self._process_edits,
                 "allow_public_rooms": _env_truthy("MATRIX_ALLOW_PUBLIC_ROOMS")},
             "media": {"max_media_bytes": self._max_media_bytes}}
 
@@ -2014,7 +2026,11 @@ class MatrixAdapter(BasePlatformAdapter):
             source_content = content.serialize() if hasattr(content, "serialize") else {}
             msgtype = str(content.msgtype) if hasattr(content, "msgtype") else ""
         relates_to = source_content.get("m.relates_to", {})
-        if relates_to.get("rel_type") == "m.replace":  # skip edits
+        if relates_to.get("rel_type") == "m.replace":
+            # Opt-in only (default: skip edits, unchanged behavior). The bot's own edits (e.g.
+            # outbound streaming updates) never reach here — _is_self_sender already returned above.
+            if self._process_edits and (msgtype == "m.text" or (msgtype == "m.notice" and self._process_notices)):
+                await self._handle_edit_message(room_id, sender, event_id, source_content, relates_to)
             return
         # m.notice is the conventional bot-response msgtype; ignoring it prevents bot-to-bot loops.
         if msgtype == "m.notice" and not self._process_notices:
@@ -2132,6 +2148,35 @@ class MatrixAdapter(BasePlatformAdapter):
             reply_to_author_name=reply_to_author_name,
             # Top-level sender fields mirror source.* — downstream prompt code reads them.
             user_id=sender, user_name=display_name, **extra)
+
+    async def _handle_edit_message(
+        self, room_id: str, sender: str, event_id: str, source_content: dict, relates_to: dict) -> None:
+        """process_edits (opt-in): forward the corrected body of an ``m.replace`` edit as a new
+        agent turn. Reuses the normal message gate (mention/thread/session/auth, all keyed off
+        ``m.new_content`` exactly as a fresh event would be) so an edit is authorized and routed
+        the same way a brand-new message from the same sender would be; the edit's own event_id
+        (checked by the caller before this point) gives per-edit dedup for free. Preserves the
+        original event as metadata rather than rewriting any prior turn."""
+        target_event_id = str(relates_to.get("event_id") or "")
+        if not target_event_id:
+            return
+        new_content = source_content.get("m.new_content")
+        if not isinstance(new_content, dict):
+            return
+        body = new_content.get("body", "") or ""
+        if not body:
+            return
+        # Threaded edits mirror the thread relation into m.new_content (MSC2676); the top-level
+        # relates_to on an edit is exclusively the m.replace pointer, never m.thread.
+        new_relates_to = new_content.get("m.relates_to")
+        if not isinstance(new_relates_to, dict):
+            new_relates_to = {}
+        msg_event = await self._build_inbound_event(
+            room_id, sender, event_id, body, new_content, new_relates_to,
+            metadata={"edited_message": True, "edited_message_original_id": target_event_id})
+        if msg_event is None:
+            return
+        await self.handle_message(msg_event)
 
     async def _handle_text_message(
         self, room_id: str, sender: str, event_id: str, event_ts: float, source_content: dict,
@@ -3124,6 +3169,7 @@ def interactive_setup() -> None:
 
 _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("require_mention", "MATRIX_REQUIRE_MENTION", "lower"), ("process_notices", "MATRIX_PROCESS_NOTICES", "lower"),
+    ("process_edits", "MATRIX_PROCESS_EDITS", "lower"),
     ("session_scope", "MATRIX_SESSION_SCOPE", "lower"), ("auto_thread", "MATRIX_AUTO_THREAD", "lower"),
     ("dm_mention_threads", "MATRIX_DM_MENTION_THREADS", "lower"),
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),

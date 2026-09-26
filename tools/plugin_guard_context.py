@@ -30,7 +30,8 @@ def js_block_comment_lines(lines: list[str]) -> set[int]:
 
     This is intentionally not a JavaScript parser. Quoted strings and line
     comments are skipped; a template literal, ambiguous slash (regex/division),
-    malformed string or unsupported line separator ends classification. Comments
+    angle bracket (potential JSX), malformed string or unsupported line separator
+    ends classification. Comments
     after that point retain their original severity. A block must close, and a
     line containing any code outside comments never qualifies.
     """
@@ -68,7 +69,7 @@ def js_block_comment_lines(lines: list[str]) -> set[int]:
             else:
                 code.add(number)
                 char = line[i]
-                if char in '`/\\' or line.startswith(('<!--', '-->'), i):
+                if char in '`/<\\' or line.startswith('-->', i):
                     return completed - code
                 i += 1
                 if char in "\"'":

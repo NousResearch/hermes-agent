@@ -48,6 +48,7 @@ def test_whole_line_block_prose_stays_visible_and_installable(tmp_path, source, 
     '/* benign */' + ' ' * 150 + 'readFileSync("/etc/shadow");',
     '--> /*\nreadFileSync("/etc/shadow");\n/* */',
     '#!node /*\nreadFileSync("/etc/shadow");\n/* */',
+    'const el = <div>/*\n{readFileSync("/etc/shadow")}\n*/</div>;',
     '<!-- /*\nreadFileSync("/etc/shadow");\n/* */',
     '/* benign */\u2028readFileSync("/etc/shadow");',
 ])

@@ -523,24 +523,37 @@ def _normalize_image_part(part: Dict[str, Any]) -> Dict[str, Any]:
     return image_part
 
 
-def _normalize_multimodal_content(content: Any) -> Any:
-    """Validate multimodal content: a plain string when text-only, else canonical ``text`` /
-    ``image_url`` parts (native OpenAI vision shape; Anthropic conversion happens downstream).
+def _normalize_multimodal_content(content: Any, *, bounded: bool = True) -> Any:
+    """Validate multimodal content into canonical text/image parts.
+
+    Protocol-normalization callers keep ``bounded=True``, which applies the defensive
+    64 KiB-per-text / 1,000-part caps. Native session chat passes ``bounded=False`` because
+    its request-body middleware is already the size boundary; accepted user input must never
+    be silently rewritten before the agent sees it.
 
     Raises ``ValueError("<code>:<message>")`` with codes ``unsupported_content_type`` (file
     parts, non-image data URLs, unknown types), ``invalid_image_url``, ``invalid_content_part``.
     """
+    def _text(value: Any) -> str:
+        text = str(value)
+        return _cap_text(text) if bounded else text
+
     if content is None:
         return ""
     if isinstance(content, str):
-        return _cap_text(content)
+        return _text(content)
     if not isinstance(content, list):
-        return _normalize_chat_content(content)
+        try:
+            return _text(content)
+        except Exception:
+            return ""
+
     normalized_parts: List[Dict[str, Any]] = []
-    for part in _cap_list(content):
+    parts = _cap_list(content) if bounded else content
+    for part in parts:
         if isinstance(part, str):
             if part:
-                normalized_parts.append({"type": "text", "text": _cap_text(part)})
+                normalized_parts.append({"type": "text", "text": _text(part)})
             continue
         if not isinstance(part, dict):
             continue  # unknown scalars are ignored for forward compatibility (e.g. ``refusal``)
@@ -549,7 +562,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
         if part_type in _TEXT_PART_TYPES:
             text = part.get("text")
             if text is not None and str(text):
-                normalized_parts.append({"type": "text", "text": _cap_text(str(text))})
+                normalized_parts.append({"type": "text", "text": _text(text)})
         elif part_type in _IMAGE_PART_TYPES:
             normalized_parts.append(_normalize_image_part(part))
         elif part_type in _FILE_PART_TYPES:
@@ -664,7 +677,10 @@ def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") 
     if not _content_has_visible_payload(user_message):
         return None, _error_response("Missing 'message' field", 400, code="missing_message")
     try:
-        return _normalize_multimodal_content(user_message), None
+        # Session chat is a native input surface. The 10 MB request-body guard is its
+        # size boundary; normalization validates/canonicalizes shape but must not drop
+        # accepted text or parts behind the caller's back.
+        return _normalize_multimodal_content(user_message, bounded=False), None
     except ValueError as exc:
         return None, _multimodal_validation_error(exc, param=param)
 

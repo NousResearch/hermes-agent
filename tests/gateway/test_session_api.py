@@ -9,7 +9,11 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import (
+    APIServerAdapter,
+    MAX_NORMALIZED_TEXT_LENGTH,
+    _normalize_multimodal_content,
+)
 from hermes_state import SessionDB
 
 
@@ -1029,6 +1033,50 @@ async def test_require_model_lock_hard_fails_when_global_default_would_be_used(a
 
 
 _CHAT_REPLY = ({"final_response": "ok"}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+
+def test_protocol_multimodal_normalizer_keeps_its_defensive_text_cap():
+    """The session-chat fix must not broaden OpenAI/history normalization globally."""
+    text = "x" * (MAX_NORMALIZED_TEXT_LENGTH + 1)
+
+    assert len(_normalize_multimodal_content(text)) == MAX_NORMALIZED_TEXT_LENGTH
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("suffix", ["/chat", "/chat/stream"])
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        pytest.param(
+            "x" * (MAX_NORMALIZED_TEXT_LENGTH + 1),
+            "x" * (MAX_NORMALIZED_TEXT_LENGTH + 1),
+            id="plain-string",
+        ),
+        pytest.param(
+            [
+                {"type": "text", "text": "x" * (MAX_NORMALIZED_TEXT_LENGTH + 1)},
+                {"type": "text", "text": "y" * (MAX_NORMALIZED_TEXT_LENGTH + 1)},
+            ],
+            "x" * (MAX_NORMALIZED_TEXT_LENGTH + 1)
+            + "\n"
+            + "y" * (MAX_NORMALIZED_TEXT_LENGTH + 1),
+            id="text-parts",
+        ),
+    ],
+)
+async def test_session_chat_preserves_accepted_long_text(adapter, session_db, suffix, message, expected):
+    """#120937: native session input is bounded by HTTP size, never silently by normalization."""
+    session_id = session_db.create_session("long-message-session", "api_server")
+    app = _create_session_app(adapter)
+
+    with patch.object(adapter, "_run_agent", AsyncMock(return_value=_CHAT_REPLY)) as mock_run:
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(f"/api/sessions/{session_id}{suffix}", json={"message": message})
+            assert resp.status == 200, await resp.text()
+            if suffix.endswith("/stream"):
+                await resp.text()
+
+    assert mock_run.call_args.kwargs["user_message"] == expected
 
 
 @pytest.mark.asyncio

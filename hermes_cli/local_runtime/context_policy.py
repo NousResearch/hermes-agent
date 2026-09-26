@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from hermes_cli.local_runtime.estimator import (
-    HardwareBudget, ModelProfile, PhysicsRefusal, ctx_bytes, footprint_bytes, physics_check)
+    HardwareBudget, LayerKind, ModelProfile, PhysicsRefusal, ctx_bytes, footprint_bytes,
+    physics_check)
 
 FLOOR = 64 * 1024                     # = target; one internal constant
 _LADDER_GROWTH = 1.5
@@ -220,8 +221,15 @@ def spill_overrides(profile: ModelProfile) -> list[str]:
     n_head_kv==0 layers carry no KV worth protecting)."""
     if profile.moe:
         return ["-ot", r"blk\.\d+\.ffn_.*_exps\.weight=CPU"]
-    if profile.recurrent_layer_count:
-        return ["-ot", r"blk\.\d+\.ffn_.*\.weight=CPU"]
+    recurrent = [
+        str(index)
+        for index, (kind, _kv_bytes) in enumerate(profile.layers)
+        if kind == LayerKind.RECURRENT
+    ]
+    if recurrent:
+        # A block-agnostic pattern also moves the hybrid's full-attention FFNs,
+        # contradicting this policy's recurrent-only placement contract (#113329).
+        return ["-ot", r"blk\.(%s)\.ffn_.*\.weight=CPU" % "|".join(recurrent)]
     return []  # dense: fit's back-to-front layer cut is the only axis
 
 

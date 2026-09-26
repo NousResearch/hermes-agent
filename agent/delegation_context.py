@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from typing import Iterator, Mapping, MutableMapping, overload
+from typing import Any, Iterator, Mapping, MutableMapping, overload
 
 _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_context", default=False)
 # Any in-process execution that is NOT the dispatcher-owned worker (cron jobs). Kept separate
@@ -18,6 +18,7 @@ _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_
 _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatcher_owned_context", default=False)
 
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
+_DELEGATED_CHILD_RUNNER_ARG = "--hermes-delegated-child-runner"
 
 KANBAN_ENV_KEYS: tuple[str, ...] = (
     "HERMES_KANBAN_TASK", "HERMES_KANBAN_RUN_ID", "HERMES_KANBAN_CLAIM_LOCK",
@@ -99,6 +100,91 @@ def _fenced_kanban_root() -> str:
         return "1"
 
 
+def is_delegated_child_mutation_context() -> bool:
+    """Return True when Kanban mutation must be denied to a delegated child.
+
+    The environment marker is a fast path, not the authority: a subprocess can
+    delete inherited environment entries before launching another Hermes CLI.
+    Delegate sessions already carry durable ``_delegate_from`` provenance in
+    ``state.db`` and their session id is bridged into child-process env, so use
+    that independent record as the fallback trust boundary.
+    """
+    import os
+
+    return (
+        is_delegated_child_process_context()
+        or _has_delegated_runner_ancestor()
+        or _has_delegated_session_provenance(os.environ.get("HERMES_SESSION_ID"))
+    )
+
+
+def _has_delegated_runner_ancestor() -> bool:
+    """Detect the environment-independent wrapper on the process ancestry."""
+    try:
+        import psutil
+
+        parents = psutil.Process().parents()
+    except Exception:
+        return False
+    for parent in parents:
+        try:
+            if _DELEGATED_CHILD_RUNNER_ARG in parent.cmdline():
+                return True
+        except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+            continue
+    return False
+
+
+def _has_delegated_session_provenance(session_id: str | None) -> bool:
+    """Read the canonical delegate marker without opening ``state.db`` writable."""
+    if not session_id:
+        return False
+
+    import json
+    import sqlite3
+
+    try:
+        from hermes_constants import get_hermes_home
+
+        db_path = get_hermes_home() / "state.db"
+        if not db_path.is_file():
+            return False
+        conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT model_config FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+    except (OSError, sqlite3.Error):
+        return False
+
+    if not row or not row[0]:
+        return False
+    try:
+        model_config = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return isinstance(model_config, dict) and bool(model_config.get("_delegate_from"))
+
+
+def wrap_delegated_child_command(argv: list[str]) -> list[str]:
+    """Keep delegated lineage in process ancestry, independent of child env."""
+    if not is_delegated_child_process_context():
+        return list(argv)
+
+    import sys
+    from pathlib import Path
+
+    return [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        _DELEGATED_CHILD_RUNNER_ARG,
+        *argv,
+    ]
+
+
 def scrub_kanban_env(env: Mapping[str, str] | MutableMapping[str, str]) -> dict[str, str]:
     """Remove worker identity, retaining board/location and an inherited write fence.
 
@@ -162,3 +248,47 @@ def delegated_child_subprocess_env(
             or (env and (env.get("HERMES_KANBAN_TASK") or env.get(DELEGATED_CHILD_ENV_MARKER)))):
         return None if env is None else dict(env)
     return scrub_kanban_env(os.environ if env is None else env)
+
+
+def _run_delegated_child(argv: list[str]) -> int:
+    """Run the real command while this stable wrapper remains its ancestor."""
+    if not argv or argv[0] != _DELEGATED_CHILD_RUNNER_ARG or len(argv) == 1:
+        return 2
+
+    import signal
+    import subprocess
+
+    proc = subprocess.Popen(argv[1:])
+    if os.name == "nt":
+        return proc.wait()
+
+    forwarded: dict[int, Any] = {}
+
+    def _forward(signum, _frame) -> None:
+        try:
+            proc.send_signal(signum)
+        except ProcessLookupError:
+            pass
+
+    for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        forwarded[signum] = signal.signal(signum, _forward)
+    try:
+        returncode = proc.wait()
+    finally:
+        for signum, previous in forwarded.items():
+            signal.signal(signum, previous)
+
+    if returncode < 0:
+        signum = -returncode
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+    return returncode
+
+
+if __name__ == "__main__":  # pragma: no cover - exercised through subprocess E2E
+    import sys
+
+    raise SystemExit(_run_delegated_child(sys.argv[1:]))

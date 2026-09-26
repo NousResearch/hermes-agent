@@ -44,20 +44,23 @@ def _completion_cwd(params: dict | None = None) -> str:
     # A session bound to another profile resolves its workspace from THAT profile's config before the launch profile's
     # env var; the dashboard's in-memory gateway does NOT inherit the PTY child's bridged TERMINAL_CWD, so a configured
     # terminal.cwd is read directly.
-    raw = (client_cwd or session_cwd
-           or _profile_workspace_cwd(profile_home) or _launch_configured_cwd()
-           or os.environ.get("TERMINAL_CWD") or os.getcwd())
-    # An ssh cwd lives on the remote host: host expansion/isdir cannot vouch for it (``~`` would name THIS host's
-    # home), so a named ssh profile's path is returned before the host check. The launch profile keeps main's host
-    # fast path and only then falls back to the raw remote path.
-    if profile_home is not None and _cwd_is_remote(profile_home):
-        return str(raw)
+    named_ssh = profile_home is not None and _cwd_is_remote(profile_home)
+    raw = str(client_cwd or session_cwd or _profile_workspace_cwd(profile_home)
+              # A named ssh profile never inherits the LAUNCH profile's host cwd: its remote default is ~.
+              or ("~" if named_ssh else "") or _launch_configured_cwd()
+              or os.environ.get("TERMINAL_CWD") or os.getcwd())
+    # An ssh cwd lives on the remote host: host expansion/isdir cannot vouch for it, and ``~`` names the REMOTE
+    # user's home, never this host's. The launch profile keeps main's host fast path for everything else.
+    if named_ssh:
+        return raw if _is_remote_cwd_shape(raw) else (_declared_remote_profile_cwd(profile_home) or "~")
+    if profile_home is None and raw.startswith("~") and _cwd_is_remote(None):
+        return raw
     with contextlib.suppress(Exception):
-        resolved = os.path.abspath(os.path.expanduser(str(raw)))
+        resolved = os.path.abspath(os.path.expanduser(raw))
         if os.path.isdir(resolved):
             return resolved
-    if profile_home is None and _cwd_is_remote(None):
-        return str(raw)
+    if profile_home is None and _is_remote_cwd_shape(raw) and _cwd_is_remote(None):
+        return raw
     return os.getcwd()
 
 
@@ -106,13 +109,17 @@ def _declared_remote_profile_cwd(profile_home) -> str | None:
     ``_profile_configured_cwd`` requires ``os.path.isdir``; an ssh working directory lives on the remote, so that
     check drops it (or expands ``~`` to THIS host's home) and the launch profile's ``TERMINAL_CWD`` wins.
     """
+    policy = _profile_terminal_policy(profile_home)
+    raw = str(policy.get("TERMINAL_CWD") or "").strip()
+    return raw if _policy_backend(policy) == "ssh" and _is_remote_cwd_shape(raw) else None
+
+
+def _is_remote_cwd_shape(raw: str) -> bool:
+    """An ssh working directory the remote shell can resolve: ``~``, ``~/…`` or absolute (a relative one would be
+    stored and git-probed relative to the gateway's own cwd)."""
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
 
-    policy = _profile_terminal_policy(profile_home)
-    backend, raw = _policy_backend(policy), str(policy.get("TERMINAL_CWD") or "").strip()
-    if backend != "ssh":
-        return None
-    return raw if _is_ssh_remote_tilde_cwd(backend, raw) or os.path.isabs(raw) else None
+    return _is_ssh_remote_tilde_cwd("ssh", raw) or os.path.isabs(raw)
 
 
 def _profile_workspace_cwd(profile_home) -> str | None:
@@ -124,7 +131,7 @@ def _workspace_cwd(profile_home, raw: str) -> str:
     """A picked workspace for a session bound to ``profile_home``: an ssh dir raw, else an existing host dir.
     Raises ValueError when a host dir does not exist."""
     if _cwd_is_remote(profile_home):
-        if raw == "~" or raw.startswith("~/") or os.path.isabs(raw):
+        if _is_remote_cwd_shape(raw):
             return raw
         raise ValueError(f"remote working directory must be absolute or ~-relative: {raw}")
     resolved = os.path.abspath(os.path.expanduser(raw))

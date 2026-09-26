@@ -60,6 +60,12 @@ export const LOCALE_OPTIONS = [
     name: LOCALE_ENDONYMS.es,
     englishName: 'Spanish',
     configValue: 'es'
+  },
+  {
+    id: 'ko',
+    name: LOCALE_ENDONYMS.ko,
+    englishName: 'Korean',
+    configValue: 'ko'
   }
 ] as const satisfies readonly { configValue: string; englishName: string; id: Locale; name: string }[]
 
@@ -147,7 +153,12 @@ const LOCALE_ALIASES: Record<string, Locale> = {
   es_419: 'es',
   spanish: 'es',
   español: 'es',
-  espanol: 'es'
+  espanol: 'es',
+  ko: 'ko',
+  'ko-kr': 'ko',
+  ko_kr: 'ko',
+  korean: 'ko',
+  한국어: 'ko'
 }
 
 export function isLocale(value: unknown): value is Locale {

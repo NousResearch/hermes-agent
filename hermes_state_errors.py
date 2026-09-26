@@ -38,7 +38,6 @@ _TRANSIENT_SQLITE_MARKERS = (
 # on its %_config read but replaces the text with "vtable constructor failed: messages_fts",
 # so a phrase match read a busy store as a hard failure.
 _SQLITE_LOCK_CODES = (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
-_SQLITE_CONSTRAINT_FOREIGNKEY = getattr(sqlite3, "SQLITE_CONSTRAINT_FOREIGNKEY", 787)  # extended code
 
 
 def _sqlite_primary_code(exc_or_str) -> "int | None":
@@ -291,7 +290,7 @@ def classify_persistence_error(exc_or_str) -> str:
         return "fts_index"
     if _sqlite_primary_code(exc_or_str) in _SQLITE_LOCK_CODES:
         return "locked"
-    if getattr(exc_or_str, "sqlite_errorcode", None) == _SQLITE_CONSTRAINT_FOREIGNKEY:
+    if getattr(exc_or_str, "sqlite_errorcode", None) == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY:
         return "session_row_missing"
     text = str(exc_or_str).lower()
     for markers, cause in _PERSISTENCE_CAUSE_BY_PHRASE:

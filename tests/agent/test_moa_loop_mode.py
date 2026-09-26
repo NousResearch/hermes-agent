@@ -740,6 +740,37 @@ def test_run_reference_captures_usage_and_cost(monkeypatch):
     assert acct.cost_usd == 0.0123
 
 
+def test_price_reference_response_reads_adapter_chat_usage_on_native_wires(monkeypatch):
+    """Regression for #123157: a reference response comes from ``call_llm``,
+    whose adapters rebuild provider usage into the OpenAI-Chat shape
+    (``prompt_tokens``/``completion_tokens``). Normalizing it with the SLOT's
+    native wire (``codex_responses`` / ``anthropic_messages``) read fields the
+    adapted object does not carry, so every advisor bucket was zero and
+    advisor spend vanished from traces and session totals."""
+    from agent.moa_loop import _price_reference_response
+    from agent.usage_pricing import CanonicalUsage
+
+    # The shape call_llm's adapters emit, regardless of the slot's native wire.
+    chat_usage = SimpleNamespace(prompt_tokens=20000, completion_tokens=1500, total_tokens=21500)
+    monkeypatch.setattr(
+        "agent.usage_pricing.estimate_usage_cost",
+        lambda *a, **k: SimpleNamespace(amount_usd=0.01, status="estimated", source="table"),
+    )
+
+    for runtime in (
+        {"provider": "openai-codex", "api_mode": "codex_responses"},
+        {"provider": "anthropic", "api_mode": "anthropic_messages"},
+    ):
+        usage, cost, _status, _source = _price_reference_response(
+            SimpleNamespace(usage=chat_usage), {"model": "advisor"},
+            {**runtime, "base_url": None, "api_key": None},
+        )
+        assert isinstance(usage, CanonicalUsage)
+        assert usage.input_tokens == 20000, runtime
+        assert usage.output_tokens == 1500, runtime
+        assert cost == 0.01, runtime
+
+
 
 
 def test_canonical_usage_add():

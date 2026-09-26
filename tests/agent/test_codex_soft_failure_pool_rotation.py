@@ -70,10 +70,10 @@ def _soft_failure(code: str, message: str) -> SimpleNamespace:
     return SimpleNamespace(status="failed", output=[], output_text="", error=SimpleNamespace(code=code, message=message))
 
 
-def _run(agent: _Agent, response: SimpleNamespace):
+def _run(agent: _Agent, response: SimpleNamespace, *, messages=None, retry_state=None):
     return retry_invalid_response(
-        agent, response=response, error_details=["response.status=failed"], _retry=TurnRetryState(),
-        thinking_spinner=None, messages=[], api_messages=[], api_kwargs=None, active_system_prompt=None,
+        agent, response=response, error_details=["response.status=failed"], _retry=retry_state or TurnRetryState(),
+        thinking_spinner=None, messages=messages if messages is not None else [], api_messages=[], api_kwargs=None, active_system_prompt=None,
         conversation_history=None, retry_count=0, max_retries=3, compression_attempts=0, api_call_count=1,
         api_request_id="r", api_start_time=0.0, api_duration=0.4, effective_task_id="t", turn_id="turn",
     )
@@ -102,3 +102,37 @@ def test_content_policy_soft_failure_leaves_pool_alone():
     assert agent.swapped_to == [] and agent.api_key == "tok-0-1234567890"
     assert all(e.last_status is None for e in pool.entries())
     agent._try_activate_fallback.assert_called()
+
+
+def test_invalid_encrypted_content_soft_failure_strips_replay_before_fallback():
+    pool = CredentialPool("openai-codex", [_entry(0)])
+    agent = _Agent(pool)
+    agent._fallback_chain = ({"provider": "custom:fallback", "model": "fallback-model"},)
+    agent._try_activate_fallback = MagicMock(return_value=True)
+    agent._codex_reasoning_replay_enabled = True
+    messages = [{"role": "assistant", "content": "", "codex_reasoning_items": [{"type": "reasoning", "encrypted_content": "stale"}]}]
+
+    def disable_replay(items):
+        count = sum(len(message.pop("codex_reasoning_items", [])) for message in items)
+        agent._codex_reasoning_replay_enabled = False
+        return {"items": count, "messages": 1}
+
+    agent._disable_codex_reasoning_replay = disable_replay
+    retry_state = TurnRetryState()
+    verdict = _run(
+        agent, _soft_failure("invalid_encrypted_content", "Encrypted content could not be decrypted"),
+        messages=messages, retry_state=retry_state,
+    )
+
+    assert verdict.action == "continue"
+    assert retry_state.invalid_encrypted_content_retry_attempted
+    assert not agent._codex_reasoning_replay_enabled
+    assert "codex_reasoning_items" not in messages[0]
+    agent._try_activate_fallback.assert_not_called()
+
+    second = _run(
+        agent, _soft_failure("invalid_encrypted_content", "Encrypted content could not be decrypted"),
+        messages=messages, retry_state=retry_state,
+    )
+    assert second.action == "break"
+    agent._try_activate_fallback.assert_called_once()

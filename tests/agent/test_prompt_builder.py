@@ -346,6 +346,116 @@ class TestBuildSkillsSystemPrompt:
         assert "cached-skill" not in second
 
 
+    def test_snapshot_entry_skill_md_exists_handles_categories_and_org_mirror(self, tmp_path):
+        """``_snapshot_entry_skill_md_exists`` reconstructs the SKILL.md path from
+        the snapshot entry and reports whether the file is still readable on disk;
+        covers the three shapes the snapshot actually carries (general category,
+        nested category, org mirror) (#8845)."""
+        from agent.prompt_builder import _snapshot_entry_skill_md_exists
+
+        # general category: skills_dir/<name>/SKILL.md
+        d = tmp_path / "general-skill"
+        d.mkdir()
+        (d / "SKILL.md").write_text("---\nname: general-skill\n---\n")
+        assert _snapshot_entry_skill_md_exists(tmp_path, {
+            "skill_name": "general-skill", "category": "general",
+        }) is True
+        # Missing skill file → False.
+        assert _snapshot_entry_skill_md_exists(tmp_path, {
+            "skill_name": "never-existed", "category": "general",
+        }) is False
+
+        # nested category: skills_dir/<cat>/<name>/SKILL.md
+        n = tmp_path / "creative" / "writing"
+        n.mkdir(parents=True)
+        (n / "SKILL.md").write_text("---\nname: writing\n---\n")
+        assert _snapshot_entry_skill_md_exists(tmp_path, {
+            "skill_name": "writing", "category": "creative",
+        }) is True
+
+        # org mirror: skills_dir/_org/<org_id>/<name>/SKILL.md
+        o = tmp_path / "_org" / "my-team" / "org-skill"
+        o.mkdir(parents=True)
+        (o / "SKILL.md").write_text("---\nname: org-skill\n---\n")
+        assert _snapshot_entry_skill_md_exists(tmp_path, {
+            "skill_name": "org-skill", "category": "general", "org_id": "my-team",
+        }) is True
+        assert _snapshot_entry_skill_md_exists(tmp_path, {
+            "skill_name": "org-skill", "category": "general", "org_id": "other-team",
+        }) is False
+
+        # Non-dict and empty-name entries short-circuit to False.
+        assert _snapshot_entry_skill_md_exists(tmp_path, None) is False  # type: ignore[arg-type]
+        assert _snapshot_entry_skill_md_exists(tmp_path, {}) is False
+        assert _snapshot_entry_skill_md_exists(tmp_path, {"category": "general"}) is False
+
+
+    def test_snapshot_drops_entries_for_pruned_skill_files(self, monkeypatch, tmp_path):
+        """End-to-end regression for #8845: a skill that's present when the
+        skills-prompt snapshot is written but pruned (SKILL.md deleted) before the
+        next build must NOT appear in the rendered prompt. The manifest check in
+        ``_load_skills_snapshot`` covers the common case, but this test pins the
+        defensive existence filter that protects against race conditions and
+        symlink-target deletions the manifest cannot catch."""
+        from agent.prompt_builder import (
+            _SKILLS_PROMPT_CACHE, _SKILLS_PROMPT_CACHE_LOCK, _build_skills_system_prompt_inner,
+            clear_skills_system_prompt_cache,
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        keep = tmp_path / "skills" / "keep-me"
+        keep.mkdir(parents=True)
+        (keep / "SKILL.md").write_text("---\nname: keep-me\ndescription: Stay\n---\n")
+        prune = tmp_path / "skills" / "openclaw-imports" / "phantom"
+        prune.mkdir(parents=True)
+        (prune / "SKILL.md").write_text("---\nname: phantom\ndescription: Will vanish\n---\n")
+
+        # First build writes the snapshot with both entries present.
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        first = _build_skills_system_prompt_inner(
+            tmp_path / "skills", external_dirs=[], available_tools=None,
+            available_toolsets=None, compact_categories=None, project_dirs=None,
+        )
+        assert "keep-me" in first
+        assert "phantom" in first
+
+        # Now prune: drop the SKILL.md but leave the directory so the manifest walk
+        # still sees it (manifest check passes, only the existence filter catches it).
+        (prune / "SKILL.md").unlink()
+
+        # Reset the in-process LRU so the next call hits the snapshot path.
+        with _SKILLS_PROMPT_CACHE_LOCK:
+            _SKILLS_PROMPT_CACHE.clear()
+        # Write a snapshot whose manifest still matches (no SKILL.md was added/removed
+        # from the walker's view), forcing the snapshot fast-path to be exercised.
+        from agent.prompt_builder import (
+            _SKILLS_PROMPT_CACHE_LOCK as _LOCK, _SKILLS_SNAPSHOT_VERSION,
+            _build_skills_manifest, _skills_prompt_snapshot_path,
+        )
+        from utils import atomic_json_write
+        snapshot = {
+            "version": _SKILLS_SNAPSHOT_VERSION,
+            "manifest": _build_skills_manifest(tmp_path / "skills"),
+            "skills": [
+                {"skill_name": "keep-me", "category": "general",
+                 "frontmatter_name": "keep-me", "description": "Stay",
+                 "platforms": [], "conditions": {}, "requires_apps": []},
+                {"skill_name": "phantom", "category": "openclaw-imports",
+                 "frontmatter_name": "phantom", "description": "Will vanish",
+                 "platforms": [], "conditions": {}, "requires_apps": []},
+            ],
+            "category_descriptions": {},
+        }
+        atomic_json_write(_skills_prompt_snapshot_path(), snapshot)
+
+        second = _build_skills_system_prompt_inner(
+            tmp_path / "skills", external_dirs=[], available_tools=None,
+            available_toolsets=None, compact_categories=None, project_dirs=None,
+        )
+        assert "keep-me" in second, "live skill must remain in the prompt"
+        assert "phantom" not in second, "snapshot entry for pruned SKILL.md must be dropped (#8845)"
+
+
 # =========================================================================
 # Context files prompt builder
 # =========================================================================

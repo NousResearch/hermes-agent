@@ -1182,6 +1182,32 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
     return None
 
 
+def _snapshot_entry_skill_md_exists(skills_dir: Path, entry: dict) -> bool:
+    """True when a snapshot entry's SKILL.md is still readable on disk.
+
+    Snapshot entries come from the cached skills prompt JSON. The manifest comparison
+    in ``_load_skills_snapshot`` already invalidates the snapshot when SKILL.md files
+    are added, removed, or content-changed; this guard is the final existence check
+    that matches the issue's "Expected Behavior" -- drop the entry silently when the
+    file is gone (#8845). Catches race conditions (snapshot written, file pruned
+    before next build) and symlink-target deletions that the ``os.walk``-based
+    manifest still records as "present".
+    """
+    if not isinstance(entry, dict):
+        return False
+    skill_name = str(entry.get("skill_name") or "").strip()
+    if not skill_name:
+        return False
+    category = str(entry.get("category") or "general").strip()
+    org_id = entry.get("org_id")
+    base = (skills_dir / ORG_MIRROR_DIR_NAME / str(org_id)) if org_id else skills_dir
+    if category and category != "general":
+        skill_md = base / category / skill_name / "SKILL.md"
+    else:
+        skill_md = base / skill_name / "SKILL.md"
+    return skill_md.is_file()
+
+
 def _requires_apps_list(frontmatter: dict) -> list[str]:
     raw = frontmatter.get("requires_apps")
     items = raw if isinstance(raw, list) else [raw] if raw else []
@@ -1458,6 +1484,13 @@ def _build_skills_system_prompt_inner(
         candidates = [(entry, skill_matches_platform_list(entry.get("platforms") or [])
                        and skill_matches_apps({"requires_apps": entry.get("requires_apps") or []}))
                       for entry in snapshot.get("skills", []) if isinstance(entry, dict)]
+        # Defensive existence filter (#8845): the manifest comparison in
+        # ``_load_skills_snapshot`` already invalidates the snapshot on content
+        # changes, but race conditions (snapshot just written, skill pruned
+        # before next build) and symlink-target deletions can still leave a
+        # snapshot with entries whose SKILL.md no longer exists. Drop silently.
+        candidates = [(entry, compat) for entry, compat in candidates
+                      if _snapshot_entry_skill_md_exists(skills_dir, entry)]
         category_descriptions = {str(k): str(v) for k, v in (snapshot.get("category_descriptions") or {}).items()}
     else:
         candidates = []
